@@ -103,6 +103,10 @@ set -u
 case "$1 ${2:-}" in
   "issue view")
     n="$3"
+    if [ -n "${FAKE_ISSUE_JSON_FILE:-}" ] && [ "$n" = "${FAKE_ISSUE_JSON_NUMBER:-}" ]; then
+      cat "$FAKE_ISSUE_JSON_FILE"
+      exit 0
+    fi
     labels='[{"name":"needs-triage"},{"name":"enhancement"}]'
     if [ "${FAKE_ISSUE_READY_FOR_AGENT:-}" = "$n" ]; then
       labels='[{"name":"ready-for-agent"},{"name":"enhancement"}]'
@@ -307,6 +311,26 @@ assert_contains "single-ticket baseline log has sample size one" "$SINGLE_BATCH_
 assert_contains "single-ticket baseline records its token count" "$SINGLE_BATCH_LOG" 'tokens_used=12345'
 assert_contains "single-ticket baseline average equals call total" "$SINGLE_BATCH_LOG" 'average_tokens_per_issue=12345.00'
 unset ZF_TRIAGE_TICK_ID
+
+# Oversize issue text is cut in the prompt with a pointer to the full thread;
+# a short issue in the same batch passes through unchanged.
+pad() { yes "$1" | tr -d '\n' | head -c "$2"; }
+jq -n --arg body "$(pad b 20000)" \
+  --arg c1 "OLD_CMT_MARK $(pad 1 9000)" --arg c2 "MID_CMT_MARK $(pad 2 9000)" --arg c3 "NEW_CMT_MARK $(pad 3 9000)" \
+  '{number:910311,title:"bounded fixture",body:$body,author:{login:"testuser"},comments:[{body:$c1},{body:$c2},{body:$c3}],createdAt:"2026-01-01T00:00:00Z",updatedAt:"2026-01-01T00:00:00Z",state:"OPEN",labels:[{name:"needs-triage"}]}' \
+  > "$TEST_ROOT/long-issue.json"
+jq -nc --argjson result "$VALID" '{issue:910311,result:$result},{issue:910312,result:$result}' > "$FAKE_CODEX_OUTPUT"
+FAKE_ISSUE_JSON_FILE="$TEST_ROOT/long-issue.json" FAKE_ISSUE_JSON_NUMBER=910311 \
+  ZF_TRIAGE_TICK_ID=bounded-prompt bash "$BATCH_SRC" --scheduled 910311 910312 >/dev/null 2>&1 || true
+BOUNDED_PROMPT="$(cat "$FAKE_PROMPT_CAPTURE")"
+assert_contains "long issue body is cut to the prompt budget" "$BOUNDED_PROMPT" 'body cut to 8192 chars'
+assert_contains "long issue keeps only comments that fit the budget" "$BOUNDED_PROMPT" 'comments kept 1 of 3'
+assert_contains "long issue keeps the newest comment" "$BOUNDED_PROMPT" 'NEW_CMT_MARK'
+assert_not_contains "long issue drops the middle comment" "$BOUNDED_PROMPT" 'MID_CMT_MARK'
+assert_not_contains "long issue drops the oldest comment" "$BOUNDED_PROMPT" 'OLD_CMT_MARK'
+assert_contains "long issue points at the full thread" "$BOUNDED_PROMPT" 'full thread: gh issue view 910311 --comments'
+assert_contains "short issue passes through verbatim" "$BOUNDED_PROMPT" '"body": "fixture body"'
+assert_not_contains "short issue gets no pointer" "$BOUNDED_PROMPT" 'gh issue view 910312'
 
 # A completed batch verdict belongs to the state and labels in its original
 # snapshot. Closure after assembly must discard the old result before writes.
@@ -618,6 +642,27 @@ assert_contains "budget-refused batch reports deferral" "$BUDGET_BATCH_OUTPUT" '
 assert_eq "budget-refused batch never invokes Codex" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
 assert_eq "budget-refused batch does not spend issue attempt" 0 \
   "$(jq -r '.attempts // 0' "$AGENT_HOME/state/910703.json")"
+
+# Stage prompt templates each carry a recorded byte budget (rounded up to 1 KB).
+# A template over its budget fails; shrink it before raising the number here.
+PROMPT_BUDGETS="advisor-batch.md 8192
+advisor.md 23552
+guarded-recut-hand.md 3072
+implement-contract.md 6144
+recut.md 10240
+review-contract.md 8192
+supervisor-arbiter.md 8192
+supervisor-cap-triage.md 3072
+triage.md 34816"
+for template in "$SCRIPT_DIR"/prompts/*.md; do
+  name="$(basename "$template")"
+  budget="$(awk -v n="$name" '$1 == n {print $2}' <<< "$PROMPT_BUDGETS")"
+  bytes="$(wc -c < "$template" | tr -d ' ')"
+  assert_eq "prompt template $name has a recorded budget" true \
+    "$([ -n "$budget" ] && echo true || echo false)"
+  assert_eq "prompt template $name is within its byte budget" true \
+    "$([ -n "$budget" ] && [ "$bytes" -le "$budget" ] && echo true || echo false)"
+done
 
 if [ "$FAILED" -ne 0 ]; then
   exit 1

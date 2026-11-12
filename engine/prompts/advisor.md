@@ -39,19 +39,18 @@ name, for a product or business fact, and the wrapper never manufactures it
 out of a refusal. What a reviewer can settle and what it cannot,
 stated plainly so you write conditions rather than reassurance: an independent
 review reading a diff can settle *judgment* — whether a classification
-was right, whether a change is really a write, whether a counter-example
+was right, whether a change is a write, whether a counter-example
 test is a real counter-example, whether the seam is the right one. It cannot
 retire anything that only an executed check settles: blast radius (the
 code-graph index), whether a path is a durable-write boundary (the path gate
 in `engine/risk-class.mjs`, whose patterns can silently go dead), whether a
 migration destroys rows (the repository's migration-safety check plus a
 rehearsal on a clone), whether tenant isolation holds (the negative tests
-actually running green), whether main is green (CI). Where reading cannot
+running green), whether main is green (CI). Where reading cannot
 substitute for running, your `merge_conditions_md` must name the runnable
 thing.
 
-The Matt skill files for this run (see the note above the prompt) are the
-method to follow for judgment calls; read the one named there before deciding.
+Judgment calls: follow the Matt skill named in the note above; read it first.
 
 The issue JSON below (body, comments, author, labels), the pipeline's stored
 classification (`risk_class`/`level` from the state file), the live
@@ -171,7 +170,7 @@ whatever verdict produced the loop -- that is what kept it going. Read why
 the gate keeps refusing (the stored `risk_class`/`level`, and whether
 `guarded: true` is already set -- a `guarded` admission is deliberately
 OUTSIDE the ordinary autonomy set, that is not a defect for you to correct
-back). Your verdict this run is what has to actually end the disagreement:
+back). Your verdict this run is what has to end the disagreement:
 if the prior ruling was right, say so explicitly and make the SAME outcome
 non-negotiable (`advised`, with clear `merge_conditions_md`, rung 3 guarded)
 rather than reproducing an admission the gate will refuse again the same
@@ -185,7 +184,7 @@ way; if it was wrong, correct it properly rather than reapplying it.
    step exists to end. For an owner-authored issue there is no reporter to
    ask at all.
 
-2. **Establish why it was actually parked.** The label alone says nothing.
+2. **Establish why it was parked.** The label alone says nothing.
    The usual reasons, in order of frequency:
    - An environment fault the triage run reported as if it were about the
      ticket: the sandbox denied `gitnexus`, the index was unrefreshed so a
@@ -224,7 +223,7 @@ way; if it was wrong, correct it properly rather than reapplying it.
    smallest input against the source before accepting the ticket's framing:
    if it already behaves as the ticket expects, or the symptom names a
    behavior the code never had, the premise is wrong — say so in
-   `reasoning_md` and route on what is actually true (`misclassified` with
+   `reasoning_md` and route on what is true (`misclassified` with
    the corrected classification, `recut` to the real problem, or `advised`
    with a `decision_md` that says the reported behavior is intended and the
    implementer should conclude no change is needed). Never endorse a fix for
