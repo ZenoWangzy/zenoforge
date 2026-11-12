@@ -2,7 +2,8 @@
 """Station standards: time, tokens and throughput for every station (NODE-HEALTH.md "Station standards").
 
 Reads only data the caller already read (units, worker runs, station out events); no gh call. node_health.main()
-calls collect() each tick, and collect() appends a STATION-OVER line for each value past its unhealthy bound. Every bound in CRITERIA is measured from live data: its window and sample count are in
+calls collect() each tick; collect(alert=True) (the --alert run only) also appends a STATION-OVER line for each value past
+its unhealthy bound. Every bound in CRITERIA is measured from live data: its window and sample count are in
 NODE-HEALTH.md. A dimension a station cannot be measured on is listed in EXCEPTIONS with its reason, never faked.
 """
 import glob, os, re
@@ -119,6 +120,11 @@ def _pct(values, q):
     return values[min(len(values) - 1, int(round(q * (len(values) - 1))))] if values else None
 
 
+def _item(value):
+    """Item id of a record; a missing one reads '-', never the string 'None'."""
+    return "-" if value in (None, "") else str(value)
+
+
 def _ts(value):
     try:
         return datetime.strptime(str(value)[:20], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -138,13 +144,13 @@ def gap_samples(units, since, now, events):
         rows = _history(unit)
         for i, (t, h) in enumerate(rows):
             if i and since <= t <= now and h["stage"] in events:
-                out.append(((t - rows[i - 1][0]).total_seconds() / 60, str(unit.get("id") or unit.get("issue"))))
+                out.append(((t - rows[i - 1][0]).total_seconds() / 60, _item(unit.get("id") or unit.get("issue"))))
     return out
 
 
 def run_tokens(runs, node):
     """(tokens, unit id) per measured run of one node; `runs` is already windowed by the caller."""
-    return [(r["tokens"], str(r.get("unit"))) for r in runs if r["node"] == node and r["tokens"] is not None]
+    return [(r["tokens"], _item(r.get("unit"))) for r in runs if r["node"] == node and r["tokens"] is not None]
 
 
 def triage_tokens_per_issue(agent_home, since, now):
@@ -207,7 +213,7 @@ def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, ou
     rereviews = [r for r in cost_rows if r["phase"] == "rereview" and since <= r["start"] <= until]
     values["rereview.runs_per_day"], samples["rereview.runs_per_day"] = len(rereviews) * scale, len(rereviews)
     rereview = [r for r in window_runs if r["node"] == "rereview"]
-    for key, rows in (("rereview.wall_p50", [(r["minutes"], str(r.get("unit"))) for r in rereview if r["output"]]),
+    for key, rows in (("rereview.wall_p50", [(r["minutes"], _item(r.get("unit"))) for r in rereview if r["output"]]),
                       ("rereview.tokens_p50", run_tokens(window_runs, "rereview"))):
         values[key], samples[key], items[key] = _pct([v for v, _ in rows], .5), len(rows), [u for _, u in rows]
     return values, samples, items
@@ -230,9 +236,10 @@ def over_bound(runtime, now, values, items):
         node, _, _, bound, higher = CRITERIA[mid]
         if not ((value <= bound) if higher else (value >= bound)):
             continue
-        if any(f"STATION-OVER metric={mid} " in l for l in seen):
+        if any(f" metric={mid} " in l for l in seen):
             continue
-        lines.append(f"[{now:%Y-%m-%dT%H:%M:%SZ}] STATION-OVER station={node} metric={mid} value={value:g} bound={bound} "
+        side = "under" if higher else "over"  # higher-is-better: a value at or below its bound is starved
+        lines.append(f"[{now:%Y-%m-%dT%H:%M:%SZ}] STATION-OVER station={node} metric={mid} side={side} value={value:g} bound={bound} "
                      f"items={','.join(items.get(mid, [])) or '-'} root-cause=required (see NODE-HEALTH.md Station standards)\n")
     if lines:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -240,12 +247,13 @@ def over_bound(runtime, now, values, items):
             out.writelines(lines)
 
 
-def collect(now, units, runs, runtime, agent_home, cost_rows=()):
-    """The station metric values for one tick: time and tokens over 24 h, throughput per 24 h. Appends STATION-OVER lines."""
+def collect(now, units, runs, runtime, agent_home, cost_rows=(), alert=False):
+    """The station metric values for one tick: time and tokens over 24 h, throughput per 24 h. alert=True appends STATION-OVER lines."""
     import station_health  # lazy: station_health imports node_health, which imports this module
     values, _, items = _window_values(now, WINDOW_HOURS, units, runs, runtime, agent_home, cost_rows,
                                       station_health.outs(units, runtime, agent_home))
-    over_bound(runtime, now, values, items)
+    if alert:
+        over_bound(runtime, now, values, items)
     return values
 
 

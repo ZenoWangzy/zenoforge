@@ -397,8 +397,9 @@ first cut; the head chose p75 and p25 so that a normal day does not turn a tile 
 keep their bounds.) Seven days give seven samples, so throughput bounds are a first measurement that a month of
 samples should tighten. Time and token values use the same window as the other node metrics: time over 24 h, tokens
 over the `--hours` window of worker runs.
-A value past its unhealthy bound appends a `STATION-OVER station=... metric=... value=... bound=... items=...` line to
-`alerts/node-health.md` (once per metric per hour). Its `root-cause=required` marks the alert open: a root-cause record
+A value past its unhealthy bound appends a `STATION-OVER station=... metric=... side=... value=... bound=... items=...` line to
+`alerts/node-health.md` (once per metric per hour), only on the `--alert` run; a report or `--now` replay writes none.
+`side=over` is a time or token value at or above its bound; `side=under` is a throughput value at or below its bound (starved). Its `root-cause=required` marks the alert open: a root-cause record
 and a guard are needed before it is closed. Closing is manual; nothing in code tracks the record yet. Throughput lines
 name no items (`station_health.outs` keeps counts only).
 
