@@ -144,6 +144,22 @@ grep -Fq 'ROLLBACK engine candidate -> old: jqf error (rc=3) in new_fn' "$sig/BE
 ! grep -Fq 'sched-jqf-known-fn-rc7' "$sig/BELL-QUEUE.md" \
   || { echo 'bell-drift-sigs.test.sh: recurring jqf signature emitted again' >&2; exit 1; }
 
+# The 24h history scan also reads scheduler.log.1: an occurrence there must
+# suppress a repeat, and a distinct class in the same beat must still be emitted.
+sig_rot="$tmp/signature-rotated-autopi"
+mkdir -p "$sig_rot/alerts"
+cp "$sig/config.json" "$sig_rot/config.json"
+printf 'window.DASH={};\n' > "$sig_rot/dashboard.data.js"
+printf '[%s] jqf error (rc=9) in old_fn: rotated occurrence\n' "$sig_old_time" > "$sig_rot/scheduler.log.1"
+printf '[%s] jqf error (rc=9) in old_fn: repeat occurrence\n[%s] jqf error (rc=8) in new_fn: distinct occurrence\n' \
+  "$sig_now" "$sig_now" > "$sig_rot/scheduler.log"
+printf '%s\n' '{"units":[]}' > "$sig_rot/units.json"
+printf '%s\n' '{"workers":[]}' > "$sig_rot/workers.json"
+jq -n '{monitor_initialized:true,scheduler_lines:0,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' > "$sig_rot/bell-state.json"
+BELL_AUTOPI_DIR="$sig_rot" bash "$bell"
+jq -e '[.pending[].raw_signature] == ["sched-jqf-new-fn-rc8"]' "$sig_rot/bell-state.json" >/dev/null \
+  || { echo 'bell-drift-sigs.test.sh: rotated-log occurrence did not suppress the repeat, or distinct class missing' >&2; cat "$sig_rot/bell-state.json" >&2; exit 1; }
+
 rm "$autopi/dashboard.data.js"
 bash "$bell"
 grep -Fq 'dashboard-data-missing' "$autopi/BELL-QUEUE.md"

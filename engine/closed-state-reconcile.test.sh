@@ -98,3 +98,24 @@ if grep -Fq 'issue edit 5304' "$GH_WRITES"; then
   exit 1
 fi
 echo 'ok - shared state writer rejects awaiting-release without PR identity'
+
+# The audit helpers had no production caller: the tick sweep is what closes the gap.
+state_merge 5320 '{"state":"ready-for-agent","scheduler_handoff":{"episode":"2026-11-05T10:19:20Z"}}'
+state_merge 5321 '{"state":"ready-for-agent"}'
+state_merge 5322 '{"state":"parked"}'
+gh_q() {
+  [[ "$*" == "issue list --repo $REPO --state closed --label ready-for-agent --limit 1000 --json number,state,stateReason,closedAt,labels" ]] || return 1
+  printf '%s\n' '[
+    {"number":5320,"state":"CLOSED","stateReason":"COMPLETED","closedAt":"2026-11-08T14:52:48Z","labels":[{"name":"ready-for-agent"}]},
+    {"number":5321,"state":"CLOSED","stateReason":"NOT_PLANNED","closedAt":"2026-11-08T14:52:48Z","labels":[{"name":"ready-for-agent"}]},
+    {"number":5322,"state":"CLOSED","stateReason":"COMPLETED","closedAt":"2026-11-08T14:52:48Z","labels":[{"name":"ready-for-agent"}]},
+    {"number":5323,"state":"CLOSED","stateReason":"COMPLETED","closedAt":"2026-11-08T14:52:48Z","labels":[{"name":"ready-for-agent"}]}
+  ]'
+}
+sweep_closed_ready_states
+[[ "$(state_read 5320 | jq -r .state)" == concluded ]]
+[[ "$(state_read 5321 | jq -r .state)" == wontfix ]]
+[[ "$(state_read 5322 | jq -r .state)" == parked ]]
+[[ ! -e "$(state_file 5323)" ]]
+echo 'ok - tick sweep reconciles closed ready-for-agent state whatever its age and leaves other lifecycle states alone'
+unset -f gh_q

@@ -89,6 +89,7 @@ sweep_reopened_issues() {
 sweep_blocking_issue_roots() { CALLS+=(needs-info-blocker-roots); }
 sweep_unlabeled_issues() { CALLS+=(needs-info-unlabeled); }
 reconcile_needs_info_issues() { CALLS+=(needs-info-loop); }
+sweep_closed_ready_states() { CALLS+=(closed-state-sweep); }
 manual_pause_is_valid() { return 1; }
 main_red_bisect_sweep() { CALLS+=(main-red-bisect); }
 sweep_batch_state() { CALLS+=(batch-state); }
@@ -216,6 +217,7 @@ ROOTS_REACHED_AT=118; tick 20261107T000001Z
 check 'roots with under 40s left take the cursor instead of the deadline' "$(resume)" needs-info-blocker-roots
 [[ " ${CALLS[*]} " != *' needs-info-blocker-roots '* ]] || fail 'roots ran with no time for the read'
 check 'the short step before roots still ran' "${CALLS[*]: -2}" 'main-red-bisect batch-state'
+[[ " ${CALLS[*]} " == *' needs-info-loop closed-state-sweep main-red-bisect '* ]] || fail 'the tick never ran the closed ready-for-agent sweep'
 
 tick 20261107T000002Z
 check 'the next tick gives roots its turn first and skips the prefix' "${CALLS[*]}" needs-info-blocker-roots

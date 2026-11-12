@@ -59,24 +59,29 @@ review_finding_class_key() { # normalized finding JSON → stable slug, at most 
   printf '%s\n' "$slug"
 }
 
-# Counts each class once per review in the state file. The second sighting opens one rule ticket through
-# pipeline-issue-upsert; the count is saved only after that write succeeds, so a failed write is retried.
+# Counts each class once per unit in the state file (a rereview of the same unit does not count again). The second unit
+# with a class opens one rule ticket through pipeline-issue-upsert; later units add to it there. The count is saved only
+# after that write succeeds, so a failed write is retried. The evidence sidecar keeps the units and the first finding.
 review_findings_record_classes() { # normalized findings JSON, state file, upsert script, unit → rc 1 when a ticket write failed
-  local findings="$1" state="$2" upsert="$3" unit="$4"
+  local findings="$1" state="$2" upsert="$3" unit="$4" evidence="$2.evidence"
   mkdir -p -- "$(dirname -- "$state")" || return 1
   (
     flock -x 9
     declare -A seen=()
-    local rc=0 finding key count body
+    local rc=0 finding key count body first
     [[ -s "$state" ]] || printf '{}\n' > "$state"
+    [[ -s "$evidence" ]] || printf '{}\n' > "$evidence"
     while IFS= read -r finding; do
       key="$(review_finding_class_key "$finding")"
       [[ -n "$key" && -z "${seen[$key]:-}" ]] || continue
       seen[$key]=1
+      jq -e --arg k "$key" --arg u "$unit" '(.[$k].units // []) | index($u) == null' "$evidence" >/dev/null || continue
       count="$(jq -r --arg k "$key" '(.[$k] // 0) + 1' "$state")" || { rc=1; continue; }
-      if (( count == 2 )); then
+      first="$(jq -r --arg k "$key" '.[$k].first // empty | "unit `\(.unit)`, \(.file):\(.line): \(.summary)"' "$evidence")"
+      if (( count >= 2 )); then
         body="$(mktemp)"
-        printf 'Blocking review finding class `%s` recurred in unit `%s`.\n\nThe class has now been reported twice; encode it as a mechanical rule, not another review finding.\n' "$key" "$unit" > "$body"
+        printf 'Blocking review finding class `%s` recurred in unit `%s`.\n\n- This finding: %s\n- Earlier finding: %s\n\nAdd a deterministic check that makes this finding impossible: a lint, a test, a type or a structure rule. A check, not another review comment.\n' \
+          "$key" "$unit" "$(jq -r '"\(.file):\(.line): \(.summary)"' <<<"$finding")" "${first:-not recorded}" > "$body"
         if ! bash "$upsert" --lane pipeline-system --class "review-$key" --title "Repeated review finding: $key" \
           --body-file "$body" --label principle-encode-lessons-in-structure >/dev/null; then
           rc=1
@@ -86,6 +91,8 @@ review_findings_record_classes() { # normalized findings JSON, state file, upser
         rm -f -- "$body"
       fi
       jq --arg k "$key" --argjson n "$count" '.[$k] = $n' "$state" > "$state.tmp" && mv -- "$state.tmp" "$state" || rc=1
+      jq --arg k "$key" --arg u "$unit" --argjson f "$(jq -c --arg u "$unit" '{unit:$u,file,line,summary}' <<<"$finding")" \
+        '.[$k].units += [$u] | .[$k].first //= $f' "$evidence" > "$evidence.tmp" && mv -- "$evidence.tmp" "$evidence" || rc=1
     done < <(jq -c '.[] | select(.status=="open" and (.severity=="P0" or .severity=="P1"))' <<<"$findings" 2>/dev/null)
     exit "$rc"
   ) 9>"$state.lock"

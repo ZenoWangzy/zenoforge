@@ -7,6 +7,15 @@ intake_parent_retry_escalate() { # issue, attempt -> one session-visible alert p
   printf '%s INTAKE-PARENT-LABEL-FAILED issue=#%s attempts=%s retry=backoff\n' "$stamp" "$n" "$attempt" >> "$alerts" || return 1
   units_update --arg n "$n" '.intake_parent_retry[$n].escalated = true'
 }
+# Idle capacity with no eligible issue goes to head-watch.alerts once an hour, with the stage of each candidate's unit (what blocks the slots).
+intake_idle_alert() { # live pending
+  local alerts="$AGENT_HOME/logs/head-watch.alerts" cand stages
+  mkdir -p "${alerts%/*}" || return 1
+  grep -F "${STAMP:0:13}" "$alerts" 2>/dev/null | grep -Fq "IDLE-CAPACITY " && return 0
+  cand='[]'; [[ ! -s "$A/intake-candidates.json" ]] || cand="$(jqf -c '[.rows | split("\n")[] | split("\t")[0] | tonumber?]' "$A/intake-candidates.json")" || cand='[]'
+  stages="$(jqf -r --argjson c "${cand:-[]}" '[.units[] | select(.issue as $i | any($c[]; . == $i)) | .stage] | group_by(.) | sort_by(-length) | map("\(.[0])=\(length)") | join(" ")' "$UNITS" 2>/dev/null)"
+  printf '%s IDLE-CAPACITY live=%s/%s pending=%s: intake found no eligible issue (labels or skip labels too narrow?) stages: %s\n' "$STAMP" "$1" "$MAX" "$2" "${stages:-none}" >> "$alerts"
+}
 # Per-candidate step timing for register_new_issues: intake_mark charges the seconds since the last mark to a named step,
 # intake_steps_say logs the pass's `intake detail steps` line. Both use register_new_issues' locals (dynamic scope, like intake_skip).
 intake_mark() { intake_step_secs[$1]=$(( ${intake_step_secs[$1]:-0} + SECONDS - intake_step_at )); intake_step_counts[$1]=$(( ${intake_step_counts[$1]:-0} + 1 )); intake_step_at=$SECONDS; }
