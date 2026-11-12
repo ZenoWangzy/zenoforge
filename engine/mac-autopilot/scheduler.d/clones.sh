@@ -176,9 +176,14 @@ ensure_clone() { # Keep clone preparation visible inside dispatch_pending's phas
 
 # Transfer the exited owner's committed and uncommitted work into the normal
 # isolated scheduler clone; never mutate or remove the original worktree.
-handoff_worktree_clone_impl() { # id branch old-worktree old-head dirty [require-remote] [rescued-ref] [rescued-sha] [stack-ref] [stack-sha]
+# Epoch of the newest supervisor ruling on a unit (its hold.sh --rule history events, or a ruling-* episode), empty when none.
+handoff_ruling_epoch() { # unit-json
+  jqf -r '[((.history // [])[] | select((.stage // "") | startswith("supervisor-")) | select((.result // "") | startswith("supervisor ruling")) | .at // empty | fromdateiso8601?),
+      ((.hold_handoff_episode // "") | select(startswith("ruling-")) | .[7:] | fromdateiso8601?)] | max // empty' <<<"$1" 2>/dev/null || :
+}
+handoff_worktree_clone_impl() { # id branch old-worktree old-head dirty [require-remote] [rescued-ref] [rescued-sha] [stack-ref] [stack-sha] [ruled-at-epoch]
   local id="$1" branch="$2" old_tree="$3" old_head="$4" dirty="$5" require_remote="${6:-0}" old_ref="${7:-}" rescue_sha="${8:-$4}" dir patch files current path handoff_head status=0
-  local stack_ref="${9:-}" stack_sha="${10:-}"
+  local stack_ref="${9:-}" stack_sha="${10:-}" ruled_at="${11:-}"
   local heads=( "$old_head" )
   [[ "$old_head" =~ $SHA_RE ]] || return 1
   dir="$(ensure_clone "$id" "$branch" "$require_remote")" || return 1
@@ -209,9 +214,10 @@ handoff_worktree_clone_impl() { # id branch old-worktree old-head dirty [require
       # Keep the existing branch, owner commit and rescue when they diverge.
       if ! git -C "$dir" -c user.name=zenoforge-agent -c user.email=zenoforge-agent@users.noreply.github.com merge -q --no-edit "$handoff_head" >/dev/null; then # stdout is the clone path the caller captures
         git -C "$dir" merge --abort >/dev/null 2>&1 || true
-        # shortcut: a ruling-* branch name is the only mark of a fresh ruling branch; the rescued ref is not compared by age. Upgrade if rulings reuse an older branch name.
-        if [[ -n "$old_ref" && "$handoff_head" == "$rescue_sha" && "$branch" == *-ruling-* ]]; then
-          say "handoff unit=$id: rescued ref $old_ref ($rescue_sha) kept, not applied: conflicts with the fresh ruling branch $branch"
+        # A supervisor ruling newer than the rescued commit already decided past it: keep the ref, never delete it, go on with the branch.
+        if [[ -n "$old_ref" && "$handoff_head" == "$rescue_sha" && "$ruled_at" =~ ^[0-9]+$ ]] \
+          && (( ruled_at > $(git -C "$dir" log -1 --format=%ct "$rescue_sha" 2>/dev/null || echo "$ruled_at") )); then
+          say "handoff unit=$id: rescued ref $old_ref ($rescue_sha) kept, not applied: a supervisor ruling is newer and the merge conflicts with $branch"
           continue
         fi
         return 73
