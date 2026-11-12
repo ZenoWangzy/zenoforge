@@ -1087,6 +1087,20 @@ run_triage_selection() (
   [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ] || dispatch_triage_batch "${TRIAGE_BATCH_IDS[@]}"
   printf 'deferred:%s\n' "$TRIAGE_DEFERRED_COUNT"
 )
+# The empty-batch explanation is the main-flow block after the selection loops; eval just that block.
+run_triage_empty_case() (
+  MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"
+  trap 'rm -rf -- "$MAC_AUTOPILOT_RUNTIME_DIR"' EXIT
+  NEEDS_TRIAGE_JSON='[]' NEEDS_TRIAGE_IDS='' READY_MEASURE_IDS='' TRIAGE_ORDERED_COUNT=0 TRIAGE_BATCH_ACTIVE=0
+  TRIAGE_CANDIDATE_QUERY_FAILED=0 READY_MEASURE_QUERY_FAILED=0 TRIAGE_SELECT_CUT=0 triage_slots=8
+  TRIAGE_BATCH_IDS=()
+  declare -A TRIAGE_SKIPS=()
+  eval "$(sed -n '/^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
+  eval "$(sed -n '/^# Permanent: an empty batch/,/^fi$/p' "$PIPELINE_SRC")" 2>/dev/null
+  grep -c '^\[[^]]*\] issue-pipeline: triage batch empty: needs_triage=0 ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null || true
+)
+assert_eq 'empty triage batch writes one triage batch empty line to scheduler.log' 1 "$(run_triage_empty_case)"
+
 TRIAGE_QUEUE_FIXTURE=$'910201\n910202'
 assert_eq "stale-index deferral lets next needs-triage issue use the slot" \
   $'batch:910202\ndeferred:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" 910201 2000 1000)"
@@ -1431,7 +1445,7 @@ assert_contains "triage stop hook records stage and issue" \
 RECUT_MEMORY_FIRST="$(run_memory_capped_dispatch recut 0 7G)"
 assert_contains "recut first attempt stays capped at 4G" "$RECUT_MEMORY_FIRST" 'MemoryMax=4G'
 
-TRIAGE_BATCH_DISPATCH_FN="$(sed -n '/^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC")"
+TRIAGE_BATCH_DISPATCH_FN="$(sed -n '/^dispatch_triage_batch() {/,/^}/p; /^pipeline_batch_launch() {/,/^}/p' "$PIPELINE_SRC")"
 run_fake_triage_batch_dispatch() (
   local oom_count="$1" retry_cap="$2"
   ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf \
@@ -1815,9 +1829,11 @@ assert_eq 'refresh launch failure still records its fault' \
 
 # Execution admission's typed 75 is pending work, not a failed systemd launch.
 run_batch_admission_case() (
-  local kind="$1" launch_status="$2" status=0
+  local kind="$1" launch_status="$2" runtime_mode="${3:-absent}" status=0
   AGENT_HOME="$(mktemp -d)"
   trap 'rm -rf -- "$AGENT_HOME"' EXIT
+  MAC_AUTOPILOT_RUNTIME_DIR="$AGENT_HOME/runtime"
+  [ "$runtime_mode" != present ] || mkdir -p -- "$MAC_AUTOPILOT_RUNTIME_DIR"
   REPO_DIR="$SCRIPT_DIR/.."
   # dispatch builds "$ZF_ENGINE_DIR/run-$stage.sh" argv; config.sh normally provides it.
   ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf
@@ -1827,7 +1843,7 @@ run_batch_admission_case() (
   ADVISOR_RUNTIME_MAX_SEC=60
   TRIAGE_RUNTIME_MAX_SEC=60
   IMPLEMENT_RUNTIME_MAX_SEC=60
-  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC")"
+  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p; /^pipeline_batch_launch() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
   systemctl() { return 3; }
   hand_agent_issue_is_live_owned() { return 1; }
   issue_spend_budget_status() { printf 'clear\t0\t0\n'; }
@@ -1843,6 +1859,7 @@ run_batch_admission_case() (
   release_deployment_record_readable() { return 0; }
   guarded_write() {
     if [ "$launch_status" -eq 0 ]; then printf 'unit-created\n'; fi
+    if [ "$launch_status" -eq 75 ]; then echo 'execution admission deferred: resource floor: available_mb=5537 load=27.76' >&2; fi
     return "$launch_status"
   }
   record_env_fault() { printf 'fault:%s\n' "$1"; }
@@ -1850,11 +1867,17 @@ run_batch_admission_case() (
     release) dispatch_release_batch 910101 candidate-sha 2>/dev/null || status=$? ;;
     advisor) dispatch_advisor_batch 2>/dev/null || status=$? ;;
     advisor-poll) dispatch_advisor_batch 1 2>/dev/null || status=$? ;;
-    triage) dispatch_triage_batch 910101 2>/dev/null || status=$? ;;
+    triage) dispatch_triage_batch 910101 2>"$AGENT_HOME/stderr" || status=$? ;;
   esac
   printf 'status:%s\n' "$status"
   if [ "$kind" = triage ]; then
     if [ -e "$AGENT_HOME/triage-batch-active.json" ]; then echo active:yes; else echo active:no; fi
+    if [ "$runtime_mode" = present ]; then
+      echo "journal:$(grep -c 'execution admission deferred: ' "$AGENT_HOME/stderr")"
+    fi
+  fi
+  if [ -f "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" ]; then
+    sed 's/^\[[^]]*\] /sched:/' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
   fi
 )
 assert_eq 'triage admission 75 leaves no fabricated active marker, unit or fault' \
@@ -1863,6 +1886,16 @@ assert_eq 'triage real launch error remains fatal and cleans the dispatch marker
   $'fault:env:systemd-run-dispatch-failed:triage-batch\nstatus:1\nactive:no' "$(run_batch_admission_case triage 1)"
 assert_eq 'triage success creates one unit with the active dispatch marker' \
   $'unit-created\nstatus:0\nactive:yes' "$(run_batch_admission_case triage 0)"
+assert_eq 'advisor admission 75 writes one scheduler line with its reason and issue id' \
+  $'status:0\nsched:issue-pipeline: advisor batch admission deferred reason=resource floor: available_mb=5537 load=27.76 issues=910101' \
+  "$(run_batch_admission_case advisor 75 present)"
+# 2026-11-09: a 4.5 h triage stall logged only to the journal; scheduler.log is the signal head-watch reads.
+assert_eq 'triage admission 75 with a runtime dir logs one reason and issue line and keeps the journal copy' \
+  $'status:75\nactive:no\njournal:1\nsched:issue-pipeline: triage batch admission deferred reason=resource floor: available_mb=5537 load=27.76 issues=910101' \
+  "$(run_batch_admission_case triage 75 present)"
+# A missing runtime dir is a no-op: the exit status stays 75 and no scheduler.log appears.
+assert_eq 'triage admission 75 without a runtime dir keeps status and writes no scheduler.log' \
+  $'status:75\nactive:no' "$(run_batch_admission_case triage 75 absent)"
 run_triage_admission_caller() (
   local launch_status="$1"
   TRIAGE_BATCH_IDS=(910101)
