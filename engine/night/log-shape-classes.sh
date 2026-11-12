@@ -16,6 +16,7 @@ if [[ ! "$threshold" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+# signatures and allowlist match the masked shape, so write <n> for a number, never [0-9]+.
 signatures=()
 while IFS= read -r re; do signatures+=("$re"); done < <(jq -r '.signatures[]? // empty' "$config")
 allowlist=()
@@ -43,19 +44,20 @@ matches_any() {
   return 1
 }
 
+# The public repo gets only the class id, count and log file names: raw shapes may carry paths, emails or tokens.
 upsert_class() {
-  local shape="$1" count="$2" id title list num body
+  local shape="$1" count="$2" id title list num state body
   id="cls-$(printf '%s' "$shape" | shasum -a 256 | cut -c1-12)"
-  title="Repeated log shape $id: ${shape:0:80}"
+  title="Repeated log shape $id"
   body="Class: $id
 Count: $count occurrences in the last 24 h (threshold $threshold)
-Masked shape: $shape
 Logs: $log_names"
-  list="$(gh issue list --repo "$ZF_GH_REPO" --state all --limit 50 --search "$id in:title" --json number,title)" || return 2
-  num="$(jq -r --arg id "$id" 'map(select(.title | contains($id))) | .[0].number // empty' <<< "$list")"
+  list="$(gh issue list --repo "$ZF_GH_REPO" --state all --limit 50 --search "$id in:title" --json number,title,state)" || return 2
+  read -r num state <<< "$(jq -r --arg id "$id" 'map(select(.title | contains($id))) | .[0] | "\(.number // "") \(.state // "")"' <<< "$list")"
   if [[ -z "$num" ]]; then
     gh issue create --repo "$ZF_GH_REPO" --title "$title" --body "$body" >/dev/null || return 2
   else
+    if [[ "$state" == CLOSED ]]; then gh issue reopen "$num" --repo "$ZF_GH_REPO" >/dev/null || return 2; fi
     gh issue comment "$num" --repo "$ZF_GH_REPO" --body "Count $count occurrences in the last 24 h (threshold $threshold)." >/dev/null || return 2
   fi
 }
