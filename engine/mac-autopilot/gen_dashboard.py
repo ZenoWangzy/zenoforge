@@ -870,7 +870,7 @@ def front_github_stages(now):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_slug): raise RuntimeError("ZF_REPO 必须是 owner/repo")
         owner, name = repo_slug.split("/", 1)
         repo_queries = [("issues_open", "is:issue is:open"), ("issues_closed", "is:issue is:closed"), ("prs_open", "is:pr is:open"), ("prs_merged", "is:pr is:merged"), ("prs_closed_unmerged", "is:pr is:closed is:unmerged")]; stage_queries = [(row[0], f"is:issue is:open label:{row[0]}") for row in FRONT_STAGES]; terms = [term for _, term in repo_queries + stage_queries]; vars = "$owner:String!,$name:String!," + ",".join(f"$q{i}:String!" for i in range(len(terms)))
-        stage_fields = "".join(f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:{100 if row[0] == "needs-triage" else 10},orderBy:{{field:UPDATED_AT,direction:ASC}}){{totalCount nodes{{number title createdAt updatedAt labels(first:100){{nodes{{name}}}}}}}} ' for i, row in enumerate(FRONT_STAGES))
+        stage_fields = triage_split.graphql_stage_fields(FRONT_STAGES)
         query = ("query(" + vars + "){repository(owner:$owner,name:$name){" + stage_fields + "}" +
                  "".join(f"c{i}:search(query:$q{i},type:ISSUE,first:1){{issueCount}}" for i in range(len(terms))) + "}")
         args = ["gh", "api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}", *[arg for i, term in enumerate(terms) for arg in ("-F", f"q{i}=repo:{repo_slug} {term}")]]
@@ -879,6 +879,7 @@ def front_github_stages(now):
         if not isinstance(repo, dict):
             first = ((payload.get("errors") or [{}])[0].get("message") if isinstance(payload, dict) else None) or "GitHub 返回无数据"
             raise RuntimeError(str(first)[:200])
+        repo["a0"] = triage_split.complete_needs_triage_pages(repo.get("a0") or {}, owner, name, front_run)
         stages = [triage_split.stage(row[0], repo.get(f"a{i}") or {}) for i, row in enumerate(FRONT_STAGES)]
         if all(s["count"] is None for s in stages): raise RuntimeError("GitHub 返回的阶段计数为空")
         data = (payload or {}).get("data") or {}

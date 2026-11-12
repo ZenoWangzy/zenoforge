@@ -98,9 +98,17 @@ printf '%s' '{"data":{"repository":{
  "a4":{"totalCount":0,"nodes":[]},"a5":{"totalCount":9,"nodes":[{"number":8,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a6":{"totalCount":5,"nodes":[{"number":3,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a7":{"totalCount":0,"nodes":[]}},
- "c0":{"issueCount":30},"c1":{"issueCount":31},"c2":{"issueCount":2},"c3":{"issueCount":3},"c4":{"issueCount":4},
- "c5":{"issueCount":4},"c6":{"issueCount":0},"c7":{"issueCount":2},"c8":{"issueCount":3},"c9":{"issueCount":0},
+ "c0":{"issueCount":128},"c1":{"issueCount":31},"c2":{"issueCount":2},"c3":{"issueCount":3},"c4":{"issueCount":4},
+ "c5":{"issueCount":102},"c6":{"issueCount":0},"c7":{"issueCount":2},"c8":{"issueCount":3},"c9":{"issueCount":0},
  "c10":{"issueCount":9},"c11":{"issueCount":5},"c12":{"issueCount":0}}}' | sed "s/__RECENT__/$(iso '-2 hours')/g" > "$f/graphql.json"
+# Exercise two-page triage pagination above the 100-issue GraphQL page size.
+jq '.data.repository.a0.totalCount = 102
+  | .data.repository.a0.pageInfo = {endCursor:"triage-cursor-1",hasNextPage:true}
+  | .data.repository.a0.nodes += [range(100;196) | {number:.,title:"system lane fixture",createdAt:"2026-01-04T00:00:00Z",updatedAt:"2026-01-04T00:00:00Z",labels:{nodes:[{name:"needs-triage"},{name:"pipeline-system"}]}}]' \
+  "$f/graphql.json" > "$f/graphql-page1.json"
+mv "$f/graphql-page1.json" "$f/graphql.json"
+jq -n '{data:{repository:{issues:{totalCount:102,nodes:([196,197] | map({number:.,title:"system lane fixture",createdAt:"2026-01-05T00:00:00Z",updatedAt:"2026-01-05T00:00:00Z",labels:{nodes:[{name:"needs-triage"},{name:"pipeline-system"}]}})),pageInfo:{endCursor:"triage-cursor-2",hasNextPage:false}}}}}' \
+  > "$f/graphql-page2.json"
 printf '{"switches":{"roadmap-order":true}}\n' > "$AGENT_HOME/model-policy.json"
 export MODEL_POLICY_FILE="$AGENT_HOME/model-policy.json"
 jq -n '[8,801,802,803,804,805,806,807,808] | map({number:.})' > "$f/ready-issues.json"
@@ -109,7 +117,7 @@ cat > "$f/bin/gh" <<'GH'
 if [[ "$1 $2" == "api graphql" ]]; then
   echo graphql >> "$FAKE_GH_LOG"
   if [[ -n "${FAKE_GH_FAIL:-}" ]]; then echo 'HTTP 502: bad gateway' >&2; exit 1; fi
-  cat "$FAKE_GRAPHQL"
+  if [[ " $* " == *"after=triage-cursor-1"* ]]; then cat "$FAKE_GRAPHQL_PAGE2"; else cat "$FAKE_GRAPHQL"; fi
 elif [[ "$1 $2" == "issue list" && " $* " == *" --label ready-for-agent "* ]]; then
   echo issue-list >> "$FAKE_GH_LOG"
   cat "$FAKE_READY_ISSUES"
@@ -145,7 +153,7 @@ case "$*" in
 esac
 SH
 chmod +x "$f/bin/gh" "$f/bin/ssh" "$f/bin/systemctl"
-export FAKE_GH_LOG="$f/gh.log" FAKE_GRAPHQL="$f/graphql.json" FAKE_READY_ISSUES="$f/ready-issues.json"; : > "$FAKE_GH_LOG"
+export FAKE_GH_LOG="$f/gh.log" FAKE_GRAPHQL="$f/graphql.json" FAKE_GRAPHQL_PAGE2="$f/graphql-page2.json" FAKE_READY_ISSUES="$f/ready-issues.json"; : > "$FAKE_GH_LOG"
 export FAKE_OBSERVED_SHA="$deployed" FAKE_OBSERVED_IMAGE=sha256:observed
 export PATH="$f/bin:$PATH"
 front() { sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -c '.front'; }
@@ -176,7 +184,7 @@ jq -e '.errors == {}
   and (.stages[0].idle_hours > 24 and .stages[0].oldest.number == 9)
   and (.stages[1].idle_hours == 0) and (.stages[2].idle_hours > 1.9 and .stages[2].idle_hours < 2.2)
   and .github.cached == false' <<<"$out" >/dev/null || fail "stage rows wrong: $(jq -c '{errors, stages, github}' <<<"$out")"
-jq -e '(.stages[0].excluded | map({key, name, count}) == [{"key":"roadmap","name":"路线图排序","count":1},{"key":"system","name":"系统通道","count":1}])
+jq -e '(.stages[0].excluded | map({key, name, count}) == [{"key":"roadmap","name":"路线图排序","count":1},{"key":"system","name":"系统通道","count":99}])
   and (.stages[0].excluded | all(.tooltip | contains("不计入待分诊")))' <<<"$out" >/dev/null \
   || fail "excluded triage figures wrong: $(jq -c '.stages[0] | {count, oldest, excluded}' <<<"$out")"
 # triage_split.py: with roadmap-order off, a roadmap-labelled ticket is eligible again
@@ -186,9 +194,14 @@ import triage_split as t
 row = t.stage("needs-triage", {"totalCount": 1, "nodes": [{"number": 10, "updatedAt": "2025-12-01T00:00:00Z", "labels": {"nodes": [{"name": "needs-triage"}, {"name": "roadmap"}]}}]})
 assert row["count"] == 1 and row["excluded"][0]["count"] == 0 and row["excluded"][1]["count"] == 0, row
 ' || fail 'roadmap switch off did not count the roadmap ticket as eligible'
-jq -e '.search_counts.issues_open == 30 and .search_counts.issues_closed == 31
+ZF_PIPELINE_ROADMAP_SWITCH=true MODEL_POLICY_FILE="$f/model-policy-off.json" PYTHONPATH="$script_dir" python3 -c '
+import triage_split as t
+row = t.stage("needs-triage", {"totalCount": 1, "nodes": [{"number": 10, "updatedAt": "2025-12-01T00:00:00Z", "labels": {"nodes": [{"name": "needs-triage"}, {"name": "roadmap"}]}}]})
+assert row["count"] == 0 and row["excluded"][0]["count"] == 1, row
+' || fail 'pipeline roadmap override did not take precedence over model-policy'
+jq -e '.search_counts.issues_open == 128 and .search_counts.issues_closed == 31
   and .search_counts.prs_open == 2 and .search_counts.prs_merged == 3 and .search_counts.prs_closed_unmerged == 4
-  and .search_counts.stages["needs-triage"] == 4 and .search_counts.stages["awaiting-release"] == 5' <<<"$out" >/dev/null \
+  and .search_counts.stages["needs-triage"] == 102 and .search_counts.stages["awaiting-release"] == 5' <<<"$out" >/dev/null \
   || fail "cached repository search counts wrong: $(jq -c '.search_counts' <<<"$out")"
 jq -e '.ready_queue.total == 9 and .ready_queue.dispatchable == 2 and .ready_queue.active == 1 and .ready_queue.held == 6
   and ([.ready_queue.classes[] | {key, value: .count}] | from_entries) == {"chain-on-ready-issue":1,"recut-refused-unpushed":1,"no-blocker-recorded":1,"tracker":1,"blocker-state-unavailable":1,"repair-breaker":1}' <<<"$out" >/dev/null \
@@ -237,17 +250,17 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
 # 2. 5 分钟缓存：再跑一次不再调 GitHub
 cache="$MAC_AUTOPILOT_DASHBOARD_OUTPUT"; cache="$(dirname "$cache")/front-cache.json"
 run
-# Three calls from the first run: the dashboard query, ready issue list, and founder_reqs' by-number fetch for #555.
+# Four calls from the first run: two dashboard query pages, the ready issue list, and founder_reqs' by-number fetch for #555.
 # None may repeat inside the cache window.
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 3 ]] || fail "GitHub reads repeated inside the cache window: $(cat "$FAKE_GH_LOG")"
-front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9 and .search_counts.issues_open == 30' >/dev/null || fail "cached run not marked cached"
+[[ "$(wc -l < "$FAKE_GH_LOG")" == 4 ]] || fail "GitHub reads repeated inside the cache window: $(cat "$FAKE_GH_LOG")"
+front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9 and .search_counts.issues_open == 128' >/dev/null || fail "cached run not marked cached"
 
 # A pre-split cache must be refreshed instead of restoring its raw needs-triage count.
 jq '(.github.stages) |= map(if .label == "needs-triage" then del(.excluded) else . end)' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
 run
 front | jq -e '.github.cached == false and .stages[0].count == 2 and (.stages[0].excluded | length == 2)' >/dev/null \
   || fail "pre-split cache kept the raw needs-triage count: $(front | jq -c '{github, stage: .stages[0]}')"
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 5 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
+[[ "$(wc -l < "$FAKE_GH_LOG")" == 7 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
 
 # 3. 缓存过期而 GitHub 失败：沿用旧缓存并标明失败原因（最长 30 分钟）
 [[ -s "$cache" ]] || fail "front cache file not written next to dashboard.data.js"
@@ -284,7 +297,7 @@ const open = values.get("issues.open"), stageTotal = stages.reduce((n,label) => 
 if (!open || stageTotal !== Number(open.value) || values.get("tickets.unclassified").value !== "7") throw new Error("stage buckets do not add to open issues");
 if (values.get("requirements.total").value !== "1" || values.get("requirements.提出").value !== "1") throw new Error("founder requirement ledger counts were not rendered");
 if (!good.includes("Issue 与 PR 共用同一编号序列") || !good.includes("#5975")) throw new Error("shared issue/PR sequence explanation was not rendered");
-if (!good.includes("待分诊标签") || !good.includes("路线图排序 1") || !good.includes("系统通道 1") || !good.includes('title="带 roadmap / roadmap-theme / roadmap-epic 标签') || !good.includes('title="带系统通道标签')) throw new Error("triage exclusions were not shown with their Chinese tooltips");
+if (!good.includes("待分诊标签") || !good.includes("路线图排序 1") || !good.includes("系统通道 99") || !good.includes('title="带 roadmap / roadmap-theme / roadmap-epic 标签') || !good.includes('title="带系统通道标签')) throw new Error("triage exclusions were not shown with their Chinese tooltips");
 if (cells.some(([, , tip]) => !tip)) throw new Error("a total has no source tooltip");
 const failedOpen = bad.match(/<div class="ts-m" data-total="issues\.open" title="([^"]*)"><span>[^<]*<\/span><b>([^<]*)<\/b><\/div>/);
 if (!failedOpen || failedOpen[2] !== "未读取" || !failedOpen[1].includes("HTTP 502")) throw new Error(failedOpen && failedOpen[0]);

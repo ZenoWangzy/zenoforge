@@ -1,6 +1,6 @@
 """待分诊口径：triage 批处理选不到的票（路线图排序 / 系统通道）不计入待分诊，单列两个数字。
 排除规则与选择器同源：系统通道标签读 nonproduct-lane-routing 裁决（engine/lib.d/pipeline-system.sh），
-路线图标签是 engine/roadmap.sh:315 的常量，路线图排序开关读 model-policy（engine/roadmap.sh:83）。"""
+路线图标签是 engine/roadmap.sh:315 的常量，路线图排序开关先读 ZF_PIPELINE_ROADMAP_SWITCH，再按 engine/roadmap.sh:83 读 model-policy。"""
 import json, os
 from config_paths import zf_config_file
 
@@ -10,6 +10,39 @@ TOOLTIPS = {
     "roadmap": "带 roadmap / roadmap-theme / roadmap-epic 标签：路线图排序开启时，这类票按路线图的顺序安排，不走 triage 逐张分诊，所以不计入待分诊。",
     "system": "带系统通道标签（nonproduct-lane-routing 裁决里的标签，如 pipeline-system）：归系统通道处理（流水线运维票），不走产品 triage，所以不计入待分诊。",
 }
+TRIAGE_PAGE_QUERY = ('query($owner:String!,$name:String!,$after:String!){repository(owner:$owner,name:$name){'
+                     'issues(states:OPEN,labels:["needs-triage"],first:100,after:$after,'
+                     'orderBy:{field:UPDATED_AT,direction:ASC}){totalCount nodes{number title createdAt updatedAt '
+                     'labels(first:100){nodes{name}}} pageInfo{endCursor hasNextPage}}}}')
+
+
+def graphql_stage_fields(stages):
+    return "".join(
+        f'a{i}:issues(states:OPEN,labels:["{row[0]}"],first:{100 if row[0] == "needs-triage" else 10},'
+        f'orderBy:{{field:UPDATED_AT,direction:ASC}}){{totalCount nodes{{number title createdAt updatedAt labels(first:100){{nodes{{name}}}}}}}}'
+        f'{" pageInfo{endCursor hasNextPage}" if row[0] == "needs-triage" else ""}}} '
+        for i, row in enumerate(stages))
+
+
+def complete_needs_triage_pages(block, owner, name, run):
+    nodes, total = list(block.get("nodes") or []), block.get("totalCount")
+    page = block.get("pageInfo") or {}
+    while page.get("hasNextPage") is True:
+        cursor = page.get("endCursor")
+        if not isinstance(cursor, str) or not cursor:
+            raise RuntimeError("待分诊分页缺少下一页游标")
+        args = ["gh", "api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"after={cursor}", "-f", "query=" + TRIAGE_PAGE_QUERY]
+        payload = json.loads(run(args, 30))
+        repo = ((payload or {}).get("data") or {}).get("repository") if isinstance(payload, dict) else None
+        following = repo.get("issues") if isinstance(repo, dict) else None
+        if not isinstance(following, dict) or following.get("totalCount") != total:
+            raise RuntimeError("待分诊分页计数变化或 GitHub 返回无数据")
+        nodes.extend(following.get("nodes") or [])
+        page = following.get("pageInfo") or {}
+    if total != len(nodes):
+        raise RuntimeError(f"待分诊 {total} 张，分页读取到 {len(nodes)} 张")
+    block["nodes"] = nodes
+    return block
 
 
 def system_lane_labels():
@@ -26,6 +59,9 @@ def system_lane_labels():
 
 
 def roadmap_order_on():
+    override = os.environ.get("ZF_PIPELINE_ROADMAP_SWITCH")
+    if override:
+        return override == "true"
     policy = os.environ.get("MODEL_POLICY_FILE") or os.path.join(
         os.environ.get("AGENT_HOME") or os.path.expanduser("~/.zenoforge"), "model-policy.json")
     try:
