@@ -55,6 +55,7 @@ live_workers() { printf '0\n'; }
 intake_footprint_snapshot() { printf '[]\n'; }
 scheduler_footprint() { printf '[]\n'; }
 active_footprint_conflict() { printf '\n'; }
+intake_author_gate() { return 0; } # the author gate has its own test (intake-author.test.sh)
 
 # The real lock helper releases the ledger around registration's remote reads.
 acquire_scheduler_lock || fail 'could not acquire fixture ledger lock'

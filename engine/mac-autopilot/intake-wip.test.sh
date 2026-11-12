@@ -23,6 +23,7 @@ active_footprint_conflict() { :; }
 predecessor_candidates() { :; }
 intake_candidates() { printf '900\tpr\tfixture\t[]\t%s\n' "$(printf '%s' '{"number":900,"state":"OPEN","subIssuesSummary":{"total":0},"labels":[{"name":"ready-for-agent"}]}' | base64 -w0)"; }
 issue_unit_task() { echo '{"task":"fixture","body_blocked_by":[],"labels":[]}'; }
+intake_author_gate() { return 0; } # the author gate has its own test (intake-author.test.sh)
 fail() { echo "intake-wip.test.sh: $*" >&2; exit 1; }
 waiters() { jq -n --argjson n "$1" '{units:[range(0;$n) | {id:("waiter-"+tostring),stage:"implement-pending",footprint_wait_owner:"owner"}]} ' > "$UNITS"; }
 waiters 16

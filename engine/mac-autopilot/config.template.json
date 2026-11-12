@@ -35,6 +35,8 @@
     "max_ready": 30,
     "labels": [],
     "product_labels": ["ready-for-agent"],
+    "author_routes": {"OWNER": "admit", "MEMBER": "admit", "COLLABORATOR": "admit"},
+    "trusted_authors": [],
     "ready_buffer": null,
     "refill_max": 2,
     "refill_max_footprint_candidates": 4,

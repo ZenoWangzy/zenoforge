@@ -647,7 +647,7 @@ register_new_issues() {
         fi
         intake_parent_retry_clear "$n"
       fi
-    fi; intake_mark parent_detect
+    fi; intake_mark parent_detect; if (( ! existing_only )) && [[ -z "$episode" && -z "${existing_id:-}" ]]; then intake_author_gate "$n" "$issue_json" || { intake_skip author_hold; continue; }; fi
     if (( ! existing_only )) && [[ -z "$episode" && -z "${existing_id:-}" && "$lane" == direct-main ]]; then
       acceptance="$(jqf -r '.body // ""' <<<"$issue_json" | acceptance_block_from_body || true)"
       # M5（#4501）：pipeline-system 票的验收块必须绑定 live-event 到登记机制，否则退回补写。
