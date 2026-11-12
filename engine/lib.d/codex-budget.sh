@@ -689,7 +689,7 @@ codex_provider_recovery_probe_if_due() {
     unlock_fd "$lock_fd"
     return 1
   }
-  pipeline_execution_run timeout "${timeout_seconds}s" env -u GH_TOKEN -u GITHUB_TOKEN codex exec \
+  pipeline_execution_run timeout "${timeout_seconds}s" env -u GH_TOKEN -u GITHUB_TOKEN codex exec -c features.plugins=false \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$REPO_DIR" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort=low "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
