@@ -17,7 +17,7 @@ About 50 of the 230 non-test files under `engine/` and `tools/` contain Chinese 
 
 ## Config files
 
-`engine/config.sh` sets `ZF_ENGINE_DIR`, `ZF_REPO_DIR`, `ZF_CONFIG_ROOT`, and optional `ZF_PACK_DIR`; caller-set values take precedence. `ZF_CONFIG_ROOT` defaults to `$ZF_REPO_DIR/.zenoforge`, an optional directory in the target repository for its own overrides. `ZF_PACK_DIR` may be empty when there is no pack. `zf_config_file <relative path>` checks the target repo's `.zenoforge/` file first, then `ZF_PACK_DIR`, then the engine's shipped default.
+`engine/config.sh` sets `ZF_ENGINE_DIR`, `ZF_REPO_DIR`, `ZF_CONFIG_ROOT`, and optional `ZF_PACK_DIR`; caller-set values take precedence. `ZF_CONFIG_ROOT` defaults to `$ZF_REPO_DIR/.zenoforge`, an optional directory in the target repository for its own overrides. `ZF_PACK_DIR` may be empty when there is no pack. `zf_config_file <relative path>` checks the target repo's `.zenoforge/` file first, then `ZF_PACK_DIR`, then the engine's shipped default. `bash engine/config-dump.sh` prints which layer wins for every overriding file and each `ZF_`/prefix variable (secret-looking values shown as `<set>`); `engine/config-dump.sh <relative path>` prints the three layers of one file. Both are read-only and ask `zf_config_file` and `zf_env_get` for the answer.
 
 ## 1. The two loops
 
