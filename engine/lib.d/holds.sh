@@ -783,7 +783,7 @@ hold_answer() (
 )
 
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/hold-rule.sh"
+source "$_AGENT_LIB_DIR/lib.d/hold-rule.sh" # the path token lets copy_agent_library (test-env.sh) carry the file along
 
 
 hold_cli_main() {

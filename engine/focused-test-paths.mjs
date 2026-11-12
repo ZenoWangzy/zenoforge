@@ -74,7 +74,7 @@ export const RELATED_TESTS = new Map([
   ]],
   ['engine/issue-pipeline-maintenance-budget.test.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
   ['engine/notify.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
-  ['engine/lib.d/holds.sh', ['engine/hold.test.sh']],
+  ['engine/lib.d/holds.sh', ['engine/hold.test.sh']], ['engine/lib.d/hold-rule.sh', ['engine/hold-rule.test.sh', 'engine/hold.test.sh']],
   ['engine/hold.test.sh', ['engine/hold.test.sh']],
   ['engine/mac-autopilot/advisor-provider-missing.test.sh', ['engine/mac-autopilot/advisor-provider-missing.test.sh']],
   ['engine/mac-autopilot/scheduler.d/review-rules.sh', ['engine/mac-autopilot/incident-prior-art-gate.test.sh']],
