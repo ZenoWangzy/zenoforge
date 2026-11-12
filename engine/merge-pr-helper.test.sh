@@ -4,6 +4,14 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
 merge_pr_static_scans() { return 0; }
 merge_pr_review_family() { return 0; }
+merge_pr_export_suites() { # the PR head's suites come from $fixture/head, not a fetch
+  local path
+  for path in "${@:3}"; do
+    [[ -f "$fixture/head/$path" ]] || continue
+    mkdir -p "$2/$(dirname "$path")"
+    cp "$fixture/head/$path" "$2/$path"
+  done
+}
 merge_pr_root() { printf '%s\n' "$repo"; } # the fixture repo stands in for the enclosing checkout: the host's size state and receipts must not reach these fixtures
 
 fixture="$test_env_root/merge-pr"
@@ -291,6 +299,23 @@ PR_FILES='["tools/quick-land.sh"]'
 rm -f "$repo/tools/size-ratchet.sh" # the fake ratchet must not reach later merges
 ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 [[ "$(cat "$fixture/check-output")" == *'skips the prior-art check for PR #17'* ]] || fail 'override was not logged'
+
+# Test bootstrap: a PR suite without the test-env line is refused before the receipt check, and the refusal names it.
+mkdir -p "$repo/engine" "$fixture/head/engine"
+cp "$MODEL_POLICY_TEST_REPO/engine/test-bootstrap-check.sh" "$repo/engine/"
+printf '#!/usr/bin/env bash\nset -euo pipefail\necho ok\n' > "$fixture/head/engine/x.test.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\nsource "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"\necho ok\n' > "$fixture/head/engine/y.test.sh"
+PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
+PR_FILES='["engine/x.test.sh"]'
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+  fail 'suite without the bootstrap reached merge'
+fi
+[[ "$(cat "$fixture/check-output")" == *'engine/x.test.sh'*'test-env.sh'* ]] || fail "bootstrap refusal wrong: $(cat "$fixture/check-output")"
+[[ "$(cat "$fixture/gh-calls")" != *merge:* ]] || fail 'suite without the bootstrap reached the merge call'
+PR_FILES='["engine/y.test.sh"]'
+merge_pr_bootstrap_ok 17 >"$fixture/check-output" 2>&1 || fail "suite with the bootstrap refused: $(cat "$fixture/check-output")"
+PR_FILES='["tools/quick-land.sh"]'
 
 # Test receipts: a merge must not follow a failed test run at the PR head.
 receipt_dir="$repo/.git/zf-test-receipts"
