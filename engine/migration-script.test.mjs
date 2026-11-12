@@ -30,3 +30,18 @@ test('role checker selects target, pack, or fails closed', () => exercise('roleC
 
 test('number checker selects target, pack, or fails closed', () => exercise('numberCheck', 'check-migration-numbers.mjs'));
 test('renumberer selects target, pack, or fails closed', () => exercise('renumber', 'fruit-migration-renumber.mjs'));
+
+test('configured renumberer runs beside its sibling checker from a published layout', () => {
+  const root = mkdtempSync(join(process.cwd(), '.git/migration-script-'));
+  const config = join(root, 'config');
+  const pack = join(root, 'pack');
+  mkdirSync(join(root, 'scripts/checks'), { recursive: true }); mkdirSync(config); mkdirSync(pack);
+  writeFileSync(join(config, 'release.json'), JSON.stringify({ migration: { renumber: 'scripts/checks/fruit-migration-renumber.mjs' } }));
+  writeFileSync(join(root, 'scripts/checks/check-migration-numbers.mjs'), 'console.log("checker ok");\n');
+  writeFileSync(join(root, 'scripts/checks/fruit-migration-renumber.mjs'), 'import "./check-migration-numbers.mjs";\nconsole.log("renumber", process.argv[2]);\n');
+  const result = spawnSync(process.execPath, [launcher, 'renumber', '--check'], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, ZF_CONFIG_ROOT: config, ZF_PACK_DIR: pack },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'checker ok\nrenumber --check');
+});
