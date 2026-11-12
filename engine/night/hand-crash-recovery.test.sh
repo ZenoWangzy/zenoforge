@@ -26,7 +26,6 @@ source "$root/engine/lib.sh"
 source "$root/engine/night/hand-crash-recovery.sh"
 ZF_ENGINE_DIR="$REPO_DIR/engine" # the stub dispatcher lives in the fixture repo
 hand_agent_pid_live() { return 1; }
-hand_agent_role_for_identity() { echo work; }
 sleep() { :; }
 say() { printf '%s\n' "$*" >> "$LOG"; }
 supervisor_inbox_append() { printf '%s %s\n' "$1" "$2" >> "$CRASH_TEST_ROOT/inbox"; }
