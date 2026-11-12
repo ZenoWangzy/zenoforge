@@ -272,10 +272,10 @@ human_feedback_items() { # pr since-iso → JSON 数组（时间升序）；gh �
         | {at:.created_at, kind:("line comment " + (.path // "")), who:(.user.login // "?"), text:text, url:(.html_url // "")}])
     | sort_by(.at)'
 }
-human_feedback_block() { # pr since-iso → 提示片段：最新 8 条带链接；无反馈或 PR 号非法则为空
+human_feedback_block() { # pr since-iso → 提示片段：最新 8 条带链接；无反馈或 PR 号非法则为空；gh 读失败返回 1（调用方须失败关闭）
   local items
   [[ "$1" =~ ^[0-9]+$ ]] || return 0
-  items="$(human_feedback_items "$1" "$2")" || return 0
+  items="$(human_feedback_items "$1" "$2")" || return 1
   jqf -r 'if length == 0 then empty else
     "\n人工 PR 评审反馈（上次派发之后共 \(length) 条，列出最新 \(if length > 8 then 8 else length end) 条；逐条处理，完整内容见链接）：\n"
     + ([.[-8:][] | "- [\(.kind)] \(.who) \(.at)：\(.text) \(.url)"] | join("\n")) end' <<<"$items"
@@ -288,7 +288,7 @@ ready_changes_requested_sweep() {
   while IFS=$'\t' read -r id pr since; do
     [[ "$pr" =~ ^[0-9]+$ ]] || continue
     jqf -e --argjson n "$pr" 'any(.[]; .number == $n and .reviewDecision == "CHANGES_REQUESTED")' <<<"$TICK_PRS" >/dev/null || continue
-    items="$(human_feedback_items "$pr" "$since")" || continue
+    items="$(human_feedback_items "$pr" "$since")" || { say "ready unit=$id pr=$pr: human feedback unreadable, retry next tick"; continue; }
     jqf -e 'any(.[]; .kind == "review CHANGES_REQUESTED")' <<<"$items" >/dev/null || continue
     set_unit "$id" "$(hist review-changes-requested "PR#$pr human changes requested") | .approved_sha=null | .repair_hint=$(js "PR#$pr 有人工请求修改的评审，见评审反馈。") | .stage=\"repair-pending\""
     say "ready unit=$id pr=$pr: human changes requested -> repair-pending"

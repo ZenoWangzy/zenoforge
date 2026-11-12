@@ -376,7 +376,9 @@ dispatch_pending() {
         rep="impl-${key}-fix-${TAG}.md"
         dcapture failure failure_prompt repair_failure_prompt "$u" "$prev_report" || { to_supervisor "$id" "repair-pending: cannot read the failure evidence ($prev_report)"; continue; }
         hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
-        hint+="$(human_feedback_block "$pr_num" "$(last_dispatch_at "$u")")"
+        # Fail closed (#119): an unreadable review list skips this repair, so no write-start hides the feedback from the next tick.
+        human_fb="$(human_feedback_block "$pr_num" "$(last_dispatch_at "$u")")" || { say "repair-pending unit=$id: human PR feedback unreadable, retry next tick"; dispatch_skip human-feedback; continue; }
+        hint+="$human_fb"
         [[ -n "$hint" ]] && hint="
 本轮额外阻断（优先处理；评审报告若已 READY，只需处理这一条）：$hint"
         if [[ "$lane" == direct-main ]]; then
