@@ -31,7 +31,7 @@ export -f gh
 
 # Stubs record argv and write a fixed reply: codex to --output-last-message, claude to stdout.
 printf '#!/usr/bin/env bash\necho "codex $*" >> "$FIXTURE/codex.calls"\nout=""; prev=""\nfor a in "$@"; do [[ "$prev" == --output-last-message ]] && out="$a"; prev="$a"; done\n[[ -z "$out" ]] || cat "$FIXTURE/reply" > "$out"\n' > "$fixture/bin/codex"
-printf '#!/usr/bin/env bash\nprintf "claude " >> "$FIXTURE/claude.calls"; printf "%%q " "$@" >> "$FIXTURE/claude.calls"; echo >> "$FIXTURE/claude.calls"\ncat > "$FIXTURE/claude.stdin"\ncat "$FIXTURE/reply"\n' > "$fixture/bin/claude"
+printf '#!/usr/bin/env bash\nprintf "claude " >> "$FIXTURE/claude.calls"; printf "%%q " "$@" >> "$FIXTURE/claude.calls"; echo >> "$FIXTURE/claude.calls"\ncat > "$FIXTURE/claude.stdin"\njq -cn --rawfile r "$FIXTURE/reply" "{type: \\\"result\\\", subtype: \\\"success\\\", is_error: false, result: \$r}"\n' > "$fixture/bin/claude"
 chmod +x "$fixture/bin/codex" "$fixture/bin/claude"
 export FIXTURE="$fixture" PATH="$fixture/bin:$PATH"
 
@@ -41,6 +41,11 @@ reset() { # unit-json
   printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; rm -f "$fixture"/*.calls "$fixture/claude.stdin"
 }
 wait_for() { local i; for i in $(seq 50); do [[ -e "$1" ]] && return 0; sleep 0.1; done; fail "timed out waiting for $1"; }
+harvest_claude_arbiter() { # unit: wait for the stream-json result in the log, then write its answer to the report as the harvest does
+  local i w log; w="$(jq -c --arg u "$1" '.workers[] | select(.unit==$u)' "$WORKERS")"; log="$sup/$(jq -r .log <<<"$w")"
+  for i in $(seq 50); do grep -q '"type":"result"' "$log" 2>/dev/null && break; sleep 0.1; done
+  python3 "$USAGE_READER" claude-stream "$log" | jq -r 'select(.complete == true) | .message' > "$sup/$(jq -r .report <<<"$w")"
+}
 unit() { jq -cn --arg id "$1" --argjson hist "${2:-[]}" '{units:[{id:$id,issue:701,pr:701,lane:"pr",stage:"supervisor-review",
   history:([{stage:"supervisor-escalated",result:"no VERDICT",at:"2026-10-27T00:01:00Z"}] + $hist)}]}'; }
 printf 'ACTION: requeue\nREASON: r\nGUIDANCE: g\n' > "$fixture/reply"
@@ -68,8 +73,8 @@ grep -q -- "--safe-mode " "$fixture/claude.calls" && grep -q -- "--setting-sourc
 jq -e --arg m "profile:$role_model" 'any(.workers[]; .type=="supervise" and .unit=="pr-702" and .model==$m)' "$WORKERS" >/dev/null || fail "worker must record the claude role model"
 [[ "$(field pr-702 '.history[-1].stage')" == supervisor-arbiter ]] || fail "dispatch must consume one arbitration slot"
 grep -q '"unitId":"pr-702"' "$fixture/claude.stdin" || fail "claude prompt must carry the frozen record"
+harvest_claude_arbiter pr-702
 report="$sup/$(jq -r '.units[0].supervise_report' "$UNITS")"
-for _ in $(seq 50); do [[ -s "$report" ]] && break; sleep 0.1; done
 [[ "$(supervisor_action_of "$report")" == requeue ]] || fail "claude report must parse through supervisor_action_of"
 
 # ---- over the stop, empty role effort: --effort is omitted, the run still dispatches ----
@@ -90,8 +95,8 @@ dispatch_supervisor_arbiters
 wait_for "$fixture/claude.calls"
 jq -e 'any(.workers[]; .type=="supervise" and .cap_triage==true)' "$WORKERS" >/dev/null || fail "third entry must dispatch a cap triage worker"
 grep -q '"capTriage":true' "$fixture/claude.stdin" || fail "cap triage prompt must reach claude"
+harvest_claude_arbiter pr-703
 report="$sup/$(jq -r '.units[0].supervise_report' "$UNITS")"
-for _ in $(seq 50); do [[ -s "$report" ]] && break; sleep 0.1; done
 [[ "$(supervisor_cap_verdict_of "$report")" == RULE ]] || fail "claude cap report must parse through supervisor_cap_verdict_of"
 printf 'ACTION: requeue\nREASON: r\nGUIDANCE: g\n' > "$fixture/reply"
 
