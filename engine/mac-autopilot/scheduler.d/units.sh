@@ -663,7 +663,7 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
       && jqf -e 'type == "object" and has("recut_children")' <<<"$issue_state" >/dev/null 2>&1; then
     :
   elif ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
-    supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
+    if [[ "$park_stage" == supervisor-cap-triage-park && ( "$err" == *'rate limit'* || "$err" == *'Resource limits'* ) ]]; then set_unit "$id" '.supervisor_cap_retry="pending"' || return 1; say "supervisor cap triage unit=$id: recut route rate-limited; stays at supervisor-review for a retry"; return 0; fi; supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
   closed_unit_issue_route "$id" || { supervisor_budget_park "$id" "$evidence (tracker label reconciliation failed)" "$decision" "$park_reason" "$park_stage"; return 0; }
   if [[ -n "$pr" ]]; then
