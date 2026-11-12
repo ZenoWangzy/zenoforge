@@ -118,6 +118,16 @@ bash "$script_dir/land-pr.sh" "$f/clone" '' "$issue_sha" 'issue tweak' "$f/repor
 [[ "$(head -1 "$f/report.md")" == "LANDED "* ]] || fail "PR-less unit not landed: $(cat "$f/report.md")"
 [[ "$(cat "$f/subject")" == '[skip ci] issue tweak (#9)' ]] || fail "PR-less subject wrong: $(cat "$f/subject")"
 [[ ! -s "$FAKE_GH_CALLS" ]] || fail "PR-less landing touched a PR: $(cat "$FAKE_GH_CALLS")"
+# 目标 clone 没有 engine/ 目录时，默认落地器必须取 land-pr.sh 所在引擎目录里的 land-direct-main.sh
+mkdir -p "$f/engine-live/mac-autopilot"; cp "$script_dir/land-pr.sh" "$f/engine-live/mac-autopilot/"
+: > "$f/engine-live/config.sh"
+printf '#!/usr/bin/env bash\necho engine-stub >> "$FAKE_LAND_CALLS"\n' > "$f/engine-live/land-direct-main.sh"
+chmod +x "$f/engine-live/land-direct-main.sh"
+git clone -q "$f/remote.git" "$f/noengine"
+[[ ! -e "$f/noengine/engine" ]] || fail 'fixture clone unexpectedly has engine/'
+out="$(env -u LAND_PR_LANDER bash "$f/engine-live/mac-autopilot/land-pr.sh" "$f/noengine" 7 "$pr_sha" 'tool tweak' "$f/report-noengine.md" "$pr_sha" 2>&1; head -1 "$f/report-noengine.md")"
+[[ "$out" == "LANDED "* ]] || fail "no-engine clone did not reach the engine lander: $out"
+grep -Fq engine-stub "$f/land.calls" || fail 'engine-relative lander did not run'
 printf 'console.log("not-eligible")\n' > "$f/policy.mjs"
 [[ "$(run "$pr_sha")" == "FAILED not eligible"* ]] || fail 'product PR not refused'
 echo 'land-pr.test.sh: PASS'
