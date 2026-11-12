@@ -767,18 +767,14 @@ load_live_state() {
 }
 
 load_process_cwds() {
-  local entry pid cwd ancestor
+  local row pid cwd ancestor
   [ "$PROCESS_CWDS_LOADED" = 1 ] && return 0
   PROCESS_CWDS_LOADED=1
-  # One find replaces one readlink process per PID; reaper checks many owner paths per pass.
-  while IFS= read -r -d '' entry; do
-    [[ "$entry" == *' -> '* ]] || continue
-    pid="${entry#/proc/}"
-    pid="${pid%%/cwd -> *}"
-    cwd="${entry#* -> }"
+  # One process_cwds scan (proc.sh) replaces one readlink process per PID; reaper checks many owner paths per pass.
+  while IFS= read -r -d '' row; do
+    pid="${row%%$'\t'*}"
+    cwd="${row#*$'\t'}"
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
-    cwd="${cwd% (deleted)}"
-    [ -n "$cwd" ] || continue
     ancestor="$cwd"
     while [[ "$ancestor" == /* ]]; do
       PROCESS_CWD_PIDS["$ancestor"]="${PROCESS_CWD_PIDS["$ancestor"]:-} $pid"
@@ -786,7 +782,7 @@ load_process_cwds() {
       ancestor="${ancestor%/*}"
       [ -n "$ancestor" ] || ancestor=/
     done
-  done < <(find /proc/[0-9]*/cwd -maxdepth 0 -type l -printf '%p -> %l\0' 2>/dev/null)
+  done < <(process_cwds)
 }
 
 unit_is_active() {

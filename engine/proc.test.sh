@@ -110,6 +110,7 @@ out="$(darwin "pid_start_id $live" || true)"; [[ -z $out ]] || fail 'macOS: unkn
 
 [[ "$(darwin host_boot_id)" == 7B0C1D2E-0000-4000-8000-ABCDEF012345 ]] || fail 'macOS: boot id not from sysctl'
 
+[[ "$(darwin 'process_cwds | tr "\0" "\n"')" == $'101\t/work/a\n102\t/work/a/sub\n103\t/work/ab\n104\t/other' ]] || fail 'macOS: process_cwds record format'
 got() { darwin "pids_with_cwd_under $1" | tr '\n' ' '; }
 [[ "$(got /work/a)" == '101 102 ' ]] || fail "macOS: /work/a -> '$(got /work/a)'"
 [[ "$(got /work/a/)" == '101 102 ' ]] || fail 'macOS: trailing slash'
