@@ -28,6 +28,22 @@ SCHED_LOCK_HELD=true
 fail() { echo "token-spend-gate.test.sh: $*" >&2; exit 1; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 cancel_unit_runs() { :; }
+# The budget-recut path: the route and the PR close are stubbed and logged. ROUTE_RC=1 refuses the route, so the unit falls back to its park.
+calls="$fixture/calls"; : > "$calls"; ROUTE_RC=1
+scheduler_route_to_recut() { printf 'route:%s\n' "$1" >> "$calls"; [[ "$ROUTE_RC" == 0 ]] || { echo 'refused' >&2; return 1; }; }
+tick_prs_changed() { :; }
+tick_pr_state() { printf 'OPEN\n'; }
+# The PR head and the failed steps of its red run: PR_HEAD empty means no census hit, RED_STEP is the failed step of the one red run.
+PR_HEAD=""; RED_STEP="Set up job"
+tick_pr_head() { printf '%s\n' "$PR_HEAD"; }
+gh() {
+  case "$1 $2" in
+    'pr close') printf 'pr-close:%s\n' "$3" >> "$calls" ;;
+    'run list') echo 90001 ;;
+    'api repos/'*/jobs) echo "$RED_STEP" ;;
+  esac
+  return 0
+}
 decision_eval_stages() { printf '\n'; }
 printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture/bin/codex"; chmod +x "$fixture/bin/codex"; export PATH="$fixture/bin:$PATH"
 INBOX="$fixture/inbox"; : > "$INBOX"
@@ -131,10 +147,15 @@ for ruling in supervisor-requeue supervisor-approve supervisor-cap-budget-refill
       history:[{stage:"token-park",result:"soft: x",at:"2026-11-05T12:00:00Z"},{stage:"token-refill",result:"once",at:"2026-11-05T12:10:00Z"},{stage:$ruling,result:"ruling",at:"2026-11-05T12:20:00Z"}]}]}' > "$UNITS"
   token_spend_gate issue-3 "$(jq -c '.units[0]' "$UNITS")" && fail "2.5M after $ruling must stay parked" || true
   [[ "$(field issue-3 .stage)" == parked && "$(field issue-3 .parked_reason)" == token-hard-park ]] || fail "$ruling: hard park expected, got $(field issue-3 .stage)"
-  # The head requeues it by hand: the next dispatch parks it again, silently.
+  # The head requeues it by hand: the issue hard-parked a moment ago, so the next park goes to the arbiter once and no second recut.
   set_unit issue-3 "$(hist supervisor-requeue 'head requeue') | .stage=\"implement-pending\""
   token_spend_gate issue-3 "$(jq -c '.units[0]' "$UNITS")" && fail "a requeue after $ruling must not lift the hard park" || true
-  [[ "$(field issue-3 .stage)" == parked ]] || fail "$ruling: a requeue lifted the hard park"
+  [[ "$(field issue-3 .stage)" == supervisor-review ]] || fail "$ruling: a repeat hard park goes to the arbiter, got $(field issue-3 .stage)"
+  # The arbiter requeues it too: the next dispatch parks it again, silently.
+  set_unit issue-3 "$(hist supervisor-requeue 'arbiter requeue') | .stage=\"implement-pending\""
+  token_spend_gate issue-3 "$(jq -c '.units[0]' "$UNITS")" && fail "a second requeue after $ruling must not lift the hard park" || true
+  [[ "$(field issue-3 .stage)" == parked && "$(field issue-3 .parked_reason)" == token-hard-park ]] || fail "$ruling: a requeue lifted the hard park"
+  [[ "$(field issue-3 '[.history[] | select(.stage == "supervisor-escalated")] | length')" == 1 ]] || fail "$ruling: the arbiter hears of a repeat once"
 done
 [[ "$(field issue-3 '[.history[] | select(.stage == "token-park" and (.result | startswith("hard")))] | length')" == 1 ]] || fail "one hard park event per unit"
 [[ "$(wc -l < "$INBOX")" == 1 ]] || fail "the inbox hears of the unit once: $(cat "$INBOX")"
@@ -145,6 +166,63 @@ dispatch_supervisor_arbiters
 jq -cn --argjson a "$(run a.log 2026-11-05T10:00:00Z implement 2400000)" '{units:[{id:"issue-4",stage:"repair-pending",spend_runs:[$a],history:[]}]}' > "$UNITS"
 token_spend_gate issue-4 "$(jq -c '.units[0]' "$UNITS")" && fail "exactly the hard line parks" || true
 [[ "$(field issue-4 .parked_reason)" == token-hard-park ]] || fail "straight to the hard park"
+
+# A unit over the hard line leaves the park through the budget-recut path: issue to needs-recut, PR closed, unit closed, no OWNER comment.
+hard_unit() { # id issue pr → one unit past the hard line
+  jq -cn --arg id "$1" --argjson n "$2" --argjson pr "$3" --argjson a "$(run a.log 2026-11-05T10:00:00Z implement 2500000)" \
+    '{id:$id,issue:$n,pr:$pr,stage:"implement-pending",branch:("agent/issue-"+($n|tostring)),spend_runs:[$a],history:[]}'
+}
+ROUTE_RC=0; : > "$calls"; : > "$INBOX"; rm -f "$INBOX.keys"; rm -rf "$WT_ROOT/wt-issue-5"
+echo "{\"units\":[$(hard_unit issue-5 5 55)]}" > "$UNITS"; rm -f "$UNITS_ARCHIVE"
+token_spend_gate issue-5 "$(jq -c '.units[0]' "$UNITS")" && fail "past the hard line the unit is held" || true
+[[ "$(field issue-5 .stage)" == closed ]] || fail "a first hard park leaves the park through the recut, got $(field issue-5 .stage)"
+[[ "$(cat "$calls")" == $'route:5\npr-close:55' ]] || fail "the issue routes to needs-recut, then its PR closes: $(cat "$calls")"
+[[ "$(field issue-5 '.history | map(.stage) | join(",")')" == token-park,supervisor-budget-recut ]] || fail "token-park stays, the recut follows: $(field issue-5 '[.history[].stage]')"
+[[ "$(field issue-5 '.parked_reason // "none"')" == none ]] || fail "a recut unit carries no park reason"
+grep -q 'token-hard-park unit=issue-5' "$INBOX" || fail "the inbox line stays"
+# A second hard park of the same issue within 7 days, from any unit (here one retired to the archive), goes to the arbiter and not to a recut.
+: > "$calls"
+echo "{\"units\":[$(hard_unit issue-7 7 77)]}" > "$UNITS"
+jq -cn --arg at "$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"issue-7-old",issue:7,stage:"closed",history:[{stage:"token-park",result:"hard: x",at:$at}]}]}' > "$UNITS_ARCHIVE"
+token_spend_gate issue-7 "$(jq -c '.units[0]' "$UNITS")" && fail "a repeat hard park holds the unit" || true
+[[ "$(field issue-7 .stage)" == supervisor-review ]] || fail "a repeat hard park goes to the arbiter, got $(field issue-7 .stage)"
+[[ ! -s "$calls" ]] || fail "a repeat hard park must neither route nor close the PR: $(cat "$calls")"
+[[ "$(field issue-7 '[.history[] | select(.stage == "supervisor-escalated") | .result][0]')" == 'token hard park repeat: '* ]] || fail "the arbiter entry records why"
+[[ "$(field issue-7 '[.history[] | select(.stage == "token-park")] | length')" == 1 ]] || fail "the repeat is still one token-park event"
+# A hard park older than 7 days does not block a recut.
+jq -cn --arg at "$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)" '{units:[{id:"issue-7-old",issue:7,stage:"closed",history:[{stage:"token-park",result:"hard: x",at:$at}]}]}' > "$UNITS_ARCHIVE"
+echo "{\"units\":[$(hard_unit issue-7 7 77)]}" > "$UNITS"
+token_spend_gate issue-7 "$(jq -c '.units[0]' "$UNITS")" && fail "past the hard line the unit is held" || true
+[[ "$(field issue-7 .stage)" == closed && "$(cat "$calls")" == $'route:7\npr-close:77' ]] || fail "a hard park 8 days ago recuts: stage=$(field issue-7 .stage) calls=$(cat "$calls")"
+rm -f "$UNITS_ARCHIVE"; ROUTE_RC=1
+
+# Synthetic fixture: a unit approved on its current PR head, whose CI then went red on that head. When the failed step is a runner-environment
+# step (Set up job) the red says nothing about the code: no recut and no PR close, the unit stays at the plain hard park.
+HEAD_A=1111111111111111111111111111111111111111; HEAD_B=2222222222222222222222222222222222222222
+histinfra="[{\"stage\":\"review-approve\",\"result\":\"$HEAD_A\",\"at\":\"2026-11-05T10:00:00Z\"},{\"stage\":\"ci-test-red\",\"result\":\"PR gate\",\"at\":\"2026-11-05T10:30:00Z\"},{\"stage\":\"review-approve\",\"result\":\"$HEAD_B\",\"at\":\"2026-11-05T11:00:00Z\"},{\"stage\":\"ci-ready\",\"result\":\"PR#88 readied\",\"at\":\"2026-11-05T11:01:00Z\"},{\"stage\":\"ci-test-red\",\"result\":\"PR gate\",\"at\":\"2026-11-05T11:30:00Z\"}]"
+unit_infra() { # extra-history-json → a unit at the hard line, approved on HEAD_B
+  jq -cn --argjson h "$histinfra" --argjson extra "$1" --argjson a "$(run a.log 2026-11-05T10:00:00Z implement 2500000)" --arg sha "$HEAD_B" \
+    '{units:[{id:"issue-8",issue:8,pr:88,stage:"implement-pending",branch:"agent/issue-8",spend_runs:[$a],reviewed_sha:$sha,reviewed_pr_head:$sha,history:($h + $extra)}]}'
+}
+infra_case() { # extra-history-json → gate the unit; calls and the stage tell what happened
+  : > "$calls"; unit_infra "$1" > "$UNITS"; rm -f "$UNITS_ARCHIVE"
+  token_spend_gate issue-8 "$(jq -c '.units[0]' "$UNITS")" && fail "past the hard line the unit is held" || true
+}
+ROUTE_RC=0; PR_HEAD="$HEAD_B"; RED_STEP="Set up job"
+infra_case '[]'
+[[ "$(field issue-8 .stage)" == parked && "$(field issue-8 .parked_reason)" == token-hard-park ]] || fail "approved head with infra-only red stays hard-parked, got $(field issue-8 .stage)"
+[[ ! -s "$calls" ]] || fail "approved head with infra-only red: no route, no PR close: $(cat "$calls")"
+[[ "$(field issue-8 '[.history[] | select(.stage == "token-park" and (.result | startswith("hard")))] | length')" == 1 ]] || fail "the token-park event stays"
+# A request-changes on the current head after the approval: not approved, so it recuts.
+infra_case "[{\"stage\":\"review-request-changes\",\"result\":\"$HEAD_B\",\"at\":\"2026-11-05T12:00:00Z\"}]"
+[[ "$(field issue-8 .stage)" == closed && "$(cat "$calls")" == $'route:8\npr-close:88' ]] || fail "request-changes on the head recuts: stage=$(field issue-8 .stage) calls=$(cat "$calls")"
+# Approved, but the red is a real test step: recut as before.
+RED_STEP="Run package tests"; infra_case '[]'
+[[ "$(field issue-8 .stage)" == closed && "$(cat "$calls")" == $'route:8\npr-close:88' ]] || fail "a code red recuts: stage=$(field issue-8 .stage) calls=$(cat "$calls")"
+# Infra-only red, but the PR head moved past the approved one: not approved on the current head, so it recuts.
+RED_STEP="Set up job"; PR_HEAD=3333333333333333333333333333333333333333; infra_case '[]'
+[[ "$(field issue-8 .stage)" == closed && "$(cat "$calls")" == $'route:8\npr-close:88' ]] || fail "a moved head recuts: stage=$(field issue-8 .stage) calls=$(cat "$calls")"
+PR_HEAD=""; ROUTE_RC=1
 
 # ---- 6. the gate sits in dispatch, ahead of the stop-loss budget ----
 grep -q 'token_spend_gate "$id" "$u" check-only' "$script_dir/scheduler.d/dispatch-queue.sh" || fail "refill must not dispatch past a token line"
