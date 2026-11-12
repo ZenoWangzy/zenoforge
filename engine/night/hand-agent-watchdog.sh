@@ -82,17 +82,12 @@ hand_agent_process_start_ticks() {
 }
 
 hand_agent_pid_live() {
-  local pid="$1" expected_start_ticks="${2:-}" stat_line rest state stats cpu actual_start_ticks
-  kill -0 "$pid" 2>/dev/null || return 1
-  IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 1
-  rest="${stat_line##*) }"
-  read -r state _ <<< "$rest"
-  [ "$state" != Z ] || return 1
+  local pid="$1" expected_start_ticks="${2:-}" current_start_ticks
+  pid_live "$pid" || return 1
   if [ -n "$expected_start_ticks" ]; then
     [[ "$expected_start_ticks" =~ ^[0-9]+$ ]] || return 1
-    stats="$(hand_agent_proc_stats "$pid")" || return 1
-    read -r cpu actual_start_ticks state <<< "$stats"
-    [ "$state" != Z ] && [ "$actual_start_ticks" = "$expected_start_ticks" ]
+    current_start_ticks="$(pid_start_id "$pid" 2>/dev/null)" || return 1
+    [ "$current_start_ticks" = "$expected_start_ticks" ]
   fi
 }
 
