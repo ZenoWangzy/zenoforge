@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-const root = mkdtempSync(join(process.cwd(), '.git/post-deploy-test-'));
+const root = mkdtempSync(join(tmpdir(), 'post-deploy-test-'));
 const config = join(root, 'config');
 const pack = join(root, 'pack');
 mkdirSync(config); mkdirSync(pack);

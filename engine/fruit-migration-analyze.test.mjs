@@ -19,7 +19,7 @@ assert.deepEqual(analyzeMigrationSql(sql, 'app'), [
 assert.deepEqual(analyzeMigrationSql('ALTER TABLE "a""b"."c""d" ADD x int;', 'a"b'), [
   'ANALYZE "a""b"."c""d";',
 ]);
-const root = mkdtempSync(join(process.cwd(), '.git/analyze-test-'));
+const root = mkdtempSync(join(tmpdir(), 'analyze-test-'));
 const pack = join(root, 'pack');
 const config = join(root, 'config');
 mkdirSync(pack); mkdirSync(config);
