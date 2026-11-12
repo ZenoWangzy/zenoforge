@@ -1430,4 +1430,18 @@ supervisor_cap_exhausted_sweep
 [[ "$(cx_stage issue-674)" == parked && "$(cx_reason issue-674)" == supervisor-cap-exhausted && ! -s "$hold_calls" && ! -s "$route2" ]] \
   || fail "inside the six-hour wait the cap-exhausted park must stay put: $(jq -c '.units[0]' "$UNITS")"
 
+# Claude arbiter (weekly Codex stop): its stream-json log carries the usage and the final answer. Its tokens count on the
+# unit, and the answer becomes the report that the verdict is read from.
+claude_arb_sid=eeeeeeee-0000-0000-0000-0000000000a1
+units "$(jq -cn '{units:[{id:"pr-640",issue:640,pr:640,lane:"pr",branch:"agent/issue-640",stage:"supervisor-review",
+  history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"}]}]}')"
+cat > "$sup/supervise-pr-640.worker.log" <<JSONL
+{"type":"system","subtype":"init","session_id":"$claude_arb_sid"}
+{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"result":"ACTION: requeue\nREASON: 评审报告缺结论行，可重跑\nEVIDENCE: no VERDICT\nREJECTED: close（产出仍需要）\nGUIDANCE: 先 git merge origin/main","session_id":"$claude_arb_sid","usage":{"input_tokens":3,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":40}}
+JSONL
+rm -f "$sup/supervise-pr-640-claude.md"
+harvest_supervisor_arbiter "$(jq -cn '{pid:99999996,unit:"pr-640",type:"supervise",provider:"claude",log:"supervise-pr-640.worker.log",report:"supervise-pr-640-claude.md",started:"2026-10-27T00:00:00Z",model:"profile:claude"}')"
+[[ "$(field pr-640 .tokens)" == 143 ]] || fail "a Claude arbiter run must count its fresh tokens on the unit, got $(field pr-640 .tokens)"
+grep -q '^ACTION: requeue$' "$sup/supervise-pr-640-claude.md" || fail "a Claude arbiter answer must become the report: $(cat "$sup/supervise-pr-640-claude.md" 2>/dev/null)"
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'
