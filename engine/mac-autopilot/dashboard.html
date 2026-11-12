@@ -1175,7 +1175,7 @@ function vHost(D) {
         ${area(hist.slice(-180), bud.gb_per_hour)}
         <div class="buls" style="margin-top:18px">${budBul("当前速率", tr.gb_per_hour, bud.gb_per_hour, "GB/时", "预算 "+bud.gb_per_hour+" GB/时")}${budBul("今日累计（UTC 日）", tr.today_gb, bud.gb_per_day, "GB", "预算 "+bud.gb_per_day+" GB/天")}</div>
 `)}
-    ${panel("timer","每日流量趋势（近 14 天）", trafficTrend(tr.days))}
+    ${panel("timer","每日流量趋势（近 14 天，柱为下载，细条为上传）", trafficTrend(tr.days))}
     ${cats.length ? panel("layers","各类流量对日预算", `<div class="buls">${cats.map(k=>budBul(k, (tr.today_category_gb||{})[k], (bud.category_gb_per_day||{})[k], "GB", `当前 ${((tr.category_gb_per_hour||{})[k]??0).toFixed(3)} GB/时，日预算 ${(bud.category_gb_per_day||{})[k]??"—"} GB`) || `<div class="bul zr s-none"><i class="ad s-none"></i><span class="bul-l">${esc(k)}</span><span></span><span class="bul-v"><b>${num((tr.today_category_gb||{})[k])}</b><small>GB</small></span></div>`).join("")}</div>`) : ""}
 ${panel("clock","调度", `<div class="kcs">${kcard("clock","每拍间隔",num(Math.round((c.tick_seconds||600)/60))+"<small> 分</small>")}${kcard("workers","同时在岗上限",num(c.max_workers))}${kcard("git","自动合并",stChip(c.auto_merge?"ok":"warn", c.auto_merge?"开":"关"))}</div>`)}
     <details class="panel"><summary class="ph" style="cursor:pointer">${ic("knob")}配置参数</summary><div class="rows">${(D.knobs||[]).map(k=>`<div class="knob" data-tip="${esc(k.meaning)}"><code>${esc(k.key)}</code><b>${esc(typeof k.value==="object"?JSON.stringify(k.value):k.value)}</b></div>`).join("")}</div></details>

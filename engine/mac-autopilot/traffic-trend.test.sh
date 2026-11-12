@@ -4,7 +4,6 @@
 # malformed, one missing day. The malformed and missing days drop out and nothing raises.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
-trap 'rm -rf -- "$test_env_root"' EXIT
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "traffic-trend.test.sh: $*" >&2; exit 1; }
@@ -16,6 +15,7 @@ row() { jq -cn --argjson rx "$1" --argjson tx "$2" --argjson cov "$3" \
 
 row 1000000000 100000000 '"full"' > "$metrics/traffic-$(day 0).jsonl"
 row 5000000000 1000000000 '"full"' >> "$metrics/traffic-$(day 0).jsonl"
+# coverage values below are synthetic: the sampler's real daily coverage schema is not in this repo (PR body, open point).
 row 4000000000 1000000000 '{"gaps":1}' > "$metrics/traffic-$(day 1).jsonl"
 printf '\n' >> "$metrics/traffic-$(day 1).jsonl"
 row 2000000000 500000000 '"full"' > "$metrics/traffic-$(day 4).jsonl"
