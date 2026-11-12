@@ -1121,7 +1121,7 @@ else
 
   PROMPT_FILE="$(mktemp)"
   {
-    echo "AGENT_PHASE for this run: $PHASE"
+    echo "AGENT_PHASE for this run: $PHASE"; matt_skills_note "${WT:-$REPO_DIR}" ask-matt
     echo "GitNexus repo argument for this run: $REPO_DIR"
     echo "GitNexus index freshness for this run: $INDEX_FRESHNESS_NOTE."
     echo "This is one frozen cohort, submitted once as a single web message. Pipeline comments and superseded state history are omitted; the current issue body, relevant human discussion, current brief, latest failure, acceptance criteria, and blockers remain. Long comments and failure excerpts retain their head and tail."

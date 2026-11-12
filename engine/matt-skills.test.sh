@@ -27,4 +27,10 @@ for name in ask-matt triage to-spec to-tickets implement tdd diagnosing-bugs cod
 done
 note="$(matt_skills_note "$target" tdd triage)"
 [[ "$note" == *"tdd=.agents/skills/tdd/SKILL.md; triage=$engine_skills/triage/SKILL.md" ]] || fail "unexpected note: $note"
+# Every stage prompt builder names its Matt skill. Exception: release (engine/run-release.sh has no agent prompt on origin/main).
+for entry in run-triage.sh:ask-matt run-triage-batch.sh:ask-matt run-recut.sh:to-tickets run-advisor.sh:ask-matt run-advisor-batch.sh:ask-matt; do
+  script="${entry%%:*}" skill="${entry##*:}"
+  grep -Eq "matt_skills_note .*\b$skill\b" "$SCRIPT_DIR/$script" || fail "$script must name Matt skill $skill in its prompt"
+  [[ -f "$engine_skills/$skill/SKILL.md" ]] || fail "Matt skill $skill for $script is not vendored"
+done
 echo 'matt-skills.test.sh: PASS'

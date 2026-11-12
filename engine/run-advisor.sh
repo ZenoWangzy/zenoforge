@@ -374,7 +374,7 @@ if [[ -z "$ADVISOR_PROMPT_PATH" || -z "$ADVISOR_SCHEMA_PATH" ]]; then
 fi
 PROMPT_FILE="$(mktemp)"
 {
-  echo "AGENT_PHASE for this run: $PHASE"
+  echo "AGENT_PHASE for this run: $PHASE"; matt_skills_note "$WT" ask-matt
   echo "GitNexus repo argument for this run: $REPO_DIR"
   echo "GitNexus index freshness for this run: $INDEX_FRESHNESS_NOTE."
   cat "$ADVISOR_PROMPT_PATH"
