@@ -138,6 +138,10 @@ classified="$(roadmap_choose_epic "$TREE" '{"title":"Domain pack intake labels"}
 assert_eq 'title classifier selects best epic' 902 "$(jq -r '.epic' <<< "$classified")"
 fallback="$(roadmap_choose_epic "$TREE" '{"title":"Unrelated invoice export"}' '')"
 assert_eq 'unmatched issue falls under 待归类' 904 "$(jq -r '.epic' <<< "$fallback")"
+# One shared Chinese bigram (支付) is not enough to link; it must fall to 待归类.
+CN_TREE="$(jq '.roots[0].children[0].children[0].title = "支付对账流程"' <<< "$TREE")"
+weak_bigram="$(roadmap_choose_epic "$CN_TREE" '{"title":"支付宝退款"}' '')"
+assert_eq 'one shared bigram does not link; falls under 待归类' 904 "$(jq -r '.epic' <<< "$weak_bigram")"
 
 CATEGORY_TREE="$(jq '.roots[0].children += [{number:910,title:"开发流水线与运行稳定",state:"OPEN",milestone:"开发流水线与运行稳定",labels:["roadmap-theme"],children:[{number:912,title:"自动派发与规则校验持续可靠",state:"OPEN",labels:["roadmap-epic"],children:[]}]}]' <<< "$TREE")"
 CATEGORY_TREE="$(jq '.roots[0].children[1].children[0].children += [{number:913,title:"Product source issue",state:"OPEN",labels:["needs-triage"],children:[]}]' <<< "$CATEGORY_TREE")"
