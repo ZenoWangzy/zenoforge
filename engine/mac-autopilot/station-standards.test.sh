@@ -10,7 +10,7 @@ python3 -I - "$here" "$d" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 from datetime import datetime, timezone
-import node_health, station_health, station_standards as ss
+import os, node_health, station_health, station_standards as ss
 
 DIMS = ("time", "tokens", "throughput")
 
@@ -76,5 +76,20 @@ assert fallback["merge.wait_p50_min"]["value_1h"] == 60, fallback
 assert fallback["merge.wait_p50_min"]["short_window"] == "6h", fallback
 empty = ss.collect_windows(now, [], [], sys.argv[2], sys.argv[2])
 assert all(row["value_1h"] is None and row["short_window"] is None for row in empty.values()), empty
+# A forced breach (merge p50 of 70 min, bound 41) writes one STATION-OVER line naming its item ids; a value within bounds writes no merge line.
+def alerts(name):
+    try:
+        return open(os.path.join(sys.argv[2], name, "alerts", "node-health.md")).read()
+    except OSError:
+        return ""
+breach = [{"id": "issue-101", "history": [{"stage": "ci-ready", "at": at(200)}, {"stage": "merged", "at": at(120)}]},
+          {"id": "issue-102", "history": [{"stage": "ci-ready", "at": at(100)}, {"stage": "merged", "at": at(30)}]}]
+ss.collect(now, breach, [], os.path.join(sys.argv[2], "breach"), sys.argv[2])
+line = [l for l in alerts("breach").splitlines() if "metric=merge.wait_p50_min " in l]
+assert len(line) == 1 and "STATION-OVER station=merge" in line[0] and "value=70 bound=41" in line[0] \
+    and "items=issue-101,issue-102" in line[0], alerts("breach")
+ss.collect(now, [{"id": "issue-103", "history": [{"stage": "ci-ready", "at": at(40)}, {"stage": "merged", "at": at(30)}]}],
+           [], os.path.join(sys.argv[2], "within"), sys.argv[2])
+assert "metric=merge.wait_p50_min " not in alerts("within"), alerts("within")
 print("station-standards ok: %d stations, %d metrics" % (len(ss.MATRIX), len(ss.CRITERIA)))
 PY

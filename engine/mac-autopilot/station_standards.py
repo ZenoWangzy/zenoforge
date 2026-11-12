@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Station standards: time, tokens and throughput for every station (NODE-HEALTH.md "Station standards").
 
-Pure over data the caller already read (units, worker runs, station out events); no gh call. node_health.main()
-calls collect() each tick. Every bound in CRITERIA is measured from live data: its window and sample count are in
+Reads only data the caller already read (units, worker runs, station out events); no gh call. node_health.main()
+calls collect() each tick, and collect() appends a STATION-OVER line for each value past its unhealthy bound. Every bound in CRITERIA is measured from live data: its window and sample count are in
 NODE-HEALTH.md. A dimension a station cannot be measured on is listed in EXCEPTIONS with its reason, never faked.
 """
 import glob, os, re
@@ -132,23 +132,23 @@ def _history(unit):
 
 
 def gap_samples(units, since, now, events):
-    """Minutes from the previous ledger event to each event named in `events` inside the window."""
+    """(minutes, unit id) from the previous ledger event to each event named in `events` inside the window."""
     out = []
     for unit in units:
         rows = _history(unit)
         for i, (t, h) in enumerate(rows):
             if i and since <= t <= now and h["stage"] in events:
-                out.append((t - rows[i - 1][0]).total_seconds() / 60)
+                out.append(((t - rows[i - 1][0]).total_seconds() / 60, str(unit.get("id") or unit.get("issue"))))
     return out
 
 
 def run_tokens(runs, node):
-    """Measured worker tokens per run of one node; `runs` is already windowed by the caller."""
-    return [r["tokens"] for r in runs if r["node"] == node and r["tokens"] is not None]
+    """(tokens, unit id) per measured run of one node; `runs` is already windowed by the caller."""
+    return [(r["tokens"], str(r.get("unit"))) for r in runs if r["node"] == node and r["tokens"] is not None]
 
 
 def triage_tokens_per_issue(agent_home, since, now):
-    """Triage batch logs: tokens_used / issue_sample_size per batch, by the log's mtime (as station outs read it)."""
+    """(tokens per issue, batch log name) per triage batch, by the log's mtime (as station outs read it)."""
     out = []
     for path in glob.glob(os.path.join(agent_home, "logs", "triage-triage-batch-*.log")):
         try:
@@ -160,7 +160,7 @@ def triage_tokens_per_issue(agent_home, since, now):
             continue
         found = dict(TRIAGE_LOG_RE.findall(text))
         if found.get("tokens_used") and int(found.get("issue_sample_size", 0)) > 0:
-            out.append(int(found["tokens_used"]) / int(found["issue_sample_size"]))
+            out.append((int(found["tokens_used"]) / int(found["issue_sample_size"]), os.path.basename(path)))
     return out
 
 
@@ -181,7 +181,7 @@ def out_count(events, now, hours=WINDOW_HOURS):
 def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, outs):
     since = until - timedelta(hours=hours)
     scale = 24 / hours
-    values, samples = {}, {}
+    values, samples, items = {}, {}, {}
     for station in STATIONS:
         events = [(t, c) for t, c in outs[station] if since <= t <= until]
         key = f"{station}.out_per_day"
@@ -189,7 +189,7 @@ def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, ou
     for key, event_names in (("merge.wait_p50_min", GAP_EVENTS["merge"]),
                              ("ci.admission_p50_min", GAP_EVENTS["ci"])):
         rows = gap_samples(units, since, until, event_names)
-        values[key], samples[key] = _pct(rows, .5), len(rows)
+        values[key], samples[key], items[key] = _pct([m for m, _ in rows], .5), len(rows), [u for _, u in rows]
     if cost_rows:
         from node_health import worker_runs
         window_runs = worker_runs(cost_rows, since, until)
@@ -198,24 +198,55 @@ def _window_values(until, hours, units, runs, runtime, agent_home, cost_rows, ou
     for station, node in RUN_NODE.items():
         rows = run_tokens(window_runs, node)
         key = f"{station}.tokens_p50"
-        values[key], samples[key] = _pct(rows, .5), len(rows)
+        values[key], samples[key], items[key] = _pct([v for v, _ in rows], .5), len(rows), [u for _, u in rows]
     rows = triage_tokens_per_issue(agent_home, since, until)
-    values["triage.tokens_per_issue_p50"], samples["triage.tokens_per_issue_p50"] = _pct(rows, .5), len(rows)
+    values["triage.tokens_per_issue_p50"], samples["triage.tokens_per_issue_p50"] = _pct([v for v, _ in rows], .5), len(rows)
+    items["triage.tokens_per_issue_p50"] = [name for _, name in rows]
     approvals = [t for t in event_times(units, ("review-approve",)) if since <= t <= until]
     values["approve.out_per_day"], samples["approve.out_per_day"] = len(approvals) * scale, len(approvals)
     rereviews = [r for r in cost_rows if r["phase"] == "rereview" and since <= r["start"] <= until]
     values["rereview.runs_per_day"], samples["rereview.runs_per_day"] = len(rereviews) * scale, len(rereviews)
-    for key, rows in (("rereview.wall_p50", [r["minutes"] for r in window_runs if r["node"] == "rereview" and r["output"]]),
+    rereview = [r for r in window_runs if r["node"] == "rereview"]
+    for key, rows in (("rereview.wall_p50", [(r["minutes"], str(r.get("unit"))) for r in rereview if r["output"]]),
                       ("rereview.tokens_p50", run_tokens(window_runs, "rereview"))):
-        values[key], samples[key] = _pct(rows, .5), len(rows)
-    return values, samples
+        values[key], samples[key], items[key] = _pct([v for v, _ in rows], .5), len(rows), [u for _, u in rows]
+    return values, samples, items
+
+
+def over_bound(runtime, now, values, items):
+    """One STATION-OVER line per metric past its unhealthy bound, once per metric per hour, naming its items.
+
+    shortcut: throughput lines name no items (station_health.outs keeps counts, not ids), add ids when outs keeps them.
+    """
+    path = os.path.join(runtime, "alerts", "node-health.md")
+    try:
+        seen = [l for l in open(path, errors="ignore") if l.startswith(f"[{now:%Y-%m-%dT%H}")]
+    except OSError:
+        seen = []
+    lines = []
+    for mid, value in values.items():
+        if mid not in CRITERIA or value is None:  # per-station out counts without a bound (e.g. merge.out_per_day) have none
+            continue
+        node, _, _, bound, higher = CRITERIA[mid]
+        if not ((value <= bound) if higher else (value >= bound)):
+            continue
+        if any(f"STATION-OVER metric={mid} " in l for l in seen):
+            continue
+        lines.append(f"[{now:%Y-%m-%dT%H:%M:%SZ}] STATION-OVER station={node} metric={mid} value={value:g} bound={bound} "
+                     f"items={','.join(items.get(mid, [])) or '-'} root-cause=required (see NODE-HEALTH.md Station standards)\n")
+    if lines:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as out:
+            out.writelines(lines)
 
 
 def collect(now, units, runs, runtime, agent_home, cost_rows=()):
-    """The station metric values for one tick: time and tokens over 24 h, throughput per 24 h."""
+    """The station metric values for one tick: time and tokens over 24 h, throughput per 24 h. Appends STATION-OVER lines."""
     import station_health  # lazy: station_health imports node_health, which imports this module
-    return _window_values(now, WINDOW_HOURS, units, runs, runtime, agent_home, cost_rows,
-                          station_health.outs(units, runtime, agent_home))[0]
+    values, _, items = _window_values(now, WINDOW_HOURS, units, runs, runtime, agent_home, cost_rows,
+                                      station_health.outs(units, runtime, agent_home))
+    over_bound(runtime, now, values, items)
+    return values
 
 
 def collect_windows(now, units, runs, runtime, agent_home, cost_rows=()):
@@ -244,9 +275,9 @@ def samples(now, hours, units, runs, agent_home, runtime):
     import station_health
     since = now - timedelta(hours=hours)
     outs = station_health.outs(units, runtime, agent_home)
-    raw = {"merge.wait_p50_min": gap_samples(units, since, now, GAP_EVENTS["merge"]),
-           "ci.admission_p50_min": gap_samples(units, since, now, GAP_EVENTS["ci"]),
-           "triage.tokens_per_issue_p50": triage_tokens_per_issue(agent_home, since, now)}
+    raw = {"merge.wait_p50_min": [m for m, _ in gap_samples(units, since, now, GAP_EVENTS["merge"])],
+           "ci.admission_p50_min": [m for m, _ in gap_samples(units, since, now, GAP_EVENTS["ci"])],
+           "triage.tokens_per_issue_p50": [v for v, _ in triage_tokens_per_issue(agent_home, since, now)]}
     for station, node in RUN_NODE.items():
-        raw[f"{station}.tokens_p50"] = run_tokens(runs, node)
+        raw[f"{station}.tokens_p50"] = [v for v, _ in run_tokens(runs, node)]
     return raw, outs
