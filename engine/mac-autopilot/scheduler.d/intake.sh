@@ -405,7 +405,6 @@ register_new_issues() {
     fi
     [[ -n "$handoff_all" ]] || handoff_all='{}'
     intake_mark state_read
-    if (( ! existing_only )); then intake_ops_flush; fi # the recut reopen writes wait marks too
     (( existing_only )) || ! intake_reopen_refused_recut "$n" "$state_file" || { intake_skip recut_reopen; continue; }
     # A row whose units are all terminal and whose episode (if any) is consumed has nothing to hand off:
     # skip it from the ledger before the handoff path reads PRs (gh pr view per merged PR).
@@ -793,8 +792,5 @@ register_new_issues() {
   if [[ "$refill_mode" != true && "$existing_only" == 0 && -f "$INTAKE_FULL_SCAN_FLAG" ]]; then
     date +%s > "$INTAKE_FULL_SCAN_FLAG" && mv -f -- "$INTAKE_FULL_SCAN_FLAG" "$A/intake-full-tick-at"
   fi
-  if (( ! existing_only && added == 0 && ! only_pred )) && [[ ! -f "$A/.idle-alert" || -n "$(find "$A/.idle-alert" -mmin +60 2>/dev/null)" ]]; then
-    touch "$A/.idle-alert"
-    echo "[$STAMP] IDLE-CAPACITY live=$live/$MAX pending=$pending: intake found no eligible issue (labels or skip labels too narrow?)" >> "$A/alerts/slo.md"
-  fi
+  if (( ! existing_only && added == 0 && ! only_pred )); then intake_idle_alert "$live" "$pending"; fi
 }
