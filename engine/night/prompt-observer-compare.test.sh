@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+export ZF_REPO=test/repo # test-env.sh unsets ZF_*; the revert issue needs a repo
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 script="$script_dir/prompt-observer-compare.sh"
@@ -56,6 +57,17 @@ grep -Fq 'before: n=5 mean=0.8' "$upsert_calls"
 grep -Fq 'after: n=5 mean=0.4' "$upsert_calls"
 grep -Fq "$landing" "$upsert_calls"
 [[ "$(grep -c -- '--class' "$upsert_calls")" == 1 ]]
+grep -Fq -- '--repo test/repo' "$upsert_calls"
+
+# regression without ZF_REPO: refused before the upsert call, so no revert issue is filed
+rm -f "$upsert_calls" "$tmp/report.jsonl"
+set +e
+env -u ZF_REPO PROMPT_OBSERVER_REPORT="$tmp/report.jsonl" PROMPT_OBSERVER_UPSERT="$tmp/upsert" \
+  ZF_REPO_DIR="$repo" bash "$script" --prompt triage --landing "$landing" --samples "$regress" >/dev/null 2>&1
+status=$?
+set -e
+[[ "$status" != 0 ]]
+[[ ! -e "$upsert_calls" ]]
 
 # insufficient data: too few known samples after landing, never a regression
 thin="$tmp/thin.jsonl"
@@ -81,6 +93,7 @@ printf '{"unit":"x","ts":1000,"score":0}\n' >> "$exact"
 rm -f "$tmp/report.jsonl"
 run_compare "$exact" >/dev/null
 [[ "$(jq -r .before_n "$tmp/report.jsonl")" == 5 ]]
+[[ "$(jq -r .after_n "$tmp/report.jsonl")" == 5 ]]
 
 # unknown landing commit is refused before any record or issue
 set +e

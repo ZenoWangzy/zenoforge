@@ -91,5 +91,5 @@ if [[ "$verdict" == regression ]]; then
   "${PROMPT_OBSERVER_UPSERT:-$script_dir/../pipeline-issue-upsert.sh}" \
     --class "revert-$prompt-${landing_sha:0:12}" \
     --title "Revert prompt $prompt change at ${landing_sha:0:12}" \
-    --body-file "$body" --lane pipeline-system
+    --body-file "$body" --lane pipeline-system --repo "${ZF_REPO:?ZF_REPO is not set}"
 fi
