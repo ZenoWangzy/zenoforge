@@ -138,3 +138,102 @@ printf 'ok - reroute keeps a dropped body blocker off the unit until reblock nam
   [ "$(jq -r '.units[]|select(.id=="issue-15")|.stage+"|"+(.blocked_on|tostring)' "$UNITS")" = "blocked-external|9999" ] || { echo "FAIL: undropped dependency did not park" >&2; exit 1; }
 )
 printf 'ok - a worker report on a dropped dependency does not park; the reroute task line says so; another dependency still parks\n'
+# --supersede-handoff clears only the unit snapshot; the ruling and current PR head stay auditable.
+(
+  fixture_engine="$test_env_root/handoff-supersede-engine"
+  fixture_repo="$test_env_root/handoff-supersede-repo"
+  fixture_runtime="$test_env_root/handoff-supersede-autopi"
+  fixture_sup="$test_env_root/handoff-supersede-supervisor"
+  fixture_bin="$test_env_root/handoff-supersede-bin"
+  remote_calls="$test_env_root/handoff-supersede-remote-calls.log"
+  remote_refs="$test_env_root/handoff-supersede-remote-refs.txt"
+  remote_head=1111111111111111111111111111111111111111
+  rescue_sha=2222222222222222222222222222222222222222
+  rescue_ref=refs/heads/rescued/agent-issue-7-fixture
+  mkdir -p "$fixture_engine/mac-autopilot" "$fixture_repo" "$fixture_runtime/alerts" "$fixture_sup" "$fixture_bin" "$AGENT_HOME/state"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$fixture_runtime/config.json"
+  printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/7.json"
+  jq -cn --arg head "$remote_head" --arg sha "$rescue_sha" --arg ref "$rescue_ref" '{units:[{
+    id:"issue-7",issue:7,pr:12,branch:"agent/issue-7",stage:"supervisor-review",reviewed_sha:$head,reviewed_pr_head:$head,history:[],
+    handoff_worktree:"/preserved/owner",handoff_worktree_sha:$sha,handoff_worktree_dirty:true,handoff_worktree_applied:false,
+    handoff_integration_sha:$sha,handoff_original_pr_head:"3333333333333333333333333333333333333333",handoff_delivery_verified_sha:null,
+    handoff_start_ref:$ref,handoff_start_sha:$sha,handoff_start_applied:true
+  }]}' > "$fixture_runtime/units.json"
+  printf '%s %s\n' "$rescue_ref" "$rescue_sha" > "$remote_refs"
+  cat > "$fixture_bin/git" <<'EOT'
+#!/usr/bin/env bash
+printf 'git %s\n' "$*" >> "$REMOTE_CALLS"
+case " $* " in
+  *' push '*|*' update-ref -d '*|*' branch -D '*)
+    : > "$REMOTE_REFS"
+    exit 91
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+EOT
+  cat > "$fixture_bin/gh" <<'EOT'
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >> "$REMOTE_CALLS"
+case " $* " in
+  *' push '*|*' delete '*|*' DELETE '*)
+    : > "$REMOTE_REFS"
+    exit 91
+    ;;
+esac
+case "$*" in
+  'api repos/test/repo/issues/comments/9')
+    printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/7","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/7#issuecomment-9","body":"supersede the old snapshot"}'
+    ;;
+  'pr view 12 --json headRefOid --jq .headRefOid') printf '%s\n' "$SUPERSEDE_HEAD" ;;
+  *) exit 64 ;;
+esac
+EOT
+  cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$TEST_ENGINE/mac-autopilot/scheduler.sh"
+rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"
+unit_field "${2:-}" .stage > "$SUPERSEDE_STAGE_AFTER_RULE"
+resume_handoff_integration "${2:-}" "$RESUME_WORKTREE"
+: > "$RESUME_RESULT"
+post_approved_status() { :; }
+supervisor_apply_action "${2:-}" approve "$SUPERSEDE_REPORT"
+EOT
+  chmod +x "$fixture_bin/git" "$fixture_bin/gh" "$fixture_engine/mac-autopilot/scheduler.sh"
+  export REMOTE_CALLS="$remote_calls" REMOTE_REFS="$remote_refs" REAL_GIT="$(command -v git)" SUPERSEDE_HEAD="$remote_head"
+  export TEST_ENGINE="$SCRIPT_DIR" SUPERSEDE_STAGE_AFTER_RULE="$test_env_root/handoff-supersede-stage-after-rule"
+  export RESUME_WORKTREE="$test_env_root/handoff-supersede-worktree" RESUME_RESULT="$test_env_root/handoff-supersede-resume-result"
+  export SUPERSEDE_REPORT="$test_env_root/handoff-supersede-report.md"
+  printf 'REASON: approve the reviewed current PR head\nREJECTED:\n- none\n' > "$SUPERSEDE_REPORT"
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$fixture_repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$fixture_sup" MAC_AUTOPILOT_RUNTIME_DIR="$fixture_runtime" TICK_PRS='[]'
+  export PATH="$fixture_bin:$PATH"
+  _AGENT_LIB_DIR="$fixture_engine"
+  rc=0
+  hold_cli_main --rule issue-7 --supersede-handoff > "$test_env_root/handoff-supersede-usage.out" 2>&1 || rc=$?
+  [ "$rc" = 64 ] && grep -Fq -- '--comment <id>' "$test_env_root/handoff-supersede-usage.out" || { echo 'FAIL: supersede-handoff without --comment did not refuse with usage' >&2; exit 1; }
+  rc=0
+  hold_cli_main --rule issue-7 --supersede-handoff --comment 9 > "$test_env_root/handoff-supersede.out" 2>&1 || rc=$?
+  [ "$rc" = 0 ] || { echo 'FAIL: supersede-handoff ruling was rejected' >&2; cat "$test_env_root/handoff-supersede.out" >&2; exit 1; }
+  jq -e '([.units[0] | keys[] | select(startswith("handoff_"))] | length) == 0 and .units[0].stage == "ready-to-merge"' "$fixture_runtime/units.json" >/dev/null || {
+    echo 'FAIL: supersede-handoff retained a handoff field or approve still refused' >&2
+    exit 1
+  }
+  [ "$(cat "$SUPERSEDE_STAGE_AFTER_RULE")" = supervisor-review ] || { echo 'FAIL: supersede-handoff changed the stage before a separate requeue or approve' >&2; exit 1; }
+  [ -f "$RESUME_RESULT" ] || { echo 'FAIL: next dispatch could not resume after the snapshot was cleared' >&2; exit 1; }
+  ! grep -E 'git .* (merge|push|update-ref -d|branch -D)( |$)|gh .* (push|delete|DELETE)( |$)' "$remote_calls" >/dev/null || {
+    echo 'FAIL: supersede-handoff tried to merge, push, or delete a remote ref' >&2
+    cat "$remote_calls" >&2
+    exit 1
+  }
+  grep -Fxq -- "$rescue_ref $rescue_sha" "$remote_refs" || { echo 'FAIL: supersede-handoff changed the rescued remote ref' >&2; exit 1; }
+  jq -e --arg head "$remote_head" --arg id 9 '
+    ([.units[0].history[] | select(.stage == "handoff-superseded")] | last) as $event
+    | $event.stage == "handoff-superseded"
+      and ($event.result | contains($id) and contains($head))
+      and $event.ruling_comment_id == $id
+      and $event.pr_head == $head
+      and $event.superseded_by == $head
+  ' "$fixture_runtime/units.json" >/dev/null || { echo 'FAIL: supersede-handoff history omitted the ruling id or superseding PR head' >&2; exit 1; }
+  jq -e '.units[0].history[-1].stage == "supervisor-approve"' "$fixture_runtime/units.json" >/dev/null || { echo 'FAIL: supervisor approve still refused after supersede-handoff' >&2; exit 1; }
+)
+printf 'ok - supersede-handoff clears the snapshot, records the ruling and current head, and leaves the rescued ref intact\n'

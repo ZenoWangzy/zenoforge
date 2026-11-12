@@ -789,7 +789,7 @@ hold_answer() (
 hold_rule() {
   local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" unit n state="" current_state comment sched
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
-  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
+  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
   unit="$target"; n="${unit#*-}"
   if [[ "$unit" == issue-* ]]; then
     state="$(state_read "$n")" || return 1
@@ -829,7 +829,7 @@ hold_cli_main() {
     (($# == 2)) || { echo "usage: hold.sh --restore <issue>" >&2; return 64; }
     hold_restore "$2"
   elif [ "${1:-}" = --rule ]; then
-    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock --comment <id> [--blocked-on <N>]" >&2; echo 'A report-only --requeue on an unchanged PR head needs a comment body containing "report only" or "report-only"; report_only_pr_requeue_harvest matches that text.' >&2; return 64; }
+    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock|--supersede-handoff --comment <id> [--blocked-on <N>]" >&2; echo 'A report-only --requeue on an unchanged PR head needs a comment body containing "report only" or "report-only"; report_only_pr_requeue_harvest matches that text.' >&2; return 64; }
     hold_rule "$2" "${3#--}" "$5" "${7:-}"
   elif [ "${1:-}" = --answer ]; then
     (($# == 4)) && [ "$3" = --comment ] || { echo "usage: hold.sh --answer <issue> --comment <id>" >&2; return 64; }

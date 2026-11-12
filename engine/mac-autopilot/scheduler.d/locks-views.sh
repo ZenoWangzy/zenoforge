@@ -113,12 +113,27 @@ state_schema_ok() {
     and all(.workers[]; type=="object" and (.pid|type)=="number" and .pid>0 and (.unit|type)=="string")' "$WORKERS" >/dev/null
 }
 
-rule_entry() { # unit-id requeue|approve|arbiter|recut ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
-  [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock <ref> [guidance]" >&2; return 64; }
+rule_supersede_handoff() { # unit ruling-comment-url：清掉已被当前 PR head 取代的快照，不碰远端救援引用
+  local id="$1" ruling="$2" comment_id pr head
+  [[ "$ruling" =~ issuecomment-([1-9][0-9]*)$ ]] || { echo "rule: supersede-handoff requires an issuecomment URL" >&2; return 64; }
+  comment_id="${BASH_REMATCH[1]}"
+  pr="$(unit_field "$id" '.pr // empty')"
+  if [[ ! "$pr" =~ ^[1-9][0-9]*$ ]]; then
+    [[ "$id" =~ ^pr-([1-9][0-9]*)$ ]] || { echo "rule: $id has no PR head to supersede the handoff snapshot" >&2; return 1; }
+    pr="${BASH_REMATCH[1]}"
+  fi
+  head="$(tick_pr_head "$pr")" || { echo "rule: could not read the current head of PR #$pr" >&2; return 1; }
+  [[ "$head" =~ $SHA_RE ]] || { echo "rule: PR #$pr has no valid current head" >&2; return 1; }
+  set_unit "$id" "$(hist handoff-superseded "ruling comment $comment_id superseded the handoff snapshot with PR #$pr head $head") | .history[-1].ruling_comment_id=$(js "$comment_id") | .history[-1].pr_head=$(js "$head") | .history[-1].superseded_by=$(js "$head") | del(.handoff_worktree, .handoff_worktree_sha, .handoff_worktree_dirty, .handoff_worktree_applied, .handoff_integration_sha, .handoff_original_pr_head, .handoff_delivery_verified_sha, .handoff_start_ref, .handoff_start_sha, .handoff_start_applied)"
+}
+
+rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
+  [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
   local issue stage
   case "$2" in
+    supersede-handoff) rule_supersede_handoff "$1" "$3" ;;
     reblock) issue="${5:-$(unit_field "$1" '.blocked_on // empty')}" # back to dependency wait; $5 names the blocker when the unit has none
       [[ "$issue" =~ ^[0-9]+$ ]] || { echo "rule: $1 has no blocker; pass --blocked-on N" >&2; return 1; }
       set_unit "$1" "$(hist supervisor-reblock "supervisor ruling: $3") | .stage=\"blocked-external\" | .blocked_on=$issue | del(.dropped_deps[]? | select(. == $issue)) | .note=$(js "waiting for predecessor #$issue")" ;;
