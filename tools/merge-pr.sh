@@ -37,8 +37,7 @@ merge_pr_receipt_file() {
   printf '%s/zf-test-receipts/%s\n' "$git_dir" "$2"
 }
 
-merge_pr_refuse() { # pr reason [fix]
-  local fix="${3:-}"
+merge_pr_refuse() { local fix="${3:-}" # pr reason [fix]
   case "$2" in 'could not'*|cannot*) : "${fix:=retry; if it repeats check gh auth status, the network and the checkout path}" ;; esac
   printf 'refusing to merge PR #%s: %s%s\n' "$1" "$2" "${fix:+; fix: $fix}" >&2
   return 1
