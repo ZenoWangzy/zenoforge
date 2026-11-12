@@ -7,6 +7,7 @@ on:
     # Gate files only. Must equal the gate regex in tools/merge-pr.sh (merge_pr_gate_ci_ok); engine/pr-ci-gate-paths.test.sh checks it.
     paths:
       - tools/merge-pr.sh
+      - tools/merge-pr-bootstrap.sh
       - tools/pin-vecta.sh
       - tools/auto-pin.sh
       - engine/eval/**
