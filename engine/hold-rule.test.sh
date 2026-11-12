@@ -93,6 +93,37 @@ printf 'ok - rule_entry reblock returns units to dependency wait\n'
   [ "$(jq -r '.units[]|select(.id=="issue-12")|.stage+"|"+(.history|length|tostring)' "$UNITS")" = "implement-pending|0" ] || { echo "FAIL: refused requeue changed the unit" >&2; exit 1; }
 )
 printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-review and rejects other active stages\n'
+# A closed unit whose open issue sits on a scheduler-stop-loss hold: the ruling requeues it and releases the hold. Every other
+# closed unit refuses, and the hint names --recut (the kind that takes a closed unit), never --reroute.
+(
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup/autopi"
+  mkdir -p "$test_env_root/repo" "$test_env_root/sup/autopi/alerts"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup/autopi/config.json"
+  echo '{"workers":[]}' > "$test_env_root/sup/autopi/workers.json"
+  echo '{"units":[{"id":"issue-20","issue":20,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-21","issue":21,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-22","issue":22,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-23","issue":23,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-24","issue":24,"stage":"closed","task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+  scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
+  gh() { printf '%s\n' "$FAKE_ISSUE_STATE"; }
+  scheduler_issue_transition() { jq '.state = "ready-for-agent" | .hold = null' "$AGENT_HOME/state/$1.json" > "$AGENT_HOME/state/$1.json.tmp" && mv "$AGENT_HOME/state/$1.json.tmp" "$AGENT_HOME/state/$1.json"; }
+  stop_loss_state() { printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}' > "$AGENT_HOME/state/$1.json"; }
+  stop_loss_state 20; stop_loss_state 21; stop_loss_state 23
+  printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/22.json"
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/24.json"
+  FAKE_ISSUE_STATE=OPEN; rule_entry issue-20 requeue u "" ""
+  [ "$(jq -r '.units[]|select(.id=="issue-20")|.stage' "$UNITS")" = implement-pending ] && jq -e '.state == "ready-for-agent" and .hold == null' "$AGENT_HOME/state/20.json" >/dev/null || { echo "FAIL: closed stop-loss unit did not requeue with its hold released" >&2; exit 1; }
+  FAKE_ISSUE_STATE=CLOSED; rc=0; rule_entry issue-21 requeue u "" "" > "$test_env_root/closed-21.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-21.out" && ! grep -q -- '--reroute' "$test_env_root/closed-21.out" || { echo "FAIL: closed issue requeue hint" >&2; cat "$test_env_root/closed-21.out" >&2; exit 1; }
+  [ "$(jq -r '.units[]|select(.id=="issue-21")|.stage' "$UNITS")" = closed ] || { echo "FAIL: refused closed issue requeue changed the unit" >&2; exit 1; }
+  FAKE_ISSUE_STATE=OPEN; rc=0; rule_entry issue-22 requeue u "" "" > "$test_env_root/closed-22.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-22.out" && ! grep -q -- '--reroute' "$test_env_root/closed-22.out" || { echo "FAIL: closed unit without a hold requeue hint" >&2; cat "$test_env_root/closed-22.out" >&2; exit 1; }
+  rc=0; rule_entry issue-24 requeue u "" "" > "$test_env_root/closed-24.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-24.out" || { echo "FAIL: closed unit with a non-stop-loss hold was not refused" >&2; exit 1; }
+  FAKE_ISSUE_STATE=CLOSED; rc=0; rule_entry issue-21 reroute u "dead" "" > "$test_env_root/closed-reroute.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-reroute.out" && ! grep -q -- '--reroute' "$test_env_root/closed-reroute.out" || { echo "FAIL: reroute hint on a closed unit names --reroute" >&2; cat "$test_env_root/closed-reroute.out" >&2; exit 1; }
+  FAKE_ISSUE_STATE=OPEN; rc=0; rule_entry issue-23 reroute u "dead" ""> "$test_env_root/closed-reroute-hold.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/closed-reroute-hold.out" && ! grep -q -- '--reroute' "$test_env_root/closed-reroute-hold.out" || { echo "FAIL: reroute on a closed stop-loss unit must name --requeue" >&2; cat "$test_env_root/closed-reroute-hold.out" >&2; exit 1; }
+)
+printf 'ok - rule_entry requeues a closed unit whose issue is on a stop-loss hold; other closed units refuse with a working hint\n'
 # hold.sh --rule accepts --reroute: it gets past the usage check (64) and stops at the owner-comment check.
 rc=0; hold_cli_main --rule issue-5 --reroute --comment 7 2>/dev/null || rc=$?
 [ "$rc" != 64 ] || { echo "FAIL: hold.sh rejects --reroute" >&2; exit 1; }
