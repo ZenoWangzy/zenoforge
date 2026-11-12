@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -256,4 +256,63 @@ test("intake priority asks four bounded questions and marks low confidence with 
     stale: { noul: 0.05 },
   });
   assert.strictEqual(JSON.parse(sure.answer).unsure, null);
+});
+
+async function withTypesafeEnv(t, { key, envFile }) {
+  const saved = { TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY, TYPESAFE_ENV_FILE: process.env.TYPESAFE_ENV_FILE };
+  t.after(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  if (key === undefined) delete process.env.TYPESAFE_API_KEY;
+  else process.env.TYPESAFE_API_KEY = key;
+  if (envFile === undefined) delete process.env.TYPESAFE_ENV_FILE;
+  else process.env.TYPESAFE_ENV_FILE = envFile;
+}
+
+test("judge reads the key from TYPESAFE_ENV_FILE when the env var is absent", async (t) => {
+  const { dir, log } = await fixture(t);
+  const envFile = path.join(dir, "typesafe.env");
+  await writeFile(envFile, "# comment\nTYPESAFE_API_KEY=\"file-secret-value\"\n");
+  await withTypesafeEnv(t, { key: undefined, envFile });
+  const mock = fakeClient({ classification: { choice: "infra", confidence: 0.95 } });
+  const result = await judge({
+    questionSet: "ci-failure",
+    state: { currentDecision: "code", event_id: "ci:50:1" },
+    client: mock.client,
+    file: log,
+  });
+  assert.equal(result.status, "answered");
+  assert.equal(result.candidate, "infra");
+});
+
+test("the TYPESAFE_API_KEY env var wins over TYPESAFE_ENV_FILE", async (t) => {
+  const { dir, log } = await fixture(t);
+  const envFile = path.join(dir, "typesafe.env");
+  await writeFile(envFile, "TYPESAFE_API_KEY=file-key\n");
+  await withTypesafeEnv(t, { key: "env-key", envFile });
+  const mock = fakeClient({ classification: { choice: "infra", confidence: 0.95 } });
+  const result = await judge({
+    questionSet: "ci-failure",
+    state: { currentDecision: "code", event_id: "ci:51:1" },
+    client: mock.client,
+    file: log,
+  });
+  assert.equal(result.status, "answered");
+  assert.equal(JSON.stringify(result).includes("file-key"), false);
+});
+
+test("a missing TYPESAFE_ENV_FILE falls back with missing-api-key", async (t) => {
+  const { dir, log } = await fixture(t);
+  await withTypesafeEnv(t, { key: undefined, envFile: path.join(dir, "absent.env") });
+  const result = await judge({
+    questionSet: "ci-failure",
+    state: { currentDecision: "code", event_id: "ci:52:1" },
+    file: log,
+  });
+  assert.equal(result.status, "fallback");
+  assert.equal(result.reason, "missing-api-key");
+  assert.equal(result.decision, "code");
 });
