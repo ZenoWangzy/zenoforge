@@ -106,4 +106,21 @@ check "prefixed identity wins over the public spelling" \
   "$(setting ZF_AGENT_GIT_USER_NAME DEPLOY_AGENT_GIT_USER_NAME=deployment ZF_AGENT_GIT_USER_NAME=public)" "deployment"
 check "an empty prefixed identity stays empty" \
   "$(setting ZF_AGENT_GIT_USER_NAME DEPLOY_AGENT_GIT_USER_NAME= ZF_AGENT_GIT_USER_NAME=public)" ""
+# Host identity: the short hostname, sanitized and persisted in AGENT_HOME/host-id; a caller's value wins.
+mkdir -p "$test_env_root/hostshim"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$HOST_SHIM_NAME"\n' > "$test_env_root/hostshim/hostname"
+chmod +x "$test_env_root/hostshim/hostname"
+host_id() { # <agent home> <hostname -s output> -> ZF_HOST_ID
+  env "${unset_all[@]}" -u ZF_HOST_ID AGENT_HOME="$1" HOST_SHIM_NAME="$2" PATH="$test_env_root/hostshim:$PATH" \
+    bash -c 'source "$1/config.sh"; printf "%s" "$ZF_HOST_ID"' _ "$target/engine"
+}
+host_home="$test_env_root/host-home"; mkdir -p "$host_home"
+check "host id is the sanitized short hostname" "$(host_id "$host_home" 'Weird_Host.Name')" "weird-host-name"
+check "host id persists when the hostname changes" "$(host_id "$host_home" 'other-box')" "weird-host-name"
+check "persisted host id is written to host-id" "$(cat "$host_home/host-id")" "weird-host-name"
+check "a hostname with no usable characters falls back to host" "$(host_id "$test_env_root/host-home-2" '__')" "host"
+check "an exported host id wins over the derived one" \
+  "$(setting ZF_HOST_ID ZF_HOST_ID=caller-set)" "caller-set"
+check "coordination switch defaults to off" "$(setting ZF_COORD)" "off"
+check "an exported coordination switch wins" "$(setting ZF_COORD ZF_COORD=on)" "on"
 echo "config.test.sh: PASS"
