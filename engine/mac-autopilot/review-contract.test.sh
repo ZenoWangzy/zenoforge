@@ -69,6 +69,37 @@ daily_html="$(jq -r '.html' <<<"$daily_html")"
 [[ "$daily_html" == *'决策日志复核（1 条）'* && "$daily_html" == *'Tried cache-first; verification covered only the mock.'* ]] \
   || fail 'the marked entry did not reach the daily report that reads the supervisor JSONL file'
 
+recur_finding='{"id":"F4","severity":"P1","file":"src/d.ts","line":3,"rule":"Defect","status":"open","summary":"[contract: out] Null guard missing on the write path."}'
+[[ "$(review_finding_class_key "$recur_finding")" == defect-null-guard-missing-on-the-write ]] || fail 'class key was not derived from the rule and summary words'
+recur_findings="[$recur_finding,{\"id\":\"F5\",\"severity\":\"P2\",\"rule\":\"Defect\",\"status\":\"open\",\"summary\":\"Minor naming nit.\"}]"
+recur_state="$tmp/recur/state.json"
+recur_upsert="$tmp/recur/upsert.sh"
+recur_log="$tmp/recur/upsert.log"
+mkdir -p "$tmp/recur"
+cat >"$recur_upsert" <<EOF
+#!/usr/bin/env bash
+[[ ! -f "$tmp/recur/fail" ]] || exit 1
+printf '%s\n' "\$*" >>"$recur_log"
+EOF
+chmod +x "$recur_upsert"
+review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-a || fail 'first sighting failed'
+[[ ! -s "$recur_log" ]] || fail 'a first sighting opened a rule ticket'
+[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$recur_state")" == 1 ]] || fail 'first sighting was not counted'
+review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-b || fail 'second sighting failed'
+[[ "$(wc -l <"$recur_log")" == 1 ]] || fail 'second sighting did not open exactly one rule ticket'
+grep -q -- '--class review-defect-null-guard-missing-on-the-write' "$recur_log" || fail 'rule ticket class was not the repeated class'
+review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-c || fail 'third sighting failed'
+[[ "$(wc -l <"$recur_log")" == 1 ]] || fail 'a third sighting opened another rule ticket'
+[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$recur_state")" == 3 ]] || fail 'third sighting was not counted'
+[[ "$(jq -r 'keys|length' "$recur_state")" == 1 ]] || fail 'a non-blocking finding was counted'
+touch "$tmp/recur/fail"
+review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-d || fail 'first sighting of the fresh state failed'
+if review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-e; then fail 'a failed rule ticket write reported success'; fi
+[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$tmp/recur/fresh.json")" == 1 ]] || fail 'a failed rule ticket write was counted'
+rm -f "$tmp/recur/fail"
+review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-f || fail 'retry after a failed write did not open the ticket'
+[[ "$(wc -l <"$recur_log")" == 2 ]] || fail 'retry after a failed write did not open exactly one ticket'
+
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
 echo 'review-contract.test.sh: PASS'

@@ -30,3 +30,45 @@ review_findings_with_contract_relation() { # normalized findings JSON → enrich
       else "unclassified" end)
   }) end' <<<"$1" 2>/dev/null
 }
+
+# Blocking findings that repeat become mechanical rules. A reviewer-supplied `class` is exact; otherwise the
+# rule plus the first six summary words stands in for it.
+# shortcut: summary wording drifts between reviews, so near-duplicates may miss; upgrade when the review prompt emits `class`.
+review_finding_class_key() { # normalized finding JSON → stable slug, at most 50 chars
+  jq -r 'if (.class|type)=="string" and (.class|test("^[a-z0-9][a-z0-9-]{0,49}$")) then .class
+    else ((.rule // "finding") + " " + ((.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | split(" ") | .[0:6] | join(" ")))
+      | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "") | .[0:50] | gsub("-+$"; "")
+    end' <<<"$1" 2>/dev/null
+}
+
+# Counts each class once per review in the state file. The second sighting opens one rule ticket through
+# pipeline-issue-upsert; the count is saved only after that write succeeds, so a failed write is retried.
+review_findings_record_classes() { # normalized findings JSON, state file, upsert script, unit → rc 1 when a ticket write failed
+  local findings="$1" state="$2" upsert="$3" unit="$4"
+  mkdir -p -- "$(dirname -- "$state")" || return 1
+  (
+    flock -x 9
+    declare -A seen=()
+    local rc=0 finding key count body
+    [[ -s "$state" ]] || printf '{}\n' > "$state"
+    while IFS= read -r finding; do
+      key="$(review_finding_class_key "$finding")"
+      [[ -n "$key" && -z "${seen[$key]:-}" ]] || continue
+      seen[$key]=1
+      count="$(jq -r --arg k "$key" '(.[$k] // 0) + 1' "$state")" || { rc=1; continue; }
+      if (( count == 2 )); then
+        body="$(mktemp)"
+        printf 'Blocking review finding class `%s` recurred in unit `%s`.\n\nThe class has now been reported twice; encode it as a mechanical rule, not another review finding.\n' "$key" "$unit" > "$body"
+        if ! bash "$upsert" --lane pipeline-system --class "review-$key" --title "Repeated review finding: $key" \
+          --body-file "$body" --label principle-encode-lessons-in-structure >/dev/null; then
+          rc=1
+          rm -f -- "$body"
+          continue
+        fi
+        rm -f -- "$body"
+      fi
+      jq --arg k "$key" --argjson n "$count" '.[$k] = $n' "$state" > "$state.tmp" && mv -- "$state.tmp" "$state" || rc=1
+    done < <(jq -c '.[] | select(.status=="open" and (.severity=="P0" or .severity=="P1"))' <<<"$findings" 2>/dev/null)
+    exit "$rc"
+  ) 9>"$state.lock"
+}
