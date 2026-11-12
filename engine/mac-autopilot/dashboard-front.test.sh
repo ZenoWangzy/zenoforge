@@ -138,6 +138,8 @@ elif [[ "$1 $2" == "api repos/"* ]]; then
   esac
 elif [[ "$1 $2" == "pr list" ]]; then
   printf '%s\n' "$*" >> "$FAKE_PR_LOG"; cat "${FAKE_PR_JSON:-/dev/null}"
+elif [[ "$1 $2" == "api --paginate" && " $* " == *"/issues?state=open&per_page=100 "* ]]; then
+  echo '[[]]'  # --slurp of one empty page: no open issues, so no intake labels to read
 else echo '[]'; fi
 GH
 cat > "$f/bin/ssh" <<SH
