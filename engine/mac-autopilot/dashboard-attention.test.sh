@@ -84,6 +84,11 @@ const wrows = dash.problems(waitFx, now);
 eq("problems above waiting, waiting oldest first", wrows.map(r => r.kind + " " + r.what), ["mem 可用内存", "person #9 旧", "person #5 中", "person #11 新"]);
 eq("waiting rule and age", wrows.slice(1).map(r => [r.rule, r.val]), [["等提单人回复", "30 天"], ["已合并等发布", "10 时"], ["等提单人回复", "2 时"]]);
 if (!wrows[1].href.endsWith("/issues/9")) throw new Error("waiting row must link its issue: " + wrows[1].href);
+// 只有等人项、指标健康：总览仍是正常，且没有「需留意」计数（等人行 s 为 none，不计入）
+const waitOnly = {...calm, front: {stages: [{label: "needs-info", name: "等提单人回复", count: 1, items: [{number: 9, title: "旧", updated_at: new Date(now - 30 * 86400e3).toISOString()}]}]}};
+if (dash.problems(waitOnly, now).length !== 1) throw new Error("needs-info item must produce one waiting row");
+const woHtml = dash.MODULES[0].render(waitOnly);
+if (!woHtml.includes('class="ov-vd s-ok"') || woHtml.includes("需留意")) throw new Error("waiting rows must not turn the verdict into 需留意 or add a warn chip");
 console.log("attention ok");
 JS
 echo "dashboard-attention.test.sh: PASS"

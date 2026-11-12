@@ -1461,7 +1461,7 @@ function vOverview(D) {
   const nNoData = ms.filter(m => m.status === "NO-DATA").length;
   const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
   const vs = vsRaw === "ok" && nNoData ? "none" : vsRaw;
-  const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.length - nBad;
+  const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.filter(r => r.s === "warn").length;
   const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
   // 数 1 员工
   const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, wst = LW.map(w => workerState(w, nowS)), waitN = wst.filter(x => x.h === "bad" || x.h === "warn").length;
