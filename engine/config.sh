@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # The one place that resolves where the engine lives and which repository it works on (Line B seam A1; same design as
 # Zenoforge S0, engine/config.sh). Source this, do not execute it. Every default reproduces the derivation it replaced, so
-# nothing changes until a variable is set. Sourcing runs no git, gh or network call and writes nothing.
+# nothing changes until a variable is set. Sourcing runs no git, gh or network call; its only write is the host-id file (below).
+#   ZF_HOST_ID     logical host name in published records: default = $AGENT_HOME/host-id when valid, else the sanitized short
+#                     hostname, written to that file once when AGENT_HOME exists. A caller-set value wins.
+#   ZF_COORD       this host's coordination switch: default = off. Nothing reads it yet.
 #   ZF_ENGINE_DIR  the engine's own files (lib.sh, run-*.sh, night/, ...): default = the directory this file lives in.
 #   ZF_REPO_DIR    the target repository the engine works on: default = two levels above the engine (the engine
 #                     lives inside it today).
@@ -163,6 +166,22 @@ if [[ -z "${ZF_PACK_DIR+x}" || ( -n "${_AGENT_PACK_DIR_DERIVED+x}" && "$ZF_PACK_
 fi
 
 export ZF_PACK_REL="${ZF_PACK_REL:-engine}" # a caller-set value wins; empty is no location, so it falls back
+
+# Host identity (S0). Plain shell variables like the rest of this file: not exported, so child processes keep their own defaults.
+if [[ -z "${ZF_HOST_ID-}" ]]; then
+  _zf_host_file="$AGENT_HOME/host-id"
+  ZF_HOST_ID=
+  if [[ -r "$_zf_host_file" ]]; then IFS= read -r ZF_HOST_ID <"$_zf_host_file" || true; fi
+  if [[ ! "$ZF_HOST_ID" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then
+    ZF_HOST_ID="$(hostname -s 2>/dev/null | tr -d '\n' | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-' | sed 's/^-*//' | cut -c1-32)" || ZF_HOST_ID=
+    [[ -n "$ZF_HOST_ID" ]] || ZF_HOST_ID=host
+    if [[ -d "$AGENT_HOME" ]]; then
+      { printf '%s\n' "$ZF_HOST_ID" >"$_zf_host_file.$$" && mv -f -- "$_zf_host_file.$$" "$_zf_host_file"; } 2>/dev/null || true
+    fi
+  fi
+  unset _zf_host_file
+fi
+[[ -n "${ZF_COORD+x}" ]] || ZF_COORD=off
 
 # Deployment identity (Line B seam G9): names of hosts, runners, repositories, CI checks and people that engine code used to
 # spell as literals. Each default is the literal it replaced, so nothing changes until a variable is set. A caller that sets a
