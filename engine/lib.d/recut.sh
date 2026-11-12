@@ -155,6 +155,22 @@ recut_parent_children_json() {
 }
 
 
+# No open or delivered child: send the tracker back to triage for a fresh judgment.
+tracker_back_to_triage() { # issue number
+  issue_transition "$1" needs-triage "tracker has no open or delivered child; re-judge: recut again, deliver, or close as obsolete"
+}
+
+
+# A tracker with no recut children, no native sub-issue and no split marker has nothing open or delivered.
+tracker_childless_to_triage() { # issue number, state JSON
+  local n="$1" state_json="$2" native
+  jq -e '((.recut_children // []) | length) == 0' <<< "$state_json" >/dev/null 2>&1 || return 1
+  native="$(native_parent_subissues_json "$n")" || return 1
+  jq -e 'length == 0' <<< "$native" >/dev/null 2>&1 || return 1
+  tracker_back_to_triage "$n"
+}
+
+
 recut_parent_has_open_child() {
   local n="$1" open_issues_json="${2:-[]}" state_json="${3:-}" allow_comment_fallback="${4:-1}" children child state native_json known_parent=0
   [ -n "$state_json" ] || state_json="$(state_read "$n")" || return 2
@@ -286,7 +302,7 @@ reconcile_recut_parent_children() {
   if ((${#live_children[@]} == 0)); then
     # A parent requeued after its last child closed still has its own work
     # (issue 1397: reclosed five minutes after a supervisor requeue).
-    local requeued_at child_json child_closed_at last_child_closed_at="" all_released=1 duplicate_children=""
+    local requeued_at child_json child_closed_at last_child_closed_at="" all_released=1 any_released=0 duplicate_children=""
     requeued_at="$(state_read "$n" | jq -r '.requeued_at // empty')" \
       || { blocker_root_fail "umbrella requeue timestamp read failed for #$n"; return 1; }
     while IFS= read -r child; do
@@ -298,7 +314,7 @@ reconcile_recut_parent_children() {
       if [ -n "$native_child_json" ]; then
         child_closed_at="$(jq -r '.closed_at // empty' <<< "$native_child_json")" \
           || { blocker_root_fail "umbrella child #$child closed-at read failed for #$n"; return 1; }
-        jq -e '(.labels // []) | index("released") != null' <<< "$native_child_json" >/dev/null || all_released=0
+        if jq -e '(.labels // []) | index("released") != null' <<< "$native_child_json" >/dev/null; then any_released=1; else all_released=0; fi
         ! jq -e '(.labels // []) | index("duplicate") != null' <<< "$native_child_json" >/dev/null \
           || duplicate_children+=" #$child"
       else
@@ -306,7 +322,7 @@ reconcile_recut_parent_children() {
           || { blocker_root_fail "umbrella child #$child closure view failed for #$n"; return 1; }
         child_closed_at="$(jq -r '.closedAt // empty' <<< "$child_json")" \
           || { blocker_root_fail "umbrella child #$child closed-at parse failed for #$n"; return 1; }
-        jq -e 'any(.labels[]?; .name == "released")' <<< "$child_json" >/dev/null || all_released=0
+        if jq -e 'any(.labels[]?; .name == "released")' <<< "$child_json" >/dev/null; then any_released=1; else all_released=0; fi
         ! jq -e 'any(.labels[]?; .name == "duplicate")' <<< "$child_json" >/dev/null \
           || duplicate_children+=" #$child"
       fi
@@ -329,6 +345,15 @@ reconcile_recut_parent_children() {
     child_list="$(jq -r 'map("#" + tostring) | join(", ")' <<< "$children_json")" \
       || { blocker_root_fail "umbrella child list build failed for #$n"; return 1; }
     if [ "$all_released" != 1 ]; then
+      # Closed children that never got the released label delivered nothing here; a native-child parent keeps
+      # its old path, since the tracker guard refuses an active move while native children exist.
+      if [ "$any_released" = 0 ] && ! jq -e 'length > 0' <<< "${native_json:-[]}" >/dev/null 2>&1; then
+        state_merge "$n" 'del(.recut_children, .native_subissue_parent)' \
+          || { blocker_root_fail "umbrella triage state write failed for #$n"; return 1; }
+        tracker_back_to_triage "$n" || { blocker_root_fail "umbrella needs-triage transition failed for #$n"; return 1; }
+        echo "issue-pipeline: recut-parent issue=#$n action=needs-triage reason=no-released-children children=$child_list" >&2
+        return 0
+      fi
       echo "issue-pipeline: recut-parent issue=#$n action=kept reason=children-not-released children=$child_list" >&2
       return 0
     fi

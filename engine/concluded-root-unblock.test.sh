@@ -63,6 +63,10 @@ gh() {
       echo 'gh: HTTP 403: secondary rate limit exceeded (fake)' >&2
       return 1
     fi
+    if [ -n "${NATIVE_OPEN_PARENT:-}" ] && [[ "$2" == */issues/$NATIVE_OPEN_PARENT/* ]]; then
+      printf '[{"number":500122,"state":"open","closed_at":null,"labels":[]}]\n'
+      return 0
+    fi
     if [ -n "${NATIVE_DUPLICATE_PARENT:-}" ] && [[ "$2" == */issues/$NATIVE_DUPLICATE_PARENT/* ]]; then
       printf '[{"number":500058,"state":"closed","closed_at":"2026-10-04T09:23:51Z","labels":[{"name":"duplicate"}]}]\n'
       return 0
@@ -697,11 +701,35 @@ EOF
 CLOSED_CHILD_IDS='500029 500030'
 : > "$ROOT_WRITE_LOG"
 reconcile_blocking_issue_root "$(cat "$TEST_HOME/completed-umbrella.json")" '[]' 2>>"$ROOT_WRITE_LOG"
-assert_not_contains "closed but unreleased recut children keep umbrella parent open" \
+assert_not_contains "closed but unreleased recut children do not close the umbrella" \
   "$(cat "$ROOT_WRITE_LOG")" "gh issue close 500028"
-assert_contains "unreleased recut parent reports child IDs" \
-  "$(cat "$ROOT_WRITE_LOG")" "reason=children-not-released children=#500029, #500030"
+assert_contains "closed but unreleased recut children send the umbrella back to triage" \
+  "$(cat "$ROOT_WRITE_LOG")" "action=needs-triage reason=no-released-children children=#500029, #500030"
+assert_eq "triaged umbrella drops its recut children record" false \
+  "$(jq -r 'has("recut_children")' "$STATE_DIR/500028.json")"
 unset CLOSED_CHILD_IDS
+
+# A childless tracker (no recut children, no native sub-issue, no split marker) is found by the sweep and sent to triage.
+cat > "$STATE_DIR/500120.json" <<'JSON'
+{"state":"tracker","tracker_parent":true}
+JSON
+BLOCKER_GRAPH_JSON='[{"number":500120,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+: > "$ROOT_WRITE_LOG"
+sweep_blocking_issue_roots 2>/dev/null || true
+assert_contains "childless tracker with no open or delivered child goes to triage" \
+  "$(cat "$ROOT_WRITE_LOG")" "needs-triage"
+assert_not_contains "childless tracker is not closed" "$(cat "$ROOT_WRITE_LOG")" "gh issue close 500120"
+
+# Counterexample: a tracker with an open native sub-issue keeps its place.
+cat > "$STATE_DIR/500121.json" <<'JSON'
+{"state":"tracker","tracker_parent":true,"native_subissue_parent":true}
+JSON
+BLOCKER_GRAPH_JSON='[{"number":500121,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+NATIVE_OPEN_PARENT=500121
+: > "$ROOT_WRITE_LOG"
+sweep_blocking_issue_roots 2>/dev/null || true
+assert_not_contains "tracker with an open native sub-issue is not sent to triage" "$(cat "$ROOT_WRITE_LOG")" "needs-triage"
+unset NATIVE_OPEN_PARENT BLOCKER_GRAPH_JSON
 
 # A parent requeued after its children closed has its own remaining work
 # (issue 1397 was reclosed five minutes after a supervisor requeue).

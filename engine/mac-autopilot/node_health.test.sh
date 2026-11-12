@@ -444,7 +444,7 @@ sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
 mkdir -p "$test_env_root/laneless-runtime/state"
 PYTHONPATH="$script_dir" python3 - "$test_env_root/laneless-runtime" "$script_dir" <<'CHECK_LANELESS' || fail 'laneless intake health metric failed'
-import json, os, sys
+import contextlib, io, json, os, sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 sys.path.insert(0, sys.argv[2])
@@ -479,7 +479,11 @@ responses = [
     None,
 ]
 calls = []
+native_calls = []
 def fake_gh(command, timeout):
+    if "sub_issues" in command[-1]:
+        native_calls.append(command)
+        return []
     calls.append((command, timeout))
     return responses.pop(0)
 os.environ["DEP_CHECK_SECONDS"] = "600"
@@ -509,6 +513,24 @@ assert f"`{metric}`" in open(os.path.join(sys.argv[2], "NODE-HEALTH.md")).read()
 dashboard = open(os.path.join(sys.argv[2], "dashboard.html")).read()
 assert '"intake.laneless_open_issues":["超时未分流工单","个"]' in dashboard
 assert '"intake.priority_route_missing"' in dashboard and "Issues without priority" in dashboard
+# Real shape: a tracker with no recut_children key but GitHub native sub-issues is laneless only when none is open.
+native_runtime = Path(runtime, "native-runtime")
+Path(native_runtime, "state").mkdir(parents=True)
+for number in (40, 41, 43):
+    Path(native_runtime, "state", f"{number}.json").write_text(json.dumps({"state": "tracker", "tracker_parent": True, "native_subissue_parent": True}))
+native_issues = [{"number": number, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "tracker"}]} for number in (40, 41, 43)]
+native_subs = {40: [{"number": 4281, "state": "open", "closed_at": None, "labels": []}],
+               41: [{"number": 4282, "state": "closed", "closed_at": "2026-10-20T10:00:00Z", "labels": []}]}
+def native_gh(command, timeout):
+    if command[-1].endswith("/sub_issues?per_page=100"):
+        number = int(command[-1].split("/")[4])
+        return None if number == 43 else [native_subs[number]]
+    return [native_issues]
+native_err = io.StringIO()
+with contextlib.redirect_stderr(native_err):
+    native_count = laneless.open_laneless_count(str(native_runtime), "test/repo", now, native_gh, str(native_runtime))
+assert native_count == 1, "only the tracker with no open native sub-issue is laneless"
+assert "#43" in native_err.getvalue(), "an unreadable sub-issue read must be logged"
 priority_now = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
 priority_config = {"intake_priority": {"live_at": "2026-11-12T00:00:00Z", "labels": {"priority": "p:", "route": "r:"}}}
 before_hook = {"number": 30, "state": "open", "created_at": "2026-11-11T23:59:59Z", "labels": []}
