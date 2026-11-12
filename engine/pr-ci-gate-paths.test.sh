@@ -95,7 +95,7 @@ done
 
 # Mutation: add one regex alternative that no workflow lists. The guard must go red.
 if [[ -z "${PR_CI_GATE_MUTANT_RUN:-}" ]]; then
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp" "$test_env_root"' EXIT
   sed 's/(merge-pr|pin-vecta|auto-pin)/(merge-pr|pin-vecta|auto-pin|zz-mutant)/' "$merge_pr" > "$tmp/merge-pr.sh"
   [[ "$(grep -c 'zz-mutant' "$tmp/merge-pr.sh")" == 1 ]] || fail "mutation did not apply to the regex"
   set +e
