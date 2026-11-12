@@ -508,6 +508,54 @@ assert command[-1] == "repos/test/repo/issues?state=open&per_page=100" and "grap
 assert f"`{metric}`" in open(os.path.join(sys.argv[2], "NODE-HEALTH.md")).read()
 dashboard = open(os.path.join(sys.argv[2], "dashboard.html")).read()
 assert '"intake.laneless_open_issues":["超时未分流工单","个"]' in dashboard
+assert '"intake.priority_route_missing"' in dashboard and "Issues without priority" in dashboard
+priority_now = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
+priority_config = {"intake_priority": {"live_at": "2026-11-12T00:00:00Z", "labels": {"priority": "p:", "route": "r:"}}}
+before_hook = {"number": 30, "state": "open", "created_at": "2026-11-11T23:59:59Z", "labels": []}
+missing_priority = {"number": 31, "state": "open", "created_at": "2026-11-12T00:01:00Z", "labels": [{"name": "r:roadmap"}]}
+missing_route = {"number": 32, "state": "open", "created_at": "2026-11-12T00:02:00Z", "labels": [{"name": "p:high"}]}
+complete = {"number": 33, "state": "open", "created_at": "2026-11-12T00:03:00Z", "labels": [{"name": "p:normal"}, {"name": "r:roadmap"}]}
+def dashboard_row(name, issues, row_config=priority_config):
+    row_runtime = Path(runtime, name)
+    row_runtime.mkdir(parents=True)
+    if row_config is not None:
+        Path(row_runtime, "config.json").write_text(json.dumps(row_config))
+    calls, front, values, standards = [], {"errors": {}}, {}, {}
+    def run(argv, timeout, **kwargs):
+        calls.append((argv, timeout))
+        return json.dumps([issues])
+    def gh_json(command, timeout):
+        return json.loads(run(["gh", *command], timeout, cwd="/"))
+    def standard(key, desc, healthy, unhealthy, higher, unit, meaning, source):
+        standards[key] = (healthy, unhealthy, higher)
+    laneless_count = laneless.open_laneless_count(str(row_runtime), "test/repo", priority_now, gh_json, str(row_runtime))
+    laneless.add_front_priority_data(front, priority_now.timestamp(), str(row_runtime), "test/repo", run, "/", str(row_runtime), standard, values)
+    return front, values, standards, calls, laneless_count
+red_front, red_values, row_standards, row_calls, red_laneless = dashboard_row("priority-red", [before_hook, missing_priority, missing_route, complete])
+row_id = laneless.PRIORITY_ROUTE_ID
+assert red_front["priority_route"]["active"] == {"priority": 1, "route": 1}
+assert red_front["priority_route"]["backlog"] == {"priority": 1, "route": 1}
+assert red_laneless == 4
+assert node_health.status_of(red_values[row_id], *row_standards[row_id]) == "UNHEALTHY", "post-hook label gaps must be red"
+assert len(row_calls) == 1 and "--paginate" in row_calls[0][0] and "per_page=100" in row_calls[0][0][-1], "priority and route counts must share one paginated issue read"
+green_front, green_values, green_standards, green_calls, green_laneless = dashboard_row("priority-green", [before_hook, complete])
+assert green_front["priority_route"]["active"] == {"priority": 0, "route": 0}
+assert green_front["priority_route"]["backlog"] == {"priority": 1, "route": 1}
+assert green_laneless == 2
+assert node_health.status_of(green_values[row_id], *green_standards[row_id]) == "OK", "backlog gaps must not turn the row red"
+assert len(green_calls) == 1
+default_good = {"number": 40, "state": "open", "created_at": "2026-11-12T00:01:00Z", "labels": [{"name": "priority:high"}, {"name": "route:roadmap"}]}
+default_missing_route = {"number": 41, "state": "open", "created_at": "2026-11-12T00:02:00Z", "labels": [{"name": "priority:normal"}]}
+default_front, default_values, default_standards, default_calls, _ = dashboard_row("priority-default", [default_good, default_missing_route], None)
+assert default_front["priority_route"]["active"] == {"priority": 0, "route": 0}
+assert default_front["priority_route"]["backlog"] == {"priority": 0, "route": 1}
+assert node_health.status_of(default_values[row_id], *default_standards[row_id]) == "OK", "without live_at every issue is backlog and the row must not be red"
+assert len(default_calls) == 1
+today_missing = {"number": 42, "state": "open", "created_at": "2026-11-13T09:00:00Z", "labels": []}
+today_front, today_values, today_standards, _, _ = dashboard_row("priority-no-live-at-today", [today_missing], None)
+assert today_front["priority_route"]["active"] == {"priority": 0, "route": 0}
+assert today_front["priority_route"]["backlog"] == {"priority": 1, "route": 1}
+assert node_health.status_of(today_values[row_id], *today_standards[row_id]) == "OK", "an issue created today without live_at must not turn the row red"
 CHECK_LANELESS
 # 裁决副本对账：pack 有而引擎实际读取的 state/rulings.json 没有的行数计入 rulings.copies_differ
 # （健康 0，异常 ≥1）；先按 id 对账，剩下的按 (date, scope) 多重集对账（构建会给部分 id 改名）；同 id 换 scope 不算缺行；任一文件缺失记 NO-DATA。

@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split, intake_laneless_health
 import ledger_history
 from config_paths import zf_config_file
 
@@ -1105,7 +1105,7 @@ def front_release_panel(now, awaiting):
 
 release_train_state = read_json(f"{A}/release-train.json") or {}
 front = {"errors": {}}
-front_now = front_started = time.time()
+front_now = front_started = time.time(); intake_laneless_health.add_front_priority_data(front, front_now, A, os.environ.get("ZF_REPO", ""), front_run, ROOT, AGENT_HOME, front_std, front_values)
 try:
     front["stages"], front["search_counts"], front["github"] = front_stage_rows(front_now, front)
 except Exception as ex:
