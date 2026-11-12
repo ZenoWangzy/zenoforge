@@ -498,11 +498,6 @@ main_red_rerun_retry() { # red_sha session_json
 }
 
 
-# The tick's maintenance entry point: if the latest completed main validation
-# run is red, advance that red's session by one bounded step;
-# then close any rerun-requested session whose same-SHA rerun went green
-# (that red was flaky and the latest verdict is green again, so the step
-# path above can no longer see it).
 # The culprit's revert commit on origin/main, empty until it has landed.
 main_red_revert_commit() { # culprit_sha
   git -C "$REPO_DIR" log -1 --format=%H origin/main --grep="This reverts commit ${1}." 2>/dev/null
@@ -529,7 +524,7 @@ main_red_revert_covers() { # red_sha
 # A landed revert with no completed suite run on it or a later main commit
 # within MAIN_RED_REVERT_VERIFY_SECONDS: one event; the lane stays held.
 main_red_revert_verify_sweep() { # completed_runs_json
-  local runs="$1" file session red_sha culprit revert_sha idle sha verified
+  local runs="$1" file session red_sha culprit revert_sha landed idle sha verified
   [ -d "$MAIN_RED_DIR" ] || return 0
   while IFS= read -r file; do
     session="$(main_red_session_read_for_file "$file" 2>/dev/null || true)"
@@ -540,7 +535,10 @@ main_red_revert_verify_sweep() { # completed_runs_json
     [[ "$red_sha" =~ ^[0-9a-f]{40}$ && "$culprit" =~ ^[0-9a-f]{40}$ ]] || continue
     revert_sha="$(main_red_revert_commit "$culprit")"
     [[ "$revert_sha" =~ ^[0-9a-f]{40}$ ]] || continue
-    idle=$(( $(date +%s) - $(stat -c %Y "$file" 2>/dev/null || date +%s) ))
+    # Clock starts at the revert commit's time, not the session file's last write.
+    landed="$(git -C "$REPO_DIR" log -1 --format=%ct "$revert_sha" 2>/dev/null)" || continue
+    [[ "$landed" =~ ^[0-9]+$ ]] || continue
+    idle=$(( $(date +%s) - landed ))
     [ "$idle" -ge "$MAIN_RED_REVERT_VERIFY_SECONDS" ] || continue
     verified=0
     while IFS= read -r sha; do
@@ -549,7 +547,7 @@ main_red_revert_verify_sweep() { # completed_runs_json
         verified=1
         break
       fi
-    done < <(jq -r '.workflow_runs[]? | .head_sha // empty' <<< "$runs" | sort -u)
+    done < <(jq -r '.workflow_runs[]? | select(.conclusion == "success" or .conclusion == "failure") | .head_sha // empty' <<< "$runs" | sort -u)
     [ "$verified" = 1 ] && continue
     main_red_session_write "$red_sha" reverted '.revert_unverified = true' || continue
     main_red_supervisor_event "$red_sha" \
@@ -558,6 +556,11 @@ main_red_revert_verify_sweep() { # completed_runs_json
 }
 
 
+# The tick's maintenance entry point: if the latest completed main validation
+# run is red, advance that red's session by one bounded step;
+# then close any rerun-requested session whose same-SHA rerun went green
+# (that red was flaky and the latest verdict is green again, so the step
+# path above can no longer see it).
 main_red_bisect_sweep() {
   local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status status idle green_sha fetched=0
   if [ "${MAIN_CI_RED_RECONCILIATION_DONE:-0}" = 1 ]; then

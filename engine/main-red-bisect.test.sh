@@ -338,10 +338,12 @@ if main_merge_clear >/dev/null 2>&1; then GATE_AFTER=clear; else GATE_AFTER=held
 assert_eq "a red after the revert keeps the merge lane held" held "$GATE_AFTER"
 
 # --- Revert then no suite run within the bound: one revert-unverified event, lane held.
-jq -cn --arg green "$GREEN_SHA" --arg red "$RED_SHA" \
+# A cancelled run on the revert SHA is no verdict and must not count as verified.
+jq -cn --arg green "$GREEN_SHA" --arg red "$RED_SHA" --arg rev "$REVERTED_MAIN_SHA" \
   '{workflow_runs:[
     {id:400,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-27T10:00:00Z"},
-    {id:401,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:"success",created_at:"2026-10-27T09:00:00Z"}]}' \
+    {id:401,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:"success",created_at:"2026-10-27T09:00:00Z"},
+    {id:402,head_sha:$rev,head_branch:"main",event:"push",status:"completed",conclusion:"cancelled",created_at:"2026-10-27T14:00:00Z"}]}' \
   > "$FAKE_GH_STATE/completed-runs.json"
 : > "$EVENTS"
 MAIN_RED_REVERT_VERIFY_SECONDS=0
@@ -354,6 +356,15 @@ assert_eq "the revert-unverified event is never repeated" reverted \
   "$(session_json | jq -r .status)"
 if main_merge_clear >/dev/null 2>&1; then GATE_UNVERIFIED=clear; else GATE_UNVERIFIED=held; fi
 assert_eq "an unverified revert keeps the merge lane held" held "$GATE_UNVERIFIED"
+
+# --- An old session file over a just-landed revert is not idle: the clock starts at the revert commit.
+jq 'del(.revert_unverified)' "$AGENT_HOME/main-red/$RED_SHA.json" > "$test_root/session-reset.json"
+mv "$test_root/session-reset.json" "$AGENT_HOME/main-red/$RED_SHA.json"
+touch -d '3 hours ago' "$AGENT_HOME/main-red/$RED_SHA.json"
+: > "$EVENTS"
+maintenance_tick
+assert_eq "a freshly landed revert is not flagged unverified by an old session file" 0 \
+  "$(grep -c 'status=revert-unverified' "$EVENTS")"
 
 # --- Flaky: the same SHA reruns green; no revert, no bisect.
 FLAKY_RED="$test_root/flaky"
