@@ -510,6 +510,16 @@ harvest_rc pr-f1 rf-1-T1.md
 findings_report rf-2-T1.md "$good_block"
 harvest_rc pr-f2 rf-2-T1.md rereview
 [[ "$(field pr-f2 '.review_findings[0].block')" == ok && "$(field pr-f2 .stage)" == repair-pending ]] || fail 'a rereview rejection was not recorded like a review rejection'
+# 同一发现类别在第二个单元复现时只开一张机械规则工单（经 pipeline-issue-upsert，stub 记下参数）。
+class_log="$fixture/class-upsert.log"; : > "$class_log"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$class_log" > "$fixture/class-upsert.sh"
+class_prev_upsert="${REVIEW_CLASS_UPSERT:-}"; class_prev_state="${REVIEW_CLASS_STATE:-}"
+export REVIEW_CLASS_UPSERT="$fixture/class-upsert.sh" REVIEW_CLASS_STATE="$fixture/class-state-e2e.json"
+findings_report rc-1-T1.md "$good_block"; harvest_rc pr-c1 rc-1-T1.md
+[[ ! -s "$class_log" ]] || fail 'a first sighting opened a rule ticket'
+findings_report rc-2-T1.md "$good_block"; harvest_rc pr-c2 rc-2-T1.md
+[[ "$(wc -l < "$class_log")" == 1 && "$(cat "$class_log")" == *'--class review-defect-x'* ]] || fail "second unit did not open exactly one rule ticket: $(cat "$class_log")"
+export REVIEW_CLASS_UPSERT="$class_prev_upsert" REVIEW_CLASS_STATE="$class_prev_state"
 findings_report rf-3-T1.md '[]'
 harvest_rc pr-f3 rf-3-T1.md
 [[ "$(field pr-f3 '.review_findings[0] | [.block, (.findings | length)] | tojson')" == '["ok",0]' ]] || fail 'an empty findings block was not recorded as present with no findings'

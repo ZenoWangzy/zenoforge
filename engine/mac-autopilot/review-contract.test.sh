@@ -92,6 +92,7 @@ cat >"$recur_upsert" <<EOF
 #!/usr/bin/env bash
 [[ ! -f "$tmp/recur/fail" ]] || exit 1
 printf '%s\n' "\$*" >>"$recur_log"
+while (( \$# )); do [[ "\$1" == --body-file ]] && cat "\$2" >>"$recur_log.body"; shift; done
 EOF
 chmod +x "$recur_upsert"
 review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-a || fail 'first sighting failed'
@@ -101,7 +102,7 @@ review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" 
 [[ "$(wc -l <"$recur_log")" == 1 ]] || fail 'second sighting did not open exactly one rule ticket'
 grep -q -- '--class review-defect-null-guard-missing-on-the-write' "$recur_log" || fail 'rule ticket class was not the repeated class'
 review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-c || fail 'third sighting failed'
-[[ "$(wc -l <"$recur_log")" == 1 ]] || fail 'a third sighting opened another rule ticket'
+[[ "$(grep -c -- '--class review-defect-null-guard-missing-on-the-write' "$recur_log")" == 2 ]] || fail 'a third sighting did not add to the existing ticket'
 [[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$recur_state")" == 3 ]] || fail 'third sighting was not counted'
 [[ "$(jq -r 'keys|length' "$recur_state")" == 1 ]] || fail 'a non-blocking finding was counted'
 touch "$tmp/recur/fail"
@@ -110,7 +111,9 @@ if review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$re
 [[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$tmp/recur/fresh.json")" == 1 ]] || fail 'a failed rule ticket write was counted'
 rm -f "$tmp/recur/fail"
 review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-f || fail 'retry after a failed write did not open the ticket'
-[[ "$(wc -l <"$recur_log")" == 2 ]] || fail 'retry after a failed write did not open exactly one ticket'
+[[ "$(wc -l <"$recur_log")" == 3 ]] || fail 'retry after a failed write did not open exactly one ticket'
+grep -q unit-a "$recur_log.body" && grep -q unit-b "$recur_log.body" && grep -qi deterministic "$recur_log.body" && grep -qi lint "$recur_log.body" \
+  || fail 'ticket body lacks both findings or the deterministic-check ask'
 
 review_findings_record_classes "[$zh_a,$zh_b]" "$tmp/recur/zh.json" "$recur_upsert" unit-g || fail 'Chinese-only findings did not record'
 [[ "$(jq -r 'keys|length' "$tmp/recur/zh.json")" == 2 ]] || fail 'distinct Chinese-only findings were counted as one class'
@@ -118,6 +121,11 @@ review_findings_record_classes "[$empty_s,$empty_s]" "$tmp/recur/empty.json" "$r
 [[ "$(jq -r 'keys|length' "$tmp/recur/empty.json")" == 0 ]] || fail 'empty-summary findings were counted'
 review_findings_record_classes "[$mixed_a,$mixed_b]" "$tmp/recur/mixed.json" "$recur_upsert" unit-i || fail 'mixed-language findings failed to record'
 [[ "$(jq -r 'keys|length' "$tmp/recur/mixed.json")" == 2 ]] || fail 'distinct mixed-language findings were counted as one class'
+
+dup_state="$tmp/recur/dup.json"
+review_findings_record_classes "$recur_findings" "$dup_state" "$recur_upsert" unit-a || fail 'a unit recorded twice failed'
+review_findings_record_classes "$recur_findings" "$dup_state" "$recur_upsert" unit-a || fail 'a rereview of one unit failed'
+[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$dup_state")" == 1 ]] || fail 'a rereview of one unit was counted twice'
 
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
