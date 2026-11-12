@@ -89,7 +89,11 @@ wins.
    is worse than an honest refusal. If you refuse because the work needs
    actions outside this repository checkout (operating production hosts or
    containers, using production credentials, provider consoles), also set
-   `needs_production_access: true`; otherwise it is `false`.
+   `needs_production_access: true`; otherwise it is `false`. An acceptance
+   line that can only be checked on production after release (a live read, a
+   production log, a customer-visible check) is not such work and is never a
+   reason to refuse: cut the code slices and carry that line into the matching
+   child's acceptance as a post-release check.
 
 3. **If real implementation exists, cut into tracer-bullet slices.** Produce
    between 1 and the child cap given below (this run's cap is stated above
