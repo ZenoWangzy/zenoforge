@@ -799,6 +799,24 @@ recut_parent_has_open_child 500057 '[]' || native_duplicate_status=$?
 assert_eq "parent whose native sub-issue closed as duplicate is not a closed recut parent" 1 "$native_duplicate_status"
 unset NATIVE_DUPLICATE_PARENT
 
+# A child closed as wontfix never gets `released`: the parent stays open, escalates once per episode, and never closes.
+cat > "$STATE_DIR/500060.json" <<'EOF'
+{"recut_children":[500061]}
+EOF
+CLOSED_CHILD_IDS='500061'
+CLOSED_CHILD_META='{"500061":{"closedAt":"2026-10-05T10:00:00Z","labels":[{"name":"wontfix"}]}}'
+: > "$ROOT_WRITE_LOG"
+: > "$AGENT_HOME/supervisor-inbox"
+reconcile_blocking_issue_root '{"number":500060,"state":"OPEN","labels":[],"blocking":{"nodes":[]}}' '[]' 2>>"$ROOT_WRITE_LOG"
+reconcile_blocking_issue_root '{"number":500060,"state":"OPEN","labels":[],"blocking":{"nodes":[]}}' '[]' 2>>"$ROOT_WRITE_LOG"
+assert_eq "wontfix recut child escalates to the supervisor inbox once" 1 \
+  "$(grep -c 'recut-wontfix-child issue=#500060' "$AGENT_HOME/supervisor-inbox")"
+assert_not_contains "wontfix recut child keeps the parent open" \
+  "$(cat "$ROOT_WRITE_LOG")" "gh issue close 500060"
+assert_eq "wontfix escalation is recorded per episode" true \
+  "$(jq -r '.recut_escalated_children' "$STATE_DIR/500060.json")"
+unset CLOSED_CHILD_IDS CLOSED_CHILD_META
+
 # Comment-only recut parents are recognized for blocker transfer during the
 # migration from local recut_children state.
 cat > "$TEST_HOME/comment-umbrella.json" <<'EOF'
