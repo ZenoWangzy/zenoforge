@@ -50,6 +50,7 @@ cancel_fixture parked 45 cancelled
 ci_admission
 [[ "$(alerts)" == 1 ]] || fail "parked head with every run cancelled for 45 min raised $(alerts) alerts, want 1"
 grep -q "unit=issue-5306 PR#5937 head=$head5937 stage=parked" "$td/alerts/gate.md" || fail "alert line does not name unit, PR, head and stage"
+grep -q "CI-CANCELLED-STALE.*(draft, gates skipped)" "$td/alerts/gate.md" || fail "draft head alert does not say 'draft, gates skipped'"
 ci_admission
 [[ "$(alerts)" == 1 && "$(gh_calls)" == 1 ]] || fail "second pass re-alerted or re-queried ($(alerts) alerts, $(gh_calls) gh calls)"
 
@@ -67,4 +68,10 @@ ci_admission; ci_admission
 cancel_fixture review-pending 45 cancelled
 ci_admission
 [[ "$(alerts)" == 0 && "$(gh_calls)" == 0 ]] || fail "review-pending unit was scanned ($(alerts) alerts, $(gh_calls) gh calls)"
+# 5. the same stale state on a ready (non-draft) PR keeps the readmission wording: no 'draft, gates skipped'
+cancel_fixture parked 45 cancelled
+TICK_PRS="${TICK_PRS/\"isDraft\":true/\"isDraft\":false}"
+ci_admission
+[[ "$(alerts)" == 1 ]] || fail "non-draft stale head raised $(alerts) alerts, want 1"
+grep -q "CI-CANCELLED-STALE.*(nothing readmits it)" "$td/alerts/gate.md" || fail "non-draft alert lost the 'nothing readmits it' wording"
 echo "ci-cancel-stale.test.sh: ok"
