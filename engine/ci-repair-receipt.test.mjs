@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 process.env.ZF_REPO ??= 'example-maintainer/example-repo';
-import { appendRepairReceipt, matchesRepairReceipt, validateRepairReceipt } from './ci-repair-receipt.mjs';
+import { appendRepairReceipt, fullCheckCommandFor, matchesRepairReceipt, validateRepairReceipt } from './ci-repair-receipt.mjs';
 
 const receipt = {
   version: 2, branch: 'hand/original-pr', prNumber: 123,
@@ -82,7 +82,8 @@ test('frozen #3536 shard evidence cannot turn one passing unit into a shard pass
     recordedAt: '2026-10-12T14:43:24.000Z', recordedAtMs: Date.parse('2026-10-12T14:43:25Z'),
   };
   const focusedCommand = 'bash engine/land-direct-main.test.sh --transient-lock-release-only';
-  assert.throws(() => validateRepairReceipt({ ...frozen, status: 'passed', scope: 'whole-check', command: undefined }),
+  assert.equal(fullCheckCommandFor(frozen.checkName), 'bash engine/run-ci-suites.sh --shard 1/5');
+  assert.throws(() => validateRepairReceipt({ ...frozen, status: 'passed', scope: 'whole-check', command: focusedCommand }),
     /whole-check pass/);
   const focused = {
     ...frozen, status: 'focused-passed', scope: 'failing-unit', command: focusedCommand,
