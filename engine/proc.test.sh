@@ -18,6 +18,10 @@ spawn() { "$@" & pids+=("$!"); }
 old_start() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'; }
 old_running() { local stat; read -r stat 2>/dev/null < "/proc/$1/stat" || return 1; stat="${stat##*) }"; [[ "${stat%% *}" != Z ]]; }
 
+# Ratchet: inline /proc/PID/stat parsing lives only in these files, and each one is a later ticket; the list may shrink, never grow.
+stat_readers="$(cd "$engine/.." && grep -rl --include='*.sh' -e '/proc/[^ "]*/stat' engine | grep -v -e '\.test\.sh$' -e '^engine/proc\.sh$' | sort || true)"
+[[ "$stat_readers" == $'engine/hotfix/hf-role-claim.sh\nengine/mac-autopilot/scheduler.d/worker-scope.sh\nengine/night/hand-agent-watchdog.sh\nengine/thread-budget.sh\nengine/worktree-lifecycle.sh' ]] || fail "inline /proc/PID/stat parse outside proc.sh: $stat_readers"
+
 # ---- Part 1: native branch, real processes ----
 spawn sleep 60; child=$!
 pid_live $$ || fail 'own pid not live'
