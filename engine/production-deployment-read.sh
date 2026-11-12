@@ -13,11 +13,25 @@ tmpdir="$(mktemp -d)" || exit 1
 trap 'rm -rf -- "$tmpdir"' EXIT
 records_file="$tmpdir/records.jsonl"
 latest_file="$tmpdir/latest-status.json"
+status_cache_dir="${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR:-}"
+status_cache_repo="$(printf '%s' "$repo" | cksum | awk '{print $1}')"
+if [[ -n "$status_cache_dir" ]] && ! mkdir -p -- "$status_cache_dir"; then status_cache_dir=""; fi
 : > "$records_file"
 while IFS= read -r deployment; do
   [[ -n "$deployment" ]] || continue
   id="$(jq -r '.id' <<< "$deployment")"
-  statuses="$(timeout "$timeout_seconds" gh api "repos/$repo/deployments/$id/statuses")" || exit 1
+  status_cache_file=""
+  if [[ -n "$status_cache_dir" ]]; then status_cache_file="$status_cache_dir/$status_cache_repo-$id.json"; fi
+  if [[ -n "$status_cache_file" && -f "$status_cache_file" ]]; then
+    statuses="$(cat "$status_cache_file")"
+    jq -e 'type == "object" and .reader_failed == true' <<< "$statuses" >/dev/null && exit 1
+  else
+    if ! statuses="$(timeout "$timeout_seconds" gh api "repos/$repo/deployments/$id/statuses")"; then
+      if [[ -n "$status_cache_file" ]]; then printf '{"reader_failed":true}\n' > "$status_cache_file.tmp.$BASHPID" && mv -f -- "$status_cache_file.tmp.$BASHPID" "$status_cache_file"; fi
+      exit 1
+    fi
+    if [[ -n "$status_cache_file" ]]; then printf '%s\n' "$statuses" > "$status_cache_file.tmp.$BASHPID" && mv -f -- "$status_cache_file.tmp.$BASHPID" "$status_cache_file"; fi
+  fi
   jq -e 'type == "array" and all(.[]; (.state | type == "string"))' <<< "$statuses" >/dev/null || exit 1
   # The NEWEST status decides whether a record is current production: a
   # rolled-back release posts `inactive` after its success status, and the

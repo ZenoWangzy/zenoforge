@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -59,11 +60,66 @@ def blocked_reason():
         if "--check" not in ARGS and any(test_file(arg) for arg in ARGS):
             return "test-file"
         return ""
-    if COMMAND in {"bash", "sh"} and any(arg == "-n" for arg in ARGS):
-        return ""
+    if COMMAND in {"bash", "sh"}:
+        if any(arg == "-n" for arg in ARGS):
+            return ""
+        i = 0
+        while i < len(ARGS):
+            arg = ARGS[i]
+            if arg == "--" or arg == "-" or not arg.startswith("-"):
+                break
+            if arg.startswith("--"):
+                if COMMAND != "bash":
+                    break
+                i += 2 if arg in {"--init-file", "--rcfile"} else 1
+                continue
+            cluster = arg[1:]
+            while cluster:
+                option, cluster = cluster[0], cluster[1:]
+                if option == "c":
+                    return ""
+                if option in {"o", "O"}:
+                    i += 1 if cluster else 2
+                    break
+            else:
+                i += 1
     if COMMAND in {"python", "python3"} and len(ARGS) >= 2 and ARGS[:2] == ["-m", "py_compile"]:
         return ""
     return "test-file" if any(test_file(arg) for arg in ARGS) else ""
+
+
+def login_shell_script_index():
+    if COMMAND not in {"bash", "sh"} or any(arg == "-n" for arg in ARGS):
+        return None
+    login = False
+    i = 0
+    while i < len(ARGS):
+        arg = ARGS[i]
+        if arg == "--" or arg == "-" or not arg.startswith("-"):
+            break
+        if arg.startswith("--"):
+            if COMMAND != "bash":
+                break
+            if arg == "--login":
+                login = True
+            i += 2 if arg in {"--init-file", "--rcfile"} else 1
+            continue
+        cluster = arg[1:]
+        skip_cluster = False
+        while cluster:
+            option, cluster = cluster[0], cluster[1:]
+            if option == "l":
+                login = True
+            elif option == "c":
+                login = login or "l" in cluster
+                return i + 1 if login and i + 1 < len(ARGS) else None
+            elif option in {"o", "O"}:
+                i += 1 if cluster else 2
+                skip_cluster = True
+                break
+        if not skip_cluster:
+            i += 1
+    return None
 
 
 def record_violation(reason):
@@ -81,8 +137,15 @@ if os.environ.get("ZF_NON_PRODUCT_UNIT") == "1":
     if reason:
         recorded = record_violation(reason)
         unit = os.environ.get("ZF_PIPELINE_UNIT", "unknown")
+        line = f"non-product-test-guard: refused unit={unit} command={COMMAND} reason={reason} recorded={int(recorded)}"
+        if guard_file := os.environ.get("ZF_NON_PRODUCT_GUARD_FILE"):
+            try:
+                with open(guard_file, "a", encoding="utf-8") as stream:
+                    stream.write(line + "\n")
+            except OSError:
+                pass
         print(
-            f"non-product-test-guard: refused unit={unit} command={COMMAND} reason={reason} recorded={int(recorded)}",
+            line,
             file=sys.stderr,
         )
         sys.exit(78)
@@ -91,4 +154,10 @@ real = real_command()
 if not real:
     print(f"non-product-test-guard: {COMMAND} unavailable", file=sys.stderr)
     sys.exit(127)
-os.execv(real, [real, *ARGS])
+exec_args = ARGS
+if os.environ.get("ZF_NON_PRODUCT_UNIT") == "1":
+    script_index = login_shell_script_index()
+    if script_index is not None:
+        exec_args = ARGS.copy()
+        exec_args[script_index] = f"PATH={shlex.quote(str(SHIM_DIR))}:$PATH; {ARGS[script_index]}"
+os.execv(real, [real, *exec_args])

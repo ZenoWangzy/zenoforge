@@ -149,20 +149,35 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
       and (if $legacy then true else (.rule|length)>0 and (.summary|length)>0 end);
     def evidence_gap: [("rerun_command","rerun_output") as $k | select((.[$k]|type)!="string" or (.[$k]|test("\\S")|not)) | $k];
     def normalized_finding: {id,severity,file,line,rule:(.rule // null),status,summary:(.summary // null),introduced_by:(.introduced_by // null),base_evidence:(.base_evidence // null)};
+    def decision_log_flag: type=="object" and keys==["entry","reason"]
+      and (.entry|type)=="string" and (.entry|test("\\S")) and (.entry|test("^[^\\r\\n]+$"))
+      and (.reason|type)=="string" and (.reason|test("\\S")) and (.reason|test("^[^\\r\\n]+$"));
     def disposition: type=="object" and (.id|type)=="string" and (.id|length)>0
       and (.disposition|IN("fixed","disproved","intentional","out-of-scope"))
       and (.reason|type)=="string" and (.reason|test("\\S")) and (.reason|test("^[^\\r\\n]+$"))
       and keys==["disposition","id","reason"];
     if type=="array" and all(.[]; finding(true)) then
-      {findings:map(normalized_finding),dispositions:[],legacy:true,dropped:0,dropped_findings:[]}
-    elif type=="object" and keys==["dispositions","findings"] and (.findings|type)=="array" and (.dispositions|type)=="array"
+      {findings:map(normalized_finding),dispositions:[],decision_log_flags:[],legacy:true,dropped:0,dropped_findings:[]}
+    elif type=="object" and (keys==["dispositions","findings"] or keys==["decision_log_flags","dispositions","findings"]) and (.findings|type)=="array" and (.dispositions|type)=="array"
       and all(.findings[]; finding(false)) and all(.dispositions[]; disposition)
+      and ((has("decision_log_flags")|not) or ((.decision_log_flags|type)=="array" and all(.decision_log_flags[]; decision_log_flag)))
       and (([.findings[].id] | length)==([.findings[].id] | unique | length))
       and (([.dispositions[].id] | length)==([.dispositions[].id] | unique | length)) then
-      {findings:(.findings|map(select(evidence_gap==[])|normalized_finding)),dispositions:.dispositions,legacy:false,
+      {findings:(.findings|map(select(evidence_gap==[])|normalized_finding)),dispositions:.dispositions,decision_log_flags:(.decision_log_flags // []),legacy:false,
        dropped:([.findings[]|select(evidence_gap!=[])]|length),
        dropped_findings:[.findings[]|select(evidence_gap!=[])|{id,reason:("no rerunnable evidence: missing "+(evidence_gap|join(", ")))}]}
     else empty end' <<<"$raw" 2>/dev/null
+}
+review_decision_log_flags_append() { # review report unit → append marked entries as JSONL in the supervisor directory
+  local report="$1" unit="$2" parsed flags
+  parsed="$(findings_block_of "$report")" || return 0
+  flags="$(jq -c '.decision_log_flags[]?' <<<"$parsed")"
+  [[ -n "$flags" ]] || return 0
+  mkdir -p "$SUP"
+  while IFS= read -r flag; do
+    jq -cn --arg at "${STAMP:-}" --arg unit "$unit" --arg report "${report##*/}" --argjson flag "$flag" \
+      '{at:$at,unit:$unit,report:$report,entry:$flag.entry,reason:$flag.reason}' >> "$SUP/decision-log-flags.jsonl"
+  done <<<"$flags"
 }
 # Actionable blocking findings provide a concrete target for the repair worker.
 review_findings_hint_update() { # report → jq update fragment for open P0/P1 findings
@@ -194,16 +209,18 @@ verdict_reask_rule() { # unit-json → prompt 片段
 }
 # 一次打回在 .review_findings 里追加一条：round 是它在 history 里的第几次打回，findings 只含阻断级（P0/P1，
 # 含 resolved 状态，由复发规则排除）；块缺失或畸形记 block=missing（node_health 的 review.findings_missing_pct 数它）。
-# 不写 history：顾问触发读 history 的最后一条是否为 review-request-changes。
+# 不追加 history：分类附在已有的打回事件上，顾问仍按最后一条 stage 识别 REQUEST-CHANGES。
 review_findings_update() { # report-path report-name → set_unit 表达式片段（以 " | " 开头）
-  local rec block
+  local rec block reason
   if block="$(findings_block_of "$1")"; then
     rec="$(jq -c '{block:"ok", findings:[.findings[] | select(.severity=="P0" or .severity=="P1")], all_findings:.findings, dispositions:[], dropped, dropped_findings}' <<<"$block")"
   else
     rec='{"block":"missing","findings":[],"dispositions":[]}'
   fi
+  reason="$(jq -r '([.findings[0].rule?, .findings[0].severity?] | map(select(type=="string" and length>0)) | first // "")[:48]' <<<"$rec")"
   printf ' | .review_findings = ((.review_findings // []) + [{round:((.history // []) | map(select(.stage=="review-request-changes")) | length), at:%s, report:%s} + %s])' \
     "$(js "$STAMP")" "$(js "$2")" "$rec"
+  if [[ -n "$reason" ]]; then printf ' | .history[-1].reason=%s' "$(js "$reason")"; fi
 }
 
 review_dispositions_update() { # repair-report → attach author dispositions to the latest finding record

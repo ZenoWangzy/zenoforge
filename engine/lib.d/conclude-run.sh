@@ -605,8 +605,10 @@ conclude_merged_run() {
   state="$(state_read "$n")" || { echo "conclude_merged_run: could not read state for #$n" >&2; return 1; }
   if [ -n "$expected_hold" ] && ! jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$state" >/dev/null; then echo "conclude_merged_run: hold for #$n changed before the merge was recorded" >&2; return 1; fi
   if jq -e '.tracker_parent == true or .state == "tracker"' <<< "$state" >/dev/null 2>&1; then
-    echo "conclude_merged_run: #$n is tracker parent; recorded PR #$pr_number merge $merge_sha without changing aggregate or release state" >&2
-    return 0
+    if ! tracker_parent_flag_is_stale "$n" "$state"; then
+      echo "conclude_merged_run: #$n is tracker parent; recorded PR #$pr_number merge $merge_sha without changing aggregate or release state" >&2
+      return 0
+    fi
   fi
   merge_detail="${merge_detail:-PR #$pr_number auto-merged (squash). Waiting on Postsubmit validate before release.}"
   record_run_decision "$n" wrapper "Merged PR #$pr_number (squash)" 0

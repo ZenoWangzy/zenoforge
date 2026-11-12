@@ -51,6 +51,23 @@
       "items": { "type": "string" },
       "description": "Exact repository-relative file or directory prefixes known from evidence. Used only to schedule concurrent work inside an expected package; return an empty array when exact paths are uncertain."
     },
+    "related": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "issue": { "type": "integer", "minimum": 1 },
+          "reason": { "type": "string" }
+        },
+        "required": ["issue", "reason"],
+        "additionalProperties": false
+      },
+      "description": "Other open issues related by module, symptom, or failing check, with a reason for each."
+    },
+    "suspected_shared_cause": {
+      "type": ["string", "null"],
+      "description": "The shared cause suspected across the related issues, when one is apparent."
+    },
     "estimated_changed_lines": {
       "type": "integer",
       "minimum": 0,
@@ -68,6 +85,6 @@
       "description": "Set required true only if acceptance cannot be met by a change in this repository. When false, location and reason are empty strings."
     }
   },
-  "required": ["category", "state", "risk_class", "level", "entry_surface", "acceptor", "advisor_reason", "brief_md", "notes_md", "expected_packages", "expected_paths", "estimated_changed_lines", "external_deliverable"],
+  "required": ["category", "state", "risk_class", "level", "entry_surface", "acceptor", "advisor_reason", "brief_md", "notes_md", "expected_packages", "expected_paths", "related", "suspected_shared_cause", "estimated_changed_lines", "external_deliverable"],
   "additionalProperties": false
 }

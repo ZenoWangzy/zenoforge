@@ -46,6 +46,12 @@ reset; dep_dead_sweep
 note="$(field issue-20 .note)"
 [[ "$note" == *'#10'* && "$note" == *'agent/issue-10@abcdef012345'* && "$note" == *'closed for size'* ]] || fail "the evidence must name predecessor, branch, SHA and why: $note"
 
+# A parked waiter gets the same automatic decision when its predecessor unit is terminal but the issue stays open and ready.
+parked_waiter='{"id":"issue-20","issue":20,"stage":"parked","parked_reason":"waiting-predecessor","blocked_on":10,"unpark_condition":"#10 delivered","task":"t","branch":"agent/issue-20","history":[]}'
+reset; ISSUE='{"state":"ready-for-agent"}'; printf '{"units":[%s,%s]}\n' "$dead" "$parked_waiter" > "$UNITS"; dep_dead_sweep
+jq -e '.units[] | select(.id=="issue-20") | .stage=="supervisor-review" and .dep_dead_proved==10 and .dep_wait_delivery==10 and .blocked_on==null' "$UNITS" >/dev/null \
+  || fail "a dead blocker must route a parked waiter to automatic arbitration: $(jq -c '.units[1]' "$UNITS")"
+
 reset; DEP_DELIVERED_CACHE[10]=1; alive 'a delivered predecessor'
 reset; jq -c '.units[0].stage="merged"' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; alive 'a merged predecessor unit'
 reset; jq -c '.units[0].stage="parked"' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; alive 'a parked predecessor unit'
@@ -149,6 +155,11 @@ reset; printf '{"units":[%s,%s]}\n' "$dead" "$(parked_repeat | jq -c '.history=[
 # Not proven dead: stays parked.
 reset; PRS='[{"number":510,"headRefName":"x","body":""}]'; printf '{"units":[%s,%s]}\n' "$dead" "$(parked_repeat)" > "$UNITS"; dep_dead_unpark
 [[ "$(field issue-20 .stage)" == parked ]] || fail 'a predecessor with an open PR is not dead: the unit stays parked'
+# A blocker that later delivers clears the repeat park even after the waiter had already received its one dead-blocker release.
+reset; printf '{"units":[%s,%s]}\n' "$dead" "$(parked_repeat | jq -c '.history=[{stage:"unblocked",result:"stopped waiting on #10: x"}]')" > "$UNITS"
+DEP_DELIVERED_CACHE=([10]=1); dep_dead_unpark
+jq -e '.units[] | select(.id=="issue-20") | .stage=="implement-pending" and .parked_reason==null and .unpark_condition==null and .dep_wait_delivery==null' "$UNITS" >/dev/null \
+  || fail "a delivered predecessor must release a repeated dead-blocker park: $(field issue-20 .stage)"
 # And release_dependency_blocks, which the loop calls, never reads that park as delivered.
 reset; printf '{"units":[%s,%s]}\n' "$(jq -c '.stage="implement"' <<<"$dead")" "$(parked_repeat)" > "$UNITS"; closed_state CLOSED; release_dependency_blocks
 [[ "$(field issue-20 .stage)" == parked ]] || fail 'a dep-dead-repeat park must not read a closed predecessor as delivered'

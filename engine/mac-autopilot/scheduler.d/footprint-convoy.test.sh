@@ -34,7 +34,7 @@ pending_fixture_stubs() {
   dispatch_order() { jqf -c '.units[] | select(.stage | test("-pending$"))' "$UNITS"; }
   ticket_budget_reason() { return 0; }
   loop_rounds() { echo 0; }
-  blocking_body_dependency() { return 0; }
+  blocking_body_dependency() { return 1; }
   room_for() { return 0; }
   pick() { PICK_MODEL=fixture; PICK_EFFORT=high; return 0; }
   # Stands in for the real check: a live owner defers the unit only while the walk's first pass asks for a verdict.
@@ -134,6 +134,59 @@ grep -Fq 'footprint wait unit=candidate owner=owner candidate_path=src/hot owner
 unset ZF_FOOTPRINT_HOTSPOT_MIN
 TICK_FOOTPRINT_DEFER=false
 
+# Three recent conflicts make the path hot. A live writer whose file is inside the candidate's
+# predicted directory scope makes it wait; a two-event overlap on another file keeps today's behavior.
+mkdir -p "$ROOT/packages/fixture/src"
+printf 'hot\n' > "$ROOT/packages/fixture/src/hot.ts"
+printf 'cold\n' > "$ROOT/packages/fixture/src/cold.ts"
+printf 'owner\n' > "$ROOT/packages/fixture/owner-marker.ts"
+printf 'candidate\n' > "$ROOT/packages/fixture/candidate-marker.ts"
+git -C "$ROOT" add .
+git -C "$ROOT" commit -qm 'hot conflict scope fixture'
+git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
+hot_path=packages/fixture/src/hot.ts
+cold_path=packages/fixture/src/cold.ts
+candidate_scope='["packages/fixture/src","packages/fixture/candidate-marker.ts"]'
+jq -n --arg at "$STAMP" --arg hot "$hot_path" --arg cold "$cold_path" '
+  {units:
+    ([range(0;3) as $i | {id:("hot-history-" + ($i|tostring)),history:[{stage:"merge-conflict",at:$at,conflict_files:($hot+" count=1")}]}]
+     + [range(0;2) as $i | {id:("cold-history-" + ($i|tostring)),history:[{stage:"merge-conflict",at:$at,conflict_files:($cold+" count=1")}]}])}
+' > "$UNITS_ARCHIVE"
+write_units --argjson scope "$candidate_scope" '{units:[
+  {id:"hot-candidate",stage:"implement-pending",footprint:$scope},
+  {id:"cold-candidate",stage:"implement-pending",footprint:$scope}]}'
+: > "$LOG"
+TICK_FOOTPRINT_HOT_CONFLICT_PATHS='[]'
+TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED=false
+TICK_FOOTPRINT_PREFLIGHT_STATUS=ready; TICK_FOOTPRINT_CONFLICT_VALID=true
+footprint_preflight_snapshot || fail 'hot conflict paths did not load through preflight'
+[[ "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS_LOADED" == true ]] || fail 'per-tick footprint preflight did not load hot conflict paths'
+[[ "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS" == '["packages/fixture/src/hot.ts"]' ]] || fail "three events did not select only the hot path: $TICK_FOOTPRINT_HOT_CONFLICT_PATHS"
+hot_owner='[{"id":"hot-owner","stage":"implement","footprint":["packages/fixture/src/hot.ts","packages/fixture/owner-marker.ts"]}]'
+hot_rows=$'hot-candidate\t'"$candidate_scope"$'\t'"$candidate_scope"
+hot_conflict="$(active_footprint_conflicts_batch "$hot_owner" "$hot_rows")"
+[[ "$hot_conflict" == $'hot-candidate\thot-owner' ]] || fail "hot live-writer overlap was not ordered: $hot_conflict"
+TICK_ACTIVE_FOOTPRINTS="$hot_owner"; TICK_ACTIVE_FOOTPRINTS_VALID=true
+TICK_FOOTPRINT_PREFLIGHT_STATUS=ready; TICK_FOOTPRINT_CONFLICT_VALID=true
+TICK_FOOTPRINT_PREFLIGHT_CONFLICT=(); TICK_FOOTPRINT_PREFLIGHT_CONFLICT[hot-candidate]=hot-owner
+TICK_FOOTPRINT_CACHE[hot-candidate]="$candidate_scope"; TICK_CHECK_SCOPE[hot-candidate]="$candidate_scope"; TICK_HOTSPOT_COUNTS[hot-candidate]='{}'
+TICK_FOOTPRINT_DEFER=true
+hot_unit="$(jqf -c '.units[] | select(.id=="hot-candidate")' "$UNITS")"
+if _footprint_room hot-candidate "$hot_unit" false; then fail 'hot candidate did not wait behind its live writer'; fi
+[[ "$(jqf -r '.units[] | select(.id=="hot-candidate") | .footprint_wait_owner // empty' "$UNITS")" == hot-owner ]] || fail 'hot wait was not recorded on the candidate'
+cold_owner='[{"id":"cold-owner","stage":"implement","footprint":["packages/fixture/src/cold.ts","packages/fixture/owner-marker.ts"]}]'
+cold_rows=$'cold-candidate\t'"$candidate_scope"$'\t'"$candidate_scope"
+cold_conflict="$(active_footprint_conflicts_batch "$cold_owner" "$cold_rows")"
+[[ -z "$cold_conflict" ]] || fail "non-hot directory/file overlap changed today's behavior: $cold_conflict"
+TICK_ACTIVE_FOOTPRINTS="$cold_owner"; TICK_ACTIVE_FOOTPRINTS_VALID=true
+TICK_FOOTPRINT_PREFLIGHT_STATUS=ready; TICK_FOOTPRINT_CONFLICT_VALID=true; TICK_FOOTPRINT_PREFLIGHT_CONFLICT=()
+cold_unit="$(jqf -c '.units[] | select(.id=="cold-candidate")' "$UNITS")"
+_footprint_room cold-candidate "$cold_unit" false || fail 'non-hot overlap was made to wait'
+[[ -z "$(jqf -r '.units[] | select(.id=="cold-candidate") | .footprint_wait_owner // empty' "$UNITS")" ]] || fail 'non-hot candidate retained a wait marker'
+[[ "$(grep -cF 'footprint hot-conflict paths window=24h threshold=3' "$LOG")" == 1 ]] || fail 'hot paths were not logged once per tick'
+grep -Fq "paths=$hot_path" "$LOG" || fail 'hot path was omitted from the tick log'
+grep -Fq "$cold_path" "$LOG" && fail 'the two-event cold path was logged as hot'
+
 # Directory predictions only conflict on known shared files, unless a side has no known files.
 mkdir -p "$ROOT/packages/fleet-gateway/src/auth" "$ROOT/migrations/meta"
 touch "$ROOT/packages/fleet-gateway/src/auth/browser-session.test.ts" "$ROOT/packages/fleet-gateway/src/other.ts" "$ROOT/migrations/meta/_journal.json"
@@ -183,6 +236,29 @@ jqf -e '.units[] | select(.id=="stale-waiter") | has("footprint_wait_owner") | n
 pending_fixture_stubs
 dispatch_pending true
 [[ "$dispatch_calls" == 1 ]] || fail "stale waiter did not reach dispatch (calls=$dispatch_calls)"
+
+# A refill that finds an open body blocker must park it, so intake capacity excludes it.
+write_units '{units:[{id:"body-blocked-refill",issue:901,stage:"implement-pending",task:"fixture task",branch:"agent/issue-901",body_blocked_by:[900],history:[]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+pending_fixture_stubs
+blocking_body_dependency() {
+  [[ "$(jqf -r '.id' <<<"$1")" == body-blocked-refill ]] || return 1
+  printf '900\n'
+}
+dispatch_pending true
+jqf -e '.units[] | select(.id=="body-blocked-refill") | .stage=="blocked-external" and .blocked_on==900' "$UNITS" >/dev/null \
+  || fail 'refill left a body-blocked unit in the pending capacity count'
+[[ "$(startable_pending_count)" == 0 ]] || fail 'refill counted a parked body blocker as startable'
+
+# An empty body-blocker result must not park a unit that the native gate allowed through.
+write_units '{units:[{id:"clear-body-block-refill",issue:902,stage:"implement-pending",task:"fixture task",branch:"agent/issue-902",body_blocked_by:[],history:[]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+pending_fixture_stubs
+blocking_body_dependency() { return 0; }
+dispatch_pending true
+[[ "$dispatch_calls" == 1 ]] || fail "empty body-blocker result parked a clear unit (calls=$dispatch_calls)"
+jqf -e '.units[] | select(.id=="clear-body-block-refill") | .stage=="implement-pending" and (.blocked_on // null)==null' "$UNITS" >/dev/null \
+  || fail 'empty body-blocker result changed the unit stage'
 
 # A live owner retains the wait and its age; leaving the writer set clears its waiters.
 write_units '{units:[

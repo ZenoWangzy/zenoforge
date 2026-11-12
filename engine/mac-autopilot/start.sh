@@ -4,12 +4,29 @@
 # 已安装 systemd 用户单元（ops/host-units/zenoforge-autopilot-*.service）时交给 systemd 托管，
 # 否则回退 nohup。看板只打印绝对路径，不自动打开桌面窗口。
 set -euo pipefail
+# Capture the caller's ZF_ENGINE_DIR before runtime-env.sh (platform-env.sh) derives an internal one;
+# the branch detection below must react to what the caller set, not to that derivation.
+ZF_ENGINE_DIR_EXTERNAL="${ZF_ENGINE_DIR:-}"
 SRC="$(cd "$(dirname "$0")" && pwd -P)"
 source "$SRC/runtime-env.sh"
 RUN="$MAC_AUTOPILOT_SUPERVISOR_DIR"
 A="$MAC_AUTOPILOT_RUNTIME_DIR"
 LIVE="$RUN/autopi-live"
 VERSIONS="$RUN/autopi-versions"
+# --sync-only 从 loop 的 sync_from_main 每拍重跑（loop.sh），失败时只写 loop.out；调度器日志必须点名失败的
+# 步骤（10-30 起 immutable 部署的同步每拍静默失败，.synced-head 四天不动）。EXIT trap 是唯一的失败日志点，
+# SYNC_STEP 由各阶段推进；成功路径不写。CLI 发布阶段在同一 trap 里追加 stage 清理。
+SYNC_STEP=init
+sync_fail() { # rc → 一行进 scheduler.log 并回显到 stderr（loop.out 收 stderr）
+  printf '[%s] SYNC-FAIL step=%s rc=%s pin=%s; live stays at %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SYNC_STEP" "$1" "${head:-unknown}" "${previous:-none}" \
+    | tee -a "$A/scheduler.log" >&2
+}
+sync_fail_on_exit() {
+  local rc=$?
+  if (( rc != 0 )); then sync_fail "$rc"; fi
+}
+trap 'sync_fail_on_exit' EXIT
 SYNC_ONLY=0
 [[ "${1:-}" == "--sync-only" ]] && SYNC_ONLY=1
 mkdir -p "$A/alerts" "$VERSIONS"
@@ -20,15 +37,15 @@ mkdir -p "$A/alerts" "$VERSIONS"
 # The zenoforge CLI is the other non-git case: it links ~/.zenoforge/engine/<version> into the checkout as engine/
 # (untracked), so git has nothing to archive. CLI_LINK pins by that version's directory name and copies the linked version.
 ENGINE_REPO="$MAC_AUTOPILOT_ROOT" ENGINE_REL=engine IMMUTABLE=0 CLI_LINK=0
-engine_dir="${ZF_ENGINE_DIR:-$(cd "$SRC/.." && pwd -P)}"
-if [[ -L "$MAC_AUTOPILOT_ROOT/engine" && -z "${ZF_ENGINE_DIR:-}" ]]; then
+engine_dir="${ZF_ENGINE_DIR_EXTERNAL:-$(cd "$SRC/.." && pwd -P)}"
+if [[ -L "$MAC_AUTOPILOT_ROOT/engine" && -z "$ZF_ENGINE_DIR_EXTERNAL" ]]; then
   # The installed version can itself sit below an unrelated Git checkout.
   # The checkout's engine link is authoritative, not Git's ancestor discovery.
   CLI_LINK=1
 elif ! git -C "$engine_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   IMMUTABLE=1 ENGINE_REL=. ZF_ENGINE_DIR="$engine_dir"
   export ZF_ENGINE_DIR
-elif [[ -n "${ZF_ENGINE_DIR:-}" ]]; then
+elif [[ -n "$ZF_ENGINE_DIR_EXTERNAL" ]]; then
   ENGINE_REPO="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-toplevel)"
   ENGINE_REL="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-prefix)"; ENGINE_REL="${ENGINE_REL%/}"
   export ZF_ENGINE_DIR # the pin self-check runs the scheduler in child shells
@@ -40,17 +57,18 @@ else
   version="$VERSIONS/$head"
 fi
 if (( ! IMMUTABLE )) && [[ ! -d "$version" ]]; then
+  SYNC_STEP=publish
   if (( CLI_LINK )); then
     # CLI install: engine/ is an untracked link to an engine version, so a worktree of this checkout would not
     # contain it. Copy the linked version, and the skills its checkout keeps next to engine/.
     stage="$(mktemp -d "$VERSIONS/.stage.XXXXXX")"
-    trap 'rm -rf -- "$stage"' EXIT
+    trap 'rc=$?; rm -rf -- "$stage"; if (( rc != 0 )); then sync_fail "$rc"; fi' EXIT
     mkdir "$stage/engine"
     tar -c -C "$MAC_AUTOPILOT_ROOT/engine/" . | tar -x -C "$stage/engine"
     skills="$(cd -P "$MAC_AUTOPILOT_ROOT/engine/.." && pwd)/.agents/skills"
     [[ -d "$skills" ]] && { mkdir -p "$stage/.agents"; cp -R "$skills" "$stage/.agents/skills"; }
     mv "$stage" "$version"
-    trap - EXIT
+    trap 'sync_fail_on_exit' EXIT
   else
     # Full-tree pinned worktree, objects shared with the live checkout; no copy list can miss files
     # again (10-29: the archive list missed verification-plan-runtime.sh, #4618, and
@@ -62,6 +80,7 @@ if (( ! IMMUTABLE )) && [[ ! -d "$version" ]]; then
   fi
 fi
 code="$version/$ENGINE_REL/mac-autopilot"
+SYNC_STEP=config-reconcile
 source "$code/config-reconcile.sh"
 # The runtime template is deployment data: target config first, then the pack, then the copy shipped
 # beside this script. config.sh resolves it the same way the scheduler's tick reconcile does.
@@ -92,21 +111,55 @@ pin_scheduler_self_check() { # version-dir → 0 = 该 pin 可以切 live
       tick_prs | pr_census_by_number | jqf -e "type == \"object\"" >/dev/null
     ' _ "$code" ) || { echo "pin self-check: live merge census unusable in $1" >&2; return 1; }
 }
+# 0 = 两个已解析的 mac-autopilot 目录跑的是同一份 engine 内容。版本目录旁的 BUILD-INFO zenoforge_sha 标识
+# 构建 engine 的来源（产品 main 每动一次都会改版本 id 里的 pack/skill 分量，engine 分量不变：2026-11-03 20:01Z
+# 这样一次内容未变的 engine-live 切换打断了演示 harness）。没有 BUILD-INFO 的部署退回逐文件比较。
+engine_content_same() { # live-mac-autopilot new-mac-autopilot
+  local live_engine new_engine live_sha new_sha
+  live_engine="$(dirname -- "$1")" new_engine="$(dirname -- "$2")"
+  [[ "$live_engine" == "$new_engine" ]] && return 0
+  live_sha="$(sed -n 's/^zenoforge_sha=//p' "$(dirname -- "$live_engine")/BUILD-INFO" 2>/dev/null | head -n1)"
+  new_sha="$(sed -n 's/^zenoforge_sha=//p' "$(dirname -- "$new_engine")/BUILD-INFO" 2>/dev/null | head -n1)"
+  if [[ -n "$live_sha" || -n "$new_sha" ]]; then
+    [[ -n "$live_sha" && -n "$new_sha" && "$live_sha" == "$new_sha" ]]
+  else
+    diff -r -q "$live_engine" "$new_engine" >/dev/null 2>&1
+  fi
+}
 if (( IMMUTABLE )); then
-  self_check=("$engine_dir/engine-sync.sh" --check "$(dirname "$(readlink -f "$engine_dir")")")
+  # engine-sync dispatches to the target repository's build hook (build.json). An immutable engine sits in a version
+  # directory, so config.sh derives ZF_REPO_DIR from that directory, not from the checkout: without the checkout's
+  # path every --check dies at "build.json not found" and the loop re-runs the sync each tick (10-30 onward).
+  # MAC_AUTOPILOT_ROOT is the checkout the loop runs start.sh from; hand it over explicitly.
+  self_check=(env ZF_REPO_DIR="$MAC_AUTOPILOT_ROOT" "$engine_dir/engine-sync.sh" --check "$(dirname "$(readlink -f "$engine_dir")")")
 else
   self_check=(pin_scheduler_self_check "$version")
 fi
+SYNC_STEP=self-check
 if ! "${self_check[@]}"; then
-  printf '[%s] SELF-CHECK FAILED pin=%s; live stays at %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$head" "${previous:-none}" | tee -a "$A/scheduler.log" >&2
-  exit 1
+  exit 1 # the EXIT trap logs the one SYNC-FAIL line naming this step
 fi
 target="autopi-versions/$head/$ENGINE_REL/mac-autopilot"
 (( ! IMMUTABLE )) || target="$engine_dir/mac-autopilot"
-# Publish only a complete version; retain the prior tick's sibling files until the next switch.
-ln -sfn "$target" "$RUN/.autopi-live.$$"
-mv -Tf "$RUN/.autopi-live.$$" "$LIVE"
+# 切 live 指针前一步：immutable 部署里产品 main 每动一次就重发布一个版本 id 并挪 engine-live，即使 engine
+# 内容逐字节相同。内容未变就不切（指针保持原样，SYNC-SKIP 记一行），退出仍为 0，让 loop 记录 head 不再重跑。
+skip_swap=0
+if (( IMMUTABLE )) && [[ -n "$previous" ]]; then
+  resolved_live="$(readlink -e -- "$LIVE" 2>/dev/null || true)"
+  resolved_target="$(readlink -e -- "$target" 2>/dev/null || true)"
+  if [[ -n "$resolved_live" && -n "$resolved_target" ]] \
+    && engine_content_same "$resolved_live" "$resolved_target"; then
+    skip_swap=1
+    printf '[%s] SYNC-SKIP engine content unchanged; live stays at %s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$resolved_live" | tee -a "$A/scheduler.log" >&2
+  fi
+fi
+SYNC_STEP=switch-live
+if (( ! skip_swap )); then
+  # Publish only a complete version; retain the prior tick's sibling files until the next switch.
+  ln -sfn "$target" "$RUN/.autopi-live.$$"
+  mv -Tf "$RUN/.autopi-live.$$" "$LIVE"
+fi
 ln -sfn ../autopi-live/dashboard.html "$A/dashboard.html"
 if (( ! IMMUTABLE )) && [[ "$previous" != "$target" ]]; then
   previous="${previous#autopi-versions/}"; previous="${previous%%/*}"
@@ -127,6 +180,7 @@ echo "synced autopilot runtime: $LIVE ($head)"
 echo "dashboard: $A/dashboard.html"
 (( SYNC_ONLY )) && exit 0
 
+SYNC_STEP=units
 if autopilot_manual_pause_is_valid; then
   echo "paused, not restarting"
   exit 0

@@ -742,7 +742,7 @@ if ! issue_verdict_snapshot_guard "$N" "$VERDICT_SNAPSHOT_JSON"; then
   echo "run-triage: #$N -- $ISSUE_VERDICT_GUARD_REASON; skipping stale triage verdict and all writes" >&2
   exit 0
 fi
-
+record_triage_related_issues "$N" "$RESULT"
 TRIAGE_MERGED_PR=""
 if [ "$STATE" = awaiting-release ]; then
   if [ -n "$BATCH_RESULT_FILE" ]; then

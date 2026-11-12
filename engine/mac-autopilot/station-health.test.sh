@@ -106,3 +106,25 @@ printf '[2026-11-07T05:00:00Z] release-closer: deployed=%s closed=[] awaiting-re
 run
 [[ "$(jq -r .stations.release.last_out "$R/station-health.json")" == 2026-11-07T05:00:00Z && "$(field release out_24h)" == 1 ]] || fail 'closer with closed=[] must count as one release out'
 echo 'ok - empty release-closer is one release out'
+
+# Intake waiting is what its candidate walk kept: a closed or skip-labelled issue whose state file still says
+# ready-for-agent is not waiting. Without the cache, every ready-for-agent state counts (the old view).
+R="$test_env_root/runtime-candidates"; H="$test_env_root/home-candidates"; mkdir -p "$R/alerts" "$H/state" "$H/logs"
+echo '{"units":[]}' > "$R/units.json"
+echo '{"state":"ready-for-agent","state_changed_at":"2026-11-06T01:00:00Z"}' > "$H/state/4409.json"
+echo '{"state":"ready-for-agent","state_changed_at":"2026-11-06T02:00:00Z"}' > "$H/state/4799.json"
+echo '{"state":"ready-for-agent","state_changed_at":"2026-11-07T01:00:00Z"}' > "$H/state/5563.json"
+run() { python3 "$here/station_health.py" --runtime "$R" --agent-home "$H" --pause-file "$H/PAUSE" --now "$NOW"; }
+run
+[[ "$(field intake waiting)" == 3 ]] || fail 'without an intake candidate cache every ready-for-agent state must count'
+jq -cn --argjson at 1794030600 '{created_at: $at, schema: 4, rows: "5563\tpr\tTitle\t[\"enhancement\",\"ready-for-agent\"]\tZ2Fyb2Jh"}' > "$R/intake-candidates.json"
+run
+[[ "$(field intake waiting)" == 1 && "$(field intake oldest_wait_min)" == 300.0 ]] || fail 'only the open, eligible #5563 may count as intake waiting'
+echo 'ok - intake waiting counts only the candidates intake walks'
+
+# A candidates file older than the intake stall bound (90 min) means intake stopped writing it: the count falls back to
+# every ready-for-agent state, so a dead intake still raises its stall.
+jq -cn --argjson at 1794024000 '{created_at: $at, schema: 4, rows: "5563\tpr\tTitle\t[\"enhancement\",\"ready-for-agent\"]\tZ2Fyb2Jh"}' > "$R/intake-candidates.json"
+run
+[[ "$(field intake waiting)" == 3 ]] || fail 'a stale candidates file must fall back to the full ready-for-agent count'
+echo 'ok - a stale intake candidates file falls back to every ready-for-agent state'

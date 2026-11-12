@@ -653,46 +653,8 @@ PY
 }
 
 # maintainer_health_mail_spend_facts <home> <start> <end>
-# What the spend log recorded in [start, end): tokens from the rows that carry a
-# token count, dollars from the rows that carry a price. The two kinds of rows are
-# different meters (a row has one or the other), so each sum is exact for its own
-# meter and the two are never added. Null when the log is missing or unreadable.
 maintainer_health_mail_spend_facts() {
-  local home="$1" start="$2" end="$3"
-  python3 - "$home" "$start" "$end" <<'PY'
-import glob
-import json
-import os
-import sys
-from datetime import datetime, timezone
-
-home, start_raw, end_raw = sys.argv[1:]
-start, end = int(start_raw), int(end_raw)
-first_day = datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%d")
-last_day = datetime.fromtimestamp(max(start, end - 1), timezone.utc).strftime("%Y-%m-%d")
-paths = sorted(path for path in glob.glob(os.path.join(home, "spend", "????-??-??.log"))
-               if first_day <= os.path.basename(path)[:10] <= last_day)
-tokens, money, rows = 0, 0.0, 0
-try:
-    for path in paths:
-        with open(path, encoding="utf-8") as source:
-            for line in source:
-                fields = line.rstrip("\r\n").split("\t")
-                if not fields[0].isdigit() or not start <= int(fields[0]) < end:
-                    continue
-                rows += 1
-                if len(fields) > 5 and fields[5].isdigit():
-                    tokens += int(fields[5])
-                try:
-                    price = float(fields[4]) if len(fields) > 4 else 0.0
-                except ValueError:
-                    price = 0.0
-                if 0 <= price < float("inf"):
-                    money += price
-except OSError:
-    rows = 0
-print(json.dumps({"tokens": tokens, "money_usd": round(money, 2)} if rows else None, separators=(",", ":")))
-PY
+  python3 "$OWNER_REPORT_COMPARE_PY" spend "$1" "$2" "$3"
 }
 
 # maintainer_health_mail_quality_facts <ledger> <home> <start> <end> <repo_root>
@@ -773,12 +735,13 @@ maintainer_health_mail_decision_facts() {
 # cannot read its source leaves null, and the renderer drops that figure.
 maintainer_health_mail_daily_facts() {
   local home="$1" ledger="$2" now="$3" repo_root="$4"
-  local start=$((now - 86400)) output deploy_at spend spend_prev quality decisions day reason stations facts compare
+  local start=$((now - 86400)) output deploy_at spend spend_prev merges quality decisions day reason stations facts compare
   output="$(maintainer_health_mail_ladder_facts "$home" "$now")" || output=null
   deploy_at="$(maintainer_health_mail_last_deploy)" || deploy_at=null
   [[ "$deploy_at" =~ ^[0-9]+$ ]] || deploy_at=null
   spend="$(maintainer_health_mail_spend_facts "$home" "$start" "$now")" || spend=null
   spend_prev="$(maintainer_health_mail_spend_facts "$home" "$((start - 86400))" "$start")" || spend_prev=null
+  merges="$(python3 "$OWNER_REPORT_COMPARE_PY" merges "$home" "$now")" || merges=null
   quality="$(maintainer_health_mail_quality_facts "$ledger" "$home" "$start" "$now" "$repo_root")" || quality='{}'
   decisions="$(maintainer_health_mail_decision_facts "$ledger")" || decisions='{"items":[],"total":null,"incomplete":0}'
   day="$(maintainer_health_mail_report_day "$now")" || return 1
@@ -786,10 +749,10 @@ maintainer_health_mail_daily_facts() {
   stations="$(owner_report_station_facts "$home" "$now")" || stations=null
   facts="$(jq -cn --arg day "$day" --rawfile reason <(printf '%s' "$reason") --argjson now "$now" \
     --argjson output "$output" --argjson deploy_at "$deploy_at" --argjson spend "$spend" --argjson spend_prev "$spend_prev" \
-    --argjson quality "$quality" --argjson decisions "$decisions" --argjson stations "$stations" \
+    --argjson merges "$merges" --argjson quality "$quality" --argjson decisions "$decisions" --argjson stations "$stations" \
     '{report_day:$day,conclusion:{reason:$reason},window:{end:$now},
       output:$output,last_deploy_at:$deploy_at,
-      spend:{day:$spend,prev_day:$spend_prev},quality:$quality,decisions:$decisions,stations:$stations}')" || return 1
+      spend:{day:$spend,prev_day:$spend_prev},merges:$merges,quality:$quality,decisions:$decisions,stations:$stations}')" || return 1
   # A failed comparison leaves the report without those lines, never with a guessed one.
   compare="$(owner_report_compare "$facts" "$home" "$now" "$repo_root")" || compare=null
   jq -c --argjson compare "$compare" '.compare=$compare' <<< "$facts"
@@ -906,7 +869,7 @@ maintainer_health_mail_contract_inbox() {
 }
 
 maintainer_health_mail_deliver() {
-  local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" claim home contract_errors isolated row key reason
+  local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" facts="${7:-}" claim home contract_errors isolated row key reason rendered="" html_body="" images="[]"
   home="${ledger%/night/founder-health-mail.json}"
   if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
     isolated="$(maintainer_health_mail_output_contract "$body" "$now" isolate-lines)" || return 1
@@ -925,9 +888,14 @@ maintainer_health_mail_deliver() {
       return 1
     fi
   fi
+  if [ -n "$facts" ]; then
+    rendered="$(maintainer_health_mail_build_html "$facts" "$body" "$home")" || return 1
+    html_body="$(jq -r '.html // empty' <<< "$rendered")" || return 1
+    images="$(jq -c '.images // []' <<< "$rendered")" || return 1
+  fi
   claim="$(maintainer_health_mail_claim_digest "$ledger" "$slot" "$now" "$events")" || return 1
   [ "$claim" = reserved ] || return 0
-  if notify_maintainer_health "$subject" "$body"; then
+  if notify_maintainer_health "$subject" "$body" "$html_body" "$images"; then
     maintainer_health_mail_mark_sent "$ledger" "$now"
     return $?
   fi
@@ -965,7 +933,7 @@ maintainer_health_mail_tick() {
   body="$(maintainer_health_mail_build_body "$facts")" || return 1
   stored="$(owner_report_snapshot_write "$facts" "$home" "$now")" || stored=failed
   case "$stored" in stored|exists) ;; *) printf 'owner report: snapshot not stored: %s\n' "$stored" >&2 ;; esac
-  maintainer_health_mail_deliver "$ledger" "$now" "$slot" "$subject" "$body" "$events"
+  maintainer_health_mail_deliver "$ledger" "$now" "$slot" "$subject" "$body" "$events" "$facts"
 }
 
 

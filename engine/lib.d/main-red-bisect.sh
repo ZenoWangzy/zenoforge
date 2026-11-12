@@ -415,7 +415,7 @@ main_red_paused_discovery() {
 # the red SHA: main recovered after it (a same-SHA green is the flaky path).
 # The sweep closes such an open session (not revert-open) as the terminal status
 # `recovered`, with recovered_by_sha and closed_at.
-main_red_green_after() { # runs_json red_sha workflow ; prints the green head SHA
+main_red_green_after() { # runs_json red_sha workflow [with_post_land] ; prints the green head SHA
   local sha
   while IFS= read -r sha; do
     [[ "$sha" =~ ^[0-9a-f]{40}$ && "$sha" != "$2" ]] || continue
@@ -423,12 +423,48 @@ main_red_green_after() { # runs_json red_sha workflow ; prints the green head SH
       printf '%s\n' "$sha"
       return 0
     fi
-  done < <(jq -r --arg w "$3" '[.workflow_runs[]?
+  done < <(jq -r --arg w "$3" --argjson pl "${4:-0}" '[.workflow_runs[]?
       | select(.red_workflow == $w and .status == "completed" and .conclusion == "success"
-        and ((.display_title // "") | startswith("Pipeline suites post-land ") | not))]
+        and ($pl == 1 or ((.display_title // "") | startswith("Pipeline suites post-land ") | not)))]
     | sort_by([.created_at // "", .id // 0]) | reverse | .[].head_sha // empty' <<< "$1" 2>/dev/null)
   return 1
 }
+
+# A post-land run is green only for the suites its own range maps to, so it alone never closes a
+# pipeline-suites session. This closes it once the session's own range (focused_base..focused_head) is
+# re-run against a descendant of the red SHA and passes: the same focused suites, on code that includes
+# the fix-forward. Pipeline suites never runs the full set on main and ci.yml does not run these suites,
+# so no other green proves it. Returns 0 only when it wrote `recovered`.
+main_red_recover_by_probe() { # red_sha session_json runs_json
+  local red_sha="$1" session="$2" base head probe attempts age verdict
+  base="$(jq -r '.focused_base_sha // empty' <<< "$session")"
+  head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
+  [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+  probe="$(jq -r '.recovery_probe_sha // empty' <<< "$session")"
+  [[ "$probe" =~ ^[0-9a-f]{40}$ ]] || probe="$(main_red_green_after "$3" "$red_sha" pipeline-suites.yml 1)" || return 1
+  verdict="$(main_red_probe_verdict "$probe" pipeline-suites.yml "$head")" || return 1
+  case "$verdict" in
+    success)
+      main_red_session_write "$red_sha" recovered ".recovered_by_sha = \"$probe\" | .closed_at = \$now" || return 1
+      main_red_log "red ${red_sha:0:12}: mapped suites pass at descendant ${probe:0:12}; closed session as recovered"
+      return 0
+      ;;
+    none)
+      attempts="$(jq -r '.recovery_probe_attempts // 0' <<< "$session")"
+      age=$(( $(date +%s) - $(stat -c %Y "$(main_red_session_file "$red_sha")" 2>/dev/null || echo 0) ))
+      [[ "$attempts" =~ ^[0-9]+$ ]] || return 1
+      if [ "$attempts" -lt "$MAIN_RED_PROBE_DISPATCH_ATTEMPTS" ] \
+          && { [ "$attempts" -eq 0 ] || [ "$age" -ge "$MAIN_RED_PROBE_RETRY_DELAY_SECONDS" ]; }; then
+        main_red_session_write "$red_sha" "$(jq -r .status <<< "$session")" \
+          ".recovery_probe_sha = \"$probe\" | .recovery_probe_attempts = ($attempts + 1)" || return 1
+        main_red_dispatch_probe "$probe" "$red_sha" pipeline-suites.yml "$base" "$head" \
+          || echo "main-red-bisect: recovery probe dispatch failed for ${probe:0:12} (attempt $((attempts + 1))/$MAIN_RED_PROBE_DISPATCH_ATTEMPTS)" >&2
+      fi
+      ;;
+  esac
+  return 1
+}
+
 
 
 # A same-SHA rerun cancelled by a superseding push has no usable verdict ("none"), and its run is
@@ -527,6 +563,9 @@ main_red_bisect_sweep() {
           && main_red_session_write "$red_sha" recovered \
             ".recovered_by_sha = \"$green_sha\" | .closed_at = \$now"; then
         main_red_log "red ${red_sha:0:12}: main green again at ${green_sha:0:12}; closed $status session as recovered"
+        continue
+      fi
+      if [[ "$workflow" == pipeline-suites.yml ]] && main_red_recover_by_probe "$red_sha" "$session" "$runs"; then
         continue
       fi
     fi

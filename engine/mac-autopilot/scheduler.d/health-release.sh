@@ -92,6 +92,17 @@ phase() {
   case "$phase_name" in refill_merge_pass | register_new_issues) refill_cost_record "$phase_name" "$elapsed" ;; esac
   return "$rc"
 }
+# A refill step that phase() does not wrap: same tick-phases entry, but it runs even after a refused lock wait, as it did before it was timed.
+step_timed() { # name command...
+  local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0
+  gh_before="$(tick_gh_calls_count)"
+  phase_mark "$1"
+  "${@:2}" || rc=$?
+  gh_after="$(tick_gh_calls_count)"
+  (( gh_after >= gh_before )) && gh_delta=$((gh_after - gh_before))
+  TICK_PHASE_DETAILS+="${TICK_PHASE_DETAILS:+,}$1:$((SECONDS - t0))s/${gh_delta}gh"
+  return "$rc"
+}
 
 stage_slo_watch() {
   local budgets row id stage since key

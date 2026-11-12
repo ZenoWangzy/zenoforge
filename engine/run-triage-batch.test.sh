@@ -210,7 +210,7 @@ export ZF_GCLOUD_BIN=/nonexistent/gcloud
 export AGENT_TRIAGE_CAP=3
 
 valid_result() {
-  jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L1",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}'
+  jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L1",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],related:[],suspected_shared_cause:null,estimated_changed_lines:0}'
 }
 VALID="$(valid_result)"
 INVALID="$(jq -c 'del(.notes_md)' <<< "$VALID")"
@@ -371,7 +371,7 @@ printf '%s\n' "$(date +%s)" > "$AGENT_HOME/gitnexus-analyze-last-start"
 jq -n --arg updated_at "$TEST_UPDATED_AT" \
   '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at}' \
   > "$AGENT_HOME/state/910504.json"
-jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: freshness failure fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: freshness failure fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],related:[],suspected_shared_cause:null,estimated_changed_lines:0}' \
   | jq -c --argjson issue 910504 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910504 2>&1)"
 assert_not_contains "failed analyze streak bypasses batch freshness wait" "$RUN_OUTPUT" 'all candidates still require the same unconfirmed L2 freshness'
@@ -396,7 +396,7 @@ assert_eq "changed issue version returns to Codex" 1 "$(wc -l < "$FAKE_CODEX_ARG
 jq -n --arg updated_at "$TEST_UPDATED_AT" \
   '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at}' \
   > "$AGENT_HOME/state/910507.json"
-jq -nc '{category:"enhancement",state:"ready-for-human",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: freshness fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-human",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: freshness fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],related:[],suspected_shared_cause:null,estimated_changed_lines:0}' \
   | jq -c --argjson issue 910507 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" FAKE_ISSUE_UPDATED_AT_AFTER_FIRST_VIEW=2026-09-27T00:00:00Z bash "$BATCH_SRC" --scheduled 910507 2>&1)"
 assert_eq "live issue update after batch snapshot prevents retry suppression" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
@@ -423,7 +423,7 @@ printf '%s\n' '{"lastCommit":"stale"}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
 jq -n --arg updated_at "$TEST_UPDATED_AT" --argjson since "$(( $(date +%s) - 7201 ))" \
   '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at,triage_freshness_deferred_since_epoch:$since}' \
   > "$AGENT_HOME/state/910508.json"
-jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: stale L2 fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: stale L2 fixture.",notes_md:"No questions.",expected_packages:["packages/react-example"],expected_paths:[],related:[],suspected_shared_cause:null,estimated_changed_lines:0}' \
   | jq -c --argjson issue 910508 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910508 2>&1)"
 assert_not_contains "expired freshness deferral does not skip stale L2 triage" "$RUN_OUTPUT" 'all candidates still require the same unconfirmed L2 freshness'
@@ -442,7 +442,7 @@ printf '%s\n' '{"lastCommit":"stale"}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
 jq -n --arg updated_at "$TEST_UPDATED_AT" --argjson retry "$(( $(date +%s) + 600 ))" --argjson since "$(date +%s)" \
   '{triage_retry_after_epoch:$retry,triage_freshness_deferred_issue_updated_at:$updated_at,triage_freshness_deferred_since_epoch:$since}' \
   > "$AGENT_HOME/state/910509.json"
-jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: maintainer test.",notes_md:"Index freshness unconfirmed.",expected_packages:["packages/react-example"],expected_paths:[],estimated_changed_lines:0}' \
+jq -nc '{category:"enhancement",state:"ready-for-agent",risk_class:"P1",level:"L2",entry_surface:"Web /chat/",acceptor:"maintainer",advisor_reason:"none",brief_md:"Summary: maintainer test.",notes_md:"Index freshness unconfirmed.",expected_packages:["packages/react-example"],expected_paths:[],related:[],suspected_shared_cause:null,estimated_changed_lines:0}' \
   | jq -c --argjson issue 910509 '{issue:$issue,result:.}' > "$FAKE_CODEX_OUTPUT"
 RUN_OUTPUT="$(FAKE_AUTHOR=maintainer FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910509 2>&1)"
 assert_eq "founder-test freshness deadline does not suppress triage" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"

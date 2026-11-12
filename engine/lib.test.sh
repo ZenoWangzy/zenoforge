@@ -217,13 +217,16 @@ if [ "${LIB_TEST_STALE_HOLD_REQUEUE_ONLY:-0}" = 1 ] || [ "${LIB_TEST_HOLD_REQUEU
 # Release conclusions use the exact PR's actual merge time, not handoff time.
 RELEASE_CLOSE_HOME="$INBOX_HELPER_HOME/release-close"
 mkdir -p "$RELEASE_CLOSE_HOME/state"
-RELEASE_CLOSE_OUT="$(AGENT_HOME="$RELEASE_CLOSE_HOME" DRY_RUN=0 AGENT_DRY_RUN=0 REPO=test/repo bash -c '
+RELEASE_CLOSE_OUT="$(AGENT_HOME="$RELEASE_CLOSE_HOME" DRY_RUN=0 AGENT_DRY_RUN=0 ZF_REPO=test/repo bash -c '
   set -euo pipefail
   source "$1/lib.sh"
   ensure_state_labels() { :; }
   is_on_hold() { return 1; }
   guarded_write() { :; }
-  gh() { printf "%s\n" '\''{"number":795,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"0123456789abcdef0123456789abcdef01234567"},"mergedAt":"2026-10-07T10:00:00Z"}'\''; }
+  gh() {
+    [[ "$1" == api && "$2" == repos/test/repo/pulls/795 ]] || return 1
+    printf "%s\n" '\''{"number":795,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"0123456789abcdef0123456789abcdef01234567","merged_at":"2026-10-07T10:00:00Z"}'\''
+  }
   seed='\''{"state":"awaiting-release","deploy_state":"deployed","requeued_at":"2026-10-07T09:00:00Z","run":{"outcome":"merged","merged_at":"2026-10-07T11:00:00Z","evidence":{"pr_number":795}}}'\''
   for started in null '\''"2026-10-07T08:00:00Z"'\''; do
     jq --argjson started "$started" '\''.run.implement_started_at = $started'\'' <<< "$seed" > "$STATE_DIR/740050.json"
@@ -436,6 +439,8 @@ AGENT_HOME="$BLOCKED_CHECKS_HOME" AGENT_DRY_RUN=0 DRY_RUN=0 REPO=test/repo \
     issue_transition_allowed untracked tracker intake-parent:roadmap-container:spec/ADR-pilot || exit 16
     issue_transition_allowed ready-for-agent tracker intake-parent:roadmap-container:has-sub-issues || exit 17
     if issue_transition_allowed needs-triage tracker intake-parent:roadmap-container:spec/ADR-pilot; then exit 18; fi
+    issue_transition_allowed needs-recut tracker intake-parent:roadmap-container:split-delivery || exit 19
+    if issue_transition_allowed needs-recut tracker intake-parent:roadmap-container:has-sub-issues; then exit 20; fi
     guarded_write() { printf "%s\n" "$*" >> "$BLOCKED_CHECKS_GH_LOG"; }
     record_implement_blocked_checks "$1" "$0" "$BLOCKED_CHECKS_LOG"
     record_implement_blocked_checks "$1" "$0" "$BLOCKED_CHECKS_LOG"
@@ -499,23 +504,40 @@ PY
 )"
 assert_eq 'production inbox writes use shared helper or the lib-unavailable fallback' '' "$INBOX_WRITER_VIOLATIONS"
 # Only main-targeted merged PRs may enter release state.
-MERGED_PR_BASE_OUT="$(REPO=test/repo bash -c '
+MERGED_PR_BASE_OUT="$(ZF_REPO=test/repo bash -c '
   set -euo pipefail
   source "$1/lib.sh"
-  gh() { printf "%s\n" '\''{"number":795,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"main-sha"}}'\''; }
+  gh() {
+    [[ "$1" == api && "$#" -eq 2 ]] || return 1
+    case "$2" in
+      repos/test/repo/pulls/795)
+        printf "%s\n" '\''{"number":795,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"main-sha","merged_at":"2026-11-04T19:54:15Z"}'\''
+        ;;
+      repos/test/repo/pulls/796)
+        printf "%s\n" '\''{"number":796,"merged":true,"base":{"ref":"agent/issue-795"},"merge_commit_sha":"feature-sha","merged_at":"2026-11-04T19:54:15Z"}'\''
+        ;;
+      repos/test/repo/pulls/797)
+        printf "%s\n" '\''{"number":797,"merged":false,"base":{"ref":"main"},"merge_commit_sha":"test-merge-sha","merged_at":null}'\''
+        ;;
+      *) return 1 ;;
+    esac
+  }
   printf "main=%s\n" "$(merged_pr_main_row 795)"
-  gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
   if merged_pr_main_row 796 >/dev/null; then echo feature=accepted; else echo feature=rejected; fi
+  if merged_pr_main_row 797 >/dev/null; then echo unmerged=accepted; else echo unmerged=rejected; fi
 ' _ "$SCRIPT_DIR")"
-assert_eq 'merged PR resolver requires base main' $'main=795\tmain-sha\nfeature=rejected' "$MERGED_PR_BASE_OUT"
+assert_eq 'merged PR resolver requires a merged PR targeting main' $'main=795\tmain-sha\nfeature=rejected\nunmerged=rejected' "$MERGED_PR_BASE_OUT"
 
 MERGED_PR_GUARD_HOME="$(mktemp -d)"
 mkdir -p "$MERGED_PR_GUARD_HOME/state"
 printf '%s\n' '{"state":"implement","attempts":1}' > "$MERGED_PR_GUARD_HOME/state/510008.json"
-MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" REPO=test/repo bash -c '
+MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" ZF_REPO=test/repo bash -c '
   set -euo pipefail
   source "$1/lib.sh"
-  gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
+  gh() {
+    [[ "$1" == api && "$2" == repos/test/repo/pulls/796 ]] || return 1
+    printf "%s\n" '\''{"number":796,"merged":true,"base":{"ref":"agent/issue-795"},"merge_commit_sha":"feature-sha","merged_at":"2026-11-04T19:54:15Z"}'\''
+  }
   if conclude_merged_run 510008 796; then echo accepted; else echo rejected; fi
   jq -c . "$STATE_DIR/510008.json"
 ' _ "$SCRIPT_DIR")"
@@ -913,6 +935,8 @@ ISSUE_TRANSITION_OUTPUT="$(AGENT_HOME="$ISSUE_TRANSITION_HOME" REPO=test/repo \
     if issue_transition_allowed finish-first awaiting-release pipeline-requeue; then exit 28; fi
     issue_transition_allowed needs-advisor released all-children-released || exit 25
     if issue_transition_allowed needs-advisor released unrelated; then exit 26; fi
+    issue_transition_allowed needs-advisor awaiting-release merged-pr || exit 29
+    if issue_transition_allowed needs-advisor awaiting-release unrelated; then exit 30; fi
     printf "all-state-tracker=allowed unrelated-reason=refused\n"
     printf "%s\n" '\''{"state":"ready-for-agent","labels":[{"name":"ready-for-agent"},{"name":"priority:top"}]}'\'' > "$ISSUE_TRANSITION_ISSUE"
     printf "%s\n" '\''{"state":"ready-for-agent","run":{"implement_started_at":"2026-10-07T08:00:00Z"}}'\'' > "$AGENT_HOME/state/740030.json"
@@ -953,8 +977,12 @@ ISSUE_TRANSITION_OUTPUT="$(AGENT_HOME="$ISSUE_TRANSITION_HOME" REPO=test/repo \
       test "$(jq -r .tracker_parent "$AGENT_HOME/state/740030.json")" = true
       test "$(jq -r .hold "$AGENT_HOME/state/740030.json")" = null
       test "$(jq -r .advisor_ruled_at "$AGENT_HOME/state/740030.json")" = null
-      test "$(jq -r .labels[].name "$ISSUE_TRANSITION_ISSUE" | sort | paste -sd, -)" = priority:top
+      test "$(jq -r .labels[].name "$ISSUE_TRANSITION_ISSUE" | sort | paste -sd, -)" = priority:top,tracker
     done
+    printf "%s\n" '\''{"state":"tracker","labels":[{"name":"priority:top"}]}'\'' > "$ISSUE_TRANSITION_ISSUE"
+    printf "%s\n" '\''{"state":"tracker"}'\'' > "$AGENT_HOME/state/740030.json"
+    issue_transition 740030 tracker recut-parent-retired
+    test "$(jq -r .labels[].name "$ISSUE_TRANSITION_ISSUE" | sort | paste -sd, -)" = priority:top,tracker
     printf "retired-finish-first-needs-info-awaiting-release=local-and-github\\n"
   ' _ "$SCRIPT_DIR" 2>&1)"
 assert_not_contains "state transitions reject illegal merged requeue" "$ISSUE_TRANSITION_OUTPUT" "unexpected fake gh args"
@@ -2784,6 +2812,32 @@ assert_eq "the X-Zenoforge-Agent-Issue marker header is stamped with the issue n
 assert_eq "no From header is set -- the Gmail API fills in the authenticated account" \
   "" "$(mime_get_header "$RAW_MSG" From)"
 
+INLINE_PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/otcAAAAASUVORK5CYII='
+INLINE_IMAGES="$(jq -cn --arg data "$INLINE_PNG_B64" '[{cid:"owner-chart",filename:"owner-chart.png",data:$data}]')"
+CHART_MSG="$(build_gmail_raw_message 'someone@example.com' '工厂日报' '纯文本备用内容' '' 'fixture' \
+  '<html><body><img src="cid:owner-chart"></body></html>' "$INLINE_IMAGES")"
+assert_eq 'inline PNG is nested inside the HTML alternative as multipart/related' \
+  multipart/related "$(python3 -c '
+import base64, sys
+from email import policy
+from email.parser import BytesParser
+raw = sys.argv[1]
+msg = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+sys.stdout.write(msg.get_payload()[1].get_content_type())
+' "$CHART_MSG")"
+assert_eq 'inline PNG keeps the requested CID and image/png type' \
+  'owner-chart:image/png:inline' "$(python3 -c '
+import base64, sys
+from email import policy
+from email.parser import BytesParser
+raw = sys.argv[1]
+msg = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+part = msg.get_payload()[1].get_payload()[1]
+sys.stdout.write(": ".join((part["Content-ID"].strip("<>"), part.get_content_type(), part.get_content_disposition())))
+' "$CHART_MSG" | tr -d ' ')"
+assert_contains 'inline-image mail preserves its plain-text fallback' \
+  "$(mime_get_part "$CHART_MSG" plain)" '纯文本备用内容'
+
 # --- Defect 7, 2026-09-13: Gmail credential self-check ----------------------
 # gmail_credential_alert_reason (notify.sh): pure decision logic, no gcloud/
 # curl/network. notify.test.sh exercises the probe with fake gcloud and curl.
@@ -3666,7 +3720,7 @@ EOF
 chmod +x "$EF_BIN/curl"
 T0=1800000000
 EF_OUT="$(
-  PATH="$EF_BIN:$PATH" AGENT_HOME="$EF_HOME" AGENT_DRY_RUN=0 ENV_FAULT_LIB_DIR="$SCRIPT_DIR" ENV_FAULT_ENV_FILE="$EF_ENV" REPO="test/repo" EF_NETWORK_PROBE_STATUS=0 \
+  PATH="$EF_BIN:$PATH" TEST_BIN="$EF_BIN" AGENT_HOME="$EF_HOME" AGENT_DRY_RUN=0 ENV_FAULT_LIB_DIR="$SCRIPT_DIR" ENV_FAULT_ENV_FILE="$EF_ENV" REPO="test/repo" EF_NETWORK_PROBE_STATUS=0 \
   ZF_REPO_DIR="$EF_REPO" ZF_ENGINE_DIR="$EF_REPO/engine" \
   ZF_GCLOUD_BIN=/nonexistent/gcloud bash -c '
     # No set -e here on purpose: this block OBSERVES non-zero return codes
@@ -3716,15 +3770,115 @@ EF_OUT="$(
     echo "other_free=$(stage_dispatch_allowed implement "[\"packages/other\"]" $((t0 + 130)) 2>/dev/null && echo yes || echo no)"
     echo "triage_blocked=$(stage_dispatch_allowed triage "[]" $((t0 + 130)) 2>/dev/null && echo no || echo yes)"
     echo "advisor_free=$(stage_dispatch_allowed advisor "[]" $((t0 + 130)) 2>/dev/null && echo yes || echo no)"
-    # canary: the triage quarantine opened at the reconcile above (t0+120s),
-    # so its first canary is due 15 minutes after THAT; exactly one goes
-    # through, then the backoff doubles
+    # A slice that stops before a job exists must not spend the canary.
     tq=$((t0 + 120))
+    echo "canary_let_through=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
+    (
+    mkdir -p "$ZF_ENGINE_DIR"
+    cat > "$ZF_ENGINE_DIR/run-triage.sh" <<"EOF"
+#!/usr/bin/env bash
+exit "${RUN_RC:-0}"
+EOF
+    cat > "$ZF_ENGINE_DIR/run-advisor.sh" <<"EOF"
+#!/usr/bin/env bash
+source "$ENV_FAULT_LIB_DIR/lib.sh"
+eval "$(sed -n "/^web_advisor_provider_dispatch_question_async() {/,/^}/p" "$ENV_FAULT_LIB_DIR/providers/web-advisor-provider.sh")"
+WEB_ADVISOR_PROVIDER_JOB_DIR="$AGENT_HOME/jobs"
+WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS=600
+web_advisor_provider_start_job_unit() { return 0; }
+printf "question\n" > "$AGENT_HOME/question"
+printf "%s" "$ZF_QUARANTINE_CANARY_SCOPES" | tr "\n" "," > "$ADVISOR_CHILD_SCOPES"
+web_advisor_provider_dispatch_question_async child "$AGENT_HOME/question"
+jq -r .canaries "$(quarantine_file advisor)" > "$ADVISOR_FIRST_CANARIES"
+web_advisor_provider_dispatch_question_async child-reask "$AGENT_HOME/question"
+jq -r .canaries "$(quarantine_file advisor)" > "$ADVISOR_REASK_CANARIES"
+EOF
+    chmod +x "$ZF_ENGINE_DIR/run-triage.sh" "$ZF_ENGINE_DIR/run-advisor.sh"
+    ln -s run-triage.sh "$ZF_ENGINE_DIR/run-implement.sh"
+    cat > "$TEST_BIN/systemd-run" <<"EOF"
+#!/usr/bin/env bash
+args=("$@"); script=-1
+for ((i=0; i<${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == -E ]]; then next=$((i + 1)); [[ "${args[$next]}" != ZF_QUARANTINE_CANARY_SCOPES=* ]] || export "${args[$next]}"; fi
+  [[ "${args[$i]}" != */run-triage.sh && "${args[$i]}" != */run-advisor.sh && "${args[$i]}" != */run-implement.sh ]] || { script=$i; break; }
+done
+(( script >= 0 )) || exit 97
+[[ "${FAIL_SYSTEMD_LAUNCH:-0}" != 1 ]] || exit 1
+exec "${args[@]:$script}"
+EOF
+    chmod +x "$TEST_BIN/systemd-run"
+    eval "$(sed -n "/^dispatch() {/,/^}/p" "$ENV_FAULT_LIB_DIR/issue-pipeline.sh")"
+    SCRIPT_DIR="$ENV_FAULT_LIB_DIR"
+    eval "$(declare -f quarantine_mark_stage_dispatch_canaries | sed -e s/quarantine_mark_stage_dispatch_canaries/real_quarantine_mark_stage_dispatch_canaries/g)"
+    MARK_LOG="$AGENT_HOME/mark-calls"
+    quarantine_mark_stage_dispatch_canaries() { printf "%s\n" "$1" >> "$MARK_LOG"; real_quarantine_mark_stage_dispatch_canaries "$1" "$((tq + 16 * 60))"; }
+    coord_issue_key() { printf "issue:%s\n" "$1"; }
+    pipeline_claim_begin() { PIPELINE_CLAIM_KEY="issue:$1"; PIPELINE_CLAIM_STAGE="$2"; PIPELINE_CLAIM_UNIT="$3"; PIPELINE_CLAIM_OWNER=fixture; }
+    coord_assert_owned() { return 0; }
+    pipeline_claim_drop() { PIPELINE_CLAIM_KEY=""; PIPELINE_CLAIM_STAGE=""; PIPELINE_CLAIM_UNIT=""; PIPELINE_CLAIM_OWNER=""; }
+    pipeline_claim_keep() { pipeline_claim_drop; }
+    # This fixture needs the normal no-OOM result; issue-pipeline.test.sh covers the memory retry branch.
+    consume_unit_memory_oom() { return 1; }
+    record_env_fault() { :; }
+    guarded_write() { "$@"; }
+    UNIT_PREFIX_TRANSIENT=zf TRIAGE_RUNTIME_MAX_SEC=60 ADVISOR_RUNTIME_MAX_SEC=60 IMPLEMENT_RUNTIME_MAX_SEC=60
+    PIPELINE_CLAIM_KEY="" PIPELINE_CLAIM_UNIT="" PIPELINE_CLAIM_STAGE="" PIPELINE_CLAIM_OWNER=""
+    dispatch_status=0; RUN_RC=124; export RUN_RC; dispatch triage 929 || dispatch_status=$?
+    echo "dispatch_124_status=$dispatch_status"
+    echo "dispatch_124_mark_calls=$(wc -l < "$MARK_LOG" 2>/dev/null || echo 0)"
+    echo "canary_overrun_unchanged=$(jq -e --argjson next "$((tq + QUARANTINE_CANARY_INITIAL_SECONDS))" ".canaries == 0 and .next_canary_at == \$next" "$(quarantine_file triage)" >/dev/null && echo yes || echo no)"
     echo "before_canary=$(quarantine_decision triage $((tq + 14 * 60)))"
     echo "canary_due=$(quarantine_decision triage $((tq + 16 * 60)))"
-    echo "canary_let_through=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
+    quarantine_open advisor env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
+    quarantine_open advisor@packages/advisor-test env:test-gate:advisor "d" 2 "$tq" 2>/dev/null
+    stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) >/dev/null 2>&1
+    stage_dispatch_allowed advisor "[\"packages/advisor-test\"]" $((tq + 16 * 60)) >/dev/null 2>&1
+    ADVISOR_CHILD_SCOPES="$AGENT_HOME/advisor-child-scopes"
+    ADVISOR_FIRST_CANARIES="$AGENT_HOME/advisor-first-canaries"
+    ADVISOR_REASK_CANARIES="$AGENT_HOME/advisor-reask-canaries"
+    export ADVISOR_CHILD_SCOPES ADVISOR_FIRST_CANARIES ADVISOR_REASK_CANARIES
+    dispatch_status=0; dispatch advisor 930 || dispatch_status=$?
+    echo "advisor_child_status=$dispatch_status"
+    echo "advisor_child_scopes=$(cat "$ADVISOR_CHILD_SCOPES")"
+    echo "advisor_child_triage_canaries=$(jq -r .canaries "$(quarantine_file triage)")"
+    echo "advisor_child_stage_canaries=$(jq -r .canaries "$(quarantine_file advisor)")"
+    echo "advisor_child_package_canaries=$(jq -r .canaries "$(quarantine_file advisor@packages/advisor-test)")"
+    STAGE_DISPATCH_CANARY_SCOPES=""
+    stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) >/dev/null 2>&1
+    echo "real_job_canaries_before=$(jq -r .canaries "$(quarantine_file triage)")"
+    dispatch_status=0; RUN_RC=0; export RUN_RC; dispatch triage 931 || dispatch_status=$?
+    echo "real_job_started=$(if [ "$dispatch_status" -eq 0 ]; then echo marked; else echo not-marked; fi)"
+    echo "real_job_canaries_after=$(jq -r .canaries "$(quarantine_file triage)")"
     echo "second_same_tick=$(stage_dispatch_allowed triage "[]" $((tq + 16 * 60)) 2>/dev/null && echo yes || echo no)"
+    echo "real_job_canaries=$(jq -r .canaries "$(quarantine_file triage)")"
     echo "next_canary_in=$(( $(jq -r .next_canary_at "$(quarantine_file triage)") - (tq + 16 * 60) ))"
+    echo "advisor_reask_stage_canaries=$(cat "$ADVISOR_REASK_CANARIES")"
+    echo "advisor_reask_first_canaries=$(cat "$ADVISOR_FIRST_CANARIES")"
+    eval "$(sed -n "/^dispatch_advisor_batch() {/,/^}/p" "$ENV_FAULT_LIB_DIR/issue-pipeline.sh")"
+    zf_advisor_batch_runner() { printf "%s\n" "$ZF_ENGINE_DIR/run-advisor.sh"; }
+    agent_memory_floor_allows() { return 0; }; stage_unit_active() { return 1; }
+    NEEDS_ADVISOR_IDS=""; ZF_ADVISOR_BATCH_UNIT_ENV=(); ADVISOR_RUNTIME_MAX_SEC=60; UNIT_PREFIX_TRANSIENT=zf
+    dispatch_advisor_batch 1 "advisor,advisor@packages/advisor-test"; echo "advisor_batch_child_scopes=$(cat "$ADVISOR_CHILD_SCOPES")"
+    # Trace requeue persistence, issue-pipeline launch, and scheduler bridge in one shell.
+    now="$(date +%s)"; quarantine_open implement env:test-gate:requeue fixture 2 "$now" >/dev/null 2>&1; qf="$(quarantine_file implement)"
+    jq --argjson now "$now" ".next_canary_at = \$now" "$qf" > "$qf.tmp" && mv "$qf.tmp" "$qf"
+    printf "%s\n" "{\"attempts\":0,\"unit_memory_ooms\":{},\"run\":{\"conclusion\":{}}}" > "$AGENT_HOME/state/932.json"
+    STAGE_DISPATCH_CANARY_SCOPES=""; quarantine_stage_canary_reserve implement
+    state_merge 932 ".run.conclusion.canary_reserved_scopes = \"$(quarantine_canary_scope_list_for_stage implement)\""
+    quarantine_stage_canary_forget_stage implement; implement_runs_since_last_hold_lift() { IMPLEMENT_REPEAT_RUN_COUNT=0; }
+    RUN_RC=0; export RUN_RC; dispatch implement 932 || :
+    ROOT="$ZF_REPO_DIR" SCHEDULER_AGENT_LIB="$ENV_FAULT_LIB_DIR/lib.sh" SCHEDULER_SCOPE_LIB_DIR="$ENV_FAULT_LIB_DIR/lib.d"; scheduler_issue_state() { state_read "$1"; }
+    jqf() { command jq "$@"; }
+    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh")"
+    scheduler_bridge_status=0; scheduler_mark_canary_after_worker_start 932 || scheduler_bridge_status=$?
+    echo "scheduler_bridge_status=$scheduler_bridge_status"
+    echo "requeue_scheduler_canaries=$(jq -r .canaries "$qf")"; echo "requeue_scheduler_reservation=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
+    state_merge 932 ".run.conclusion.canary_reserved_scopes = \"implement\""; STAGE_DISPATCH_CANARY_SCOPES=implement
+    FAIL_SYSTEMD_LAUNCH=1; RUN_RC=0; export FAIL_SYSTEMD_LAUNCH RUN_RC; dispatch implement 932 || :
+    unset FAIL_SYSTEMD_LAUNCH
+    echo "failed_launch_canaries=$(jq -r .canaries "$qf")"; echo "failed_launch_memory_reserved=$(quarantine_stage_canary_pending implement && echo yes || echo no)"
+    echo "failed_launch_state_reserved=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
+    )
     # canary survived (no new fault within grace) -> lifted
     reconcile_quarantines "$((tq + 16 * 60 + 31 * 60))" 2>/dev/null
     echo "triage_lifted=$([ -f "$(quarantine_file triage)" ] && echo no || echo yes)"
@@ -3750,8 +3904,8 @@ EF_OUT="$(
     rc=0; env_fault_probe env:nothing-known || rc=$?; echo "probe_unknown_rc=$rc"
     rc=0; env_fault_repair env:nothing-known || rc=$?; echo "repair_unknown_rc=$rc"
     echo "key_sanitized=$(env_fault_key "env:test-gate:../../x y")"
-  ' 2>&1
-)"
+    ' 2>&1
+  )"
 rm -rf "$EF_HOME" "$EF_BIN"
 ef() { printf '%s\n' "$EF_OUT" | grep -m1 "^$1=" | cut -d= -f2-; }
 assert_eq "env_fault_is_systemic: nothing recorded is not systemic" "no" "$(ef 'systemic(empty)')"
@@ -3775,9 +3929,37 @@ assert_eq "stage_dispatch_allowed: the quarantined stage is blocked" "yes" "$(ef
 assert_eq "stage_dispatch_allowed: an unrelated stage keeps running" "yes" "$(ef advisor_free)"
 assert_eq "quarantine_decision: open before the first canary is due" "open" "$(ef before_canary)"
 assert_eq "quarantine_decision: canary due after 15 minutes" "canary" "$(ef canary_due)"
+assert_eq "a canary slice overrun before job creation leaves its schedule unchanged" "yes" "$(ef canary_overrun_unchanged)"
+assert_eq "dispatch() sees the run-triage stub return 124" "1" "$(ef dispatch_124_status)"
+assert_eq "dispatch() does not mark a canary when run-triage returns 124" "0" "$(ef dispatch_124_mark_calls)"
 assert_eq "stage_dispatch_allowed: the canary goes through" "yes" "$(ef canary_let_through)"
+assert_eq "stage dispatch charges the canary after a real job starts" "marked" "$(ef real_job_started)"
 assert_eq "stage_dispatch_allowed: a second candidate the same tick does not" "no" "$(ef second_same_tick)"
+assert_eq "advisor child receives only advisor canary scopes" "advisor,advisor@packages/advisor-test" "$(ef advisor_child_scopes)"
+assert_eq "advisor child leaves a reserved triage scope uncharged" "0" "$(ef advisor_child_triage_canaries)"
+assert_eq "advisor child marks its stage canary" "1" "$(ef advisor_child_stage_canaries)"
+assert_eq "advisor child marks its package canary" "1" "$(ef advisor_child_package_canaries)"
+assert_eq "advisor re-ask does not charge its inherited canary again" "1" "$(ef advisor_reask_stage_canaries)"
+assert_eq "advisor first job charges its canary once" "1" "$(ef advisor_reask_first_canaries)"
+assert_eq "a real job starts with canaries at zero before the mark" "0" "$(ef real_job_canaries_before)"
+assert_eq "a real job start increments the canary count once" "1" "$(ef real_job_canaries_after)"
 assert_eq "quarantine_mark_canary: the next canary waits twice as long" "1800" "$(ef next_canary_in)"
+assert_eq "same-process requeue and issue-pipeline plus scheduler charge one canary" "1" "$(ef requeue_scheduler_canaries)"
+assert_eq "scheduler consumes the persisted canary reservation" "" "$(ef requeue_scheduler_reservation)"
+assert_eq "scheduler canary bridge runs successfully in its fixture" "0" "$(ef scheduler_bridge_status)"
+assert_eq "failed issue-pipeline launch leaves the canary uncharged" "1" "$(ef failed_launch_canaries)"
+assert_eq "failed issue-pipeline launch clears in-memory canary reservation" "no" "$(ef failed_launch_memory_reserved)"
+assert_eq "failed issue-pipeline launch clears persisted canary reservation" "" "$(ef failed_launch_state_reserved)"
+assert_eq "advisor batch passes its reserved scopes to the launched runner" "advisor,advisor@packages/advisor-test" "$(ef advisor_batch_child_scopes)"
+PROVIDER_DISPATCH_BODY="$(sed -n '/^web_advisor_provider_dispatch_question_async() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
+assert_contains "advisor provider uses the shared canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine_mark_canary_scope_list'
+assert_contains "advisor provider reports a failed canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine canary mark failed'
+QUARANTINE_MARK_BODY="$(sed -n '/^quarantine_mark_canary() {/,/^}/p' "$SCRIPT_DIR/lib.d/quarantine.sh")"
+assert_contains "canary read-modify-write takes a per-scope flock" "$QUARANTINE_MARK_BODY" 'flock -x'
+BLOCKER_REQUEUE_BODY="$(sed -n '/^reconcile_blocking_issue_root() {/,/^}/p' "$SCRIPT_DIR/lib.d/blockers.sh")"
+assert_contains "blocker requeue persists its canary reservation" "$BLOCKER_REQUEUE_BODY" 'canary_reserved_scopes'
+assert_contains "blocker requeue clears its in-memory reservation after persistence" "$BLOCKER_REQUEUE_BODY" 'quarantine_stage_canary_forget_stage implement'
+assert_contains "scheduler consumes blocker reservations in the worker-start bridge" "$(cat "$SCRIPT_DIR/mac-autopilot/scheduler.d/dispatch.sh")" 'quarantine_mark_canary_scope_list "$scope"'
 assert_eq "reconcile: a canary with no new fault inside the grace period lifts the quarantine" "yes" "$(ef triage_lifted)"
 assert_eq "reconcile: a canary followed by the same fault keeps it" "yes" "$(ef docker_still_quarantined)"
 assert_eq "env_fault_probe: git identity fails against an env file without the keys" "fail" "$(ef probe_before)"
@@ -6264,13 +6446,34 @@ if [ "$1" = issue ] && [ "$2" = comment ]; then
     fi
   done
 fi
-if [ "$1" = issue ] && [ "$2" = view ]; then printf '%s\n' '{"state":"OPEN"}'; fi
-if [ "$1" = pr ] && [ "$2" = view ]; then
-  case "$3" in
-    991005) printf '{"number":%s,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$3" "$PIPELINE_CLOSE_LINKED_SHA" ;;
-    991006) printf '{"number":%s,"state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$3" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
-    991007) printf '{"number":%s,"state":"MERGED","baseRefName":"main","mergedAt":"2026-10-12T18:01:06Z","mergeCommit":{"oid":"%s"}}\n' "$3" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+if [ "$1" = issue ] && [ "$2" = view ]; then
+  case "$*" in
+    *'--json state'*) printf '%s\n' OPEN ;;
+    *'--json title,body,subIssuesSummary'*)
+      case "$3" in
+        991007) printf '%s\n' '{"title":"tracker umbrella","body":"","subIssuesSummary":{"total":1,"completed":0}}' ;;
+        *) printf '%s\n' '{"title":"tracker leaf","body":"","subIssuesSummary":{"total":0,"completed":0}}' ;;
+      esac ;;
+    *) printf '%s\n' '{"state":"OPEN"}' ;;
   esac
+fi
+if [ "$1" = api ] && [[ "${2:-}" == repos/test/repo/pulls/* ]]; then
+  pr_number="${2##*/}"
+  case "$pr_number" in
+    991005) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_LINKED_SHA" ;;
+    991006) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+    991007) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+    991010) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+  esac
+fi
+if [ "$1" = api ] && [[ "${2:-}" == repos/test/repo/issues/*/sub_issues?per_page=100 ]]; then
+  issue_number="${2#repos/test/repo/issues/}"
+  issue_number="${issue_number%%/*}"
+  if [ "$issue_number" = 991007 ]; then
+    printf '%s\n' '[{"number":991009,"state":"open","closed_at":null,"labels":[]}]'
+  else
+    printf '%s\n' '[]'
+  fi
 fi
 if [ "$1" = api ] && [[ " $* " == *"/comments?"* ]]; then printf '[[]]\n'; fi
 EOF
@@ -6283,7 +6486,7 @@ git -C "$PIPELINE_CLOSE_FIXTURE/repo" commit --allow-empty -m 'fix(agent): unrel
 PIPELINE_CLOSE_UNLINKED_SHA="$(git -C "$PIPELINE_CLOSE_FIXTURE/repo" rev-parse HEAD)"
 git -C "$PIPELINE_CLOSE_FIXTURE/repo" update-ref refs/remotes/origin/main "$PIPELINE_CLOSE_UNLINKED_SHA"
 PIPELINE_MERGED_LINKED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
-  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
   PIPELINE_GH_LOG="$PIPELINE_GH_LOG" PIPELINE_CLOSE_LINKED_SHA="$PIPELINE_CLOSE_LINKED_SHA" \
   PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" \
   bash -c '
@@ -6299,7 +6502,7 @@ assert_eq "merged pipeline-system PR closes as pipeline-system when commit cites
   $'pipeline-system\tconcluded\t'"$PIPELINE_CLOSE_LINKED_SHA"$'\tconcluded\ttrue' "$PIPELINE_MERGED_LINKED_OUT"
 
 PIPELINE_MERGED_UNLINKED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
-  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
   PIPELINE_GH_LOG="$PIPELINE_GH_LOG" PIPELINE_CLOSE_LINKED_SHA="$PIPELINE_CLOSE_LINKED_SHA" \
   PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" \
   bash -c '
@@ -6317,11 +6520,11 @@ assert_not_contains "unlinked PR close evidence does not close issue" \
   "$(cat "$PIPELINE_GH_LOG")" 'issue close 991006'
 
 mkdir -p "$PIPELINE_CLOSE_FIXTURE/home/state"
-jq -n '{state:"tracker",tracker_parent:true,run:{outcome:"not-completed",evidence:{}}}' \
+jq -n '{state:"tracker",tracker_parent:true,recut_children:[],run:{outcome:"not-completed",evidence:{}}}' \
   > "$PIPELINE_CLOSE_FIXTURE/home/state/991007.json"
 TRACKER_GH_LOG="$PIPELINE_CLOSE_FIXTURE/tracker-gh.log"
 PIPELINE_TRACKER_MERGED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
-  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
   PIPELINE_GH_LOG="$TRACKER_GH_LOG" PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" \
   PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" bash -c '
     set -euo pipefail
@@ -6330,13 +6533,35 @@ PIPELINE_TRACKER_MERGED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
     state_read 991007 | jq -r --arg result "$result" \
       "[\$result,.state,.tracker_parent,.run.outcome,.run.evidence.pr_number,.run.evidence.merged_pr.number,.run.evidence.merged_pr.merge_sha,.run.evidence.merged_pr.merged_at] | @tsv"
   ' _ "$SCRIPT_DIR")"
-assert_eq "tracker parent records exact merged PR without entering release state" \
+assert_eq "tracker with an open GitHub sub-issue records exact merge without entering release state" \
   $'0\ttracker\ttrue\tnot-completed\t991007\t991007\t'"$PIPELINE_CLOSE_UNLINKED_SHA"$'\t2026-10-12T18:01:06Z' \
   "$PIPELINE_TRACKER_MERGED_OUT"
 assert_not_contains "tracker parent merge evidence does not mutate issue labels or close" \
   "$(cat "$TRACKER_GH_LOG")" 'issue edit'
 assert_not_contains "tracker parent merge evidence does not close the issue" \
   "$(cat "$TRACKER_GH_LOG")" 'issue close'
+
+jq -n '{state:"tracker",tracker_parent:true,recut_children:[],run:{outcome:"not-completed",evidence:{}}}' \
+  > "$PIPELINE_CLOSE_FIXTURE/home/state/991010.json"
+TRACKER_LEAF_GH_LOG="$PIPELINE_CLOSE_FIXTURE/tracker-leaf-gh.log"
+PIPELINE_TRACKER_LEAF_MERGED_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
+  ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" ZF_REPO=test/repo \
+  PIPELINE_GH_LOG="$TRACKER_LEAF_GH_LOG" PIPELINE_CLOSE_UNLINKED_SHA="$PIPELINE_CLOSE_UNLINKED_SHA" \
+  PATH="$PIPELINE_CLOSE_FIXTURE/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1/lib.sh"
+    roadmap_ensure_issue_parent() { :; }
+    conclude_merged_run 991010 991010 "PR #991010 merged"
+    state_read 991010 | jq -r "[.state,(.tracker_parent // false),.run.outcome,.run.evidence.pr_number,.deploy_state]|@tsv"
+  ' _ "$SCRIPT_DIR")"
+assert_eq "merged childless tracker enters awaiting-release and clears its parent flag" \
+  $'awaiting-release\tfalse\tmerged\t991010\tpending' "$PIPELINE_TRACKER_LEAF_MERGED_OUT"
+assert_contains "merged tracker leaf removes the tracker label" \
+  "$(cat "$TRACKER_LEAF_GH_LOG")" '--remove-label tracker'
+assert_contains "merged tracker leaf adds the awaiting-release label" \
+  "$(cat "$TRACKER_LEAF_GH_LOG")" '--add-label awaiting-release'
+assert_not_contains "merged tracker leaf does not close the issue" \
+  "$(cat "$TRACKER_LEAF_GH_LOG")" 'issue close 991010'
 
 PIPELINE_CLOSE_SUCCESS_OUT="$(AGENT_HOME="$PIPELINE_CLOSE_FIXTURE/home" \
   ZF_REPO_DIR="$PIPELINE_CLOSE_FIXTURE/repo" REPO=test/repo \
@@ -6446,6 +6671,21 @@ assert_eq "recut umbrella with open child is not implement-eligible" 0 \
   "$(recut_parent_has_open_child 991201 '[{"number":991202,"state":"OPEN"}]' && echo 0 || echo $?)"
 assert_eq "recut umbrella with closed child reports completed parent" 3 \
   "$(gh() { echo CLOSED; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+printf '{"state":"needs-advisor","recut_children":[]}\n' > "$(state_file 991205)"
+gh() { return 64; }
+assert_eq "ordinary empty recut list tolerates an unavailable live child read" 3 \
+  "$(recut_parent_has_open_child 991205 '[]' && echo 0 || echo $?)"
+printf '{"state":"needs-advisor"}\n' > "$(state_file 991206)"
+assert_eq "ordinary issue without recut children tolerates an unavailable live child read" 3 \
+  "$(recut_parent_has_open_child 991206 '[]' && echo 0 || echo $?)"
+printf '{"state":"tracker","tracker_parent":true,"recut_children":[]}\n' > "$(state_file 991204)"
+gh() {
+  if [ "${1:-}" = api ]; then printf '[]\n'
+  elif [ "${1:-} ${2:-}" = "issue view" ]; then printf '{"body":"","comments":[]}\n'
+  else return 64; fi
+}
+assert_eq "empty recut child list is checked against live sub-issues" 1 \
+  "$(recut_parent_has_open_child 991204 '[]' && echo 0 || echo $?)"
 unset -f gh
 printf '{}' > "$(state_file 991203)"
 gh() {
@@ -6475,7 +6715,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
   NATIVE_CHILD_RELEASED_LABEL='[{"name":"released"}]' \
   bash -c '
     set -euo pipefail
-    source "$1/lib.sh"
+    source "$ZF_EXECUTION_MODULE_DIR/lib.sh"
     roadmap_ensure_issue_parent() { :; }
     REPO=test/repo
     is_on_hold() { return 1; }
@@ -6487,12 +6727,13 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
         printf "api %s\n" "$2" >> "$NATIVE_PARENT_LOG"
         number="${2#repos/test/repo/issues/}"
         number="${number%%/*}"
-        child_labels='[]'
+        child_labels="[]"
         case "$number" in
           991210) child=991211; child_state=open; closed_at=null ;;
           991212) child=991213; child_state=open; closed_at=null ;;
           991214) child=991215; child_state=open; closed_at=null ;;
           991218) child=991219; child_state=open; closed_at=null ;;
+          991220) printf "%s\n" "[]"; return 0 ;;
           991216)
             child=991217
             child_state="${NATIVE_CHILD_STATE:-closed}"
@@ -6503,6 +6744,8 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
         esac
         printf "[{\"number\":%s,\"state\":\"%s\",\"closed_at\":%s,\"labels\":%s}]\n" \
           "$child" "$child_state" "$closed_at" "$child_labels"
+      elif [ "${1:-} ${2:-}" = "issue view" ]; then
+        printf "%s\n" "{\"body\":\"\",\"comments\":[]}"
       elif [ "${1:-} ${2:-}" = "issue edit" ] || [ "${1:-} ${2:-}" = "issue close" ]; then
         printf "%s\n" "$*" >> "$NATIVE_PARENT_LOG"
       elif [ "${1:-} ${2:-}" = "issue list" ]; then
@@ -6527,6 +6770,12 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
       "$(state_read 991212 | jq -r .state)" "$(state_attempts 991212)" \
       "$(state_read 991212 | jq -r ".native_subissue_parent // false")"
 
+    NATIVE_PARENT_SUBISSUES_CACHE[991220]="[]"
+    printf "%s\n" "{\"state\":\"tracker\",\"tracker_parent\":true,\"recut_children\":[]}" > "$STATE_DIR/991220.json"
+    state_requeue 991220 "" pipeline-requeue
+    printf "tracker-requeue=%s parent=%s\n" \
+      "$(state_read 991220 | jq -r .state)" "$(state_read 991220 | jq -r ".tracker_parent // false")"
+
     printf "%s\n" "{\"attempts\":2,\"state\":\"needs-advisor\",\"pipeline_system\":{\"enabled\":true},\"model_policy\":{\"unit\":\"implement\",\"step\":\"advisor\"}}" \
       > "$STATE_DIR/991214.json"
     pipeline_system_return_to_implement 991214 needs-advisor
@@ -6544,7 +6793,7 @@ NATIVE_PARENT_OUTPUT="$(AGENT_HOME="$NATIVE_PARENT_HOME" REPO=test/repo NATIVE_P
     printf "sweep-closed=%s marker=%s\n" \
       "$(grep -c "issue close 991216" "$NATIVE_PARENT_LOG" || true)" \
       "$(state_read 991216 | jq -r ".native_subissue_parent // false")"
-  ' _ "$SCRIPT_DIR" 2>&1)" || {
+  ' 2>&1)" || {
   echo "native parent fixture exited non-zero:" >&2
   echo "$NATIVE_PARENT_OUTPUT" >&2
   FAILED=1
@@ -6553,6 +6802,8 @@ assert_contains "native children are discovered without recut state" \
   "$NATIVE_PARENT_OUTPUT" 'native-children=[991211] open-status=0 parent-reads=1'
 assert_contains "requeue keeps native parent out of ready-for-agent" \
   "$NATIVE_PARENT_OUTPUT" 'requeue-state=needs-advisor attempts=3 marker=true'
+assert_contains "childless tracker can requeue when its recorded child list is empty" \
+  "$NATIVE_PARENT_OUTPUT" 'tracker-requeue=ready-for-agent parent=false'
 assert_contains "advisor return keeps native parent in its current lane" \
   "$NATIVE_PARENT_OUTPUT" 'advisor-state=needs-advisor'
 assert_contains "advisor return does not write ready-for-agent" \

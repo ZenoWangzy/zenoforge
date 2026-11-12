@@ -94,7 +94,9 @@ test('a reproducible optimization premise must be implemented, not refused', () 
 
 test('the current pipeline schema rejects malformed routing output', async () => {
   const { validateStageOutput } = await import('./graders.mjs');
-  const valid = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L1', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fix', notes_md: '', expected_packages: ['engine'], expected_paths: [], estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
+  const valid = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L1', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fix', notes_md: '', expected_packages: ['engine'], expected_paths: [], related: [], suspected_shared_cause: null, estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
+  assert.deepEqual(validateStageOutput('triage', { ...valid, suspected_shared_cause: 'shared parser' }), []);
+  assert.deepEqual(validateStageOutput('triage', { ...valid, suspected_shared_cause: 7 }), ['triage.suspected_shared_cause: expected string|null']);
   assert.deepEqual(validateStageOutput('triage', valid), []);
   assert.ok(validateStageOutput('triage', { ...valid, risk_class: 'P9' }).length);
   assert.ok(validateStageOutput('triage', { ...valid, external_deliverable: { required: false } }).length);

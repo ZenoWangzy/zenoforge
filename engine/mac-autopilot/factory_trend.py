@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import roi_ledger
 import roi_rollup
+import ledger_history
 
 OK_STAGES = {"merged", "landed", "done"}
 BAD_STAGES = {"parked", "blocked-external", "needs-human", "supervisor-review"}
@@ -112,14 +113,15 @@ def accepted_requirements(release_events, units, worktrees, branch_refs, cleanup
     return accepted
 
 
-def _cleanup_times(runtime):
+def _cleanup_times(runtime, now=None):
     """Latest logged worktree and branch removals, including the one rotated scheduler log."""
     out = {"units": {}, "branches": {}}
+    future_stamped = 0
+    now = now or datetime.now(timezone.utc)
     for path in (os.path.join(runtime, "scheduler.log"), os.path.join(runtime, "scheduler.log.1")):
-        try:
-            with open(path, encoding="utf-8", errors="ignore") as source:
-                lines = source.readlines()
-        except OSError:
+        lines, skipped = ledger_history.scheduler_log_lines(path, now)
+        future_stamped += skipped
+        if lines is None:
             continue
         for raw in lines:
             if len(raw) < 22 or not raw.startswith("[") or _epoch(raw[1:21]) is None:
@@ -133,6 +135,7 @@ def _cleanup_times(runtime):
             if branch:
                 key = branch.group(1)
                 out["branches"][key] = max(at, out["branches"].get(key, ""))
+    out["future_stamped"] = future_stamped
     return out
 
 
@@ -298,10 +301,12 @@ def collect(home, units, live_units, versions_dir, cache_path, now=None, traffic
     worktree_root = worktree_root or os.environ.get("MAC_AUTOPILOT_WT_ROOT") \
         or os.path.join(home, "autopilot-wt")
     repo_root = repo_root or os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.join(home, "checkout")
-    import node_health
-    releases = node_health.release_acceptances(runtime) or []
+    releases = ledger_history.release_acceptances(runtime, now=now) or []
     worktrees, branch_refs = _workspace_snapshot(units, worktree_root, repo_root)
-    accepted = accepted_requirements(releases, units, worktrees, branch_refs, _cleanup_times(runtime))
+    cleanup_times = _cleanup_times(runtime, now)
+    accepted = accepted_requirements(releases, units, worktrees, branch_refs, cleanup_times)
+    if cleanup_times["future_stamped"]:
+        out["future_stamped"] = cleanup_times["future_stamped"]
     out["trend"] = trend(events, rep, units, versions_dir, now=now, max_workers=max_workers,
                          prices=prices, accepted=accepted)
     return out

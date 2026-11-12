@@ -8,9 +8,10 @@ source "$script_dir/scheduler.d/worker-command.sh"
 # Keep this focused on the command builder's public boundary; unrelated scheduler policy is stubbed.
 jqf() { command jq "$@"; }
 provider_of() { [[ "$1" == claude-* ]] && printf claude || printf codex; }
-unit_field() { printf false; }
+unit_field() { case "$2" in *sessions*) printf '{}' ;; *) printf false ;; esac; }
 worker_rules() { :; }
 fail() { printf 'worker-command.test.sh: %s\n' "$*" >&2; exit 1; }
+SESSION_RE='^[0-9a-f-]{36}$'
 contains_arg() { [[ " $1 " == *" $2 "* ]]; }
 
 CFG='{"models":[["gpt-6-luna","max","fast"]]}'
@@ -43,8 +44,34 @@ contains_arg "$review_args" '-c mcp_servers.chrome-devtools-shared.enabled=false
   || fail "review command omitted chrome MCP override: ${CODEX_COMMAND[*]}"
 contains_arg "$review_args" '-c mcp_servers.gbrain.enabled=false' \
   || fail "review command omitted gbrain MCP override: ${CODEX_COMMAND[*]}"
-[[ "$review_args" != *'tool_output_token_limit='* ]] \
-  || fail "review command unexpectedly set output limit: ${CODEX_COMMAND[*]}"
+# Default cap 64 KB = 16384 tokens for every codex type except implement, which keeps its tighter 8000.
+contains_arg "$review_args" '-c tool_output_token_limit=16384' \
+  || fail "review command omitted the default output cap: ${CODEX_COMMAND[*]}"
+build_codex_command repair gpt-6-luna max review-1 'repair prompt'
+contains_arg " ${CODEX_COMMAND[*]} " '-c tool_output_token_limit=16384' \
+  || fail "repair command omitted the default output cap (4741): ${CODEX_COMMAND[*]}"
+WORKER_OUTPUT_CAP_KB=16 build_codex_command repair gpt-6-luna max review-1 'repair prompt'
+contains_arg " ${CODEX_COMMAND[*]} " '-c tool_output_token_limit=4096' \
+  || fail "configured 16 KB cap not applied: ${CODEX_COMMAND[*]}"
+WORKER_OUTPUT_CAP_KB=16 build_codex_command implement gpt-6-luna max implement-1 'implement prompt'
+contains_arg " ${CODEX_COMMAND[*]} " '-c tool_output_token_limit=4096' \
+  || fail "implement ignored a cap below its 8000: ${CODEX_COMMAND[*]}"
+WORKER_OUTPUT_CAP_KB=junk build_codex_command repair gpt-6-luna max review-1 'repair prompt'
+contains_arg " ${CODEX_COMMAND[*]} " '-c tool_output_token_limit=16384' \
+  || fail "invalid cap did not fall back to 64 KB: ${CODEX_COMMAND[*]}"
+# ZCode counts characters in BASH_MAX_OUTPUT_LENGTH (native default 30000), so the cap never loosens it.
+zf_zcode_bin_argv() { printf '%s\n' "$test_env_bin/zcode"; }
+provider_of() { printf zcode; }
+build_codex_command repair glm-5.3 max review-1 'zcode prompt' '' "$test_env_root" zcode
+contains_arg " ${CODEX_COMMAND[*]} " 'BASH_MAX_OUTPUT_LENGTH=30000' \
+  || fail "zcode command omitted the output cap: ${CODEX_COMMAND[*]}"
+WORKER_OUTPUT_CAP_KB=8 build_codex_command repair glm-5.3 max review-1 'zcode prompt' '' "$test_env_root" zcode
+contains_arg " ${CODEX_COMMAND[*]} " 'BASH_MAX_OUTPUT_LENGTH=8192' \
+  || fail "zcode ignored a configured 8 KB cap: ${CODEX_COMMAND[*]}"
+# bin/luna (codex) and bin/zc (zcode) start outside build_codex_command, so they read the same cap through the lib.
+grep -q 'tool_output_token_limit=$(worker_output_cap_tokens)' "$script_dir/../bin/luna" || fail 'bin/luna does not pass the output cap'
+grep -q 'BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)"' "$script_dir/../bin/zc" || fail 'bin/zc does not pass the output cap'
+provider_of() { [[ "$1" == claude-* ]] && printf claude || printf codex; }
 
 eval "$(sed -n '/^CLAUDE_REVIEW_TOOLS=/p' "$script_dir/scheduler.sh")"
 ENGINE_ROOT="$(cd -- "$script_dir/../.." && pwd -P)"
@@ -160,6 +187,6 @@ repair_raw=21000000
 build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail 'codex repair at 21M raw was refused'
 [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == session-too-large ]] || fail "codex repair above the cutoff resumed ($CODEX_MODE/$CODEX_PATH_REASON)"
 
-printf '%s\n' 'PASS scheduler Codex commands disable configured MCP servers and limit implement tool output'
+printf '%s\n' 'PASS scheduler Codex commands disable configured MCP servers and cap tool output (64 KB default, implement 8000 tokens)'
 printf '%s\n' 'PASS Sonnet fallback allows focused test runners and does not allow git push'
 printf '%s\n' 'PASS Claude implement is stream-json, worktree-scoped, branch-only push, resumes its own session'

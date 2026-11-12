@@ -90,4 +90,31 @@ intake_candidates() { for n in 10 11 12 13; do row "$n"; done; }
 SECONDS=280
 register_new_issues 0 true
 grep -Eq 'intake budget spent after [0-9]+s: rows from #10 wait for the next tick' "$LOG" || fail "a late refill ran into the kill: $(cat "$LOG")"
+# A closed unit with its recut reopen spent is removed before the handoff lookup, and its note is throttled.
+handoff_reads="$fixture/handoff-reads"; : > "$handoff_reads"
+handoff_open_pr() { printf '%s\n' "$1" >> "$handoff_reads"; echo '[]'; }
+intake_census_load() { return 1; } # exercise the GitHub fallback on the unpatched path
+existing_handoff_candidates() { printf '4932\tpr\tfixture\t[]\n'; }
+HANDOFF_PR_CENSUS='[]' HANDOFF_CENSUS_PARTIAL=0
+jq -n '{units:[{id:"issue-4932",issue:4932,stage:"closed",pr:null,recut_reopen_refused:true,hold_handoff_episode:"old"}]}' > "$UNITS"
+rm -f "$UNITS.view" "$A/intake-skip-noted.tsv"
+printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"new"}}' > "$AGENT_HOME/state/4932.json"
+: > "$LOG"
+register_new_issues 1
+first_notes="$(grep -Fc 'intake skip issue #4932: unit=issue-4932 stays closed, recut refused and its reopen is spent' "$LOG" || true)"
+: > "$LOG"; : > "$handoff_reads"
+register_new_issues 1
+[[ ! -s "$handoff_reads" ]] || fail "second pass performed handoff lookup: $(cat "$handoff_reads")"
+! grep -Fq 'intake hold handoff issue #4932:' "$LOG" || fail "second pass repeated the hold line: $(cat "$LOG")"
+[[ "$first_notes" == 1 ]] || fail "the first pass did not log one throttled note: $first_notes"
+
+# The cheaper status mode still treats a nested untracked file as preserved work.
+unsafe_wt="$fixture/wt-unsafe"; mkdir -p "$unsafe_wt"
+git -C "$unsafe_wt" init -q
+git -C "$unsafe_wt" config user.name test; git -C "$unsafe_wt" config user.email test@example.com
+printf 'base\n' > "$unsafe_wt/base.txt"; git -C "$unsafe_wt" add base.txt; git -C "$unsafe_wt" commit -qm base
+mkdir -p "$unsafe_wt/build/cache/deep"; printf 'untracked\n' > "$unsafe_wt/build/cache/deep/result.txt"
+reason="$(worktree_cleanup_block_reason "$unsafe_wt")" || fail 'nested untracked work was not preserved'
+[[ "$reason" == 'uncommitted changes' ]] || fail "wrong preserved-worktree reason: $reason"
+
 echo 'intake-terminal-skip.test.sh: pass'

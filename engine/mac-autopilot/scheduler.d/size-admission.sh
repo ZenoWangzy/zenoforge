@@ -2,7 +2,7 @@
 # 尺寸准入的计数：分支相对 PR 基线（普通 PR 为 main，堆叠 PR 为父分支）的代码加删行数；文档、生成物、锁文件与测试快照不计，
 # 避免这些内容单独变大就触发重切。数不出来（clone 丢了、fetch 失败）返回空，不挡评审。
 changed_lines_count() {
-  awk -F'\t' '$3 !~ /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/ && $3 !~ /^(docs|lessons|\.trellis)\// && $3 !~ /(^|\/)[^/]+\.md$/ && $3 !~ /(^|\/)(__snapshots__|generated|dist|build|coverage)(\/|$)/ && $3 !~ /(^|\/)[^/]*\.generated\.[^/]+$/ && $3 !~ /\.snap$/ { n += $1 + $2 } END { print n }'
+  awk -F'\t' '$3 ~ /(^|\/)fixtures?\/.*\.json$/ { f += $1 + $2; next } $3 !~ /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/ && $3 !~ /^(docs|lessons|\.trellis)\// && $3 !~ /(^|\/)[^/]+\.md$/ && $3 !~ /(^|\/)(__snapshots__|generated|dist|build|coverage)(\/|$)/ && $3 !~ /(^|\/)[^/]*\.generated\.[^/]+$/ && $3 !~ /\.snap$/ { n += $1 + $2 } END { if (f > 500) n += f; print n }'  # shortcut: fixture JSON counts only past 500 lines (then in full), hardcoded; move to config if it needs tuning
 }
 changed_lines_of() { # dir branch base-branch [refs-current] → 行数或空
   local base base_branch="${3:-main}" refs_current="${4:-false}"
@@ -70,7 +70,8 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]]; then
     ! size_recut_refused_on_head "$1" "$5" "$issue" || refused=true
   fi
-  if [[ "$8" == write-start && "$refused" == true ]] \
+  # Repair-pending dispatch (5374: the repair that trims the PR was refused on every tick) gets the same one admission.
+  if [[ ( "$8" == write-start || "$4" == repair-pending* ) && "$refused" == true ]] \
     && (( $(unit_history_count "$1" supervisor-escalated '^size admission:') >= 1 )) \
     && (( $(unit_history_count "$1" size-split-admitted) == 0 )) \
     && size_split_admit "$1" "$issue" "$2" "$limit"; then
@@ -128,7 +129,7 @@ size_admission_recheck() { # Keep the per-candidate diff+fetch visible inside di
   return "$rc"
 }
 size_admission_write_start() { # unit workdir unit-json → block before worker launch when estimate or current diff is oversized
-  local issue estimate actual="" lines="" source="" branch base_branch head state limit
+  local issue estimate actual="" lines="" source="" branch base_branch head state limit est_limit reject_limit
   size_admission_exempt_unit "$3" && return 0
   issue="$(jqf -r '.issue // empty' <<<"$3")"
   estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"$3")"
@@ -143,19 +144,22 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   fi
   head="$(git -C "$2" rev-parse -q --verify HEAD 2>/dev/null || true)"
   limit="$(size_admission_limit_for "$3")"
-  if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > limit )); then
+  # An unwaived ticket whose estimate passes 80% of the limit is cut before a worker starts (row 117: 41.2% of 641-800 estimates needed a size recut later, only 20.9% of 481-640); a waiver already means the recut ran out.
+  est_limit="$limit"; (( limit != SIZE_ADMISSION_LINES )) || est_limit=$((limit * 80 / 100))
+  if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > est_limit )); then
     lines="$estimate"; source=estimate
   fi
   if [[ "$actual" =~ ^[0-9]+$ ]] && (( actual > limit )) && (( actual > ${lines:-0} )); then
     lines="$actual"; source=diff
   fi
+  reject_limit="$limit"; [[ "$source" != estimate ]] || reject_limit="$est_limit"
   [[ -n "$lines" ]] || return 0
   [[ "$source" != estimate || ! "$actual" =~ ^[0-9]+$ ]] || (( actual > limit )) || (( $(unit_history_count "$1" size-split-admitted) == 0 )) || return 0
   # The 30-second refill may start implement workers using local data only. It
   # defers an oversized ticket for the slow tick, which owns the existing recut
   # issue transition and records the decision once.
   [[ "${TICK_DISPATCH_LOCAL_REFILL:-false}" != true ]] || return 1
-  size_admission_reject "$1" "$lines" "$branch" "write-start ($source)" "$head" "${estimate:-unknown}" "${actual:-unknown}" write-start "$limit"
+  size_admission_reject "$1" "$lines" "$branch" "write-start ($source)" "$head" "${estimate:-unknown}" "${actual:-unknown}" write-start "$reject_limit"
 }
 pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonzero means defer or recut
   local id="$1" branch="$2" pr="$3" context="$4" head dir
@@ -198,6 +202,26 @@ harvest_pr_implement() { # unit report-path
     needs_direct_route "$1" "$first"; return 0
   fi
   head="$(git -C "$dir" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ "$head" =~ $SHA_RE ]]; then
+    local_head="$(git -C "$dir" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)"
+    if [[ "$local_head" =~ $SHA_RE && "$local_head" != "$head" ]] \
+      && git -C "$dir" merge-base --is-ancestor "$head" "$local_head" 2>/dev/null; then
+      # A handoff can leave a committed rescue descendant in the worker clone while
+      # the PR branch already exists at its older head. Publish the same topic ref
+      # with a fast-forward before opening/reusing the PR; the missing-branch path
+      # below cannot recover this common case because ls-remote already succeeded.
+      if push_out="$(git -C "$dir" push origin "refs/heads/$branch:refs/heads/$branch" 2>&1)"; then
+        head="$local_head"
+        set_unit "$1" "$(hist implement-push-recovered "engine pushed worker commit $local_head to $branch")"
+        say "implement-no-push unit=$1: engine pushed committed work $local_head -> $branch"
+      else
+        push_out="$(grep -am1 -E '(! \[remote rejected\]|^error:|^fatal:|^remote:)' <<<"$push_out" | cut -c1-160)"
+        [[ -n "$push_out" ]] || push_out="git push exited nonzero"
+        to_supervisor "$1" "implement committed $local_head on $branch but publishing it failed: ${push_out} (report $(basename "$2"))"
+        return 0
+      fi
+    fi
+  fi
   if [[ ! "$head" =~ $SHA_RE ]]; then
     # 远端没有分支时先诊断 worktree，再决定是否值得再跑一轮 implement（#5180/#5071/#5246）。
     local_head=""; ahead=""; dirty=""
@@ -318,6 +342,10 @@ $(head -n 200 "$rep" 2>/dev/null)"
   if [[ -n "$url" ]]; then
     num="${url##*/}"
     set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"
+    if ! scheduler_issue_transition "$issue" tracker "intake-parent:roadmap-container:split-delivery" '.tracker_parent = true'; then
+      to_supervisor "$unit" "split remainder #$num filed but parent #$issue could not transition to tracker"
+      return 0
+    fi
     say "unit $unit split delivery: remainder #$num filed; slice in PR #$pr"
   else
     # 切片 PR 已在评审，失败只报 supervisor inbox，不把单元踢出评审队列；剩余范围仍在 worker 报告与 PR 描述里。

@@ -4,7 +4,7 @@
   "tick_seconds": 120,
   "engine": {
     "canary_ticks": 2,
-    "worker_tasks_max": 2000,
+    "worker_tasks_max": 500,
     "mem_admission": {
       "calibrate": false,
       "estimates_mb": {
@@ -13,6 +13,11 @@
         "review": 1024,
         "advisor": 1024
       }
+    },
+    "eval_on_pin": {
+      "enabled": true,
+      "stages": null,
+      "timeout_minutes": 45
     }
   },
   "station_health": {
@@ -94,7 +99,8 @@
     "slow_worker_minutes": 60,
     "burn_tokens_no_output": 800000,
     "stuck_confirm_minutes": 10,
-    "max_no_output": 2
+    "max_no_output": 2,
+    "tool_output_cap_kb": 64
   },
   "models": {
     "review": [

@@ -18,6 +18,14 @@ restore_archived_unit() { # id；rc 0 = 该单元现在在热台账里
 # 解阻或重排，必须留在热台账。退休只移动台账行，历史读者经 units_history_doc 继续可见。
 UNIT_RETIRE_STAGES='["merged","landed","closed","done","wontfix","duplicate"]'
 
+closed_unit_issue_route() { # id [pr-closed] → keep tracker marker or restore the current lane after an external PR close
+  local issue state snapshot repo
+  issue="$(unit_field "$1" '.issue // empty')"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0; [[ "${2:-}" != pr-closed || "$(unit_field "$1" '.lane // empty')" == pr ]] || return 0; state="$(scheduler_issue_state "$issue")" || return 1; state="$(jqf -r '.state // "untracked"' <<<"$state")" || return 1
+  if [[ "${2:-}" == pr-closed ]]; then repo="${REPO:-${ZF_REPO:-}}"; [[ -n "$repo" ]] || return 1; snapshot="$(gh issue view "$issue" --repo "$repo" --json number,state,title,body,labels)" || return 1; [[ "$(jqf -r '.state | ascii_downcase' <<<"$snapshot")" == open ]] || return 0; fi
+  if [[ "$state" == tracker ]]; then scheduler_issue_transition "$issue" tracker recut-parent-retired; return $?; fi
+  [[ "${2:-}" == pr-closed ]] || return 0; case "$state" in untracked) scheduler_issue_transition "$issue" needs-triage pr-closed-requeue . 0 "$snapshot" ;; on-hold) return 0 ;; *) scheduler_issue_transition "$issue" "$state" pr-closed-label-reconcile . 0 "$snapshot" ;; esac
+}
+
 # 需要历史（终态）记录的读者用这个合并视图：活台账 + 归档，按 id 去重。同一 id 同时出现在
 # 两处（退休两步写之间崩溃的窗口）时以 units.json 的行较新为准（reduce 后写覆盖，活台账行排在后面）。
 units_history_doc() { _units_history_view doc; }
@@ -25,7 +33,7 @@ units_history_doc() { _units_history_view doc; }
 units_history_index() { _units_history_view index; }
 # 合并视图缓存：键为两个文件的 mtime(ns)+大小，任一文件被写就换键重建；所以一拍内的几十次查找只付一次合并。
 _units_history_view() { # doc|index
-  local kind="$1" key dir f g proj='{units: [.units[] | {id, issue, branch, pr, stage, hold_handoff_episode}]}'
+  local kind="$1" key dir f g proj='{units: [.units[] | {id, issue, branch, pr, stage, hold_handoff_episode, merge_sha, land_sha}]}'
   if [[ ! -s "$UNITS_ARCHIVE" ]]; then
     if [[ "$kind" == doc ]]; then cat "$UNITS"; else jqf "$proj" "$UNITS"; fi
     return
@@ -168,12 +176,31 @@ intake_parent_retry_failed() { # issue -> prints "<attempt> <delay-secs>" after 
   local now step; now="$(date +%s)"
   step="$(jqf -r --arg n "$1" '((.intake_parent_retry[$n].fails // 0) + 1) as $k | "\($k) \([300 * pow(2; ([$k - 1, 6] | min)), 21600] | min)"' "$UNITS")" || return 1
   units_update --arg n "$1" --argjson now "$now" --argjson k "${step% *}" --argjson d "${step#* }" \
-    '.intake_parent_retry[$n] = {fails: $k, next_at: ($now + $d)}' || return 1
+    '.intake_parent_retry[$n] = {fails: $k, next_at: ($now + $d), escalated: (.intake_parent_retry[$n].escalated // false)}' || return 1
   printf '%s\n' "$step"
 }
 intake_parent_retry_clear() { # issue
   jqf -e --arg n "$1" '(.intake_parent_retry // {}) | has($n)' "$UNITS" >/dev/null 2>&1 || return 0
   units_update --arg n "$1" 'del(.intake_parent_retry[$n])'
+}
+# A parent check that could not answer (rc 2) backs off like a failed label write; the third failed check parks the
+# issue for triage instead of deferring it every tick.
+intake_parent_unverified() { # issue, check rc, issue JSON, check reason
+  local n="$1" rc="$2" json="$3" reason="${4:-}" retry_step attempts parent_step
+  parent_step="$(sed -n 's/^parent-check-failure step=//p' <<<"$reason" | head -n 1)"
+  [[ -n "$parent_step" ]] || parent_step=unknown
+  retry_step="$(intake_parent_retry_failed "$n")" || retry_step="? ?"
+  attempts="${retry_step% *}"
+  if [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts >= 3 )); then
+    if scheduler_issue_transition "$n" needs-triage "intake-parent:unverified-after-$attempts" . 0 "$json"; then
+      say "intake issue #$n -> needs-triage (parent status unverified after $attempts attempts, rc=$rc, step=$parent_step)"
+      intake_parent_retry_clear "$n"
+    else
+      say "intake issue #$n held: parent status unverified (rc=$rc, step=$parent_step); needs-triage update failed (attempt $attempts)"
+    fi
+  else
+    say "intake issue #$n deferred: could not verify parent status rc=$rc step=$parent_step"
+  fi
 }
 unit_field() { jqf -r --arg id "$1" "[.units[] | select(.id==\$id) | ($2 // empty)][0] // empty" "$UNITS"; }
 # hold_handoff_waiting outlives its hold when the issue leaves ready-for-agent (tracker, closed) with its episode unconsumed:
@@ -195,7 +222,11 @@ hist() {
   local entry
   entry="$(jqf -cn --arg stage "$1" --arg result "${2:-}" --arg at "$STAMP" --argjson decision "${3:-null}" \
     '{stage:$stage,result:$result,at:$at} + (if $decision == null then {} else {decision:$decision} end)')"
-  echo ".history += [$entry]"
+  # A recut or park event names the attempt before it: the unit's latest write-start (null before any launch).
+  case "$1" in
+    *recut*|*park*) echo ".history += [$entry + {attempt: ((.history // []) | map(select(.stage == \"write-start\")) | last | .attempt // null)}]" ;;
+    *) echo ".history += [$entry]" ;;
+  esac
 }
 decision_entry() { # decision why evidence rejected-json owner -> history decision object
   jqf -cn --arg decision "$1" --arg why "$2" --arg evidence "$3" --argjson rejected "$4" --arg owner "$5" \
@@ -205,15 +236,44 @@ decision_entry() { # decision why evidence rejected-json owner -> history decisi
 last_review_blocked() { # unit-json → 0 when the latest review verdict in its history is review-block
   jqf -e '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last.stage == "review-block"' <<<"$1" >/dev/null 2>&1
 }
+no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approved), "review-pending" (no current approval), or nothing (a repair is right)
+  # A repair with no red check and no open P0/P1 finding has nothing to fix (2026-11-08: issue-5306 went to repair three times on cancelled checks).
+  # Other failures keep repair: a merge conflict, a land/precheck/CI red stage, or any lookup that fails.
+  local u="$1" pr head rows
+  pr="$(jqf -r '.pr // empty' <<<"$u")"
+  [[ "$pr" =~ ^[0-9]+$ ]] || return 0
+  # A handoff (hold episode or handoff worktree/ref) must be integrated by the repair worker first.
+  [[ "$(jqf -r '[.hold_handoff_episode, .handoff_start_ref, .handoff_worktree_sha] | map(select(. != null and . != "")) | length' <<<"$u")" == 0 ]] || return 0
+  [[ ! "$(jqf -r '.history[-1].stage // ""' <<<"$u")" =~ ^(land-failed|merge-reverted|merge-conflict|precheck-red|ci-red|ci-test-red)$ ]] || return 0
+  [[ "$(tick_pr_mergeable "$pr")" != CONFLICTING ]] || return 0
+  head="$(tick_pr_head "$pr")"; [[ "$head" =~ $SHA_RE ]] || return 0
+  rows="$(repair_check_rows "$pr")" || return 0
+  jqf -e 'any(.[]; .bucket == "fail")' <<<"$rows" >/dev/null && return 0
+  jqf -e '((.review_findings // []) | last // {}) | (.findings // []) | any(.status == "open" and (.severity == "P0" or .severity == "P1"))' <<<"$u" >/dev/null && return 0
+  jqf -e '((.review_findings // []) | length == 0) and ((.review_report // "") != "" or ([(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | .stage) == "review-request-changes")' <<<"$u" >/dev/null && return 0
+  if jqf -e --arg h "$head" '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | (.stage == "review-approve" and .result == $h)' <<<"$u" >/dev/null; then
+    printf 'ready-to-merge %s\n' "$head"
+  else
+    printf 'review-pending\n'
+  fi
+}
+supervisor_requeue_repair_route() { # unit-json guidance → target<TAB>jq update for a supervisor repair requeue
+  local u="$1" route="" head="" target=repair-pending extra
+  extra=" | .repair_hint=$(js "$2")"
+  read -r route head <<<"$(no_finding_repair_route "$u")" || true
+  case "$route" in
+    ready-to-merge) target=ready-to-merge; extra=" | .approved_sha=$(js "$head") | .repair_hint=null" ;;
+    review-pending) target=review-pending; extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null' ;;
+  esac
+  printf '%s\t%s\n' "$target" "$extra"
+}
 supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending stage for a RULE decision
   local u="$1" stage="${2:-}"
   [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"
+  if [[ -n "$(jqf -r '.handoff_integration_sha // empty' <<<"$u")" && -z "$(jqf -r '.handoff_delivery_verified_sha // empty' <<<"$u")" && "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]]; then printf 'repair-pending\n'; return 0; fi
   case "$stage" in
     implement-pending|repair-pending|review-pending|rereview-pending) printf '%s\n' "$stage" ;;
-    implement) printf 'implement-pending\n' ;;
-    repair) printf 'repair-pending\n' ;;
-    review) printf 'review-pending\n' ;;
-    rereview) printf 'rereview-pending\n' ;;
+    implement|repair|review|rereview) printf '%s-pending\n' "$stage" ;;
     blocked-external)
       local resume
       resume="$(jqf -r '.blocked_resume_stage // empty' <<<"$u")"
@@ -283,26 +343,53 @@ supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发
 SUPERVISOR_CAP_PARK_RESULT_RE='^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for )'
 
 # RECUT cannot finish over unpushed work, so triaging the same head again only spends a run: 148 of 625 dispatches on 11-06.
-supervisor_recut_refuse() { # id evidence decision worktree [notify-supervisor]
-  local id="$1" evidence="$2" decision="$3" wt="$4" notify_supervisor="${5:-true}" head note key
+supervisor_recut_refuse() { # id evidence decision worktree [resume-work]
+  local id="$1" evidence="$2" decision="$3" wt="$4" resume_work="${5:-false}" head note u resumed runs
   head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
   note="RECUT refused: unpushed work at ${head:0:12}. Unparks when that head changes or the worktree is gone."
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  resumed="$(jqf -r '.recut_refused_resume_head // empty' <<<"$u")"
+  runs="$(jqf -r '[.history[]? | select(.stage=="supervisor-arbiter")] | length' <<<"$u")"
+  if [[ "$resume_work" == true && "$resumed" != "$head" && "$runs" =~ ^[0-9]+$ ]] \
+    && (( runs < SUPERVISOR_ARBITER_UNIT_CAP )); then
+    supervisor_recut_refused_resume "$id" "$head" "$evidence" "$decision"
+    return $?
+  fi
   cap_set_unit "$id" park "$note $evidence" "" "$(hist supervisor-recut-refused "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"recut-refused-unpushed\" | .unpark_condition=\"the unit head changes\" | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .note=$(js "$note $evidence")" \
     || return 1
   say "supervisor recut refused unit=$id head=${head:0:12}: unpushed work"
-  [[ "$notify_supervisor" == true ]] || return 0
-  key="recut-refused:$id:$head"
-  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "$key" "recut-refused unit=$id: $note") \
-    || say "recut refused unit=$id: escalation not delivered"
 }
 
-supervisor_recut_refused_hold() { # unit-json → 0 while the refused head is still what its worktree holds
-  local id refused d
+supervisor_recut_refused_resume() { # id head evidence [decision] → let the existing worker publish the work before another RECUT
+  local id="$1" head="$2" evidence="$3" decision="${4:-null}" u pr stage hint note
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  pr="$(jqf -r '.pr // empty' <<<"$u")"
+  if [[ "$pr" =~ ^[0-9]+$ ]]; then
+    stage=repair-pending
+    hint="Preserve the existing unpushed work, commit and push the new head, then retry the refused RECUT."
+  else
+    stage=implement-pending
+    hint="Preserve the existing unpushed work, finish and push it, then retry the refused RECUT."
+  fi
+  note="RECUT refused because existing work at ${head:0:12} is unpushed. Resume it and publish the resulting head before another RECUT attempt. $evidence"
+  cap_set_unit "$id" "resume existing work" "$note" "" \
+    "$(hist supervisor-recut-refused "$evidence" "$decision") | $(hist supervisor-recut-resume "$head") | .stage=$(js "$stage") | .note=$(js "$note") | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .recut_refused_resume_head=$(js "$head") | .repair_hint=$(js "$hint") | del(.parked_reason,.unpark_condition)" \
+    || return 1
+  say "supervisor recut refusal unit=$id head=${head:0:12}: resumed $stage to publish existing work"
+}
+
+supervisor_recut_refused_hold() { # unit-json → 0 while the refused head is unchanged; resume it once while arbitration budget remains
+  local id refused d resumed
   [[ "$(jqf -r '.parked_reason // empty' <<<"$1")" == recut-refused-unpushed ]] || return 1
   id="$(jqf -r .id <<<"$1")"; refused="$(jqf -r '.recut_refused_head // empty' <<<"$1")"
+  resumed="$(jqf -r '.recut_refused_resume_head // empty' <<<"$1")"
   [[ -n "$refused" ]] || return 1
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do
-    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" != "$refused" ]] || return 0
+    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$refused" ]] || continue
+    if [[ "$resumed" != "$refused" ]] && (( "$(jqf -r '[.history[]? | select(.stage=="supervisor-arbiter")] | length' <<<"$1")" < SUPERVISOR_ARBITER_UNIT_CAP )); then
+      supervisor_recut_refused_resume "$id" "$refused" "legacy RECUT refusal has unchanged unpushed work" || return 1
+    fi
+    return 0
   done
   return 1
 }
@@ -335,7 +422,7 @@ supervisor_arbiter_lifetime_runs() { # unit-json → supervisor-arbiter 事件�
 # b. 最近一次有效终局裁决是 RECUT，或该单元从未走过 recut → 既有 recut 路线一次，不关 PR：单元有 PR 时改为停车；
 # c. 其余 → 停车，只记录原因。
 # on-hold 的 issue 不给默认决定：hold 结束后下一拍再判；issue 状态读不出来也不判。派发仍被硬上限挡住。
-# 每个单元只执行一次：历史里已有 supervisor-cap-default 就直接返回。
+# 每个停留只执行一次：历史里已有 supervisor-cap-default 且单元不在 supervisor-review（默认决定之后才重新进入）就直接返回。
 supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/branch, or PR issue number
   local issue id branch pr
   issue="$(jqf -r '.issue // empty' <<<"$1")"
@@ -352,15 +439,21 @@ supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/bran
 }
 
 supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [budget] → 0 当该单元已有、刚得到或暂不该有默认决定
-  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default"
+  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" pr_state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default" current_issue current_pr current_stage
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$u" != null ]] || return 1
   # stop-loss：止损遇到同一失败（stop_loss_same_failure）不派 arbiter，用止损自己的 park/recut 阶段：cap-triage-park 会被 arbiter 清扫成一次模型 cap triage。
   local park_stage=supervisor-cap-triage-park recut_stage=supervisor-cap-triage-recut
   [[ "$trigger" != stop-loss ]] || { park_stage=supervisor-budget-park; recut_stage=supervisor-budget-recut; }
   # repeat：同一原因的第二次仲裁（supervisor_repeat_arbitration）走同一条路线，但不占「每单元一次」的终身默认决定，
   # 也不追加 supervisor-cap-default 事件；路线自己的事件（recut/park/obsolete）以 "supervisor repeat guard:" 开头，供 supervisor.repeat_guard_24h 计数。
   [[ "$trigger" == repeat ]] && tag="supervisor repeat guard"
+  # A default always leaves the unit parked or closed, so a capped unit found at supervisor-review that already has one re-entered after it
+  # (CI, stop-loss, hold lift): it gets the route again. Skipping it left it with no arbiter run and no exit (row 150, issue-4879).
+  local reentered=false
+  [[ "$trigger" =~ ^(lifetime|daily)$ && "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]] && reentered=true
   # A stop-loss park that was requeued by its timed retry (.stop_loss_timed_requeue) gets one more default decision: the second same failure parks again.
-  [[ "$trigger" == repeat ]] || { jqf -e --argjson limit "$([[ "$trigger" == stop-loss ]] && [[ "$(jqf -r '.stop_loss_timed_requeue // empty' <<<"$u")" == true ]] && echo 2 || echo 1)" \
+  [[ "$trigger" == repeat || "$reentered" == true ]] || { jqf -e --argjson limit "$([[ "$trigger" == stop-loss ]] && [[ "$(jqf -r '.stop_loss_timed_requeue // empty' <<<"$u")" == true ]] && echo 2 || echo 1)" \
     '[(.history // [])[]? | select(.stage == "supervisor-cap-default")] | length >= $limit' <<<"$u" >/dev/null && return 0; }
   issue="$(supervisor_cap_default_issue "$u" || true)"; pr="$(jqf -r '.pr // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
@@ -382,10 +475,28 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
   # merge-reverted 在 merged 之后意味着交付已被撤回：那不是「已交付」，不进分支 a。
   [[ "$(jqf -r '[(.history // [])[] | select(.stage == "merged" or .stage == "landed" or .stage == "merge-reverted") | .stage] | last // ""' <<<"$u")" =~ ^(merged|landed)$ ]] && delivered=true
   if [[ "$delivered" != true && "$pr" =~ ^[0-9]+$ ]]; then
-    [[ "$(tick_pr_state "$pr" 2>/dev/null || true)" == MERGED ]] && delivered=true
+    pr_state="$(tick_pr_state "$pr" 2>/dev/null || true)"
+    [[ "$pr_state" == MERGED ]] && delivered=true
   fi
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$u" != null ]] || return 1
+  current_issue="$(supervisor_cap_default_issue "$u" || true)"
+  current_pr="$(jqf -r '.pr // empty' <<<"$u")"
+  [[ "$current_issue" == "$issue" && "$current_pr" == "$pr" ]] || return 1
+  if [[ "$trigger" =~ ^(lifetime|daily|repeat)$ ]]; then
+    current_stage="$(jqf -r '.stage // empty' <<<"$u")"
+    [[ "$current_stage" == supervisor-review || "$current_stage" == parked ]] || return 0
+  fi
+  delivered=false
+  [[ "$state" =~ ^(closed|awaiting-release|released|concluded|tracker)$ ]] && delivered=true
+  [[ "$(jqf -r '[(.history // [])[] | select(.stage == "merged" or .stage == "landed" or .stage == "merge-reverted") | .stage] | last // ""' <<<"$u")" =~ ^(merged|landed)$ ]] && delivered=true
+  if [[ "$delivered" != true && "$pr_state" == MERGED ]]; then delivered=true; fi
   verdict="$(jqf -r '.supervisor_cap_verdict // .recut_refused_verdict // ""' <<<"$u")" || verdict=""
   recut_done="$(jqf -r 'any((.history // [])[]?; .stage == "supervisor-budget-recut" or .stage == "supervisor-cap-triage-recut") or .recut_routed == true' <<<"$u")"
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]] \
+    && jqf -e '(.hold.kind == "guarded-recut-repeat") or ((try (.recut_refused_at | fromdateiso8601) catch 0) >= now - 604800)' <<<"$raw" >/dev/null; then
+    recut_done=true
+  fi
   if [[ "$delivered" == true ]]; then
     branch=obsolete
     reason="issue state ${state:-unknown} or the work is already merged elsewhere"
@@ -395,7 +506,7 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
     reason="$limit_reason; recut the unit once"
     supervisor_budget_recut "$id" "$tag: $reason" "$decision" \
       "$tag could not complete the recut route" "$tag recut" \
-      "$park_stage" "$recut_stage" false false || return 1
+      "$park_stage" "$recut_stage" false || return 1
     branch=park
     [[ "$(unit_field "$id" '.stage')" != closed ]] || branch=recut
   else
@@ -418,12 +529,21 @@ supervisor_arbiter_mark() { # unit-json → what must differ before another run:
 }
 
 supervisor_arbiter_no_change_hold() { # unit-json → 0 when a past run left it here and nothing changed: another run would repeat that one
-  local id mark
-  [[ "$(jqf -r '.stage // empty' <<<"$1")" == supervisor-review ]] || return 1
-  [[ -n "$(jqf -r '.arbiter_left_mark // empty' <<<"$1")" ]] || return 1
-  mark="$(supervisor_arbiter_mark "$1")"
-  [[ "$mark" == "$(jqf -r .arbiter_left_mark <<<"$1")" ]] || return 1
+  local id mark u
   id="$(jqf -r .id <<<"$1")"
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]] || return 1
+  [[ -n "$(jqf -r '.arbiter_left_mark // empty' <<<"$u")" ]] || return 1
+  mark="$(supervisor_arbiter_mark "$u")"
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  [[ -n "$u" && "$(jqf -r '.stage // empty' <<<"$u")" == supervisor-review ]] || return 1
+  [[ "$mark" == "$(jqf -r .arbiter_left_mark <<<"$u")" ]] || return 1
+  # Applied decisions write supervisor-* history; a trailing dispatch alone never applied one.
+  if jqf -e '((.history // [])[-1].stage // "") == "supervisor-arbiter"' <<<"$u" >/dev/null; then
+    set_unit "$id" 'del(.arbiter_left_mark)'
+    say "supervisor arbitration retry unit=$id: last history entry is dispatch only"
+    return 1
+  fi
   say "supervisor arbitration held unit=$id: no head, state or ruling change since its last run"
   (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "arbiter-no-change:$id:$mark" \
     "arbiter-no-change unit=$id: its last run left it at supervisor-review; held until head, state or ruling changes") \
@@ -483,6 +603,7 @@ supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbit
       .parked_reason == "supervisor-arbitration-cap" or
       .parked_reason == "supervisor-cap-triage-reask" or
       .parked_reason == "recut-refused-unpushed" or
+      .parked_reason == "repair-breaker" or
       any((.history // [])[]?; .stage == "supervisor-budget-park" and
         ((.result // "") | test($cap_park_result_re))) or
       any((.history // [])[]?; .stage == "supervisor-cap-triage-park")
@@ -501,31 +622,48 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
 }
 
 # 轮数或墙钟止损已用尽且仍没有 PR：交给 recut 拆成可交付的子票。
-# 走 lib.sh 唯一的 needs-recut 入口 route_to_recut；有未提交、stash 或未推送改动时不关单元，照旧 park。
-supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close notify-refusal
+# 走 lib.sh 唯一的 needs-recut 入口 route_to_recut；cap triage 遇到未推送改动时先让原单元继续提交，触顶默认仍停放。
+supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close dead-park-salvage
   local id="$1" evidence="$2" decision="${3:-null}" park_reason="${4:-supervisor budget exhausted}"
   local recut_reason="${5:-ticket stop-loss reached}" park_stage="${6:-supervisor-budget-park}" recut_stage="${7:-supervisor-budget-recut}"
-  local allow_pr_close="${8:-false}" notify_refusal="${9:-true}" issue pr err note pr_comment pr_state
+  local allow_pr_close="${8:-false}" dead_park_salvage="${9:-false}" issue pr err note pr_comment pr_state issue_state salvage_refs salvage_error salvage_refs_all=""
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
+    if [[ -d "$d" && "$dead_park_salvage" == true && "$park_stage" == supervisor-budget-park && "$recut_stage" == supervisor-budget-recut ]]; then
+      err="$(git -C "$d" fetch -q --prune origin 2>&1)" || { supervisor_budget_park "$id" "$evidence (worktree origin ref refresh failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0; }
+    fi
     if [[ -d "$d" ]] && { [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] || [[ -n "$(git -C "$d" stash list 2>/dev/null)" ]] \
         || [[ -z "$(git -C "$d" branch -r --contains HEAD 2>/dev/null)" ]]; }; then
       if [[ "$park_stage" == supervisor-cap-triage-park ]]; then
-        supervisor_recut_refuse "$id" "$evidence" "$decision" "$d" "$notify_refusal"; return 0
+        supervisor_recut_refuse "$id" "$evidence" "$decision" "$d" "$allow_pr_close"; return 0
+      fi
+      if [[ "$dead_park_salvage" == true && "$park_stage" == supervisor-budget-park && "$recut_stage" == supervisor-budget-recut ]]; then
+        [[ -z "$salvage_refs_all" ]] || sleep 1
+        if salvage_refs="$(dead_park_salvage_worktree "$id" "$d" 2>&1)"; then
+          salvage_refs_all="${salvage_refs_all:+$salvage_refs_all,}$salvage_refs"
+          continue
+        fi
+        salvage_error="${salvage_refs//$'\n'/ }"
+        supervisor_budget_park "$id" "$evidence (worktree has unpushed work; salvage push failed: ${salvage_error:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
       fi
       supervisor_budget_park "$id" "$evidence (worktree has unpushed work; not sent to recut)" "$decision" "$park_reason" "$park_stage"; return 0
     fi
   done
+  [[ -z "$salvage_refs_all" ]] || dead_park_salvage_notice "$id" "$salvage_refs_all"
   [[ "$issue" =~ ^[0-9]+$ ]] || { supervisor_budget_park "$id" "$evidence" "$decision" "$park_reason" "$park_stage"; return 0; }
   if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
   fi
-  # Route first: a refused route must leave the PR open, or the slice has no owner (#1167 and #4840 lost theirs this way).
-  # A retry after a failed close has already routed; the route guard would refuse it and strand the PR. An older split's recut_children proves nothing here.
-  if [[ "$(unit_field "$id" '.recut_routed // empty')" != true ]] && ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
+  # Once this unit's route created children, a close retry must bypass the permanent guard (#1167/#4840).
+  if [[ "$(unit_field "$id" '.recut_routed // empty')" == true ]] \
+      && issue_state="$(scheduler_issue_state "$issue" 2>/dev/null)" \
+      && jqf -e 'type == "object" and has("recut_children")' <<<"$issue_state" >/dev/null 2>&1; then
+    :
+  elif ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
     supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
+  closed_unit_issue_route "$id" || { supervisor_budget_park "$id" "$evidence (tracker label reconciliation failed)" "$decision" "$park_reason" "$park_stage"; return 0; }
   if [[ -n "$pr" ]]; then
     set_unit "$id" '.recut_routed=true' || return 1
     pr_comment="Cap triage is sending issue #$issue to recut: $evidence"
@@ -546,6 +684,56 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   fi
   cap_set_unit "$id" recut "$recut_reason: $evidence" "" "$(hist "$recut_stage" "$evidence" "$decision") | .stage=\"closed\" | .note=$note" \
     && say "supervisor budget-recut unit=$id issue=#$issue: $evidence"
+}
+
+# Row 131: three parks had no exit a machine could meet (cap default, repair breaker, budget park; 21 units, the oldest 229 h on 11-09).
+# Each takes the existing budget-recut route once per 24h, read from its own dead-park-exit event; a unit that parks again in a class gets another recut, never a requeue.
+# Left alone: session-owned issues/PRs, supervisor_owned units, non-stop-loss holds, non-stale tracker parents,
+# and other park reasons (recut-refused, token hard park, arbiter-owned cap triage).
+DEAD_PARK_EXIT_PER_TICK="${DEAD_PARK_EXIT_PER_TICK:-3}"
+dead_park_exit() {
+  local prs id class n=0 issue issue_state issue_json pr issue_repo="${REPO:-${ZF_REPO:-}}"
+  prs="$(tick_prs)" || return 0 # without the census a PR's session-owned label cannot be read
+  while IFS=$'\t' read -r id class; do
+    (( n < DEAD_PARK_EXIT_PER_TICK )) || break
+    issue="$(unit_field "$id" '.issue // empty')"
+    if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+      issue_state="$(scheduler_issue_state "$issue" 2>/dev/null)" || continue
+      jqf -e 'type == "object"' <<<"$issue_state" >/dev/null 2>&1 || continue
+      if jqf -e '.state == "on-hold" and (.hold.holder // "") != "scheduler-stop-loss"' <<<"$issue_state" >/dev/null 2>&1; then continue; fi
+      if jqf -e '.tracker_parent == true or .state == "tracker"' <<<"$issue_state" >/dev/null 2>&1 \
+          && ! (REPO="$issue_repo"; scheduler_scope_lib recut blockers && tracker_parent_flag_is_stale "$issue" "$issue_state"); then
+        pr="$(unit_field "$id" '.pr // empty')"; [[ -n "$pr" ]] || pr=none
+        ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "dead-park-tracker-parent:$id" \
+          "dead-park-tracker-parent unit=$id issue=#$issue slice-pr=$pr" ) >/dev/null 2>&1 || true
+        continue
+      fi
+      [[ -n "$issue_repo" ]] || continue
+      issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json labels 2>/dev/null)" || continue
+      jqf -e 'type == "object" and (.labels | type == "array")' <<<"$issue_json" >/dev/null 2>&1 || continue
+      if jqf -e --arg owned "$SESSION_OWNED_LABEL" 'any(.labels[]?; .name == $owned)' <<<"$issue_json" >/dev/null 2>&1; then continue; fi
+    fi
+    n=$((n + 1))
+    set_unit "$id" "$(hist dead-park-exit "$class park has no automatic exit; sent to recut")" || continue
+    say "dead park exit unit=$id class=$class"
+    supervisor_budget_recut "$id" "dead park exit ($class)" null "dead park exit could not complete the recut route" "dead park exit recut" \
+      supervisor-budget-park supervisor-budget-recut true true
+  done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg owned "$SESSION_OWNED_LABEL" --arg re "$SUPERVISOR_CAP_PARK_RESULT_RE" \
+    --argjson since "$(($(date +%s) - 86400))" '
+    [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
+    | .units[]
+    | (.history // []) as $h
+    | ($h | map(select(.stage != "supervisor-cap-default")) | last // {}) as $l
+    | select(.stage == "parked" and (.supervisor_owned // false) == false and (.hold_handoff_waiting // false) == false
+        and ((.pr | type) != "number" or (.pr as $p | $claimed | index($p)) == null)
+        and all($h[]; .stage != "dead-park-exit" or (((.at // "") | sub("\\.[0-9]+Z$"; "Z") | (fromdateiso8601? // 0)) < $since)))
+    | (if .parked_reason == "repair-breaker" and $l.stage == "repair-breaker" then "repair-breaker"
+       elif (.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park", "supervisor-requeue-failed")) then
+         (if any($h[]; .stage == "supervisor-cap-default") then "cap-default"
+          elif ($l.stage | IN("supervisor-budget-park", "supervisor-requeue-failed")) and (($l.result // "") | test($re) | not) then "budget-park"
+          else empty end)
+       else empty end) as $class
+    | [.id, $class] | @tsv' "$UNITS")
 }
 
 supervisor_needs_info() { # id question evidence —— needs-info：给提需求的人发一个澄清问题并打标签（唯一回到人的出口）
@@ -606,3 +794,5 @@ live_workers() {
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) || refresh_live_worker_cache
   echo "$LIVE_WORKER_CACHE_TOTAL"
 }
+
+source "${BASH_SOURCE[0]%/*}/no-human-wait.sh"

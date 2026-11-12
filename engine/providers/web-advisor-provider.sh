@@ -54,7 +54,7 @@ web_advisor_provider_job_candidates() {
     case "$started_at" in
       ''|*[!0-9]*) continue ;;
     esac
-    if [ "$((now - started_at))" -gt "$WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS" ]; then
+    if [ "$((now - started_at - $(codex_hold_overlap "$started_at" "$now")))" -gt "$WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS" ]; then
       continue
     fi
     job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$job_id"
@@ -235,11 +235,13 @@ record_web_advisor_provider_fault() {
 # shared browser lease; the tick must not require it to be free at dispatch.
 web_advisor_provider_dispatch_allowed() {
   local now="${1:-$(date +%s)}"
+  web_advisor_provider_usable || { STAGE_DISPATCH_BLOCKING_SCOPES=advisor; return 1; }
   if model_config_fault_blocked advisor "$(model_policy identity advisor)"; then
     STAGE_DISPATCH_BLOCKING_SCOPES=advisor
     return 1
   fi
-  stage_dispatch_allowed advisor "[]" "$now"
+  stage_dispatch_allowed advisor "[]" "$now" || return $?
+  quarantine_canary_scope_list_for_stage advisor
 }
 
 # WEB_ADVISOR_PROVIDER_SCRIPT -- env-first, same convention as other
@@ -554,7 +556,8 @@ web_advisor_provider_resume_job_if_stopped() {
   if systemctl --user is-active --quiet "$unit" >/dev/null 2>&1; then return 0; fi
   [[ "$deadline" =~ ^[0-9]+$ ]] || return 0
   phase="$(jq -r '.phase // empty' "$job_dir/state.json" 2>/dev/null || true)"
-  if [ "$phase" != answered ] && [ "$(date +%s)" -ge "$deadline" ]; then
+  # The deadline is dispatch + timeout; hold time inside that window does not count against it.
+  if [ "$phase" != answered ] && [ "$(( $(date +%s) - $(codex_hold_overlap "$((deadline - WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS))" "$(date +%s)") ))" -ge "$deadline" ]; then
     printf 'web-advisor-provider advisor job %s answer deadline exceeded while its unit was stopped\n' "$job_id" >> "$job_dir/answer.err"
     printf '124\n' > "$job_dir/done.$$.tmp"
     mv "$job_dir/done.$$.tmp" "$job_dir/done"
@@ -564,18 +567,28 @@ web_advisor_provider_resume_job_if_stopped() {
 }
 
 web_advisor_provider_dispatch_question_async() {
-  local job_id="$1" question_file="$2" mode="${3:-single}"
+  local job_id="$1" question_file="$2" mode="${3:-single}" canary_scopes="${ZF_QUARANTINE_CANARY_SCOPES:-}" start_status
   local job_dir="$WEB_ADVISOR_PROVIDER_JOB_DIR/$job_id"
   case "$mode" in
     single|single-request-ndjson) ;;
     *) echo "web_advisor_provider_dispatch_question_async: unsupported mode '$mode'" >&2; return 2 ;;
   esac
+  [ -z "$canary_scopes" ] || declare -F quarantine_mark_canary_scope_list >/dev/null \
+    || { echo "web-advisor-provider: cannot start canary job without quarantine marker" >&2; return 1; }
   mkdir -p "$job_dir"
   rm -f "$job_dir/answer.out" "$job_dir/answer.err" "$job_dir/done" "$job_dir/state.json"
   cp "$question_file" "$job_dir/question.txt"
   printf '%s\n' "$mode" > "$job_dir/mode"
   printf '%s\n' "$(( $(date +%s) + WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS ))" > "$job_dir/deadline"
-  web_advisor_provider_start_job_unit "$job_id"
+  if web_advisor_provider_start_job_unit "$job_id"; then :; else
+    start_status=$?
+    unset ZF_QUARANTINE_CANARY_SCOPES
+    return "$start_status"
+  fi
+  unset ZF_QUARANTINE_CANARY_SCOPES
+  if [ -n "$canary_scopes" ] && ! quarantine_mark_canary_scope_list "$canary_scopes"; then
+    echo "web-advisor-provider: quarantine canary mark failed after job start job=$job_id scopes=$canary_scopes" >&2
+  fi
 }
 
 web_advisor_provider_dispatch_async() {
@@ -740,7 +753,7 @@ reconcile_stale_web_advisor_provider_jobs() {
             case "$started_at" in
               ''|*[!0-9]*) continue ;;
             esac
-            age=$((now - started_at))
+            age=$((now - started_at - $(codex_hold_overlap "$started_at" "$now")))
             [ "$age" -gt "$WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS" ] || continue
             reason="job age ${age}s exceeds timeout ${WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS}s"
             ;;

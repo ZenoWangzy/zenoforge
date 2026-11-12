@@ -32,6 +32,7 @@ assert_refuses() {
 : > "$fixture/gh-calls"
 PR_HEAD="$sha"
 PR_CHECKS='[]'
+PR_CI_ROLLUP='[]'
 PR_BODY=$'## prior-art\nFollows required status checks: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches\n'
 PR_FILES='["tools/quick-land.sh"]'
 PR_FILE_STATUSES='[]'
@@ -40,6 +41,9 @@ PR_LIST='[]'
 PR_FILES_BY_PR='{}'
 PR_HEAD_REF=parent-branch
 PR_CHILDREN='[]'
+PR_CI_VIEW_ERROR=0
+PR_CI_VIEW_OUTPUT=''
+PR_FILES_API_ERROR=0
 gh() {
   case "$1 $2" in
     'pr view')
@@ -48,7 +52,11 @@ gh() {
         return
       fi
       printf 'view:%s\n' "$*" >> "$fixture/gh-calls"
-      if [[ "$*" == *body,files* ]]; then
+      if [[ "$*" == *headRefOid,statusCheckRollup* ]]; then
+        [[ "$PR_CI_VIEW_ERROR" == 0 ]] || return 1
+        if [[ -n "$PR_CI_VIEW_OUTPUT" ]]; then printf '%s\n' "$PR_CI_VIEW_OUTPUT"; return; fi
+        printf '{"headRefOid":"%s","statusCheckRollup":%s,"files":%s}\n' "${PR_CI_HEAD:-$PR_HEAD}" "$PR_CI_ROLLUP" "$(jq -cn --argjson files "$PR_FILES" '$files[:100] | map({path:.})')"
+      elif [[ "$*" == *body,files* ]]; then
         [[ "$PR_BODY" != gh-error ]] || return 1
         jq -cn --arg body "$PR_BODY" --argjson files "$PR_FILES" --arg at "${PR_HEAD_DATE:-}" \
           '{body:$body,files:($files | map({path:.})),commits:(if $at == "" then [] else [{committedDate:$at}] end)}'
@@ -93,6 +101,12 @@ gh() {
       printf '%s\n' "$3" >> "$fixture/cancelled"
       ;;
     'api '*)
+      if [[ "$*" == *' -q .[].filename' ]]; then
+        printf 'api:%s\n' "$*" >> "$fixture/gh-calls"
+        [[ "$PR_FILES_API_ERROR" == 0 ]] || return 1
+        jq -r '.[]' <<<"$PR_FILES"
+        return
+      fi
       local path="${!#}" num
       case "$path" in
         'repos/{owner}/{repo}/pulls/17')
@@ -299,14 +313,155 @@ expect_receipt_merge() {
 PR_CHECKS='[]'
 PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
 PR_FILES='["tools/quick-land.sh"]'
-PR_HEAD="$rsha" # no full-suite result exists for this head, so only a receipt can pass
+PR_HEAD="$rsha" # no full-suite result exists for this head, so receipt or CI checks must prove it
+PR_CI_HEAD="$rsha"
 rm -rf "$receipt_dir"
 expect_receipt_refusal 'no test receipt' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+ci_rollup() {
+  jq -cn '
+    ([{name:"cla",workflowName:"CLA"},{name:"cli",workflowName:"cli-tests"}]
+      + [range(0;8) | {name:("suites (" + tostring + ")"),workflowName:"engine-tests"}])
+    | map(. + {__typename:"CheckRun",status:"COMPLETED",conclusion:"SUCCESS"})'
+}
+ci_rollup_with_times() {
+  ci_rollup | jq -c 'map(. + {startedAt:"2026-11-10T09:55:10Z",completedAt:"2026-11-10T10:14:00Z"})'
+}
+ci_set() {
+  PR_CI_ROLLUP="$(jq -c --arg name "$1" --arg status "$2" --arg conclusion "$3" '
+    map(if .name == $name then .status=$status
+      | (if $conclusion == "" then del(.conclusion) else .conclusion=$conclusion end)
+      else . end)' <<<"$PR_CI_ROLLUP")"
+}
+ci_set_workflow() {
+  PR_CI_ROLLUP="$(jq -c --arg name "$1" --arg workflow "$2" '
+    map(if .name == $name then .workflowName=$workflow else . end)' <<<"$PR_CI_ROLLUP")"
+}
+PR_CI_ROLLUP="$(ci_rollup)"
+expect_receipt_merge 'all-green CI checks at the head'
+[[ "$(cat "$fixture/check-output")" == *"receipt: ci-green 10 checks at ${rsha:0:12}"* ]] \
+  || fail "green CI receipt path was not logged: $(cat "$fixture/check-output")"
+PR_CI_ROLLUP="$(ci_rollup_with_times | jq -c '. + [
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"FAILURE",startedAt:"2026-11-10T09:55:13Z",completedAt:"2026-11-10T10:08:17Z"},
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"SUCCESS",startedAt:"2026-11-10T10:24:56Z",completedAt:"2026-11-10T10:40:50Z"}
+]')"
+expect_receipt_merge 'stale same-name failure followed by success'
+PR_CI_ROLLUP="$(ci_rollup_with_times | jq -c '. + [
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"SUCCESS",startedAt:"2026-11-10T09:55:13Z",completedAt:"2026-11-10T10:08:17Z"},
+  {__typename:"CheckRun",name:"suites (0)",workflowName:"engine-tests",status:"COMPLETED",conclusion:"CANCELLED",startedAt:"2026-11-10T10:24:56Z",completedAt:"2026-11-10T10:40:50Z"}
+]')"
+expect_receipt_refusal 'newest cancelled same-name run' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set_workflow cli engine-tests
+expect_receipt_refusal 'cli check from engine-tests workflow' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set_workflow 'suites (0)' cli-tests
+expect_receipt_refusal 'suite check from cli-tests workflow' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set cla COMPLETED FAILURE
+expect_receipt_refusal 'failed non-required check' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set 'suites (3)' COMPLETED SKIPPED
+expect_receipt_refusal 'skipped required suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set cli COMPLETED SKIPPED
+expect_receipt_refusal 'skipped required cli' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set 'suites (3)' COMPLETED FAILURE
+rm -f "$receipt_dir/$rsha"
+expect_receipt_refusal 'failed CI suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set 'suites (3)' IN_PROGRESS ''
+expect_receipt_refusal 'pending CI suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_HEAD=ffffffffffffffffffffffffffffffffffffffff
+PR_CI_ROLLUP="$(ci_rollup)"
+expect_receipt_refusal 'rollup for another head' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_HEAD="$rsha"
+PR_CI_ROLLUP="$(ci_rollup | jq -c 'map(if .name == "cli" then {__typename:"StatusContext",context:"cli",state:"SUCCESS"} else . end)')"
+expect_receipt_refusal 'StatusContext cannot satisfy cli' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup | jq -c 'map(if .name == "cli" then del(.workflowName) else . end)')"
+expect_receipt_refusal 'required CheckRun without workflow' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup | jq -c 'map(select(.name != "cli"))')"
+expect_receipt_refusal 'missing cli' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup | jq -c '[.[] | select(.name == "cla" or .name == "cli" or .name == "suites (0)" or .name == "suites (1)" or .name == "suites (2)")]')"
+expect_receipt_refusal 'only three of eight suites' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+for conclusion in CANCELLED TIMED_OUT ACTION_REQUIRED; do
+  PR_CI_ROLLUP="$(ci_rollup)"
+  ci_set 'suites (3)' COMPLETED "$conclusion"
+  expect_receipt_refusal "suite $conclusion" "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+done
+PR_CI_ROLLUP="$(ci_rollup | jq -c 'map(if .name == "cla" then .conclusion="SKIPPED" else . end) + [{__typename:"CheckRun",name:"optional",workflowName:"other.yml",status:"COMPLETED",conclusion:"NEUTRAL"}]')"
+expect_receipt_merge 'non-required skipped and neutral checks'
+PR_CI_ROLLUP="$(ci_rollup)"
+PR_CI_VIEW_ERROR=1
+expect_receipt_refusal 'gh pr view fails' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_VIEW_ERROR=0
+PR_CI_VIEW_OUTPUT='not JSON'
+expect_receipt_refusal 'non-JSON gh output' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_VIEW_OUTPUT=''
+PR_CI_ROLLUP=null
+expect_receipt_refusal 'null rollup' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"
+PR_FILES='[".github/workflows/engine-tests.yml"]'
+expect_receipt_refusal 'workflow-editing PR' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+for path in tools/run-engine-tests.sh .zenoforge/ci.json; do
+  PR_FILES="$(jq -cn --arg path "$path" '[$path]')"
+  expect_receipt_refusal "CI suite-selection file $path" "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+done
+PR_FILES="$(jq -cn '[range(0;119) | "safe/file-\(.).txt"] + [".github/workflows/x.yml"] + [range(120;150) | "safe/file-\(.).txt"]')"
+expect_receipt_refusal 'workflow file past the first 100 entries' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+[[ "$(cat "$fixture/gh-calls")" == *'api --paginate repos/{owner}/{repo}/pulls/17/files -q .[].filename'* ]] \
+  || fail 'workflow-editing PR did not use the paginated CI file guard'
+PR_FILES='["tools/quick-land.sh"]'
+PR_FILES_API_ERROR=1
+expect_receipt_refusal 'paginated PR file read fails' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_FILES_API_ERROR=0
+PR_FILES='["tools/quick-land.sh"]'
+red_result="$(merge_pr_result_file "$repo" "$rsha")"
+mkdir -p "$(dirname "$red_result")"
+jq -n --arg sha "$rsha" '{sha:$sha,green:false,cli_exit_code:1,engine_shards:[]}' >"$red_result"
+PR_CI_ROLLUP="$(ci_rollup)"
+expect_receipt_refusal 'local red result with green CI' "full local suites are red for SHA $rsha"
+[[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite a local red result'
+rm -f "$red_result"
+jq -n --arg sha "$rsha" '{sha:$sha,green:true,cli_exit_code:0,engine_shards:[range(0;7) as $shard | {shard:$shard,exit_code:0}]}' >"$red_result"
+expect_receipt_refusal 'short local green result with green CI' "the full-suite result for SHA $rsha is incomplete or invalid"
+[[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite an incomplete local result'
+printf '{\n' >"$red_result"
+expect_receipt_refusal 'malformed local result with green CI' "the full-suite result for SHA $rsha is incomplete or invalid"
+[[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite a malformed local result'
+jq -n --arg sha "$rsha" '{sha:$sha,green:true,cli_exit_code:0,engine_shards:[range(0;8) as $shard | {shard:$shard,exit_code:0}]}' >"$red_result"
+expect_unreadable_result_refusal() {
+  : > "$fixture/gh-calls"
+  if (
+    jq() {
+      local arg
+      for arg in "$@"; do
+        [[ "$arg" == "$red_result" ]] && return 2
+      done
+      command jq "$@"
+    }
+    merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1
+  ); then
+    fail 'unreadable local result reached merge'
+  fi
+  [[ "$(cat "$fixture/check-output")" == *"the full-suite result for SHA $rsha is incomplete or invalid"* ]] \
+    || fail "unreadable local result wrong refusal: $(cat "$fixture/check-output")"
+  [[ "$(cat "$fixture/gh-calls")" != *statusCheckRollup* ]] || fail 'CI was consulted despite an unreadable local result'
+}
+expect_unreadable_result_refusal
+rm -f "$red_result"
+mkdir -p "$receipt_dir"
+: >"$receipt_dir/$rsha"
+PR_CI_ROLLUP="$(ci_rollup)"
+expect_receipt_merge 'empty local receipt uses green CI'
+[[ "$(cat "$fixture/check-output")" == *"receipt: ci-green 10 checks at ${rsha:0:12}"* ]] || fail "empty local receipt did not use the green CI receipt: $(cat "$fixture/check-output")"
+rm -f "$receipt_dir/$rsha"
 mkdir -p "$receipt_dir"
 printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/merge-pr-helper.test.sh\n' >"$receipt_dir/$rsha"
 expect_receipt_refusal 'failed last run' 'bash engine/merge-pr-helper.test.sh (exit 1)'
 printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/merge-pr-helper.test.sh\n0\tbash engine/merge-pr-helper.test.sh\n' >"$receipt_dir/$rsha"
 expect_receipt_merge 'later pass of the same command'
+[[ "$(cat "$fixture/check-output")" == *'receipt: local'* ]] || fail "local receipt path was not logged: $(cat "$fixture/check-output")"
 printf '1\tbash engine/x.test.sh\nnot-a-receipt-line\n' >"$receipt_dir/$rsha"
 expect_receipt_refusal 'malformed receipt line' 'malformed receipt line 2'
 rm -f "$receipt_dir/$rsha"
@@ -314,6 +469,7 @@ PR_FILES='["docs/notes.md","README.md"]'
 expect_receipt_merge 'Markdown-only PR with no receipt'
 PR_FILES='["tools/quick-land.sh"]'
 PR_HEAD="$sha" # the green full-suite result above proves this head and counts as a receipt
+PR_CI_HEAD="$sha"
 
 # tools/test-receipt.sh writes <rc><TAB><command> under the current HEAD and exits with the command's code.
 if (cd "$repo" && bash "$MODEL_POLICY_TEST_REPO/tools/test-receipt.sh" true); then :; else fail 'test-receipt.sh exited non-zero for a passing command'; fi
@@ -349,8 +505,35 @@ if merge_pr_review_family_ok 17 >"$fixture/check-output" 2>&1; then fail 'a red 
 [[ "$(cat "$fixture/check-output")" == *'review-family.test.sh failed: not ok - dispatch line'* ]] || fail "review-family refusal lost its reason: $(cat "$fixture/check-output")"
 merge_pr_review_family() { return 0; }
 
-# A scheduler change runs the scheduler.test.sh prelude; a red prelude refuses, other changes skip it.
-merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'not ok - stale grep'; return 1; }
+# Missing checkouts refuse both the size gate and the scheduler prelude.
+(
+  mkdir -p "$fixture/no-git"
+  cd "$fixture/no-git"
+  merge_pr_root() { git rev-parse --show-toplevel 2>/dev/null; }
+  failures=0
+  if merge_pr_size_ok 17 >"$fixture/no-git-size" 2>&1; then
+    printf 'merge-pr-helper.test.sh: size gate passed without a checkout\n' >&2
+    failures=$((failures + 1))
+  elif [[ "$(cat "$fixture/no-git-size")" != *'refusing to merge PR #17: no git checkout: cannot run size-ratchet'* ]]; then
+    printf 'merge-pr-helper.test.sh: size gate lost its no-checkout refusal: %s\n' "$(cat "$fixture/no-git-size")" >&2
+    failures=$((failures + 1))
+  fi
+  PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
+  PR_CI_ROLLUP='[]'
+  if merge_pr_scheduler_prelude_ok 17 >"$fixture/no-git-tree" 2>&1; then
+    printf 'merge-pr-helper.test.sh: tree gate passed without a checkout\n' >&2
+    failures=$((failures + 1))
+  elif [[ "$(cat "$fixture/no-git-tree")" != *'refusing to merge PR #17: scheduler.test.sh prelude failed rc=1: no git checkout: cannot run merge_pr_prelude_in on the PR head'* ]]; then
+    printf 'merge-pr-helper.test.sh: tree gate lost its no-checkout refusal: %s\n' "$(cat "$fixture/no-git-tree")" >&2
+    failures=$((failures + 1))
+  fi
+  (( failures == 0 ))
+) || fail 'a gate passed or lost its refusal without a git checkout'
+
+# A scheduler change runs the scheduler.test.sh prelude; all-green checks at the head skip it.
+PRELUDE_RC=1
+PRELUDE_OUT='not ok - stale grep'
+merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; printf '%s\n' "$PRELUDE_OUT"; return "$PRELUDE_RC"; }
 : > "$fixture/prelude-calls"
 PR_CHECKS='[]' PR_FILES='["tools/quick-land.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
 merge_pr_scheduler_prelude_ok 17 || fail 'a non-scheduler PR was refused by the prelude check'
@@ -360,10 +543,49 @@ if merge_pr_scheduler_prelude_ok 17 >"$fixture/check-output" 2>&1; then fail 'an
 [[ "$(cat "$fixture/check-output")" == *'could not read PR files'* ]] || fail "unreadable PR refusal lost its reason: $(cat "$fixture/check-output")"
 PR_BODY=$'## prior-art\nno external prior art: test fixture'
 PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
+PRELUDE_RC=0
+PRELUDE_OUT='prelude passed'
+PR_CI_ROLLUP="$(ci_rollup)"
 : > "$fixture/gh-calls"
-if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail 'a red prelude did not refuse the merge'; fi
-[[ "$(cat "$fixture/check-output")" == *'prelude failed: not ok - stale grep'* ]] || fail "prelude refusal lost its reason: $(cat "$fixture/check-output")"
-! grep -q '^merge:' "$fixture/gh-calls" || fail 'a red prelude still merged'
+if ! merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail "green checks at the head did not proceed to merge: $(cat "$fixture/check-output")"; fi
+[[ ! -s "$fixture/prelude-calls" ]] || fail 'all-green head checks still ran the prelude'
+[[ "$(cat "$fixture/check-output")" == *"prelude: ci-green 10 checks at ${sha:0:12}"* ]] || fail "green prelude skip was not logged: $(cat "$fixture/check-output")"
+grep -q '^merge:' "$fixture/gh-calls" || fail 'all-green head checks did not merge'
+
+# Any failed PR check keeps the local prelude in the merge path.
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set 'suites (3)' COMPLETED FAILURE
+: > "$fixture/prelude-calls"
+merge_pr_scheduler_prelude_ok 17 || fail 'a failed PR check stopped the local prelude'
+[[ -s "$fixture/prelude-calls" ]] || fail 'a failed PR check skipped the local prelude'
+
+# A skipped check is green for receipts but does not satisfy the prelude's SUCCESS contract.
+PR_CI_ROLLUP="$(ci_rollup)"
+ci_set 'suites (3)' COMPLETED SKIPPED
+: > "$fixture/prelude-calls"
+merge_pr_scheduler_prelude_ok 17 || fail 'a skipped PR check stopped the local prelude'
+[[ -s "$fixture/prelude-calls" ]] || fail 'a skipped PR check incorrectly skipped the prelude'
+for path in .github/workflows/engine-tests.yml tools/run-engine-tests.sh .zenoforge/ci.json; do
+  PR_FILES="$(jq -cn --arg path "$path" '["engine/mac-autopilot/scheduler.d/models.sh",$path]')"
+  PR_CI_ROLLUP="$(ci_rollup)"
+  : > "$fixture/prelude-calls"
+  merge_pr_scheduler_prelude_ok 17 || fail "CI suite-selection file $path stopped the local prelude"
+  [[ -s "$fixture/prelude-calls" ]] || fail "CI suite-selection file $path incorrectly skipped the prelude"
+done
+
+# A real prelude timeout reports its exit code and the 300-second bound.
+(
+  source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
+  merge_pr_root() { printf '%s\n' "$repo"; }
+  timeout() { return 124; }
+  PR_CI_ROLLUP='[]'
+  PR_FILES='["engine/mac-autopilot/scheduler.d/models.sh"]'
+  git -C "$repo" remote add origin "$repo"
+  git -C "$repo" update-ref refs/pull/17/head "$sha"
+  if merge_pr_scheduler_prelude_ok 17 >"$fixture/check-output" 2>&1; then fail 'a timed-out prelude did not refuse the merge'; fi
+  [[ "$(cat "$fixture/check-output")" == *'scheduler.test.sh prelude failed rc=124 (timeout 300s):'* ]] || fail "prelude refusal lost its rc or timeout: $(cat "$fixture/check-output")"
+  git -C "$repo" remote remove origin
+)
 
 # A gate file waits for its suites; other files keep merging on pending checks.
 PR_CHECKS='[{"name":"cla","bucket":"pass"},{"name":"suites (0)","bucket":"pending"}]' PR_FILES='["tools/merge-pr.sh"]'

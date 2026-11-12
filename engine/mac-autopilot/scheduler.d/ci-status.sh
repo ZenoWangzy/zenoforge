@@ -177,14 +177,14 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
 # 停线（Jidoka）：失败 job 的日志里已有测试断言失败（vitest FAIL / AssertionError / TAP not ok），就是确定性的代码结论。
 # 以前要等其余检查全部跑完、再整体重跑一次才派修复：热修 #3860 04:15 测试已红，按旧路径约 2 小时后才会开始修（L62）。
 ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败的检查名（逗号分隔，没有则空）；其后每行是该检查日志里 vitest 标记行的结构化事实
-  local name link job hits="" logfile facts="" i pid
+  local name link job hits="" logfile facts="" marker i pid
   local -a names=() logfiles=() pids=()
   # 失败 job 日志有界并行抓（GH_PARALLEL）。
   while IFS=$'\t' read -r name link; do
     job="${link##*/job/}"; [[ "$job" =~ ^[0-9]+$ ]] || continue
     # Dagger 里的 vitest 输出带 ANSI 颜色（ESC[41m FAIL ESC[49m），不去色就匹配不到：热修 #3860 的确定性测试红
     # 三次被当成"旧 base 的红"走 update-branch，每次多耗一整轮 CI（L75）。
-    # 一次日志抓取同时给出红判定和 scripts/ci/vitest-fail-facts.mjs 打印的标记行；没有标记行的检查不解析、保持通用提示。
+    # 一次日志抓取同时给出红判定和 scripts/ci/vitest-fail-facts.mjs 打印的标记行；没有标记行的检查回退到 ` FAIL  <file> > <test>` 行（至多 12 条）。
     logfile="$(mktemp)" || continue
     names+=("$name"); logfiles+=("$logfile")
     { gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$logfile"; } &
@@ -196,7 +196,8 @@ ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败
     if grep -qaE ' FAIL  .* > |AssertionError|not ok [0-9]+ -' "$logfile"; then
       name="${names[$i]}"
       hits="${hits:+$hits, }$name"
-      facts="${facts}$(grep -a -m1 -oE 'ZENOFORGE-FAIL-FACTS \{.*' "$logfile" | sed 's/^ZENOFORGE-FAIL-FACTS //')"$'\n'
+      marker="$({ grep -a -m1 -oE 'ZENOFORGE-FAIL-FACTS \{.*' "$logfile" || :; } | sed 's/^ZENOFORGE-FAIL-FACTS //')"; [[ -n "$marker" ]] || marker="$({ grep -a -oE ' FAIL  [^[:space:]]+ > .*' "$logfile" || :; } | sed 's/^ FAIL  //' | jq -Rsc 'split("\n") | map(select(. != ""))[:12] | group_by(split(" > ")[0]) | map({file: (.[0] | split(" > ")[0]), tests: map({name: (split(" > ")[1:] | join(" > "))})}) | select(length > 0) | {suites: .}' 2>/dev/null)"
+      [[ -z "$marker" ]] || facts="${facts}${marker}"$'\n'
       # run-ci-suites.sh 已为每个失败的 engine 套件打印 "[pipeline suites] FAILED suite=<path>"；同一次抓取里取出，供分诊用
       facts="${facts}$(grep -a -oE '^\[pipeline suites\] FAILED suite=[^ ]+' "$logfile" | sed 's/.*suite=//' | jq -Rsc 'split("\n") | map(select(. != "")) | select(length > 0) | {pipelineSuites: .}' 2>/dev/null)"$'\n'
     fi
@@ -206,8 +207,10 @@ ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败
   printf '%s' "$facts" | grep -a '^{' || true
 }
 
-ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → JSON array of failing suite files and test names, for the ci-test-red history entry
-  jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name)), (.pipelineSuites[]?)] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null || echo '[]'
+ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → failing suites/tests, or the failed check labels when facts are unavailable
+  local tests
+  tests="$(jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name)), (.pipelineSuites[]?)] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null)" || tests='[]'
+  jqf -cn --argjson tests "$tests" --arg fallback "${2:-}" '$tests | if length > 0 then . elif $fallback != "" then [$fallback[:120]] else [] end'
 }
 
 # 分诊（只出结论，不路由、不写台账）：stale-base / attributable / unknown。失败套件取自 ci_test_red_checks 的事实，
@@ -642,6 +645,7 @@ retire_landed_pr_units() {
       release_mark="$(awaiting_release_mark "$pr")"
       [[ ! "$merge_sha" =~ $SHA_RE ]] || release_mark+=" | .merge_sha=$(js "$merge_sha")"
     fi
+    [[ "$state" != closed ]] || closed_unit_issue_route "$id" pr-closed || continue
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
   done < "$rows_file"

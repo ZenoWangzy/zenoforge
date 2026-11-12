@@ -86,6 +86,47 @@ grep -Fq 'phase_yield_lock dispatch_pending' "$script_dir/scheduler.sh" \
 grep -Fq 'phase_yield_lock_batch run_refill_intake_dispatch_phases' "$script_dir/scheduler.sh" \
   || failures+=('refill issue registration and dispatch do not yield the ledger lock')
 
+# Exercise the full tick call site. The arbiter probe is another process: it must
+# be able to acquire the shared ledger lock while dispatch_supervisor_arbiters runs.
+(
+  arbiter_tick="$fixture/supervisor-arbiter-yield"
+  mkdir -p "$arbiter_tick/repo" "$arbiter_tick/supervisor/autopi/alerts"
+  ROOT="$arbiter_tick/repo"; SUP="$arbiter_tick/supervisor"; A="$arbiter_tick/supervisor/autopi"
+  UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
+  SCHED_LOCK="$A/.scheduler.lock"; SCHED_LOCK_HELD=false; PAUSE_FILE="$A/PAUSE"
+  arbiter_lock_taken="$A/arbiter-lock-taken"
+  printf '{"units":[]}\n' > "$UNITS"; printf '{"workers":[]}\n' > "$WORKERS"
+  GH_TICK_CALLS_FILE=""; TICK_INTAKE_READS_FILE=""; TICK_PHASES=""; TICK_PHASE_DETAILS=""; TICK_LOCK_WAIT=0
+  state_schema_ok() { return 0; }
+  tick_gh_calls_begin() { :; }; tick_gh_calls_count() { printf '0\n'; }
+  tick_roadmap_cache_begin() { :; }; tick_roadmap_cache_end() { :; }
+  harvest_station_fresh() { return 0; }; supervisor_marking_deferred() { return 1; }
+  paused_midrun() { return 1; }; phase_mark() { :; }; say() { :; }
+  git() { return 1; }; update_budget() { return 0; }; record_run_spend() { return 0; }
+  live_workers() { printf '0\n'; }; dispatch_skip_summary() { printf '\n'; }
+  tick_prs_changed() { :; }; run_issue_intake_phases() { :; }
+  ci_station_fresh() { return 0; }; merge_station_fresh() { return 0; }
+  for stub in rotate_logs budget_alert_if_needed flush_focus_alert publish_pr_run_snapshot launch_views cleanup_tick; do
+    eval "$stub() { :; }"
+  done
+  phase() {
+    if [[ "$1" == dispatch_supervisor_arbiters ]]; then dispatch_supervisor_arbiters; fi
+  }
+  dispatch_supervisor_arbiters() {
+    [[ ! -e "$SCHED_LOCK" ]] || fail 'full-tick arbiter dispatch still holds the ledger lock'
+    (
+      acquire_scheduler_lock || exit 1
+      printf 'taken\n' > "$arbiter_lock_taken"
+      release_scheduler_lock
+    ) &
+    arbiter_pid=$!
+    wait "$arbiter_pid" || fail 'another process could not take the ledger lock during arbiter dispatch'
+    [[ -s "$arbiter_lock_taken" ]] || fail 'arbiter lock probe did not run'
+  }
+  main
+  [[ ! -e "$SCHED_LOCK" ]] || fail 'full tick left its ledger lock held'
+)
+
 # Refill dispatches startable work first, then merges, then takes in issues, and dispatches again only when intake added some.
 phase() { order+=("$1"); [[ "$1" != register_new_issues ]] || INTAKE_ADDED=$intake_adds; }
 for intake_adds in 0 1; do

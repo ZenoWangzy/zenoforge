@@ -131,13 +131,13 @@ unlabelled_implement_prompt="$(incident_worker_prompt implement "$unlabelled_uni
 [[ "$unlabelled_implement_prompt" == 'base implement prompt' ]] \
   || { echo 'not ok - scheduler.test.sh: unlabelled issue received INCIDENT_RULE' >&2; exit 1; }
 missing_guard_report="$test_env_root/incident-missing-guard.md"
-printf '## root-cause\nworker input selected the wrong state\n' > "$missing_guard_report"
+printf '## decision-log\nTried the report check, preserved the incident guard, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n\n## root-cause\nworker input selected the wrong state\n' > "$missing_guard_report"
 gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$missing_guard_report")"
 gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$missing_guard_report")"
 [[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'missing ## recurrence-guard'* ]] \
   || { echo "not ok - scheduler.test.sh: missing recurrence-guard did not request changes (verdict=$gate_verdict reason=$gate_reason)" >&2; exit 1; }
 prose_guard_report="$test_env_root/incident-prose-guard.md"
-printf '## root-cause\nworker input selected the wrong state\n## recurrence-guard\nkind: prose\n## prior-art\nSource: https://example.invalid/reference\n' > "$prose_guard_report"
+printf '## decision-log\nTried the report check, preserved the incident guard, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n\n## root-cause\nworker input selected the wrong state\n## recurrence-guard\nkind: prose\n## prior-art\nSource: https://example.invalid/reference\n' > "$prose_guard_report"
 gate_reason="$(incident_report_gate_reason "$bug_unit_json" "$prose_guard_report")"
 gate_verdict="$(incident_review_verdict "$bug_unit_json" READY "$prose_guard_report")"
 [[ "$gate_verdict" == NOT_READY && "$gate_reason" == *'guard kind prose is not allowed'* ]] \
@@ -470,7 +470,7 @@ jq -e '(.ci_live.values | has("runners_online") and has("queued_runs") and has("
   || { echo "dashboard lacks the CI runner pools or control knobs: $(jq -c '{ci_live, knobs}' <<<"$dashboard_data")" >&2; exit 1; }
 jq -e '.summary.focus_mode == "release"
   and .summary.real_daily_tokens == 16000000
-  and .summary.tokens_per_merged == 16000000
+  and .summary.tokens_per_merged == .summary.token_efficiency.fresh_tokens_per_merged
   and .totals.merged_today == [501,502]
   and .summary.dollars_per_merged > 0.90999 and .summary.dollars_per_merged < 0.91001
   and .cost.today.tokens == 16000000
@@ -613,6 +613,12 @@ tick_gh() {
       body="$(tick_gh "${rest[@]}")" || return $?
       printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
       return 0 ;;
+    'api repos/example-maintainer/example-repo/pulls/'*)
+      local pr_number="${2##*/}"
+      [[ "$#" -eq 2 && "$pr_number" =~ ^[0-9]+$ ]] || return 97
+      command jq -cn --argjson n "$pr_number" --arg oid "$(printf '%040x' "$pr_number")" \
+        '{number:$n,merged:true,base:{ref:"main"},merge_commit_sha:$oid,merged_at:"2026-10-29T00:00:00Z"}'
+      ;;
     'run list')
       if [[ -f "$TF/ci-admission-runs.json" && "$*" == *'--limit 300 --json databaseId,status,event,headBranch,headSha,workflowName'* ]]; then
         cat "$TF/ci-admission-runs.json"
@@ -641,6 +647,11 @@ tick_gh() {
     'run view') [[ ! -f "$TF/log-unavailable" ]] || return 1; cat "$TF/failed.log" ;;
     'run rerun') echo "rerun $3" >> "$TF/actions"; [[ ! -f "$TF/rerun-unconfirmed" ]] ;;
     'issue view')
+      if [[ "$*" == *'--json state'* ]]; then
+        [[ -f "$TF/issues/$3.json" ]] || { echo "missing issue fixture #$3" >&2; return 97; }
+        command jq -r '.state // empty' "$TF/issues/$3.json"
+        return 0
+      fi
       if [[ -f "$TF/size-recut-mode" && "$*" == *'--json number,labels'* ]]; then
         command jq -cn --argjson n "$3" '{number:$n,labels:[{name:"ready-for-agent"}]}'
         return 0
@@ -723,9 +734,6 @@ tick_gh() {
             command jq -cn --argjson n "$3" --arg branch "${fixture_branch:-agent/issue-$3}" '{number:$n,headRefName:$branch,title:"fixture",body:"",state:"OPEN",labels:[]}'
           fi ;;
         *files*) printf 'packages/fixture/src/index.ts\n' ;;
-        *number,state,baseRefName,mergeCommit,mergedAt*)
-          command jq -cn --argjson n "$3" --arg oid "$(printf '%040x' "$3")" \
-            '{number:$n,state:"MERGED",baseRefName:"main",mergeCommit:{oid:$oid},mergedAt:"2026-10-29T00:00:00Z"}' ;;
         *mergeCommit*)
           if [[ -f "$TF/no-merge-sha" ]]; then echo ''
           elif [[ -f "$TF/pr-head-$3" ]]; then cat "$TF/pr-head-$3"
@@ -938,7 +946,17 @@ seed_roadmap_tree() {
 
 new_tick_fixture() {
   TF="$test_env_root/tick-$1"; export TF
-  mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin"
+  mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin" "$TF/agent-home"
+  export CODEX_PROBE_MARKER="$TF/agent-home/codex-probe-passed"
+  export CODEX_EXHAUSTED_MARKER_FILE="$TF/agent-home/codex-exhausted-until"
+  export CODEX_PROVIDER_PROBE_REQUIRED_FILE="$TF/agent-home/codex-exhausted-until.probe-required"
+  export ZCODE_EXHAUSTED_MARKER_FILE="$TF/agent-home/zcode-exhausted-until"
+  export ZCODE_PROVIDER_CONFIG_FILE="$TF/zcode-provider.json" ZCODE_QUOTA_SNAPSHOT_FILE="$TF/zcode-quota.json"
+  export MODEL_POLICY_FILE="$TF/agent-home/model-policy.json"
+  touch "$CODEX_PROBE_MARKER"
+  command jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$ZCODE_PROVIDER_CONFIG_FILE"
+  command jq -n --argjson now "$(date +%s)" '{five_h_pct:1,week_pct:1,cap_5h:85,max_age_seconds:900,freshness:"fresh",read_at:$now}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/bin/zcode"
   command jq --arg wt "$TF/clones" '.engine.worker_tasks_max=0 | .release_train.enabled=false | .max_workers=0 | .auto_merge=false | .auto_dispatch_new_prs=false | .issue_intake.enabled=false | .focus_mode="all" | .worktree_root=$wt' "$tick_template" > "$TF/supervisor/autopi/config.json"
   echo '{"units":[]}' > "$TF/supervisor/autopi/units.json"
   echo '{"workers":[]}' > "$TF/supervisor/autopi/workers.json"
@@ -1007,7 +1025,7 @@ SH
   chmod +x "$TF/bin/"*
   mkdir -p "$TF/repo/engine"
   cp -a "$script_dir" "$TF/repo/engine/mac-autopilot"
-  copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh
+  copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh lib.d/model-not-found-cache.bash
   cp "$TF/supervisor/autopi/config.json" "$TF/repo/engine/mac-autopilot/config.template.json"
   # merge_candidates 每拍经 $HERE/../../ci/ 调 pr-required-aggregate.mjs（16e097913 起按 run/时间
   # 取同 head 最新检查行）；夹具 repo 是 engine 子集，需一并带上。
@@ -2523,7 +2541,8 @@ start_tick_worker() {
     < /dev/null > /dev/null 2>&1 &
   local pid=$!
   printf '%s\n' "$pid" > "$TF/$1-worker.pid"
-  for _ in {1..50}; do [[ -s "$backend" ]] && break; sleep 0.01; done
+  for _ in {1..500}; do [[ -s "$backend" ]] && break; sleep 0.01; done
+  [[ -s "$backend" ]] || { echo 'not ok - scheduler.test.sh: timed out waiting for backend pid file' >&2; return 1; }
   printf '%s' "$pid"
 }
 worker_stopped() {
@@ -2614,6 +2633,32 @@ sched_run_case stuck_worker_disposition
 }
 [[ "$(decision_eval_stages_for_paths '.zenoforge/model-policy.default.json')" == 'triage advisor implement review end-to-end ' ]] || {
   echo 'not ok - scheduler.test.sh: target model policy did not select every eval stage' >&2; exit 1;
+}
+[[ "$(decision_eval_stages_for_paths 'engine/prompts/supervisor-arbiter.md')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: supervisor arbiter prompt did not select only supervisor' >&2; exit 1;
+}
+[[ "$(decision_eval_stages_for_paths 'engine/prompts/supervisor-cap-triage.md')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: supervisor cap-triage prompt did not select only supervisor' >&2; exit 1;
+}
+[[ "$(decision_eval_stages_for_paths 'engine/lib.d/model-calls.sh')" == '' ]] || {
+  echo 'not ok - scheduler.test.sh: stage execution code selected eval stages for prompt dispatch' >&2; exit 1;
+}
+# The shared mapping also feeds the engine-pin eval gate (engine-sync.sh): stage execution
+# code gates the product set there, while a diff with no decision surface still selects none.
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/lib.d/model-calls.sh')" == 'triage advisor implement review end-to-end ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping did not gate stage code on the product stages' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/eval/stage-call.sh')" == 'triage advisor implement review end-to-end ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping did not gate the stage seam on the product stages' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<$'docs/note.md\nengine/engine-sync.test.sh')" == '' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping selected stages for a doc/test-only diff' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/prompts/supervisor-arbiter.md')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping spent supervisor on more than its own prompt' >&2; exit 1;
+}
+[[ "$(bash "$repo_root/engine/eval/decision-stages.sh" --pin <<<'engine/mac-autopilot/scheduler.d/evals-arbiter.sh')" == 'supervisor ' ]] || {
+  echo 'not ok - scheduler.test.sh: pin mapping missed supervisor arbiter decision code' >&2; exit 1;
 }
 
 set_pipeline_gate_probe() {
@@ -2735,12 +2780,52 @@ command git -C "$TF/repo" checkout -q main
 command jq -n --arg sha "$sha" '{units:[{id:"pr-77",pr:77,issue:4470,lane:"pr",branch:"agent/issue-4470",stage:"ready-to-merge",approved_sha:$sha,ready_since:1,history:[]}]}' > "$TF/supervisor/autopi/units.json"
 tick
 command grep -q '^merge 77' "$TF/actions"
+command grep -Fq 'gh api repos/example-maintainer/example-repo/pulls/77' "$TF/calls" \
+  || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: merged PR release evidence did not use the REST endpoint' >&2; exit 1; }
 command jq -e '.state=="awaiting-release" and .run.outcome=="merged"
   and .run.evidence.pr_number=="77" and .deploy_state=="pending"' \
   "$TF/agent-home/state/4470.json" >/dev/null
 command grep -q 'issue edit 4470 .*--add-label awaiting-release' "$TF/actions"
 command grep -q 'issue comment 4470 ' "$TF/actions"
 command grep -q 'entered awaiting-release at merge of PR#77' "$TF/supervisor/autopi/scheduler.log"
+
+# A tracker with an open recut child records the merge but remains a tracker;
+# the merge lane must report its state instead of claiming release handoff.
+new_tick_fixture merge-release-tracker-child
+enable_rule_lane_fixture
+command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq '.conclusion="success"' "$TF/run.json" > "$TF/run.tmp"; mv "$TF/run.tmp" "$TF/run.json"
+unset ZF_ROADMAP_TREE_CACHE_FILE
+command git -C "$TF/repo" checkout -qb release-tracker-child-79
+mkdir -p "$TF/repo/packages/fixture/src"
+printf 'export const trackerChild = true\n' > "$TF/repo/packages/fixture/src/index.ts"
+command git -C "$TF/repo" add packages/fixture/src/index.ts
+command git -C "$TF/repo" commit -qm 'tracker child merge fixture'
+tracker_child_sha="$(command git -C "$TF/repo" rev-parse HEAD)"
+command git -C "$TF/repo" push -q origin "$tracker_child_sha:refs/pull/79/head"
+printf '%s\n' "$tracker_child_sha" > "$TF/pr-head-79"
+command git -C "$TF/repo" checkout -q main
+mkdir -p "$TF/issues" "$TF/agent-home/state"
+command jq -n '{state:"tracker",tracker_parent:true,recut_children:[4472],run:{outcome:"not-completed",evidence:{}}}' \
+  > "$TF/agent-home/state/4471.json"
+command jq -n '{number:4472,state:"OPEN",title:"tracker child",body:"",labels:[]}' > "$TF/issues/4472.json"
+command jq -n --arg sha "$tracker_child_sha" \
+  '{units:[{id:"pr-79",pr:79,issue:4471,lane:"pr",branch:"agent/issue-4471",stage:"ready-to-merge",approved_sha:$sha,ready_since:1,history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
+tick
+command grep -q '^merge 79' "$TF/actions"
+command jq -e '.state=="tracker" and .tracker_parent==true
+  and .run.evidence.pr_number=="79" and .deploy_state==null' "$TF/agent-home/state/4471.json" >/dev/null
+if command grep -q 'entered awaiting-release at merge of PR#79' "$TF/supervisor/autopi/scheduler.log"; then
+  echo 'scheduler.test.sh: open-child tracker was falsely logged as entering awaiting-release' >&2
+  exit 1
+fi
+command grep -Fq 'issue #4471 release handoff state=tracker (previous=tracker) after merge of PR#79' \
+  "$TF/supervisor/autopi/scheduler.log"
+if command grep -q 'issue edit 4471 .*--add-label awaiting-release' "$TF/actions"; then
+  echo 'scheduler.test.sh: open-child tracker received awaiting-release label' >&2
+  exit 1
+fi
 # 无 issue 的单元合入时无事可写，也不产生告警。
 new_tick_fixture merge-release-unlinked
 enable_rule_lane_fixture
@@ -4695,6 +4780,42 @@ sched_case_hold_handoff_rescued_clone() {
 }
 sched_run_case hold_handoff_rescued_clone
 
+# A clone the secret scan refuses is set aside (mode 700) and the same pass resumes the handoff; no stash content reaches a log or the inbox.
+sched_case_hold_handoff_scan_refused_clone() {
+  local clone origin aside
+  new_tick_fixture hold-handoff-scan-refused-clone
+  clone="$TF/clones/wt-issue-781"; origin="$TF/origin-781.git"
+  mkdir -p "$TF/agent-home/state" "$TF/clones"
+  command git init -q --bare "$origin"
+  command git init -q -b main "$clone"
+  command git -C "$clone" config user.name test
+  command git -C "$clone" config user.email test@example.invalid
+  printf 'one\n' > "$clone/a.txt"; command git -C "$clone" add a.txt; command git -C "$clone" commit -q -m base
+  command git -C "$clone" remote add origin "$origin"
+  command git -C "$clone" push -q origin main
+  command git -C "$clone" fetch -q origin
+  command git -C "$clone" checkout -q -b agent/issue-781
+  printf 'key=AKIAFAKEFIXTURE\n' >> "$clone/a.txt"; command git -C "$clone" stash -q
+  touch "$TF/real-clone-git"
+  mkdir -p "$TF/bin"; printf '#!/usr/bin/env bash\n[[ "${1:-}" == stdin ]] || exit 2\ngrep -qF "AKIAFAKEFIXTURE" && exit 3\nexit 0\n' > "$TF/bin/gitleaks"; chmod +x "$TF/bin/gitleaks"
+  mkdir -p "$TF/repo/scripts/hooks"; printf '#!/usr/bin/env bash\nexit 0\n' > "$TF/repo/scripts/hooks/pre-push"; chmod +x "$TF/repo/scripts/hooks/pre-push"
+  command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-781"}}' > "$TF/agent-home/state/781.json"
+  command jq -n '{number:781,title:"resume held work",body:"finish",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{units:[{id:"issue-781",issue:781,branch:"agent/issue-781",lane:"pr",stage:"closed",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  PATH="$TF/bin:$PATH" tick
+  command jq -e '.units[0].stage=="implement-pending" and .units[0].hold_handoff_episode=="hold-781"' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - the handoff stayed blocked by a clone the secret scan refused' >&2; exit 1; }
+  [[ ! -e "$clone" ]] || { echo 'not ok - the refused clone stayed in place' >&2; exit 1; }
+  aside=("$TF"/clones/wt-issue-781.preserved-*)
+  [[ ${#aside[@]} == 1 && -d "${aside[0]}" && "$(stat -c %a "${aside[0]}")" == 700 ]] || { echo 'not ok - the refused clone is not one mode-700 preserved dir' >&2; exit 1; }
+  grep -Fq "handoff-preserved-clone-aside unit=issue-781 path=${aside[0]}" "$TF/agent-home/supervisor-inbox" \
+    || { echo 'not ok - the supervisor inbox does not name the preserved path' >&2; exit 1; }
+  ! grep -rqF 'AKIAFAKEFIXTURE' "$TF/agent-home/supervisor-inbox" "$TF/supervisor/autopi/scheduler.log" "$TF/tick.out" \
+    || { echo 'not ok - stash content reached a log or the inbox' >&2; exit 1; }
+}
+sched_run_case hold_handoff_scan_refused_clone
+
 sched_case_hold_handoff_preserved_clone() {
   local clone owner base_sha old_sha handoff_sha today i
   new_tick_fixture hold-handoff-preserved-clone
@@ -5867,6 +5988,20 @@ command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/uni
 tick
 grep -Fq 'attempt 2, retry in 600s' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: second backoff step did not double the delay' >&2; exit 1; }
+command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+grep -Fq 'attempt 3, retry in 1200s' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: third failed parent label write stopped retrying' >&2; exit 1; }
+command jq -e '.intake_parent_retry["4279"].escalated == true' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: third failed parent label write was not marked escalated' >&2; exit 1; }
+[[ "$(grep -c 'INTAKE-PARENT-LABEL-FAILED issue=#4279 ' "$TF/agent-home/logs/head-watch.alerts")" == 1 ]] \
+  || { echo 'scheduler.test.sh: parent label failure did not alert the session once' >&2; exit 1; }
+command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+grep -Fq 'attempt 4, retry in 2400s' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: parent label retries stopped after escalation' >&2; exit 1; }
+[[ "$(grep -c 'INTAKE-PARENT-LABEL-FAILED issue=#4279 ' "$TF/agent-home/logs/head-watch.alerts")" == 1 ]] \
+  || { echo 'scheduler.test.sh: repeated parent label failures duplicated the session alert' >&2; exit 1; }
 rm -f "$TF/fail-issue-edit"
 command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
 tick
@@ -5874,6 +6009,52 @@ command jq -e '(.intake_parent_retry // {}) | has("4279") | not' "$TF/supervisor
   || { echo 'scheduler.test.sh: backoff entry survived a successful parent label write' >&2; exit 1; }
 grep -Fq 'intake issue #4279 -> needs-triage (parent: has GitHub sub-issues)' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: parent label write did not succeed after the failure cleared' >&2; exit 1; }
+
+# An unverifiable parent check (rc 2: no sub-issue fixture, so the lookup fails) backs off, then parks the issue
+# for triage on the third failed check instead of deferring every tick.
+new_tick_fixture parent-unverified-cap
+mkdir -p "$TF/issues"
+command jq '.max_workers=1 | .release_train.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
+  "$template" > "$TF/supervisor/autopi/config.json"
+command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-external",blocked_on:4279,history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
+command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
+  > "$TF/issues/4279.json"
+seed_roadmap_tree 4279
+parent_unverified_lines() { grep -c 'intake issue #4279 deferred: could not verify parent status rc=2 step=' "$TF/supervisor/autopi/scheduler.log" || true; }
+tick
+[[ "$(parent_unverified_lines)" == 1 ]] \
+  || { echo "scheduler.test.sh: rc 2 parent check was not logged with its rc: $(cat "$TF/supervisor/autopi/scheduler.log")" >&2; exit 1; }
+command jq -e '.intake_parent_retry["4279"].fails == 1' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: first unverified parent check was not recorded in the ledger' >&2; exit 1; }
+command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+command jq -e '.intake_parent_retry["4279"].fails == 2' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: second unverified parent check was not recorded' >&2; exit 1; }
+command jq '.intake_parent_retry["4279"].next_at = 0' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+grep -Eq '^issue edit 4279 --repo [^ ]+ .*--remove-label ready-for-agent .*--add-label needs-triage$' "$TF/actions" \
+  || { echo "scheduler.test.sh: third unverified parent check did not route #4279 to needs-triage: $(cat "$TF/actions")" >&2; exit 1; }
+grep -Fq 'intake issue #4279 -> needs-triage (parent status unverified after 3 attempts, rc=2, step=' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: capped parent check did not log its needs-triage disposition' >&2; exit 1; }
+command jq -e '(.intake_parent_retry // {}) | has("4279") | not' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: capped parent check left its backoff entry behind' >&2; exit 1; }
+
+# A parent check that answers 1 (leaf) clears a backoff entry left by earlier unverified checks.
+new_tick_fixture parent-leaf-clears-unverified
+mkdir -p "$TF/issues"
+command jq '.max_workers=1 | .implement_cap=0 | .release_train.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
+  "$template" > "$TF/supervisor/autopi/config.json"
+command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-external",blocked_on:4279,history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
+command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
+  > "$TF/issues/4279.json"
+seed_roadmap_tree 4279
+printf '%s\n' '[]' > "$TF/sub-issues-4279.json"
+command jq '.intake_parent_retry = {"4279": {fails: 2, next_at: 0}}' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+tick
+command jq -e '(.intake_parent_retry // {}) | has("4279") | not' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: a leaf parent check (rc 1) did not clear the unverified backoff entry' >&2; exit 1; }
 
 # A roadmap container cannot take an active stage; intake records it as a tracker.
 new_tick_fixture roadmap-container-parent-intake
@@ -5899,8 +6080,8 @@ command jq -e '.state == "tracker" and .tracker_parent == true' "$TF/agent-home/
 tracker_edit="$(grep -E '^issue edit 4279 --repo ' "$TF/actions" || true)"
 [[ "$(grep -Ec '^issue edit 4279 --repo ' "$TF/actions")" == 1 ]] \
   || { echo "scheduler.test.sh: tracker transition did not make exactly one issue edit: $(cat "$TF/actions")" >&2; exit 1; }
-[[ "$tracker_edit" == *'--remove-label ready-for-agent'* && "$tracker_edit" != *'--add-label'* ]] \
-  || { echo "scheduler.test.sh: tracker transition did not clear ready-for-agent without adding a stage label: $tracker_edit" >&2; exit 1; }
+[[ "$tracker_edit" == *'--remove-label ready-for-agent'* && "$tracker_edit" == *'--add-label tracker'* && "$tracker_edit" != *'--add-label ready-for-agent'* ]] \
+  || { echo "scheduler.test.sh: tracker transition did not replace the lane label with its container marker: $tracker_edit" >&2; exit 1; }
 grep -Fq 'intake issue #4279 -> tracker (roadmap container parent: spec/ADR pilot)' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: roadmap container tracker disposition was not logged' >&2; exit 1; }
 
@@ -6128,7 +6309,7 @@ grep -Fq 'live-event close issue=97' "$TF/supervisor/autopi/scheduler.log" \
 sched_run_case m5_live_event_timeout
 
 glm_share_fixture() {
-  CFG="$(command jq '.models.implement_share={zcode:50,codex:50} | .models.hard=["gpt-6.1-terra","high"]' "$template")"
+  CFG="$(command jq '.models.implement_share={zcode:50,codex:50} | .models.hard=["gpt-6.1-terra","high"] | .models.review_fallback=["claude-sonnet-5-5","high"]' "$template")"
   A="$TF/supervisor/autopi"
   SUP="$A"
   UNITS="$A/units.json"
@@ -6139,6 +6320,7 @@ glm_share_fixture() {
   ZCODE_QUOTA_SNAPSHOT_FILE="$TF/zc-quota.json"
   ZCODE_PROVIDER_CONFIG_FILE="$TF/provider-config.json"
   CODEX_PROBE_MARKER="$AGENT_HOME/codex-probe-passed"
+  MODEL_POLICY_FILE="$TF/model-policy.json"
   NOW_EPOCH="$(date +%s)"
   STAMP='2026-11-03T00:00:00Z'
   SCHED_LOCK_HELD=true
@@ -6147,6 +6329,7 @@ glm_share_fixture() {
   printf '%s\n' '{}' > "$COOLDOWN"
   command jq -n '{config:{defaultModelSelection:{modelId:"GLM-5.3"}}}' > "$ZCODE_PROVIDER_CONFIG_FILE"
   command jq -n --argjson now "$NOW_EPOCH" '{five_h_pct:1,week_pct:1,cap_5h:85,max_age_seconds:900,freshness:"fresh",read_at:$now}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"
+  printf '%s\n' '{"allow_roles":{"sonnet":["review_fallback"]}}' > "$MODEL_POLICY_FILE"
   cat > "$TF/bin/codex" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -6156,6 +6339,7 @@ SH
 exit 0
 SH
   chmod +x "$TF/bin/codex" "$TF/bin/zcode"
+  ln -sfn zcode "$TF/bin/claude"
   export PATH="$TF/bin:$PATH" ZCODE_PROVIDER_CONFIG_FILE ZCODE_QUOTA_SNAPSHOT_FILE CODEX_PROBE_MARKER
   SCHED_MODEL_POLICY_JSON="$(command jq '.roles["hand-zcode"].disabled=false | .roles["hand-zcode"].model="GLM-5.3" | .roles.production.model="gpt-6.1-terra" | .roles.production.effort="high"' "$repo_root/engine/model-policy.default.json")"
 }

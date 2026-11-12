@@ -113,7 +113,8 @@ case "$PROVIDER" in
       echo "dispatch failed for $NAME: zcode config model mismatch (policy expects $MODEL at .config.defaultModelSelection.modelId)" >&2
       exit 1
     }
-    command -v zcode >/dev/null 2>&1 || { echo "dispatch failed for $NAME: zcode runtime unavailable" >&2; exit 1; }
+    mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
+    (( ${#zcode_cmd[@]} > 0 )) || { echo "dispatch failed for $NAME: zcode runtime unavailable" >&2; exit 1; }
     ;;
   *) echo "role $ROLE has unsupported hand-agent provider: $PROVIDER" >&2; exit 2 ;;
 esac
@@ -391,7 +392,7 @@ else
     -E "NODE_USE_ENV_PROXY=1" \
     -E "https_proxy=http://127.0.0.1:3128" -E "HTTPS_PROXY=http://127.0.0.1:3128" \
     -E "http_proxy=http://127.0.0.1:3128" -E "HTTP_PROXY=http://127.0.0.1:3128" \
-    --unit="$HAND_UNIT" -- setsid nohup env -u GH_TOKEN -u GITHUB_TOKEN "${worker_env[@]}" zcode -p "$zcode_prompt" --cwd "$WT" --mode yolo \
+    --unit="$HAND_UNIT" -- setsid nohup env -u GH_TOKEN -u GITHUB_TOKEN "${worker_env[@]}" "${zcode_cmd[@]}" -p "$zcode_prompt" --cwd "$WT" --mode yolo \
     > "$LOG" 2>&1 &
   launcher_pid=$!
 fi

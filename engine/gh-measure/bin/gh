@@ -1,23 +1,54 @@
 #!/usr/bin/env bash
 # Measurement-only gh shim: one TSV row per call, then gh's own output and exit code.
 # A unit opts in by putting this directory first on PATH. Rows never carry argument values:
-# unit, calling script basename, subcommand, digit-normalized API path, exit code, milliseconds.
+# unit, calling script basename, subcommand, digit-normalized API path, exit code, milliseconds, error class.
 real="${ZF_GH_REAL:-$HOME/.local/bin/gh}"
 log="${ZF_GH_MEASURE_FILE:-${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}/measure/gh-calls.tsv}"
 start="${EPOCHREALTIME/./}"
+capture_dir="$(mktemp -d)" || exit 125
+stdout_file="$capture_dir/stdout"; stderr_file="$capture_dir/stderr"
+trap 'rm -rf -- "$capture_dir"' EXIT
+include_headers=false
+if [[ "${1:-}" == api ]]; then
+  probe_args=("$@")
+  for ((i = 0; i < ${#probe_args[@]}; i++)); do
+    case "${probe_args[$i]}" in
+      -i|--include) include_headers=true ;;
+      -H|--header|-f|--raw-field|-F|--field|-X|--method|--hostname|--input|--jq|--template) i=$((i + 1)) ;;
+    esac
+  done
+fi
 
 # Background the real gh so a TERM from an outer `timeout` reaches it; `<&0` keeps stdin (`--input -`).
-"$real" "$@" <&0 &
+"$real" "$@" <&0 >"$stdout_file" 2>"$stderr_file" &
 child=$!
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
 wait "$child"; rc=$?
 while kill -0 "$child" 2>/dev/null; do wait "$child"; rc=$?; done
+cat "$stdout_file"
+cat "$stderr_file" >&2
+error_class=other
+first_line="$(sed -n '1p' "$stdout_file")"
+if [[ "$include_headers" == true && "$first_line" =~ ^HTTP/[0-9.]+[[:space:]]+304([[:space:]]|$) ]]; then
+  error_class=304
+elif grep -qi 'secondary rate limit' "$stderr_file"; then
+  error_class=secondary
+elif grep -Eqi 'API rate limit exceeded|primary rate limit' "$stderr_file"; then
+  error_class=rate
+fi
 
 {
   sub="${1:-}"; endpoint=""
   if [ "$sub" = api ]; then
     shift
-    for a in "$@"; do case "$a" in -*) ;; *) endpoint="$a"; break ;; esac; done
+    while (($#)); do
+      case "$1" in
+        -H|--header|-f|--raw-field|-F|--field|-X|--method|--hostname|--input|--jq|--template) shift 2 ;;
+        --header=*|--raw-field=*|--field=*|--method=*|--hostname=*|--input=*|--jq=*|--template=*) shift ;;
+        -*) shift ;;
+        *) endpoint="$1"; break ;;
+      esac
+    done
     endpoint="$(sed -E 's/\?.*$//; s/[0-9]+/N/g' <<< "$endpoint")"
   else
     sub="$sub ${2:-}"
@@ -28,7 +59,7 @@ while kill -0 "$child" 2>/dev/null; do wait "$child"; rc=$?; done
     caller="$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -m1 -E '\.(sh|py|mjs|cjs)$')" && [ -n "$caller" ] && break
     p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [ "${p:-1}" -gt 1 ] || break
   done
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "${caller##*/}" "$sub" "$endpoint" "$rc" \
-    "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" >> "$log"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "${caller##*/}" "$sub" "$endpoint" "$rc" \
+    "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" "$error_class" >> "$log"
 } 2>/dev/null
 exit "$rc"

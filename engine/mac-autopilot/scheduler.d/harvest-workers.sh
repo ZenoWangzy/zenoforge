@@ -3,9 +3,9 @@
 incident_report_resume_prompt() { # gate reason source report destination report → read-only replacement-report prompt
   local reason="$1" source_report="$2" destination_report="$3" body
   body="$(cat -- "$source_report")" || return 1
-  printf 'Continue the same implementer session only to complete its incident report.\n'
+  printf 'Continue the same implementer session only to complete its required report sections.\n'
   printf 'The implementation report failed this structural check: %s\n' "$reason"
-  printf 'Return a complete replacement report for %s. Preserve all existing content and change only the report parts needed to satisfy that check.\n' "$destination_report"
+  printf 'Return a complete replacement report for %s. Preserve existing content and satisfy the check, including non-empty ## how and ## why sections (with a commit SHA or #N issue citation) and a non-empty ## decision-log with attempts, failure reasons, final choice, and verification.\n' "$destination_report"
   printf 'Do not edit source, tests, configuration, Git state, or any other file. Do not run tests, commit, push, or call GitHub write operations. The scheduler saves your final answer as the replacement report.\n\n'
   printf '%s\n' 'Existing report:' "$body"
 }
@@ -23,7 +23,7 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
   [[ "$provider" == codex && "$session_id" =~ $SESSION_RE && -n "$model" && -n "$workdir" ]] || return 1
   [[ "$(unit_field "$unit" '.sessions.repair.id // empty')" == "$session_id" ]] || return 1
   pending_stage="$(unit_field "$unit" .stage)"
-  [[ "$pending_stage" == review-pending || "$pending_stage" == rereview-pending ]] || return 1
+  [[ "$pending_stage" == review-pending || "$pending_stage" == rereview-pending || "$pending_stage" == repair-pending ]] || return 1 # repair-pending: a repair that pushed nothing; the harvest sends the fixed report to rereview
   unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
   output_report="incident-report-${safe_id}-${TAG}.md"
@@ -33,28 +33,35 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
     --arg pending_stage "$pending_stage" --arg session_id "$session_id" \
     '{incident_report_resume:true,incident_report_resume_source_type:$source_type,incident_report_resume_source_report:$source_report,incident_report_resume_pending_stage:$pending_stage,incident_report_resume_session_id:$session_id}')"
   dispatch_if_room "$unit" repair repair "$output_log" "$output_report" "$model" "$effort" "$prompt" "$sha" "$workdir" "$pr_head" "$prompt" "$unit_json" false "$provider" "$hard" incident-report-resume "$route_provider" "$context" || return 1
-  say "incident report resume dispatched unit=$unit source=$source_report output=$output_report"
+  say "report resume dispatched unit=$unit source=$source_report output=$output_report"
 }
 
-incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed
-  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason
+incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed; rc 1 = one is now running
+  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason n
   wtype="$(jqf -r '.type // empty' <<<"$w")"
   [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
   unit="$(jqf -r '.unit // empty' <<<"$w")"
   incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   [[ "$wtype" != repair ]] || report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$incident_unit_json")" # a repair edits the unit's own report in place; its worker report is only the fix note
-  reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
-  [[ -n "$reason" ]] || return 0
-  dispatch_incident_report_resume "$w" "$report_name" "$reason" || say "incident report resume unavailable unit=$unit; review will use the existing report"
+  reason="$(decision_log_gate_reason "$incident_unit_json" "$SUP/$report_name")"
+  [[ -n "$reason" ]] || reason="$(how_why_gate_reason "$incident_unit_json" "$SUP/$report_name")"
+  [[ -n "$reason" ]] || reason="$(incident_report_gate_reason "$incident_unit_json" "$SUP/$report_name")"
+  [[ -n "$reason" ]] || { [[ "$(jqf -r 'has("report_gate_fail")' <<<"$incident_unit_json")" == false ]] || set_unit "$unit" 'del(.report_gate_fail)'; return 0; }
+  # The same gate reason twice in a row means another repair writes the same kind of report: stop instead of looping (4741).
+  n=1; [[ "$(jqf -r '.report_gate_fail.reason // empty' <<<"$incident_unit_json")" != "$reason" ]] || n=$(( $(jqf -r '.report_gate_fail.n // 0' <<<"$incident_unit_json") + 1 ))
+  set_unit "$unit" ".report_gate_fail={reason:$(js "$reason"),n:$n}"
+  if (( n >= 2 )); then to_supervisor "$unit" "implementation report gate failed ${n} times in a row with the same reason: $reason (report $report_name)"; return 0; fi
+  ! dispatch_incident_report_resume "$w" "$report_name" "$reason" || return 1
+  say "report resume unavailable unit=$unit; review will use the existing report"
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
-  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins no_output pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage
+  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
-    report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"
+    report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"; model_not_found_cache_observe_worker "$w" "$lg" || true
     if [[ "$local_only" == true ]]; then
       if [[ "$wtype" =~ ^(review|rereview|repair)$ || ( "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ) ]]; then
         # Finished worker with a report: harvest now so its slot frees and the next stage dispatches in this refill. Land, eval, supervise and report-less deaths stay on the slow tick.
@@ -207,15 +214,17 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         esac
       }
       incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-      incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
+      incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json" "$rep")"
+      [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(how_why_gate_reason "$incident_unit_json" "$rep")"
+      [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json" "$rep")"
       if [[ -z "$incident_gate_reason" && -s "$rep" ]]; then
-        set_unit "$unit" ".implementation_report=$(js "$report") | .stage=$(js "$report_resume_stage")"
-        say "incident report resume passed unit=$unit report=$report; sending to review"
+        set_unit "$unit" ".implementation_report=$(js "$report") | del(.report_gate_fail) | .stage=$(js "$report_resume_stage")"
+        say "report resume passed unit=$unit report=$report; sending to review"
       else
         [[ -n "$incident_gate_reason" ]] || incident_gate_reason='resumed session did not produce a report'
         [[ -n "$report_resume_source" ]] && set_unit "$unit" ".implementation_report=$(js "$report_resume_source")"
         set_unit "$unit" ".stage=$(js "$report_resume_stage")"
-        say "incident report resume failed unit=$unit reason=$incident_gate_reason; sending to review with the existing report"
+        say "report resume failed unit=$unit reason=$incident_gate_reason; sending to review with the existing report"
       fi
       jqf --argjson accounting "$accounting" --arg finished "$STAMP" \
         --argjson pid "$pid" --arg unit "$unit" \
@@ -224,23 +233,25 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       continue
     fi
     if [[ -s "$rep" ]]; then
-      v="$(verdict_of "$rep")"
+      v="$(verdict_of "$rep")"; [[ "$wtype" != review && "$wtype" != rereview ]] || review_decision_log_flags_append "$rep" "$unit"
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
         incident_unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-        incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json")"
-        v="$(incident_review_verdict "$incident_unit_json" "$v")"
+        incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json")"
+        [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(how_why_gate_reason "$incident_unit_json")"
+        [[ -n "$incident_gate_reason" ]] || incident_gate_reason="$(incident_report_gate_reason "$incident_unit_json")"
+        [[ -z "$incident_gate_reason" ]] || v=NOT_READY
         if [[ "$v" == NOT_READY ]]; then
           original_report="$report"
           gate_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
-          report="incident-gate-${gate_id}-${TAG}.md"
+          report="report-gate-${gate_id}-${TAG}.md"
           rep="$SUP/$report"
           {
-            printf '# Incident report gate\n\n'
-            printf 'The reviewer returned READY in %s, but the incident implementation report failed the required structural check.\n\n' "$original_report"
+            printf '# Implementation report gate\n\n'
+            printf 'The reviewer returned READY in %s, but the implementation report failed the required structural check.\n\n' "$original_report"
             printf 'REQUEST-CHANGES: %s\n\n' "$incident_gate_reason"
             printf 'VERDICT: NOT_READY\n\n```review-findings\n{"findings":[],"dispositions":[]}\n```\n'
           } > "$rep"
-          say "incident report gate requested changes unit=$unit reason=$incident_gate_reason"
+          say "implementation report gate requested changes unit=$unit reason=$incident_gate_reason"
         fi
       fi
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
@@ -273,6 +284,8 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       wsha="$(jqf -r '.sha // empty' <<<"$w")"; [[ "$wsha" =~ $SHA_RE ]] || wsha=""
       wprhead="$(jqf -r '.pr_head // empty' <<<"$w")"; [[ "$wprhead" =~ $SHA_RE ]] || wprhead=""
       say "harvest unit=$unit type=$wtype verdict=${v:-none} mode=$wmode tokens=${tk:-unavailable} session_id=${session_id:-none} session_tokens=$dispatch_usage_count session_total_tokens=$session_usage_count"
+      report_only_requeue_handled=false
+      if ! report_only_pr_requeue_harvest "$unit" "$w" "$report" "$rep" "$wtype"; then
       case "$wtype" in
         review|rereview)
           local reviewed=".reviewed_sha=$(js "$wsha") | .reviewed_pr_head=$(js "$wprhead") | .review_report=$(js "$report")"
@@ -347,7 +360,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
           if [[ "$(unit_field "$unit" '.self_fix_active // false')" == true ]]; then
             set_unit "$unit" "$(hist self-fix-delivered) | .self_fix_active=false | .self_fix_pending=false | .self_check_sha=null | .self_check_status=null | .stage=.self_check_return_stage"
           else
-            local current_unit disposition_update head_class head_base
+            local current_unit disposition_update head_class head_base delivered_head repair_workdir
             if [[ "$(unit_field "$unit" '.author_dispositions_pending // false')" == true ]]; then
               current_unit="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
               disposition_update="$(review_dispositions_update "$rep" "$current_unit")"
@@ -355,14 +368,18 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
               disposition_update=""
             fi
             read -r head_class head_base <<<"$(repair_head_class "$unit" "$(jqf -r '.workdir // empty' <<<"$w")")"
-            set_unit "$unit" "$(repair_run_filter "$unit" "$head_class" "$head_base" "$tk") $disposition_update | .author_dispositions_pending=false"
+            repair_workdir="$(jqf -r '.workdir // empty' <<<"$w")"
+            delivered_head=""; [[ -z "$repair_workdir" ]] || delivered_head="$(git -C "$repair_workdir" rev-parse --verify HEAD 2>/dev/null || true)"
+            set_unit "$unit" "$(repair_run_filter "$unit" "$head_class" "$head_base" "$tk" "$lg" "$rep" "$delivered_head") $disposition_update | .author_dispositions_pending=false"
           fi
           # f6 复查（#4482）：repair/self-fix 推的新 head 重新过尺寸准入；超线同样转 supervisor 拆分
           local recheck_dir recheck_branch
           recheck_dir="$(jqf -r '.workdir // empty' <<<"$w")"; recheck_branch="$(unit_field "$unit" '.branch // empty')"
           if [[ "$(unit_field "$unit" '.history[-1].stage // empty')" != repair-no-push && "$(unit_field "$unit" '.lane // "pr"')" != direct-main ]] && [[ "$(unit_field "$unit" '.pr // empty')" =~ ^[0-9]+$ ]]; then
             size_admission_recheck "$unit" "$recheck_dir" "$recheck_branch" "on $recheck_branch after repair" "${recheck_dir:+$(git -C "$recheck_dir" rev-parse -q --verify HEAD 2>/dev/null)}" || :
-          fi; repair_breaker "$unit" "$rep" || : ;;
+          fi
+          # The report check runs before the breaker: a continuation fixing the report is part of this round, so the breaker waits for the next one.
+          incident_report_pre_review "$w" "$report" "$rep" && { repair_breaker "$unit" "$rep" || :; } ;;
         land)
           local land_result; land_result="$(head -1 "$rep")"
           case "$land_result" in
@@ -401,20 +418,10 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             *) # 冲突、预检失败、落地卡死：改动本身要修，交给 repair 并附落地日志
                set_unit "$unit" "$(hist land-failed "$land_result") | .approved_sha=null | .repair_hint=$(js "直落 main 失败：${land_result}。落地日志 $SUP/${report}.land.log；与 main 冲突就 merge origin/main 解决；检查失败或卡死就修复根因并补回归测试。") | .stage=\"repair-pending\"" ;;
           esac ;;
-        implement|triage)
-          if [[ "$wtype" == implement && -z "$(unit_field "$unit" .pr)" && "$(unit_field "$unit" .lane)" == direct-main ]]; then
-            harvest_prless_implement "$unit" "$rep" "$local_only"
-          elif [[ "$wtype" == implement && -z "$(unit_field "$unit" .pr)" && "$(unit_field "$unit" .lane)" == pr ]]; then
-            harvest_pr_implement "$unit" "$rep"
-          else
-            decision="$(decision_entry 'Hand off delivered worker result to supervisor' 'the current unit state has no automatic delivery transition' "$report" '["Advance the unit without supervisor handling"]' scheduler)"
-            set_unit "$unit" "$(hist delivered "" "$decision") | (.stage=\"supervisor-review\")"
-            echo "[$STAMP] IMPL-DELIVERED unit=$unit report=$(basename "$rep")" >> "$A/alerts/events.md"
-          fi ;;
+        implement|triage) harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only" ;;
       esac
-      if [[ "$wtype" == implement || "$wtype" == repair ]]; then
-        incident_report_pre_review "$w" "$report" "$rep"
       fi
+      [[ "$wtype" != implement || "$report_only_requeue_handled" == true ]] || incident_report_pre_review "$w" "$report" "$rep" || :
     else
       if [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" == true ]]; then
         report_resume_source="$(jqf -r '.incident_report_resume_source_report // empty' <<<"$w")"
@@ -449,20 +456,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
         continue
       fi
-      echo "[$STAMP] WASTE zero-output worker pid=$pid unit=$unit log=$(basename "$lg")" >> "$A/alerts/waste.md"
-      say "WASTE zero-output pid=$pid unit=$unit"
-      # L9：无产出死亡计数；到上限转人工，不再无限重派。
-      set_unit "$unit" "$(hist worker-no-output "$wtype")"
-      no_output="$(jqf -r --arg id "$unit" '[.units[] | select(.id==$id) | (.history // []) | map(select(.stage=="worker-no-output")) | length][0] // 0' "$UNITS")"
-      if [[ "$(unit_field "$unit" '.self_fix_active // false')" != true && "$no_output" =~ ^[0-9]+$ ]] && (( no_output >= MAX_NO_OUTPUT )); then
-        if [[ "$wtype" =~ ^(review|rereview|repair|implement)$ && "$(unit_retries "$unit" fresh-session-retry)" == 0 ]]; then
-          # 续接的会话可能已坏（上下文爆、提供方会话失效）：丢掉会话 ID 再试一次全新会话。
-          set_unit "$unit" "$(hist fresh-session-retry "$no_output deaths") | .session_ids={} | .sessions={} | .session_id=null | .stage=\"${wtype}-pending\""
-          say "unit=$unit: $no_output workers died -> one fresh-session retry"
-        else
-          to_supervisor "$unit" "$no_output workers died without a report, fresh session too (last log $(basename "$lg"))"
-        fi
-      fi
+      handle_worker_no_output "$w" "$unit" "$wtype" "$lg" "$pid" "$(jqf -r 'if (.pr_head // "") != "" then .pr_head else .sha // "" end' <<<"$w")"
     fi
     jqf --argjson accounting "$accounting" --arg finished "$STAMP" "(.workers[] |= (if .pid==$pid and .unit==\"$unit\" and .harvested != true then (. += \$accounting | .harvested=true | .finished_at=\$finished) else . end))" "$WORKERS" | write_state "$WORKERS"
   done < <(jqf -c '.workers[]' "$WORKERS")

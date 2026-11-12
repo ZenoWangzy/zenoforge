@@ -48,13 +48,13 @@ def main():
 
     units = ledger_history.load_units(a)
     workers = json.load(open(os.path.join(a, "workers.json")))["workers"]
-    lines = []
     log = os.path.join(a, "scheduler.log")
-    if os.path.exists(log):
-        for raw in open(log, errors="ignore"):
-            m = LINE_RE.match(raw.rstrip("\n"))
-            if m and (t := ts(m.group(1))) and t >= since:
-                lines.append((t, m.group(2)))
+    log_rows, future_stamped = ledger_history.scheduler_log_lines(log, now)
+    lines = []
+    for raw in log_rows or []:
+        m = LINE_RE.match(raw.rstrip("\n"))
+        if m and (t := ts(m.group(1))) and t >= since:
+            lines.append((t, m.group(2)))
 
     # ---- 各环节：耗时（派发→回收）、token、结果 ----
     harvests = []
@@ -76,7 +76,8 @@ def main():
     def count(pattern):
         return sum(1 for _, msg in lines if re.search(pattern, msg))
 
-    print(f"autopilot health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h")
+    future_note = f" future_stamped={future_stamped}" if future_stamped else ""
+    print(f"autopilot health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h{future_note}")
     print("drift check: STRATEGY.md 'Maintainer intents' — fix the most UNHEALTHY node in the scorecard below first; "
           "name the intent and the metric each change serves")
     stages = {}

@@ -124,6 +124,24 @@ jqf_optional_file() {
   fi
   jqf "$@" "$_file"
 }
+# Refresh dependency state without dropping native blocked_by entries written by concurrent hold checks.
+sched_dep_cache_refresh_merge() {
+  local cache_file="$1" epoch="$2" states_json="$3" lock_file="${1%/*}/dep-check.cache.lock" lock_fd="" blocked_by rc=0
+  if ! exec {lock_fd}>>"$lock_file" || ! flock -x "$lock_fd"; then
+    [[ -z "$lock_fd" ]] || exec {lock_fd}>&-
+    return 1
+  fi
+  blocked_by="$(jqf_optional_file "$cache_file" -c 'if (.blocked_by|type)=="object" then .blocked_by else {} end' 2>/dev/null || echo '{}')"
+  if ! jqf -cn --argjson epoch "$epoch" --slurpfile states <(printf '%s' "$states_json") --argjson blocked_by "$blocked_by" \
+    '{epoch:$epoch,states:$states[0]} + (if ($blocked_by|length)>0 then {blocked_by:$blocked_by} else {} end)' > "$cache_file.tmp" \
+    || ! mv "$cache_file.tmp" "$cache_file"; then
+    rm -f -- "$cache_file.tmp"
+    rc=1
+  fi
+  flock -u "$lock_fd" || true
+  exec {lock_fd}>&-
+  return "$rc"
+}
 js() { jq -cn --arg v "$1" '$v'; }  # 任意文本 → jq 字符串字面量，供拼入 set_unit 表达式
 # 旧单元形状归一（11-03 pr-3575：字符串 .cto_rulings 撞上数组追加，jqf rc=5，整笔更新被丢）。字段改形
 # （.cto_rulings 2026-10-21 起为累积数组；.ready_since 早期存过 ISO 字符串）后没有任何路径归一存量数据，
@@ -152,10 +170,8 @@ gh() {
 }
 AUTOPILOT_AUTO_FILED_LABEL_READY="${AUTOPILOT_AUTO_FILED_LABEL_READY:-false}"
 scheduler_auto_filed_issue_create() {
-  local existing
   if [[ "$AUTOPILOT_AUTO_FILED_LABEL_READY" != true ]]; then
-    existing="$(gh label list --limit 100 --json name -q '.[].name' 2>/dev/null || true)"
-    if grep -qx -- auto-filed <<<"$existing" || gh label create auto-filed --color ededed \
+    if gh label create auto-filed --force --color ededed \
         --description "Automatically filed by Zenoforge" >/dev/null 2>&1; then
       AUTOPILOT_AUTO_FILED_LABEL_READY=true
     fi
@@ -170,6 +186,10 @@ scheduler_auto_filed_issue_create() {
 tick_gh_calls_begin() {
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
   : >"$GH_TICK_CALLS_FILE" 2>/dev/null || GH_TICK_CALLS_FILE=""
+  ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$A/deployment-status.$BASHPID"
+  rm -rf -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || :
+  mkdir -p -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR=""
+  export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR
   TICK_INTAKE_READS_FILE="$A/intake-reads.$BASHPID"
   printf '0\n' >"$TICK_INTAKE_READS_FILE" 2>/dev/null || TICK_INTAKE_READS_FILE=""
   TICK_PHASE_DETAILS=""
@@ -177,6 +197,7 @@ tick_gh_calls_begin() {
   TICK_LOCK_WAIT=0
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
+  find "$A" -maxdepth 1 -type d -name 'deployment-status.*' -mmin +120 -exec rm -rf -- {} + 2>/dev/null || :
   find "$A" -maxdepth 1 -name 'intake-reads.*' -mmin +120 -delete 2>/dev/null || :
   find "$GH_ETAG_DIR" -type f -mmin +360 -delete 2>/dev/null || :
 }

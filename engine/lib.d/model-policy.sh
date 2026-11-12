@@ -818,7 +818,7 @@ review_identity_unavailable_reason() {
       ;;
     zcode)
       if ! zcode_review_open; then echo 'glm hold'
-      elif ! command -v zcode >/dev/null 2>&1; then echo 'glm cli missing'
+      elif ! zf_zcode_bin_argv >/dev/null 2>&1; then echo 'glm cli missing'
       elif ! zcode_provider_config_model_matches "$identity"; then echo 'glm config mismatch'
       else echo 'glm unavailable'; fi
       ;;
@@ -846,7 +846,7 @@ review_identity_available() {
       ;;
     zcode)
       zcode_review_open || return 1
-      command -v zcode >/dev/null 2>&1 || return 1
+      zf_zcode_bin_argv >/dev/null 2>&1 || return 1
       zcode_provider_config_model_matches "$identity"
       ;;
     claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
@@ -926,10 +926,7 @@ review_model_for_implementer() {
       fi
     fi
     if review_identity_available "$candidate" "$candidate_role" "$author_family"; then
-      if [[ "$candidate_role" == review_fallback ]]; then
-        review_family_log "review-family fallback unit=$unit author=$author_family reviewer=$candidate_model reason=${primary_reason:-cross reviewer unavailable}"
-        record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "${primary_reason:-cross reviewer unavailable}" 2>/dev/null || true
-      fi
+      review_family_candidate_selected "$candidate_role" "$issue" "$unit" "$author_family" "${candidate_model:-}" "${primary_reason:-}" "$candidate"
       printf '%s\n' "$candidate"
       return 0
     fi

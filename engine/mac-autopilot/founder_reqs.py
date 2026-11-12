@@ -1,7 +1,7 @@
 """Founder requirements for the dashboard front page: every issue or unit labelled founder-test, hotfix or focus,
 with the founder's words (rulings.json references, else the issue title), a stage that only pipeline events and release
 acceptance advance (never an agent's note), owner, blocker and the time the stage was established.
-A stage change appends one supervisor-inbox line; the head supervisor monitors it. Nothing per-requirement reaches the founder."""
+A stage change appends one supervisor-inbox line; engine/supervisor/watch/pipe-watch.sh forwards it to a supervisor session (founder-req is in watch.inbox_events). Nothing per-requirement reaches the founder."""
 import calendar, json, os, re, subprocess, time
 
 LABELS = ("founder-test", "hotfix", "focus")
@@ -215,7 +215,7 @@ def _fetch_issues(repo, cache_path, needed=()):
 
 
 def collect(units, repo, rulings_path, runtime, agent_home, lib):
-    import node_health, live_delivery, release_retained
+    import ledger_history, live_delivery, release_retained
     try: rulings = json.load(open(rulings_path)).get("rulings") or []
     except (OSError, ValueError): rulings = []
     live = live_delivery.read_live_sha(agent_home)
@@ -224,7 +224,7 @@ def collect(units, repo, rulings_path, runtime, agent_home, lib):
     needed = set(held) | {int(u["issue"]) for u in units if set(u.get("labels") or []) & set(LABELS) and u.get("stage") != "closed"
                           and str(u.get("issue", "")).isdigit()}
     rows, truncated = _fetch_issues(repo, os.path.join(runtime, "founder-reqs.cache.json"), needed)
-    out = build(units, rows, rulings, node_health.release_acceptances(runtime), time.time(),
+    out = build(units, rows, rulings, ledger_history.release_acceptances(runtime), time.time(),
                 _hotfix_live(os.path.join(agent_home, "hotfix-live.jsonl")), live_merge_shas, held, truncated=truncated)
     push_changes(out["items"], os.path.join(agent_home, "founder-req-stage.json"), lib, agent_home)
     return out

@@ -89,6 +89,7 @@ if [[ "${1:-}" == "--advisor-runner-only" ]]; then
   unset -f stage_unit_active
   guarded_write() { printf '<%s>\n' "$@" >> "$AGENT_HOME/advisor-runner-dispatch.args"; }
   release_batch_cadence_mark() { :; }
+  release_deployment_record_readable() { return 0; }
   eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
   RELEASE_RUNTIME_MAX_SEC=60
   dispatch_release_batch 4928 deadbeef
@@ -96,6 +97,8 @@ if [[ "${1:-}" == "--advisor-runner-only" ]]; then
     "$(grep -Fx "<$runner_target/scripts/release/run-release.sh>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
   assert_eq 'release dispatch carries the config root into its transient unit' yes \
     "$(grep -Fx "<ZF_CONFIG_ROOT=$runner_target/.zenoforge>" "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
+  assert_eq 'release unit counts the runner exit 75 as success, not a failed unit' yes \
+    "$(grep -Fx '<SuccessExitStatus=75>' "$AGENT_HOME/advisor-runner-dispatch.args" >/dev/null && echo yes || echo no)"
   [ "$FAILED" -eq 0 ] || exit 1
   echo 'issue-pipeline.test.sh: configured runners PASS'
   exit 0
@@ -1571,9 +1574,20 @@ run_advisor_selection() (
   ADVISOR_STALE_PENDING_JOB_IDS="$stale"
   ADVISOR_BATCH_UNIT_ACTIVE="$active"
   ADVISOR_QUEUE_READ_FAILED="$queue_failed"
+  NEEDS_ADVISOR_IDS=930102
   advisor_slots=1
+  STAGE_DISPATCH_BLOCKING_SCOPES=""
+  STAGE_DISPATCH_CANARY_SCOPES=""
   advisor_batch_job_active() { return 1; }
-  web_advisor_provider_dispatch_allowed() { return 0; }
+  web_advisor_provider_dispatch_allowed() {
+    if [[ "${ADVISOR_CANARY_BLOCKED:-0}" == 1 ]]; then
+      STAGE_DISPATCH_BLOCKING_SCOPES=advisor
+      return 1
+    fi
+    STAGE_DISPATCH_CANARY_SCOPES=advisor
+    return 0
+  }
+  consume_unit_memory_oom() { return 1; }
   dispatch_advisor_batch() {
     [ "${ADVISOR_BATCH_LAUNCH_STATUS:-0}" -eq 0 ] || return "$ADVISOR_BATCH_LAUNCH_STATUS"
     echo batch-dispatch
@@ -1586,6 +1600,10 @@ run_advisor_selection() (
 )
 
 SINGLE_QUEUE_SELECTION="$(run_advisor_selection '' '' 1 0 2>&1)"
+ADVISOR_QUARANTINE_BLOCKED="$(ADVISOR_CANARY_BLOCKED=1 run_advisor_selection '' '' 1 0 2>&1)"
+assert_eq 'blocked advisor scope is recorded from the parent-shell dispatch check' \
+  'quarantine:skipped' \
+  "$(jq -r '[(.advisor_tick_decision.gate // "missing"),(.advisor_tick_decision.outcome // "missing")] | join(":")' "$ADVISOR_LEDGER_HOME/state/930102.json")"
 ADVISOR_CALL_FAILURE_STATUS=0
 ADVISOR_CALL_FAILURE_OUT="$(ADVISOR_BATCH_LAUNCH_STATUS=1 run_advisor_selection '' '' 1 0 2>&1)" || ADVISOR_CALL_FAILURE_STATUS=$?
 assert_eq 'advisor caller explicitly propagates real launch failure' 1 "$ADVISOR_CALL_FAILURE_STATUS"
@@ -1822,6 +1840,7 @@ run_batch_admission_case() (
   model_config_fault_blocked() { return 1; }
   consume_unit_memory_oom() { return 1; }
   state_read() { echo '{}'; }
+  release_deployment_record_readable() { return 0; }
   guarded_write() {
     if [ "$launch_status" -eq 0 ]; then printf 'unit-created\n'; fi
     return "$launch_status"
@@ -1901,14 +1920,38 @@ PRODUCTION_DEPLOYMENT_SHA_FN="$(sed -n '/^latest_production_deployment_sha() {/,
 mkdir -p "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh"
 cat > "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh/gh" <<'GH'
 #!/usr/bin/env bash
+[ "${FAKE_DEPLOYMENT_FAIL:-0}" != 1 ] || exit 1
 case "$2" in
   repos/*/deployments\?environment=production\&per_page=20)
+    [ "${FAKE_DEPLOYMENT_EMPTY:-0}" != 1 ] || { echo '[]'; exit 0; }
     jq -cn --arg sha "$FAKE_DEPLOYMENT_SHA" '[{id:1,sha:$sha,payload:{sha:$sha,images:{"example-admin":"sha256:test"},image_shas:{"example-admin":$sha}}}]' ;;
   repos/*/deployments/1/statuses) echo '[{"state":"success","created_at":"2026-10-24T00:00:00Z"}]' ;;
   *) echo "unexpected fake deployment API call: $*" >&2; exit 2 ;;
 esac
 GH
 chmod +x "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh/gh"
+# The runner refuses with 75 when the production Deployment record is unreadable, so dispatch reads it first and
+# leaves the anchor pending. A record that already covers the batch still dispatches: the runner closes its tickets.
+run_release_predispatch_case() (
+  local status=0 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf REPO=test/repo RELEASE_RUNTIME_MAX_SEC=60
+  PATH="$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh:$PATH"
+  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
+  zf_release_runner() { echo /bin/true; }
+  release_batch_cadence_mark() { :; }
+  record_env_fault() { printf 'fault:%s\n' "$1"; }
+  guarded_write() { case " $* " in *" -p SuccessExitStatus=75 "*) echo unit-with-75 ;; *) echo unit-without-75 ;; esac; }
+  dispatch_release_batch 910101 "$sha" 2>/dev/null || status=$?
+  printf 'status:%s\n' "$status"
+)
+assert_eq 'release dispatch leaves the anchor pending when the Deployment record is unreadable' \
+  'status:75' "$(FAKE_DEPLOYMENT_SHA=x FAKE_DEPLOYMENT_FAIL=1 run_release_predispatch_case)"
+assert_eq 'release dispatch launches one unit when the Deployment record is older than the batch' \
+  $'unit-with-75\nstatus:0' "$(FAKE_DEPLOYMENT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_release_predispatch_case)"
+assert_eq 'release dispatch still launches when the Deployment record already covers the batch' \
+  $'unit-with-75\nstatus:0' "$(FAKE_DEPLOYMENT_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb run_release_predispatch_case)"
+assert_eq 'release dispatch launches when no Deployment record exists yet' \
+  $'unit-with-75\nstatus:0' "$(FAKE_DEPLOYMENT_SHA=x FAKE_DEPLOYMENT_EMPTY=1 run_release_predispatch_case)"
 run_release_selection() (
   local issue_json="$1" state_issue="${2:-}" on_hold="${3:-}" label_rc="${4:-1}" released="${5:-}" deploy_blocked="${6:-1}" state_pr="${7:-910201}" fleet_issue="${8:-}" missing_pr_issue="${9:-}" slot_count="${10:-10}" invalid_pr_issue="${11:-}" invalid_ancestor_issue="${12:-}" stage_rc="${13:-0}" memory_rc="${14:-0}" active_issue="${15:-}" run_outcome="${16:-merged}" deploy_status="${17:-pending}" pipeline_system_issue="${18:-}" timing_wait_sha="${19:-}"
   if [[ "${RELEASE_CADENCE_TEST_NOW:-}" =~ ^[0-9]+$ ]]; then
@@ -2518,6 +2561,70 @@ assert_contains "reconciliation recognizes the existing legacy comment and does 
 assert_contains "a different merged PR gets its own waiting-release comment" \
   "$MERGED_REOPEN_OUT" 'different-pr-comment-writes=1 comments=2'
 rm -rf "$MERGED_REOPEN_HOME"
+# head's codex-unavailable-until hold: the advisor leg is held with one log line, and it runs before any dispatch,
+# quarantine or canary. A temp marker only; the real ~/.vecta-agent file is never touched.
+HOLD_HOME="$(mktemp -d)"
+CODEX_UNAVAILABLE_MARKER_FILE="$HOLD_HOME/codex-unavailable-until"
+eval "$(sed -n '/^codex_unavailable_until() {/,/^}/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
+eval "$(sed -n '/^advisor_held_codex_unavailable() {/,/^}/p' "$SCRIPT_DIR/lib.d/advisor-batch.sh")"
+hold_future=$(( $(date +%s) + 3600 ))
+printf '%s\n' "$hold_future" > "$CODEX_UNAVAILABLE_MARKER_FILE"
+held_rc=0; advisor_held_codex_unavailable 2> "$HOLD_HOME/held.log" || held_rc=$?
+assert_eq 'a future codex-unavailable-until holds the advisor leg' 0 "$held_rc"
+assert_eq 'a held tick logs exactly one line' 1 "$(wc -l < "$HOLD_HOME/held.log")"
+assert_contains 'the held line names the hold expiry' "$(cat "$HOLD_HOME/held.log")" \
+  "advisor held: codex-unavailable-until $(date -u -d "@$hold_future" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$(( $(date +%s) - 1 ))" > "$CODEX_UNAVAILABLE_MARKER_FILE"
+expired_rc=0; advisor_held_codex_unavailable 2> "$HOLD_HOME/held.log" || expired_rc=$?
+assert_eq 'an expired hold lets the advisor leg dispatch as before' 1 "$expired_rc"
+assert_eq 'an expired hold logs nothing' 0 "$(wc -l < "$HOLD_HOME/held.log")"
+assert_eq 'the held gate precedes every advisor dispatch call in the leg' yes \
+  "$(gate_line="$(grep -n '^if advisor_held_codex_unavailable; then' "$PIPELINE_SRC" | cut -d: -f1)"; pending_line="$(grep -n '^    advisor_dispatch_pending_job_pool$' "$PIPELINE_SRC" | cut -d: -f1)"; [ -n "$gate_line" ] && [ -n "$pending_line" ] && [ "$gate_line" -lt "$pending_line" ] && echo yes || echo no)"
+# Hold time is not spent: a verdict's age, a job's deadline and a job's age all subtract the recorded hold, and the first
+# tick after a hold charges it. The unit-stopped resume is the path that times a job out; it must restart, not time out.
+CODEX_UNAVAILABLE_HOLD_LEDGER="$HOLD_HOME/held.ledger"
+CODEX_UNAVAILABLE_TICK_FILE="$HOLD_HOME/tick"
+eval "$(sed -n '/^codex_hold_overlap() {/,/^}/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
+eval "$(sed -n '/^codex_unavailable() {/p' "$SCRIPT_DIR/lib.d/codex-budget.sh")"
+eval "$(sed -n '/^advisor_hold_clock() {/,/^}/p; /^advisor_pending_verdict_age_seconds() {/,/^}/p' "$SCRIPT_DIR/lib.d/advisor-batch.sh")"
+eval "$(sed -n '/^advisor_stored_verdict_disposition() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^web_advisor_provider_resume_job_if_stopped() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
+ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS=43200
+WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS=3600
+ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX=zf
+JOBS="$HOLD_HOME/jobs"; mkdir -p "$JOBS/job-1"; : > "$JOBS/job-1/question.txt"
+WEB_ADVISOR_PROVIDER_JOB_DIR="$JOBS"
+systemctl() { return 1; }
+web_advisor_provider_start_job_unit() { echo restarted > "$HOLD_HOME/restarted"; }
+DISPATCH=$(( $(date +%s) - 3700 ))
+printf '%s\n' "$(( DISPATCH + 3600 ))" > "$JOBS/job-1/deadline"
+printf '%s %s\n' "$(( DISPATCH + 1000 ))" "$(( DISPATCH + 1600 ))" > "$CODEX_UNAVAILABLE_HOLD_LEDGER"  # 600 s of hold
+web_advisor_provider_resume_job_if_stopped job-1 || true
+assert_eq 'a job whose unit stopped during a ten-minute hold is restarted, not timed out' yes \
+  "$([ -f "$HOLD_HOME/restarted" ] && [ ! -f "$JOBS/job-1/done" ] && echo yes || echo no)"
+rm -f "$HOLD_HOME/restarted" "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+web_advisor_provider_resume_job_if_stopped job-1 || true
+assert_eq 'without a recorded hold the same job is timed out (control)' 124 "$(cat "$JOBS/job-1/done" 2>/dev/null)"
+rm -f "$JOBS/job-1/done"
+printf '%s %s\n' "$(( DISPATCH + 1000 ))" "$(( DISPATCH + 1600 ))" > "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+verdict_json="$(jq -nc --arg at "$(date -u -d "@$(( $(date +%s) - 43300 ))" +%Y-%m-%dT%H:%M:%SZ)" '{pending_advisor_verdict:{computed_at:$at}}')"
+printf '%s %s\n' "$(( $(date +%s) - 43300 ))" "$(( $(date +%s) - 43100 ))" > "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+assert_eq 'a stored verdict older than 12 h by hold time alone is resumed, not discarded' resume \
+  "$(advisor_stored_verdict_disposition 1 "$verdict_json")"
+rm -f "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+assert_eq 'the same stored verdict with no hold recorded is discarded (control)' discard-age \
+  "$(advisor_stored_verdict_disposition 1 "$verdict_json")"
+rm -f "$CODEX_UNAVAILABLE_TICK_FILE" "$CODEX_UNAVAILABLE_HOLD_LEDGER"
+printf '%s 0\n' "$(( $(date +%s) - 600 ))" > "$CODEX_UNAVAILABLE_TICK_FILE"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CODEX_UNAVAILABLE_MARKER_FILE"
+clock_rc=0; advisor_hold_clock || clock_rc=$?
+assert_eq 'a tick that finds the hold charges the ten minutes since the last tick' 0 "$clock_rc"
+hold_s="$(codex_hold_overlap 0 9999999999)"
+assert_eq 'the charged hold is about ten minutes' yes "$([ "$hold_s" -ge 600 ] && [ "$hold_s" -le 602 ] && echo yes || echo no)"
+rm -f "$CODEX_UNAVAILABLE_MARKER_FILE"
+clock_rc=0; advisor_hold_clock || clock_rc=$?
+assert_eq 'the first tick after the hold ends still charges its last interval' 2 "$(wc -l < "$CODEX_UNAVAILABLE_HOLD_LEDGER")"
+rm -rf "$HOLD_HOME"
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL PASSED"
 else

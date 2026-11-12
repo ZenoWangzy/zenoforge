@@ -52,6 +52,20 @@ if [[ $mode == builtin_info ]]; then
   sleep 0.3
   mode=success
 fi
+if [[ $mode == models_manager_401 ]]; then
+  printf 'codex_models_manager: failed to refresh available models: unexpected status 401\n' >> "$d/stderr.log"
+  sleep 0.3
+  mode=success
+fi
+if [[ $mode == auth_turn_failed ]]; then
+  printf 'codex_models_manager: failed to refresh available models: unexpected status 401\n' >> "$d/stderr.log"
+  printf '%s\n' '{"type":"turn.failed","error":{"code":"authentication_error","message":"Authentication failed: token expired (401)"}}' > "$d/events.jsonl"
+  exit 1
+fi
+if [[ $mode == model_not_found ]]; then
+  printf '%s\n' '{"type":"turn.failed","error":{"code":"model_not_found","message":"The requested model is not supported"}}' > "$d/events.jsonl"
+  exit 1
+fi
 [[ $mode == gated ]] && { sleep 7; mode=success; }   # queued at the capacity gate past the stall threshold
 [[ $mode == hang || $mode == builtin_noise || $mode == queued ]] || echo $$ > "$d/codex.pid"   # real backends write it once past the capacity gate
 case "$mode" in
@@ -143,6 +157,9 @@ run_case() {
   local name=$1 expected_rc=$2 zc_mode=$3 luna_mode=$4 stall_seconds=$5 timeout_seconds=$6
   local initial_backend=${7-zc}
   local initial_model=${8:-gpt-6-luna} history=${10:-}
+  local gate_queue_seconds=${12:-}
+  local -a queue_override=()
+  [[ -z $gate_queue_seconds ]] || queue_override=(WORKER_GATE_QUEUE_SECONDS="$gate_queue_seconds")
   local root="$test_root/$name/.scratch" wt="$test_root/$name/worktree" prompt="$test_root/$name/brief.md"
   local agent_home="$test_root/$name/agent-home" home="$test_root/$name/home" hold=${11:-}
   local key=${9:-test-$name} d rc schema=''
@@ -162,9 +179,9 @@ run_case() {
   [[ -z $history ]] || printf '%s\n' "$history" > "$root/luna/rounds.log"
 
   if timeout --signal=TERM --kill-after=1 "${WORKER_TEST_RUN_TIMEOUT:-$timeout_seconds}" \
-    env HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
+    env -u WORKER_GATE_QUEUE_SECONDS HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
       WORKER_STALL_SECONDS="$stall_seconds" WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
-      FAKE_ZC_MODE="$zc_mode" FAKE_LUNA_MODE="$luna_mode" \
+      FAKE_ZC_MODE="$zc_mode" FAKE_LUNA_MODE="$luna_mode" "${queue_override[@]}" \
       bash "$worker_script" "$key" "$wt" "$prompt" "$schema" > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
     rc=0
   else
@@ -174,6 +191,24 @@ run_case() {
     fail "$name returned rc=$rc, expected rc=$expected_rc (details: $test_root/$name.stderr)"
   fi
   CASE_DIR=$d
+}
+
+run_prompt_case() {
+  local name=$1 prompt=$2 home=$3 expected_rc=$4
+  local root="$test_root/$name/.scratch" agent_home="$test_root/$name/agent-home" rc=0
+  mkdir -p "$root/tmp" "$home" "$agent_home"
+  if timeout --signal=TERM --kill-after=1 "${WORKER_TEST_RUN_TIMEOUT:-10}" \
+    env HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL=gpt-6-luna \
+      WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND=luna \
+      WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+      FAKE_ZC_MODE=success FAKE_LUNA_MODE=success \
+      bash "$worker_script" "$name" "$test_root" "$prompt" \
+      > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [[ $rc == "$expected_rc" ]] || fail "$name returned rc=$rc, expected rc=$expected_rc (details: $test_root/$name.stderr)"
 }
 
 run_case explicit-zc-hold 0 success success 8 4 zc gpt-6-luna '' '' active
@@ -204,6 +239,37 @@ env HOME="$test_root/missing-home" WORKER_SCRATCH_ROOT="$test_root/missing/.scra
 [[ $missing_rc == 2 ]] || fail "missing prompt file returned rc=$missing_rc, expected 2"
 assert_file_contains "$test_root/missing.stderr" 'worker: prompt file not found: brief text, not a path'
 printf 'PASS a prompt that is not a file fails with rc=2\n'
+
+brief_home="$test_root/session-home"
+brief_prompt="$brief_home/.zenoforge/briefs/deny.md"
+mkdir -p "${brief_prompt%/*}"
+cat > "$brief_prompt" <<'BRIEF'
+Issue: #6039
+STOP: use the existing main behavior for unknown products.
+BRIEF
+run_prompt_case brief-missing-existing-path "$brief_prompt" "$brief_home" 2
+assert_file_contains "$test_root/brief-missing-existing-path.stderr" 'worker: brief lacks "Existing path: <file:line of how main already handles the nearest sibling case>" (or "Existing path: none, <why>")'
+printf 'PASS a session brief without Existing path fails with rc=2\n'
+
+brief_prompt="$brief_home/.zenoforge/briefs/allow.md"
+cat > "$brief_prompt" <<'BRIEF'
+Issue: #6039
+STOP: use the existing main behavior for unknown products.
+Existing path: receipt-document-entry.ts:3405 new-SKU on confirm
+BRIEF
+run_prompt_case brief-with-existing-path "$brief_prompt" "$brief_home" 0
+[[ $(cat "$test_root/brief-with-existing-path/.scratch/luna/brief-with-existing-path/backend") == luna ]] || fail 'valid session brief did not reach the backend'
+printf 'PASS a session brief with Existing path reaches the backend\n'
+
+outside_prompt="$test_root/outside-brief-path/prompt.md"
+mkdir -p "${outside_prompt%/*}"
+cat > "$outside_prompt" <<'PROMPT'
+Issue: generated workflow prompt
+STOP: continue the existing workflow.
+PROMPT
+run_prompt_case outside-session-brief "$outside_prompt" "$brief_home" 0
+[[ $(cat "$test_root/outside-session-brief/.scratch/luna/outside-session-brief/backend") == luna ]] || fail 'prompt outside the session brief paths did not reach the backend'
+printf 'PASS a prompt outside the session brief paths needs no Existing path\n'
 
 run_case capacity 0 success capacity 8 4 luna gpt-6.1-terra
 [[ $(cat "$CASE_DIR/models") == $'gpt-6.1-terra\ngpt-6-luna' ]] || fail 'terra capacity did not retry on default exactly once'
@@ -279,6 +345,19 @@ assert_file_contains "$fatal_dir/failover" 'repeated AI_APICallError'
 assert_file_contains "$fatal_dir/briefs" 'Resume after backend failover'
 printf 'PASS fatal stderr pattern -> immediate failover\n'
 
+LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-session 0 gated success 1 25 zc gpt-6-luna '' '' '' 20
+late_gate_dir=$CASE_DIR
+[[ -s "$late_gate_dir/codex.pid" && $(cat "$late_gate_dir/rc") == 0 && ! -e "$late_gate_dir/failover" ]] || fail 'session gate override did not wait through late admission'
+printf 'PASS session gate override admits after the default bound\n'
+LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-default 75 gated success 1 10 zc gpt-6-luna
+[[ $(cat "$CASE_DIR/rc") == 75 ]] || fail 'unset gate queue override changed the default timeout'
+printf 'PASS unset session gate override keeps the default timeout\n'
+for invalid_queue_seconds in 0 -5 abc 99999999999999999999; do
+  LUNA_AGE_ADMIT_SECONDS=0 run_case "late-gate-invalid-$invalid_queue_seconds" 75 gated success 1 10 zc gpt-6-luna '' '' '' "$invalid_queue_seconds"
+  [[ $(cat "$CASE_DIR/rc") == 75 ]] || fail "invalid queue override $invalid_queue_seconds did not keep the default timeout"
+done
+printf 'PASS invalid session gate overrides keep the default timeout\n'
+
 LUNA_AGE_ADMIT_SECONDS=0 run_case queued 75 queued success 1 8
 queued_dir=$CASE_DIR
 assert_file_contains "$queued_dir/failover" 'queued at the capacity gate'
@@ -311,6 +390,29 @@ assert_file_contains "$turn_dir/failover" 'backend=zc failed; next=luna; reason=
 [[ -f "$test_root/turn-failed/.scratch/tmp/zc-breaker" ]] || fail 'Turn execution failed did not open the zc breaker'
 assert_file_contains "$turn_dir/last.md" 'success from luna'
 printf 'PASS zc Turn execution failed -> luna failover with reason; partial worktree preserved\n'
+
+run_case models-manager-401 0 success models_manager_401 8 4 luna
+[[ $(cat "$CASE_DIR/backend") == luna ]] || fail 'models_manager refresh 401 was treated as fatal'
+[[ ! -e $CASE_DIR/failover ]] || fail 'models_manager refresh 401 started backend failover'
+printf 'PASS models_manager refresh 401 is ignored without hiding other fatal turn events\n'
+
+run_case auth-turn-failed 0 success auth_turn_failed 8 4 luna
+assert_file_contains "$CASE_DIR/failover" 'reason=fatal event pattern: turn.failed'
+[[ $(cat "$CASE_DIR/backend") == zc ]] || fail 'authentication turn.failed did not trigger backend failover'
+printf 'PASS authentication turn.failed remains fatal after filtering models_manager stderr\n'
+
+history=$'2026-11-09T00:00:00Z go1-9169 gpt-6-luna rc=1\n2026-11-09T01:00:00Z go2-9169 gpt-6-luna rc=75'
+run_case terra-cache 1 success model_not_found 8 4 luna gpt-6-luna go3-9169 "$history"
+[[ $(cat "$CASE_DIR/models") == gpt-6.1-terra ]] || fail 'the first eligible escalation did not try terra'
+model_cache="${CASE_DIR%/*}/model-not-found.cache"
+assert_file_contains "$model_cache" 'gpt-6.1-terra'
+cache_expiry=$(awk -F '\t' '$1 == "gpt-6.1-terra" { print $2 }' "$model_cache")
+cache_now=$(date +%s)
+[[ $cache_expiry =~ ^[0-9]+$ ]] || fail 'unsupported-model cache has no numeric expiry'
+(( cache_expiry > cache_now && cache_expiry <= cache_now + 86400 )) || fail 'unsupported-model cache expiry is not within 24 hours'
+run_case terra-cache 0 success success 8 4 luna gpt-6-luna go4-9169 "$history"
+[[ $(cat "$CASE_DIR/models") == gpt-6-luna ]] || fail 'a cached model_not_found did not suppress terra escalation'
+printf 'PASS model_not_found caches terra for 24 hours and suppresses later escalation\n'
 
 run_case success 0 success success 2 6
 success_dir=$CASE_DIR

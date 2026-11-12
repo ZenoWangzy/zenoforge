@@ -18,8 +18,8 @@ import uuid
 # Maintainer 10-30 CPU band: load above 16 on 12 cores is "too high". opt at 2x the
 # maximum (24) kept WSL at load5 ~20, PSI 37%, 5 GB swap; cap opt at 4/3 of it.
 OPT_LOAD_FACTOR = 4 / 3
-MEMORY_FULL_AVG60_LIMIT = 10.0
-
+try: MEMORY_FULL_AVG60_LIMIT = float(os.environ.get("AGENT_EXECUTION_MEMORY_FULL_AVG60_LIMIT", "10")); assert math.isfinite(MEMORY_FULL_AVG60_LIMIT)  # test-env.sh raises it
+except (ValueError, AssertionError): MEMORY_FULL_AVG60_LIMIT = 10.0; print("execution admission: invalid AGENT_EXECUTION_MEMORY_FULL_AVG60_LIMIT, using 10", file=sys.stderr)
 
 # Same setting lib.sh resolves.
 UNIT_PREFIX_TRANSIENT = os.environ.get("ZF_UNIT_PREFIX") or "zf"

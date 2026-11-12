@@ -22,7 +22,8 @@ cat > "$fixture/issues.json" <<'JSON'
   {"number":302,"title":"Configured anomaly: machine report","state":"OPEN","labels":[{"name":"focus"}]},
   {"number":303,"title":"factory-f2 machine report","state":"OPEN","labels":[{"name":"focus"}]},
   {"number":304,"title":"machine report","state":"OPEN","labels":[{"name":"focus"},{"name":"prod-anomaly"}]},
-  {"number":401,"title":"optimizer ticket","state":"OPEN","labels":[{"name":"focus"},{"name":"opt-lane"},{"name":"hotfix"}]}
+  {"number":401,"title":"optimizer ticket","state":"OPEN","labels":[{"name":"focus"},{"name":"opt-lane"},{"name":"hotfix"}]},
+  {"number":403,"title":"session-owned ready ticket","state":"OPEN","labels":[{"name":"ready-for-agent"},{"name":"session-owned"}]}
 ]
 JSON
 export INTAKE_ISSUES_FILE="$fixture/issues.json"
@@ -41,7 +42,7 @@ intake_gh_read() {
   jq -c --arg label "$label" '[.[] | select(any(.labels[]?; .name == $label))]' "$INTAKE_ISSUES_FILE"
 }
 
-CFG='{"issue_intake":{"labels":["founder-test","priority:top","focus"],"product_labels":[]}}'
+CFG='{"issue_intake":{"labels":["founder-test","priority:top","focus"],"product_labels":["ready-for-agent"]}}'
 rows="$(intake_candidates false)"
 numbers="$(cut -f1 <<<"$rows" | paste -sd, -)"
 expected='101,102,201,202,301,304,303,302'
@@ -57,6 +58,11 @@ expected='101,102,201,202,301,304,303,302'
 intake_candidates false >/dev/null
 [[ "$(grep -c 'intake skip issue #401: skip label opt-lane,hotfix' "$LOG")" == 1 ]] || {
   printf 'intake-auto-filed.test.sh: skip-label drop not logged once: %s\n' "$(cat "$LOG")" >&2
+  exit 1
+}
+# A ready-for-agent issue carrying session-owned is not a candidate and is reported as a label skip.
+[[ "$(grep -c 'intake skip issue #403: skip label session-owned' "$LOG")" == 1 ]] || {
+  printf 'intake-auto-filed.test.sh: session-owned skip not logged once: %s\n' "$(cat "$LOG")" >&2
   exit 1
 }
 echo 'intake-auto-filed.test.sh: PASS'

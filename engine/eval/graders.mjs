@@ -137,7 +137,8 @@ export function validateStageOutput(stage, value) {
   const failures = [];
   function visit(v, s, path) {
     const type = Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v;
-    if (s.type && type !== s.type && !(s.type === 'integer' && Number.isInteger(v))) { failures.push(`${path}: expected ${s.type}`); return; }
+    const types = [].concat(s.type ?? []);
+    if (types.length && !types.includes(type) && !(types.includes('integer') && Number.isInteger(v))) { failures.push(`${path}: expected ${types.join('|')}`); return; }
     if (s.minimum !== undefined && (typeof v !== 'number' || v < s.minimum)) failures.push(`${path}: below minimum ${s.minimum}`);
     if (s.enum && !s.enum.includes(v)) failures.push(`${path}: invalid enum ${v}`);
     if (type === 'object') {

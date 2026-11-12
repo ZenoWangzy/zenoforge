@@ -1,3 +1,4 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/ci-stuck-unqueued.sh"
 
 # 打开 PR census 的归一化：同名检查去重（--latest-checks）→ 以 PR 号为键的对象（head/draft/bucket 化的检查行与
 # ci 档位）。merge_candidates 的排序输入与 start.sh 的 pin 切换自检共用这一条链，自检跑的正是合并车道要用的管线。
@@ -123,12 +124,18 @@ review_conflict_to_repair() { # id pr head
 # 不读 PR 正文。无 issue 的单元（外部 PR，关闭词由 GitHub 在合并时自动关票）无事可写。
 # 写失败不回滚合入（PR 已在 main 上），告警到 alerts/merge.md 人工补 conclude_merged_run。
 merge_lane_awaiting_release() { # ready-unit-json pr
-  local issue
+  local issue before_state="" after_state=""
   issue="$(jqf -r '.issue // empty' <<<"$1")"
   [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0
+  before_state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // "untracked"')" || before_state=""
   if scheduler_conclude_merged_pr "$issue" "$2" >>"$LOG" 2>&1; then
+    after_state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // "untracked"')" || after_state=""
     set_unit "$(jqf -r .id <<<"$1")" 'del(.awaiting_release_pending) | del(.awaiting_release_tries)'
-    say "issue #$issue entered awaiting-release at merge of PR#$2"
+    if [[ "$after_state" == awaiting-release && -n "$before_state" && "$before_state" != "$after_state" ]]; then
+      say "issue #$issue entered awaiting-release at merge of PR#$2"
+    else
+      say "issue #$issue release handoff state=${after_state:-unknown} (previous=${before_state:-unknown}) after merge of PR#$2"
+    fi
   else
     echo "[$STAMP] merged PR#$2 but the awaiting-release write for issue #$issue failed; rerun conclude_merged_run #$issue $2" >> "$A/alerts/merge.md"
     say "awaiting-release write failed for issue #$issue after PR#$2 merge"
@@ -258,6 +265,66 @@ pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
   local k
   for k in "${!PASS_STEP_SECS[@]}"; do printf '%08d %s=%ss/%s\n' "${PASS_STEP_SECS[$k]}" "$k" "${PASS_STEP_SECS[$k]}" "${PASS_STEP_COUNT[$k]}"; done \
     | sort -rn | cut -d' ' -f2- | paste -sd' ' -
+}
+# The PR body is derived from the unit's report, rendered here once for the open and again for the refresh (PR 5650, 2026-11-08: a
+# report that gained ## prior-art never reached the body, and the next review round was spent on the missing section).
+pr_body_source() { # issue report-path [unit-json] → the body text before closing keywords are scrubbed
+  local report sec
+  report="$(head -40 "$2")"
+  sec="$(awk -v h="## decision-log" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$2")"
+  if [[ -n "$sec" ]]; then
+    report="$(awk '/^## decision-log[[:space:]]*$/{skip=1; next} /^##[[:space:]]/{skip=0} !skip' <<<"$report")"
+    report+=$'\n\n'"$sec"
+  fi
+  printf '%s%s%s' "${1:+Refs #$1
+
+}" "Implemented by the the product autopilot. Implementer report (first lines):
+
+${report}" "$(self_check_verification_body "${3:-}")"
+}
+pr_body_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+pr_body_append_missing() { # unit pr report hash unit-json → a legacy PR (opened before .pr_body_hash) keeps its body; missing report, decision-log, and verification sections are appended
+  local body new file h sec added=false missing=false unit="${5:-}"
+  body="$(gh pr view "$2" --json body -q .body 2>/dev/null)" || return 0
+  new="$body"
+  for h in root-cause recurrence-guard prior-art decision-log verification; do
+    grep -qE "^## $h[[:space:]]*\$" <<<"$body" && continue
+    if [[ "$h" == verification ]]; then sec="$(self_check_verification_body "$unit")"; else sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"; fi
+    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else [[ "$h" == verification ]] || missing=true; fi
+  done
+  if [[ "$added" == true ]]; then
+    file="$(mktemp)" || return 0
+    scrub_closing_keywords <<<"$new" > "$file"
+    if gh pr edit "$2" --body-file "$file" >/dev/null 2>&1 && set_unit "$1" ".pr_body_hash=$(js "$4")"; then
+      say "unit $1 PR#$2 legacy body: appended the sections it lacked from ${3##*/}"
+    else
+      say "unit $1 PR#$2 legacy body append failed; tried again at the next review or land"
+    fi
+    rm -f -- "$file"
+  elif [[ "$missing" == false ]]; then
+    set_unit "$1" ".pr_body_hash=$(js "$4")" # complete as it is: the normal path takes over, one gh read less per pass
+  fi
+}
+pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current report renders a body other than the one stored at open
+  local id pr rep src hash stored file
+  id="$(jqf -r '.id // empty' <<<"$1")"; pr="$(jqf -r '.pr // empty' <<<"$1")"
+  rep="$(jqf -r '.implementation_report // empty' <<<"$1")"; stored="$(jqf -r '.pr_body_hash // empty' <<<"$1")"
+  [[ "$pr" =~ ^[0-9]+$ && -n "$rep" ]] || return 0
+  [[ "$rep" == /* ]] || rep="$SUP/$rep"
+  [[ -s "$rep" ]] || return 0
+  src="$(pr_body_source "$(jqf -r '.issue // empty' <<<"$1")" "$rep" "$1")"
+  hash="$(pr_body_hash "$src")"
+  # No stored hash: the PR opened before the hash existed and its body may carry hand edits, so it is never re-rendered, only completed.
+  [[ -n "$stored" ]] || { pr_body_append_missing "$id" "$pr" "$rep" "$hash" "$1"; return 0; }
+  [[ "$hash" != "$stored" ]] || return 0
+  file="$(mktemp)" || return 0
+  scrub_closing_keywords <<<"$src" > "$file"
+  if gh pr edit "$pr" --body-file "$file" >/dev/null 2>&1 && set_unit "$id" ".pr_body_hash=$(js "$hash")"; then
+    say "unit $id PR#$pr body re-rendered from ${rep##*/}"
+  else
+    say "unit $id PR#$pr body refresh failed; tried again at the next review or land"
+  fi
+  rm -f -- "$file"
 }
 run_merge_lane_pass() {
   local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
@@ -468,7 +535,7 @@ run_merge_lane_pass() {
       approved="$head"
     fi
     # Only an approved head can win a CI slot, so a draft with no approval goes to review below instead of waiting forever.
-    if [[ "$(jqf -r '.pr_open_draft // false' <<<"$ready")" == true && "$approved" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (draft, waiting for its CI slot)"; pass_step_end skipped-draft "$pr"; continue; fi
+    if [[ "$(jqf -r '.pr_open_draft // false' <<<"$ready")" == true && "$approved" =~ $SHA_RE && "$head" =~ $SHA_RE && "$head" == "$approved" ]]; then say "merge skipped PR#$pr (draft, waiting for its CI slot)"; pass_step_end skipped-draft "$pr"; continue; fi
     if [[ ! "$head" =~ $SHA_RE ]]; then say "merge skipped PR#$pr (head unreadable; unit left unchanged)"; pass_step_end skipped-head-unreadable "$pr"; continue; fi
     if [[ ! "$approved" =~ $SHA_RE || "$head" != "$approved" ]]; then
       # 批准绑定的 head 已变（或旧台账无绑定）：新提交必须先评审，不能带着旧批准合并。
@@ -518,7 +585,8 @@ run_merge_lane_pass() {
         set_unit "$id" ".ci_facts_head=$(js "$head") | .ci_facts=$(js "$red_facts")"
         say "triage PR#$pr head ${head:0:9}: $(ci_triage "$head" "$red_facts") (verdict only; routing unchanged)"
         cancel_branch_runs "$(jqf -r '.branch // empty' <<<"$ready")" "tests already red; repair pushes a new head" || :
-        set_unit "$id" "$(hist ci-test-red "$red") | .history[-1].tests=$(ci_red_tests "$red_facts") | .approved_sha=null | .repair_hint=$(js "PR head $head 的必需检查已有测试失败：${red}。用 gh pr checks $pr 与失败 job 日志定位；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$head" "$red_facts")") | .stage=\"repair-pending\""
+        set_unit "$id" "$(hist ci-test-red "$red") | .history[-1].tests=$(ci_red_tests "$red_facts" "$red") | .approved_sha=null | .repair_hint=$(js "PR head $head 的必需检查已有测试失败：${red}。用 gh pr checks $pr 与失败 job 日志定位：读取日志用 gh api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/<job id>/logs，绝不要用 gh run view --log；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$head" "$red_facts")") | .stage=\"repair-pending\""
+        set_unit "$id" ".history[-1].head=$(js "$head")"
         say "merge skipped PR#$pr (tests failed in: $red) -> repair-pending without waiting for the other checks or a rerun"
         pass_step_end repair-tests-red "$pr"; continue
       fi
@@ -538,6 +606,7 @@ run_merge_lane_pass() {
         merge_conflict_to_repair "$id" "$pr" "conflicts with main; CI cannot start" "PR 与最新 main 冲突，GitHub 不会跑 CI 也拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（热修回迁以生产已验证行为为准），跑受影响测试，推送。" "$head"
         pass_step_end conflict-repair "$pr"; continue
       fi
+      if ci_stuck_unqueued_pending "$id" "$pr" "$head" "$branch"; then pass_step_end stuck-unqueued "$pr"; continue; fi
       # A completed failure is a failure even while other checks still run; only pending or unreadable rows are "pending or unavailable".
       if [[ -n "$fails" ]]; then say "merge skipped PR#$pr (check failed: $fails; other checks still pending)"
       else say "merge skipped PR#$pr (checks pending or unavailable)"; fi
@@ -683,6 +752,7 @@ run_merge_lane_pass() {
       say "merge skipped PR#$pr (supervisor-owned hotfix lane; the hotfix supervisor merges it)"
       pass_step_end skipped-supervisor-owned "$pr"; continue
     fi
+    pr_body_refresh "$ready"
     pre_merge_sha="$(git -C "$ROOT" ls-remote origin refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}')"
     # main may advance while PR checks run or another lane lands; exact-head PR checks gate the merge,
     # and post-merge exact-SHA CI verifies the resulting main commit without a stable-main barrier.

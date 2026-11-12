@@ -475,39 +475,18 @@ markdown_to_html_email() {
   python3 -c "$MD_TO_HTML_PY" "$body" 2>/dev/null
 }
 
-# build_gmail_raw_message <to-header> <subject> <body> <issue-marker> [mailer-id]
-#
-# Builds the exact base64url-encoded RFC822 message send_email() posts to the
-# Gmail API -- and NOTHING else: no gcloud, no curl, no network. Split out of
-# send_email() (which used to build this inline) purely so message
-# construction is directly testable (lib.test.sh) without touching the real
-# credential or the real inbox, same reasoning as every other pure helper in
-# this file. Prints the encoded message on stdout, or nothing if EmailMessage
-# construction fails for any reason (caller treats empty stdout as "could not
-# build the message", same as before this was extracted).
-#
-# Built with python3's email.message.EmailMessage, not by hand: subjects and
-# bodies are Chinese, and EmailMessage handles RFC 2047/charset encoding
-# correctly where hand-rolled headers would mis-encode. No `From` header --
-# the Gmail API fills in the authenticated user automatically, which keeps
-# the maintainer's personal address out of this repository entirely. stdlib
-# only, no dependency.
-#
-# 2026-09-14: now builds a multipart/alternative message -- the SAME
-# plain-text part as always (msg.set_content(body)), plus a second text/html
-# part (markdown_to_html_email()'s rendering of that same body) that is what
-# Gmail actually renders by default. Every other property (headers, no-From,
-# RFC 2047 encoding) is unchanged.
+# build_gmail_raw_message <to> <subject> <plain> <issue> [mailer-id [html [images-json]]]
+# Pure stdlib RFC822 builder; images are {cid,filename,data} rows with base64 PNG data.
 build_gmail_raw_message() {
-  local to_addr="$1" subject="$2" body="$3" issue_marker="$4" mailer_id="${5:-fixture}" html_body
-  html_body="$(markdown_to_html_email "$body")" || return 1
+  local to_addr="$1" subject="$2" body="$3" issue_marker="$4" mailer_id="${5:-fixture}" html_body="${6:-}" images_json="${7:-[]}"
+  [ -n "$html_body" ] || html_body="$(markdown_to_html_email "$body")" || return 1
   [ -n "$html_body" ] || return 1
   python3 -c '
-import base64
+import base64, json, re
 import sys
 from email.message import EmailMessage
 
-to_addr, subject, body, issue_marker, mailer_id, html_body = sys.argv[1:7]
+to_addr, subject, body, issue_marker, mailer_id, html_body, images_json = sys.argv[1:8]
 msg = EmailMessage()
 msg["To"] = to_addr
 msg["Subject"] = subject
@@ -518,13 +497,22 @@ if issue_marker:
 msg.set_content(body)
 if html_body:
     msg.add_alternative(html_body, subtype="html")
+    html_part = msg.get_payload()[-1]
+    images = json.loads(images_json)
+    if not isinstance(images, list) or len(images) > 8: raise ValueError("invalid inline images")
+    seen = set()
+    for image in images:
+        cid = image.get("cid", "")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", cid) or cid in seen or "cid:"+cid not in html_body: raise ValueError("invalid image CID")
+        seen.add(cid)
+        data = base64.b64decode(image.get("data", ""), validate=True)
+        if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 2_000_000: raise ValueError("invalid PNG")
+        html_part.add_related(data, maintype="image", subtype="png", cid="<"+cid+">", filename=image.get("filename", cid+".png"), disposition="inline")
 sys.stdout.write(base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii"))
-' "$to_addr" "$subject" "$body" "$issue_marker" "$mailer_id" "$html_body" 2>/dev/null
+' "$to_addr" "$subject" "$body" "$issue_marker" "$mailer_id" "$html_body" "$images_json" 2>/dev/null
 }
 
-# Shared Gmail transport. Audit first, and fail closed if notify.log cannot
-# record the attempt. Both send modes use this contract gate and one network
-# path, so a new sender cannot bypass logging or founder-mail validation.
+# Shared transport: audit and contract checks precede MIME construction and Gmail.
 _send_email_logged() {
   notify_test_write_guard || return 1
   local mode="$1" subject="$2" body="$3" issue_marker="$4" maintainer_kind="$5"
@@ -536,6 +524,14 @@ _send_email_logged() {
   # Before the request is issued, every failure proves Gmail received nothing.
   NOTIFY_LAST_SEND_RETRY_SAFE=1
   shift 5
+  local html_body="" images_json="[]"
+  while (($#)); do
+    case "$1" in
+      --html-body) (($# >= 2)) || return 1; html_body="$2"; shift 2 ;;
+      --inline-images) (($# >= 2)) || return 1; images_json="$2"; shift 2 ;;
+      *) break ;;
+    esac
+  done
   local -a recipients=("$@")
 
   rejection="$(_pre_send_mail_rejection_for_recipients "$maintainer_kind" "$subject" "$body" "${recipients[@]}")"
@@ -614,7 +610,7 @@ $body" >&2
 
   to_header="$(printf '%s,' "${recipients[@]}")"
   to_header="${to_header%,}"
-  encoded="$(build_gmail_raw_message "$to_header" "$subject" "$body" "$issue_marker" "$NOTIFY_MAILER_ID")"
+  encoded="$(build_gmail_raw_message "$to_header" "$subject" "$body" "$issue_marker" "$NOTIFY_MAILER_ID" "$html_body" "$images_json")"
   if [ -z "$encoded" ]; then
     notify_log_send "$issue_marker" "$subject" failed transport "${recipients[@]}" || true
     if [ "$mode" = strict ]; then
@@ -1702,10 +1698,9 @@ https://github.com/$repo/issues/$issue"
   _send_email_logged strict "$subject" "$body" "$issue" resolution "$maintainer" >/dev/null
 }
 
-# Health mail is strict and founder-only. The shared sender records its final
-# result after Gmail returns.
+# Health mail is strict and founder-only.
 notify_maintainer_health() {
-  local subject="$1" body="$2" maintainer
+  local subject="$1" body="$2" html_body="${3:-}" images_json="${4:-[]}" maintainer
   NOTIFY_LAST_SEND_RETRY_SAFE=1
   maintainer="$(_maintainer_email)"
   notify_test_write_guard || return 1
@@ -1713,10 +1708,11 @@ notify_maintainer_health() {
     notify_log_send "" "$subject" failed no-recipients
     return 1
   fi
-  if send_email_strict "$subject" "$body" --maintainer-kind health "$maintainer" >/dev/null 2>/dev/null; then
-    return 0
+  if [ -n "$html_body" ] || [ "$images_json" != '[]' ]; then
+    _send_email_logged strict "$subject" "$body" "" health --html-body "$html_body" --inline-images "$images_json" "$maintainer" >/dev/null 2>/dev/null
+  else
+    send_email_strict "$subject" "$body" --maintainer-kind health "$maintainer" >/dev/null 2>/dev/null
   fi
-  return 1
 }
 
 
