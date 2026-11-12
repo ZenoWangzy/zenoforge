@@ -36,6 +36,7 @@ on:
       - engine/systemd/zenoforge-label-churn.service
       - engine/systemd/zenoforge-memory-check.service
       - engine/systemd/zenoforge-owner-report-causes.service
+      - engine/systemd/zenoforge-retro.service
       - engine/systemd/zenoforge-roi-collector.service
       - engine/systemd/zenoforge-supervisor.service
   workflow_dispatch:

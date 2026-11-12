@@ -852,6 +852,8 @@ tick_gh() {
         if [[ -f "$TF/pr-files" ]]; then cat "$TF/pr-files"; else echo 'packages/fixture/src/index.ts'; fi
       elif [[ "$*" == *'commits/'*'/status'* ]]; then echo 1
       elif [[ "$*" == *'/comments'* ]]; then echo '[]'
+      elif [[ "$*" == *'/pulls/'*'/reviews' ]]; then echo '[]' # human PR feedback (#957) fails closed on an unreadable review list
+      elif [[ "$*" =~ ' repos/{owner}/{repo}/issues/'[0-9]+$ ]]; then echo '{"author_association":"OWNER","user":{"login":"fixture"}}' # the intake author gate (#114); its own test is intake-author.test.sh
       else echo '{}'; fi ;;
     *) echo "unexpected gh call: $*" >&2; return 97 ;;
   esac
@@ -1023,8 +1025,9 @@ echo 'unexpected host command in tick fixture' > "$TF/unexpected-host"
 exit 97
 SH
   chmod +x "$TF/bin/"*
-  mkdir -p "$TF/repo/engine"
+  mkdir -p "$TF/repo/engine/bin"
   cp -a "$script_dir" "$TF/repo/engine/mac-autopilot"
+  cp "$repo_root/engine/bin/luna-capacity.sh" "$TF/repo/engine/bin/luna-capacity.sh"
   copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh lib.d/model-not-found-cache.bash
   cp "$TF/supervisor/autopi/config.json" "$TF/repo/engine/mac-autopilot/config.template.json"
   # merge_candidates 每拍经 $HERE/../../ci/ 调 pr-required-aggregate.mjs（16e097913 起按 run/时间
@@ -1064,6 +1067,9 @@ tick() (
   export AUTOPILOT_POLICY_SCRIPT="${AUTOPILOT_POLICY_SCRIPT:-$POLICY_FIXTURE}"
   export AP_SYSTEM_TMP="$TF/tmp" AP_SYSTEM_TMP_FS=fixture
   export ZF_GH_REAL_CLI="$TF/bin/gh-real" ZF_TEST_EVIDENCE_LEDGER="$TF/supervisor/test-evidence.jsonl"
+  # The host gate reads live memory, PSI and CPU; pin ample readings so a busy test host cannot refuse starts.
+  printf 'MemAvailable: 16777216 kB\n' > "$TF/meminfo"; printf 'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$TF/psi"
+  export LUNA_PROC_MEMINFO="${LUNA_PROC_MEMINFO:-$TF/meminfo}" LUNA_PROC_PSI_MEMORY="${LUNA_PROC_PSI_MEMORY:-$TF/psi}" LUNA_CPU_TARGET="${LUNA_CPU_TARGET:-100}"
   [[ ! -f "$TF/roadmap-tree.json" ]] || export ZF_ROADMAP_TREE_CACHE_FILE="$TF/roadmap-tree.json"
   git() { tick_git "$@"; }; jq() { tick_jq "$@"; }
   # A dispatched fixture worker stays alive across intra-tick refills until its output is ready.
@@ -3147,6 +3153,7 @@ pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
 # This suite checks scheduler behavior; family availability is covered by
 # review-family.test.sh.
 pick_review_for_unit() { PICK_MODEL=fixture-model; PICK_EFFORT=high; return 0; }
+human_feedback_block() { :; } # human PR feedback (#957) has its own tests; the fixture has no gh
 footprint_room() { return 0; }
 unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
 verify_handoff_delivery() { return 0; }

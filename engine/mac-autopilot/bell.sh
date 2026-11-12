@@ -10,8 +10,9 @@ EXPLICIT_AGENT_HOME="${AGENT_HOME:-}"
 source "$HERE/runtime-env.sh"
 ROOT="$MAC_AUTOPILOT_ROOT"
 ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}"
+source "$HERE/incident-fingerprint.sh"
 source "$ENGINE_DIR/lib.d/transport.sh"
-source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"
+source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"; source "$HERE/bell-history.sh"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
 CHECK_ONLY=0
 for arg in "$@"; do
@@ -141,17 +142,6 @@ print(int(os.stat(sys.argv[1]).st_mtime))
 PY
 }
 
-incident_class() {
-  local raw="$1" slug hash
-  slug="$(printf '%s' "$raw" | LC_ALL=C tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
-  [[ -n "$slug" ]] || slug=incident
-  if ((${#slug} > 64)); then
-    hash="$(printf '%s' "$raw" | shasum -a 256 | awk '{print substr($1,1,8)}')"
-    slug="${slug:0:55}-$hash"
-  fi
-  printf '%s\n' "$slug"
-}
-
 scheduler_signature_class() {
   local line="$1" rc fn var
   if [[ "$line" =~ jqf[[:space:]]error[[:space:]]\(rc=([0-9]+)\)[[:space:]]in[[:space:]]([^[:space:]:]+) ]]; then
@@ -195,49 +185,6 @@ scheduler_signature_class() {
     # ticks; keep the warning on the normal #166 incident intake path.
     printf 'sched-maintenance-deferral-%s\n' "${BASH_REMATCH[1]}"
   fi
-}
-
-scheduler_history_consider() {
-  local line="$1" ts class
-  [[ "$line" =~ ^\[([^]]+)\] ]] || return 0
-  ts="${BASH_REMATCH[1]}"
-  [[ "$ts" > "$SCHEDULER_CUTOFF_STAMP" && ( "$ts" < "$SCHEDULER_EVENT_STAMP" || "$ts" == "$SCHEDULER_EVENT_STAMP" ) ]] || return 0
-  class="$(scheduler_signature_class "$line")"
-  [[ "$class" == "$SCHEDULER_WANTED_CLASS" ]] || return 0
-  if [[ -z "$SCHEDULER_HISTORY_STAMP" || "$ts" > "$SCHEDULER_HISTORY_STAMP" ]]; then
-    SCHEDULER_HISTORY_STAMP="$ts"
-  fi
-}
-
-scheduler_signature_last_seen() {
-  local wanted="$1" before_line="$2" event_stamp="$3" file stored_epoch stored_recent=0 latest_epoch=0
-  local SCHEDULER_WANTED_CLASS="$wanted" SCHEDULER_EVENT_STAMP="$event_stamp" SCHEDULER_HISTORY_STAMP=""
-  SCHEDULER_CUTOFF_STAMP="$(python3 - "$((now - 86400))" <<'PY'
-from datetime import datetime, timezone
-import sys
-print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-PY
-)"
-  stored_epoch="$(jq -r --arg c "$wanted" '.scheduler_signature_seen[$c]//0' <<<"$STATE_JSON")"
-  if [[ "$stored_epoch" =~ ^[0-9]+$ ]] && (( now - stored_epoch < 86400 )); then
-    stored_recent="$stored_epoch"
-  fi
-  for file in "$A/scheduler.log.1" "$A/scheduler.log"; do
-    [[ -r "$file" ]] || continue
-    if [[ "$file" == "$A/scheduler.log" ]]; then
-      (( before_line > 1 )) || continue
-      while IFS= read -r history_line; do scheduler_history_consider "$history_line"; done \
-        < <(sed -n "1,$((before_line - 1))p" "$file" 2>/dev/null)
-    else
-      while IFS= read -r history_line; do scheduler_history_consider "$history_line"; done < "$file"
-    fi
-  done
-  if [[ -n "$SCHEDULER_HISTORY_STAMP" ]]; then
-    latest_epoch="$(to_epoch "$SCHEDULER_HISTORY_STAMP")"
-    [[ "$latest_epoch" =~ ^[0-9]+$ ]] || latest_epoch=0
-  fi
-  (( stored_recent > latest_epoch )) && latest_epoch="$stored_recent"
-  printf '%s\n' "$latest_epoch"
 }
 
 INCIDENT_REPO="${ZF_GH_REPO:-${ZF_REPO:-}}"
@@ -464,7 +411,7 @@ queue_incident_filing() {
   local severity="$1" raw="$2" summary="$3" evidence="$4"
   local class first_seen occurrence_count stats
   (( $(severity_rank "$severity") >= FILE_MIN_SEVERITY_RANK )) || return 0
-  class="$(incident_class "$raw")"
+  class="$(incident_class "$(incident_fingerprint "$raw")")"
   # 一次读取 first_seen/count；逐字段读会把整个（MB 级）状态各解析一遍。
   stats="$(jq -r --arg c "$class" '(.incident_stats[$c] // {}) as $s | [($s.first_seen // ""), ($s.count // 0 | tostring)] | @tsv' <<<"$STATE_JSON" 2>/dev/null || true)"
   IFS=$'\t' read -r first_seen occurrence_count <<<"$stats"

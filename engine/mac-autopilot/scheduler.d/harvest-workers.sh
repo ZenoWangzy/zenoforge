@@ -332,6 +332,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             NOT_READY)
               if findings_block_of "$rep" >/dev/null 2>&1; then
                 set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
+                review_class_recurrence_record "$rep" "$unit"
                 cancel_unit_runs "$unit" "review requested changes; head will change"
               else
                 # 打回但发现块缺失/畸形（11-03：一个 line:0 的文件级发现废掉整块，修复拿到零发现）。

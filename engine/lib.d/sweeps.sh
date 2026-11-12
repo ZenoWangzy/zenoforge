@@ -71,7 +71,7 @@ outcomes_closed_state_reconciliation_snapshot() { # home repo recent-closed-json
   local OUTCOMES_GH_TIMEOUT_SECONDS=10
   jq -e 'type == "array" and all(.[]; (.number | type) == "number" and (.labels | type) == "array")' \
     <<< "$recent_json" >/dev/null 2>&1 || return 1
-  ready_json="$(gh_q issue list --repo "$repo" --state closed --label ready-for-agent --limit 1000 \
+  ready_json="$(main_gh issue list --repo "$repo" --state closed --label ready-for-agent --limit 1000 \
     --json number,state,stateReason,closedAt,labels)" || return 1
   jq -e 'type == "array" and all(.[];
     (.number | type) == "number" and
@@ -785,3 +785,5 @@ conclusion_requeue_comment_once() {
 
 $marker"
 }
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/closed-ready-sweep.sh"

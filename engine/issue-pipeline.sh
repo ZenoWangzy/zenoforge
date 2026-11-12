@@ -1389,6 +1389,11 @@ maintenance_run_optional_step() { # bounded maintenance work that can yield to r
         echo "issue-pipeline: supervisor hold sweep failed; ownerless tickets remain for next tick" >&2
       fi
       ;;
+    closed-state-sweep)
+      if [ "$DRY_RUN" != "1" ] && ! sweep_closed_ready_states; then
+        echo "issue-pipeline: closed ready-for-agent sweep failed; retrying next tick" >&2
+      fi
+      ;;
     hand-completion-events)
       if [ "$DRY_RUN" != "1" ] && ! hand_completion_events_run_once "$REPO_DIR"; then
         echo "issue-pipeline: hand completion recovery deferred until next tick" >&2
@@ -1454,7 +1459,7 @@ run_post_dispatch_maintenance() {
   local resume_suffix=0 original_gh_deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}"
   local original_gmail_deadline="${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" original_email_stop_at="${ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS:-}"
   local -a prefix_steps=(checks-blocked-sweep hold-sweep supervisor-hold-sweep hand-completion-events founder-outcome-recovery)
-  local -a suffix_steps=(needs-info-unlabeled needs-info-loop main-red-bisect batch-state needs-info-blocker-roots) # roots last: it spends all the time it gets and resumes by its own cursor
+  local -a suffix_steps=(needs-info-unlabeled needs-info-loop closed-state-sweep main-red-bisect batch-state needs-info-blocker-roots) # roots last: it spends all the time it gets and resumes by its own cursor
   [[ "$required_slot" =~ ^[1-9][0-9]*$ ]] || required_slot=55
   [[ "$reopen_slot" =~ ^[1-9][0-9]*$ ]] || reopen_slot=18
   (( required_slot >= 55 )) || required_slot=55

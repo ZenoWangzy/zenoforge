@@ -7,6 +7,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../bin" && pwd -P)/luna-capacity.sh"
+intake_author_gate() { return 0; } # the author gate has its own test (intake-author.test.sh)
 
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -54,6 +55,7 @@ priority_admission_case() {
   PRIORITY_GATE_RUNS="$(luna_run_cap)"
   room_for issue-9 implement "" true false && fail 'opt waiter did not hold normal dispatch at the shared run cap'
   rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
+  PRIORITY_GATE_RUNS=$((LUNA_RUNS_HARD_CAP - 1)) # the host gate now also admits a normal start, so the hotfix case needs headroom
   room_for issue-9 implement "" true false || fail 'normal dispatch held while hotfix admission was open'
   printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=12 avg60=12 avg300=12 total=12\n' > "$psi"
   room_for issue-9 implement "" true false && fail 'memory-full hotfix waiter released normal dispatch'
@@ -510,6 +512,16 @@ harvest_rc pr-f1 rf-1-T1.md
 findings_report rf-2-T1.md "$good_block"
 harvest_rc pr-f2 rf-2-T1.md rereview
 [[ "$(field pr-f2 '.review_findings[0].block')" == ok && "$(field pr-f2 .stage)" == repair-pending ]] || fail 'a rereview rejection was not recorded like a review rejection'
+# 同一发现类别在第二个单元复现时只开一张机械规则工单（经 pipeline-issue-upsert，stub 记下参数）。
+class_log="$fixture/class-upsert.log"; : > "$class_log"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$class_log" > "$fixture/class-upsert.sh"
+class_prev_upsert="${REVIEW_CLASS_UPSERT:-}"; class_prev_state="${REVIEW_CLASS_STATE:-}"
+export REVIEW_CLASS_UPSERT="$fixture/class-upsert.sh" REVIEW_CLASS_STATE="$fixture/class-state-e2e.json"
+findings_report rc-1-T1.md "$good_block"; harvest_rc pr-c1 rc-1-T1.md
+[[ ! -s "$class_log" ]] || fail 'a first sighting opened a rule ticket'
+findings_report rc-2-T1.md "$good_block"; harvest_rc pr-c2 rc-2-T1.md
+[[ "$(wc -l < "$class_log")" == 1 && "$(cat "$class_log")" == *'--class review-defect-x'* ]] || fail "second unit did not open exactly one rule ticket: $(cat "$class_log")"
+export REVIEW_CLASS_UPSERT="$class_prev_upsert" REVIEW_CLASS_STATE="$class_prev_state"
 findings_report rf-3-T1.md '[]'
 harvest_rc pr-f3 rf-3-T1.md
 [[ "$(field pr-f3 '.review_findings[0] | [.block, (.findings | length)] | tojson')" == '["ok",0]' ]] || fail 'an empty findings block was not recorded as present with no findings'
@@ -3302,6 +3314,7 @@ PRIORITY_GATE_RUNS="$priority_gate_total_cap"
 room_for issue-9 implement "" true false && fail 'an opt waiter did not hold normal dispatch when total capacity was full'
 rm -f "$LUNA_SLOTS/wait-opt-$$"
 : > "$LUNA_SLOTS/wait-hotfix-$$"
+PRIORITY_GATE_RUNS=$((priority_gate_total_cap - 1)) # headroom for the host gate; the hold itself is what this line checks
 room_for issue-9 implement "" true false || fail 'normal dispatch was held while hotfix admission was open'
 room_for issue-opt implement "" true false && fail 'an opt dispatch was admitted while a higher-priority hotfix waits'
 room_for issue-hp review || fail 'a hotpatch dispatch was held behind another hotfix waiter'
@@ -3325,6 +3338,7 @@ TICK_PRIORITY_HOLD_EXPIRED=()
 for pass in 1 2; do room_for issue-9 implement "" true false || fail 'an old opt waiter held dispatch'; done
 [[ "$(grep -c 'priority hold expired for wait-opt-.* after .*s; normal dispatch resumes' "$A/scheduler.log")" == 1 ]] || fail 'expired waiter was not logged once per pass'
 touch -d "@$(($(date +%s) - 60))" "$LUNA_SLOTS/wait-opt-$$"
+PRIORITY_GATE_RUNS="$priority_gate_total_cap"
 room_for issue-9 implement "" true false && fail 'a fresh opt waiter did not hold dispatch'
 set_unit issue-9 ".priority_hold={since_epoch:$(( $(date +%s) - 1201 )),alerted:false}"
 : > "$A/scheduler.log"; : > "$A/alerts/waste.md"
@@ -3333,6 +3347,23 @@ for pass in 1 2; do if room_for issue-9 implement "" true false; then fail 'a st
 rm -f "$LUNA_SLOTS"/wait-*
 unset PRIORITY_GATE_RUNS LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET LUNA_MIN LUNA_MAX LUNA_AGE_ADMIT_SECONDS AUTOPI_PRIORITY_HOLD_MAX_SECONDS
 eval "$priority_gate_cpu_busy_real"; eval "$priority_gate_codex_runs_real"
+
+# A normal start with no waiter passes the same host gate as bin/luna: low memory defers it with a dispatch why line, ample memory admits it.
+host_meminfo="$fixture/host-gate-meminfo"; host_psi="$fixture/host-gate-psi"
+host_runs_fn="$(declare -f codex_runs)"; host_cpu_fn="$(declare -f cpu_busy)"
+codex_runs() { echo 0; }; cpu_busy() { echo 0; }
+printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$host_psi"
+units '{"units":[{"id":"issue-9","stage":"implement-pending","history":[]}]}'
+rm -f "$LUNA_SLOTS"/wait-*; dispatch_why_clear issue-9; : > "$A/scheduler.log"
+LUNA_PROC_PSI_MEMORY="$host_psi" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85 LUNA_PROC_MEMINFO="$host_meminfo"
+printf 'MemAvailable: 3072000 kB\n' > "$host_meminfo"
+room_for issue-9 implement "" true false && fail 'a normal start with no waiter was admitted under low memory'
+grep -q 'dispatch why unit=issue-9 gate=host-capacity' "$A/scheduler.log" || fail 'host-capacity deferral left no dispatch why line'
+printf 'MemAvailable: 6291456 kB\n' > "$host_meminfo"
+room_for issue-9 implement "" true false || fail 'a normal start was refused with ample memory'
+rm -f "$host_meminfo"; room_for issue-9 implement "" true false || fail 'a host without /proc/meminfo refused a normal start (the gate must stay off there)'
+unset LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_MIN LUNA_MAX LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET
+eval "$host_runs_fn"; eval "$host_cpu_fn"
 
 # factory_prs_only: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
 cfg_saved="$CFG"; CFG="$(jq '.factory_prs_only=true' <<<"$CFG")"

@@ -492,6 +492,12 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
     return 1
   fi
   if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; dispatch_why "$1" capacity; return 1; fi
+  # Same host gate as bin/luna (CPU, memory, PSI, run cap); the waiter age keeps an aged waiter's admission rule.
+  # Review and report-only resumes are exempt: a refused report resume would fall through to review with the stale report.
+  # shortcut: no /proc/meminfo means no gate (box_has_room would refuse every start, issue #9), upgrade when the portable readers land
+  if [[ "$2" != review && "$2" != rereview && "${6:-false}" != true && -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] && ! priority_admission_has_room "$priority" "${PRIORITY_WAITING_AGE_SECONDS:-0}"; then
+    say "skip dispatch unit=$1 priority=$priority (host capacity: CPU, memory or run cap)"; dispatch_why "$1" host-capacity; return 1
+  fi
   impl_cap="$IMPLEMENT_CAP"
   if [[ ( "$2" == "implement" || "$2" == "repair" ) && "$check_footprint" == true ]]; then
     footprint_room "$1" "$u" "$fresh_footprint" || return 1

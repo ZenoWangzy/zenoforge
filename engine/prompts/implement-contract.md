@@ -50,6 +50,14 @@ measured numbers and how you computed them.
   unused work, then restructuring, then adding a copy of the data; if you add
   a copy, say why the first two cannot work.
 
+## Name the full verification command before coding
+
+Before you write code, decide the one command or script that fully verifies
+this change. If no existing check covers it, build that check first and see it
+fail on the current code, then implement. The decision-log's "how it was
+verified" line names this command and its exit code. This adds no report
+section and no schema field.
+
 ## Blast-radius proof on risk-class paths
 
 Run `node engine/risk-class.mjs --json origin/main...HEAD`: `[]` means no

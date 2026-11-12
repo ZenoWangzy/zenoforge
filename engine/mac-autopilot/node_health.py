@@ -884,9 +884,11 @@ def ledger_metrics(units, since, now, window_hours=None, sample_counts=None):
                   if (t := ts(r.get("at"))) and t >= since]
     if sample_counts is not None:
         sample_counts.update({"loop.rounds_p90": len(rounds), "ci.approve_to_ship_p50": len(approve_to_ship),
-                              "supervisor.latency_p50": len(sup_lat)})
+                              "supervisor.latency_p50": len(sup_lat), "review.findings_missing_pct": len(rejections)})
+    # Empty window with units read is 0; no units at all means the ledger was unreadable (NO-DATA).
+    # shortcut: a readable but empty units.json also reads NO-DATA, upgrade by passing live_ledger_readable as held_ready_pct does
     return {**arbiter_health.ledger_metrics(units, now, ts, window_hours), **ledger_history.metrics(units, now, ts, window_hours, sample_counts),
-        "review.findings_missing_pct": 100 * sum(rejections) / len(rejections) if rejections else None,
+        "review.findings_missing_pct": 100 * sum(rejections) / len(rejections) if rejections else (0 if units else None),
         "loop.advisor_fail_pct": 100 * asked.count("advisor-unavailable") / len(asked) if asked else None,
         "review.first_pass_pct": 100 * sum(first_reviews) / len(first_reviews) if first_reviews else None,
         "loop.rounds_p90": pct(rounds, .9),
