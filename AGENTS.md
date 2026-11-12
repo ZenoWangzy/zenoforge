@@ -45,11 +45,7 @@ The five canonical role names, unchanged. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context. See `docs/agents/domain.md`.
-
-## Design reference
-
-Before designing or reviewing anything that runs per worker, per tick or per PR, read `docs/design/AGENT-SCALE-PRINCIPLES.md`.
+Single-context. See `docs/agents/domain.md`. Before designing anything that runs per worker, per tick or per PR, read `docs/design/AGENT-SCALE-PRINCIPLES.md`.
 
 ## Enforced rules
 

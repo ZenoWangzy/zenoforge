@@ -2,7 +2,6 @@
 # Structure and public-safety checks for docs/design/AGENT-SCALE-PRINCIPLES.md and its AGENTS.md pointer (issue #1039).
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
-trap 'rm -rf -- "$test_env_root"' EXIT
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 doc="$repo/docs/design/AGENT-SCALE-PRINCIPLES.md"
 fail() { printf 'agent-scale-principles-doc.test.sh: %s\n' "$*" >&2; exit 1; }

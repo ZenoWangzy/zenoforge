@@ -143,10 +143,10 @@ Each row is a measured incident or optimisation. Numbers are the measured values
 | Date | What was measured | Principles broken | Fix or status |
 |---|---|---|---|
 | 2026-11-12 | Every codex process start downloaded the same 54.3 MB plugin manifest: about 300 GB in 12 days, 53% of all downloads | 2, 5 | Fixed by zenoforge#1026 (merged into main) |
-| 2026-11-12 | Each full network clone of the origin product repository: 235 MiB | 2, 4 | `zf-clone` now borrows local objects: 44 MiB per clone. No PR recorded |
-| 2026-11-12 | GitHub API polling: 622,826 calls in 12 days, 15 GB, quota exhausted | 3, 4, 6 | Not started |
-| 2026-11-12 | The same data pulled repeatedly from the origin VPS: about 4.3 GB per day | 2, 7 | Not started |
-| 2026-11-12 | The clone pool only grows: 1,133 entries, about 95 GB | 4, 9 | Not started. The process that creates them is not yet identified |
+| 2026-11-12 | Each full network clone of the origin product repository: 235 MiB | 2, 4 | `zf-clone` now borrows local objects: 44 MiB per clone. #1046 (tracking issue; no PR recorded yet) |
+| 2026-11-12 | GitHub API polling: 622,826 calls in 12 days, 15 GB, quota exhausted | 3, 4, 6 | #1038 and #1031 (REST fallback) |
+| 2026-11-12 | The same data pulled repeatedly from the origin VPS: about 4.3 GB per day | 2, 7 | #1044 |
+| 2026-11-12 | The clone pool only grows: 1,133 entries, about 95 GB | 4, 9 | #1045. The process that creates them is not yet identified |
 
 No deterministic check exists yet for the traffic cases. Once #1026 is live, plan to tighten the daily traffic budget for codex-class work so that a regression triggers an alert.
 
