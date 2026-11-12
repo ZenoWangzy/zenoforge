@@ -1135,6 +1135,33 @@ reconcile_size_recuts
 [[ "$(field issue-706 .stage)" == implement-pending && "$(field issue-707 .stage)" == implement-pending && ! -e "$A/.size-recut-cursor" ]] \
   || fail "a walk with budget must resume every unit and clear its cursor: $(jq -c '.units' "$UNITS")"
 
+# A walk that spends its budget after unit 1 stops at unit 2 with cursor 1, and the next tick resumes there. Unit 711 stays in
+# the pending list (on-hold parks it, it keeps size_recut_pending), so the cursor still names unit 712 next tick. The clock jumps
+# inside set_unit, so the stop is deterministic and no real sleep runs.
+eval "_real_$(declare -f set_unit)"
+set_unit() {
+  _real_set_unit "$@"
+  printf '%s\n' "$1" >> "$fixture/recut-order"
+  if [[ "${size_recut_jump:-0}" == 1 ]]; then size_recut_jump=0; SECONDS=$((SECONDS + 1000)); fi
+}
+printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"}}' > "$issue_states/711.json"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/712.json"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/713.json"
+units "$(jq -cn '{units:[711,712,713] | map({id:("issue-"+tostring),issue:.,stage:"blocked-external",size_recut_pending:true,history:[]})}')"
+rm -f "$fixture/recut-order" "$A/.size-recut-cursor"
+size_recut_jump=1 SIZE_RECUT_RECONCILE_SECONDS=10 reconcile_size_recuts
+[[ "$(field issue-711 .stage)" == parked && "$(field issue-712 .stage)" == blocked-external && "$(field issue-713 .stage)" == blocked-external ]] \
+  || fail "a walk that spends its budget after unit 1 must leave units 2 and 3 waiting: $(jq -c '.units' "$UNITS")"
+[[ "$(cat "$A/.size-recut-cursor")" == 1 ]] || fail "the walk must stop at unit 2 with cursor 1, got: $(cat "$A/.size-recut-cursor" 2>/dev/null)"
+[[ "$(cat "$fixture/recut-order")" == issue-711 ]] || fail "the first walk must touch only unit 1: $(cat "$fixture/recut-order")"
+rm -f "$fixture/recut-order"
+reconcile_size_recuts
+[[ "$(cat "$fixture/recut-order")" == $'issue-712\nissue-713' ]] || fail "the next tick must start at unit 2 and finish the round: $(cat "$fixture/recut-order" 2>/dev/null)"
+[[ "$(field issue-712 .stage)" == implement-pending && "$(field issue-713 .stage)" == implement-pending && ! -e "$A/.size-recut-cursor" ]] \
+  || fail "the resumed round must resume units 2 and 3 and clear the cursor: $(jq -c '.units' "$UNITS")"
+eval "$(declare -f _real_set_unit | sed '1s/^_real_//')"
+unset -f _real_set_unit
+
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"},"size_admission":{"lines":802,"limit":800}}' > "$fixture/recut-agent-state.json"
 cat > "$fixture/recut-agent-lib.sh" <<LIB
 route_to_recut() { return 0; }

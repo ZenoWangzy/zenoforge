@@ -10,6 +10,7 @@ reconcile_size_recuts() {
   for ((k = 0; k < n; k++)); do
     i=$(((cursor + k) % n))
     if (( SECONDS >= deadline )); then
+      # shortcut: cursor is a snapshot index; list membership changes can defer one unit a tick; store the unit id if that starves anything
       printf '%s\n' "$i" > "$A/.size-recut-cursor"
       say "size-recut reconcile stopped at ${SECONDS}s: $((n - k)) units left, resumes at unit $i next tick"
       return 0
