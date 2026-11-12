@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split, intake_laneless_health
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split, intake_laneless_health, traffic_trend
 import ledger_history
 from config_paths import zf_config_file
 
@@ -362,15 +362,6 @@ def current_pause():
 
 traffic_last = read_json(os.path.join(AGENT_HOME, "night/network-traffic-last-result.json")) or {}
 traffic_budget = read_json(os.path.join(AGENT_HOME, "state/traffic-budget.json")) or {}
-traffic_history = []
-try:
-    utc_day = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
-    with open(os.path.join(AGENT_HOME, f"metrics/traffic-{utc_day}.jsonl")) as stream:
-        for line in stream.read().splitlines()[-180:]:
-            row = json.loads(line)
-            traffic_history.append({"t": row.get("sampled_epoch"), "gbh": row.get("gb_per_hour")})
-except (OSError, ValueError):
-    pass
 traffic_daily = traffic_last.get("daily") or {}
 traffic = {
     "installed": bool(traffic_budget),
@@ -382,7 +373,8 @@ traffic = {
     "today_category_gb": {k: v / 1e9 for k, v in (traffic_daily.get("categories") or {}).items() if isinstance(v, (int, float))},
     "budget": {k: traffic_budget.get(k) for k in ("gb_per_hour", "gb_per_day", "category_gb_per_hour", "category_gb_per_day")},
     "detail": (traffic_last.get("detail") or "")[:300],
-    "history": traffic_history,
+    "history": traffic_trend.history(AGENT_HOME),
+    "days": traffic_trend.days(AGENT_HOME),
 }
 
 # ---- worker 成本账（worker_cost.py：单元 / ticket / 阶段 / 后端 + 最近 24h + eval 栏） ----

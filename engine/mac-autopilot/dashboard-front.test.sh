@@ -433,4 +433,21 @@ JSON
 run >/dev/null
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.standards.trend_metrics | length == 1 and .[0].id == "delivery.revert_rate_30d_pct" and .[0].value > .[0].unhealthy' >/dev/null \
   || fail "30-day metric did not reach the dashboard trend-panel data"
+
+# Traffic trend: three readable day files reach traffic.days; the malformed day and the missing day drop out, nothing raises.
+traffic_day() { date -u -d "-$1 days" +%Y-%m-%d; }
+traffic_row() { jq -cn --argjson rx "$1" --argjson tx "$2" --argjson cov "$3" \
+  '{daily:{rx_bytes:$rx, tx_bytes:$tx, wire_bytes:($rx+$tx), categories:{}, category_rx_bytes:{models:($rx*0.75), git:($rx*0.25)}, category_tx_bytes:{}, coverage:$cov}}'; }
+traffic_row 1000000000 100000000 '"full"' > "$AGENT_HOME/metrics/traffic-$(traffic_day 0).jsonl"
+traffic_row 5000000000 1000000000 '"full"' >> "$AGENT_HOME/metrics/traffic-$(traffic_day 0).jsonl"
+traffic_row 4000000000 1000000000 '{"gaps":1}' > "$AGENT_HOME/metrics/traffic-$(traffic_day 1).jsonl"
+traffic_row 2000000000 500000000 '"full"' > "$AGENT_HOME/metrics/traffic-$(traffic_day 4).jsonl"
+printf '{"daily":' > "$AGENT_HOME/metrics/traffic-$(traffic_day 2).jsonl"
+run >/dev/null
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e --arg d4 "$(traffic_day 4)" --arg d1 "$(traffic_day 1)" --arg d0 "$(traffic_day 0)" '
+  (.traffic.days | map(.day) == [$d4, $d1, $d0])
+  and (.traffic.days[0] | .rx_gb == 2 and .tx_gb == 0.5 and .partial == false)
+  and (.traffic.days[1] | .rx_gb == 4 and .tx_gb == 1 and .partial == true)
+  and (.traffic.days[2] | .rx_gb == 5 and .tx_gb == 1 and .category_rx_gb.models == 3.75 and .partial == false)' >/dev/null \
+  || fail "traffic.days did not carry each day's last-line totals with the malformed and missing days skipped"
 echo "dashboard-front.test.sh: PASS"

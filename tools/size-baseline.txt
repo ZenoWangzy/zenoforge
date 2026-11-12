@@ -10,7 +10,7 @@
 969	engine/lib.d/model-policy.sh
 1027	engine/lib.sh
 976	engine/mac-autopilot/bell.sh
-1188	engine/mac-autopilot/gen_dashboard.py
+1180	engine/mac-autopilot/gen_dashboard.py
 1643	engine/mac-autopilot/node_health.py
 850	engine/mac-autopilot/scheduler.d/harvest-workers.sh
 983	engine/mac-autopilot/usage_reader.py

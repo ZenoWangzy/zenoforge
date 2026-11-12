@@ -1133,6 +1133,35 @@ function area(pts, budget) {
     ${pts.map((p,i)=>`<rect class="hit" x="${(x(i)-bw/2).toFixed(1)}" y="0" width="${bw.toFixed(2)}" height="${H}" data-tip="${esc(hm(p.t*1000, true)+"，"+p.v.toFixed(2)+" GB/时")}"/>`).join("")}</svg>
     <div class="axis"><span>${hm(pts[0].t*1000)}</span>${budget?`<span style="color:var(--bad-ink)">--- 预算 ${budget} GB/时</span>`:""}<span>${hm(pts[pts.length-1].t*1000)}</span></div>`;
 }
+// 近 14 天每日流量：下载按类堆叠，上传为右侧细条；缺失的日子留空位，采样有缺口的日子半透明并标"部分"
+const TR_ORDER = ["models","git","github","deps","other"], TR_LABEL = {models:"模型与 codex", git:"git", github:"GitHub 接口", deps:"依赖安装", other:"其他"};
+function trafficTrend(days) {
+  if (!(days||[]).length) return emptyMsg("每日流量还没有可读的日记录");
+  const byDay = Object.fromEntries(days.map(d => [d.day, d]));
+  const dayStr = off => new Date(Date.now() - off*864e5).toISOString().slice(0,10);
+  const slots = Array.from({length:14}, (_, i) => ({day: dayStr(13-i), d: byDay[dayStr(13-i)]}));
+  const tot = d => d ? d.rx_gb + d.tx_gb : null;
+  const fmt = v => v==null ? "—" : v.toFixed(2);
+  const pct = (a, b) => a==null || !b ? "—" : ((a-b)/b*100 > 0 ? "+" : "") + ((a-b)/b*100).toFixed(0) + "%";
+  const catsOf = d => { const out = Object.fromEntries(TR_ORDER.map(k => [k, 0])); for (const [k, v] of Object.entries(d.category_rx_gb||{})) out[TR_ORDER.includes(k) ? k : "other"] += Number(v)||0; return out; };
+  const top = Math.max(1e-9, ...slots.map(s => s.d ? s.d.rx_gb : 0)), bw = 40, H = 120;
+  const bars = slots.map((s, i) => {
+    const x = i*bw;
+    if (!s.d) return `<rect class="hit" x="${x}" y="0" width="${bw}" height="${H}" data-tip="${esc(s.day+"：无数据")}"/>`;
+    const c = catsOf(s.d); let acc = 0;
+    const segs = TR_ORDER.map((k, j) => { const v = c[k]; const seg = `<rect x="${x+8}" y="${(H - ((acc+v)/top)*(H-4)).toFixed(1)}" width="${bw-16}" height="${((v/top)*(H-4)).toFixed(1)}" fill="${CAT[j]}"/>`; acc += v; return seg; }).join("");
+    const up = H - (s.d.tx_gb/top)*(H-4);
+    const tip = `${s.day}：下载 ${fmt(s.d.rx_gb)} GB，上传 ${fmt(s.d.tx_gb)} GB${s.d.partial ? "（采样有缺口，部分）" : ""}`;
+    return `<g opacity="${s.d.partial ? .45 : 1}">${segs}<rect x="${x+bw-6}" y="${up.toFixed(1)}" width="4" height="${(H-up).toFixed(1)}" fill="var(--stone)"/></g><rect class="hit" x="${x}" y="0" width="${bw}" height="${H}" data-tip="${esc(tip)}"/>`;
+  }).join("");
+  const today = dayStr(0), yest = dayStr(1), lastWeek = dayStr(7);
+  const yPct = pct(tot(byDay[yest]), tot(byDay[dayStr(2)]));
+  const legend = TR_ORDER.map((k, j) => `<span><i style="background:${CAT[j]}"></i>${TR_LABEL[k]}</span>`).join("") + `<span><i style="background:var(--stone)"></i>上传</span>`;
+  return `<div class="buls">${kcard("timer","今日（截至现在）", fmt(tot(byDay[today]))+"<small> GB</small>")}${kcard("clock","昨日", fmt(tot(byDay[yest]))+"<small> GB</small>", `<div class="sub">较前一日 ${yPct}</div>`)}${kcard("globe","上周同一天", fmt(tot(byDay[lastWeek]))+"<small> GB</small>")}</div>
+    <svg class="area" viewBox="0 0 ${14*bw} ${H}" preserveAspectRatio="none" aria-hidden="true">${bars}</svg>
+    <div class="axis">${slots.map(s => `<span style="flex:1;text-align:center">${s.day.slice(5)}</span>`).join("")}</div>
+    <div class="lg">${legend}</div>`;
+}
 function vHost(D) {
   const tr = D.traffic || {}, bud = tr.budget || {}, n = NET[tr.status] || ["未知","none"], c = D.config || {};
   const hist = (tr.history||[]).filter(h=>h.gbh!=null).map(h=>({t:h.t, v:h.gbh}));
@@ -1146,6 +1175,7 @@ function vHost(D) {
         ${area(hist.slice(-180), bud.gb_per_hour)}
         <div class="buls" style="margin-top:18px">${budBul("当前速率", tr.gb_per_hour, bud.gb_per_hour, "GB/时", "预算 "+bud.gb_per_hour+" GB/时")}${budBul("今日累计（UTC 日）", tr.today_gb, bud.gb_per_day, "GB", "预算 "+bud.gb_per_day+" GB/天")}</div>
 `)}
+    ${panel("timer","每日流量趋势（近 14 天，柱为下载，细条为上传）", trafficTrend(tr.days))}
     ${cats.length ? panel("layers","各类流量对日预算", `<div class="buls">${cats.map(k=>budBul(k, (tr.today_category_gb||{})[k], (bud.category_gb_per_day||{})[k], "GB", `当前 ${((tr.category_gb_per_hour||{})[k]??0).toFixed(3)} GB/时，日预算 ${(bud.category_gb_per_day||{})[k]??"—"} GB`) || `<div class="bul zr s-none"><i class="ad s-none"></i><span class="bul-l">${esc(k)}</span><span></span><span class="bul-v"><b>${num((tr.today_category_gb||{})[k])}</b><small>GB</small></span></div>`).join("")}</div>`) : ""}
 ${panel("clock","调度", `<div class="kcs">${kcard("clock","每拍间隔",num(Math.round((c.tick_seconds||600)/60))+"<small> 分</small>")}${kcard("workers","同时在岗上限",num(c.max_workers))}${kcard("git","自动合并",stChip(c.auto_merge?"ok":"warn", c.auto_merge?"开":"关"))}</div>`)}
     <details class="panel"><summary class="ph" style="cursor:pointer">${ic("knob")}配置参数</summary><div class="rows">${(D.knobs||[]).map(k=>`<div class="knob" data-tip="${esc(k.meaning)}"><code>${esc(k.key)}</code><b>${esc(typeof k.value==="object"?JSON.stringify(k.value):k.value)}</b></div>`).join("")}</div></details>
