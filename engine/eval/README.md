@@ -290,3 +290,15 @@ Other cases use the merged fix's own tests. Gold verification should accompany a
    `decision-gate.mjs` therefore accepts an earlier baseline that lacks
    newly added cases (they run in the candidate and stay unpaired); a
    baseline holding removed cases still fails the gate.
+
+## Fresh-agent cases
+
+`fresh-agent.mjs` holds the case schema (`id`, frozen `base_sha`, `prompt`, `hidden_check`,
+`expected_divergence`; unknown keys are rejected, so no memory or session context can
+enter a case) and a pure grader. The grader classifies a failed run as `missing-doc`,
+`missing-guard` or `agent-error` from the first failing step, using facts the runner
+records at the base SHA. It calls no model. The practice used is SWE-bench-style task
+replay: a fresh agent gets a frozen checkout and a hidden check, the same design as the
+triage cases above. It was chosen over onboarding or golden-path tests and over
+docs-as-tests because those check documents, while this suite must measure what a
+no-memory agent does with the checkout it is given.
