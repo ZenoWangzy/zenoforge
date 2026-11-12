@@ -188,4 +188,25 @@ run_gate issue-87006 87006 impl-87006.md
 [[ "$(grep -Fc 'verification: ignored head copy for this run unit=issue-87006 path=.zenoforge/state/verification.json' "$LOG")" == 1 ]] || fail 'added head config was not logged as ignored'
 [[ ! -e "$marker" ]] || fail 'head-only verification config ran its marker command'
 
+# A base tooling script runs in place of a failing head copy; the head tree is restored after the run.
+git -C "$repo" switch -q main
+mkdir -p "$repo/scripts" "$repo/.zenoforge/state"
+printf '#!/bin/sh\necho base tool ok\nexit 0\n' > "$repo/scripts/verify-tool.sh"
+jqf -cn '{argv:["sh","scripts/verify-tool.sh"],timeout_s:5,evidence_dir:"evidence"}' > "$repo/.zenoforge/state/verification.json"
+git -C "$repo" add -A -- scripts/verify-tool.sh .zenoforge/state/verification.json
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm 'base verification tool'
+git -C "$repo" switch -q -c head-verify-tooling
+printf '#!/bin/sh\nexit 1\n' > "$repo/scripts/verify-tool.sh"
+git -C "$repo" add -- scripts/verify-tool.sh
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm 'head carries old tool copy'
+sha="$(git -C "$repo" rev-parse HEAD)"
+write_unit issue-87008 87008 impl-87008.md
+run_gate issue-87008 87008 impl-87008.md
+[[ "$(field issue-87008 .self_check_status)" == pass ]] || fail 'verification did not run the base tooling copy over the failing head copy'
+out="$(field issue-87008 .self_check_output)"
+grep -Fq 'verification passed unit=issue-87008 exit_code=0' "$out" || fail 'base tooling verification did not pass'
+[[ "$(grep -Fc 'verification: ignored head copy for this run unit=issue-87008 path=scripts/verify-tool.sh' "$LOG")" == 1 ]] || fail 'changed head tooling was not logged as ignored'
+git -C "$repo" show "$sha:scripts/verify-tool.sh" | cmp -s - "$repo/scripts/verify-tool.sh" || fail 'head tooling copy was not restored after the run'
+[[ -z "$(git -C "$repo" status --porcelain -- scripts)" ]] || fail 'verification left the head tree modified'
+
 echo 'verification-self-check.test.sh: ok'
