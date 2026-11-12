@@ -147,7 +147,8 @@ self_check_run() (
 pid_start() { pid_start_id "$1"; } # start ticks: tells a reused pid from the gate
 self_check_verification_run() ( # unit head clone config output metadata; success writes the verification evidence record
   local id="$1" sha="$2" dir="$3" config="$4" command_output="$5" metadata="$6" argv_json timeout_s evidence_dir files_json rc=0 arg
-  local -a argv=() evidence_files=()
+  local -a argv=() evidence_files=() overlaid=()
+  local base="${7:-}"
   set -o pipefail
   if [[ ! -r "$config" ]]; then printf 'verification refused unit=%s: config is unreadable\n' "$id"; return 1; fi
   if ! jq . "$config" >/dev/null 2>&1; then printf 'verification refused unit=%s: state/verification.json is not valid JSON\n' "$id"; return 1; fi
@@ -162,7 +163,23 @@ self_check_verification_run() ( # unit head clone config output metadata; succes
   fi
   argv_json="$(jq -c '.argv' "$config")"; timeout_s="$(jq -r '.timeout_s|floor' "$config")"; evidence_dir="$(jq -r '.evidence_dir' "$config")"
   while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(jq -j '.argv[] | ., "\u0000"' "$config")
+  # argv paths tracked at the trusted base run that base copy, not the unit head; the head copy is restored after the run.
+  for arg in "${argv[@]}"; do
+    [[ -n "$base" && -n "$arg" && "$arg" != /* && "$arg" != *..* ]] || continue
+    [[ "$(git -C "$dir" cat-file -t "$base:$arg" 2>/dev/null)" == blob ]] || continue
+    if ! git -C "$dir" diff --quiet "$base" "$sha" -- "$arg"; then say "verification: ignored head copy for this run unit=$id path=$arg"; fi
+    mkdir -p "$(dirname "$dir/$arg")" && git -C "$dir" show "$base:$arg" > "$dir/$arg" \
+      || { printf 'verification refused unit=%s: could not write base copy path=%s\n' "$id" "$arg"; return 1; }
+    overlaid+=("$arg")
+  done
   if (cd "$dir" && timeout -k 10 "$timeout_s" "${argv[@]}") 2>&1 | awk 'NR <= 20' > "$command_output"; then rc=0; else rc=$?; fi
+  for arg in "${overlaid[@]}"; do
+    if git -C "$dir" cat-file -e "$sha:$arg" 2>/dev/null; then
+      git -C "$dir" checkout -q "$sha" -- "$arg" || { printf 'verification failed unit=%s: could not restore head copy path=%s\n' "$id" "$arg"; return 1; }
+    else
+      rm -f -- "$dir/$arg"
+    fi
+  done
   if (( rc != 0 )); then
     printf 'verification failed unit=%s exit_code=%s argv=%s evidence=%s\n' "$id" "$rc" "$argv_json" "$evidence_dir"
     if [[ -s "$command_output" ]]; then sed -n '1,20p' "$command_output"; else printf '(no command output)\n'; fi
@@ -226,7 +243,7 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
     if [[ -n "$reason" ]]; then
       printf '%s check failed: %s\nreport: %s\n' "$gate" "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
       printf 'red\n' > "$result"
-    elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json"; then
+    elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json" "$config_base"; then
       printf 'red\n' > "$result"
     elif self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
     else
