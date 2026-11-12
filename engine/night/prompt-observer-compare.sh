@@ -88,8 +88,12 @@ if [[ "$verdict" == regression ]]; then
     jq -r -s --argjson at "$landing_ts" '.[] | select(.score != null and .ts != $at)
       | "- \(if .ts < $at then "before" else "after" end) \(.unit) score=\(.score)"' "$samples"
   } > "$body"
-  "${PROMPT_OBSERVER_UPSERT:-$script_dir/../pipeline-issue-upsert.sh}" \
+  # lib.sh derives ZF_REPO from origin; this script sources only config.sh, so derive it the same way.
+  # The upsert helper reads ZF_REPO before it parses --repo, so the slug is also passed in the environment.
+  repo_slug="${ZF_REPO:-$(git -C "$repo_dir" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
+  [[ -n "$repo_slug" ]] || { echo "prompt-observer-compare: ZF_REPO is not set and origin has no owner/name; no revert issue" >&2; exit 64; }
+  ZF_REPO="$repo_slug" bash "${PROMPT_OBSERVER_UPSERT:-$script_dir/../pipeline-issue-upsert.sh}" \
     --class "revert-$prompt-${landing_sha:0:12}" \
     --title "Revert prompt $prompt change at ${landing_sha:0:12}" \
-    --body-file "$body" --lane pipeline-system --repo "${ZF_REPO:?ZF_REPO is not set}"
+    --body-file "$body" --lane pipeline-system --repo "$repo_slug"
 fi

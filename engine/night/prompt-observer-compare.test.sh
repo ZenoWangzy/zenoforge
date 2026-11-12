@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
-export ZF_REPO=test/repo # test-env.sh unsets ZF_*; the revert issue needs a repo
+# test-env.sh exports a placeholder ZF_REPO; drop it so the slug comes from the fixture's origin, as in production.
+unset ZF_REPO ZF_GH_REPO
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 script="$script_dir/prompt-observer-compare.sh"
@@ -9,6 +10,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 repo="$tmp/repo"
 git init -q -b main "$repo"
+git -C "$repo" remote add origin https://github.com/test/repo.git
 git_commit() {
   GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1" git -C "$repo" -c user.name=test \
     -c user.email=test@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m "$2"
@@ -59,15 +61,38 @@ grep -Fq "$landing" "$upsert_calls"
 [[ "$(grep -c -- '--class' "$upsert_calls")" == 1 ]]
 grep -Fq -- '--repo test/repo' "$upsert_calls"
 
-# regression without ZF_REPO: refused before the upsert call, so no revert issue is filed
+# no ZF_REPO and no origin slug: refused (rc 64) before the upsert call, so no revert issue is filed
 rm -f "$upsert_calls" "$tmp/report.jsonl"
+git -C "$repo" remote remove origin
 set +e
-env -u ZF_REPO PROMPT_OBSERVER_REPORT="$tmp/report.jsonl" PROMPT_OBSERVER_UPSERT="$tmp/upsert" \
+PROMPT_OBSERVER_REPORT="$tmp/report.jsonl" PROMPT_OBSERVER_UPSERT="$tmp/upsert" \
   ZF_REPO_DIR="$repo" bash "$script" --prompt triage --landing "$landing" --samples "$regress" >/dev/null 2>&1
 status=$?
 set -e
-[[ "$status" != 0 ]]
+git -C "$repo" remote add origin https://github.com/test/repo.git
+[[ "$status" == 64 ]]
 [[ ! -e "$upsert_calls" ]]
+
+# real upsert helper, no ZF_REPO in the environment: it must get past its own ZF_REPO check and call gh with the origin slug
+gh_bin="$tmp/gh-bin"
+gh_calls="$tmp/gh-calls"
+mkdir -p "$gh_bin"
+cat > "$gh_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_GH_CALLS"
+exit 1
+STUB
+chmod +x "$gh_bin/gh"
+rm -f "$gh_calls" "$tmp/report.jsonl"
+set +e
+env -u ZF_REPO -u ZF_GH_REPO PATH="$gh_bin:$PATH" TEST_GH_CALLS="$gh_calls" ZF_ISSUE_LOCK_DIR="$tmp/locks" \
+  PROMPT_OBSERVER_REPORT="$tmp/report.jsonl" ZF_REPO_DIR="$repo" \
+  bash "$script" --prompt triage --landing "$landing" --samples "$regress" >/dev/null 2>"$tmp/real.err"
+status=$?
+set -e
+[[ "$status" == 1 ]]
+! grep -q 'ZF_REPO is not set' "$tmp/real.err"
+grep -Fq 'repos/test/repo/issues' "$gh_calls"
 
 # insufficient data: too few known samples after landing, never a regression
 thin="$tmp/thin.jsonl"
