@@ -346,6 +346,8 @@ jq -cn --arg green "$GREEN_SHA" --arg red "$RED_SHA" --arg rev "$REVERTED_MAIN_S
     {id:402,head_sha:$rev,head_branch:"main",event:"push",status:"completed",conclusion:"cancelled",created_at:"2026-10-27T14:00:00Z"}]}' \
   > "$FAKE_GH_STATE/completed-runs.json"
 : > "$EVENTS"
+: > "$FAKE_GH_STATE/actions.log"
+: > "$FAKE_GH_STATE/calls.log"
 MAIN_RED_REVERT_VERIFY_SECONDS=0
 maintenance_tick
 maintenance_tick
@@ -356,6 +358,23 @@ assert_eq "the revert-unverified event is never repeated" reverted \
   "$(session_json | jq -r .status)"
 if main_merge_clear >/dev/null 2>&1; then GATE_UNVERIFIED=clear; else GATE_UNVERIFIED=held; fi
 assert_eq "an unverified revert keeps the merge lane held" held "$GATE_UNVERIFIED"
+assert_not_contains "an unverified revert opens no second revert PR" "$(cat "$FAKE_GH_STATE/calls.log")" "pr create"
+assert_not_contains "an unverified revert dispatches no probe or second revert" "$(cat "$FAKE_GH_STATE/actions.log")" "dispatch"
+
+# --- A revert older than the oldest run the read covers is not flagged: it cannot be verified from that read.
+jq 'del(.revert_unverified)' "$AGENT_HOME/main-red/$RED_SHA.json" > "$test_root/session-covered.json"
+mv "$test_root/session-covered.json" "$AGENT_HOME/main-red/$RED_SHA.json"
+TOMORROW="$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)"
+jq -cn --arg rev "$REVERTED_MAIN_SHA" --arg later "$TOMORROW" \
+  '{workflow_runs:[
+    {id:402,head_sha:$rev,head_branch:"main",event:"push",status:"completed",conclusion:"cancelled",created_at:$later}]}' \
+  > "$FAKE_GH_STATE/completed-runs.json"
+: > "$EVENTS"
+MAIN_RED_REVERT_VERIFY_SECONDS=0
+maintenance_tick
+MAIN_RED_REVERT_VERIFY_SECONDS=7200
+assert_eq "a revert older than the read's oldest run sends no revert-unverified event" 0 \
+  "$(grep -c 'status=revert-unverified' "$EVENTS")"
 
 # --- An old session file over a just-landed revert is not idle: the clock starts at the revert commit.
 jq 'del(.revert_unverified)' "$AGENT_HOME/main-red/$RED_SHA.json" > "$test_root/session-reset.json"

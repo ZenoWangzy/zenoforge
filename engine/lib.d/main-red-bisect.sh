@@ -524,8 +524,13 @@ main_red_revert_covers() { # red_sha
 # A landed revert with no completed suite run on it or a later main commit
 # within MAIN_RED_REVERT_VERIFY_SECONDS: one event; the lane stays held.
 main_red_revert_verify_sweep() { # completed_runs_json
-  local runs="$1" file session red_sha culprit revert_sha landed idle sha verified
+  local runs="$1" file session red_sha culprit revert_sha landed idle sha verified covered_since covered_epoch
   [ -d "$MAIN_RED_DIR" ] || return 0
+  # The read is the newest 50 runs per workflow. A revert older than the oldest
+  # run of either page cannot be verified from it: skip it, never flag it.
+  covered_since="$(jq -r '[.workflow_runs[]? | select(.created_at) | {w: .red_workflow, t: .created_at}] | group_by(.w) | map(map(.t) | min) | max // empty' <<< "$runs")"
+  [ -n "$covered_since" ] || return 0
+  covered_epoch="$(date -u -d "$covered_since" +%s 2>/dev/null)" || return 0
   while IFS= read -r file; do
     session="$(main_red_session_read_for_file "$file" 2>/dev/null || true)"
     [ "$(jq -r '.status // empty' <<< "$session")" = reverted ] || continue
@@ -538,6 +543,7 @@ main_red_revert_verify_sweep() { # completed_runs_json
     # Clock starts at the revert commit's time, not the session file's last write.
     landed="$(git -C "$REPO_DIR" log -1 --format=%ct "$revert_sha" 2>/dev/null)" || continue
     [[ "$landed" =~ ^[0-9]+$ ]] || continue
+    [ "$landed" -ge "$covered_epoch" ] || continue
     idle=$(( $(date +%s) - landed ))
     [ "$idle" -ge "$MAIN_RED_REVERT_VERIFY_SECONDS" ] || continue
     verified=0
