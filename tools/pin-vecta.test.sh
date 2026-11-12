@@ -130,13 +130,26 @@ chmod +x "$tmp/bin/gh"
 export GH="$tmp/bin/gh"
 
 setup_target() { # <name>
-  local name="$1" bare="$tmp/$1-origin.git" target="$tmp/$1-target"
+  local name="$1" gate_fixture="${2:-present}" bare="$tmp/$1-origin.git" target="$tmp/$1-target"
   git init -q --bare "$bare"
   git init -q --initial-branch=main "$target"
   git -C "$target" config user.name 'pin-vecta fixture'
   git -C "$target" config user.email 'pin-vecta@example.invalid'
   mkdir -p "$target/.zenoforge/build/pack/scripts/agent/hotfix"
   mkdir -p "$target/scripts"
+  if [[ "$gate_fixture" == present ]]; then
+    mkdir -p "$target/.zenoforge/build/pack/scripts/zenoforge-pack"
+    cat > "$target/.zenoforge/build/pack/scripts/zenoforge-pack/merge-lane-vecta-gate.test.sh" <<'GATE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gate:%s|%s|%s|%s\n' "${0#"$ZF_REPO_DIR"/}" "$#" "$PWD" "$(jq -r .engine "$ZF_REPO_DIR/.zenoforge/build.json")" >> "${PIN_CALLS:?}"
+[[ $# == 0 ]] || exit 96
+[[ "$PWD" == "$ZF_REPO_DIR" ]] || exit 97
+[[ "$(jq -r .engine "$ZF_REPO_DIR/.zenoforge/build.json")" == "${PIN_EXPECTED_ENGINE:?}" ]] || exit 98
+echo 'VectA merge-lane gate: fixture passed'
+exit "${PIN_VECTA_GATE_STATUS:-0}"
+GATE
+  fi
   printf '.worktrees/\n' > "$target/.gitignore"
   printf '{"hook":".zenoforge/build/engine-sync.sh","engine":"%s"}\n' "$old_engine" > "$target/.zenoforge/build.json"
   : > "$target/.zenoforge/build/overrides.tsv"
@@ -163,10 +176,60 @@ run_pin() { # <calls-file> <scope-file> <agent-home> <target> [args...]
   local calls="$1" scopes="$2" agent="$3" target="$4"
   shift 4
   PIN_CALLS="$calls" PIN_SCOPE_CALLS="$scopes" \
-    AGENT_HOME="$agent" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" \
+    AGENT_HOME="$agent" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" PIN_EXPECTED_ENGINE="$new_engine" \
     ZF_LOCAL_CLONE="$engine_repo" \
     bash "$pin_script" "$new_engine" "$target" "$@"
 }
+
+# A failing VectA gate refuses a direct-main publication after the bounded preflight steps.
+gate_fail_target=$(setup_target gate-fail)
+gate_fail_agent=$(setup_agent gate-fail)
+gate_fail_calls="$tmp/gate-fail.calls"
+gate_fail_scopes="$tmp/gate-fail.scopes"
+: > "$gate_fail_calls"
+: > "$gate_fail_scopes"
+cat > "$tmp/gate-fail-lander.sh" <<'LANDER'
+#!/usr/bin/env bash
+printf 'lander-called\n' >> "${PIN_CALLS:?}"
+LANDER
+chmod +x "$tmp/gate-fail-lander.sh"
+set +e
+PIN_VECTA_GATE_STATUS=1 ZF_LAND_DIRECT_MAIN="$tmp/gate-fail-lander.sh" \
+  run_pin "$gate_fail_calls" "$gate_fail_scopes" "$gate_fail_agent" "$gate_fail_target" --land \
+  > "$tmp/gate-fail.out" 2>&1
+gate_fail_status=$?
+set -e
+if ((gate_fail_status != 1)); then
+  cat "$tmp/gate-fail.out" >&2
+  fail "failed VectA gate must refuse publication with rc 1, got $gate_fail_status"
+fi
+grep -Fq 'VectA merge-lane gate: fixture passed' "$tmp/gate-fail.out" \
+  || fail 'failing gate fixture did not run the VectA gate'
+grep -Fq 'pin-vecta: refusing publication build_status=0 check_status=0 preflight_status=0 vecta_gate_status=1' "$tmp/gate-fail.out" \
+  || fail 'publication refusal did not report the failed VectA gate status'
+! grep -q '^lander-called$' "$gate_fail_calls" || fail 'failed VectA gate reached the direct-main lander'
+! grep -q '^gh:pr create ' "$gate_fail_calls" || fail 'failed VectA gate created a PR'
+ok 'failed VectA merge-lane gate refuses publication with its status'
+
+# A missing VectA gate file is explicitly skipped, leaving the existing preflight result intact.
+gate_missing_target=$(setup_target gate-missing absent)
+gate_missing_agent=$(setup_agent gate-missing)
+gate_missing_calls="$tmp/gate-missing.calls"
+gate_missing_scopes="$tmp/gate-missing.scopes"
+: > "$gate_missing_calls"
+: > "$gate_missing_scopes"
+if ! run_pin "$gate_missing_calls" "$gate_missing_scopes" "$gate_missing_agent" "$gate_missing_target" \
+  > "$tmp/gate-missing.out" 2>&1; then
+  cat "$tmp/gate-missing.out" >&2
+  fail 'pin preparation failed when the optional VectA gate file was missing'
+fi
+grep -Fq 'pin-vecta: skipping VectA merge-lane gate; test missing:' "$tmp/gate-missing.out" \
+  || fail 'missing VectA gate file was not reported as skipped'
+[[ $(wc -l < "$gate_missing_scopes" | tr -d '[:space:]') == 3 ]] \
+  || fail 'missing VectA gate file unexpectedly ran an additional bounded step'
+grep -Fq 'pin-vecta: prepared route=land-direct-main' "$tmp/gate-missing.out" \
+  || fail 'missing VectA gate changed the existing preparation result'
+ok 'missing VectA merge-lane gate is skipped with one status line'
 
 # Ruling zenoforge-pin-does-not-wait-ci-2026-11-05: a completed red engine-tests/cli-tests run for
 # this exact SHA on main never blocks the pin; it logs PIN-ON-RED (the incident comes from bell's zf_main_ci_scan).
@@ -258,9 +321,16 @@ grep -Fq 'pin-vecta: prepared route=land-direct-main' "$tmp/direct.out" || fail 
 build_line=$(grep -n '^dispatcher:--build ' "$direct_calls" | cut -d: -f1)
 check_line=$(grep -n '^dispatcher:--check ' "$direct_calls" | cut -d: -f1)
 preflight_line=$(grep -n '^candidate:--preflight ' "$direct_calls" | cut -d: -f1)
-[[ -n "$build_line" && -n "$check_line" && -n "$preflight_line" ]] || fail 'build, check, or publish preflight was skipped'
-((build_line < check_line && check_line < preflight_line)) || fail 'engine steps ran out of order'
-[[ $(wc -l < "$direct_scopes" | tr -d '[:space:]') == 3 ]] || fail 'build, check, and preflight were not each resource bounded'
+gate_line=$(grep -n '^gate:' "$direct_calls" | cut -d: -f1)
+[[ -n "$build_line" && -n "$check_line" && -n "$preflight_line" && -n "$gate_line" ]] \
+  || fail 'build, check, publish preflight, or VectA gate was skipped'
+((build_line < check_line && check_line < preflight_line && preflight_line < gate_line)) \
+  || fail 'engine and VectA gate steps ran out of order'
+grep -Fxq "gate:.zenoforge/build/pack/scripts/zenoforge-pack/merge-lane-vecta-gate.test.sh|0|$direct_worktree|$new_engine" "$direct_calls" \
+  || fail 'passing VectA gate did not run without arguments in the prepared worktree with the new pin'
+grep -Fq 'VectA merge-lane gate: fixture passed' "$tmp/direct.out" || fail 'passing VectA gate output was not collected'
+[[ $(wc -l < "$direct_scopes" | tr -d '[:space:]') == 4 ]] \
+  || fail 'build, check, preflight, and VectA gate were not each resource bounded'
 [[ "$(git --git-dir="$tmp/direct-origin.git" rev-parse refs/heads/main)" == "$(git -C "$direct_target" rev-parse origin/main)" ]] \
   || fail 'default mode pushed a direct-main pin'
 ok 'pin-only diff is prepared and stopped before publication'
@@ -282,7 +352,7 @@ pack_calls="$tmp/pack.calls"
 pack_scopes="$tmp/pack.scopes"
 set +e
 PIN_PREFLIGHT_FAIL=1 PIN_CALLS="$pack_calls" PIN_SCOPE_CALLS="$pack_scopes" \
-  AGENT_HOME="$pack_agent" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" \
+  AGENT_HOME="$pack_agent" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" PIN_EXPECTED_ENGINE="$new_engine" \
   ZF_LOCAL_CLONE="$engine_repo" GH="$tmp/bin/gh" \
   bash "$pin_script" "$new_engine" "$pack_target" --land > "$tmp/pack.out" 2>&1
 pack_status=$?
@@ -483,7 +553,7 @@ run_merge_pin() { # <name> <target> [args]
   local name="$1" t="$2"; shift 2
   : > "$tmp/$name.calls"; : > "$tmp/$name.scopes"
   PIN_CALLS="$tmp/$name.calls" PIN_SCOPE_CALLS="$tmp/$name.scopes" \
-    AGENT_HOME="$(setup_agent "$name")" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" ZF_LOCAL_CLONE="$mengine" \
+    AGENT_HOME="$(setup_agent "$name")" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" PIN_EXPECTED_ENGINE="$mnew" ZF_LOCAL_CLONE="$mengine" \
     bash "$pin_script" "$mnew" "$t" "$@"
 }
 
