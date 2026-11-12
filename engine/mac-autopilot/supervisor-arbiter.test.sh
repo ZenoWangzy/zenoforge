@@ -1121,6 +1121,20 @@ reconcile_size_recuts
 [[ "$(field issue-705 .stage)" == supervisor-review && "$(field issue-705 .size_recut_pending)" == true ]] \
   || fail "a supervisor-review unit with a ready issue must stay with the arbiter: $(jq -c '.units' "$UNITS")"
 
+# A spent budget does no unit work and makes no gh call; the walk is kept for the next tick, and a full pass clears the cursor.
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/706.json"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/707.json"
+units "$(jq -cn '{units:[706,707] | map({id:("issue-"+tostring),issue:.,stage:"blocked-external",size_recut_pending:true,history:[]})}')"
+: > "$GH_CALLS"
+SIZE_RECUT_RECONCILE_SECONDS=0 reconcile_size_recuts
+[[ "$(field issue-706 .stage)" == blocked-external && "$(field issue-707 .stage)" == blocked-external ]] \
+  || fail "a spent size-recut budget must leave every unit for the next tick: $(jq -c '.units' "$UNITS")"
+[[ ! -s "$GH_CALLS" ]] || fail "a spent size-recut budget must make no gh call: $(cat "$GH_CALLS")"
+[[ "$(cat "$A/.size-recut-cursor")" == 0 ]] || fail "the stopped walk must keep its unit cursor"
+reconcile_size_recuts
+[[ "$(field issue-706 .stage)" == implement-pending && "$(field issue-707 .stage)" == implement-pending && ! -e "$A/.size-recut-cursor" ]] \
+  || fail "a walk with budget must resume every unit and clear its cursor: $(jq -c '.units' "$UNITS")"
+
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"stop-loss"},"size_admission":{"lines":802,"limit":800}}' > "$fixture/recut-agent-state.json"
 cat > "$fixture/recut-agent-lib.sh" <<LIB
 route_to_recut() { return 0; }

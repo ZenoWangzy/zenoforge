@@ -1,6 +1,20 @@
 reconcile_size_recuts() {
-  local u id issue state hold_note reconcile_note
-  while IFS= read -r u; do
+  local u id issue state hold_note reconcile_note k i n cursor=0 deadline
+  local -a pending=()
+  # The budget is checked between units, so a unit already running may finish past it. A stopped walk resumes at its unit next tick, so no unit starves.
+  deadline=$((SECONDS + ${SIZE_RECUT_RECONCILE_SECONDS:-300}))
+  mapfile -t pending < <(jqf -c '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .size_recut_pending==true)' "$UNITS")
+  n=${#pending[@]}
+  cursor="$(cat "$A/.size-recut-cursor" 2>/dev/null || true)"
+  [[ "$cursor" =~ ^[0-9]+$ ]] && (( n > 0 )) && cursor=$((cursor % n)) || cursor=0
+  for ((k = 0; k < n; k++)); do
+    i=$(((cursor + k) % n))
+    if (( SECONDS >= deadline )); then
+      printf '%s\n' "$i" > "$A/.size-recut-cursor"
+      say "size-recut reconcile stopped at ${SECONDS}s: $((n - k)) units left, resumes at unit $i next tick"
+      return 0
+    fi
+    u="${pending[i]}"
     id="$(jqf -r .id <<<"$u")"; issue="$(jqf -r '.issue // empty' <<<"$u")"
     state="$(scheduler_issue_state "$issue")" || continue
     if jqf -e '.state == "tracker" or (.state == "released" and (has("recut_children") or .tracker_parent == true)) or (.state == "concluded" and .run.outcome == "duplicate" and .closed_by_pipeline == true)' <<<"$state" >/dev/null; then
@@ -34,5 +48,6 @@ reconcile_size_recuts() {
       set_unit "$id" "$(hist size-recut-unheld "issue #$issue hold lifted") | .stage=\"blocked-external\" | .note=null | del(.parked_reason, .unpark_condition)"
       say "unit $id recut hold lifted; back to waiting for issue #$issue recut"
     fi
-  done < <(jqf -c '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .size_recut_pending==true)' "$UNITS")
+  done
+  rm -f -- "$A/.size-recut-cursor"
 }

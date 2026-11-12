@@ -44,6 +44,8 @@ log_reliability_breach() {
 phase_mark() {
   local f=.tick-phase
   [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || f=.refill-phase
+  # A station runs beside the tick and shares the file: its phases named the tick's phase in the kill line.
+  [[ "${SCHED_STATION:-false}" != true ]] || return 0
   printf '%s\n' "$1" > "$A/$f" || :
 }
 # One whole-refill budget. The kill counts from the refill's start and no step could see it coming: a preflight that began at 200s died at 300s.
@@ -87,7 +89,7 @@ phase() {
   gh_after="$(tick_gh_calls_count)"
   (( gh_after >= gh_before )) && gh_delta=$((gh_after - gh_before))
   TICK_PHASE_DETAILS+="${TICK_PHASE_DETAILS:+,}${phase_name}:${elapsed}s/${gh_delta}gh"
-  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || printf '%s\n' "${phase_name}:${elapsed}s/${gh_delta}gh" >> "$A/.tick-phases" || :
+  [[ "${TICK_LOCAL_REFILL:-false}" == true || "${SCHED_STATION:-false}" == true ]] || printf '%s\n' "${phase_name}:${elapsed}s/${gh_delta}gh" >> "$A/.tick-phases" || :
   (( elapsed < 5 )) || TICK_PHASES+=" $phase_name=${elapsed}s"
   case "$phase_name" in refill_merge_pass | register_new_issues) refill_cost_record "$phase_name" "$elapsed" ;; esac
   return "$rc"

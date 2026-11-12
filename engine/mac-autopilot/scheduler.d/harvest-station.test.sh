@@ -155,6 +155,13 @@ for p in 'phase self_check_harvest' 'phase precheck_harvest' 'phase recover_orph
 done
 grep -Fq 'if [[ "$tick_harvests" == true ]]; then' <<<"$after_recut" || fail 'the tick self-check phases are not behind the same gate'
 
+# A station shares $A/.tick-phase with the full tick: its phase marks must not replace the tick's phase, which the TICK-TIMEOUT line names.
+printf '%s\n' reconcile_size_recuts > "$A/.tick-phase"
+( SCHED_STATION=true; phase_mark harvest_workers )
+[[ "$(cat "$A/.tick-phase")" == reconcile_size_recuts ]] || fail "a station phase mark replaced the tick phase: $(cat "$A/.tick-phase")"
+( phase_mark dispatch_pending )
+[[ "$(cat "$A/.tick-phase")" == dispatch_pending ]] || fail 'the full tick must keep marking its own phase'
+
 # --- case 9: loop.sh launches the station on its own cadence, detached, and never before it is due. ---
 hl="$fixture/loop"; mkdir -p "$hl/live" "$hl/state"
 cat > "$hl/live/scheduler.sh" <<'SH'

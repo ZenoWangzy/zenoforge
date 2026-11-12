@@ -758,10 +758,10 @@ fi
 case "${1:-}" in
   --views) views_entry "${2:-dashboard}" ;;
   --refill) refill_tick ;;
-  --ci-admission) ci_station_tick ;;
-  --merge) merge_entry ;;
-  --harvest-station) harvest_station_tick ;;
-  --existing-walk) existing_walk_tick ;;
+  --ci-admission) SCHED_STATION=true; ci_station_tick ;;
+  --merge) SCHED_STATION=true; merge_entry ;;
+  --harvest-station) SCHED_STATION=true; harvest_station_tick ;;
+  --existing-walk) SCHED_STATION=true; existing_walk_tick ;;
   --release-deps) release_deps_station_tick ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
