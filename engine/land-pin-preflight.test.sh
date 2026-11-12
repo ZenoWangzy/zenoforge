@@ -184,7 +184,7 @@ grep -Fq 'resolved-config-check: CHANGED prompts/supervisor-cap-triage.md' "$out
   || fail 'publish preflight did not name the missing intended engine-owned prompt'
 grep -Fq 'publish-preflight: resolved-config check failed' "$out" \
   || fail 'publish preflight did not report the resolved-config failure'
-grep -Fq 'next step: declare each engine-owned change in .zenoforge/build/intended-changes.tsv with a reason and matching engine SHA' "$out" \
+grep -Fq 'next step: declare each engine-owned change in .zenoforge/build/intended-changes.tsv with a reason and a sha256:<first 12 hex of the new file hash> (preferred, survives main moving) or the matching engine SHA' "$out" \
   || fail 'pre-land refusal lacks the intended-changes next step'
 
 # The same pin bump passes only when its intended row carries the new engine SHA.
