@@ -26,7 +26,6 @@ ROADMAP_CONTAINER_LABELS = frozenset({"roadmap-epic", "roadmap-theme", "roadmap"
 CONTAINER_LABELS = ROADMAP_CONTAINER_LABELS | {"tracker"}
 PRIORITY_ROUTE_ID = "intake.priority_route_missing"
 DEFAULT_PRIORITY_ROUTE_PREFIXES = {"priority": "priority:", "route": "route:"}
-DEFAULT_PRIORITY_ROUTE_LIVE_AT = "2026-11-12T00:00:00Z"
 
 
 def _read_cache(path):
@@ -82,15 +81,18 @@ def _priority_route_config(runtime):
         key: value if isinstance(value, str) and value else DEFAULT_PRIORITY_ROUTE_PREFIXES[key]
         for key, value in ((key, labels.get(key)) for key in DEFAULT_PRIORITY_ROUTE_PREFIXES)
     }
-    live_at = intake.get("live_at") or DEFAULT_PRIORITY_ROUTE_LIVE_AT
+    live_at = intake.get("live_at")
+    if not live_at:
+        # Unset cutover: every issue is backlog and the row never turns red.
+        return prefixes, None, True
     try:
         cutoff = datetime.fromisoformat(live_at.replace("Z", "+00:00"))
         if cutoff.tzinfo is None:
             cutoff = cutoff.replace(tzinfo=timezone.utc)
         cutoff = cutoff.astimezone(timezone.utc)
     except (AttributeError, TypeError, ValueError):
-        cutoff = None
-    return prefixes, cutoff
+        return prefixes, None, False
+    return prefixes, cutoff, True
 
 
 def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
@@ -102,8 +104,9 @@ def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
         interval = 600
     path = Path(runtime) / "intake-laneless-open-issues.json"
     now_epoch = int(now.timestamp())
-    prefixes, priority_cutoff = _priority_route_config(runtime)
-    config_key = {"prefixes": prefixes, "live_at": priority_cutoff.isoformat() if priority_cutoff else None}
+    prefixes, priority_cutoff, priority_valid = _priority_route_config(runtime)
+    config_key = {"prefixes": prefixes, "live_at": priority_cutoff.isoformat() if priority_cutoff else None,
+                  "valid": priority_valid}
     cached = _read_cache(path)
     checked_at = cached.get("checked_at")
     if (cached.get("repo") == repo and isinstance(checked_at, int) and not isinstance(checked_at, bool)
@@ -154,7 +157,7 @@ def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
             priority_route = ({"live_at": config_key["live_at"],
                                "active": {"priority": 0, "route": 0},
                                "backlog": {"priority": 0, "route": 0}}
-                              if priority_cutoff is not None else None)
+                              if priority_valid else None)
             for issue in open_issues:
                 labels = issue.get("labels")
                 if not isinstance(labels, list):
@@ -174,7 +177,8 @@ def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
                         created_at = datetime.fromisoformat(issue["created_at"].replace("Z", "+00:00"))
                         if created_at.tzinfo is None:
                             created_at = created_at.replace(tzinfo=timezone.utc)
-                        bucket = "active" if created_at.astimezone(timezone.utc) >= priority_cutoff else "backlog"
+                        bucket = ("active" if priority_cutoff is not None
+                                  and created_at.astimezone(timezone.utc) >= priority_cutoff else "backlog")
                     except (AttributeError, KeyError, TypeError, ValueError):
                         priority_route = None
                     if priority_route is not None:

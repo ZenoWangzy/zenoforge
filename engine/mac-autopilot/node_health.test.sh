@@ -547,9 +547,15 @@ assert len(green_calls) == 1
 default_good = {"number": 40, "state": "open", "created_at": "2026-11-12T00:01:00Z", "labels": [{"name": "priority:high"}, {"name": "route:roadmap"}]}
 default_missing_route = {"number": 41, "state": "open", "created_at": "2026-11-12T00:02:00Z", "labels": [{"name": "priority:normal"}]}
 default_front, default_values, default_standards, default_calls, _ = dashboard_row("priority-default", [default_good, default_missing_route], None)
-assert default_front["priority_route"]["active"] == {"priority": 0, "route": 1}
-assert node_health.status_of(default_values[row_id], *default_standards[row_id]) == "UNHEALTHY", "default route prefix must be read before row 334 lands"
+assert default_front["priority_route"]["active"] == {"priority": 0, "route": 0}
+assert default_front["priority_route"]["backlog"] == {"priority": 0, "route": 1}
+assert node_health.status_of(default_values[row_id], *default_standards[row_id]) == "OK", "without live_at every issue is backlog and the row must not be red"
 assert len(default_calls) == 1
+today_missing = {"number": 42, "state": "open", "created_at": "2026-11-13T09:00:00Z", "labels": []}
+today_front, today_values, today_standards, _, _ = dashboard_row("priority-no-live-at-today", [today_missing], None)
+assert today_front["priority_route"]["active"] == {"priority": 0, "route": 0}
+assert today_front["priority_route"]["backlog"] == {"priority": 1, "route": 1}
+assert node_health.status_of(today_values[row_id], *today_standards[row_id]) == "OK", "an issue created today without live_at must not turn the row red"
 CHECK_LANELESS
 # 裁决副本对账：pack 有而引擎实际读取的 state/rulings.json 没有的行数计入 rulings.copies_differ
 # （健康 0，异常 ≥1）；先按 id 对账，剩下的按 (date, scope) 多重集对账（构建会给部分 id 改名）；同 id 换 scope 不算缺行；任一文件缺失记 NO-DATA。
