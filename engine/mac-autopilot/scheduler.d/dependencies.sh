@@ -154,11 +154,6 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   ! tracker_dep_cleared "$dep" "$(jqf -r '.issue // empty' <<<"$1")" || return 1
   printf '%s' "$dep"
 }
-dep_fresh_closed() { # predecessor → 0 only when a fresh GitHub read says CLOSED or MERGED; an unreadable read is not closed
-  local fresh
-  fresh="$(dep_states "$1" 2>/dev/null | awk -F'\t' -v d="$1" '$1 == d { print $2; exit }' || true)"
-  [[ "$fresh" == CLOSED || "$fresh" == MERGED ]]
-}
 dep_has_unit() { # issue → 0 when the ledger has rows and none is settled: with no delivery, a closed state there is work given up or a stale read, not work done. A wontfix, duplicate, done or parked row will not move on its own, and the sweep could never prove it.
   local rc=0
   dep_rows_flag "$1" 2 || rc=$?
@@ -349,7 +344,7 @@ dep_now() { # run a command that reads the ledger it just wrote (to_supervisor c
   "$@"
 }
 release_dependency_blocks() {
-  local id dep issue state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u line
+  local id dep issue state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u line fresh
   local blocker_issue pair_key real_wait recut stacked bb has_info pilot has_note epic_seen marked pilot_label delivered_note
   local -a deps=() unique_deps=()
   local -A DEP_BLOCKED_PAIR_COUNTS=() intake_step_secs=() intake_step_counts=()
@@ -444,7 +439,10 @@ release_dependency_blocks() {
     if (( gh_due )) && [[ "$state" == OPEN && "$real_wait" != true && "$pilot" == true ]] && ! dep_body_declares "$bb" "$u" "$dep" \
         && dep_now stack_approved_dependency "$id" "$dep" "$u"; then continue; fi
     # A marker ends on delivery or a ruling: a closed issue that delivered nothing goes to dep_dead_sweep, and a stale closed state cannot release it (#536).
-    if [[ "$real_wait" == true && "$state" == CLOSED ]] && { dep_has_unit "$dep" || ! dep_fresh_closed "$dep"; }; then continue; fi
+    if [[ "$real_wait" == true && "$state" == CLOSED ]]; then # a stale closed cache with no unit row needs one fresh read; a fresh MERGED releases as delivered (#536)
+      if dep_has_unit "$dep"; then continue; fi; fresh="$(dep_fresh_state "$dep")"
+      [[ "$fresh" == CLOSED || "$fresh" == MERGED ]] || continue; [[ "$fresh" != MERGED ]] || state=MERGED
+    fi
     if [[ "$state" == CLOSED || "$state" == MERGED ]]; then
       dep_blocker_forget "$issue" "$dep"
       if [[ "$state" == MERGED ]]; then dep_release_delivered "$id" "$dep" "$has_note"; else unblock_unit "$id" "#$dep delivered"; fi
