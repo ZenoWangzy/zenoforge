@@ -7,6 +7,7 @@ mkdir -p "$AGENT_HOME/night" "$test_env_root/autopi" "$test_env_root/repo"
 export REPO_DIR="$test_env_root/repo"
 export MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/autopi"
 eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 
 # Deadline math and assertions share a clock driven by the test's SECONDS.
 MAINTENANCE_TEST_EPOCH_MS=1700000000000
@@ -257,5 +258,94 @@ check 'one failed root does not stop the prefix on the next tick' "$(resume)" no
 # needs-info-loop and main-red-bisect meet the deadline the same way, so short steps have a floor too.
 ROOTS_REACHED_AT=121; tick 20261107T000007Z
 check 'a short step with under 15s left takes the cursor' "$(resume)" needs-info-loop
+
+slice_call() { printf '%s\n' "$1" >> "$AGENT_HOME/night/slice-calls"; }
+checks_blocked_sweep() { slice_call checks-blocked-sweep; }
+hold_sweep() {
+  slice_call hold-sweep
+  [[ "${HOLD_SWEEP_SLEEPS:-0}" == 1 ]] || return 0
+  sleep 5
+}
+supervisor_hold_sweep() { slice_call supervisor-hold-sweep; }
+hand_completion_events_run_once() { slice_call hand-completion-events; }
+reconcile_maintainer_outcomes() { slice_call founder-outcome-recovery; }
+flush_maintainer_outcome_digest() { :; }
+read_needs_info_email_replies() { slice_call needs-info-email; }
+sweep_reopened_issues() { slice_call needs-info-recovery; }
+sweep_unlabeled_issues() { slice_call needs-info-unlabeled; }
+reconcile_needs_info_issues() { slice_call needs-info-loop; }
+main_red_bisect_sweep() { slice_call main-red-bisect; }
+sweep_batch_state() { slice_call batch-state; }
+sweep_blocking_issue_roots() { slice_call needs-info-blocker-roots; OPEN_ISSUE_BLOCKER_GRAPH_STATUS=available; }
+profile_mark() { :; }
+manual_pause_is_valid() { return 1; }
+check_gmail_credential() { :; }
+gh() { [[ "${1:-}:${2:-}" == variable:get ]] && printf 'triage\n'; }
+roadmap_switch_value() { printf 'false\n'; }
+LOCK_FILE="$test_env_root/pipeline.lock"
+REPO=test/repo
+ZF_NIGHT_DIR="$AGENT_HOME/night"
+MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/autopi"
+TEST_MAINTENANCE_TIMEOUT=0.2s
+rm -f -- "$AGENT_HOME/night/maintenance-resume" "$AGENT_HOME/night/maintenance-current-step"
+export REPO LOCK_FILE ZF_NIGHT_DIR MAC_AUTOPILOT_RUNTIME_DIR TEST_MAINTENANCE_TIMEOUT
+export DRY_RUN=0 IMPLEMENT_TICK_ID=maintenance-timeout-test HOLD_SWEEP_SLEEPS=1
+export MAINTENANCE_TEST_EPOCH_MS MAINTENANCE_REQUIRED_SLOT_SECONDS MAINTENANCE_REOPEN_SLOT_SECONDS
+export -f maintenance_record_deferred_step maintenance_scheduler_log maintenance_clear_deferred_step
+export -f maintenance_now_epoch_ms maintenance_set_optional_deadline maintenance_restore_slice_deadline
+export -f maintenance_defer_optional_step maintenance_run_optional_step run_post_dispatch_maintenance
+export -f maintenance_step_mark maintenance_resume_cursor
+export -f slice_call checks_blocked_sweep hold_sweep supervisor_hold_sweep hand_completion_events_run_once
+export -f reconcile_maintainer_outcomes flush_maintainer_outcome_digest read_needs_info_email_replies
+export -f sweep_reopened_issues sweep_unlabeled_issues reconcile_needs_info_issues main_red_bisect_sweep
+export -f sweep_batch_state sweep_blocking_issue_roots profile_mark manual_pause_is_valid
+slice_scheduler="$test_env_root/maintenance-slice-scheduler.sh"
+cat > "$slice_scheduler" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == --stage && "${2:-}" == maintenance ]] || exit 2
+IMPLEMENT_TICK_ID="${ZF_PIPELINE_SLICE_TICK:-maintenance-timeout-test}"
+run_post_dispatch_maintenance
+SH
+timeout() {
+  local kill_after="$1" duration="$2"
+  shift 2
+  if [[ "${@: -1}" == maintenance ]]; then
+    command timeout --kill-after=0.1s "$TEST_MAINTENANCE_TIMEOUT" "$@"
+  else
+    return 0
+  fi
+}
+slice_output="$test_env_root/maintenance-slice.out"
+slice_runner_status=0
+run_pipeline_slices "$slice_scheduler" triage > "$slice_output" 2>&1 || slice_runner_status=$?
+if [ "$slice_runner_status" -ne 0 ]; then
+  cat "$slice_output" >&2
+  fail "maintenance slice runner exits successfully (got $slice_runner_status)"
+fi
+overrun_count="$(grep -Fc 'slice overrun stage=maintenance step=hold-sweep' "$slice_output" || true)"
+if [ "$overrun_count" != 1 ]; then cat "$slice_output" >&2; fi
+check 'a killed maintenance step names itself in the slice overrun line' \
+  "$overrun_count" 1
+check 'the killed step remains as the maintenance resume cursor' \
+  "$(cat "$AGENT_HOME/night/maintenance-resume")" hold-sweep
+check 'the killed step remains visible to the next maintenance tick' \
+  "$(cat "$AGENT_HOME/night/maintenance-current-step")" hold-sweep
+HOLD_SWEEP_SLEEPS=0; export HOLD_SWEEP_SLEEPS
+: > "$AGENT_HOME/night/slice-calls"
+slice_runner_status=0
+run_pipeline_slices "$slice_scheduler" triage > "$slice_output" 2>&1 || slice_runner_status=$?
+if [ "$slice_runner_status" -ne 0 ]; then
+  cat "$slice_output" >&2
+  fail "resumed maintenance slice runner exits successfully (got $slice_runner_status)"
+fi
+check 'the next tick logs its one-time skip for the killed step' \
+  "$(grep -Fc 'maintenance skipped killed step=hold-sweep' "$slice_output" || true)" 1
+check 'the next tick continues with the following prefix step' \
+  "$(grep -Fc 'supervisor-hold-sweep' "$AGENT_HOME/night/slice-calls" || true)" 1
+check 'the next tick does not repeat the killed step' \
+  "$(grep -Fxc 'hold-sweep' "$AGENT_HOME/night/slice-calls" || true)" 0
+check 'the next tick reaches the suffix after skipping the killed step' \
+  "$(grep -Fc 'needs-info-blocker-roots' "$AGENT_HOME/night/slice-calls" || true)" 1
 
 echo 'issue-pipeline-maintenance-budget.test.sh: PASS'
