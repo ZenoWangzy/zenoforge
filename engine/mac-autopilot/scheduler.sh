@@ -106,6 +106,7 @@ source "$HERE/scheduler.d/ci-status.sh"
 source "$HERE/scheduler.d/ci-admission.sh"
 source "$HERE/scheduler.d/harvest-station.sh"
 source "$HERE/scheduler.d/existing-walk-station.sh"
+source "$HERE/scheduler.d/dependency-station.sh"
 source "$HERE/scheduler.d/merge-prep.sh"
 source "$HERE/scheduler.d/merge-lane.sh"
 source "$HERE/scheduler.d/conflict-resolve.sh"
@@ -123,7 +124,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --rule ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --dependency-station && "${1:-}" != --rule ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -553,6 +554,8 @@ CI_STATION_LOCK="$A/.ci-station.lock"
 HARVEST_STATION_LOCK="$A/.harvest-station.lock"
 # The intake existing walk as its own station (existing_walk_tick, scheduler.d/existing-walk-station.sh): its own lock, the ledger lock per write.
 EXISTING_WALK_LOCK="$A/.existing-walk-station.lock"
+# The release-dependency pass as its own station (dependency_station_tick, scheduler.d/dependency-station.sh): its own lock, the ledger lock per write.
+DEPENDENCY_STATION_LOCK="$A/.dependency-station.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束且带报告的 PR 车道 implement/review/rereview/repair worker（释放槽位，有少量 GitHub 调用）、回收孤儿记录，
@@ -577,7 +580,7 @@ run_issue_intake_phases() {
 run_refill_intake_dispatch_phases() {
   # Dispatch first: a refill exists to fill free slots, and 8 of the 33 refill kills of 2026-11-06/07 died in the merge pass that
   # used to run in front of it, so those refills dispatched nothing. The merge pass and intake run on the time left.
-  step_timed dep_snapshot dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
+  step_timed dep_snapshot dep_delivered_snapshot # release_dependency_blocks (the station or the full tick) fills the cache; the body gate reads it on both
   step_timed record_run_spend record_run_spend || : # the gate in dispatch_pending reads spend_runs; a refill used to dispatch on whatever the last full tick left
   phase dispatch_pending true
   paused_midrun "refill merge" || { phase refill_merge_pass; tick_prs_changed; } # a merge changes the PRs intake reads next
@@ -690,7 +693,7 @@ main() {
     # dispatch / CI 准入 / 合并车道就不用再为它们付每笔 2 秒的整文件读写。PAUSE 期间不动台账。
     phase retire_terminal_units
     phase stuck_worker_disposition
-    phase_yield_lock release_dependency_blocks
+    dependency_release_tick
     phase_yield_lock_batch run_issue_intake_phases
     phase retire_landed_pr_units
     phase supersede_resolved_main_red_units
@@ -754,6 +757,7 @@ case "${1:-}" in
   --merge) merge_entry ;;
   --harvest-station) harvest_station_tick ;;
   --existing-walk) existing_walk_tick ;;
+  --dependency-station) dependency_station_tick ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;
