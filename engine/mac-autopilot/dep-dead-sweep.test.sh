@@ -25,12 +25,12 @@ marked() { printf '{"id":"issue-%s","issue":%s,"stage":"blocked-external","block
 reset() { # the dead case; each fail-closed case below breaks one fact
   printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20)" > "$UNITS"
   printf '%s\n' '{"workers":[]}' > "$A/workers.json"
-  DEP_DELIVERED_CACHE=()
+  DEP_DELIVERED_CACHE=(); rm -f "$A"/dep-fresh-*
   PRS='[]'; PRS_RC=0; ISSUE='{"state":"tracker"}'; ISSUE_RC=0; SUBS=''; SUBS_RC=0; CHILD='CLOSED'
 }
 tick_prs() { printf '%s' "$PRS"; return "$PRS_RC"; }
 scheduler_issue_state() { printf '%s' "$ISSUE"; return "$ISSUE_RC"; }
-dep_states() { [[ -z "$CHILD" ]] || printf '%s\t%s\t\n' "$1" "$CHILD"; }
+dep_states() { echo >> "$A/dep-states.calls"; [[ -z "$CHILD" ]] || printf '%s\t%s\t\n' "$1" "$CHILD"; }
 gh() {
   case "$*" in
     *sub_issues*) [[ -z "$SUBS" ]] || printf '%s\n' "$SUBS"; return "$SUBS_RC" ;;
@@ -112,10 +112,26 @@ reset; closed_state MERGED; release_dependency_blocks
 reset; closed_state CLOSED; printf '{"units":[%s]}\n' "$(marked 20)" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a closed predecessor with no unit row was closed by hand and must release'
 ! dep_marker_open "$(marked 20)" >/dev/null || fail 'a closed predecessor with no unit row must end the marker'
+# A stale closed cache with no unit row frees nothing until one fresh read says closed (#536): open or unreadable holds.
+nounit() { printf '{"units":[%s]}\n' "$(marked 20)" > "$UNITS"; }
+reset; nounit; closed_state CLOSED; CHILD=OPEN
+[[ "$(dep_marker_open "$(marked 20)")" == 10 ]] || fail 'a stale closed cache with a fresh OPEN read must hold the marker'
+reset; nounit; closed_state CLOSED; CHILD=''
+[[ "$(dep_marker_open "$(marked 20)")" == 10 ]] || fail 'a stale closed cache with an unreadable fresh read must hold the marker'
+reset; nounit; closed_state CLOSED; CHILD=OPEN; release_dependency_blocks
+[[ "$(field issue-20 .stage):$(field issue-20 .blocked_on)" == blocked-external:10 ]] || fail "a fresh OPEN read must keep a marked unit waiting on a stale closed cache: $(field issue-20 .stage)"
+reset; nounit; closed_state CLOSED; release_dependency_blocks
+[[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'a fresh CLOSED read still releases a marked unit with no unit row'
 reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | jq -c 'del(.dep_wait_delivery)')" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" != blocked-external ]] || fail 'an unmarked unit keeps the old release on a closed predecessor'
 reset; closed_state CLOSED; printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20 | jq -c '.stage="parked"')" > "$UNITS"; release_dependency_blocks
 [[ "$(field issue-20 .stage)" == parked ]] || fail 'a parked marked unit must not read a closed undelivered predecessor as delivered'
+# The parked-waiter loop frees a marked unit on a stale closed cache with no unit row only after a fresh CLOSED read (#536).
+parked_marked() { printf '{"units":[%s]}\n' "$(marked 20 | jq -c '.stage="parked" | .parked_reason="waiting-predecessor"')" > "$UNITS"; }
+reset; nounit; parked_marked; closed_state CLOSED; CHILD=OPEN; release_dependency_blocks
+[[ "$(field issue-20 .stage):$(field issue-20 .dep_wait_delivery)" == parked:10 ]] || fail "a fresh OPEN read must keep a parked marked waiter on a stale closed cache: $(field issue-20 .stage)"
+reset; nounit; parked_marked; closed_state CLOSED; release_dependency_blocks
+[[ "$(field issue-20 .stage)" == implement-pending ]] || fail "a fresh CLOSED read must release a parked marked waiter with no unit row: $(field issue-20 .stage)"
 rm -f "$A/dep-check.cache.json" "$A/dep-check.epoch"
 
 # Proof is the only way past the marker, including a body dependency on the same predecessor.
@@ -187,5 +203,22 @@ release_dependency_blocks
 : > "$fixture/pr-closes"
 reset; PRS='[{"number":5311}]'; printf '{"units":[%s]}\n' "$pr_unit" > "$UNITS"; closed_reason COMPLETED; release_dependency_blocks
 [[ "$(field issue-5148 .stage)" != closed && ! -s "$fixture/pr-closes" ]] || fail "a completed close must neither retire the unit nor close its PR: $(field issue-5148 .stage) $(cat "$fixture/pr-closes")"
+
+# A fresh hold is memoized for DEP_CHECK_SECONDS: one GitHub read per window, not one per unit per pass; CLOSED is never memoized (#536).
+calls() { wc -l < "$A/dep-states.calls" 2>/dev/null || echo 0; }
+rm -f "$A/dep-states.calls"
+reset; nounit; closed_state CLOSED; CHILD=OPEN
+dep_marker_open "$(marked 20)" >/dev/null; dep_marker_open "$(marked 20)" >/dev/null
+[[ "$(calls)" == 1 ]] || fail "two passes in one window must read GitHub once for a held marker, got $(calls)"
+NOW_EPOCH=$((NOW_EPOCH + 600)); closed_state CLOSED; dep_marker_open "$(marked 20)" >/dev/null
+[[ "$(calls)" == 2 ]] || fail "the held-marker memo must expire with DEP_CHECK_SECONDS, got $(calls)"
+rm -f "$A/dep-states.calls" "$A"/dep-fresh-*
+reset; nounit; closed_state CLOSED; CHILD=CLOSED
+! dep_marker_open "$(marked 20)" >/dev/null && ! dep_marker_open "$(marked 20)" >/dev/null || fail 'a fresh CLOSED read must end the marker every time'
+[[ "$(calls)" == 2 ]] || fail "a CLOSED read must not be memoized, got $(calls) reads"
+# A fresh MERGED under a stale CLOSED cache releases as delivered, not as a closed-issue unblock (#536).
+reset; nounit; closed_state CLOSED; CHILD=MERGED; release_dependency_blocks
+jq -e '.units[] | select(.id=="issue-20") | .stage != "blocked-external" and any(.released_deps[]?; .issue == 10 and .kind == "delivered")' "$UNITS" >/dev/null \
+  || fail "a fresh MERGED read must release through the delivered path: $(jq -c '.units[1]' "$UNITS")"
 
 echo 'dep-dead-sweep.test.sh: PASS'
