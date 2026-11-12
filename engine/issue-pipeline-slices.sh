@@ -90,6 +90,69 @@ pipeline_slice_failure_note() { # tick stage status
     "$(date -u +%FT%TZ)" "$1" "$2" "$3" >> "$runtime_dir/scheduler.log" 2>/dev/null || true
 }
 
+maintenance_step_mark() {
+  [ "${DRY_RUN:-0}" = 1 ] && return 0
+  printf '%s\n' "$1" > "$AGENT_HOME/night/maintenance-current-step"
+}
+
+maintenance_resume_cursor() {
+  local resume_file="$1" current_step_file="$2" resume_name="$3" prefix_name="$4" suffix_name="$5" suffix_flag_name="$6"
+  local current_step="" resume="" i matched=0
+  local -n resume_out="$resume_name" prefix_start_out="$prefix_name" suffix_start_out="$suffix_name" resume_suffix_out="$suffix_flag_name"
+  local -n prefix_steps_ref="$7" suffix_steps_ref="$8"
+  IFS= read -r resume 2>/dev/null < "$resume_file" || resume=""
+  IFS= read -r current_step 2>/dev/null < "$current_step_file" || current_step=""
+  resume_out="$resume"
+  if [ "${DRY_RUN:-0}" != 1 ] && [ -n "$current_step" ] && [ "$resume" = "$current_step" ]; then
+    for i in "${!prefix_steps_ref[@]}"; do
+      if [ "${prefix_steps_ref[$i]}" = "$current_step" ]; then
+        prefix_start_out=$((i + 1))
+        if (( prefix_start_out >= ${#prefix_steps_ref[@]} )); then
+          prefix_start_out="${#prefix_steps_ref[@]}"; suffix_start_out=0; resume_suffix_out=1
+        fi
+        matched=1; break
+      fi
+    done
+    if [ "$matched" != 1 ]; then
+      for i in "${!suffix_steps_ref[@]}"; do
+        if [ "${suffix_steps_ref[$i]}" = "$current_step" ]; then
+          if (( i + 1 < ${#suffix_steps_ref[@]} )); then
+            suffix_start_out=$((i + 1)); resume_suffix_out=1
+          else
+            prefix_start_out=0; suffix_start_out=0; resume_suffix_out=0
+          fi
+          matched=1; break
+        fi
+      done
+    fi
+    if [ "$matched" = 1 ]; then
+      echo "issue-pipeline: maintenance skipped killed step=$current_step; resuming after it" >&2
+      rm -f -- "$current_step_file"
+      return 0
+    fi
+  fi
+  for i in "${!prefix_steps_ref[@]}"; do
+    if [ "${prefix_steps_ref[$i]}" = "$resume" ]; then prefix_start_out="$i"; fi
+  done
+  for i in "${!suffix_steps_ref[@]}"; do
+    if [ "${suffix_steps_ref[$i]}" = "$resume" ]; then suffix_start_out="$i"; resume_suffix_out=1; fi
+  done
+}
+
+pipeline_slice_overrun_note() { # stage
+  local stage="$1" current_step=""
+  if [ "$stage" = maintenance ]; then
+    IFS= read -r current_step 2>/dev/null < "$AGENT_HOME/night/maintenance-current-step" || current_step=""
+    if [ -n "$current_step" ]; then
+      echo "issue-pipeline: slice overrun stage=maintenance step=$current_step; continuing other stages" >&2
+      printf '%s\n' "$current_step" > "$AGENT_HOME/night/maintenance-resume" \
+        || echo "issue-pipeline: could not persist maintenance resume step=$current_step" >&2
+      return 0
+    fi
+  fi
+  echo "issue-pipeline: slice overrun stage=$stage; continuing other stages" >&2
+}
+
 run_pipeline_slices() {
   local scheduler="$1" mode stage budget status=0 started tick="" deadline night
   exec 9>"$LOCK_FILE"
@@ -147,10 +210,11 @@ run_pipeline_slices() {
       timeout --kill-after=5s "${budget}s" bash "$scheduler" --stage "$stage" || status=$?
     echo "issue-pipeline: slice tick=$tick stage=$stage elapsed_sec=$((SECONDS - started)) status=$status" >&2
     case "$status" in
-      0) ;;
-      "$ZF_SLICE_DEFER_STATUS") echo "issue-pipeline: slice deferred stage=$stage status=$status (claim/admission said not-now); continuing other stages" >&2 ;;
-      124|137) echo "issue-pipeline: slice overrun stage=$stage; continuing other stages" >&2 ;;
+      0) [ "$stage" != maintenance ] || rm -f -- "$AGENT_HOME/night/maintenance-current-step" ;;
+      "$ZF_SLICE_DEFER_STATUS") [ "$stage" != maintenance ] || rm -f -- "$AGENT_HOME/night/maintenance-current-step"; echo "issue-pipeline: slice deferred stage=$stage status=$status (claim/admission said not-now); continuing other stages" >&2 ;;
+      124|137) pipeline_slice_overrun_note "$stage" ;;
       *)
+        [ "$stage" != maintenance ] || rm -f -- "$AGENT_HOME/night/maintenance-current-step"
         echo "issue-pipeline: slice failed stage=$stage status=$status; isolating this slice and continuing other stages" >&2
         pipeline_slice_failure_note "$tick" "$stage" "$status"
         ;;

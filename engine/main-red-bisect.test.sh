@@ -170,6 +170,7 @@ probe_runs() { # <sha> <status> <conclusion> [workflow]
 main_runs > "$FAKE_GH_STATE/completed-runs.json"
 
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400)) # the fixtures carry fixed dates; the age bound has its own case below
 
 # The list crosses the 128 KiB argv limit in production: 100 runs, about 1.4 MB, failed every tick for 39 hours.

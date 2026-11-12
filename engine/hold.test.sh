@@ -1460,8 +1460,63 @@ test_nested_state_lock_reuses_inherited_fd_in_child_process() {
   assert_eq "child-process write lands" true "$(state_read 4196 | jq -r '.nested')"
 }
 
+state_lock_timeout_case() {
+  local n="$1" inherited="$2" f lock_file ready out holder elapsed elapsed_start held_var reuse_fd
+  reset_fixture
+  write_issue "$n" '[{"name":"on-hold"}]' '[]' 'bounded state lock wait'
+  write_state "$n" '{"state":"ready-for-agent","attempts":0}'
+  export STATE_DIR ZF_STATE_LOCK_WAIT_SECONDS=2
+  export -f state_file state_read state_merge state_lock_take
+  f="$(state_file "$n")"
+  lock_file="$f.lock"
+  ready="$test_env_root/state-lock-$n.ready"
+  out="$test_env_root/state-lock-$n.out"
+  rm -f -- "$ready"
+  if [ "$inherited" = 1 ]; then
+    exec {reuse_fd}>"$lock_file"
+    held_var="ZF_STATE_LOCK_FD_$n"
+    printf -v "$held_var" '%s' "$reuse_fd"
+    export "$held_var"
+  else
+    unset "ZF_STATE_LOCK_FD_$n"
+  fi
+  bash -c 'exec {holder_fd}>"$1"; flock -x "$holder_fd"; : > "$2"; exec sleep 4' \
+    bash "$lock_file" "$ready" &
+  holder=$!
+  for _ in {1..100}; do [ -e "$ready" ] && break; sleep 0.05; done
+  if [ "$inherited" = 1 ]; then
+    if bash -c "[ /dev/fd/$reuse_fd -ef '$lock_file' ]"; then LAST_STATUS=0; else LAST_STATUS=$?; fi
+    assert_eq "inherited lock fd reaches the state merge child" 0 "$LAST_STATUS"
+  fi
+  elapsed_start="$SECONDS"
+  if timeout 20 bash -c "state_merge $n '.lock_timeout_probe = true'" > "$out" 2>&1; then
+    LAST_STATUS=0
+  else
+    LAST_STATUS=$?
+  fi
+  elapsed=$((SECONDS - elapsed_start))
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  if [ "$inherited" = 1 ]; then
+    unset "$held_var"
+    exec {reuse_fd}>&-
+  fi
+  assert_eq "state_merge under a held lock returns failure" 1 "$LAST_STATUS"
+  assert_contains "state lock timeout names the issue and configured wait" "$(cat "$out")" \
+    'state lock wait > 2s for #'
+  assert_contains "state lock timeout names the exact issue" "$(cat "$out")" \
+    "state lock wait > 2s for #$n"
+  assert_eq "state lock timeout returns within five seconds" yes "$([ "$elapsed" -le 5 ] && echo yes || echo no)"
+  assert_eq "state lock timeout leaves the issue state unchanged" false "$(jq -r '.lock_timeout_probe // false' "$f")"
+}
+
+test_state_lock_timeout_is_bounded() { state_lock_timeout_case 4197 0; }
+test_inherited_state_lock_timeout_is_bounded() { state_lock_timeout_case 4198 1; }
+
 run_case "nested state lock reuses inherited fd" test_nested_state_lock_reuses_inherited_fd
 run_case "nested state lock reuses inherited fd in child process" test_nested_state_lock_reuses_inherited_fd_in_child_process
+run_case "state lock wait is bounded" test_state_lock_timeout_is_bounded
+run_case "inherited state lock wait is bounded" test_inherited_state_lock_timeout_is_bounded
 run_case "direct hold-label guard" test_no_direct_hold_label_writers
 test_settled_holds_skip_issue_reads() {
   local expiry

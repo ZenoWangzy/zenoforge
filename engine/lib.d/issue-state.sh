@@ -80,18 +80,18 @@ state_file() { echo "$STATE_DIR/$1.json"; }
 # <n>.json.lock waits on the lock its own ancestor holds. The holder exports its fd
 # as ZF_STATE_LOCK_FD_<n>; reuse it only when it still refers to this lock file.
 state_lock_take() {
-  local n="$1" fd_var="$2" f held fd
+  local n="$1" fd_var="$2" f held fd status wait_seconds="${ZF_STATE_LOCK_WAIT_SECONDS:-60}"; [[ "$wait_seconds" =~ ^[0-9]+$ ]] || wait_seconds=60
   # Keys are not always numeric (gmail-credential); a name collision is safe because of the -ef check.
   held="ZF_STATE_LOCK_FD_${n//[^A-Za-z0-9]/_}"
   f="$(state_file "$n")" || return 1
   if [[ "${!held:-}" =~ ^[0-9]+$ ]] && [ "/dev/fd/${!held}" -ef "$f.lock" ] 2>/dev/null; then
     # Re-lock: a no-op while the holder still has it, a fresh wait if it was flock -u'd.
-    flock -x "${!held}" || return 1
+    flock -x -w "$wait_seconds" -E 75 "${!held}" || { status=$?; [ "$status" -ne 75 ] || echo "state lock wait > ${wait_seconds}s for #$n" >&2; return 1; }
     printf -v "$fd_var" '%s' "${!held}"
     return 0
   fi
   exec {fd}>"$f.lock" || return 1
-  flock -x "$fd" || { exec {fd}>&-; return 1; }
+  flock -x -w "$wait_seconds" -E 75 "$fd" || { status=$?; exec {fd}>&-; [ "$status" -ne 75 ] || echo "state lock wait > ${wait_seconds}s for #$n" >&2; return 1; }
   printf -v "$fd_var" '%s' "$fd"
   # Exported so a child bash process (hold.sh, a script) can reuse the fd too.
   printf -v "$held" '%s' "$fd"

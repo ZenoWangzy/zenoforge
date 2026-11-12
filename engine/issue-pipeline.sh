@@ -1450,7 +1450,7 @@ run_post_dispatch_maintenance() {
   local required_slot="${MAINTENANCE_REQUIRED_SLOT_SECONDS:-55}"
   local reopen_slot="${MAINTENANCE_REOPEN_SLOT_SECONDS:-18}" email_slot email_stop_at max_email_stop_at
   local prefix_stop_at suffix_stop_at step_floor failed_step=""
-  local resume_file="$AGENT_HOME/night/maintenance-resume" resume="" step i prefix_start=0 suffix_start=0 deferred_step=""
+  local resume_file="$AGENT_HOME/night/maintenance-resume" current_step_file="$AGENT_HOME/night/maintenance-current-step" resume="" step i prefix_start=0 suffix_start=0 deferred_step=""
   local resume_suffix=0 original_gh_deadline="${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}"
   local original_gmail_deadline="${ZF_GMAIL_CALL_DEADLINE_EPOCH_MS:-}" original_email_stop_at="${ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS:-}"
   local -a prefix_steps=(checks-blocked-sweep hold-sweep supervisor-hold-sweep hand-completion-events founder-outcome-recovery)
@@ -1466,13 +1466,7 @@ run_post_dispatch_maintenance() {
   suffix_stop_at=$((budget - timeout_reserve))
   (( prefix_stop_at >= 0 )) || prefix_stop_at=0
   (( suffix_stop_at >= 0 )) || suffix_stop_at=0
-  IFS= read -r resume 2>/dev/null < "$resume_file" || resume=""
-  for i in "${!prefix_steps[@]}"; do
-    if [ "${prefix_steps[$i]}" = "$resume" ]; then prefix_start="$i"; fi
-  done
-  for i in "${!suffix_steps[@]}"; do
-    if [ "${suffix_steps[$i]}" = "$resume" ]; then suffix_start="$i"; resume_suffix=1; fi
-  done
+  maintenance_resume_cursor "$resume_file" "$current_step_file" resume prefix_start suffix_start resume_suffix prefix_steps suffix_steps
 
   # A prior suffix cursor means the prefix has already run; still run the
   # required recovery pair before resuming the expensive suffix work.
@@ -1485,7 +1479,7 @@ run_post_dispatch_maintenance() {
         deferred_step="$step"
         break
       fi
-      profile_mark "$step"
+      maintenance_step_mark "$step"; profile_mark "$step"
       maintenance_run_optional_step "$step"
     done
   fi
@@ -1527,7 +1521,7 @@ run_post_dispatch_maintenance() {
         deferred_step="$step"
         break
       fi
-      profile_mark "$step"
+      maintenance_step_mark "$step"; profile_mark "$step"
       if ! maintenance_run_optional_step "$step"; then
         # Rings without the cursor: a resume skips the prefix, so a lasting failure must not hold it.
         failed_step="$step"
@@ -1537,7 +1531,7 @@ run_post_dispatch_maintenance() {
     maintenance_restore_slice_deadline "$original_gh_deadline" "$original_gmail_deadline"
   fi
   if [ -z "$deferred_step" ] && [ "$DRY_RUN" != "1" ]; then
-    rm -f -- "$resume_file"
+    rm -f -- "$resume_file" "$current_step_file"
     [ -n "$failed_step" ] || maintenance_clear_deferred_step
   fi
 }
