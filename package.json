@@ -1,6 +1,6 @@
 {
   "name": "zenoforge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One-command installer and operator CLI for Zenoforge, a self-hosted software factory.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",

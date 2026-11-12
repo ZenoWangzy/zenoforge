@@ -11,6 +11,8 @@ import { buildCtx, foreground } from './scheduler.mjs';
 import { readEnvFile } from './state.mjs';
 import { Actions, run, which } from './util.mjs';
 
+const VERSION = cmd.pkgVersion(); // engine version dirs are named after package.json
+
 const FAKE_GH = `#!/usr/bin/env bash
 echo "gh $*" >> "$ZF_FAKE_LOG"
 case "$1 $2" in
@@ -119,7 +121,7 @@ test('init: files, modes, checkout, engine link, labels, variables and units', a
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(s.agent, 'recipients.json'), 'utf8')).recipients, {});
 
   // dedicated checkout: engine reachable through the link, invisible to git, survives git clean
-  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), '0.1.0');
+  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), VERSION);
   assert.ok(fs.existsSync(path.join(s.checkout, 'engine/run-tick.sh')));
   assert.equal(execFileSync('git', ['-C', s.checkout, 'status', '--porcelain']).toString(), '');
   execFileSync('git', ['-C', s.checkout, 'clean', '-fdq']);
@@ -161,7 +163,7 @@ test('the real engine scripts work through the checkout link (write guard, runti
   assert.match(sh(`source "${s.checkout}/engine/lib.sh" && echo "repo=$REPO"`), /repo=example-maintainer\/example-repo/);
   sh(`bash "${s.checkout}/engine/mac-autopilot/start.sh" --sync-only`);
   const live = path.join(s.checkout, '.scratch-supervisor/autopi-live');
-  assert.equal(fs.readlinkSync(live), 'autopi-versions/0.1.0/engine/mac-autopilot');
+  assert.equal(fs.readlinkSync(live), `autopi-versions/${VERSION}/engine/mac-autopilot`);
   assert.ok(fs.existsSync(path.join(live, 'loop.sh')));
   const runtime = JSON.parse(fs.readFileSync(path.join(s.checkout, '.scratch-supervisor/autopi/config.json'), 'utf8'));
   assert.equal(runtime.max_workers, 2);
@@ -176,7 +178,7 @@ test('init twice is idempotent and keeps user-owned files; another repo is refus
   const before = fs.readFileSync(path.join(s.agent, 'recipients.json'), 'utf8');
   await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
   assert.equal(fs.readFileSync(path.join(s.agent, 'recipients.json'), 'utf8'), before);
-  assert.deepEqual(fs.readdirSync(path.join(s.agent, 'engine')).sort(), ['0.1.0', 'current']);
+  assert.deepEqual(fs.readdirSync(path.join(s.agent, 'engine')).sort(), [VERSION, 'current']);
   await assert.rejects(cmd.init({ repo: 'other/thing', yes: true, noScheduler: true }, s.io), /already set up for example-maintainer\/example-repo/);
 });
 
@@ -334,15 +336,15 @@ test('re-running init with a changed setting installs a new engine version and r
   await cmd.init({ repo: REPO, yes: true }, s.io);
   fs.writeFileSync(path.join(s.root, 'calls.log'), '');
   await cmd.init({ repo: REPO, yes: true, maxWorkers: '4' }, s.io);
-  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), '0.1.0+2');
-  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/previous')), '0.1.0');
+  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), `${VERSION}+2`);
+  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/previous')), VERSION);
   assert.equal(JSON.parse(fs.readFileSync(path.join(s.agent, 'engine/current/mac-autopilot/config.template.json'), 'utf8')).max_workers, 4);
   assert.match(s.calls(), /systemctl --user restart zenoforge-autopilot-scheduler\.service zenoforge-autopilot-bell\.service/);
   assert.match(fs.readFileSync(path.join(s.agent, 'capacity.env'), 'utf8'), /^AGENT_GLOBAL_EXECUTION_CAP=4$/m);
   // a third run without flags keeps the earlier choice and installs nothing new
   await cmd.init({ repo: REPO, yes: true }, s.io);
-  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), '0.1.0+2');
-  assert.deepEqual(fs.readdirSync(path.join(s.agent, 'engine')).sort(), ['0.1.0', '0.1.0+2', 'current', 'previous']);
+  assert.equal(fs.readlinkSync(path.join(s.agent, 'engine/current')), `${VERSION}+2`);
+  assert.deepEqual(fs.readdirSync(path.join(s.agent, 'engine')).sort(), [VERSION, `${VERSION}+2`, 'current', 'previous']);
 });
 
 test('dry run shows the scheduler plan for systemd, launchd and foreground before any engine dir exists', async () => {
