@@ -257,3 +257,42 @@ sweep_rule() { # unit-json [head-sha]
   [[ -n "$classes" ]] || return 0
   printf '\n改动文件扫描（此前打回过）：下列是此前的阻断发现类别。对本 PR 全部改动文件（git diff --name-only origin/main...HEAD；以 head %s 为准，不限于被点名的文件）逐类搜同类实例，一并处理或在报告里逐类写出：是否又发现更多同类实例、各几处（发现块里新实例用同一 rule 记 open）。\n%s\n' "${2:-当前 head}" "$classes"
 }
+
+# 人工 PR 评审反馈（#119）：上次派发（write-start）之后的人工评审与行内评论。机器人与引擎自己的评论（带 vecta-agent-comment）不算。
+human_feedback_items() { # pr since-iso → JSON 数组（时间升序）；gh 失败返回 1
+  local pr="$1" since="$2" reviews comments
+  reviews="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/reviews" 2>/dev/null)" || { say "human feedback pr=$pr: could not list reviews"; return 1; }
+  comments="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/comments" 2>/dev/null)" || { say "human feedback pr=$pr: could not list review comments"; return 1; }
+  jq -n --arg since "$since" --argjson r "$(jq -s 'add // []' <<<"$reviews")" --argjson c "$(jq -s 'add // []' <<<"$comments")" '
+    def human: .user.type != "Bot" and ((.user.login // "") | endswith("[bot]") | not) and ((.body // "") | contains("<!-- vecta-agent-comment -->") | not);
+    def text: (.body // "") | gsub("\\s+"; " ") | .[0:500];
+    ([$r[] | select(human and (.submitted_at // "") >= $since and (((.body // "") | test("\\S")) or .state == "CHANGES_REQUESTED"))
+        | {at:.submitted_at, kind:("review " + .state), who:(.user.login // "?"), text:text, url:(.html_url // "")}]
+     + [$c[] | select(human and (.created_at // "") >= $since and ((.body // "") | test("\\S")))
+        | {at:.created_at, kind:("line comment " + (.path // "")), who:(.user.login // "?"), text:text, url:(.html_url // "")}])
+    | sort_by(.at)'
+}
+human_feedback_block() { # pr since-iso → 提示片段：最新 8 条带链接；无反馈或 PR 号非法则为空；gh 读失败返回 1（调用方须失败关闭）
+  local items
+  [[ "$1" =~ ^[0-9]+$ ]] || return 0
+  items="$(human_feedback_items "$1" "$2")" || return 1
+  jqf -r 'if length == 0 then empty else
+    "\n人工 PR 评审反馈（上次派发之后共 \(length) 条，列出最新 \(if length > 8 then 8 else length end) 条；逐条处理，完整内容见链接）：\n"
+    + ([.[-8:][] | "- [\(.kind)] \(.who) \(.at)：\(.text) \(.url)"] | join("\n")) end' <<<"$items"
+}
+last_dispatch_at() { jqf -r '[(.history // [])[] | select(.stage == "write-start") | .at] | last // ""' <<<"$1"; }
+# 就绪单元：census 的 reviewDecision 为 CHANGES_REQUESTED，且上次派发之后有人工的请求修改评审，则移回 repair-pending。
+ready_changes_requested_sweep() {
+  local id pr since items
+  [[ -n "${TICK_PRS:-}" ]] || return 0
+  while IFS=$'\t' read -r id pr since; do
+    [[ "$pr" =~ ^[0-9]+$ ]] || continue
+    jqf -e --argjson n "$pr" 'any(.[]; .number == $n and .reviewDecision == "CHANGES_REQUESTED")' <<<"$TICK_PRS" >/dev/null || continue
+    items="$(human_feedback_items "$pr" "$since")" || { say "ready unit=$id pr=$pr: human feedback unreadable, retry next tick"; continue; }
+    jqf -e 'any(.[]; .kind == "review CHANGES_REQUESTED")' <<<"$items" >/dev/null || continue
+    set_unit "$id" "$(hist review-changes-requested "PR#$pr human changes requested") | .approved_sha=null | .repair_hint=$(js "PR#$pr 有人工请求修改的评审，见评审反馈。") | .stage=\"repair-pending\""
+    say "ready unit=$id pr=$pr: human changes requested -> repair-pending"
+  done < <(jqf -r '.units[] | select(.stage == "ready-to-merge" and (.pr // null) != null)
+    | [.id, (.pr | tostring), ([(.history // [])[] | select(.stage == "write-start") | .at] | last // "")] | @tsv' "$UNITS")
+  return 0
+}

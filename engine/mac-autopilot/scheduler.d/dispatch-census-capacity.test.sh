@@ -397,9 +397,83 @@ stop_loss_case issue-4932 "[$rework]" 532 repair-pending
 fresh_rate null
 stop_loss_case issue-4933 "[$rework]" 533 repair-pending
 [[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4933 | grep -c "$fresh_prefix")" == 1 ]] || fail "no rate (under 6 outcomes) did not requeue (calls=$stop_loss_calls)"
+# Human PR feedback (#119): a human changes-requested review on a ready PR moves the unit to repair (CHANGES_REQUESTED in the
+# census), and the repair hint carries the human reviews and line comments since the last write-start: no bot, no engine
+# comment (vecta-agent-comment marker), nothing from before the dispatch, capped with links.
+jq -n '[{state:"CHANGES_REQUESTED",submitted_at:"2026-11-11T01:00:00Z",user:{login:"human-reviewer",type:"User"},body:"take approach B instead",html_url:"https://example.test/r1"},
+  {state:"COMMENTED",submitted_at:"2026-11-11T02:00:00Z",user:{login:"ci-bot[bot]",type:"Bot"},body:"bot noise",html_url:"https://example.test/r2"},
+  {state:"CHANGES_REQUESTED",submitted_at:"2026-10-01T00:00:00Z",user:{login:"old-reviewer",type:"User"},body:"stale",html_url:"https://example.test/r0"}]' > "$fixture/human-reviews.json"
+jq -n '[{created_at:"2026-11-11T01:30:00Z",user:{login:"human-reviewer",type:"User"},body:"use B here",path:"engine/x.sh",html_url:"https://example.test/c1"},
+  {created_at:"2026-11-11T01:45:00Z",user:{login:"ci-bot[bot]",type:"Bot"},body:"bot line",path:"engine/x.sh",html_url:"https://example.test/c2"},
+  {created_at:"2026-11-11T03:00:00Z",user:{login:"zeno",type:"User"},body:"<!-- vecta-agent-comment -->\nagent note",path:"engine/x.sh",html_url:"https://example.test/c3"}]' > "$fixture/human-comments.json"
+gh() {
+  printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
+  case "${1:-} ${2:-} ${3:-}" in
+    'pr list'*) cat "$FIXTURE_PRS" ;;
+    'api --paginate repos/{owner}/{repo}/pulls/505/reviews') cat "$fixture/human-reviews.json" ;;
+    'api --paginate repos/{owner}/{repo}/pulls/505/comments') cat "$fixture/human-comments.json" ;;
+    *) printf 'unexpected gh query during human feedback: %s\n' "$*" >&2; return 97 ;;
+  esac
+}
+jq -n --arg sha "$sha" '[{number:505,headRefOid:$sha,headRefName:"agent/issue-4910",baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",
+  statusCheckRollup:[],mergeable:"MERGEABLE",createdAt:"2026-11-10T00:00:00Z",reviewDecision:"CHANGES_REQUESTED"}]' > "$FIXTURE_PRS"
+jq -n '{units:[{id:"issue-4910",stage:"ready-to-merge",pr:505,branch:"agent/issue-4910",lane:"pr",title:"fixture ready",approved_sha:"3333333333333333333333333333333333333333",
+  history:[{stage:"write-start",result:"",at:"2026-11-11T00:00:00Z"}]}]}' > "$UNITS"
+TICK_PRS="$(cat "$FIXTURE_PRS")"
+ready_changes_requested_sweep
+jq -e '.units[0] | .stage == "repair-pending" and .approved_sha == null and .history[-1].stage == "review-changes-requested"' "$UNITS" >/dev/null \
+  || fail "a human changes-requested review did not move the ready unit to repair: $(cat "$UNITS")"
+hint="$(human_feedback_block 505 2026-11-11T00:00:00Z)"
+[[ "$hint" == *"take approach B instead"* && "$hint" == *"use B here"* && "$hint" == *"https://example.test/c1"* ]] || fail "repair hint lacks the human feedback: $hint"
+[[ "$hint" != *"bot noise"* && "$hint" != *"bot line"* && "$hint" != *"agent note"* && "$hint" != *stale* ]] || fail "repair hint carries bot, engine or pre-dispatch feedback: $hint"
+TICK_PRS=''
+# Fail closed (#119): an unreadable review list skips the repair this tick. Dispatching without the feedback would write a
+# write-start that hides it from every later pass. Subshell: the room, pick and footprint stubs stay local to this case.
+(
+  jq -n --arg sha "$sha" '[{number:501,headRefOid:$sha,headRefName:"agent/issue-4901",baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",
+    statusCheckRollup:[],mergeable:"MERGEABLE",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
+  gh() {
+    printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
+    case "${1:-} ${2:-} ${3:-}" in
+      'pr list'*) cat "$FIXTURE_PRS" ;;
+      'api --paginate repos/{owner}/{repo}/pulls/501/reviews') return 1 ;;
+      *) printf 'unexpected gh query during unreadable feedback: %s\n' "$*" >&2; return 97 ;;
+    esac
+  }
+  room_for() { return 0; }
+  footprint_room() { return 0; }
+  token_spend_gate() { return 0; }
+  ticket_budget_reason() { :; }
+  loop_rounds() { printf 0; }
+  pick() { PICK_MODEL=fixture; PICK_EFFORT=high; return 0; }
+  jq -n '{units:[{id:"issue-4901",stage:"repair-pending",pr:501,branch:"agent/issue-4901",lane:"pr",title:"fixture repair",review_report:"review-501.md",history:[]}]}' > "$UNITS"
+  printf '%s\n' '# review 501: fixture' > "$MAC_AUTOPILOT_SUPERVISOR_DIR/review-501.md"
+  dispatch_calls=0; write_workers 7; : > "$GH_CALLS"; : > "$LOG"
+  dispatch_pending false
+  [[ "$dispatch_calls" == 0 ]] || fail "a repair dispatched with unreadable human feedback (calls=$dispatch_calls)"
+  grep -Fq 'human PR feedback unreadable, retry next tick' "$LOG" || fail "unreadable feedback was not named in the log: $(cat "$LOG")"
+  jq -e '.units[] | select(.id == "issue-4901") | .stage == "repair-pending" and ([.history[].stage] | index("write-start") == null)' "$UNITS" >/dev/null \
+    || fail "unreadable feedback still wrote a write-start: $(jq -c '.units[] | select(.id == "issue-4901")' "$UNITS")"
+) || exit 1
+TICK_PRS=''
+# Fail closed (#119): an unreadable review list leaves a CHANGES_REQUESTED ready unit where it is, approved_sha included, for the next tick.
+(
+  jq -n --arg sha "$sha" '[{number:506,headRefOid:$sha,headRefName:"agent/issue-4911",baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",
+    statusCheckRollup:[],mergeable:"MERGEABLE",createdAt:"2026-11-10T00:00:00Z",reviewDecision:"CHANGES_REQUESTED"}]' > "$FIXTURE_PRS"
+  gh() { printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"; return 1; }
+  jq -n --arg sha "$sha" '{units:[{id:"issue-4911",stage:"ready-to-merge",pr:506,branch:"agent/issue-4911",lane:"pr",title:"fixture ready",approved_sha:$sha,
+    history:[{stage:"write-start",result:"",at:"2026-11-11T00:00:00Z"}]}]}' > "$UNITS"
+  TICK_PRS="$(cat "$FIXTURE_PRS")"
+  ready_changes_requested_sweep
+  jq -e --arg sha "$sha" '.units[0] | .stage == "ready-to-merge" and .approved_sha == $sha and ([.history[].stage] | index("review-changes-requested") == null)' "$UNITS" >/dev/null \
+    || fail "an unreadable review list moved or cleared a ready unit: $(cat "$UNITS")"
+  grep -Fq 'human feedback unreadable, retry next tick' "$LOG" || fail "unreadable sweep feedback was not named in the log: $(cat "$LOG")"
+) || exit 1
+TICK_PRS=''
+
 rm -f "$MAC_AUTOPILOT_RUNTIME_DIR/node-health.json"
 unset -f fresh_events fresh_rate
 unset -f red_history stop_loss_case case_stage case_events
 
 unset -f red_history stop_loss_case case_stage case_events red_check_history ci_update_branch
-echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named)'
+echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named; human changes-requested moves ready to repair; repair hint carries human feedback only)'
