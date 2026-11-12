@@ -133,15 +133,15 @@ def _landings_and_closures(rows):
 
 
 def _reverted_shas(repo_root):
-    """Reverted commit SHAs mapped to their newest revert time, as node_health delivery does."""
+    """Reverted commit SHAs mapped to their newest revert time, as node_health delivery does; None when git cannot be read."""
     try:
         result = subprocess.run(
             ["git", "-C", repo_root, "log", "--format=%H%x00%ct%x00%B%x1e", "--grep=This reverts commit"],
             capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return {}
+            return None
     except (OSError, subprocess.TimeoutExpired):
-        return {}
+        return None
     reverted = {}
     for record in result.stdout.split("\x1e"):
         _, separator, rest = record.partition("\x00")
@@ -268,7 +268,7 @@ def tickets_report(home, days=7, prices_path=None, repo=None, repo_root=None, no
     efficiency = _efficiency_rows(home)
     landings, closures = _landings_and_closures(efficiency)
     created = _issue_created(repo, since - timedelta(days=30))
-    reverted = _reverted_shas(repo_root or os.path.join(home, "checkout"))
+    reverted = _reverted_shas(repo_root or os.path.join(home, "checkout")) or {}
     unit_stages = _unit_final_stages(home)
     issueless = sum(1 for row in efficiency
                     if row.get("event_type") == "source-landed" and not row.get("owned_issues")
