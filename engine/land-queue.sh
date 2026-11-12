@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # The engine this script belongs to, as the caller named it (logical path, like config.sh): the default for ZF_ENGINE_LIVE.
 QUEUE_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/proc.sh" # pid_live, pid_start_id: process identity without /proc parsing here
 source "$SCRIPT_DIR/config.sh" # deploy.env: a clean environment (the landing unit) still sees the deployment's home and unit prefix
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
 # Same setting lib.sh resolves; this script sources lib.sh only on demand.
@@ -368,7 +369,7 @@ queue_report_landing_complete() (
 )
 
 queue_hand_lock_is_stale() {
-  local reason="$1" owner_pid owner_ticks unit unit_state unit_main_pid stat_line rest current_ticks
+  local reason="$1" owner_pid owner_ticks unit unit_state unit_main_pid current_ticks
   [[ "$reason" =~ ^hand-agent:owner_pid=([1-9][0-9]*)[[:space:]]owner_start_ticks=([0-9]+)[[:space:]]unit=(${UNIT_PREFIX_TRANSIENT}-hand-[[:alnum:]_.-]+)$ ]] || return 1
   owner_pid="${BASH_REMATCH[1]}"
   owner_ticks="${BASH_REMATCH[2]}"
@@ -376,10 +377,7 @@ queue_hand_lock_is_stale() {
   unit_state="$(systemctl --user show "$unit" --property=ActiveState --value 2>/dev/null)" || return 1
   unit_main_pid="$(systemctl --user show "$unit" --property=MainPID --value 2>/dev/null)" || return 1
   [[ "$unit_state" == inactive && "$unit_main_pid" == 0 ]] || return 1
-  if [[ -e "/proc/$owner_pid/stat" ]]; then
-    IFS= read -r stat_line < "/proc/$owner_pid/stat" || return 1
-    rest="${stat_line##*) }"
-    current_ticks="$(awk '{print $20}' <<< "$rest")"
+  if current_ticks="$(pid_start_id "$owner_pid" 2>/dev/null)"; then
     [[ "$current_ticks" =~ ^[0-9]+$ && "$current_ticks" != "$owner_ticks" ]] || return 1
   fi
 }
@@ -402,7 +400,7 @@ queue_worktree_lock_matches() {
 }
 
 queue_worktree_state() {
-  local repo="$1" ticket="$2" owner="$3" line in_tree=0 primary=0 found=0 first=1 locked=0 reason="" unit="${UNIT_PREFIX_TRANSIENT}-land-direct-main-$2" stat_line rest owner_ticks
+  local repo="$1" ticket="$2" owner="$3" line in_tree=0 primary=0 found=0 first=1 locked=0 reason="" unit="${UNIT_PREFIX_TRANSIENT}-land-direct-main-$2" owner_ticks
   local records
   records="$(git -C "$repo" worktree list --porcelain)" || return 1
   while IFS= read -r line; do
@@ -440,9 +438,7 @@ queue_worktree_state() {
       return 1
     }
   fi
-  IFS= read -r stat_line < "/proc/$BASHPID/stat" || return 1
-  rest="${stat_line##*) }"
-  owner_ticks="$(awk '{print $20}' <<< "$rest")"
+  owner_ticks="$(pid_start_id "$BASHPID")" || return 1
   [[ "$owner_ticks" =~ ^[0-9]+$ ]] || return 1
   git -C "$repo" worktree lock \
     --reason "land-direct-main:ticket=$ticket owner=$owner owner_pid=$BASHPID owner_start_ticks=$owner_ticks unit=$unit" \
@@ -1032,11 +1028,9 @@ queue_conclude_landed() {
 }
 
 queue_lander_process_matches() {
-  local pid="$1" expected_ticks="$2" stat_line rest current_ticks
-  [[ "$pid" =~ ^[1-9][0-9]*$ && "$expected_ticks" =~ ^[0-9]+$ && -r "/proc/$pid/stat" ]] || return 1
-  IFS= read -r stat_line < "/proc/$pid/stat" || return 1
-  rest="${stat_line##*) }"
-  current_ticks="$(awk '{print $20}' <<< "$rest")"
+  local pid="$1" expected_ticks="$2" current_ticks
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$expected_ticks" =~ ^[0-9]+$ ]] || return 1
+  current_ticks="$(pid_start_id "$pid" 2>/dev/null)" || return 1
   [[ "$current_ticks" == "$expected_ticks" ]]
 }
 
@@ -1456,7 +1450,7 @@ queue_requeue_completed_rebase() (
      and .worktree == $request[0].owner_worktree' "$registry" >/dev/null || return 2
   pid="$(jq -r '.pid' "$registry")"
   ticks="$(jq -r '.start_ticks' "$registry")"
-  [[ "$pid" =~ ^[1-9][0-9]*$ && "$ticks" =~ ^[0-9]+$ && ! -e "/proc/$pid" ]] || return 2
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$ticks" =~ ^[0-9]+$ ]] && ! pid_start_id "$pid" >/dev/null 2>&1 || return 2
   unit_state="$(systemctl --user show "${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket" --property=ActiveState --value)" || return 2
   unit_pid="$(systemctl --user show "${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket" --property=MainPID --value)" || return 2
   [[ "$unit_state" == inactive && "$unit_pid" == 0 ]] || return 2
@@ -1474,7 +1468,7 @@ queue_requeue_completed_rebase() (
   [[ "$reason" =~ ^land-direct-main:ticket=([0-9]{20})[[:space:]]owner=([a-zA-Z0-9_.-]+)[[:space:]]owner_pid=([1-9][0-9]*)[[:space:]]owner_start_ticks=[0-9]+[[:space:]]unit=(${UNIT_PREFIX_TRANSIENT}-land-direct-main-[0-9]{20})$ ]] || return 2
   [[ "${BASH_REMATCH[1]}" == "$ticket" && "${BASH_REMATCH[2]}" == "$owner" && "${BASH_REMATCH[4]}" == "${UNIT_PREFIX_TRANSIENT}-land-direct-main-$ticket" ]] || return 2
   lock_pid="${BASH_REMATCH[3]}"
-  [[ ! -e "/proc/$lock_pid" ]] || return 2
+  pid_start_id "$lock_pid" >/dev/null 2>&1 && return 2
   log="$QUEUE_DIR/logs/$ticket.log"
   baseline="$(sed -n "s/^land-direct-main: preflight baseline-sha=\([0-9a-f]\{40\}\) head=$head$/\1/p" "$log")" || return 2
   [[ "$baseline" =~ ^[0-9a-f]{40}$ ]] || return 2
