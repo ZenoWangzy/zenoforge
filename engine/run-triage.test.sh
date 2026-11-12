@@ -393,7 +393,7 @@ cat > "$FAKE_TS_JUDGE" <<'EOF'
 printf '%s\n' "$1" >> "$INTAKE_PRIORITY_TEST_CALLS"
 if [ "$1" = intake-priority ]; then
   cat > "$INTAKE_PRIORITY_TEST_STATE"
-  printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.95,"decision":"{\"priority\":\"priority:top\",\"needsTriage\":false,\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
+  printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.85,"decision":"{\"priority\":\"priority:top\",\"needsTriage\":true,\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
 else
   cat >/dev/null
   printf '%s\n' '{"status":"answered","adopted":false,"decision":"ready-for-agent"}'
@@ -426,6 +426,10 @@ assert_eq "adopted intake priority exposes its roadmap containers to the judge" 
 assert_contains "adopted intake priority applies its configured priority label" "$GH_LOG_CONTENT" '--add-label priority:top'
 assert_contains "adopted intake priority applies its selected roadmap route" "$GH_LOG_CONTENT" '--add-label route:902'
 assert_contains "adopted intake priority places the issue under its selected roadmap epic" "$GH_LOG_CONTENT" 'repos/test/repo/issues/902/sub_issues --method POST'
+INTAKE_PRIORITY_LABEL_WRITE="$(grep -F -- '--add-label priority:top' <<< "$GH_LOG_CONTENT" | head -n 1)"
+assert_not_contains "intake priority updater leaves needs-triage to the state transition" "$INTAKE_PRIORITY_LABEL_WRITE" '--add-label needs-triage'
+assert_contains "low-confidence intake reaches the existing needs-triage state writer" "$GH_LOG_CONTENT" '--add-label needs-triage'
+assert_eq "low-confidence adopted intake moves through the triage state" needs-triage "$(jq -r '.state' <<< "$STATE_CONTENT")"
 if [[ "$GH_LOG_CONTENT" != *'--add-label priority:top'* ]]; then printf 'intake-priority apply stderr:\n%s\n' "$RUN_STDERR_CONTENT" >&2; fi
 jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 unset ZF_TS_JUDGE_SCRIPT INTAKE_PRIORITY_TEST_CALLS

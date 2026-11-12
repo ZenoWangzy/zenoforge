@@ -19,16 +19,22 @@ jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 jq '.switches["roadmap-order"] = true' "$SCRIPT_DIR/model-policy.default.json" > "$MODEL_POLICY_FILE"
 jq -n '{roots:[{number:90,title:"Roadmap",state:"open",labels:["roadmap"],children:[{number:91,title:"Theme",state:"open",labels:["roadmap-theme"],children:[{number:101,title:"Release work",state:"open",labels:["roadmap-epic"],children:[]},{number:102,title:"Reliability",state:"open",labels:["roadmap-epic"],children:[]}]}]}]}' > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq -n '[
-  {number:11,title:"Alpha release",body:"Release hardening.",labels:[],state:"OPEN"},
-  {number:12,title:"Beta duplicate",body:"A repeated request.",labels:[],state:"OPEN"},
-  {number:13,title:"Gamma obsolete",body:"An old behavior.",labels:[],state:"OPEN"}
+  {number:11,title:"Alpha release",body:"Release hardening.",labels:[{name:"priority:normal"}],comments:[{body:"Release context."}],state:"OPEN"},
+  {number:12,title:"Beta duplicate",body:"A repeated request.",labels:[],comments:[{body:"Duplicate context."}],state:"OPEN"},
+  {number:13,title:"Gamma obsolete",body:"An old behavior.",labels:[],comments:[],state:"OPEN"}
 ]' > "$INTAKE_BACKLOG_ISSUES"
 
 cat > "$test_root/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$INTAKE_BACKLOG_GH_LOG"
 case "${1:-} ${2:-}" in
-  "issue list") cat "$INTAKE_BACKLOG_ISSUES" ;;
+  "issue list")
+    if [[ " $* " == *' --jq '* ]]; then
+      jq '[.[] | {number,title,body,labels:[.labels[]?.name],comments:[.comments[]?.body]}]' "$INTAKE_BACKLOG_ISSUES"
+    else
+      cat "$INTAKE_BACKLOG_ISSUES"
+    fi
+    ;;
   "label list") printf '%s\n' '[]' ;;
   "issue edit"|"label create") exit 0 ;;
   *) exit 2 ;;
@@ -69,6 +75,7 @@ report="$(cat "$test_root/report.json")"
 [[ "$(jq -r '.duplicate_candidates[0].candidates[0].number' <<< "$report")" == 11 ]]
 [[ "$(jq -r '.stale_candidates[0].issue' <<< "$report")" == 13 ]]
 [[ "$(jq -r '.low_confidence_count' <<< "$report")" == 1 ]]
+[[ "$(grep -F 'issue list' "$INTAKE_BACKLOG_GH_LOG")" == *'--json number,title,body,labels,comments --jq'* ]]
 [[ "$(grep -E '^(issue edit|label create)' "$INTAKE_BACKLOG_GH_LOG" 2>/dev/null || true)" == '' ]]
 [[ "$(wc -l < "$INTAKE_BACKLOG_JUDGE_LOG")" == 3 ]]
 
