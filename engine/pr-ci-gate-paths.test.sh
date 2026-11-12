@@ -5,13 +5,36 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 fail() { echo "pr-ci-gate-paths.test.sh: $*" >&2; exit 1; }
 
-# Gate regex straight from merge-pr.sh; jq's "\\." is ERE "\.".
-raw="$(grep -oE 'test\("\^\([^"]*\)\$"\)' "$root/tools/merge-pr.sh" | head -1)"
+# Gate regex straight from merge-pr.sh; jq's "\\." is ERE "\.". The override exists only for the mutation case below.
+merge_pr="${PR_CI_GATE_MERGE_PR:-$root/tools/merge-pr.sh}"
+raw="$(grep -oE 'test\("\^\([^"]*\)\$"\)' "$merge_pr" | head -1)"
 [[ -n "$raw" ]] || fail "no gate regex found in tools/merge-pr.sh"
 raw="${raw#*\"}"; raw="${raw%\"*}"
 regex="$(sed 's/\\\\/\\/g' <<<"$raw")"
 
-# Every gate file, written out. A new alternative in the regex needs a line here too.
+# Every item the regex can match, expanded from the regex itself (a sample for .*). Checked against the workflows below.
+mapfile -t derived < <(node -e '
+  const s = process.argv[1]; let i = 0;
+  const prod = (a, b) => a.flatMap((x) => b.map((y) => x + y));
+  function parseAlt() {
+    let branches = [], seq = [""];
+    while (i < s.length && s[i] !== ")") {
+      const c = s[i];
+      if (c === "|") { branches.push(...seq); seq = [""]; i++; }
+      else if (c === "(") { i++; let sub = parseAlt(); i++; if (s[i] === "?") { sub = [...sub, ""]; i++; } seq = prod(seq, sub); }
+      else if (c === "\\") { seq = seq.map((x) => x + s[i + 1]); i += 2; }
+      else if (c === "." && s[i + 1] === "*") { seq = seq.map((x) => x + "x"); i += 2; }
+      else if (c === "^" || c === "$") { i++; }
+      else { seq = seq.map((x) => x + c); i++; }
+    }
+    branches.push(...seq);
+    return branches;
+  }
+  console.log(parseAlt().join("\n"));
+' "$regex")
+[[ ${#derived[@]} -gt 0 ]] || fail "could not expand the gate regex"
+
+# Hand-written list of gate files; the derived check below catches a regex item missing from it or from the workflows.
 gate_files=(
   tools/merge-pr.sh tools/pin-vecta.sh tools/auto-pin.sh
   engine/eval/some-eval.sh
@@ -59,6 +82,26 @@ for wf in engine-tests cli-tests; do
     done
     [[ $covered == 1 ]] || fail "$wf.yml pull_request paths do not cover gate file $f"
   done
+  for f in "${derived[@]}"; do
+    covered=0
+    for g in "${globs[@]}"; do
+      # shellcheck disable=SC2254
+      case "$f" in $g) covered=1; break ;; esac
+    done
+    [[ $covered == 1 ]] || fail "$wf.yml pull_request paths do not cover $f, which the merge-pr.sh gate regex matches"
+  done
 done
 
-echo "pr-ci-gate-paths.test.sh: ok (${#gate_files[@]} gate files)"
+# Mutation: add one regex alternative that no workflow lists. The guard must go red.
+if [[ -z "${PR_CI_GATE_MUTANT_RUN:-}" ]]; then
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  sed 's/(merge-pr|pin-vecta|auto-pin)/(merge-pr|pin-vecta|auto-pin|zz-mutant)/' "$merge_pr" > "$tmp/merge-pr.sh"
+  [[ "$(grep -c 'zz-mutant' "$tmp/merge-pr.sh")" == 1 ]] || fail "mutation did not apply to the regex"
+  set +e
+  out="$(PR_CI_GATE_MERGE_PR="$tmp/merge-pr.sh" PR_CI_GATE_MUTANT_RUN=1 bash "${BASH_SOURCE[0]}" 2>&1)"
+  rc=$?
+  set -e
+  [[ $rc -ne 0 && "$out" == *'tools/zz-mutant.sh'* ]] || fail "a regex item missing from the workflows did not fail the guard (rc=$rc): $out"
+fi
+
+echo "pr-ci-gate-paths.test.sh: ok (${#gate_files[@]} gate files, ${#derived[@]} regex items)"
