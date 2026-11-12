@@ -388,14 +388,17 @@ cat > "$FAKE_TS_JUDGE" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$1" >> "$INTAKE_PRIORITY_TEST_CALLS"
 if [ "$1" = intake-priority ]; then
+  cat > "$INTAKE_PRIORITY_TEST_STATE"
   printf '%s\n' '{"status":"answered","adopted":true,"confidence":0.95,"decision":"{\"priority\":\"priority:top\",\"needsTriage\":false,\"route\":\"902\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}"}'
 else
+  cat >/dev/null
   printf '%s\n' '{"status":"answered","adopted":false,"decision":"ready-for-agent"}'
 fi
 EOF
 chmod +x "$FAKE_TS_JUDGE"
 export ZF_TS_JUDGE_SCRIPT="$FAKE_TS_JUDGE"
 export INTAKE_PRIORITY_TEST_CALLS="$test_env_root/intake-priority-calls.txt"
+export INTAKE_PRIORITY_TEST_STATE="$test_env_root/intake-priority-state.json"
 rm -f "$INTAKE_PRIORITY_TEST_CALLS"
 jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 unset TYPESAFE_API_KEY TYPESAFE_ENV_FILE
@@ -415,9 +418,11 @@ jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
 run_once "$RAW_BODY"
 unset TYPESAFE_API_KEY
 assert_eq "adopted intake priority calls both judge sets through the stub" $'triage-size\nintake-priority' "$(cat "$INTAKE_PRIORITY_TEST_CALLS")"
+assert_eq "adopted intake priority exposes its roadmap containers to the judge" 902 "$(jq -r '.roadmapContainers[0].number' "$INTAKE_PRIORITY_TEST_STATE")"
 assert_contains "adopted intake priority applies its configured priority label" "$GH_LOG_CONTENT" '--add-label priority:top'
 assert_contains "adopted intake priority applies its selected roadmap route" "$GH_LOG_CONTENT" '--add-label route:902'
-assert_contains "adopted intake priority places the issue under its selected roadmap epic" "$GH_LOG_CONTENT" 'repos/fixture/repo/issues/902/sub_issues --method POST'
+assert_contains "adopted intake priority places the issue under its selected roadmap epic" "$GH_LOG_CONTENT" 'repos/test/repo/issues/902/sub_issues --method POST'
+if [[ "$GH_LOG_CONTENT" != *'--add-label priority:top'* ]]; then printf 'intake-priority apply stderr:\n%s\n' "$RUN_STDERR_CONTENT" >&2; fi
 jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 unset ZF_TS_JUDGE_SCRIPT INTAKE_PRIORITY_TEST_CALLS
 if [ -n "$SAVED_ZF_TS_JUDGE_SCRIPT" ]; then export ZF_TS_JUDGE_SCRIPT="$SAVED_ZF_TS_JUDGE_SCRIPT"; fi

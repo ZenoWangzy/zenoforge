@@ -442,7 +442,8 @@ roadmap_place_issue() {
   flat="$(roadmap_flatten "$tree")" || return 1
   if [[ -n "$explicit_epic" ]]; then
     selected="$(jq -ce --argjson epic "$explicit_epic" '
-      [.[] | select(.number == $epic and .depth == 2 and .state == "open" and (.labels | index("roadmap-epic") != null))][0]
+      [.[] | select(.number == $epic and .depth == 2 and ((.state // "") | ascii_downcase) == "open"
+        and (.labels | index("roadmap-epic") != null))][0]
       | select(. != null) | {epic:.number,milestone:.theme_milestone}
     ' <<< "$flat")" || { echo "roadmap: selected route #$explicit_epic is not an open epic" >&2; return 1; }
   fi
