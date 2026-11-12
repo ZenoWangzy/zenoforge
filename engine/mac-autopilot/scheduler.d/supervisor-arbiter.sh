@@ -241,12 +241,11 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); exec timeout -k 30 900 codex exec -p "$1" "${extra[@]}" \
       --skip-git-repo-check -s read-only --json --output-last-message "$2" - < "$3"' \
       supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$MODEL_NOT_FOUND_ARBITER_MODEL" "$MODEL_NOT_FOUND_ARBITER_EFFORT")
-    # Same report file as the Codex path: the prompt carries the frozen record, so the Claude run gets no tools.
-    # --safe-mode --setting-sources "" as in build_claude_implement_command: no project CLAUDE.md or settings may reshape the ACTION/VERDICT lines.
-    # An empty effort drops --effort (the CLI default applies).
+    # stream-json to the log (usage and answer on the result line; harvest writes the report). The frozen record rides in the prompt, so no tools.
+    # --safe-mode --setting-sources "" as in build_claude_implement_command; an empty effort drops --effort.
     [[ "$over_stop" != true ]] || worker_command=(bash -c 'exec timeout -k 30 900 claude -p \
-      --model "$1" ${2:+--effort "$2"} --safe-mode --setting-sources "" --strict-mcp-config --permission-mode dontAsk --tools "" < "$4" > "$3"' \
-      supervisor-arbiter "$arbiter_profile" "$arbiter_effort" "$SUP/$report" "$SUP/$q")
+      --model "$1" ${2:+--effort "$2"} --output-format stream-json --verbose --safe-mode --setting-sources "" --strict-mcp-config --permission-mode dontAsk --tools "" < "$3"' \
+      supervisor-arbiter "$arbiter_profile" "$arbiter_effort" "$SUP/$q")
     pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
     rm -f -- "$pid_file"
     worker_scope_launch "$pid_file" "$ROOT" "$SUP/$log" "${launcher[@]}" -- "${worker_command[@]}" || {
@@ -256,8 +255,8 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     rm -f -- "$pid_file"
     w="$(jqf -cn --argjson pid "${pid:-0}" --arg unit "$id" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg profile "$arbiter_profile" \
       --argjson cap_triage "$([[ "$cap_triage" == true ]] && echo true || echo false)" \
-      --argjson jev "$judge_metadata" \
-      '{pid:$pid,unit:$unit,type:"supervise",log:$log,report:$report,started:$at,model:("profile:"+$profile),cap_triage:$cap_triage,jev:$jev}')"
+      --argjson jev "$judge_metadata" --arg provider "$([[ "$over_stop" == true ]] && echo claude || echo codex)" \
+      '{pid:$pid,unit:$unit,type:"supervise",log:$log,report:$report,started:$at,model:("profile:"+$profile),cap_triage:$cap_triage,jev:$jev,provider:$provider}')"
     jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
     set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $arbiter_profile") | .supervise_report=$(js "$report") | .hard_escalated=true"
     say "supervisor arbitration dispatched pid=$pid unit=$id profile=$arbiter_profile"
@@ -751,15 +750,16 @@ supervisor_record_jev_comparison() { # worker-json terra-action → shadow compa
   printf '%s\n' "$input" | node "${ZF_ENGINE_DIR:-$ROOT/engine}/ts-judge.mjs" record f12 >/dev/null 2>&1 || true
 }
 harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or final cap-triage report
-  local w="$1" unit pid report log action stream tk session_id cap_triage decided=false arbiter_retry=false
-  unit="$(jqf -r .unit <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"; report="$(jqf -r .report <<<"$w")"; log="$SUP/$(jqf -r .log <<<"$w")"
+  local w="$1" unit pid report log action stream tk session_id cap_triage decided=false arbiter_retry=false provider
+  unit="$(jqf -r .unit <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"; report="$(jqf -r .report <<<"$w")"; log="$SUP/$(jqf -r .log <<<"$w")"; provider="$(jqf -r '.provider // empty' <<<"$w")"
   model_not_found_cache_observe_worker "$w" "$log" || true
   cap_triage="$(jqf -r '.cap_triage // false' <<<"$w")"
-  stream="$(python3 "$USAGE_READER" codex-stream "$log" 2>/dev/null || true)"
-  tk="$(jqf -r '.fresh // empty' <<<"$stream")"
-  [[ "$tk" =~ ^[0-9]+$ ]] && set_unit "$unit" ".tokens = ((.tokens // 0) + $tk)"
+  stream="$(python3 "$USAGE_READER" "$([[ "$provider" == claude ]] && echo claude-stream || echo codex-stream)" "$log" 2>/dev/null || true)"
+  tk="$(jqf -r '.fresh // empty' <<<"$stream")"; [[ "$tk" =~ ^[0-9]+$ ]] && set_unit "$unit" ".tokens = ((.tokens // 0) + $tk)"
   session_id="$(jqf -r '.session_id // empty' <<<"$stream")"
-  python3 "$USAGE_READER" codex-ingest "$log" "$session_id" "$(jqf -r .started <<<"$w")" "$BUDGET_EVENTS" >/dev/null 2>&1 || true
+  [[ "$provider" == claude ]] || python3 "$USAGE_READER" codex-ingest "$log" "$session_id" "$(jqf -r .started <<<"$w")" "$BUDGET_EVENTS" >/dev/null 2>&1 || true
+  # The Claude run streams to the log: its final answer becomes the report when the run completed.
+  [[ "$provider" != claude || -s "$SUP/$report" ]] || jqf -r 'select(.complete == true) | .message // empty' <<<"$stream" > "$SUP/$report"
   [[ ! -s "$SUP/$report" ]] || touch "$SUP/arbiter-last-answer"
   if [[ "$cap_triage" == true ]]; then
     if [[ ! -s "$SUP/$report" ]]; then
