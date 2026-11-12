@@ -1421,6 +1421,27 @@ test_complete_hold_without_created_at_is_durable() {
   assert_contains "legacy hold archives exact fields to GitHub" "$comments" '<!-- vecta-hold-record-v1 issue=4194 record='
 }
 
+# Mechanism test: a holder takes the per-issue lock, then a nested state_merge
+# without a lock mode must reuse the inherited fd. flock(2) locks the open file
+# description, so a reopen would wait on the holder's own lock forever.
+test_nested_state_lock_reuses_inherited_fd() {
+  reset_fixture
+  write_issue 4195 '[{"name":"on-hold"}]' '[]' 'nested state lock'
+  write_state 4195 '{"state":"ready-for-agent","attempts":0}'
+  export STATE_DIR
+  export -f state_file state_read state_merge
+  export -f state_lock_take 2>/dev/null || true
+  timeout 20 bash -c '
+    f="$(state_file 4195)"
+    exec {outer}>"$f.lock" && flock -x "$outer"
+    ZF_STATE_LOCK_FD_4195="$outer"
+    ( state_merge 4195 ".nested = true" )
+  ' > "$test_env_root/nested-lock.out" 2>&1 && LAST_STATUS=0 || LAST_STATUS=$?
+  assert_eq "nested state_merge under held issue lock completes" 0 "$LAST_STATUS"
+  assert_eq "nested write lands" true "$(state_read 4195 | jq -r '.nested')"
+}
+
+run_case "nested state lock reuses inherited fd" test_nested_state_lock_reuses_inherited_fd
 run_case "direct hold-label guard" test_no_direct_hold_label_writers
 test_settled_holds_skip_issue_reads() {
   local expiry

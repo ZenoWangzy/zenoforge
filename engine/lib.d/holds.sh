@@ -686,7 +686,7 @@ $marker"
       renewal_expiry="$(hold_expiry_resolve 168h)" || { failure=1; continue; }
       if ! (
         f="$(state_file "$n")" || exit 1
-        exec {hold_lock_fd}>"$f.lock" && flock -x "$hold_lock_fd" || exit 1
+        state_lock_take "$n" hold_lock_fd || exit 1
         current="$(state_read "$n")" || exit 1
         jq -e --argjson expected "$hold_json" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$current" >/dev/null || exit 1
         marker="<!-- vecta-hold-renewed issue=$n expires=$expires_at -->"
