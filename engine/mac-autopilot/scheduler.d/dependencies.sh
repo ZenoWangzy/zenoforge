@@ -387,7 +387,7 @@ release_dependency_blocks() {
         [inputs | split("\t") | select(length >= 2 and .[0] != "" and .[1] != "")]
         | map({key:.[0],value:({state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}
           + (if (.[5] // "") == "" then {} else {updated_at:.[5]} end)
-          + {merged_closer:(.[6] // "")})}) | from_entries')"
+          + (if (.[6] // "") == "" then {} else {merged_closer:.[6]} end))}) | from_entries')"
     else
       dep_states_json='{}'
     fi
