@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../bin" && pwd -P)/luna-capacity.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../bin" && pwd -P)/luna-capacity.sh"; scheduler_gate_capacity_fixture
 intake_author_gate() { return 0; } # the author gate has its own test (intake-author.test.sh)
 
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
@@ -2857,8 +2857,8 @@ command git -C "$ROOT" branch agent/local-only
 command git -C "$remote" branch -D agent/pushed >/dev/null
 rm -f "$A/.branch-gc"
 AP_TMPDIR="$fixture/ap-tmp"; mkdir -p "$AP_TMPDIR/stale-test/pg" "$AP_TMPDIR/live-test"
-touch -d '-2 days' "$AP_TMPDIR/stale-test"
-AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || :
+touch -d '-2 days' "$AP_TMPDIR/stale-test" # A fresh cleanup tick must work even when the suite has outlived the tick deadline.
+( SECONDS=1680; SECONDS=0 AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick ) || :
 ! command git -C "$ROOT" rev-parse -q --verify refs/heads/agent/pushed >/dev/null || fail 'branch with a gone upstream was kept'
 command git -C "$ROOT" rev-parse -q --verify refs/heads/agent/local-only >/dev/null || fail 'never-pushed local branch was deleted'
 [[ ! -e "$AP_TMPDIR/stale-test" && -d "$AP_TMPDIR/live-test" ]] || fail 'worker tmp reap must drop day-old entries and keep fresh ones'
@@ -2939,7 +2939,7 @@ touch "$A/.branch-gc"
 units "$(jq -cn --arg dirty "$cleanup_dirty_id" --arg stash "$cleanup_stash_id" \
   --arg unpushed "$cleanup_unpushed_id" --arg clean "$cleanup_clean_id" --arg tmp_clean "$cleanup_tmp_clean_id" \
   '{units:[$dirty,$stash,$unpushed,$clean,$tmp_clean] | map({id:.,stage:"closed"})}')"
-AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'cleanup tick failed while preserving terminal worktrees'
+SECONDS=0 AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'cleanup tick failed while preserving terminal worktrees'
 [[ -f "$cleanup_dirty_wt/scratch.txt" ]] || fail 'cleanup removed a terminal worktree with uncommitted changes'
 [[ -d "$cleanup_tmp_stash" && -n "$(command git -C "$cleanup_tmp_stash" stash list)" ]] \
   || fail 'cleanup removed a terminal /tmp worktree with a stash'
