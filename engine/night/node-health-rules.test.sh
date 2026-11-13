@@ -404,4 +404,81 @@ assert_eq 'REST: other read error exits 1' 1 "$rc"
 ! grep -Fq 'issue create' "$rest_calls"
 [[ ! -s "$rest_acks" ]]
 
+# A closed matched issue on hold is parked: the anomaly is recorded in the log,
+# but it is not reopened or commented on every monitor run.
+held_marker="<!-- target-signature sig=$rest_key_a -->"
+held_body="$tmp/held-body"
+held_calls="$tmp/held-calls"
+printf 'recurrence evidence\n' >"$held_body"
+run_closed_issue_upsert() { # issue lookup row -> real upsert with issue-state collaborators recorded
+  local lookup="$1" fixture_live_labels="${2:-}"
+  (
+    ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR="$pack_dir" source "$script_dir/node-health-rules.sh"
+    declare -A ISSUE_LABEL_VIEW_LABELS=()
+    roadmap_switch_value() { printf 'false\n'; }
+    health_prod_errors_issue_list() { printf '%s\n' "$lookup"; }
+    health_prod_errors_issue_list_drop() { :; }
+    issue_label_read_live() {
+      printf 'label-read #%s\n' "$1" >>"$held_calls"
+      ISSUE_LABEL_VIEW_LABELS["$1"]="$fixture_live_labels"
+    }
+    issue_transition() {
+      printf 'transition %s %s %s\n' "$1" "$2" "$3" >>"$held_calls"
+      if ! jq -e '((.state // "") | ascii_downcase) == "closed" and (.labels | type) == "array"' \
+        <<< "${6:-}" >/dev/null 2>&1; then
+        printf 'issue_transition: reopening requires a closed snapshot with labels for #%s\n' "$1" >&2
+        return 1
+      fi
+      if [[ "${6:-}" == *'"on-hold"'* ]] || grep -Fqx on-hold <<< "${ISSUE_LABEL_VIEW_LABELS[$1]:-}"; then
+        printf 'issue_transition: refused held #%s untracked -> needs-triage (reason=prod-anomaly-recurred)\n' "$1" >&2
+        return 1
+      fi
+    }
+    guarded_issue_comment() { printf 'comment %s\n' "$1" >>"$held_calls"; }
+    health_prod_errors_upsert_issue "$held_marker" 'Target anomaly held fixture' "$held_body"
+  )
+}
+held_lookup="$(jq -cn --arg marker "$held_marker" \
+  '[{number:3946,title:"Target anomaly held fixture",body:$marker,state:"CLOSED",labels:[{name:"on-hold"}]}]')"
+: >"$held_calls"
+rc=0
+held_result="$(run_closed_issue_upsert "$held_lookup" 2>"$tmp/held-stderr")" || rc=$?
+assert_eq 'held closed anomaly upsert exits successfully' 0 "$rc"
+assert_eq 'held closed anomaly upsert returns its issue number' 3946 "$held_result"
+assert_eq 'held closed anomaly logs once without a recurrence comment' \
+  'prod-anomaly: #3946 on-hold; recurrence recorded, not reopened' "$(cat -- "$tmp/held-stderr")"
+! grep -Eq '^(transition|comment|label-read) ' "$held_calls"
+
+# If an older lookup row omits labels, the same live label view used by issue_transition detects the hold.
+held_lookup_without_labels="$(jq -cn --arg marker "$held_marker" \
+  '[{number:3946,title:"Target anomaly held fixture",body:$marker,state:"CLOSED"}]')"
+: >"$held_calls"
+rc=0
+held_result="$(run_closed_issue_upsert "$held_lookup_without_labels" on-hold 2>"$tmp/held-stderr")" || rc=$?
+assert_eq 'held closed anomaly with no lookup labels exits successfully' 0 "$rc"
+assert_eq 'held closed anomaly with no lookup labels returns its issue number' 3946 "$held_result"
+assert_eq 'missing lookup labels trigger one live label read' 'label-read #3946' "$(cat -- "$held_calls")"
+assert_eq 'missing-label hold logs once' \
+  'prod-anomaly: #3946 on-hold; recurrence recorded, not reopened' "$(cat -- "$tmp/held-stderr")"
+
+# Closed issues without the hold label keep the existing reopen and recurrence-comment path.
+openable_lookup="$(jq -cn --arg marker "$held_marker" \
+  '[{number:3946,title:"Target anomaly held fixture",body:$marker,state:"CLOSED",labels:[{name:"target-anomaly"}]}]')"
+: >"$held_calls"
+rc=0
+held_result="$(run_closed_issue_upsert "$openable_lookup" 2>"$tmp/held-stderr")" || rc=$?
+assert_eq 'closed non-held anomaly still reopens successfully' 0 "$rc"
+assert_eq 'closed non-held anomaly still returns its issue number' 3946 "$held_result"
+assert_eq 'closed non-held anomaly still transitions and comments' \
+  $'transition 3946 needs-triage prod-anomaly-recurred\ncomment 3946' "$(cat -- "$held_calls")"
+
+# A non-held live label read also supplies the labels required by issue_transition's closed snapshot guard.
+: >"$held_calls"
+rc=0
+held_result="$(run_closed_issue_upsert "$held_lookup_without_labels" target-anomaly 2>"$tmp/held-stderr")" || rc=$?
+assert_eq 'closed non-held anomaly with no lookup labels still reopens' 0 "$rc"
+assert_eq 'closed non-held anomaly with no lookup labels returns its issue number' 3946 "$held_result"
+assert_eq 'non-held live labels preserve transition and comment path' \
+  $'label-read #3946\ntransition 3946 needs-triage prod-anomaly-recurred\ncomment 3946' "$(cat -- "$held_calls")"
+
 echo 'ok - production monitor uses .zenoforge overrides and skips when unset'
