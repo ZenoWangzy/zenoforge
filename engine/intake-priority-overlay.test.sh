@@ -90,7 +90,7 @@ expect_eq() {
 issue_priority() { jq -r --argjson n "$1" '.issues[] | select(.number == $n) | .priority' <<< "$report"; }
 issue_overlay() { jq -r --argjson n "$1" '.issues[] | select(.number == $n) | (.overlay // "<none>")' <<< "$report"; }
 
-expect_eq 'founder issue seed' '[3066,5663,5665,6120,6121,6123,6124,6126,6130,6131,6133,6167,6226,6235,6237,6238,6601]' \
+expect_eq 'founder issue seed' '[3066,5663,5665,6120,6121,6123,6124,6126,6130,6131,6133,6167,6226,6235,6237,6238,6601,6611]' \
   "$(jq -c '.founder_issues // []' <<< "$config")"
 expect_eq 'off-market issue seed' '[1158,1159,3299,4620,5298,5329,5341,5421,6208,6288,6289]' \
   "$(jq -c '.off_market_issues // [] | sort' <<< "$config")"
