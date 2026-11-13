@@ -171,6 +171,56 @@ printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-rev
   [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/closed-reroute-hold.out" && ! grep -q -- '--reroute' "$test_env_root/closed-reroute-hold.out" || { echo "FAIL: reroute on a closed stop-loss unit must name --requeue" >&2; cat "$test_env_root/closed-reroute-hold.out" >&2; exit 1; }
 )
 printf 'ok - rule_entry requeues a closed unit whose issue is on a stop-loss hold; other closed units refuse with a working hint\n'
+# A unit closed by a recut (cap-triage-recut, or a recut that refused to cut) whose issue stays open and ready-for-agent with no hold
+# has no other way forward (#3405, #1135, #6206): the same requeue reopens it. Any other closed unit keeps the --recut refusal.
+(
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo2" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup2" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup2/autopi"
+  mkdir -p "$test_env_root/repo2" "$test_env_root/sup2/autopi/alerts"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup2/autopi/config.json"
+  echo '{"workers":[]}' > "$test_env_root/sup2/autopi/workers.json"
+  cu() { printf '{"id":"issue-%s","issue":%s,"stage":"closed","task":"t","branch":"b","history":[%s]}' "$1" "$1" "$2"; }
+  hs() { local out="" s; for s; do out+="${out:+,}{\"stage\":\"$s\",\"at\":\"2026-11-13T00:00:00Z\"}"; done; printf '%s' "$out"; }
+  printf '{"units":[%s,%s,%s,%s,%s,%s,%s,%s]}\n' \
+    "$(cu 30 "$(hs supervisor-escalated supervisor-cap-triage-recut supervisor-cap-default)")" \
+    "$(cu 31 "$(hs supervisor-cap-triage-recut merged)")" \
+    "$(cu 32 "$(hs supervisor-cap-triage-recut)")" \
+    "$(cu 33 "$(hs supervisor-cap-triage-recut)")" \
+    "$(cu 34 "$(hs supervisor-cap-triage-recut)")" \
+    "$(cu 35 "$(hs supervisor-recut hold-handoff)")" \
+    "$(cu 36 "$(hs obsolete)")" \
+    "$(cu 37 "$(hs supervisor-cap-triage-recut)")" > "$test_env_root/sup2/autopi/units.json" # live-only
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+  scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
+  gh() { [[ "$1" == issue ]] && { printf '{}\n'; return; }
+    [[ "$1" == api && "$2" == repos/test/repo/issues/* && "$4" == .state && "$FAKE_ISSUE_STATE" != FAIL ]] || return 1
+    printf '%s\n' "$FAKE_ISSUE_STATE"; }
+  scheduler_issue_transition() { echo "FAIL: a ready issue must not be transitioned" >&2; return 1; }
+  for n in 30 31 32 34 36; do printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/$n.json"; done
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/33.json"
+  printf '%s\n' '{"state":"ready-for-agent","recut_refused_at":"2026-11-13T00:00:01Z"}' > "$AGENT_HOME/state/35.json"
+  printf '%s\n' '{"state":"ready-for-agent","recut_children":[1]}' > "$AGENT_HOME/state/37.json"
+  stage() { jq -r --arg id "$1" '.units[]|select(.id==$id)|.stage' "$UNITS"; } # live-only
+  refused() { # unit issue-state text: rc 1, the message has text, the unit stays closed
+    FAKE_ISSUE_STATE="$2"; rc=0; rule_entry "$1" requeue u "" "" > "$test_env_root/recut-$1.out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] && [ "$(stage "$1")" = closed ] && grep -q -- "$3" "$test_env_root/recut-$1.out" || { echo "FAIL: $1 (issue $2) was not refused with '$3'" >&2; cat "$test_env_root/recut-$1.out" >&2; exit 1; }
+  }
+  # the #3405 shape: closed by cap-triage-recut, issue open, no hold -> requeued
+  FAKE_ISSUE_STATE=open; rule_entry issue-30 requeue u "" ""
+  [ "$(stage issue-30)" = implement-pending ] && [ "$(jq -r '.units[]|select(.id=="issue-30")|.history[-1].stage' "$UNITS")" = supervisor-requeue ] || { echo "FAIL: recut-closed unit did not requeue" >&2; exit 1; } # live-only
+  # a refused recut (marker, no children) followed only by a handoff is the same shape (#1135, #6206)
+  FAKE_ISSUE_STATE=open; rule_entry issue-35 requeue u "" ""
+  [ "$(stage issue-35)" = implement-pending ] || { echo "FAIL: refused-recut unit did not requeue" >&2; exit 1; }
+  refused issue-31 open -- '--recut'        # delivered: merged in its history
+  refused issue-32 closed -- '--recut'      # issue closed
+  refused issue-33 open -- '--recut'        # issue on a hold
+  refused issue-36 open -- '--recut'        # closed on purpose, no recut event
+  refused issue-37 open -- '--recut'        # the recut produced children
+  refused issue-34 FAIL 'could not be read' # unreadable GitHub state: retry the ruling
+  # the reroute refusal names the route that works
+  FAKE_ISSUE_STATE=open; rc=0; rule_entry issue-32 reroute u "dead" "" > "$test_env_root/recut-reroute.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/recut-reroute.out" && ! grep -q -- '--reroute' "$test_env_root/recut-reroute.out" || { echo "FAIL: reroute hint on a recut-closed unit" >&2; cat "$test_env_root/recut-reroute.out" >&2; exit 1; }
+)
+printf 'ok - rule_entry requeues a recut-closed unit whose issue is open, ready and unheld; delivered, held, closed-issue, on-purpose, children and unreadable cases refuse\n'
 # hold.sh --rule accepts --reroute: it gets past the usage check (64) and stops at the owner-comment check.
 rc=0; hold_cli_main --rule issue-5 --reroute --comment 7 2>/dev/null || rc=$?
 [ "$rc" != 64 ] || { echo "FAIL: hold.sh rejects --reroute" >&2; exit 1; }
