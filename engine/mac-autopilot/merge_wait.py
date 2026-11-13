@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -34,6 +35,20 @@ def failure_kind(text):
         return "rate-limit"
     code = re.search(r"\b(50\d)\b", text)
     return code.group(1) if code else "error"
+
+
+def gh_graphql(command, timeout):
+    """Run gh for this row and preserve the failure kind for its details."""
+    try:
+        result = subprocess.run(["gh", *command], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"gh_failure": "timeout"}
+    except OSError:
+        return {"gh_failure": "error"}
+    try:
+        return json.loads(result.stdout or "null") if result.returncode == 0 else {"gh_failure": failure_kind(result.stderr)}
+    except ValueError:
+        return {"gh_failure": "error"}
 
 
 def _page(gh_json, args, deadline, fail=None):
