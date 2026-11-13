@@ -435,6 +435,11 @@ priority_admission_has_room() { # priority age; dispatch_pending caches one reso
   fi
   cache_key="$priority:$age:${LUNA_CPU_TARGET:-85}" # the host-capacity start and the priority-wait check use different CPU targets
   result="${TICK_PRIORITY_ADMISSION_CACHE[$cache_key]:-}"
+  # An admit at a stricter CPU target this pass implies an admit at a looser one: one host sample per start (#1129).
+  local k
+  for k in "${!TICK_PRIORITY_ADMISSION_CACHE[@]}"; do
+    [[ -z "$result" && "$k" == "$priority:$age:"* && "${TICK_PRIORITY_ADMISSION_CACHE[$k]}" == admit && "${k##*:}" -le "${LUNA_CPU_TARGET:-85}" ]] && result=admit
+  done
   if [[ -z "$result" ]]; then
     if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result=hold; fi
     TICK_PRIORITY_ADMISSION_CACHE[$cache_key]="$result"
