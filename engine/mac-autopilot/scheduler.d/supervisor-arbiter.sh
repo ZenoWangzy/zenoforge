@@ -410,7 +410,7 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
       fi
     fi
   fi
-  set_unit "$id" "$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra" || { supervisor_requeue_retry "$id" "unit stage update failed after the requeue verdict"; return $?; }
+  set_unit "$id" "${SUPERVISOR_REQUEUE_PATCH:+$SUPERVISOR_REQUEUE_PATCH | }$(hist "supervisor-$action" "$guidance" "$decision") | .stage=\"$target\"$extra" || { supervisor_requeue_retry "$id" "unit stage update failed after the requeue verdict"; return $?; }
   say "supervisor arbitration unit=$id: $action -> $target"
 }
 supervisor_apply_action() { # id action report-path —— 六动作落地，决定/理由/证据/否掉选项写进单元

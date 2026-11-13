@@ -182,11 +182,18 @@ closed_unit_refusal() { # id [rc]：已关闭单元的拒绝语只指向本环�
   esac
 }
 
-rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
+rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready ref [guidance] [blocker] [size-waiver max_lines] [comment author]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
   [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
-  local issue stage rc
+  local issue stage rc waiver="${6:-}" author="${7:-}" reason patch=""
+  if [[ -n "$waiver" ]]; then # size waiver ($6 max_lines, $7 comment author): rides the requeue's single unit write, one size-waiver event before supervisor-requeue
+    [[ "$2" == requeue ]] || { echo "rule: --size-waiver goes with --requeue" >&2; return 64; }
+    size_waiver_range_check "$waiver" || return 1
+    [[ -n "$author" ]] || { echo "rule: --size-waiver needs the ruling comment author" >&2; return 1; }
+    reason="$(head -n1 <<<"${4:-}")"; reason="${reason#"${reason%%[![:space:]]*}"}"; reason="${reason%"${reason##*[![:space:]]}"}"; reason="${reason:0:200}"
+    patch="$(hist size-waiver "size limit raised to $waiver lines by $author: ${reason:-see ruling}") | .size_waiver = {max_lines: $waiver, by: $(js "$author"), at: $(js "$STAMP"), reason: $(js "${reason:-see ruling}")}"
+  fi
   case "$2" in
     supersede-handoff) rule_supersede_handoff "$1" "$3" ;;
     reblock) issue="${5:-$(unit_field "$1" '.blocked_on // empty')}" # back to dependency wait; $5 names the blocker when the unit has none
@@ -202,9 +209,9 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
     *) if [[ "$2" == requeue ]]; then
          stage="$(unit_field "$1" .stage)"
          case "$stage" in
-           parked|supervisor-review) supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null ;;
+           parked|supervisor-review) SUPERVISOR_REQUEUE_PATCH="$patch" supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null ;;
            closed) rc=0; closed_unit_route "$1" || rc=$?
-             if [[ "$rc" == 0 || "$rc" == 3 ]]; then supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null; else closed_unit_refusal "$1" "$rc"; return 1; fi ;; # the stop-loss ruling reopens the issue and releases its hold, the recut route (rc 3) requeues a recut-closed unit; rc 2 never requeues
+             if [[ "$rc" == 0 || "$rc" == 3 ]]; then SUPERVISOR_REQUEUE_PATCH="$patch" supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null; else closed_unit_refusal "$1" "$rc"; return 1; fi ;; # the stop-loss ruling reopens the issue and releases its hold, the recut route (rc 3) requeues a recut-closed unit; rc 2 never requeues
            *) echo "rule: $1 is in $stage; use --reroute to move it" >&2; return 1 ;;
          esac
        else
