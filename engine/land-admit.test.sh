@@ -157,4 +157,25 @@ assert_gh_pair --subject "$subject"
 assert_gh_pair --body "$body"
 assert_gh_arg --delete-branch
 
+reset_gh_calls
+unset LAND_MERGE_REST_FALLBACK
+GH_RC=1
+assert_merge_rc 1 '' 19 "$valid_sha"
+[[ "$GH_CALL_COUNT" == 1 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls without REST fallback"
+
+reset_gh_calls
+LAND_MERGE_REST_FALLBACK=1
+GH_RC=1
+GH_API_RC=0
+GH_DELETE_RC=0
+assert_merge_rc 0 '' 20 "$valid_sha" --repo owner/project
+[[ "$GH_CALL_COUNT" == 4 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls with REST fallback"
+read_gh_call 3
+assert_gh_arg 'repos/{owner}/{repo}/pulls/20/merge'
+assert_gh_arg "sha=$valid_sha"
+assert_gh_pair --repo owner/project
+read_gh_call 4
+assert_gh_arg 'repos/{owner}/{repo}/git/refs/heads/feature/topic'
+unset LAND_MERGE_REST_FALLBACK
+
 echo 'land-admit.test.sh: all assertions passed'
