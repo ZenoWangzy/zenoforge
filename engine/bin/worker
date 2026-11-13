@@ -62,8 +62,12 @@ cache_model_not_found() {
   flock -u "$lock_fd"
   exec {lock_fd}>&-
 }
+# 11-13 23:06Z: a codex_core::tools::router error echoes the patch the worker was writing on its continuation lines; that
+# patch said "API rate limit already exceeded" and the worker was failed over as a quota error. Drop such an entry up to the
+# next timestamped line before matching.
 fatal_stderr_without_model_refresh() {
-  grep -ivE 'codex_models_manager.*failed to refresh available models' "$1" || true
+  awk '/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/ { skip = ($0 ~ /codex_core::tools::router/) } !skip' "$1" 2>/dev/null \
+    | grep -ivE 'codex_models_manager.*failed to refresh available models' || true
 }
 # Use the last numeric group: go3-3861 and review-3861 refer to the same ticket.
 if [[ -f $S/luna/rounds.log ]] && awk -v key="$key" '
