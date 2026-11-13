@@ -368,11 +368,21 @@ verify_handoff_delivery() { # unit PR branch reviewed-candidate
 }
 
 # 评审 clone 检出被评审的 PR head：评审读的就是要合并的代码，diff 走本地 git，不依赖网络 API。
-checkout_pr_head() { # dir pr candidate-sha observed-pr-head（candidate 可以是该 head 的本地修复后代）
+checkout_pr_head() { # dir pr candidate-sha observed-pr-head [branch]（candidate 可以是该 head 的本地修复后代）
   [[ -z "$2" ]] && { git -C "$1" checkout -q --detach "$3"; return; }
-  local fetched_head
+  local fetched_head branch_head
   git -C "$1" fetch -q origin "refs/pull/$2/head" \
     && fetched_head="$(git -C "$1" rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null)" \
     && [[ "$fetched_head" == "$4" ]] \
-    && git -C "$1" checkout -q --detach "$3"
+    && {
+      if [[ "${5:-}" =~ ^[A-Za-z0-9._/-]+$ && "${5:-}" != main ]] \
+        && git -C "$1" check-ref-format --branch "$5" >/dev/null 2>&1; then
+        branch_head="$(git -C "$1" rev-parse -q --verify "refs/heads/$5^{commit}" 2>/dev/null || true)"
+        [[ -z "$branch_head" || "$branch_head" == "$3" ]] \
+          || git -C "$1" merge-base --is-ancestor "$branch_head" "$3" 2>/dev/null || return 1
+        git -C "$1" checkout -q -B "$5" "$3"
+      else
+        git -C "$1" checkout -q --detach "$3"
+      fi
+    }
 }

@@ -141,20 +141,26 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
   raw="$(awk '/^(```|~~~)review-findings[[:space:]]*$/{on=1;buf="";last="";f=substr($0,1,3);next} on&&$0 ~ ("^" f "[[:space:]]*$"){last=buf;on=0;next} on{buf=buf $0 "\n"} END{printf "%s", last}' "$1" 2>/dev/null)"
   [[ -n "${raw//[[:space:]]/}" ]] || return 1
   jq -ce '
+    def test_case: type=="object" and keys==["name","path"]
+      and (.name|type)=="string" and (.name|test("\\S")) and (.name|test("^[^\\r\\n]+$"))
+      and (.path|type)=="string" and (.path|test("\\S")) and (.path|test("^[^/].*\\.test\\.(sh|mjs|py)$"))
+      and ((.path|split("/"))|all(.[]; .!=".." and .!="."));
     def finding($legacy): type=="object"
       and (.id|type)=="string" and (.id|length)>0
       and (.severity|IN("P0","P1","P2","P3"))
       and (.file|type)=="string" and (.file|length)>0
       and (.line|type)=="number" and .line==(.line|floor) and .line>0
-      and (.status|IN("open","resolved","inherited"))
+      and (.status|IN("open","resolved","inherited","fixed-in-review"))
+      and (if .status=="fixed-in-review" then (.commit_sha|type)=="string" and (.commit_sha|test("^[0-9a-f]{40}$")) and (.test|test_case) else true end)
       and ((has("introduced_by")|not and $legacy) or (.introduced_by|IN("candidate","pre_existing","unknown")))
       and ((has("base_evidence")|not and $legacy) or ((.base_evidence|type)=="string" and (.base_evidence|test("\\S"))))
-      and (if $legacy then true else del(.rerun_command,.rerun_output)|keys==["base_evidence","file","id","introduced_by","line","rule","severity","status","summary"] end)
+      and (if $legacy then true elif .status=="fixed-in-review" then del(.rerun_command,.rerun_output)|keys==["base_evidence","commit_sha","file","id","introduced_by","line","rule","severity","status","summary","test"] else del(.rerun_command,.rerun_output)|keys==["base_evidence","file","id","introduced_by","line","rule","severity","status","summary"] end)
       and ((has("rule")|not) or (.rule|type)=="string")
       and ((has("summary")|not) or (.summary|type)=="string")
       and (if $legacy then true else (.rule|length)>0 and (.summary|length)>0 end);
-    def evidence_gap: [("rerun_command","rerun_output") as $k | select((.[$k]|type)!="string" or (.[$k]|test("\\S")|not)) | $k];
-    def normalized_finding: {id,severity,file,line,rule:(.rule // null),status,summary:(.summary // null),introduced_by:(.introduced_by // null),base_evidence:(.base_evidence // null)};
+    def evidence_gap: if .status=="fixed-in-review" then [] else [("rerun_command","rerun_output") as $k | select((.[$k]|type)!="string" or (.[$k]|test("\\S")|not)) | $k] end;
+    def normalized_finding: {id,severity,file,line,rule:(.rule // null),status,summary:(.summary // null),introduced_by:(.introduced_by // null),base_evidence:(.base_evidence // null)}
+      + (if .status=="fixed-in-review" then {commit_sha,test} else {} end);
     def decision_log_flag: type=="object" and keys==["entry","reason"]
       and (.entry|type)=="string" and (.entry|test("\\S")) and (.entry|test("^[^\\r\\n]+$"))
       and (.reason|type)=="string" and (.reason|test("\\S")) and (.reason|test("^[^\\r\\n]+$"));
@@ -189,7 +195,7 @@ review_decision_log_flags_append() { # review report unit → append marked entr
 review_findings_hint_update() { # report → jq update fragment for open P0/P1 findings
   local findings hint
   findings="$(findings_block_of "$1")" || return 0
-  hint="$(jqf -r '[.findings[] | select(.status=="open" and (.severity=="P0" or .severity=="P1"))
+  hint="$(jqf -r '[.findings[] | select((.status=="open" or .status=="fixed-in-review") and (.severity=="P0" or .severity=="P1"))
     | "\(.id) \(.file):\(.line) — \(.summary // .id)"] | join("\n")' <<<"$findings")"
   [[ -n "$hint" ]] || return 0
   printf ' | .repair_hint=%s' "$(js "$hint")"

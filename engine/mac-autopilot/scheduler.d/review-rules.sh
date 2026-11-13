@@ -254,13 +254,22 @@ lane_rule() { # lane sha
 subject_of() { # pr issue → 评审/修复对象的称呼（无 PR 的直落单元用 issue 或单元 id）
   if [[ -n "$1" ]]; then printf 'PR #%s' "$1"; elif [[ -n "$2" ]]; then printf 'issue #%s 的本地实现（无 PR）' "$2"; else printf '本地实现（无 PR）'; fi
 }
+review_fix_prompt_rule() { # lane → bounded edit/commit/push instructions
+  if [[ "$1" == pr ]]; then
+    printf '%s' '发现一个小且局部的缺陷时，可在本分支就地修复并补一个回归测试：仅改一个源文件，源文件改动最多 20 行，不做设计变更；测试文件可作为第二个改动文件。先运行该测试，再以调度器已配置的 reviewer identity 提交一个直接基于当前 head 的 commit，运行 `bash tools/test-receipt.sh <测试命令>`，然后只 push 当前分支。报告中的该 finding 使用 status `fixed-in-review`，包含 commit_sha 与 test 对象（path、name），结论仍可为 READY。更大的修复不要做，保持 finding open 并返回 NOT_READY。'
+  else
+    printf '%s' '此 lane 只读，不在评审中改代码；直落 main 的测试由落地后流水线运行。'
+  fi
+}
 review_prompt() { # pr-or-subject title sha report [lane] [checkout]
-  local subject="$1"; [[ "$subject" =~ ^[0-9]+$ ]] && subject="PR #$subject"
-  printf '%s' "你是 the product 流水线的独立代码评审 subagent，只读【增量评审】（diff-scoped，不做全库漫游）。当前目录是隔离 clone，已检出被评审提交（detached），origin/main 为最新 main；本地 diff：git diff origin/main...HEAD。评审 ${subject}（$2）fixed head $3：
-评审面：① diff（merge-base..head）与关联 issue 验收条件逐条对照；② 变更文件的直接 import/依赖闭包；③ 只读边界下可核实的测试与行为证据。
+  local subject="$1"
+  [[ "$subject" =~ ^[0-9]+$ ]] && subject="PR #$subject"
+  printf '%s' "你是 the product 流水线的独立代码评审 subagent，进行【增量评审】（diff-scoped，不做全库漫游）。当前目录是隔离 clone，已检出被评审提交，origin/main 为最新 main；本地 diff：git diff origin/main...HEAD。评审 ${subject}（$2）fixed head $3：
+评审面：① diff（merge-base..head）与关联 issue 验收条件逐条对照；② 变更文件的直接 import/依赖闭包；③ 可核实的测试与行为证据。
 请完整读取并遵守正式评审契约，按其要求评审与交付。$(review_contract_rule)
 效率纪律：不重述代码内容；不展开未变更文件的细节；低风险样式性改动一行带过。目标 15-25 分钟内交付。
-只读边界：不编辑/commit/push/merge/评论。报告写到 $SUP/$4。落盘后交付完即结束。$(risk_class_safety_rule "${6:-}")$(lane_rule "${5:-}" "$3")"
+$(review_fix_prompt_rule "${5:-}")
+禁止 merge、评论或改 GitHub 状态。报告写到 $SUP/$4。落盘后交付完即结束。$(risk_class_safety_rule "${6:-}")$(lane_rule "${5:-}" "$3")"
 }
 review_verification_rule() { # unit-json dir log sha → status paragraph; copies the verification output when the command ran
   local u="$1" dir="$2" log="$3" sha="$4" state ev

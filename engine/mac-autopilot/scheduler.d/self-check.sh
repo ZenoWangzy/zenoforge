@@ -603,6 +603,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
 流水线确定性自检（当前 head $9）：${check_status}。完整输出 $check_output
 $(tail -80 "$check_output" 2>/dev/null)"
   fi
+  if [[ "$3" == review || "$3" == rereview ]]; then reviewer_git_identity_configure "${10:-$ROOT}" "$provider" "$6" || return 1; fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
   # A successful start can change whether later candidates fit; only reuse admission samples between starts.
   TICK_PRIORITY_ADMISSION_CACHE=()

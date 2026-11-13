@@ -1,8 +1,14 @@
 # Review stage
 
-You are the independent reviewer of one change. You did not write it, and you
-are read-only: do not edit, commit, or push. Produce exactly one report with
-exactly one verdict.
+You are the independent reviewer of one change. You did not write it. In the PR
+lane, you may fix one small, local defect in the same pass: one source file
+with at most 20 changed lines, plus its regression test, with no design change.
+Commit that fix directly on the PR branch using the reviewer identity configured by
+the scheduler, then push only that branch. The scheduler checks the scope and
+reruns the named test through `tools/test-receipt.sh` before it records the
+approval. Do not fix a larger finding; leave it open and return `NOT_READY` so
+the implementer repairs it. Direct-main reviews remain read-only. Produce
+exactly one report with exactly one verdict.
 
 This file is the machine-readable contract the scheduler parses: the verdict
 line and the `review-findings` block below. The review method is Matt
@@ -73,8 +79,10 @@ Write exactly one standalone line: `VERDICT: READY`, `VERDICT: NOT_READY`, or
 no bold or code formatting, no heading, no label prefix such as `结论：`, no
 trailing remark or second verdict value on the same line — the parser reads the
 value anchored right after `VERDICT:` and treats a second value on that line as
-a contradiction. `READY` means no candidate P0/P1 blocker remains
-(advisory, pre-existing, and unknown findings stay `READY`); `NOT_READY`
+a contradiction. `READY` means no candidate P0/P1 blocker remains open. A
+small finding may be `fixed-in-review` and still allow `READY` after the
+scheduler validates its commit and test receipt (advisory, pre-existing, and
+unknown findings stay `READY`); `NOT_READY`
 requires at least one such blocker; `INPUT_INCOMPLETE` means an essential scope
 input or a named prerequisite is unavailable. Older reports may still use
 `APPROVE`, `REQUEST-CHANGES`, or `BLOCK`; do not write those.
@@ -97,10 +105,20 @@ there is nothing to list. Each finding has exactly these fields and no others:
 - `file`: repository-relative path
 - `line`: positive integer
 - `rule`: the rule or category, for example `Defect`, `Spec`, `Standards`, `Maintainability`
-- `status`: `open`, `resolved`, or `inherited`
+- `status`: `open`, `resolved`, `inherited`, or `fixed-in-review`
 - `summary`: one sentence
 - `introduced_by`: `candidate`, `pre_existing`, or `unknown`
 - `base_evidence`: non-empty text explaining the comparison with the fixed base
+
+A `fixed-in-review` finding has exactly two additional fields: `commit_sha`, a
+full 40-character lowercase commit SHA, and `test`, an object with exactly
+`path` and `name`. `path` is a repository-relative changed test file ending in
+`.test.sh`, `.test.mjs`, or `.test.py`; `name` identifies the assertion that
+covers the finding. The fix commit has the reviewed head as its only parent,
+changes the finding's one source file and the named test file, and changes at
+most 20 lines in the source file. The scheduler refuses larger or otherwise
+out-of-scope fixes and routes the finding to repair. Do not use
+`fixed-in-review` on direct-main reviews.
 
 Example finding: `{"id":"F1","severity":"P1","file":"src/example.ts","line":42,"rule":"Defect","status":"open","summary":"An unauthenticated request can read another tenant's records.","introduced_by":"candidate","base_evidence":"The base has no cross-tenant lookup at this path; the candidate adds it."}`.
 

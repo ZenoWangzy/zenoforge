@@ -47,6 +47,17 @@ claude_implement_tools() { # workdir unit → --allowedTools 值
   printf '%s' "$tools"
 }
 
+claude_review_tools() { # workdir unit → bounded review-edit, test, and branch-push tools
+  local workdir="$1" unit="$2" branch tools
+  tools="Grep,Glob,Read(/$workdir/**),Bash(pwd),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(cat:*),Bash(ls:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(sort:*),Bash(uniq:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(python3 *.test.py),Bash(bash *.test.sh),Bash(bash tools/test-receipt.sh:*)"
+  branch="$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [[ "$(unit_field "$unit" '.lane // empty')" == pr && "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != main ]] \
+    && git -C "$workdir" check-ref-format --branch "$branch" >/dev/null 2>&1; then
+    tools+=",Edit(/$workdir/**),Write(/$workdir/**),Bash(git add:*),Bash(git commit:*),Bash(git push origin $branch)"
+  fi
+  printf '%s' "$tools"
+}
+
 # 实现/修复：claude -p stream-json；repair 在同一提供方与模型、会话文件仍在时 --resume（session id 来自上一次 result 流）。
 # 不加载用户设置/钩子/MCP/技能/记忆（--safe-mode --setting-sources "" --strict-mcp-config），权限 dontAsk 只认上面的白名单。
 build_claude_implement_command() { # type model effort unit prompt failure workdir
@@ -116,17 +127,17 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   fi
   if [[ "$provider" == claude ]]; then
     [[ "$type" == review || "$type" == rereview ]] || return 1
-    # Claude 评审只读：报告作为最终回答输出，由 dispatch 成功后落盘（不给写文件权限）。
+    # Review report stays on stdout; bounded source edits and branch pushes use the scoped allowlist below.
     # --strict-mcp-config：不加载用户级 MCP 服务器（4 个评审曾拉起 426 个进程、2.5 GB 内存，且 chrome-devtools 会碰用户浏览器）。
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null  # Claude is not measured by Codex cumulative counters.
     # 用户级 PreToolUse hook（rtk）把 git log/diff 改写成 rtk git …，白名单不匹配，dontAsk 全拒：评审 worker 不加载 hook。
     CODEX_COMMAND=(claude -p "$prompt_arg
-（本次运行无写文件权限：把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。
-当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」（这些形式不匹配白名单会被拒）。可用命令（白名单外一律被拒）：git diff/log/show/fetch/rev-parse/merge-base/ls-files、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort、pnpm <script>、npx vitest <file>、node --test <file>、bash <file>.test.sh；优先用 Read/Grep 工具读代码并先跑聚焦测试。当前目录已是评审目录，直接执行单条命令即可。一条命令被拒只说明其中某一段不在白名单，不代表 Bash 不可用：拆成单条白名单命令重试，不要据此判定 INPUT_INCOMPLETE。）" \
+（把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。仅在 PR lane 的小型 fixed-in-review 修复中编辑当前工作目录，提交并 push 当前分支；工具白名单限制到当前 clone、当前分支和测试命令。
+当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」。可用命令：git diff/log/show/rev-parse/merge-base/ls-files/status/add/commit、git push origin 当前分支、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort、pnpm <script>、npx vitest <file>、node --test <file>、python3 <file>.test.py、bash <file>.test.sh、bash tools/test-receipt.sh <测试命令>。优先用 Read/Grep 工具读代码，并先运行聚焦测试；一条命令被拒就拆开重试。）" \
       --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
       --model "$model" --effort "$effort" --permission-mode dontAsk --strict-mcp-config \
-      --tools "Read,Grep,Glob,Bash" --allowedTools "$CLAUDE_REVIEW_TOOLS")
+      --tools "Read,Edit,Write,Grep,Glob,Bash" --allowedTools "$(claude_review_tools "$workdir" "$unit")")
     return 0
   fi
   tier="$(jqf -r --arg m "$model" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
