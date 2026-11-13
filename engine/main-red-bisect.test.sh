@@ -179,7 +179,7 @@ assert_eq "a run list over the argv limit still reads" 800 \
   "$(ci_main_completed_push_runs() { printf '%s\n' "$big_runs"; }; main_red_completed_runs | jq '.workflow_runs | length')"
 # Run the tick-owned maintenance loop from its durable resume point. The
 # other maintenance owners are quiet fixtures; main-red is the real sweep.
-eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+source "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh"
 profile_mark() { :; }
 checks_blocked_sweep() { :; }
 hold_sweep() { :; }

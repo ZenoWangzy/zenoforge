@@ -71,7 +71,7 @@ export const RELATED_TESTS = new Map([
     'engine/issue-pipeline.test.sh',
     'engine/main-red-bisect.test.sh',
     'engine/sweep-unlabeled-issues.test.sh',
-  ]],
+  ]], ['engine/issue-pipeline.d/maintenance.sh', ['engine/issue-pipeline-maintenance-budget.test.sh', 'engine/issue-pipeline.test.sh', 'engine/main-red-bisect.test.sh', 'engine/sweep-unlabeled-issues.test.sh']],
   ['engine/issue-pipeline-maintenance-budget.test.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
   ['engine/notify.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
   ['engine/lib.d/holds.sh', ['engine/hold.test.sh']], ['engine/lib.d/hold-rule.sh', ['engine/hold-rule.test.sh', 'engine/hold.test.sh']],

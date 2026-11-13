@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$AGENT_HOME/night" "$test_env_root/autopi" "$test_env_root/repo"
 export REPO_DIR="$test_env_root/repo"
 export MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/autopi"
-eval "$(sed -n '/^maintenance_record_deferred_step() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p; /^maintenance_clear_deferred_step() {/,/^}/p; /^maintenance_now_epoch_ms() {/,/^}/p; /^maintenance_set_optional_deadline() {/,/^}/p; /^maintenance_restore_slice_deadline() {/,/^}/p; /^maintenance_defer_optional_step() {/,/^}/p; /^maintenance_run_optional_step() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+source "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 
 # Deadline math and assertions share a clock driven by the test's SECONDS.
@@ -120,7 +120,7 @@ check 'optional work leaves a resume cursor at the next deferred section' \
 check 'optional GitHub and Gmail work share the earlier cutoff' \
   "$CAPTURED_OPTIONAL_GMAIL_DEADLINE" "$CAPTURED_OPTIONAL_GH_DEADLINE"
 
-eval "$(sed -n '/^read_needs_info_email_replies() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+source "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh"
 GH_LIST_CALLS=0
 gh() { GH_LIST_CALLS=$((GH_LIST_CALLS + 1)); return 1; }
 SECONDS=87

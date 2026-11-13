@@ -11,8 +11,8 @@
 2	engine/hold-landing-owner.test.sh
 1	engine/hold.test.sh
 1	engine/issue-pipeline-census-size.test.sh
-3	engine/issue-pipeline-maintenance-budget.test.sh
-50	engine/issue-pipeline.test.sh
+1	engine/issue-pipeline-maintenance-budget.test.sh
+48	engine/issue-pipeline.test.sh
 5	engine/landed-incident-guards.test.sh
 1	engine/land-pin-preflight.test.sh
 1	engine/land-pipeline-suites-absent.test.sh
@@ -30,7 +30,7 @@
 1	engine/mac-autopilot/scheduler-tick-latency.test.sh
 1	engine/mac-autopilot/stuck-worker-disposition.test.sh
 1	engine/mac-autopilot/worker-command.test.sh
-2	engine/main-red-bisect.test.sh
+1	engine/main-red-bisect.test.sh
 1	engine/night/hand-agent-session-discovery.test.sh
 3	engine/notify.test.sh
 1	engine/owner-admission-lanes.test.sh

@@ -25,7 +25,7 @@ eval "$(sed -n '/^fastlane_snapshot_candidates() {/,/^}/p; /^fastlane_read_path_
 ROUTE_PIPELINE_SYSTEM_CANDIDATES_FN="$(sed -n '/^pipeline_system_factory_infra_paths_valid() {/,/^}/p; /^pipeline_system_external_pr_check_state() {/,/^}/p; /^pipeline_system_external_pr_to_product() {/,/^}/p; /^pipeline_system_hand_external_pr_conclusion() {/,/^}/p; /^pipeline_system_hand_report_conclusion() {/,/^}/p; /^route_pipeline_fastlane_issue() {/,/^}/p; /^route_nonproduct_path_issue_rows() {/,/^}/p; /^route_nonproduct_path_candidates() {/,/^}/p' "$PIPELINE_SRC")"
 ROUTE_PIPELINE_SYSTEM_CANDIDATES_FN+=$'\n'"$(sed -n '/^fastlane_scan_order() {/,/^}/p; /^fastlane_snapshot_candidates() {/,/^}/p; /^fastlane_read_path_contexts() {/,/^}/p' "$PIPELINE_SRC")"
 ROUTE_PIPELINE_SYSTEM_CANDIDATES_FN+=$'\n'"$(sed -n '/^ensure_issue_roadmap_parent_for_dispatch() {/,/^}/p' "$PIPELINE_SRC")"
-eval "$(sed -n '/^read_needs_info_email_replies() {/,/^}/p; /^reconcile_needs_info_issues() {/,/^}/p; /^run_post_dispatch_maintenance() {/,/^}/p' "$PIPELINE_SRC")"
+source "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh"
 eval "$(sed -n '/^reconcile_pipeline_system_delivery() {/,/^}/p' "$PIPELINE_SRC")"
 
 FAILED=0
@@ -237,8 +237,8 @@ run_checks_blocked_sweep "$CHECKS_BLOCKED_REPEAT" workspace-write
 assert_eq 'same head is not auto-requeued twice' checks-blocked \
   "$(state_read "$CHECKS_BLOCKED_REPEAT" | jq -r '.state')"
 
-POST_DISPATCH_MAINTENANCE_FN="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$PIPELINE_SRC")"
-POST_DISPATCH_MAINTENANCE_STEP_FN="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$PIPELINE_SRC")"
+POST_DISPATCH_MAINTENANCE_FN="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh")"
+POST_DISPATCH_MAINTENANCE_STEP_FN="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh")"
 assert_cond 'checks-blocked owner sweep is routed through post-dispatch maintenance' \
   "$(grep -qF 'maintenance_run_optional_step "$step"' <<< "$POST_DISPATCH_MAINTENANCE_FN" \
     && grep -qF 'checks_blocked_sweep' <<< "$POST_DISPATCH_MAINTENANCE_STEP_FN" && echo 1 || echo 0)"
@@ -1095,7 +1095,6 @@ run_triage_empty_case() (
   TRIAGE_CANDIDATE_QUERY_FAILED=0 READY_MEASURE_QUERY_FAILED=0 TRIAGE_SELECT_CUT=0 triage_slots=8
   TRIAGE_BATCH_IDS=()
   declare -A TRIAGE_SKIPS=()
-  eval "$(sed -n '/^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
   eval "$(sed -n '/^# Permanent: an empty batch/,/^fi$/p' "$PIPELINE_SRC")" 2>/dev/null
   grep -c '^\[[^]]*\] issue-pipeline: triage batch empty: needs_triage=0 ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null || true
 )
@@ -1863,7 +1862,7 @@ run_batch_admission_case() (
   ADVISOR_RUNTIME_MAX_SEC=60
   TRIAGE_RUNTIME_MAX_SEC=60
   IMPLEMENT_RUNTIME_MAX_SEC=60
-  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p; /^pipeline_batch_launch() {/,/^}/p; /^maintenance_scheduler_log() {/,/^}/p' "$PIPELINE_SRC")"
+  eval "$(sed -n '/^dispatch_release_batch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p; /^pipeline_batch_launch() {/,/^}/p' "$PIPELINE_SRC")"
   systemctl() { return 3; }
   hand_agent_issue_is_live_owned() { return 1; }
   issue_spend_budget_status() { printf 'clear\t0\t0\n'; }

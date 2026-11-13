@@ -2517,7 +2517,7 @@ assert_false "an empty processed array means nothing has been processed yet" \
 # adds one of those calls inside this function, which is the point: the
 # needs-info reply/default handlers consume the relayed comment and own the
 # stage transition; the read side stays comment-only on GitHub.
-READ_SIDE_FN_BODY="$(sed -n '/^read_needs_info_email_replies() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+READ_SIDE_FN_BODY="$(sed -n '/^read_needs_info_email_replies() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh")"
 
 assert_true "read_needs_info_email_replies() is actually found in issue-pipeline.sh (fixture sanity check)" \
   bash -c '[ -n "$1" ]' _ "$READ_SIDE_FN_BODY"
@@ -2543,9 +2543,9 @@ assert_true "read_needs_info_email_replies() applies the dedup check before ever
 assert_true "read_needs_info_email_replies() keeps applied-default threads eligible for late replies" \
   bash -c 'echo "$1" | grep -qF -- "needs_info_default_applied.thread_id"' _ "$READ_SIDE_FN_BODY"
 
-POST_DISPATCH_MAINTENANCE_BODY="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-MAINTENANCE_OPTIONAL_STEP_BODY="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-NEEDS_INFO_RECONCILE_BODY="$(sed -n '/^reconcile_needs_info_issues() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+POST_DISPATCH_MAINTENANCE_BODY="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh")"
+MAINTENANCE_OPTIONAL_STEP_BODY="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh")"
+NEEDS_INFO_RECONCILE_BODY="$(sed -n '/^reconcile_needs_info_issues() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh")"
 # #193 gave maintenance bounded slots with a resume cursor: the needs-info
 # email poll stayed inline required work, while reply reconciliation moved to
 # the optional suffix as the needs-info-loop step dispatched through

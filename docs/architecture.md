@@ -39,7 +39,7 @@ A tick that refuses counts as a failure. After three in a row, it writes an even
 - triage (`run-triage.sh`, `run-triage-batch.sh`)
 - advisor (`run-advisor.sh`, `run-advisor-batch.sh`). The advisor role is disabled by default, and no advisor provider ships.
 - recut (`run-recut.sh`)
-- needs-info replies (`reconcile_needs_info_issues`)
+- needs-info replies (`reconcile_needs_info_issues` in `engine/issue-pipeline.d/maintenance.sh`)
 - release batches (`run-release.sh`)
 - one main-red recovery step (`main-red-bisect` in the sweep loop)
 
