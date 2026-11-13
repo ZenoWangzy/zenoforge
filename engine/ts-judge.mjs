@@ -390,6 +390,9 @@ export async function judge({
     const baseline = safeState.currentDecision;
     const hasBaseline = baseline !== undefined && baseline !== null && baseline !== "";
     const eventId = safeState.event_id ?? "";
+    const overlay = questionSet === "intake-priority"
+      ? typeof safeState.overlay === "string" && safeState.overlay.length > 0 ? safeState.overlay : null
+      : undefined;
     let adopted = false;
     let decision = hasBaseline ? baseline : normalized.answer;
     let logging = "pending-baseline";
@@ -405,6 +408,7 @@ export async function judge({
         candidate: String(normalized.answer),
         confidence,
         decision: String(decision),
+        ...(overlay !== undefined ? { overlay } : {}),
         agreement: String(normalized.answer) === String(baseline),
         mode: ready ? "active" : "shadow",
       };
@@ -427,6 +431,7 @@ export async function judge({
       score: normalized.score ?? null,
       probability: normalized.probability ?? null,
       decision,
+      ...(overlay !== undefined ? { overlay } : {}),
       adopted,
       rollout_ready: ready,
       sample_count: history.length,
