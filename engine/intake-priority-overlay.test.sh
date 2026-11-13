@@ -43,6 +43,16 @@ case "${1:-} ${2:-}" in
     if [[ " $* " == *" --search "* ]]; then printf '[]\n'; else cat "$INTAKE_OVERLAY_ISSUES"; fi
     ;;
   "label list") printf '[]\n' ;;
+  "api"*)
+    if [[ " $* " == *"/issues/9021 --jq"* ]]; then
+      printf '9021001\n'
+    elif [[ " $* " == *"/issues/101/sub_issues"* ]]; then
+      printf '%s\n' 'An error occurred while adding the sub-issue to the parent issue. Parent cannot have more than N sub-issues' >&2
+      exit 1
+    else
+      printf '%s\n' "$*" >> "$INTAKE_OVERLAY_WRITES"
+    fi
+    ;;
   "issue edit"|"label create") printf '%s\n' "$*" >> "$INTAKE_OVERLAY_WRITES" ;;
   *) exit 2 ;;
 esac
@@ -131,16 +141,57 @@ result_file="$test_root/off-market.result.json"
 jq -c '.[] | select(.number == 9002)' "$INTAKE_OVERLAY_ISSUES" > "$issue_file"
 bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$issue_file" --dry-stub > "$result_file"
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$issue_file" --result-file "$result_file"
-expect_eq 'label writer uses the off-market overlay decision' true \
-  "$(grep -F -- '--add-label priority:low' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
+expect_eq 'label writer uses the REST labels endpoint for the off-market overlay' true \
+  "$(grep -F -- 'api -X POST repos/fixture/repo/issues/9002/labels' "$INTAKE_OVERLAY_WRITES" \
+    | grep -qF 'labels[]=priority:low' && echo true || echo false)"
+
+# A parent that has reached GitHub's sub-issue cap must not lose the tier label.
+route_issue_file="$test_root/parent-full.issue.json"
+route_result_file="$test_root/parent-full.result.json"
+jq -cn '{number:9021,title:"Parent-full route fixture",body:"",labels:[]}' > "$route_issue_file"
+jq -cn '{status:"answered",adopted:true,confidence:0.99,
+  decision:({priority:"priority:top",route:"101",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
+  intake_context:{roadmap_containers:[{number:101}]}}' > "$route_result_file"
+jq -cn '{roots:[{number:90,title:"Roadmap",state:"OPEN",labels:["roadmap"],children:[
+  {number:91,title:"Theme",state:"OPEN",labels:["roadmap-theme"],children:[
+    {number:101,title:"Epic",state:"OPEN",labels:["roadmap-epic"],children:[]}
+  ]}
+]}]}' > "$test_root/parent-full-roadmap.json"
+export ZF_ROADMAP_TREE_CACHE_FILE="$test_root/parent-full-roadmap.json"
+set +e
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$route_issue_file" --result-file "$route_result_file" \
+  > "$test_root/parent-full.out" 2>&1
+parent_full_rc=$?
+set -e
+expect_eq 'parent-full route failure keeps label apply successful' 0 "$parent_full_rc"
+expect_eq 'parent-full route failure still adds priority:top through REST' true \
+  "$(grep -F -- 'api -X POST repos/fixture/repo/issues/9021/labels' "$INTAKE_OVERLAY_WRITES" \
+    | grep -qF 'labels[]=priority:top' && echo true || echo false)"
+expect_eq 'parent-full route failure still adds the selected route label through REST' true \
+  "$(grep -F -- 'api -X POST repos/fixture/repo/issues/9021/labels' "$INTAKE_OVERLAY_WRITES" \
+    | grep -qF 'labels[]=route:101' && echo true || echo false)"
+expect_eq 'parent-full route failure is logged' true \
+  "$(grep -F 'intake-priority: route placement failed for #9021:' "$test_root/parent-full.out" >/dev/null && echo true || echo false)"
+expect_eq 'parent-full warning keeps the GitHub rejection reason' true \
+  "$(grep -F 'Parent cannot have more than N sub-issues' "$test_root/parent-full.out" >/dev/null && echo true || echo false)"
 
 founder_issue_file="$test_root/founder.issue.json"
 founder_result_file="$test_root/founder.result.json"
 jq -c '.[] | select(.number == 3066)' "$INTAKE_OVERLAY_ISSUES" > "$founder_issue_file"
 bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$founder_issue_file" --dry-stub > "$founder_result_file"
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$founder_issue_file" --result-file "$founder_result_file"
-expect_eq 'missing priority:high label is created before founder issue edit' true \
-  "$(awk '$0 ~ /^label create priority:high / { created=NR } $0 ~ /^issue edit 3066 / { edited=NR } END { print (created > 0 && edited > created) ? "true" : "false" }' "$INTAKE_OVERLAY_WRITES")"
+expect_eq 'missing priority:high label is created before founder REST label write' true \
+  "$(awk '$0 ~ /^label create priority:high / { created=NR } $0 ~ /^api -X POST repos\/fixture\/repo\/issues\/3066\/labels / { edited=NR } END { print (created > 0 && edited > created) ? "true" : "false" }' "$INTAKE_OVERLAY_WRITES")"
+
+jq -cn '{number:9022,title:"Stale priority labels",body:"",labels:[{name:"priority:low"},{name:"route:old"}]}' > "$test_root/stale-labels.issue.json"
+jq -cn '{status:"answered",adopted:true,confidence:0.99,
+  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson)}' \
+  > "$test_root/stale-labels.result.json"
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$test_root/stale-labels.issue.json" --result-file "$test_root/stale-labels.result.json"
+expect_eq 'stale priority labels are removed through URL-encoded REST paths' true \
+  "$(grep -F 'api -X DELETE repos/fixture/repo/issues/9022/labels/priority%3Alow' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
+expect_eq 'stale route labels are removed through URL-encoded REST paths' true \
+  "$(grep -F 'api -X DELETE repos/fixture/repo/issues/9022/labels/route%3Aold' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
 
 # 11-13: the judge stays in shadow until rollout, so an unadopted answer must still write a code-owned overlay label,
 # and must not write a label that only the unadopted model chose.
@@ -153,9 +204,9 @@ jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:"fruit-feature",
   > "$test_root/shadow-overlay.result.json"
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$shadow_issue_file" --result-file "$test_root/shadow-overlay.result.json"
 expect_eq 'an unadopted answer still writes the overlay label' true \
-  "$(grep -E '^issue edit 9007 ' "$INTAKE_OVERLAY_WRITES" | grep -qF -- '--add-label priority:normal' && echo true || echo false)"
+  "$(grep -E '^api -X POST repos/fixture/repo/issues/9007/labels ' "$INTAKE_OVERLAY_WRITES" | grep -qF 'labels[]=priority:normal' && echo true || echo false)"
 expect_eq 'an unadopted answer does not write the shadow baseline label' false \
-  "$(grep -E '^issue edit 9007 ' "$INTAKE_OVERLAY_WRITES" | grep -qF -- '--add-label priority:top' && echo true || echo false)"
+  "$(grep -E '^api -X POST repos/fixture/repo/issues/9007/labels ' "$INTAKE_OVERLAY_WRITES" | grep -qF 'labels[]=priority:top' && echo true || echo false)"
 jq -cn '{number:9020,title:"Tweak dashboard spacing",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"}' > "$test_root/shadow-plain.issue.json"
 jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:null,
   decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
@@ -163,7 +214,7 @@ jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:null,
   > "$test_root/shadow-plain.result.json"
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$test_root/shadow-plain.issue.json" --result-file "$test_root/shadow-plain.result.json"
 expect_eq 'an unadopted answer without an overlay writes no label' false \
-  "$(grep -qE '^issue edit 9020 ' "$INTAKE_OVERLAY_WRITES" && echo true || echo false)"
+  "$(grep -qE '^api -X (POST|DELETE) repos/fixture/repo/issues/9020/labels' "$INTAKE_OVERLAY_WRITES" && echo true || echo false)"
 
 # Verify ready-unit order through dispatch_pending, the scheduler's public dispatch entry point.
 scheduler_fixture="$test_root/scheduler"
