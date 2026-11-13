@@ -170,6 +170,10 @@ expect_eq 'parent-full route failure still adds priority:top through REST' true 
 expect_eq 'parent-full route failure still adds the selected route label through REST' true \
   "$(grep -F -- 'api -X POST repos/fixture/repo/issues/9021/labels' "$INTAKE_OVERLAY_WRITES" \
     | grep -qF 'labels[]=route:101' && echo true || echo false)"
+expect_eq 'parent-full route failure attempts the link after writing labels' true \
+  "$(awk '/api -X POST repos\/fixture\/repo\/issues\/9021\/labels/ { labels=NR } \
+    /repos\/fixture\/repo\/issues\/101\/sub_issues/ { route=NR } \
+    END { print (labels > 0 && route > labels) ? "true" : "false" }' "$INTAKE_OVERLAY_LOG")"
 expect_eq 'parent-full route failure is logged' true \
   "$(grep -F 'intake-priority: route placement failed for #9021:' "$test_root/parent-full.out" >/dev/null && echo true || echo false)"
 expect_eq 'parent-full warning keeps the GitHub rejection reason' true \

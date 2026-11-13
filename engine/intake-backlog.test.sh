@@ -37,18 +37,29 @@ case "${1:-} ${2:-}" in
     elif [[ " $* " == *' --jq '* ]]; then
       jq '[.[] | {number,title,body,labels:[.labels[]?.name],comments:[.comments[]?.body]}]' "$INTAKE_BACKLOG_ISSUES"
     else
+      if [[ -n "${INTAKE_BACKLOG_DELAY_SEARCH:-}" && " $* " == *"$INTAKE_BACKLOG_DELAY_SEARCH"* ]]; then
+        sleep 0.5
+      fi
       cat "$INTAKE_BACKLOG_ISSUES"
     fi
     ;;
   "label list") printf '%s\n' '[]' ;;
   "api"*)
-    if [[ "$*" == *"/issues/"*"/labels"* && "$*" == *"-X POST"* ]]; then
+    if [[ "$*" == *"rate_limit"* ]]; then
+      jq -cn --argjson core "${INTAKE_BACKLOG_RATE_CORE_REMAINING:-5000}" \
+        --argjson graphql "${INTAKE_BACKLOG_RATE_GRAPHQL_REMAINING:-5000}" \
+        '{resources:{core:{remaining:$core},graphql:{remaining:$graphql}}}'
+    elif [[ "$*" == *"/issues/"*"/labels"* && "$*" == *"-X POST"* ]]; then
       number="$(sed -nE 's#.*issues/([0-9]+)/labels.*#\1#p' <<< "$*")"
       printf 'labels:%s\n' "$number" >> "$INTAKE_BACKLOG_EVENTS"
       if [[ -n "${INTAKE_BACKLOG_RATE_LIMIT_NUMBER:-}" && "$number" == "$INTAKE_BACKLOG_RATE_LIMIT_NUMBER" ]]; then
         printf '%s\n' 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)' >&2
         exit 1
       fi
+    elif [[ -n "${INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT:-}" \
+      && "$*" == *"/issues/${INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT}/sub_issues"* ]]; then
+      printf '%s\n' 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)' >&2
+      exit 1
     elif [[ "$*" == *"/sub_issues"* ]]; then
       printf '{}\n'
     elif [[ "$*" =~ /issues/([0-9]+)[[:space:]] ]]; then
@@ -123,18 +134,47 @@ rate_report="$(cat "$test_root/rate-limit.json")"
 [[ "$(grep -F 'judge:13' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
 
 unset INTAKE_BACKLOG_RATE_LIMIT_NUMBER
-export INTAKE_BACKLOG_RATE_LIMIT_SEARCH='beta duplicate in:title'
+export INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT=102
 : > "$INTAKE_BACKLOG_JUDGE_LOG"
 : > "$INTAKE_BACKLOG_EVENTS"
-bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/rate-limit-judge.json" --limit 3 --concurrency 1 --apply
+bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/rate-limit-route.json" --limit 3 --concurrency 1 --apply
+route_rate_report="$(cat "$test_root/rate-limit-route.json")"
+[[ "$(jq -r '.partial' <<< "$route_rate_report")" == true ]]
+[[ "$(jq -r '.stop_reason' <<< "$route_rate_report")" == rate-limit ]]
+[[ "$(jq -r '[.issues[].number] | sort | join(",")' <<< "$route_rate_report")" == '11,12' ]]
+[[ "$(grep -F 'labels:12' "$INTAKE_BACKLOG_EVENTS" || true)" != '' ]]
+[[ "$(grep -F 'judge:13' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
+
+unset INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT
+export INTAKE_BACKLOG_RATE_CORE_REMAINING=1499
+: > "$INTAKE_BACKLOG_JUDGE_LOG"
+: > "$INTAKE_BACKLOG_EVENTS"
+: > "$INTAKE_BACKLOG_GH_LOG"
+bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/rate-floor.json" --limit 3 --concurrency 1 --apply --rate-floor 1500
+floor_report="$(cat "$test_root/rate-floor.json")"
+[[ "$(jq -r '.partial' <<< "$floor_report")" == true ]]
+[[ "$(jq -r '.stop_reason' <<< "$floor_report")" == rate-limit ]]
+[[ "$(jq -r '.scanned' <<< "$floor_report")" == 1 ]]
+[[ "$(jq -r '[.issues[].number] | join(",")' <<< "$floor_report")" == '11' ]]
+[[ "$(grep -F 'judge:11' "$INTAKE_BACKLOG_EVENTS" || true)" != '' ]]
+[[ "$(grep -F 'labels:11' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
+[[ "$(grep -F 'api rate_limit' "$INTAKE_BACKLOG_GH_LOG" || true)" != '' ]]
+unset INTAKE_BACKLOG_RATE_CORE_REMAINING
+
+export INTAKE_BACKLOG_RATE_LIMIT_SEARCH='beta duplicate in:title'
+export INTAKE_BACKLOG_DELAY_SEARCH='alpha release in:title'
+: > "$INTAKE_BACKLOG_JUDGE_LOG"
+: > "$INTAKE_BACKLOG_EVENTS"
+bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/rate-limit-judge.json" --limit 3 --concurrency 2 --apply
 judge_rate_report="$(cat "$test_root/rate-limit-judge.json")"
 [[ "$(jq -r '.partial' <<< "$judge_rate_report")" == true ]]
 [[ "$(jq -r '.stop_reason' <<< "$judge_rate_report")" == rate-limit ]]
 [[ "$(jq -r '[.issues[].number] | sort | join(",")' <<< "$judge_rate_report")" == '11,12' ]]
 [[ "$(grep -F 'judge:12' "$INTAKE_BACKLOG_EVENTS" || true)" != '' ]]
 [[ "$(grep -F 'labels:12' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
+[[ "$(grep -F 'labels:11' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
 [[ "$(grep -F 'judge:13' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
-unset TYPESAFE_API_KEY INTAKE_BACKLOG_RATE_LIMIT_SEARCH
+unset TYPESAFE_API_KEY INTAKE_BACKLOG_RATE_LIMIT_SEARCH INTAKE_BACKLOG_DELAY_SEARCH
 jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 
 set +e

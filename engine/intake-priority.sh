@@ -310,6 +310,11 @@ intake_priority_apply_result() {
     route_error="${route_error//$'\n'/; }"
     printf 'intake-priority: route placement failed for #%s: %s\n' \
       "$issue_number" "${route_error:-unknown error}" >&2
+    if [[ "$route_error" == *'API rate limit already exceeded'* && -n "${ZF_INTAKE_RATE_LIMIT_SIGNAL:-}" ]]; then
+      if ! printf 'rate-limit\n' > "$ZF_INTAKE_RATE_LIMIT_SIGNAL"; then
+        echo 'intake-priority: could not set backlog rate-limit stop signal' >&2
+      fi
+    fi
   fi
   return 0
 }
