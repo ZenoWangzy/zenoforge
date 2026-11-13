@@ -67,6 +67,11 @@ tick_step_run() { # scheduler.sh --tick-step step
 
 start_detached_tick_step() { # step; same detached setsid/timeout pattern as other scheduler stations
   case "${1:-}" in dispatch_pending | register_new_issues | release_dependency_blocks) ;; *) return 64 ;; esac
+  if [[ "${AUTOPI_TEST_INLINE_TICK_STEPS:-false}" == true ]]; then
+    local TICK_STEP_LOCK_RESULT="" rc=0
+    tick_step_lock_run "$1" tick_step_execute "$1" || rc=$?
+    return "$rc"
+  fi
   local limit="${AUTOPI_TICK_STEP_KILL_SECONDS:-900}"
   [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=900
   A="$A" LOG="$LOG" setsid timeout -k 30 "$limit" bash "$HERE/scheduler.sh" --tick-step "$1" >> "$A/loop.out" 2>&1 < /dev/null &

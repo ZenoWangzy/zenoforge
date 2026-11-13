@@ -1093,7 +1093,8 @@ tick() (
   export -f git jq node ps tick_gh tick_git tick_jq
   # 额外参数原样传给 scheduler.sh（如 --refill）；不带参数就是一整拍慢 tick。
   local rc=0
-  bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
+  # Fixture ticks assert step effects before exit; keep the production step lock but run them inline here.
+  AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
   if (( rc != 0 && rc != 75 )); then cat "$TF/tick.out" >&2; return 1; fi
   [[ ! -e "$TF/unexpected-host" ]] || { cat "$TF/unexpected-host" >&2; return 1; }
   return "$rc"
