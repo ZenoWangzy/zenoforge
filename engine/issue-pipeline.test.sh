@@ -1090,7 +1090,7 @@ run_triage_selection() (
 # The empty-batch explanation is the main-flow block after the selection loops; eval just that block.
 run_triage_empty_case() (
   MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"
-  trap 'rm -rf -- "$MAC_AUTOPILOT_RUNTIME_DIR" "$test_env_root"' EXIT
+  trap 'rm -rf -- "$MAC_AUTOPILOT_RUNTIME_DIR"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
   NEEDS_TRIAGE_JSON='[]' NEEDS_TRIAGE_IDS='' READY_MEASURE_IDS='' TRIAGE_ORDERED_COUNT=0 TRIAGE_BATCH_ACTIVE=0
   TRIAGE_CANDIDATE_QUERY_FAILED=0 READY_MEASURE_QUERY_FAILED=0 TRIAGE_SELECT_CUT=0 triage_slots=8
   TRIAGE_BATCH_IDS=()
@@ -1851,7 +1851,7 @@ assert_eq 'refresh launch failure still records its fault' \
 run_batch_admission_case() (
   local kind="$1" launch_status="$2" runtime_mode="${3:-absent}" status=0
   AGENT_HOME="$(mktemp -d)"
-  trap 'rm -rf -- "$AGENT_HOME" "$test_env_root"' EXIT
+  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
   MAC_AUTOPILOT_RUNTIME_DIR="$AGENT_HOME/runtime"
   [ "$runtime_mode" != present ] || mkdir -p -- "$MAC_AUTOPILOT_RUNTIME_DIR"
   REPO_DIR="$SCRIPT_DIR/.."
