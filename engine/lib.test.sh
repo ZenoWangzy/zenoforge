@@ -13,7 +13,7 @@
 # sections still run.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"; source "$SCRIPT_DIR/lib-test-setup.sh"; LIB_TEST_SETUP_DEFERRED=1; source "$SCRIPT_DIR/test-lib-helpers.sh"; unset LIB_TEST_SETUP_DEFERRED; lib_test_setup "$SCRIPT_DIR"; LIB_TEST_SETUP_COMPLETE=1
 
 test_provider_quota_classification() {
   local refusal="ERROR: You’ve hit your usage limit. Try again at Oct 19th, 2099 1:13 AM." event
@@ -2577,8 +2577,8 @@ assert_true "the needs-info-loop suffix step still routes to reply reconciliatio
 # advisor-origin needs-info answer back to needs-advisor (route_to_advisor,
 # which also clears the stale advisor_ruled_at), never to needs-triage --
 # that restart is only correct for the reporter/triage-origin case.
-RESUME_ANSWERED_BODY="$(sed -n '/^needs_info_resume_answered_issue() {/,/^}/p' "$SCRIPT_DIR/lib.d/route-advisor.sh")"
-TIMEOUT_STEP_BODY="$(sed -n '/^needs_info_timeout_step() {/,/^}/p' "$SCRIPT_DIR/lib.d/route-advisor.sh")"
+RESUME_ANSWERED_BODY="$(source "$SCRIPT_DIR/lib.d/route-advisor.sh" && declare -f needs_info_resume_answered_issue)"
+TIMEOUT_STEP_BODY="$(source "$SCRIPT_DIR/lib.d/route-advisor.sh" && declare -f needs_info_timeout_step)"
 assert_true "needs-info reconciliation and timeout share existing reply transition" \
   bash -c 'echo "$1" | grep -qF -- "needs_info_resume_answered_issue" && echo "$2" | grep -qF -- "needs_info_resume_answered_issue"' _ "$NEEDS_INFO_RECONCILE_BODY" "$TIMEOUT_STEP_BODY"
 assert_true "shared reply transition branches on needs_info_origin" \
@@ -3815,6 +3815,7 @@ done
 exec "${args[@]:$script}"
 EOF
     chmod +x "$TEST_BIN/systemd-run"
+    source "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh"
     eval "$(sed -n "/^dispatch() {/,/^}/p" "$ENV_FAULT_LIB_DIR/issue-pipeline.sh")"
     SCRIPT_DIR="$ENV_FAULT_LIB_DIR"
     eval "$(declare -f quarantine_mark_stage_dispatch_canaries | sed -e s/quarantine_mark_stage_dispatch_canaries/real_quarantine_mark_stage_dispatch_canaries/g)"
@@ -3877,7 +3878,6 @@ EOF
     RUN_RC=0; export RUN_RC; dispatch implement 932 || :
     ROOT="$ZF_REPO_DIR" SCHEDULER_AGENT_LIB="$ENV_FAULT_LIB_DIR/lib.sh" SCHEDULER_SCOPE_LIB_DIR="$ENV_FAULT_LIB_DIR/lib.d"; scheduler_issue_state() { state_read "$1"; }
     jqf() { command jq "$@"; }
-    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh")"
     scheduler_bridge_status=0; scheduler_mark_canary_after_worker_start 932 || scheduler_bridge_status=$?
     echo "scheduler_bridge_status=$scheduler_bridge_status"
     echo "requeue_scheduler_canaries=$(jq -r .canaries "$qf")"; echo "requeue_scheduler_reservation=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
@@ -3962,9 +3962,9 @@ assert_eq "advisor batch passes its reserved scopes to the launched runner" "adv
 PROVIDER_DISPATCH_BODY="$(sed -n '/^web_advisor_provider_dispatch_question_async() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
 assert_contains "advisor provider uses the shared canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine_mark_canary_scope_list'
 assert_contains "advisor provider reports a failed canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine canary mark failed'
-QUARANTINE_MARK_BODY="$(sed -n '/^quarantine_mark_canary() {/,/^}/p' "$SCRIPT_DIR/lib.d/quarantine.sh")"
+QUARANTINE_MARK_BODY="$(source "$SCRIPT_DIR/lib.d/quarantine.sh" && declare -f quarantine_mark_canary)"
 assert_contains "canary read-modify-write takes a per-scope flock" "$QUARANTINE_MARK_BODY" 'flock -x'
-BLOCKER_REQUEUE_BODY="$(sed -n '/^reconcile_blocking_issue_root() {/,/^}/p' "$SCRIPT_DIR/lib.d/blockers.sh")"
+BLOCKER_REQUEUE_BODY="$(source "$SCRIPT_DIR/lib.d/blockers.sh" && declare -f reconcile_blocking_issue_root)"
 assert_contains "blocker requeue persists its canary reservation" "$BLOCKER_REQUEUE_BODY" 'canary_reserved_scopes'
 assert_contains "blocker requeue clears its in-memory reservation after persistence" "$BLOCKER_REQUEUE_BODY" 'quarantine_stage_canary_forget_stage implement'
 assert_contains "scheduler consumes blocker reservations in the worker-start bridge" "$(cat "$SCRIPT_DIR/mac-autopilot/scheduler.d/dispatch.sh")" 'quarantine_mark_canary_scope_list "$scope"'
