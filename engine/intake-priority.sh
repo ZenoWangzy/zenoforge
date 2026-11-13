@@ -151,30 +151,10 @@ intake_priority_overlay_decision() { # issue-json decision-json config-json → 
   local issue_json="$1" decision_json="$2" config="$3" issue_arg decision_arg result
   issue_arg="$(jq_arg_file "$issue_json")" || return 1
   decision_arg="$(jq_arg_file "$decision_json")" || { rm -f -- "$issue_arg"; return 1; }
-  result="$(jq -cn --slurpfile issue_rows "$issue_arg" --slurpfile decision_rows "$decision_arg" --argjson config "$config" '
+  result="$(jq -L "$INTAKE_PRIORITY_DIR" -cn --slurpfile issue_rows "$issue_arg" --slurpfile decision_rows "$decision_arg" --argjson config "$config" '
+    import "intake-priority-policy" as intake_policy;
     $issue_rows[0] as $issue | $decision_rows[0] as $decision
-    | ($config.labels) as $labels_config
-    | ($issue.labels // [] | map(if type == "string" then . else .name // "" end)) as $labels
-    | ((($issue.title // "") + " " + ($labels | join(" "))) | ascii_downcase) as $haystack
-    | (($config.founder_issues // []) | index($issue.number) != null
-        or ($labels | index("founder-test") != null)) as $founder
-    | (($config.off_market_issues // []) | index($issue.number) != null
-        or any(($config.off_market_terms // [])[]; . as $term | $haystack | contains($term | ascii_downcase))) as $off_market
-    | (any($labels[]; . == "hotfix" or . == "incident" or . == "production-anomaly")) as $hotfix_incident
-    | ($labels | index("bug") != null) as $bug
-    | ($labels | index("enhancement") != null) as $enhancement
-    | (if $founder then
-         (if $decision.priority == $labels_config.high or $decision.priority == $labels_config.top
-          then $labels_config.top else $labels_config.high end)
-       elif $off_market then $labels_config.low
-       elif $hotfix_incident then $labels_config.top
-       elif $bug then $labels_config.high
-       elif $enhancement then $labels_config.normal
-       else $decision.priority end) as $priority
-    | (if $founder then "founder-ask" elif $off_market then "off-market"
-       elif $hotfix_incident then "hotfix-incident" elif $bug then "bug"
-       elif $enhancement then "fruit-feature" else null end) as $overlay
-    | $decision + {priority:$priority,overlay:$overlay}
+    | intake_policy::intake_priority_overlay($issue; $decision; $config)
   ' 2>/dev/null)" || { rm -f -- "$issue_arg" "$decision_arg"; return 1; }
   rm -f -- "$issue_arg" "$decision_arg"
   printf '%s\n' "$result"

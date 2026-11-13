@@ -26,6 +26,12 @@ jq -n '[
   {number:9005,title:"Production outage",body:"",labels:[{name:"ready-for-agent"},{name:"hotfix"}],state:"OPEN"},
   {number:9006,title:"Totals are incorrect",body:"",labels:[{name:"ready-for-agent"},{name:"bug"}],state:"OPEN"},
   {number:9007,title:"Add harvest dashboard",body:"",labels:[{name:"ready-for-agent"},{name:"enhancement"}],state:"OPEN"},
+  {number:9008,title:"Sports broadcast rights outage",body:"",labels:[{name:"ready-for-agent"},{name:"hotfix"}],state:"OPEN"},
+  {number:9009,title:"Sports league totals bug",body:"",labels:[{name:"ready-for-agent"},{name:"bug"}],state:"OPEN"},
+  {number:9010,title:"Incident: fruit tenant outage",body:"",labels:[{name:"ready-for-agent"},{name:"prod-anomaly"}],state:"OPEN"},
+  {number:9011,title:"Incident: factory alarm",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"},
+  {number:9012,title:"[HOT-FIX] fruit tenant outage",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"},
+  {number:9013,title:"【热修】fruit tenant outage",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"},
   {number:6289,title:"New industry backlog item",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"}
 ]' > "$INTAKE_OVERLAY_ISSUES"
 
@@ -53,7 +59,7 @@ number="$(jq -r '.issue.number' <<< "$state")"
 case "$number" in
   3066) priority=priority:normal ;;
   9001) priority=priority:high ;;
-  9002|9003|6289) priority=priority:top ;;
+  9002|9003|6289|9008|9009|9010|9011|9012|9013) priority=priority:top ;;
   9004) priority=priority:high ;;
   9005) priority=priority:low ;;
   9006) priority=priority:top ;;
@@ -110,8 +116,14 @@ expect_eq 'configured off-market issue cap' 'priority:low' "$(issue_priority 628
 # A fruit issue without a tier marker keeps the judge score; business classes impose hotfix > bug > fruit feature > off-market.
 expect_eq 'fruit issue keeps judge score' 'priority:high' "$(issue_priority 9004)"
 expect_eq 'hotfix tier' 'priority:top' "$(issue_priority 9005)"
+expect_eq 'hotfix stays above off-market cap' 'priority:top' "$(issue_priority 9008)"
 expect_eq 'bug tier' 'priority:high' "$(issue_priority 9006)"
+expect_eq 'bug stays above off-market cap' 'priority:high' "$(issue_priority 9009)"
 expect_eq 'fruit feature tier' 'priority:normal' "$(issue_priority 9007)"
+expect_eq 'prod-anomaly label is hotfix tier' 'priority:top' "$(issue_priority 9010)"
+expect_eq 'Incident title is hotfix tier' 'priority:top' "$(issue_priority 9011)"
+expect_eq 'existing [HOT-FIX] title marker is hotfix tier' 'priority:top' "$(issue_priority 9012)"
+expect_eq 'existing Chinese title marker is hotfix tier' 'priority:top' "$(issue_priority 9013)"
 
 issue_file="$test_root/off-market.issue.json"
 result_file="$test_root/off-market.result.json"
@@ -121,23 +133,64 @@ bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$i
 expect_eq 'label writer uses the off-market overlay decision' true \
   "$(grep -F -- '--add-label priority:low' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
 
-# The scheduler consumes ready units from dispatch_order, so verify the same tiers at the actual pick seam.
-CFG="$(cat -- "$SCRIPT_DIR/mac-autopilot/config.template.json")"
-DISPATCH_PRIORITY_ORDER='["hotfix","opt","normal"]'
+# Verify ready-unit order through dispatch_pending, the scheduler's public dispatch entry point.
+scheduler_fixture="$test_root/scheduler"
+export MAC_AUTOPILOT_ROOT="$scheduler_fixture/repo"
+export MAC_AUTOPILOT_SUPERVISOR_DIR="$scheduler_fixture/supervisor"
+export MAC_AUTOPILOT_RUNTIME_DIR="$scheduler_fixture/supervisor/autopi"
+export REQUIRED_PR_CHECKS_FILE="$SCRIPT_DIR/mac-autopilot/required-pr-checks.json"
+mkdir -p "$MAC_AUTOPILOT_ROOT" "$MAC_AUTOPILOT_RUNTIME_DIR/alerts"
+jq '.max_workers=8 | .implement_cap=8 | .hotfix_lane.supervisor_owned=false
+  | .dispatch_first_issues=[8201]' "$SCRIPT_DIR/mac-autopilot/config.template.json" > "$MAC_AUTOPILOT_RUNTIME_DIR/config.json"
+printf '%s\n' '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
+export AUTOPI_TEST_LIBRARY_ONLY=true
+source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+unset AUTOPI_TEST_LIBRARY_ONLY
+LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
+UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+WORKERS="$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
+STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+NOW_EPOCH="$(date +%s)"
+SCHED_LOCK_HELD=true
+DRY_RUN=0
+dispatch_live_prime() { :; }
+paused_midrun() { return 1; }
+footprint_waiters_revalidate() { :; }
+dispatch_why_load() { :; }
+dispatch_why_save() { :; }
+dispatch_steps_say() { :; }
+footprint_convoy_alert() { return 0; }
+ticket_budget_reason() { return 0; }
+park_if_body_blocked() { return 1; }
+room_for() { return 0; }
+pick() {
+  PICK_MODEL=fixture PICK_EFFORT=high PICK_PROVIDER=fixture PICK_HARD=false
+  PICK_REASON=fixture PICK_ROUTE_PROVIDER=fixture
+}
+footprint_room() { return 0; }
+ensure_clone() { printf '%s\n' "$MAC_AUTOPILOT_ROOT"; }
+resume_handoff_integration() { return 0; }
+verification_plan_for_state() { printf '{}'; }
+verification_plan_brief() { printf 'fixture'; }
+matt_method_rule() { :; }
+decision_scope() { :; }
+feature_verification_prompt() { :; }
+implement_report_sections() { printf 'fixture'; }
+direct_main_worker_prompt() { printf '%s' "$1"; }
+dispatches=()
+dispatch_if_room() { dispatches+=("$1"); return 0; }
 jq -n '{units:[
-  {id:"off-market",issue:8201,title:"Sports broadcast rights",labels:["enhancement"],stage:"implement-pending",lane:"pr",history:[]},
-  {id:"fruit-feature",issue:8202,title:"Fruit feature",labels:["enhancement"],stage:"implement-pending",lane:"pr",history:[]},
-  {id:"bug",issue:8203,title:"Bug fix",labels:["bug"],stage:"implement-pending",lane:"pr",history:[]},
-  {id:"hotfix",issue:8204,title:"Production incident",labels:["hotfix"],stage:"implement-pending",lane:"pr",history:[]}
- ]}' > "$test_root/units.json"
-UNITS="$test_root/units.json"
-DISPATCH_FIRST_ISSUES='[]'
-TICK_DISPATCH_PENDING_ACTIVE=false
-jqf() { jq "$@"; }
-say() { :; }
-source "$SCRIPT_DIR/mac-autopilot/scheduler.d/stop-loss.sh"
-expect_eq 'ready units dispatch in business tier order' 'hotfix bug fruit-feature off-market' \
-  "$(dispatch_order | jq -r '.id' | paste -sd ' ' -)"
+  {id:"off-market",issue:8201,title:"Sports broadcast rights",labels:["enhancement"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/off-market",main_red:true,critical:true,history:[]},
+  {id:"fruit-feature",issue:8202,title:"Fruit feature",labels:["enhancement"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/fruit",history:[]},
+  {id:"bug",issue:8203,title:"Bug fix",labels:["bug"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/bug",history:[]},
+  {id:"hotfix",issue:8204,title:"Production incident",labels:["hotfix"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/hotfix",history:[]},
+  {id:"founder",issue:3066,title:"Founder sports request",labels:["enhancement","priority:high"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/founder",history:[]}
+ ]}' > "$UNITS"
+dispatch_pending true
+# The founder fixture shares the fruit tier; its priority:high label sorts it before the normal fruit feature.
+expect_eq 'ready units dispatch in factory tier order' 'hotfix bug founder fruit-feature off-market' \
+  "${dispatches[*]}"
 
 # TypeSafe logs the code-owned overlay reason with the decision event without seeing or choosing the policy.
 export TYPESAFE_JUDGE_LOG="$test_root/ts-judge.jsonl"

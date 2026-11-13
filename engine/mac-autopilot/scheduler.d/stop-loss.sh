@@ -362,31 +362,21 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
   return 1
 }
 # ---------- 2. 派发（焦点与并发；预算只告警） ----------
-# New worker slots keep the existing main-red/hotpatch/critical urgency, then apply intake's founder and market tiers before stage and lane.
+# New worker slots apply intake's founder, hotfix, bug, fruit and market tiers before the existing urgency, stage and lane keys.
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。
 dispatch_order() {
   local started=$SECONDS rc=0 elapsed
-  jqf -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" \
+  jqf -L "$ENGINE_ROOT/engine" -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" \
     --argjson intake_priority "$(jqf -c '.intake_priority // {}' <<<"$CFG")" '
+    import "intake-priority-policy" as intake_policy;
     .units
     | map(select(.stage | test("-pending$")))
     | sort_by([
+        intake_policy::intake_dispatch_tier(.; $intake_priority),
         (.issue as $issue | if any($first_issues[] | numbers; . == $issue) then 0 else 1 end),
         (if .main_red == true then 0 else 1 end),
         (if .hotpatch == true then 0 else 1 end),
         (if .critical == true then 0 else 1 end),
-        (. as $unit
-          | ([$unit.labels[]? | if type == "string" then . else .name // "" end]) as $labels
-          | (($unit.title // "") + " " + ($labels | join(" ")) | ascii_downcase) as $haystack
-          | (($intake_priority.founder_issues // []) | index($unit.issue) != null
-              or ($labels | index("founder-test") != null)) as $founder
-          | (($intake_priority.off_market_issues // []) | index($unit.issue) != null
-              or any(($intake_priority.off_market_terms // [])[]; . as $term | $haystack | contains($term | ascii_downcase))) as $off_market
-          | any($labels[]; . == "hotfix" or . == "incident" or . == "production-anomaly") as $hotfix_incident
-          | ($labels | index("bug") != null) as $bug
-          | ($labels | index("enhancement") != null) as $enhancement
-          | if $founder then 1 elif $off_market then 4 elif $hotfix_incident then 0
-            elif $bug then 2 elif $enhancement then 3 else 3 end),
         (. as $unit
           | ([$unit.labels[]? | if type == "string" then . else .name // "" end]) as $labels
           | if ($labels | index($intake_priority.labels.top // "priority:top")) != null then 0
