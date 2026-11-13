@@ -11,9 +11,6 @@ source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 
 # Deadline math and assertions share a clock driven by the test's SECONDS.
 MAINTENANCE_TEST_EPOCH_MS=1700000000000
-maintenance_now_epoch_ms() {
-  printf '%s\n' "$((MAINTENANCE_TEST_EPOCH_MS + SECONDS * 1000))"
-}
 
 if [[ "${1:-}" == --plant-old ]]; then
   PLANT_OLD_ORDER=1
@@ -88,7 +85,6 @@ sweep_reopened_issues() {
 }
 sweep_blocking_issue_roots() { CALLS+=(needs-info-blocker-roots); }
 sweep_unlabeled_issues() { CALLS+=(needs-info-unlabeled); }
-reconcile_needs_info_issues() { CALLS+=(needs-info-loop); }
 sweep_closed_ready_states() { CALLS+=(closed-state-sweep); }
 manual_pause_is_valid() { return 1; }
 main_red_bisect_sweep() { CALLS+=(main-red-bisect); }
@@ -125,6 +121,7 @@ maintenance_now_epoch_ms() {
   printf '%s\n' "$((MAINTENANCE_TEST_EPOCH_MS + SECONDS * 1000))"
 }
 reconcile_needs_info_issues() { CALLS+=(needs-info-loop); }
+ZF_GH_CALL_DEADLINE_EPOCH_MS=$(( $(maintenance_now_epoch_ms) + 300000 ))
 GH_LIST_CALLS=0
 gh() { GH_LIST_CALLS=$((GH_LIST_CALLS + 1)); return 1; }
 SECONDS=87
