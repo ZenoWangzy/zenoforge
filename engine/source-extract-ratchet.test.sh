@@ -57,8 +57,8 @@ trap 'rm -rf -- "$fixture_root" "$test_env_root"' EXIT
 mkdir -p "$fixture_root/engine"
 git -C "$fixture_root" init -q -b main
 {
-  printf '%s%s%s\n' 'sed -n ' "'" '/^first() {/,/^}/p' engine/source.sh'
-  printf '%s%s%s\n' 'sed -n ' '"' '/^second() {/,/^}/p' engine/source.sh'
+  printf '%s%s%s%s\n' 'sed -n ' "'" '/^first() {/,/^}/p' "' engine/source.sh"
+  printf '%s%s%s%s\n' 'sed -n ' '"' '/^second() {/,/^}/p' '" engine/source.sh'
 } > "$fixture_root/engine/fake.test.sh"
 git -C "$fixture_root" add engine/fake.test.sh
 fixture_baseline="$fixture_root/source-extract-baseline.txt"
