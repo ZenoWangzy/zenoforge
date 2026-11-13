@@ -78,7 +78,7 @@
   },
   "allow_roles": {
     "sonnet": ["hand-claude"],
-    "haiku": ["triage-haiku", "hand-claude", "unit-review-fallback"],
+    "haiku": ["triage-haiku", "hand-claude", "review_fallback", "unit-review-fallback"],
     "terra": ["unit-implement-hotfix"]
   },
   "escalation": {
