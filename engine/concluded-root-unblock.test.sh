@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$MODEL_POLICY_TEST_DEFAULT_FILE" > "$AGENT_HOME/model-policy.json"
 source "$SCRIPT_DIR/lib.sh"
 TEST_HOME="$AGENT_HOME"
-trap 'rm -rf -- "$TEST_HOME"' EXIT
+trap 'rm -rf -- "$TEST_HOME" "$test_env_root"' EXIT
 
 FAILED=0
 assert_contains() {
