@@ -6,13 +6,13 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 trap 'rm -rf "$test_env_root"' EXIT
 
 repo_root="$MAC_AUTOPILOT_ENV_ROOT"
-HERE="$repo_root/engine/mac-autopilot/scheduler.d"
+HERE="$repo_root/engine/mac-autopilot"
 ROOT="$test_env_root/product"
 SUP="$test_env_root/sup"
 mkdir -p "$ROOT/scripts/ci" "$ROOT/scripts/checks" "$ROOT/packages/fruit/tests" "$ROOT/packages/fruit/src" "$ROOT/.zenoforge/state" "$SUP"
-source "$HERE/self-check.sh"
-source "$HERE/review-rules.sh"
-source "$HERE/reports.sh"
+source "$HERE/scheduler.d/self-check.sh"
+source "$HERE/scheduler.d/review-rules.sh"
+source "$HERE/scheduler.d/reports.sh"
 jqf() { command jq "$@"; }
 unit_field() { printf '%s' "$SUP/self-check.log"; }
 test_evidence_has_pass() { return 1; }

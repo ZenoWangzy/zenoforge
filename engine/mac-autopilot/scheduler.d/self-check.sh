@@ -1,12 +1,13 @@
 self_check_run() (
   set -o pipefail
-  local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source
+  local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source runner_path
   local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
   local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
   local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg
   local delegate_tests=0
   local -a builds=()
-  runner_source="$(<"$HERE/escape-suite-runner.mjs")" || return 1
+  runner_path="$(dirname -- "${BASH_SOURCE[0]}")/escape-suite-runner.mjs"
+  runner_source="$(<"$runner_path")" || return 1
   cd "$dir" || return 1
   tree="$(git rev-parse "$sha^{tree}")" || return 1
   base="$(git merge-base origin/main "$sha")" || return 1
