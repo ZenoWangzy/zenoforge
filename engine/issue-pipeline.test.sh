@@ -2455,7 +2455,11 @@ run_env_proxy_site() (
 )
 assert_eq "the three inline issue-pipeline systemd-run sites carry NO_PROXY and the Node env-proxy opt-in" 3 \
   "$(grep -c -- '-E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY' "$PIPELINE_SRC")"
-assert_eq 'the advisor batch site takes the shared unit environment' 1 "$(grep -Fc '"${ZF_ADVISOR_BATCH_UNIT_ENV[@]}"' "$PIPELINE_SRC")"
+# 2026-11-13: the triage units lacked TYPESAFE_ENV_FILE, so intake-priority logged "skipped (missing-typesafe-key)"
+# 89 times in 30 h and no vecta issue got a priority label. Stage and triage-batch units import it.
+assert_eq 'the stage and triage-batch systemd-run sites import TYPESAFE_ENV_FILE' 2 \
+  "$(grep -c -- '-E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE' "$PIPELINE_SRC")"
+assert_eq 'the advisor batch site takes the shared unit environment' 1"$(grep -Fc '"${ZF_ADVISOR_BATCH_UNIT_ENV[@]}"' "$PIPELINE_SRC")"
 assert_eq 'the shared unit environment carries the proxies and the provider job directory' yes \
   "$(source "$SCRIPT_DIR/config.sh"; grep -q -- '-E NO_PROXY -E NODE_USE_ENV_PROXY .*-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR' <<< "${ZF_ADVISOR_BATCH_UNIT_ENV[*]}" && echo yes || echo no)"
 assert_eq 'the single-ticket advisor dispatch passes the provider job directory' 1 \
