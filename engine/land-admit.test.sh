@@ -65,13 +65,25 @@ GH_API_RC=0
 GH_DELETE_RC=0
 
 gh() {
+  local method=""
   GH_CALL_COUNT=$((GH_CALL_COUNT + 1))
   printf '%s\0' "$@" > "$GH_LOG_DIR/call-$GH_CALL_COUNT"
   case "${1-} ${2-} ${3-}" in
     'pr merge '*) printf 'gh merge output\n'; return "$GH_RC" ;;
     'pr view '*) printf '{"headRefName":"feature/topic"}\n'; return 0 ;;
-    'api -X PUT '*) return "$GH_API_RC" ;;
-    'api -X DELETE '*) return "$GH_DELETE_RC" ;;
+    'api '*)
+      while (($#)); do
+        if [[ "$1" == -X && $# -ge 2 ]]; then
+          method="$2"
+          break
+        fi
+        shift
+      done
+      case "$method" in
+        PUT) return "$GH_API_RC" ;;
+        DELETE) return "$GH_DELETE_RC" ;;
+      esac
+      ;;
   esac
   return 90
 }
