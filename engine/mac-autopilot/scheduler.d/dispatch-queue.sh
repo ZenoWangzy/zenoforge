@@ -157,6 +157,7 @@ dispatch_pending() {
     paused_midrun dispatch && break
     [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || break # footprint_room said why
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"; why_unit="$id"
+    branch="$(jqf -r '.branch // empty' <<<"$u")"
     # The kill counts from the refill's start, and one start can take a minute under load. 90 matches the merge pass stop.
     if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
       say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"

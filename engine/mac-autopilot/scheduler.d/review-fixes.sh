@@ -15,7 +15,7 @@ review_fix_refusal_report() { # parsed findings reason unit head → report base
   safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
   out="review-fix-refused-${safe_id}-${head:0:12}.md"
   if [[ -n "$parsed" ]]; then
-    block="$(jq -c --arg reason "$reason" '
+    block="$(jq -c --rawfile reason <(printf '%s' "$reason") '
       .findings |= (if any(.[]; .status=="fixed-in-review") then
         map(if .status=="fixed-in-review" then
           .status="open"
@@ -30,7 +30,7 @@ review_fix_refusal_report() { # parsed findings reason unit head → report base
         rerun_command:"review fix scope and receipt gate",rerun_output:$reason}]
       end) | {findings:.findings,dispositions:[]}' <<<"$parsed")" || return 1
   else
-    block="$(jq -cn --arg reason "$reason" '{findings:[{id:"RF1",severity:"P1",file:"review-fix",line:1,rule:"Review fix gate",status:"open",
+    block="$(jq -cn --rawfile reason <(printf '%s' "$reason") '{findings:[{id:"RF1",severity:"P1",file:"review-fix",line:1,rule:"Review fix gate",status:"open",
       summary:("Reviewer changed the PR head outside the in-review fix contract: " + $reason),
       introduced_by:"candidate",base_evidence:"The reviewed head did not contain this commit.",
       rerun_command:"review fix scope and receipt gate",rerun_output:$reason}],dispositions:[]}')" || return 1
@@ -89,15 +89,18 @@ review_fix_run_receipt() { # repo head test path → test runner rc, recorded at
 
 review_fix_gate() { # repo base-sha current-pr-head report provider model branch lane observed-pr-head unit → JSON result
   local repo="$1" base="$2" current="$3" report="$4" provider="$5" model="$6" branch="$7" lane="$8" observed="$9" unit="${10}"
-  local parsed='' fixed_count=0 finding file test_path commit_sha parent author_name author_email committer_name committer_email base_author_name base_author_email expected_name expected_email status source_numstat adds dels source_lines reason='' refusal_report='' actual_branch
+  local parsed='' fixed_count=0 finding file test_path commit_sha parent author_name author_email committer_name committer_email base_author_name base_author_email expected_name expected_email status repo_head repo_is_git=false source_numstat adds dels source_lines reason='' refusal_report='' actual_branch
   parsed="$(findings_block_of "$report" 2>/dev/null || true)"
   if [[ -n "$parsed" ]]; then fixed_count="$(jq -r '[.findings[] | select(.status=="fixed-in-review")] | length' <<<"$parsed")" || fixed_count=0; fi
   [[ "$fixed_count" =~ ^[0-9]+$ ]] || fixed_count=0
   status="$(git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null || true)"
   actual_branch="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if (( fixed_count == 0 )); then
-    if [[ -n "$status" || "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" != "$base" \
-       || ( "$lane" == pr && ( "$current" != "$observed" || "$current" != "$base" ) ) ]]; then
+    if [[ -n "$repo" ]] && git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      repo_is_git=true; repo_head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    if [[ ( "$repo_is_git" == true && ( -n "$status" || "$repo_head" != "$base" ) ) \
+       || ( "$lane" == pr && ( ! "$observed" =~ ^[0-9a-f]{40}$ || "$current" != "$observed" ) ) ]]; then
       reason='the reviewer changed the worktree or PR head without a fixed-in-review finding'
     else
       review_fix_result approve READY "$base" "$observed" ''
