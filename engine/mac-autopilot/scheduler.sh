@@ -59,6 +59,7 @@ declare -F gh_timeout >/dev/null 2>&1 || source "$HERE/../lib.d/transport.sh"
 # in a permanent "required checks skipped" wait for PRs whose heavy jobs did not start.
 declare -F gh_timeout >/dev/null 2>&1 || source "$HERE/../lib.d/transport.sh"
 declare -F issue_rest_view >/dev/null 2>&1 || source "$HERE/../lib.d/issue-rest.sh"
+source "$HERE/../land-admit.sh"
 source "$HERE/scheduler.d/core.sh"
 ADVISOR_PROVIDER_SCRIPT="$(source "$HERE/../config.sh" && printf '%s' "$ZF_WEB_ADVISOR_PROVIDER_SCRIPT")"
 if [[ -z "${MODEL_POLICY_DEFAULT:-}" ]]; then
