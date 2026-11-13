@@ -10,7 +10,7 @@ command -v jq >/dev/null || { echo 'dispatch-queue-footprint-first: jq is requir
 
 events="$(mktemp)"
 UNITS="$(mktemp)"
-trap 'rm -f -- "$events" "$UNITS"' EXIT
+trap 'rm -rf -- "$events" "$UNITS" "$test_env_root"' EXIT
 export DISPATCH_QUEUE_FOOTPRINT_EVENTS="$events"
 
 unit='{"id":"issue-2095","issue":2095,"pr":5012,"stage":"repair-pending","branch":"","history":[],"title":"reproduce footprint-blocked repair dispatch","lane":"pull-request","advisor_round":0}'
@@ -21,6 +21,8 @@ CFG='{"advisor":false}'
 jq -nc --argjson u "$unit" '{units:[$u]}' > "$UNITS"
 
 source "$queue_source"
+declare -F tick_step_lock_run >/dev/null 2>&1 \
+  && { echo 'dispatch-queue-footprint-first: dispatch-queue.sh unexpectedly loaded tick-steps.sh' >&2; exit 1; }
 
 jqf() { jq "$@"; }
 dispatch_order() { printf '%s\n' "$unit"; }

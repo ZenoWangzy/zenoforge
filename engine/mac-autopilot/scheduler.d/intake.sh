@@ -5,6 +5,7 @@
 # 非产品标签走直落车道，产品标签（默认 ready-for-agent）走 PR 车道（实现 → 推分支 → 流水线开 PR → 评审 → 合并 → 发布列车）。
 # WIP 护栏（Little 定律）：开发/评审/返工环节在途 ≤ max_upstream（默认 2×max_workers）；待合并队列 ≥ max_ready（默认 30）时停止收单——瓶颈在合并车道，堆更多 WIP 只会拉长交付时间。
 # founder-test 是维护者提的 issue，队列里排第一（docs/agents/issue-pipeline.md），不是跳过标签（2026-10-20 曾误跳过 30 个）。
+declare -F tick_step_lock_run >/dev/null 2>&1 || source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/tick-steps.sh"
 intake_remote_read_reserve() { # Reserve one bounded GH read across this tick and any intake subprocesses.
   local cap="${ISSUE_INTAKE_REMOTE_READ_CAP:-24}" used=0 marker
   [[ -n "${TICK_INTAKE_READS_FILE:-}" ]] || return 0
@@ -252,7 +253,7 @@ intake_census_prime() { # the open-PR census the handoff block reads; register_n
     units_update '.units |= map(if .hold_handoff_lookup_pending == true then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)'
   fi
 }
-register_new_issues() {
+register_new_issues_pass() {
   local enabled live pending upstream total_upstream total_room max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
   local cached_prs busy_prs issue64
@@ -794,3 +795,5 @@ register_new_issues() {
   fi
   if (( ! existing_only && added == 0 && ! only_pred )); then intake_idle_alert "$live" "$pending"; fi
 }
+
+register_new_issues() { local step=register_new_issues TICK_STEP_LOCK_RESULT=""; [[ "${1:-}" != 1 ]] || step=existing_walk; tick_step_lock_run "$step" register_new_issues_pass "$@"; }

@@ -71,19 +71,25 @@ failures=()
 [[ -z "$(grep -v '^unlocked$' "$GH_TEST_LOCKS" || true)" ]] \
   || failures+=('a remote intake read ran while the ledger lock was held')
 
-# Guard the production call sites as well as the helper: registration and dispatch
-# must keep the same release/read/commit/reacquire flow as the runtime lock helper.
-grep -Fq 'phase_yield_lock_batch run_issue_intake_phases' "$script_dir/scheduler.sh" \
-  || failures+=('full-tick issue registration does not yield the ledger lock')
-# The tick's opening holds the lock; a yield around the census prime let a refill in at tick start, and 9 of 37 such refills were killed.
 tick_body="$(sed -n '/^main() {/,/^}/p' "$script_dir/scheduler.sh")"
+# Guard the production call sites as well as the worker: all three heavy steps start detached.
+grep -Fq 'start_detached_tick_step register_new_issues' <<<"$tick_body" \
+  && grep -Fq 'register_new_issues) tick_step_register_issues' "$script_dir/scheduler.d/tick-steps.sh" \
+  || failures+=('full-tick issue registration is not a detached step')
+grep -Fq 'start_detached_tick_step release_dependency_blocks' <<<"$tick_body" \
+  && grep -Fq 'release_dependency_blocks) phase release_dependency_blocks' "$script_dir/scheduler.d/tick-steps.sh" \
+  || failures+=('full-tick dependency release is not a detached step')
+# The tick's opening holds the lock; a yield around the census prime let a refill in at tick start, and 9 of 37 such refills were killed.
 grep -Fq 'phase tick_prs_prime' <<<"$tick_body" && ! grep -Fq 'phase_yield_lock tick_prs_prime' <<<"$tick_body" \
   || failures+=('the full tick yields the ledger lock at tick start, so a refill can queue behind its opening')
 # The closing steps (focus alert, snapshot, views, cleanup) run without the ledger lock: 128s of lock hold there blocked a refill's writes.
 [[ "${tick_body%%phase_mark flush_focus_alert*}" == *release_scheduler_lock* ]] \
   || failures+=('the full tick still holds the ledger lock through its closing steps')
-grep -Fq 'phase_yield_lock dispatch_pending' "$script_dir/scheduler.sh" \
-  || failures+=('full-tick dispatch does not yield the ledger lock')
+grep -Fq 'start_detached_tick_step dispatch_pending' <<<"$tick_body" \
+  && grep -Fq 'tick_step_lock_run dispatch_pending' "$script_dir/scheduler.d/dispatch-queue.sh" \
+  || failures+=('full-tick dispatch is not detached under its step lock')
+grep -Fq 'phase dispatch_pending || rc=$?' "$script_dir/scheduler.d/tick-steps.sh" \
+  || failures+=('detached full-tick dispatch must not select refill mode')
 grep -Fq 'phase_yield_lock_batch run_refill_intake_dispatch_phases' "$script_dir/scheduler.sh" \
   || failures+=('refill issue registration and dispatch do not yield the ledger lock')
 
@@ -102,6 +108,7 @@ grep -Fq 'phase_yield_lock_batch run_refill_intake_dispatch_phases' "$script_dir
   tick_gh_calls_begin() { :; }; tick_gh_calls_count() { printf '0\n'; }
   tick_roadmap_cache_begin() { :; }; tick_roadmap_cache_end() { :; }
   harvest_station_fresh() { return 0; }; supervisor_marking_deferred() { return 1; }
+  start_detached_tick_step() { :; }
   paused_midrun() { return 1; }; phase_mark() { :; }; say() { :; }
   git() { return 1; }; update_budget() { return 0; }; record_run_spend() { return 0; }
   live_workers() { printf '0\n'; }; dispatch_skip_summary() { printf '\n'; }
@@ -143,6 +150,79 @@ for late in 180 240; do
   [[ "${order[*]}" == "$want" ]] || failures+=("refill phase order at ${late}s was '${order[*]}', want '$want'")
 done
 SECONDS=0
+
+# The tick starts detached heavy steps: one slow dispatch must not hold up the
+# tick, and the next tick skips that step while its per-step flock is held.
+(
+  detached="$fixture/detached-steps"
+  mkdir -p "$detached/repo" "$detached/supervisor/autopi/alerts" "$detached/worker"
+  ROOT="$detached/repo"; SUP="$detached/supervisor"; A="$detached/supervisor/autopi"
+  UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
+  STAMP=detached-step-test; NOW_EPOCH=1793577600; MAX=20; IMPLEMENT_CAP=20
+  SCHED_LOCK="$A/.scheduler.lock"; SCHED_LOCK_HELD=false; PAUSE_FILE="$A/PAUSE"
+  printf '{"units":[]}\n' > "$UNITS"; printf '{"workers":[]}\n' > "$WORKERS"
+  : > "$LOG"
+
+  cat > "$detached/worker/scheduler.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$TICK_STEP_LIBRARY"
+tick_step_execute() {
+  printf 'start %s\n' "$1" >> "$TICK_STEP_CALLS"
+  [[ "$1" != dispatch_pending ]] || sleep 2
+  printf 'finish %s\n' "$1" >> "$TICK_STEP_CALLS"
+}
+say() { printf '%s\n' "$*" >> "$LOG"; }
+tick_step_run "${2:-}"
+SH
+  chmod +x "$detached/worker/scheduler.sh"
+  HERE="$detached/worker"
+  export TICK_STEP_LIBRARY="$script_dir/scheduler.d/tick-steps.sh"
+  export TICK_STEP_CALLS="$detached/worker-calls" LOG
+  : > "$TICK_STEP_CALLS"
+
+  state_schema_ok() { return 0; }
+  tick_gh_calls_begin() { :; }; tick_gh_calls_count() { printf '0\n'; }
+  tick_roadmap_cache_begin() { :; }; tick_roadmap_cache_end() { :; }
+  harvest_station_fresh() { return 0; }; ci_station_fresh() { return 0; }; merge_station_fresh() { return 0; }
+  existing_walk_fresh() { return 0; }; intake_census_prime() { :; }; existing_walked_load() { :; }
+  supervisor_marking_deferred() { return 1; }; paused_midrun() { return 1; }
+  phase() { :; }; phase_mark() { :; }; say() { printf '%s\n' "$*" >> "$LOG"; }
+  rotate_logs() { :; }; update_budget() { return 0; }; budget_meter_scan() { :; }; budget_alert_if_needed() { :; }
+  git() { return 1; }; live_workers() { printf '0\n'; }; dispatch_skip_summary() { printf '\n'; }
+  tick_prs_changed() { :; }
+  for stub in coord_reap_expired coord_reconcile_systemd_workers coord_reconcile_scheduler_workers \
+      reconcile_size_recuts self_check_harvest precheck_harvest recover_orphans recover_orphan_landing \
+      live_event_watch retire_terminal_units stuck_worker_disposition retire_landed_pr_units \
+      supersede_resolved_main_red_units mark_supervisor_owned_units release_session_pr_units \
+      dispatch_supervisor_arbiters dispatch_prompt_evals fast_land_lane register_new_prs \
+      reconcile_orphan_prs aged_pr_lifecycle run_release_train stage_slo_watch footprint_hog_alert \
+      flush_focus_alert publish_pr_run_snapshot launch_views cleanup_tick tick_prs_prime; do
+    eval "$stub() { :; }"
+  done
+
+  SECONDS=0; main; first_elapsed=$SECONDS
+  (( first_elapsed < 2 )) || fail "tick waited for its detached dispatch step (${first_elapsed}s)"
+  for _ in $(seq 100); do
+    grep -Fxq 'start dispatch_pending' "$TICK_STEP_CALLS" && break
+    read -t 0.02 <> <(:) || :
+  done
+  grep -Fxq 'start dispatch_pending' "$TICK_STEP_CALLS" || fail 'the detached dispatch worker did not start'
+
+  SCHED_LOCK_HELD=false
+  SECONDS=0; main; second_elapsed=$SECONDS
+  (( second_elapsed < 2 )) || fail "second tick waited for its detached dispatch step (${second_elapsed}s)"
+  for _ in $(seq 100); do
+    grep -Fq 'tick-step skipped step=dispatch_pending' "$LOG" && break
+    read -t 0.02 <> <(:) || :
+  done
+  grep -Fq 'tick-step skipped step=dispatch_pending' "$LOG" || fail 'the second tick did not skip the locked dispatch step'
+  for _ in $(seq 150); do
+    grep -Fxq 'finish dispatch_pending' "$TICK_STEP_CALLS" && break
+    read -t 0.02 <> <(:) || :
+  done
+  grep -Fxq 'finish dispatch_pending' "$TICK_STEP_CALLS" || fail 'the slow detached dispatch worker did not finish'
+)
 
 if ((${#failures[@]})); then
   printf 'not ok - %s\n' "${failures[@]}" >&2
