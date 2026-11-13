@@ -157,6 +157,28 @@ test_census() {
   [[ "$DISPATCH_HOOK_N" == 4 && "$lists" == 1 && "$views" == 0 ]] || fail "dispatch expected one fresh census for four PRs, got $lists list(s), $views view(s)"
 }
 
+test_adopt() { # #1038: the per-head PR lookup is answered from the loaded census
+  local sha=0123456789012345678901234567890123456789 calls rc
+  jq -n --arg sha "$sha" '[range(1;5) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:(. == 2),title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
+  TICK_PRS=''; tick_prs_prime
+  : > "$TEST_GH_CALLS"
+  scheduler_pr_adopt_open branch-2 || fail 'a PR in the census was not adopted'
+  [[ "$SCHED_PR_NUM" == 2 ]] || fail "adopted PR $SCHED_PR_NUM, expected 2"
+  rc=0; scheduler_pr_adopt_open branch-9 || rc=$?
+  [[ "$rc" == 1 && -z "$SCHED_PR_NUM" ]] || fail 'a head missing from a complete census was adopted'
+  [[ ! -s "$TEST_GH_CALLS" ]] || fail "a loaded census still called gh: $(cat "$TEST_GH_CALLS")"
+  TICK_PRS=''
+  rc=0; scheduler_pr_adopt_open branch-2 || rc=$?
+  [[ "$(grep -c '^pr list$' "$TEST_GH_CALLS")" == 1 ]] || fail 'an empty census did not fall back to the live lookup'
+  jq -n --arg sha "$sha" '[range(1;301) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
+  TICK_PRS=''; tick_prs_prime
+  : > "$TEST_GH_CALLS"
+  scheduler_pr_adopt_open branch-300 || fail 'a PR in a full census was not adopted'
+  [[ ! -s "$TEST_GH_CALLS" ]] || fail 'a hit in a full census called gh'
+  rc=0; scheduler_pr_adopt_open branch-999 || rc=$?
+  [[ "$(grep -c '^pr list$' "$TEST_GH_CALLS")" == 1 ]] || fail 'a miss in a census cut at the limit did not fall back to the live lookup'
+}
+
 test_footprint() {
   local blocked='{"id":"blocked","footprint":["pkg/a"]}' clear='{"id":"clear","footprint":["pkg/unrelated"]}'
   export ZF_FOOTPRINT_HOTSPOT_MIN=1 # this fixture's pkg/a link has a low co-change count; the verdict cache is what is under test.
@@ -196,8 +218,9 @@ test_footprint() {
 
 case "${1:-all}" in
   census) test_census ;;
+  adopt) test_adopt ;;
   footprint) test_footprint ;;
-  all) test_census; test_footprint ;;
+  all) test_census; test_adopt; test_footprint ;;
   *) fail "unknown test $1" ;;
 esac
 printf 'tick-census.test.sh: ok\n'

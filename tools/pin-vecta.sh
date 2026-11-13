@@ -437,9 +437,14 @@ else
     || { echo "pin-vecta: branch delivery preflight is missing: $delivery_preflight" >&2; exit 2; }
   run_bounded_step delivery node "$delivery_preflight" --mode push --publish-topic
   gh_bin=${GH:-gh}
-  pr_url=$("$gh_bin" pr create --base main --head "$branch" \
-    --title "chore(engine): pin zenoforge $short_sha" \
-    --body "Pin the engine to $engine_sha. The build, check, and publish preflight passed before selecting the PR route.")
+  pr_title="chore(engine): pin zenoforge $short_sha"
+  pr_body="Pin the engine to $engine_sha. The build, check, and publish preflight passed before selecting the PR route."
+  if ! pr_url=$("$gh_bin" pr create --base main --head "$branch" --title "$pr_title" --body "$pr_body"); then
+    # gh pr create runs over GraphQL, which can be rate-limited after the branch is pushed; REST opens the same PR.
+    echo 'pin-vecta: gh pr create failed; opening the PR through the REST pulls API' >&2
+    pr_url=$("$gh_bin" api -X POST repos/ZenoWangzy/vecta/pulls -f title="$pr_title" -f head="$branch" -f base=main -f body="$pr_body" \
+      | jq -er .html_url) || { echo 'pin-vecta: REST PR create failed too' >&2; exit 1; }
+  fi
   printf '%s\n' "$pr_url"
   printf 'pin-vecta: result=pr-open route=PR landed=no pr=%s (NOT landed: the pin is live only after this PR merges)\n' "$pr_url"
   # Exit 0 means landed. A PR is not landed, and zf-auto-pin records exit 0 as pinned, so fail closed with 75.

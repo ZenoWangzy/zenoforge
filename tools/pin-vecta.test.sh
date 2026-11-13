@@ -118,8 +118,12 @@ cat > "$tmp/bin/gh" <<'GH'
 set -euo pipefail
 printf 'gh:%s\n' "$*" >> "${PIN_CALLS:?}"
 printf 'gh-cwd:%s\n' "$PWD" >> "${PIN_CALLS:?}"
+if [[ "${1:-}" == pr && "${PIN_GH_PR_FAIL:-0}" == 1 ]]; then
+  echo 'GraphQL: API rate limit already exceeded for user ID 1.' >&2; exit 1
+fi
 if [[ "${1:-}" == api ]]; then
   [[ "${PIN_GH_API_FAIL:-0}" != 1 ]] || exit 1
+  if [[ "$*" == *'/pulls'* ]]; then printf '%s\n' '{"html_url":"https://github.com/ZenoWangzy/vecta/pull/9001"}'; exit 0; fi
   if [[ -n "${PIN_WORKFLOW_RUNS+x}" ]]; then
     printf '%s\n' "$PIN_WORKFLOW_RUNS"
   else
@@ -413,6 +417,33 @@ grep -Eq '^pin-vecta: result=pr-open route=PR landed=no ' "$tmp/pr.out" \
   || fail 'PR route did not say the pin is not landed'
 ! grep -q 'result=landed' "$tmp/pr.out" || fail 'PR route claimed landed'
 ok 'passing PR pin uses the topic publish preflight and creates a PR'
+
+# A rate-limited gh pr create falls back to Vecta's REST pulls API; the PR and the parseable result line are the same as the gh route.
+rl_target=$(setup_target prrate)
+git -C "$rl_target" checkout -q -b product-change
+printf '# existing override row\n' > "$rl_target/.zenoforge/build/overrides.tsv"
+mkdir -p "$rl_target/packages/fixture"
+printf 'product line\n' > "$rl_target/packages/fixture/product-touch.js"
+git -C "$rl_target" add -A
+git -C "$rl_target" commit -qm 'fixture: reviewed product change'
+rl_agent=$(setup_agent prrate)
+rl_calls="$tmp/prrate.calls"
+rl_scopes="$tmp/prrate.scopes"
+: > "$rl_calls"
+: > "$rl_scopes"
+set +e
+PIN_GH_PR_FAIL=1 run_pin "$rl_calls" "$rl_scopes" "$rl_agent" "$rl_target" --land > "$tmp/prrate.out" 2>&1
+rl_status=$?
+set -e
+((rl_status == 75)) || { cat "$tmp/prrate.out" >&2; fail "REST fallback PR pin must exit 75, got $rl_status"; }
+grep -Fq 'gh:pr create --base main' "$rl_calls" || fail 'REST fallback test did not try gh pr create first'
+grep -Fq 'gh:api -X POST repos/ZenoWangzy/vecta/pulls -f title=chore(engine): pin zenoforge' "$rl_calls" \
+  || fail 'rate-limited gh pr create did not fall back to the REST pulls API'
+grep -Fxq 'pin-vecta: result=pr-open route=PR landed=no pr=https://github.com/ZenoWangzy/vecta/pull/9001 (NOT landed: the pin is live only after this PR merges)' "$tmp/prrate.out" \
+  || { cat "$tmp/prrate.out" >&2; fail 'REST fallback did not print the pr-open result line with the PR URL'; }
+[[ "$(sed -n 's/.*result=pr-open route=PR landed=no pr=\([^ ]*\).*/\1/p' "$tmp/prrate.out")" == https://github.com/ZenoWangzy/vecta/pull/9001 ]] \
+  || fail 'REST fallback line is not parseable by zf-auto-pin'
+ok 'rate-limited gh pr create falls back to REST and prints the parseable result line'
 
 # land-direct-main refuses a detached HEAD, so it must run in the pin worktree,
 # never in the caller's engine checkout.

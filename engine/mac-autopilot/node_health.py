@@ -1037,20 +1037,19 @@ def cancel_metrics(records, since, until):
 def gated_agent_pr_share(repo):
     """M12 from the provider's open-PR census and server-side gate label."""
     try:
+        # REST, not `gh pr list`: GraphQL is the rate-limited surface (#1038). node_health has no UNREADABLE state for
+        # other metrics, so a gh failure stays None (NO-DATA) as before.
         result = subprocess.run(
-            ["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "1000",
-             "--json", "headRefName,labels"], capture_output=True, text=True)
+            ["gh", "api", f"repos/{repo}/pulls?state=open&per_page=100", "--paginate",
+             "--jq", ".[] | {ref: .head.ref, labels: [.labels[].name]}"], capture_output=True, text=True)
         if result.returncode != 0:
             return None
-        prs = json.loads(result.stdout or "[]")
-        if not isinstance(prs, list):
-            return None
+        prs = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         active = [pr for pr in prs if isinstance(pr, dict) and
-                  str(pr.get("headRefName") or "").startswith("agent/issue-")]
+                  str(pr.get("ref") or "").startswith("agent/issue-")]
         if not active:
             return None
-        gated = sum(any(isinstance(label, dict) and label.get("name") == "agent/ci-gated"
-                        for label in pr.get("labels") or []) for pr in active)
+        gated = sum("agent/ci-gated" in (pr.get("labels") or []) for pr in active)
         return 100 * gated / len(active)
     except (OSError, ValueError, TypeError):
         return None
@@ -1483,7 +1482,7 @@ def main():
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
-    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_json); metrics.update(merge_metrics)
+    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, merge_wait.gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,

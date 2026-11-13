@@ -49,5 +49,23 @@ class SchedulerLogLinesTest(unittest.TestCase):
             self.assertEqual(ledger_history.release_acceptances(directory, now=NOW), [])
 
 
+class ConflictRepairsTest(unittest.TestCase):
+    def count(self, *units):
+        return ledger_history.conflict_repairs(list(units), NOW - timedelta(hours=24), NOW, lambda at: datetime.strptime(at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) if at else None)
+
+    def test_two_conflict_events_in_one_second_share_one_repair(self):
+        # measured 2026-11-13 on pr-3822 and issue-6432: merge-tree sweep + "conflicts with main; CI cannot start", then one write-start
+        same_second = [{"stage": "merge-conflict", "at": "2026-10-30T08:41:03Z"}, {"stage": "merge-conflict", "at": "2026-10-30T08:41:03Z"}]
+        pair = {"id": "pr-3822", "history": same_second + [{"stage": "repair-pending"}, {"stage": "write-start", "at": "2026-10-30T08:50:00Z"}]}
+        self.assertEqual(self.count(pair), 1)
+        # a later conflict followed by its own write-start is a second repair; an unrepaired conflict counts nothing
+        again = {"id": "u2", "history": pair["history"] + [{"stage": "merge-conflict", "at": "2026-10-30T09:30:00Z"}, {"stage": "write-start", "at": "2026-10-30T09:40:00Z"}]}
+        self.assertEqual(self.count(again), 2)
+        self.assertEqual(self.count({"id": "u3", "history": same_second}), 0)
+        # a conflict before the window still shares its repair with one inside it: one repair
+        old = {"id": "u4", "history": [{"stage": "merge-conflict", "at": "2026-10-28T08:00:00Z"}] + pair["history"]}
+        self.assertEqual(self.count(old), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
