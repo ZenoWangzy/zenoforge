@@ -7,7 +7,11 @@ blocked_on_of() {
   { head -12 "$1" | grep -oiE 'BLOCKED[- ]?(ON|BY)[^0-9#]{0,12}#?[0-9]+'; grep -oE 'BLOCKED-ON:[[:space:]]*#[0-9]+' "$1"; } 2>/dev/null \
     | grep -oE '[0-9]+$' | head -1
 }
-park_blocked() { # unit dep
+hist_blocked() { # stage dep source [result] → hist event that also names the blocker (blocked_on) and where it came from (source); readers of stage/result ignore both
+  echo "$(hist "$1" "${4:-#$2}") | .history[-1] += {blocked_on: $2, source: $(js "$3")}"
+}
+park_blocked() { # unit dep [source: worker-report | issue-body | dep-marker]
+  local source="${3:-worker-report}"
   # supervisor 已在 reroute 中放弃的前置（dropped_deps）：worker 报告的 BLOCKED-ON 不停住单元，单元留在原环节再跑一次。
   # 调用方若刚把单元标成 blocked-external（评审路径），这里还原成可继续的环节。
   if unit_dep_dropped "$1" "$2"; then
@@ -35,7 +39,7 @@ park_blocked() { # unit dep
       "dep-disagreement unit=$1: a worker blocked twice on #$2 after a release; it now waits for #$2 to be delivered") \
       || say "dep-disagreement unit=$1: escalation not delivered"
   fi
-  set_unit "$1" "$(hist blocked-on "#$2") | .blocked_on=$2 | .note=$(js "waiting for predecessor #$2") | .stage=\"blocked-external\"$real_wait"
+  set_unit "$1" "$(hist_blocked blocked-on "$2" "$source") | .blocked_on=$2 | .note=$(js "waiting for predecessor #$2") | .stage=\"blocked-external\"$real_wait"
   say "unit $1 blocked on predecessor #$2"
 }
 # 正文 `## Blocked by` 只认小节内的 issue 引用；小节外的 #N 不算前置（#4485 正文自己就引用了 #4384/#4486）。
@@ -112,6 +116,8 @@ dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached Git
   ! dep_dead_ruled "$1" "$2" || return 0
   info="$(dep_cache_info "$2")"
   state="$(jqf -r '.state // empty' <<<"$info")"
+  # A requeued unit can reach dispatch before the next cache refresh listed its blockers: no entry is unknown, not open (#1135 parked on #1133, closed not_planned). One fresh read decides; unreadable or OPEN still blocks.
+  [[ -n "$state" ]] || state="$(dep_fresh_state "$2")"
   [[ "$state" == CLOSED || "$state" == MERGED ]] && return 0
   labels="$(jqf -r '.labels // ""' <<<"$info")"
   [[ "$state" == OPEN && ",$labels," =~ ,roadmap(-epic|-theme)?, ]] && return 0
@@ -135,7 +141,14 @@ unit_blocked_run_dep() {
       | ([$r | to_entries[] | select(.value.stage == "blocked-on") | .key] | max) as $b
       | if $e.result == "[]" and $b != null
           and all($r[($b + 1):][]; (.stage == "unblocked" or ((.stage | IN("supervisor-requeue","supervisor-reroute","supervisor-cap-rule")) and (.decision.owner | IN("supervisor","typesafe")))) | not)
-        then ($r[$b].result // "" | ltrimstr("#")) else empty end end' <<<"$1" 2>/dev/null
+        then
+          # The blocker moved since that run (blocker-repointed, in order): the number that run reported is stale, and a requeue must not bring it back (#3405 on #2827 -> #5434 -> #5793).
+          (reduce ($r[($b + 1):][] | select(.stage == "blocker-repointed")) as $p ($r[$b].result // "" | ltrimstr("#");
+            . as $cur | if (($p.result // "") | startswith("#" + $cur + " closed in ledger after recut; now waits on child #"))
+              then ($p.result | sub("^.*child #"; "") | sub("[^0-9].*$"; "")) else $cur end)) as $d
+          # A reroute dropped this blocker for the unit: it is no longer a wait.
+          | if ((.dropped_deps // []) | map(tostring) | index($d)) != null then empty else $d end
+        else empty end end' <<<"$1" 2>/dev/null
 }
 dep_dead_ruled() { # unit-json predecessor → 0 only when dep_dead_sweep proved it and the arbiter then ruled; a handoff requeue is no ruling
   jqf -e --argjson d "$2" '.dep_dead_proved == $d and ((.history // []) | (map(.stage) | rindex("dep-dead-proved")) as $p
@@ -168,7 +181,7 @@ park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发�
   id="$(jqf -r .id <<<"$1")"
   dep="$(blocking_body_dependency "$1")" || return 1
   [[ "$dep" =~ ^[0-9]+$ ]] || return 1
-  park_blocked "$id" "$dep"
+  park_blocked "$id" "$dep" issue-body
 }
 # 前置状态每 DEP_CHECK_SECONDS（默认 600）向 GitHub 刷新一次，同一前置每拍只查一次：逐单元 gh issue view
 # 让这一步占了一拍 58 秒（2026-10-20，42 个 blocked 单元）。台账内可判定的（已交付、互等）仍每拍处理。
@@ -609,7 +622,7 @@ dep_hold_parked() {
   local id n note
   while IFS=$'\t' read -r id n; do
     dep_delivered_in_ledger "$n" && continue
-    set_unit "$id" "$(hist blocker-held "released while #$n is parked or open and nothing was built; waiting again") | .blocked_on=$n | .note=$(js "waiting for predecessor #$n") | .stage=\"blocked-external\" | .task |= (. // \"\" | sub(\"\\n\\nScheduler note: predecessor #$n is parked or can never deliver \\\\([^)]*\\\\)[^\\n]*\"; \"\"))"
+    set_unit "$id" "$(hist_blocked blocker-held "$n" parked-blocker "released while #$n is parked or open and nothing was built; waiting again") | .blocked_on=$n | .note=$(js "waiting for predecessor #$n") | .stage=\"blocked-external\" | .task |= (. // \"\" | sub(\"\\n\\nScheduler note: predecessor #$n is parked or can never deliver \\\\([^)]*\\\\)[^\\n]*\"; \"\"))"
     say "unit $id blocked again on #$n: the scheduler had stopped waiting on a blocker that is parked or open"
   done < <(jqf -r '. as $r | .units[] | select(.stage == "implement-pending" and .pr == null and .blocked_on == null and .size_recut_pending != true)
     | ((.history // []) | map(select(.stage == "unblocked")) | last // {}) as $e
