@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
-p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf -- "$t" "$test_env_root"' EXIT
+export HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 # hf-merge reads the required names from required-pr-checks.json; the stub builds its
 # rollup from the same file so the canned answer cannot drift from the merge bar again.
 mkdir -p "$t/repo/.zenoforge/mac-autopilot"
@@ -18,7 +19,7 @@ case "$1 $2" in
      printf '%s\n' 'engine/hotfix/hf-merge.sh'
    else
      jq -cn --arg label "${LABEL:-hotfix}" --arg gate "${GATE:-SUCCESS}" \
-       --arg head 0123456789abcdef0123456789abcdef01234567 \
+       --arg head "$HEAD_SHA" \
        --arg acc "${ACC_HEAD:-0123456789abcdef0123456789abcdef01234567}" \
        --argjson required "$(jq -c '.required' "$REQ")" '
        def row(name; concl): {name:name,status:"COMPLETED",conclusion:concl,startedAt:"2026-10-30T00:00:00Z",detailsUrl:"https://github.com/example-maintainer/example-repo/actions/runs/100/job/101"};
@@ -34,6 +35,15 @@ LABEL=other "$p/hf-merge.sh" 12 && exit 1
 LABEL=hotfix GATE=FAILURE "$p/hf-merge.sh" 12 && exit 1
 LABEL=hotfix "$p/hf-merge.sh" 12
 grep -Fxq 'Fix [hotfix] (#12)' "$LOG"
+mapfile -t merge_args < "$LOG"
+matched_head=0
+for ((i = 0; i < ${#merge_args[@]} - 1; i++)); do
+  if [[ "${merge_args[$i]}" == --match-head-commit && "${merge_args[$((i + 1))]}" == "$HEAD_SHA" ]]; then
+    matched_head=1
+    break
+  fi
+done
+[[ "$matched_head" == 1 ]]
 LABEL=hotfix GATE=IN_PROGRESS "$p/hf-merge.sh" 12 && exit 1
 # Acceptance is checked from the PR body, with no separate CI check: a stale accepted head refuses.
 LABEL=hotfix ACC_HEAD=fedcba9876543210fedcba9876543210fedcba98 "$p/hf-merge.sh" 12 && exit 1
