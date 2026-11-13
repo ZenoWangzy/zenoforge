@@ -8,13 +8,10 @@
 # safe: merge-pr.sh's merge call fails on a merged PR and the next listing no longer shows it.
 # shortcut: receipts are searched in the sibling clones under clones_dir (one git call per clone and PR), upgrade if the clone count makes a pass slow.
 engine_batch_receipt_clone() { # head clones_dir -> the clone whose receipt for that head is non-empty and whose last run of every command is rc 0
-  local clone gd
+  local clone receipt
   for clone in "$2"/*/; do
-    gd="$(git -C "$clone" rev-parse --git-common-dir 2>/dev/null)" || continue
-    case "$gd" in /*) ;; *) gd="${clone%/}/$gd" ;; esac
-    [[ -s "$gd/zf-test-receipts/$1" ]] || continue
-    awk -F'\t' 'NF >= 2 && $1 ~ /^[0-9]+$/ { last[$2] = $1; n++ } END { bad = (n == 0); for (c in last) if (last[c] + 0 != 0) bad = 1; exit bad }' \
-      "$gd/zf-test-receipts/$1" && { printf '%s\n' "${clone%/}"; return 0; }
+    receipt="$(land_receipt_file "$clone" "$1")" || continue
+    land_receipt_green "$receipt" 2>/dev/null && { printf '%s\n' "${clone%/}"; return 0; }
   done
   return 1
 }
