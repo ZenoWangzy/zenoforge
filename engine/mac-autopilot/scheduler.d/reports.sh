@@ -87,7 +87,7 @@ review_tools_denied() { # report-path → 0 when the report blames a denied tool
   grep -qiE "don.t.ask|权限模式" "$1" 2>/dev/null
 }
 harvest_input_incomplete() { # unit report-path report-name head reviewed-filter: an INPUT_INCOMPLETE review never leads to a commit repair
-  local unit="$1" rep="$2" report="$3" wsha="$4" reviewed="$5" bdep
+  local unit="$1" rep="$2" report="$3" wsha="$4" reviewed="$5" bdep event stage_update=""
   bdep="$(blocked_on_of "$rep" || :)"
   if [[ -z "$bdep" ]] && review_tools_denied "$rep"; then
     # The reviewer's own tools were refused: the code was never judged. One re-review per head, then the supervisor.
@@ -100,7 +100,13 @@ harvest_input_incomplete() { # unit report-path report-name head reviewed-filter
     fi
     return 0
   fi
-  set_unit "$unit" "$(hist_blocked review-block "$bdep" review-report "$wsha") | $reviewed | .approved_sha=null | .blocked_main_sha=$(js "$MAIN_HEAD") | .stage=\"blocked-external\""
+  if [[ -n "$bdep" ]]; then
+    event="$(hist review-block "$wsha")"
+  else
+    event="$(hist_blocked review-block '' review-report "$wsha")"
+    stage_update=' | .stage="blocked-external"'
+  fi
+  set_unit "$unit" "$event | $reviewed | .approved_sha=null | .blocked_main_sha=$(js "$MAIN_HEAD")$stage_update"
   [[ -z "$bdep" ]] || park_blocked "$unit" "$bdep" review-report
   cancel_unit_runs "$unit" "review blocked"
 }

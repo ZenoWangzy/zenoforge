@@ -45,10 +45,19 @@ BLOCKED-ON: #77
 VERDICT: INPUT_INCOMPLETE'
 [[ "$(field .blocked_on)" == 77 && "$(field .stage)" == blocked-external ]] || fail "BLOCKED-ON review must take the dependency hold ($(field .stage):$(field .blocked_on))"
 jq -e '.units[0] | ([.history[] | select(.stage=="review-block")] | length)==1
-  and ([.history[] | select(.stage=="review-block")][0] | .blocked_on==77 and .source=="review-report")
+  and ([.history[] | select(.blocked_on==77 and .source=="review-report")] | length)==1
   and .history[-1].stage=="blocked-on" and .history[-1].blocked_on==77 and .history[-1].source=="review-report"' "$UNITS" >/dev/null \
   || fail 'BLOCKED-ON review transition must record its blocker and source'
 echo 'ok - BLOCKED-ON review takes the existing dependency hold'
+
+printf '{"units":[{"id":"pr-9","pr":9,"lane":"pr","branch":"agent/issue-9","stage":"review","dropped_deps":[77],"history":[]}]}' > "$UNITS"
+review_with_report '## Verdict
+BLOCKED-ON: #77
+
+VERDICT: INPUT_INCOMPLETE'
+[[ "$(field .stage)" == review-pending && "$(field .blocked_on)" == null ]] \
+  || fail "a dropped review dependency must return to review ($(field .stage):$(field .blocked_on))"
+echo 'ok - dropped BLOCKED-ON review returns to review'
 
 printf '{"units":[{"id":"pr-9","pr":9,"lane":"pr","branch":"agent/issue-9","stage":"review","history":[]}]}' > "$UNITS"
 review_with_report 'VERDICT: INPUT_INCOMPLETE'

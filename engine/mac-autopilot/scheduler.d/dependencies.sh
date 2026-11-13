@@ -14,7 +14,7 @@ park_blocked() { # unit dep [source: worker-report | review-report | issue-body 
   if unit_dep_dropped "$1" "$2"; then
     # Same dependency ignored again with nothing else changed (last event is the same ignore, unit already runnable): no second event, no log line.
     jqf -e --arg id "$1" --arg r "#$2" --argjson d "$2" 'any(.units[]; .id == $id and .stage != "blocked-external" and .dep_wait_delivery != $d and (((.history // [])[-1] // {}) | .stage == "dropped-dep-ignored" and .result == $r))' "$UNITS" >/dev/null && return 0
-    set_unit "$1" "$(hist dropped-dep-ignored "#$2") | (if .dep_wait_delivery == $2 then del(.dep_wait_delivery, .unpark_condition) else . end) | (if .stage == \"blocked-external\" then .stage = (if .pr != null then \"review-pending\" else \"implement-pending\" end) else . end)"
+    set_unit "$1" "$(hist dropped-dep-ignored "#$2") | (if .dep_wait_delivery == $2 then del(.dep_wait_delivery, .unpark_condition) else . end) | (if .stage == \"blocked-external\" or $(js "$source") == \"review-report\" then .stage = (if .pr != null then \"review-pending\" else \"implement-pending\" end) else . end)"
     say "unit $1 ignores dropped dependency #$2 from a worker report; it runs again"
     return 0
   fi
