@@ -37,11 +37,49 @@
       "provider": "zcode",
       "model": "GLM-5.3",
       "effort": "max"
+    },
+    "unit-review": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "service_tier": "fast",
+      "fallback_model": "gpt-6-luna"
+    },
+    "unit-review-cross": {
+      "provider": "zcode",
+      "model": "GLM-5.3",
+      "effort": "max"
+    },
+    "unit-implement": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "service_tier": "fast",
+      "fallback_model": "gpt-6-luna"
+    },
+    "unit-triage": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "service_tier": "fast",
+      "fallback_model": "gpt-6-luna"
+    },
+    "unit-review-fallback": {
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "high"
+    },
+    "unit-implement-hotfix": {
+      "provider": "codex",
+      "model": "gpt-6.1-terra",
+      "effort": "high",
+      "fallback_model": "gpt-6-luna"
     }
   },
   "allow_roles": {
     "sonnet": ["hand-claude"],
-    "haiku": ["triage-haiku", "hand-claude"]
+    "haiku": ["triage-haiku", "hand-claude", "unit-review-fallback"],
+    "terra": ["unit-implement-hotfix"]
   },
   "escalation": {
     "initial_step": "work",

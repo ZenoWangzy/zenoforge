@@ -17,6 +17,7 @@ else
 fi
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh" # deploy.env: a clean environment still sees the deployment's unit prefix
+source "$here/../land-admit.sh"
 # Same setting lib.sh resolves; this script runs without sourcing it.
 UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 info=$(gh pr view "$pr" --json title,labels,state,headRefOid,body,statusCheckRollup)
@@ -50,7 +51,7 @@ while IFS= read -r check; do
 done < <(jq -r '.required[]' "$required_checks_file")
 
 title=$(jq -r '.title' <<<"$info")
-gh pr merge "$pr" --squash --subject "$title [hotfix] (#$pr)" --match-head-commit "$head_sha"
+land_merge_pr "$pr" "$head_sha" --subject "$title [hotfix] (#$pr)"
 
 if [[ "$image_lane" == 1 ]]; then
   gate_wait="${HF_RELEASE_GATE_WAIT_SECONDS:-7200}"

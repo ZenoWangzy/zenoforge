@@ -3,6 +3,8 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 trap 'rm -rf -- "$test_env_root"' EXIT
 source "$MODEL_POLICY_TEST_REPO/engine/lib.sh"
+jq '.roles["unit-implement-hotfix"].disabled = true' "$MODEL_POLICY_DEFAULT" > "$test_env_root/live-policy.json"
+MODEL_POLICY_DEFAULT="$test_env_root/live-policy.json" MODEL_POLICY_FILE="$test_env_root/live-policy.json"
 ps() { printf '%s\n' "$process_row"; }
 
 # Exercise every active Codex identity, not only the usual work role.

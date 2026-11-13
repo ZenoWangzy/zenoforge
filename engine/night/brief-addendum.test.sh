@@ -28,7 +28,12 @@ case "$1 $2" in
     else jq -c '[. + {title:(.title // "fixture issue"),body:(.body // "")}]' "$ADDENDUM_ISSUE"; fi ;;
   'issue view') cat "$ADDENDUM_ISSUE" ;;
   'pr list') printf '%s\n' "${ADDENDUM_OPEN_PRS:-[]}" ;;
-  'api '*) printf '[]\n' ;;
+  'api '*) # issue_rest_view reads the fixture issue as REST and its comments as one slurped page; any other api call is empty
+    url="${*: -1}"
+    if [[ "$url" == */comments\?* ]]; then jq -c '[(.comments // []) | map({body:(.body // "")})]' "$ADDENDUM_ISSUE"
+    elif [[ "$url" =~ /issues/([0-9]+)$ ]]; then
+      jq -c --argjson n "${BASH_REMATCH[1]}" '{number:$n,title:(.title // "fixture issue"),body:(.body // ""),state:((.state // "OPEN") | ascii_downcase),labels:(.labels // [])}' "$ADDENDUM_ISSUE"
+    else printf '[]\n'; fi ;;
   'label list') printf 'ready-for-agent\nneeds-triage\nneeds-info\nneeds-advisor\nneeds-recut\n' ;;
   'label create') : ;;
   'issue comment')

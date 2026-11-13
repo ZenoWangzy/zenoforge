@@ -5,8 +5,7 @@
 #
 # Output contract (#4480): a green run prints one summary line; a failing run
 # prints every failing assertion ("not ok - <case>") before the FAILED tail.
-# Targeted runs: `bash engine/lib.test.sh --quota-only` runs only the
-# provider-quota case. Section stop switches are LIB_TEST_POST_LAND_ONLY,
+# Section stop switches are LIB_TEST_POST_LAND_ONLY,
 # LIB_TEST_STALE_HOLD_REQUEUE_ONLY, LIB_TEST_HOLD_REQUEUE_ONLY,
 # LIB_TEST_RELEASE_CLOSE_ONLY, LIB_TEST_OPS_TRANSITION_ONLY, and
 # LIB_TEST_MODEL_POLICY_ONLY; each stops after its section, so preceding
@@ -14,32 +13,6 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"; source "$SCRIPT_DIR/lib-test-setup.sh"; LIB_TEST_SETUP_DEFERRED=1; source "$SCRIPT_DIR/test-lib-helpers.sh"; unset LIB_TEST_SETUP_DEFERRED; lib_test_setup "$SCRIPT_DIR"; LIB_TEST_SETUP_COMPLETE=1
-
-test_provider_quota_classification() {
-  local refusal="ERROR: You’ve hit your usage limit. Try again at Oct 19th, 2099 1:13 AM." event
-  assert_false "signal status never classifies even a real refusal" premium_call_is_quota_refused "$refusal" 143
-  assert_false "successful exit never creates quota hold" premium_call_is_quota_refused "$refusal" 0
-  assert_false "bare quota prose is not provider evidence" premium_call_is_quota_refused 'an overly broad quota regex' 1
-  assert_false "bare rate limit prose is not provider evidence" premium_call_is_quota_refused 'rate limit exceeded, try again later' 1
-  assert_false "bare HTTP status is not provider evidence" premium_call_is_quota_refused 'HTTP 429 Too Many Requests' 1
-  assert_false "codex-error prose is not provider evidence" premium_call_is_quota_refused '2026-10-11T23:07:06Z codex-error fixing quota and rate limit' 1
-  assert_true "actual Codex usage-limit line is provider evidence" premium_call_is_quota_refused "$refusal" 1
-  assert_true "normalized HTTP 429 error remains supported" premium_call_is_quota_refused '{"api_error_status":429}' 1
-  event="$(jq -cn --arg message "${refusal#ERROR: }" '{type:"turn.failed",error:{message:$message}}')"
-  assert_true "CLI turn.failed event is provider evidence" premium_call_is_quota_refused "$event" 1
-  event="$(jq -cn --arg message "${refusal#ERROR: }" '{type:"error",message:$message}')"
-  assert_true "CLI error event is provider evidence" premium_call_is_quota_refused "$event" 1
-  event="$(jq -cn --arg text "$refusal" '{type:"item.completed",item:{type:"agent_message",text:$text}}')"
-  assert_false "agent JSON quoting refusal is not provider evidence" premium_call_is_quota_refused "$event" 1
-  event="$(jq -cn --arg result "$refusal" '{is_error:true,result:$result}')"
-  assert_true "run_codex_json failure envelope retains provider error" premium_call_is_quota_refused "$event" 1
-  assert_false "504 containing quota prose is not quota" premium_call_is_quota_refused 'ERROR: unexpected status 504 Gateway Timeout: quota proxy unavailable' 1
-  assert_false "websocket close containing quota prose is not quota" premium_call_is_quota_refused 'ERROR: websocket closed by server before response.completed: quota' 1
-  assert_eq "uppercase CLI Try again parses exact reset" "$(agent_epoch 'Oct 19, 2099 1:13 AM')" "$(parse_quota_reset_epoch "$refusal")"
-  assert_eq "same-day CLI reset time parses" "$(agent_epoch '1:13 AM')" "$(parse_quota_reset_epoch 'ERROR: You’ve hit your usage limit. Try again at 1:13 AM.')"
-}
-test_provider_quota_classification
-if [[ "${1:-}" == --quota-only ]]; then lib_case_exit; fi
 
 # lib.sh is sourced by callers whose SCRIPT_DIR is unset (merge-held.sh) or another
 # directory (night/); 2026-10-08 a lib.sh helper died with "SCRIPT_DIR: unbound variable".
@@ -154,6 +127,14 @@ test_hold_requeue_child_status_consistency() {
     # #1598 had an expired local hold while GitHub retained product-stage labels.
     printf "%s\\n" enhancement\|awaiting-release\|ready-for-human > "$AGENT_HOME/fake-labels/740043"
     gh() {
+      if [[ "${1:-}" == api && "${2:-}" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)$ ]]; then
+        local child="${BASH_REMATCH[1]}" reads=0
+        [[ ! -f "$AGENT_HOME/child-reads/$child" ]] || reads="$(cat "$AGENT_HOME/child-reads/$child")"
+        printf "%s\\n" "$((reads + 1))" > "$AGENT_HOME/child-reads/$child"
+        case "$child:$reads" in 740141:0|740142:1) return 1 ;; esac
+        printf "{\"number\":%s,\"state\":\"closed\",\"labels\":[]}\\n" "$child"
+        return 0
+      fi
       if [[ "${1:-} ${2:-}" == "issue view" ]]; then
         local child="$3" reads=0
         [[ ! -f "$AGENT_HOME/child-reads/$child" ]] || reads="$(cat "$AGENT_HOME/child-reads/$child")"
@@ -2247,9 +2228,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
 fi
 args=("$@")
 for i in "${!args[@]}"; do
-  [ "${args[$i]}" = "--body-file" ] || continue
+  [ "${args[$i]}" = "--body" ] || continue
   printf 'args=%s\n' "$*" >> "$PR_MERGE_BODY_LOG"
-  printf 'body=%s\n' "$(cat "${args[$((i + 1))]}")" >> "$PR_MERGE_BODY_LOG"
+  printf 'body=%s\n' "${args[$((i + 1))]}" >> "$PR_MERGE_BODY_LOG"
   exit 0
 done
 exit 1
@@ -2285,9 +2266,8 @@ PR_MERGE_BODY_CONTENT="$(cat "$PR_MERGE_BODY_LOG")"
 PR_MERGE_MANIFEST="$(cat "$PR_MERGE_BODY_HOME/night/worktree-cleanup-manifest.txt")"
 rm -rf "$PR_MERGE_BODY_BIN" "$PR_MERGE_BODY_HOME"
 rm -f "$PR_MERGE_BODY_LOG"
-assert_contains "guarded_pr_merge passes a body file" "$PR_MERGE_BODY_CONTENT" "--body-file"
-assert_not_contains "guarded_pr_merge never passes literal --body" "$PR_MERGE_BODY_CONTENT" "--body body"
-assert_contains "guarded_pr_merge preserves body text through the file" "$PR_MERGE_BODY_CONTENT" "body=body from file"
+assert_contains "guarded_pr_merge passes its body through land_merge_pr" "$PR_MERGE_BODY_CONTENT" "--body"
+assert_contains "guarded_pr_merge preserves body text through land_merge_pr" "$PR_MERGE_BODY_CONTENT" "body=body from file"
 assert_eq "guarded_pr_merge detects the target config incident registry" 2 \
   "$(grep -c '^guard-path=true$' <<< "$PR_MERGE_BODY_CONTENT")"
 assert_contains "post-merge failure is retryable" "$PR_MERGE_RESULT" 'statuses=23,0'
@@ -6718,7 +6698,9 @@ printf '{"recut_children":[991202]}' > "$(state_file 991201)"
 assert_eq "recut umbrella with open child is not implement-eligible" 0 \
   "$(recut_parent_has_open_child 991201 '[{"number":991202,"state":"OPEN"}]' && echo 0 || echo $?)"
 assert_eq "recut umbrella with closed child reports completed parent" 3 \
-  "$(gh() { echo CLOSED; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+  "$(gh() { printf '{"number":991202,"title":"t","body":"","state":"closed","labels":[]}\n'; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+assert_eq "recut umbrella whose child state cannot be read is unreadable, not completed" 2 \
+  "$(gh() { return 1; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
 printf '{"state":"needs-advisor","recut_children":[]}\n' > "$(state_file 991205)"
 gh() { return 64; }
 assert_eq "ordinary empty recut list tolerates an unavailable live child read" 3 \

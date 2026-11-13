@@ -31,6 +31,9 @@ intake_priority_config() {
       and all(["normal","high","top"][]; ($thresholds[.] | type == "number" and . >= 0 and . <= 3))
       and ($thresholds.normal <= $thresholds.high and $thresholds.high <= $thresholds.top)
       and ($minimum | type == "number" and . >= 0 and . <= 1)
+      and (.founder_issues | type == "array" and all(.[]; type == "number" and . > 0 and floor == .))
+      and (.off_market_issues | type == "array" and all(.[]; type == "number" and . > 0 and floor == .))
+      and (.off_market_terms | type == "array" and all(.[]; type == "string" and length > 0))
   ' <<< "$merged" >/dev/null || return 1
   # A label that is also a pipeline state would re-enter triage on every tick.
   jq -ce --argjson states "$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
@@ -105,7 +108,7 @@ intake_priority_recent_main_subjects() {
 }
 
 intake_priority_prepare_state() {
-  local repo="$1" issue_file="$2" triage_state="$3" config="$4" issue_json policy route_context duplicate_candidates recent baseline_priority baseline_duplicate baseline_stale current_decision event_id issue_arg duplicates_arg rc=0
+  local repo="$1" issue_file="$2" triage_state="$3" config="$4" issue_json policy route_context duplicate_candidates recent baseline_priority baseline_duplicate baseline_stale current_decision overlay_decision overlay_reason event_id issue_arg duplicates_arg rc=0
   issue_json="$(jq -ce 'select(type == "object" and (.number | type == "number" and . > 0) and (.title | type == "string"))' "$issue_file")" || return 1
   policy="$(intake_priority_judge_policy "$config")" || return 1
   route_context="$(intake_priority_route_context "$repo" "$issue_json")" || return 1
@@ -127,18 +130,34 @@ intake_priority_prepare_state() {
   current_decision="$(jq -cn --arg priority "$baseline_priority" --arg route "$baseline_route" \
     --argjson duplicate "$baseline_duplicate" --argjson stale "$baseline_stale" \
     '{priority:$priority,route:$route,duplicate:$duplicate,duplicateCandidates:[],stale:$stale}')" || return 1
+  overlay_decision="$(intake_priority_overlay_decision "$issue_json" "$current_decision" "$config")" || return 1
+  overlay_reason="$(jq -r '.overlay // empty' <<< "$overlay_decision")"
   event_id="intake-priority:$(jq -r '.number' <<< "$issue_json"):$(date +%s%N):$RANDOM"
   # The issue and duplicate list are untrusted-size, so they reach jq as files, not argv.
   issue_arg="$(jq_arg_file "$issue_json")" || return 1
   duplicates_arg="$(jq_arg_file "$duplicate_candidates")" || { rm -f "$issue_arg"; return 1; }
-  jq -cn --arg event_id "$event_id" --arg current "$current_decision" --slurpfile issue_rows "$issue_arg" \
+  jq -cn --arg event_id "$event_id" --arg current "$current_decision" --arg overlay "$overlay_reason" --slurpfile issue_rows "$issue_arg" \
     --argjson containers "$(jq -c '.containers' <<< "$route_context")" \
     --slurpfile duplicate_rows "$duplicates_arg" --argjson recent "$recent" --argjson policy "$policy" \
     '$issue_rows[0] as $issue | $duplicate_rows[0] as $duplicates
       | {event_id:$event_id,currentDecision:$current,issue:{number:$issue.number,title:$issue.title,body:($issue.body // "")},
-      roadmapContainers:$containers,duplicateCandidates:$duplicates,recentMainSubjects:$recent,policy:$policy}' || rc=$?
+      roadmapContainers:$containers,duplicateCandidates:$duplicates,recentMainSubjects:$recent,policy:$policy,
+      overlay:(if $overlay == "" then null else $overlay end)}' || rc=$?
   rm -f "$issue_arg" "$duplicates_arg"
   return "$rc"
+}
+
+intake_priority_overlay_decision() { # issue-json decision-json config-json → deterministic priority decision with its overlay reason
+  local issue_json="$1" decision_json="$2" config="$3" issue_arg decision_arg result
+  issue_arg="$(jq_arg_file "$issue_json")" || return 1
+  decision_arg="$(jq_arg_file "$decision_json")" || { rm -f -- "$issue_arg"; return 1; }
+  result="$(jq -L "$INTAKE_PRIORITY_DIR" -cn --slurpfile issue_rows "$issue_arg" --slurpfile decision_rows "$decision_arg" --argjson config "$config" '
+    import "intake-priority-policy" as intake_policy;
+    $issue_rows[0] as $issue | $decision_rows[0] as $decision
+    | intake_policy::intake_priority_overlay($issue; $decision; $config)
+  ' 2>/dev/null)" || { rm -f -- "$issue_arg" "$decision_arg"; return 1; }
+  rm -f -- "$issue_arg" "$decision_arg"
+  printf '%s\n' "$result"
 }
 
 intake_priority_judge() {
@@ -157,9 +176,29 @@ intake_priority_judge() {
     echo 'intake-priority: judge failed' >&2
     return 1
   fi
-  jq -ce --argjson duplicates "$(jq -c '.duplicateCandidates' <<< "$state")" \
+  result="$(jq -ce --argjson duplicates "$(jq -c '.duplicateCandidates' <<< "$state")" \
     --argjson containers "$(jq -c '.roadmapContainers' <<< "$state")" \
-    '. + {intake_context:{duplicate_candidates:$duplicates,roadmap_containers:$containers}}' <<< "$result"
+    '. + {intake_context:{duplicate_candidates:$duplicates,roadmap_containers:$containers}}' <<< "$result")" || return 1
+  if [[ "$(jq -r '.status == "answered" and (.candidate | type == "string")' <<< "$result")" == true ]]; then
+    local scored_candidate candidate_overlay decision_overlay overlay_reason
+    scored_candidate="$(jq -er '.candidate | fromjson' <<< "$result")" || return 1
+    candidate_overlay="$(intake_priority_overlay_decision "$(cat -- "$issue_file")" "$scored_candidate" "$config")" || return 1
+    candidate_overlay="$(jq -c '.' <<< "$candidate_overlay")" || return 1
+    overlay_reason="$(jq -r '.overlay // empty' <<< "$candidate_overlay")"
+    if [[ "$(jq -r '.adopted == true' <<< "$result")" == true ]]; then
+      decision_overlay="$candidate_overlay"
+    else
+      decision_overlay="$(jq -er '.decision | fromjson' <<< "$result")" || return 1
+      decision_overlay="$(jq -c '.' <<< "$decision_overlay")" || return 1
+    fi
+    result="$(jq -c --arg scored_candidate "$(jq -c '.' <<< "$scored_candidate")" \
+      --arg candidate "$candidate_overlay" --arg decision "$decision_overlay" --arg overlay "$overlay_reason" '
+        . + {scored_candidate:$scored_candidate,candidate:$candidate,
+          overlay:(if $overlay == "" then null else $overlay end)}
+        | if .adopted == true then .decision=$decision else . end
+      ' <<< "$result")" || return 1
+  fi
+  printf '%s\n' "$result"
 }
 
 intake_priority_place_route() {
@@ -285,7 +324,7 @@ intake_priority_triage() {
     if intake_priority_apply_result "$repo" "$issue_file" "$result"; then
       decision="$(jq -r '.decision | fromjson' <<< "$result")"
       priority="$(jq -r '.priority' <<< "$decision")"
-      echo "intake-priority: applied issue=#$issue_number priority=$priority route=$(jq -r '.route' <<< "$decision")" >&2
+      echo "intake-priority: applied issue=#$issue_number priority=$priority route=$(jq -r '.route' <<< "$decision") overlay=$(jq -r '.overlay // "none"' <<< "$decision")" >&2
     else
       echo "intake-priority: label update failed for issue #$issue_number" >&2
     fi

@@ -48,6 +48,12 @@ gh() {
     printf '[]\n'
     return 0
   fi
+  if [[ "${1:-}" == api && "${2:-}" =~ ^repos/fixture/repo/issues/([0-9]+)$ ]]; then
+    local child="${BASH_REMATCH[1]}"
+    echo "$child" >> "$OPEN_CHILD_LOOKUPS"
+    printf '{"number":%s,"state":"open","state_reason":null,"closed_at":null,"labels":[]}\n' "$child"
+    return 0
+  fi
   if [[ "$1 $2" == 'issue view' ]]; then
     if [[ "${6:-}" == '--json' && "${7:-}" == 'state' && "${8:-}" =~ ^(-q|--jq)$ ]]; then
       echo "$3" >> "$OPEN_CHILD_LOOKUPS"; echo OPEN; return 0

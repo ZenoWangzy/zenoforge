@@ -91,6 +91,7 @@ ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR="$pack_dir" source "$script_dir/node-h
 [[ "$(jq -r '.production.database_user' <<< "$PROD_ERRORS_REMOTE_CONFIG_JSON")" == target-user ]]
 [[ "$(jq -r '.production.database_name' <<< "$PROD_ERRORS_REMOTE_CONFIG_JSON")" == target-name ]]
 
+timeout() { shift; "$@"; } # the monitor wraps its reads in `timeout 20`, which cannot reach the gh stubs
 calls="$tmp/writes"
 gh() { printf 'gh %s\n' "$*" >> "$calls"; }
 guarded_write() { printf 'write %s\n' "$*" >> "$calls"; }
@@ -134,15 +135,15 @@ grep -Fq 'route=/items request_id=none' "$inbox"
 grep -Fq "target-anomaly sig=$fixture_key container=service" "$inbox"
 ! grep -Fq 'production-anomaly sig=' "$inbox"
 
-# (#1038) The upsert runs in a command substitution, so its label-ready flag dies with it: the router primes the label
-# once per run in its own shell, and two alerts cost one `gh label list`, not one per alert.
+# (#1038) The router primes the anomaly label once per run in its own shell; the upsert handles issue reads.
+# The issue list remains shared by alerts, and the router does not list issues itself.
 PROD_ANOMALY_LABEL_READY=0
 gh() { printf 'gh %s\n' "$*" >> "$calls"; } # sourcing the mail helper restored the real gh
 : > "$calls"
 two_alerts="$(jq -cn --arg a "$(printf 'one' | sha256sum | cut -c1-20)" --arg b "$(printf 'two' | sha256sum | cut -c1-20)" \
   '{alerts:[$a,$b] | map({key:.,event_id:("first-seen-" + .),source:"log",reason:"first-seen",container:"service",service:"service",count:1,first:"2026-10-12T02:13:14Z",route:"/items",sample_request_id:"",trace_id:"",deduplicated_lines:["route=GET /items status=500"]})}')"
 health_prod_errors_route "$two_alerts" BROKEN '' "$tmp/state.json"
-[[ "$(grep -c '^gh label list' "$calls")" == 1 ]]
+[[ "$(grep -c '^gh api --paginate repos/example/repository/labels?per_page=100' "$calls")" == 1 ]]
 [[ -f "$NIGHT/target-monitor.lock" ]]
 grep -Fq 'Target Service: service' "$tmp/last-issue-body"
 grep -Fq 'Target Route: /items' "$tmp/last-issue-body"
@@ -262,7 +263,8 @@ run_missing_trace_create() { # roadmap-flag -> call the real upsert once
     }
     gh() {
       printf 'gh %s\n' "$*" >>"$missing_calls"
-      if [[ "$1 $2" == 'issue list' ]]; then printf '[]\n'; fi
+      if [[ "$1 $2" == 'api --paginate' && "$3" == */issues\?* ]]; then printf '[]\n'; fi
+      if [[ "$1 $2" == 'api -X' ]]; then printf '{"items":[]}\n'; fi
     }
     ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR="$pack_dir" source "$script_dir/node-health-rules.sh"
     if [[ "$roadmap_mode" == true ]]; then
@@ -277,7 +279,7 @@ run_missing_trace_create() { # roadmap-flag -> call the real upsert once
   )
 }
 run_missing_trace_create false
-grep -Fq 'gh label list --repo example/repository --limit 200' "$missing_calls"
+grep -Fq 'gh api --paginate repos/example/repository/labels?per_page=100' "$missing_calls"
 grep -Fq 'gh label create target-anomaly' "$missing_calls"
 grep -Eq 'gh issue create [^#]*--label needs-triage --label target-anomaly' "$missing_calls"
 ! grep -Fq 'issue_transition' "$missing_calls"
@@ -288,5 +290,118 @@ grep -Fq 'gh label create target-anomaly' "$missing_calls"
 grep -Eq 'gh issue create [^#]*--label target-anomaly' "$missing_calls"
 ! grep -Eq 'gh issue create [^#]*--label needs-triage --label' "$missing_calls"
 grep -Fq 'issue_transition 7701 needs-triage prod-anomaly-created' "$missing_calls"
+
+# (#1038) REST reads: one issue list per run serves every alert, a rate limit skips the run, and a create never works
+# from a stale list. gh is a stateful REST stub: `rest_state` holds the labelled issues the "server" has.
+rest_state="$tmp/rest-issues.json" rest_calls="$tmp/rest-calls" rest_acks="$tmp/rest-acks"
+run_rest_route() { # alerts-json -> real route and real upsert over the stub; GH_MODE=ok|rate-limit|issue-rate-limit|http-500
+  (
+    timeout() { shift; "$@"; }
+    ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR="$pack_dir" source "$script_dir/node-health-rules.sh"
+    roadmap_switch_value() { printf 'false\n'; }
+    supervisor_inbox_append_once() { :; }
+    prod_errors_ack_alert() { printf '%s\n' "$2" >>"$rest_acks"; }
+    guarded_issue_comment() { printf 'comment %s\n' "$1" >>"$rest_calls"; }
+    guarded_write() {
+      printf 'write %s\n' "$*" >>"$rest_calls"
+      if [[ "$1 $2" == 'gh issue' && "$3" == create ]]; then
+        local title='' body_file='' n="$((RANDOM + 9000))"
+        while (( $# )); do
+          case "$1" in --title) title="$2"; shift ;; --body-file) body_file="$2"; shift ;; esac
+          shift
+        done
+        jq --argjson n "$n" --arg t "$title" --rawfile b "$body_file" --arg now "$(date -u +%FT%TZ)" \
+          '. + [{number:$n,title:$t,body:$b,state:"open",labels:[{name:"target-anomaly"}],created_at:$now}]' \
+          "$rest_state" >"$rest_state.new" && mv -- "$rest_state.new" "$rest_state"
+        printf 'https://github.com/example/repository/issues/%s\n' "$n"
+      fi
+    }
+    gh() {
+      printf 'gh %s\n' "$*" >>"$rest_calls"
+      case "${GH_MODE:-ok}" in
+        rate-limit) echo 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)' >&2; return 1 ;;
+        issue-rate-limit)
+          if [[ "$1 $2" == 'api --paginate' && "$3" == */issues\?* ]]; then
+            echo 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)' >&2
+            return 1
+          fi
+          ;;
+        http-500) echo 'gh: Server Error (HTTP 500)' >&2; return 1 ;;
+      esac
+      if [[ "$1 $2" == 'api --paginate' && "$3" == */labels\?* ]]; then echo target-anomaly
+      elif [[ "$1 $2" == 'api --paginate' && "$3" == */issues\?* ]]; then cat -- "$rest_state"
+      elif [[ "$1 $2" == 'api -X' ]]; then printf '{"items":%s}\n' "${SEARCH_ITEMS:-[]}"
+      fi
+    }
+    health_prod_errors_route "$1" BROKEN '' "$tmp/state.json"
+  )
+}
+rest_alerts() { # key... -> log alerts without trace, so each also files a missing-trace issue for service "service"
+  printf '%s\n' "$@" | jq -Rcn '{alerts:[inputs | {key:.,event_id:("first-seen-" + .),source:"log",reason:"first-seen",container:"service",service:"service",count:1,first:"2026-10-12T02:13:14Z",route:"/items",sample_request_id:"",trace_id:"",deduplicated_lines:["route=GET /items status=500"]}]}'
+}
+rest_key_a="$(printf 'rest-a' | sha256sum | cut -c1-20)" rest_key_b="$(printf 'rest-b' | sha256sum | cut -c1-20)"
+rest_two="$(rest_alerts "$rest_key_a" "$rest_key_b")"
+rest_missing_marker="<!-- target-missing-trace service=$(printf 'service' | sha256sum | cut -c1-20) -->"
+rest_issue() { jq -cn --argjson n "$1" --arg b "$2" '{number:$n,title:"t",body:$b,state:"open",labels:[{name:"target-anomaly"}],created_at:"2026-11-12T00:00:00Z"}'; }
+
+# Both lookups of both alerts (signature and missing-trace) are answered by ONE REST issue list; the label is also
+# listed once by the router's per-run prime, and nothing is created.
+jq -cn --argjson a "$(rest_issue 11 "<!-- target-signature sig=$rest_key_a -->")" --argjson b "$(rest_issue 12 "<!-- target-signature sig=$rest_key_b -->")" \
+  --argjson m "$(rest_issue 13 "$rest_missing_marker")" '[$a,$b,$m]' >"$rest_state"
+: >"$rest_calls" : >"$rest_acks"
+GH_MODE=ok run_rest_route "$rest_two" >"$tmp/rest-out"
+assert_eq 'REST: one issue list serves both alerts and both lookups' 1 "$(grep -c '^gh api --paginate repos/example/repository/issues?labels=target-anomaly&state=all&per_page=100$' "$rest_calls")"
+assert_eq 'REST: one label list, one issue list, and four comments' 6 "$(grep -c '^gh api \|^comment 1[123]$' "$rest_calls")"
+assert_eq 'REST: label list is primed once' 1 "$(grep -c '^gh api --paginate repos/example/repository/labels?per_page=100' "$rest_calls")"
+! grep -Eq '^gh (issue|label)|issue create|search/issues' "$rest_calls"
+assert_eq 'REST: both events acked' 2 "$(wc -l <"$rest_acks")"
+
+# An existing issue found only by title search (legacy, no label) is commented, never duplicated.
+echo '[]' >"$rest_state"
+: >"$rest_calls" : >"$rest_acks"
+GH_MODE=ok SEARCH_ITEMS="[$(jq -cn --arg b "<!-- target-signature sig=$rest_key_a -->" '{number:21,title:"Target anomaly x",body:$b,state:"open",labels:[]}')]" \
+  run_rest_route "$(rest_alerts "$rest_key_a")" >"$tmp/rest-out"
+grep -Fxq 'comment 21' "$rest_calls"
+! grep -Fq "sig=$rest_key_a" "$rest_state" # no second signature issue
+
+# Nothing exists: each issue is created once. The second alert sees the first alert's missing-trace issue because the
+# create dropped the cached list, so the service gets one missing-trace issue, not two.
+echo '[]' >"$rest_state"
+: >"$rest_calls" : >"$rest_acks"
+GH_MODE=ok run_rest_route "$rest_two" >"$tmp/rest-out"
+assert_eq 'REST: two signature issues and one missing-trace issue created' 3 "$(grep -c '^write gh issue create' "$rest_calls")"
+assert_eq 'REST: one missing-trace issue for the service' 1 "$(jq --arg m "$rest_missing_marker" '[.[] | select(.body | contains($m))] | length' "$rest_state")"
+[[ "$(grep -c '^gh api --paginate repos/example/repository/issues' "$rest_calls")" -ge 2 ]] # refetched after a create
+
+# Rate limit on the label prime: "skipped: rate-limited", rc 0, no create or ack, and stop at the first read.
+echo '[]' >"$rest_state"
+: >"$rest_calls" : >"$rest_acks"
+rc=0
+GH_MODE=rate-limit run_rest_route "$rest_two" >"$tmp/rest-out" 2>"$tmp/rest-err" || rc=$?
+assert_eq 'REST: rate limit exits 0' 0 "$rc"
+grep -Fxq 'skipped: rate-limited' "$tmp/rest-out"
+! grep -Fq 'issue create' "$rest_calls"
+[[ ! -s "$rest_acks" ]]
+assert_eq 'REST: rate limit stops after one read' 1 "$(grep -c '^gh ' "$rest_calls")"
+
+# Rate limit on the issue list is also skipped, with one label prime and one issue read.
+: >"$rest_calls" : >"$rest_acks"
+rc=0
+GH_MODE=issue-rate-limit run_rest_route "$rest_two" >"$tmp/rest-out" 2>"$tmp/rest-err" || rc=$?
+assert_eq 'REST issue-list rate limit exits 0' 0 "$rc"
+grep -Fxq 'skipped: rate-limited' "$tmp/rest-out"
+! grep -Fq 'issue create' "$rest_calls"
+[[ ! -s "$rest_acks" ]]
+assert_eq 'REST: issue-list rate limit stops after the failed list' 1 "$(grep -c '^gh api --paginate repos/example/repository/issues?' "$rest_calls")"
+assert_eq 'REST: label prime and issue-list rate limit use two reads' 2 "$(grep -c '^gh api ' "$rest_calls")"
+
+# Any other read error still fails the run and creates nothing.
+: >"$rest_calls" : >"$rest_acks"
+rc=0
+GH_MODE=http-500 run_rest_route "$rest_two" >"$tmp/rest-out" 2>"$tmp/rest-err" || rc=$?
+assert_eq 'REST: other read error exits 1' 1 "$rc"
+! grep -Fq 'skipped' "$tmp/rest-out"
+! grep -Fq 'issue create' "$rest_calls"
+[[ ! -s "$rest_acks" ]]
 
 echo 'ok - production monitor uses .zenoforge overrides and skips when unset'

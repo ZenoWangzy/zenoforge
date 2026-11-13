@@ -133,10 +133,8 @@ merge_pr_and_reconcile() {
     echo "guarded_pr_merge: could not acquire the merge lock within $((MERGE_LOCK_WAIT_SECONDS / 60)) minutes" >&2
     return 1
   fi
-  if guarded_write gh pr merge "$pr" --repo "$REPO" --squash --delete-branch \
-    --subject "$subject" \
-    --body-file "$body_file" \
-    --match-head-commit "$match_head_commit"; then
+  if guarded_write land_merge_pr "$pr" "$match_head_commit" --repo "$REPO" \
+    --delete-branch --subject "$subject" --body "$(cat -- "$body_file")"; then
     rc=0
   else
     rc=$?

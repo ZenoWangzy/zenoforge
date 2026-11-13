@@ -56,6 +56,9 @@ if [ "${1:-}" = api ]; then
     *issues/5336/sub_issues*) printf '[{"number":5338,"state":"closed","closed_at":"2026-11-10T00:00:00Z","labels":[]} ]\n'; exit 0 ;;
     *issues/5337/sub_issues*) printf 'fixture sub-issue read failed\n' >&2; exit 1 ;;
     *sub_issues*) printf '[]\n'; exit 0 ;;
+    */issues/[0-9]*) # issue_rest_view: the state file of `gh issue view --json state`, REST-shaped
+      n="${2##*/}"; st="$(cat "${ZF_GH_LIVE_LABELS:?}/$n.state" 2>/dev/null || echo CLOSED)"
+      printf '{"number":%s,"title":"t","body":"","state":"%s","labels":[]}\n' "$n" "$(printf '%s' "$st" | tr 'A-Z' 'a-z')"; exit 0 ;;
   esac
   printf 'unexpected gh api call: %s\n' "$*" >&2
   exit 1

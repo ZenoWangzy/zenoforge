@@ -42,7 +42,7 @@ model_policy_validate_json() {
               and . != "work" and . != "production" and . != "implement"))
           and (if $family == "sonnet"
             then all($roles[]; . == "review_fallback" or . == "hand-claude")
-            elif $family == "haiku" then all($roles[]; . == "triage-haiku" or . == "hand-claude" or . == "review_fallback")
+            elif $family == "haiku" then all($roles[]; . == "triage-haiku" or . == "hand-claude" or . == "review_fallback" or . == "unit-review-fallback")
             else true end)] | all)
     else true end)
     and ((.forbidden + $canonical[0].forbidden | unique) as $forbidden

@@ -106,6 +106,7 @@ for number in "${issue_numbers[@]}"; do
     | ($result.intake_context.duplicate_candidates // []) as $candidates
     | {number:$issue.number,title:$issue.title,
        priority:($decision.priority // $config.labels.needs_triage),
+       overlay:($decision.overlay // $result.overlay // null),
        route:($decision.route // "none-fits"),
        confidence:($result.confidence // null),
        adopted:($result.status == "answered" and $result.adopted == true),

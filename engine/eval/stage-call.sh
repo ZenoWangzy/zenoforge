@@ -20,7 +20,10 @@ source "$repo/engine/lib.d/model-not-found-cache.bash"
 N=$(jq -r '.issue.number' "$input")
 export N
 mkdir -p "$STATE_DIR"
-jq '.priorState + {last_failure_reason:.failure, last_failure_tail:.failure}' "$input" > "$STATE_DIR/$N.json"
+# Seed the isolated eval state fixture; this is not a runtime state write.
+state_tmp="$(mktemp "$STATE_DIR/$N.json.XXXXXX")"
+jq '.priorState + {last_failure_reason:.failure, last_failure_tail:.failure}' "$input" > "$state_tmp"
+mv -f -- "$state_tmp" "$STATE_DIR/$N.json"
 settings="$(zf_config_file prompts/agent-settings.json)"
 save_usage() {
   if [[ -f "$artifact/worker.log" ]]; then

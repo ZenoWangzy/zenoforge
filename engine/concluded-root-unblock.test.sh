@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$MODEL_POLICY_TEST_DEFAULT_FILE" > "$AGENT_HOME/model-policy.json"
 source "$SCRIPT_DIR/lib.sh"
 TEST_HOME="$AGENT_HOME"
-trap 'rm -rf -- "$TEST_HOME"' EXIT
+trap 'rm -rf -- "$TEST_HOME" "$test_env_root"' EXIT
 
 FAILED=0
 assert_contains() {
@@ -72,6 +72,16 @@ gh() {
       return 0
     fi
     printf '[]\n'
+    return 0
+  fi
+  if [ "${1:-}" = api ] && [[ "${2:-}" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)$ ]]; then # issue_rest_view: state from CLOSED_CHILD_IDS, close time and labels from CLOSED_CHILD_META
+    [ -z "${ISSUE_API_FAIL:-}" ] || { echo 'gh: HTTP 403: secondary rate limit exceeded (fake)' >&2; return 1; }
+    jq -cn --argjson n "${BASH_REMATCH[1]}" --arg closed " ${CLOSED_CHILD_IDS:-} " --argjson meta "${CLOSED_CHILD_META:-null}" '
+      (($closed | contains(" \($n) ")) | if . then "closed" else "open" end) as $state
+      | (($meta // {})[$n | tostring]) as $m
+      | {number:$n, title:"t", body:"", state:$state,
+         closed_at:($m.closedAt // (if $state == "closed" then "2026-01-01T00:00:00Z" else null end)),
+         labels:($m.labels // (if $state == "closed" then [] elif $n == 500053 or $n == 500054 then [{name:"concluded"}, {name:"pipeline-system"}] else [{name:"concluded"}] end))}'
     return 0
   fi
   if [ "${1:-}" = issue ] && [ "${2:-}" = list ]; then
@@ -775,6 +785,24 @@ assert_not_contains "mixed-release umbrella stays open" \
 assert_contains "mixed-release umbrella reports pending release" \
   "$(cat "$ROOT_WRITE_LOG")" "reason=children-not-released children=#500046, #500047"
 unset CLOSED_CHILD_IDS CLOSED_CHILD_META
+
+# A child whose state cannot be read never counts as closed: the helper reports unreadable (2), and the umbrella is neither released nor closed nor stripped of its children.
+cat > "$STATE_DIR/500062.json" <<'EOF'
+{"recut_children":[500063]}
+EOF
+ISSUE_API_FAIL=1
+unreadable_status=0
+recut_parent_has_open_child 500062 '[]' || unreadable_status=$?
+: > "$ROOT_WRITE_LOG"
+reconcile_blocking_issue_root '{"number":500062,"state":"OPEN","labels":[],"blocking":{"nodes":[]}}' '[]' 2>>"$ROOT_WRITE_LOG" || true
+unset ISSUE_API_FAIL
+assert_eq "an unreadable child state is reported as unreadable" 2 "$unreadable_status"
+assert_not_contains "an unreadable child does not close the umbrella" \
+  "$(cat "$ROOT_WRITE_LOG")" "gh issue close 500062"
+assert_not_contains "an unreadable child does not label the umbrella released" \
+  "$(cat "$ROOT_WRITE_LOG")" "--add-label released"
+assert_eq "an unreadable child keeps the umbrella's recut children" true \
+  "$(jq -r 'has("recut_children")' "$STATE_DIR/500062.json")"
 
 # A child closed as a duplicate delivered nothing; on 2026-10-04 child 2425 was closed as a duplicate
 # whose work "由 #1141 承担", and the auto-close then closed 1141 as completed with its work undone.

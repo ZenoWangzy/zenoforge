@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE_SRC="$SCRIPT_DIR/issue-pipeline.sh"
 ISSUE_PIPELINE_TEST_AGENT_HOME="$(mktemp -d)"
 export AGENT_HOME="$ISSUE_PIPELINE_TEST_AGENT_HOME"
-trap 'rm -rf -- "$ISSUE_PIPELINE_TEST_AGENT_HOME"' EXIT
+trap 'rm -rf -- "$ISSUE_PIPELINE_TEST_AGENT_HOME" "$test_env_root"' EXIT
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" \
   > "$AGENT_HOME/model-policy.json"
 # shellcheck source=./lib.sh
@@ -1090,7 +1090,7 @@ run_triage_selection() (
 # The empty-batch explanation is the main-flow block after the selection loops; eval just that block.
 run_triage_empty_case() (
   MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"
-  trap 'rm -rf -- "$MAC_AUTOPILOT_RUNTIME_DIR"' EXIT
+  trap 'rm -rf -- "$MAC_AUTOPILOT_RUNTIME_DIR"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
   NEEDS_TRIAGE_JSON='[]' NEEDS_TRIAGE_IDS='' READY_MEASURE_IDS='' TRIAGE_ORDERED_COUNT=0 TRIAGE_BATCH_ACTIVE=0
   TRIAGE_CANDIDATE_QUERY_FAILED=0 READY_MEASURE_QUERY_FAILED=0 TRIAGE_SELECT_CUT=0 triage_slots=8
   TRIAGE_BATCH_IDS=()
@@ -1851,7 +1851,7 @@ assert_eq 'refresh launch failure still records its fault' \
 run_batch_admission_case() (
   local kind="$1" launch_status="$2" runtime_mode="${3:-absent}" status=0
   AGENT_HOME="$(mktemp -d)"
-  trap 'rm -rf -- "$AGENT_HOME"' EXIT
+  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
   MAC_AUTOPILOT_RUNTIME_DIR="$AGENT_HOME/runtime"
   [ "$runtime_mode" != present ] || mkdir -p -- "$MAC_AUTOPILOT_RUNTIME_DIR"
   REPO_DIR="$SCRIPT_DIR/.."
@@ -2342,8 +2342,10 @@ BUDGET_DISPATCH_OUT="$(
     fi
   }
   gh() {
-    if [ "${1:-}" = issue ] && [ "${2:-}" = view ]; then
-      local number="${3:-}" label='{"name":"ready-for-agent"}' comments='[]'
+    if { [ "${1:-}" = api ] && [[ "${*: -1}" == */issues/[0-9]* ]]; } || { [ "${1:-}" = issue ] && [ "${2:-}" = view ]; }; then
+      # `api` is issue_rest_view (the issue, then its comments as slurped pages); `issue view` is the label cache read
+      local url="${*: -1}" number label='{"name":"ready-for-agent"}' comments='[]' state
+      if [ "${1:-}" = api ]; then number="${url#*/issues/}"; number="${number%%/*}"; state=open; else number="${3:-}"; url=''; state=OPEN; fi
       case "$number" in
         991301|991303)
           if jq -e '.state == "on-hold"' "$(state_file "$number")" >/dev/null 2>&1; then
@@ -2354,7 +2356,8 @@ BUDGET_DISPATCH_OUT="$(
       if [ "$number" = 991301 ] && [ "$BUDGET_COMMENT_PRESENT" = 1 ]; then
         comments="$(jq -cn --arg marker "$ISSUE_SPEND_BUDGET_MARKER" '[{body:$marker}]')"
       fi
-      printf '{"state":"OPEN","labels":[%s],"comments":%s}\n' "$label" "$comments"
+      if [[ "$url" == */comments\?* ]]; then jq -cn --argjson comments "$comments" '[$comments]'
+      else printf '{"number":%s,"state":"%s","state_reason":null,"labels":[%s],"comments":%s}\n' "$number" "$state" "$label" "$comments"; fi
     elif [ "${1:-}" = issue ] && [ "${2:-}" = list ]; then
       for number in 991301 991303; do
         if jq -e '.state == "on-hold"' "$(state_file "$number")" >/dev/null 2>&1; then
@@ -2452,6 +2455,10 @@ run_env_proxy_site() (
 )
 assert_eq "the three inline issue-pipeline systemd-run sites carry NO_PROXY and the Node env-proxy opt-in" 3 \
   "$(grep -c -- '-E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY' "$PIPELINE_SRC")"
+# 2026-11-13: the triage units lacked TYPESAFE_ENV_FILE, so intake-priority logged "skipped (missing-typesafe-key)"
+# 89 times in 30 h and no vecta issue got a priority label. Stage and triage-batch units import it.
+assert_eq 'the stage and triage-batch systemd-run sites import TYPESAFE_ENV_FILE' 2 \
+  "$(grep -c -- '-E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE' "$PIPELINE_SRC")"
 assert_eq 'the advisor batch site takes the shared unit environment' 1 "$(grep -Fc '"${ZF_ADVISOR_BATCH_UNIT_ENV[@]}"' "$PIPELINE_SRC")"
 assert_eq 'the shared unit environment carries the proxies and the provider job directory' yes \
   "$(source "$SCRIPT_DIR/config.sh"; grep -q -- '-E NO_PROXY -E NODE_USE_ENV_PROXY .*-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR' <<< "${ZF_ADVISOR_BATCH_UNIT_ENV[*]}" && echo yes || echo no)"

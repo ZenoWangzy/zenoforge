@@ -200,7 +200,7 @@ recut_parent_has_open_child() {
         case "${state^^}" in OPEN) return 0 ;; CLOSED) continue ;; *) return 2 ;; esac
       fi
     fi
-    state="$(gh issue view "$child" --repo "$REPO" --json state -q .state 2>/dev/null)" || return 2
+    state="$(issue_rest_state "$child" "$REPO")" || return 2
     case "${state^^}" in OPEN) return 0 ;; CLOSED) ;; *) return 2 ;; esac
   done < <(jq -r '.[]' <<< "$children")
   return 3
@@ -294,7 +294,7 @@ reconcile_recut_parent_children() {
         child_state="$(jq -r --argjson child "$child" '[.[] | select(.number == $child)][0].state // empty' <<< "$native_json")" \
           || { blocker_root_fail "umbrella child #$child state read failed for #$n"; return 1; }
       fi
-      [ -n "$child_state" ] || child_state="$(gh issue view "$child" --repo "$REPO" --json state -q .state 2>/dev/null)" \
+      [ -n "$child_state" ] || child_state="$(issue_rest_state "$child" "$REPO")" \
         || { blocker_root_fail "umbrella child #$child issue view failed for #$n"; return 1; }
       case "${child_state^^}" in CLOSED) ;; OPEN) live_children+=("$child") ;; *) blocker_root_fail "umbrella child #$child has unrecognized state '$child_state'"; return 1 ;; esac
     fi
@@ -320,7 +320,7 @@ reconcile_recut_parent_children() {
         ! jq -e '(.labels // []) | index("wontfix") != null' <<< "$native_child_json" >/dev/null \
           || wontfix_children+=" #$child"
       else
-        child_json="$(gh issue view "$child" --repo "$REPO" --json closedAt,labels 2>/dev/null)" \
+        child_json="$(issue_rest_view "$child" "$REPO")" \
           || { blocker_root_fail "umbrella child #$child closure view failed for #$n"; return 1; }
         child_closed_at="$(jq -r '.closedAt // empty' <<< "$child_json")" \
           || { blocker_root_fail "umbrella child #$child closed-at parse failed for #$n"; return 1; }

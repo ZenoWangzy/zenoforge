@@ -26,6 +26,12 @@ test_receipt_main() {
     printf 'test-receipt: cannot read HEAD\n' >&2
     return 2
   }
+  # 11-13 #1113: a fix sat uncommitted (amend without -a); the tests passed on the working tree, the receipt was
+  # filed under HEAD, and main got the broken line. A receipt is for HEAD only, so tracked changes refuse it.
+  if ! git -C "$repo" diff --quiet HEAD -- 2>/dev/null; then
+    printf 'test-receipt: refused: tracked files differ from HEAD %.12s; commit them first (git status)\n' "$sha" >&2
+    return 2
+  fi
   "$@"
   rc=$?
   if ! mkdir -p "$git_dir/zf-test-receipts" 2>/dev/null \

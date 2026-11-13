@@ -362,18 +362,27 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
   return 1
 }
 # ---------- 2. 派发（焦点与并发；预算只告警） ----------
-# 新 worker slot 按 main-red、热修回迁、critical 的现有紧急度排序；其后离完成最近的环节优先，再按配置 tier。
+# New worker slots apply intake's founder, hotfix, bug, fruit and market tiers before the existing urgency, stage and lane keys.
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。
 dispatch_order() {
   local started=$SECONDS rc=0 elapsed
-  jqf -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" '
+  jqf -L "$ENGINE_ROOT/engine" -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" \
+    --argjson intake_priority "$(jqf -c '.intake_priority // {}' <<<"$CFG")" '
+    import "intake-priority-policy" as intake_policy;
     .units
     | map(select(.stage | test("-pending$")))
     | sort_by([
+        intake_policy::intake_dispatch_tier(.; $intake_priority),
         (.issue as $issue | if any($first_issues[] | numbers; . == $issue) then 0 else 1 end),
         (if .main_red == true then 0 else 1 end),
         (if .hotpatch == true then 0 else 1 end),
         (if .critical == true then 0 else 1 end),
+        (. as $unit
+          | ([$unit.labels[]? | if type == "string" then . else .name // "" end]) as $labels
+          | if ($labels | index($intake_priority.labels.top // "priority:top")) != null then 0
+            elif ($labels | index($intake_priority.labels.high // "priority:high")) != null then 1
+            elif ($labels | index($intake_priority.labels.normal // "priority:normal")) != null then 2
+            elif ($labels | index($intake_priority.labels.low // "priority:low")) != null then 3 else 2 end),
         (if .stage == "rereview-pending" then 0 elif .stage == "repair-pending" then 1 elif .stage == "review-pending" then 2 elif .stage == "implement-pending" then 3 else 4 end),
         ((if .hotpatch == true then "hotfix" elif (.lane // "") == "direct-main" then "opt" else "normal" end) as $tier
           | ($priority_order | index($tier) // ($priority_order | length))),

@@ -224,14 +224,63 @@ health_prod_errors_write_evidence() {
   chmod 600 "$tmp" && mv -f -- "$tmp" "$path"
 }
 
+# Read-only gh call for the monitor: rc 75 when GitHub says rate limit (the caller skips the run), 1 on any other error.
+health_prod_errors_gh_read() {
+  local err out rc=0
+  err="$(mktemp)" || return 1
+  out="$(timeout 20 "$@" 2>"$err")" || rc=$?
+  if (( rc != 0 )); then
+    if grep -qi 'rate limit' "$err"; then rc=75; else cat -- "$err" >&2; rc=1; fi
+    rm -f -- "$err"
+    return "$rc"
+  fi
+  rm -f -- "$err"
+  printf '%s\n' "$out"
+}
+
+# One REST list of the anomaly-labelled issues (#1038), in the shape the old issue list gave. A route run keeps it in
+# PROD_ERRORS_ISSUE_LIST_FILE so every alert of the run shares one call; creating an issue drops it (no cross-run cache).
+health_prod_errors_issue_list() {
+  local raw label
+  if [[ -n "${PROD_ERRORS_ISSUE_LIST_FILE:-}" && -s "$PROD_ERRORS_ISSUE_LIST_FILE" ]]; then
+    cat -- "$PROD_ERRORS_ISSUE_LIST_FILE"
+    return
+  fi
+  label="$(jq -rn --arg l "$PROD_ERRORS_ISSUE_LABEL" '$l | @uri')" || return 1
+  raw="$(health_prod_errors_gh_read gh api --paginate "repos/$REPO/issues?labels=$label&state=all&per_page=100")" || return $?
+  raw="$(jq -sc 'add // [] | map(select(has("pull_request") | not)
+    | {number, title, body, state: (.state | ascii_upcase), labels: [.labels[] | {name}], createdAt: .created_at})' <<< "$raw")" || return 1
+  [[ -z "${PROD_ERRORS_ISSUE_LIST_FILE:-}" ]] || printf '%s\n' "$raw" > "$PROD_ERRORS_ISSUE_LIST_FILE" || return 1
+  printf '%s\n' "$raw"
+}
+
+health_prod_errors_issue_list_drop() {
+  [[ -z "${PROD_ERRORS_ISSUE_LIST_FILE:-}" ]] || : > "$PROD_ERRORS_ISSUE_LIST_FILE"
+}
+
+# Title lookup for issues that never got the label (legacy); REST search, only reached on a label-list miss.
+health_prod_errors_title_search() {
+  local title="$1" raw
+  raw="$(health_prod_errors_gh_read gh api -X GET search/issues -f q="repo:$REPO is:issue in:title \"${title//\"/}\"" -f per_page=100)" || return $?
+  jq -c '[.items[] | {number, title, body, state: (.state | ascii_upcase), labels: [.labels[] | {name}]}]' <<< "$raw"
+}
+
+# Every issue create goes through here so the run's cached list is dropped, whether or not the create succeeded.
+health_prod_errors_issue_create() {
+  local rc=0
+  guarded_write gh issue create --repo "$REPO" "$@" || rc=$?
+  health_prod_errors_issue_list_drop
+  return "$rc"
+}
+
 health_prod_errors_ensure_anomaly_label() {
   local existing
   [[ "${PROD_ANOMALY_LABEL_READY:-0}" == 1 ]] && return 0
-  existing="$(gh label list --repo "$REPO" --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
+  existing="$(health_prod_errors_gh_read gh api --paginate "repos/$REPO/labels?per_page=100" -q '.[].name')" || return $?
   if ! grep -qx -- "$PROD_ERRORS_ISSUE_LABEL" <<< "$existing"; then
     if ! guarded_write gh label create "$PROD_ERRORS_ISSUE_LABEL" --repo "$REPO" --color "$PROD_ERRORS_ISSUE_LABEL_COLOR" \
         --description "$PROD_ERRORS_ISSUE_LABEL_DESCRIPTION" >/dev/null; then
-      existing="$(gh label list --repo "$REPO" --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
+      existing="$(health_prod_errors_gh_read gh api --paginate "repos/$REPO/labels?per_page=100" -q '.[].name')" || return $?
       grep -qx -- "$PROD_ERRORS_ISSUE_LABEL" <<< "$existing" || return 1
     fi
   fi
@@ -240,9 +289,10 @@ health_prod_errors_ensure_anomaly_label() {
 
 health_prod_errors_create_anomaly_issue() {
   local title="$1" body_file="$2" issue_url issue issue_json
+  health_prod_errors_ensure_anomaly_label || return $?
   if [[ "$(roadmap_switch_value)" == true ]]; then
     health_prod_errors_ensure_roadmap_cache || return 1
-    issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" \
+    issue_url="$(health_prod_errors_issue_create --title "$title" \
       --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file")" || return 1
     issue="${issue_url##*/}"
     [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -253,7 +303,7 @@ health_prod_errors_create_anomaly_issue() {
     printf '%s\n' "$issue"
     return 0
   fi
-  issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" \
+  issue_url="$(health_prod_errors_issue_create --title "$title" \
     --label needs-triage --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file")" || return 1
   issue="${issue_url##*/}"
   [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -281,21 +331,13 @@ health_prod_errors_rollup_issue() {
 health_prod_errors_upsert_issue() {
   local marker="$1" title="$2" body_file="$3" force_individual="${4:-0}"
   local anomaly=0 results lookup_results issue state issue_json issue_url legacy_results recent_count
-  if [[ "$marker" == "$PROD_ERRORS_SIGNATURE_MARKER_PREFIX"* ]]; then
-    anomaly=1
-    health_prod_errors_ensure_anomaly_label || return 1
-    results="$(timeout 20 gh issue list --repo "$REPO" --label "$PROD_ERRORS_ISSUE_LABEL" --state all --limit 1000 \
-      --json number,title,body,state,labels,createdAt)" || return 1
-  else
-    results="$(timeout 20 gh issue list --repo "$REPO" --state all --limit 1000 \
-      --search "in:title $title" --json number,title,body,state,labels)" || return 1
-  fi
+  [[ "$marker" != "$PROD_ERRORS_SIGNATURE_MARKER_PREFIX"* ]] || anomaly=1
+  results="$(health_prod_errors_issue_list)" || return $?
   jq -e 'type == "array"' <<< "$results" >/dev/null || return 1
   lookup_results="$results"
   issue="$(jq -r --arg marker "$marker" '[.[] | select((.body // "") | contains($marker))][0].number // empty' <<< "$results")"
-  if [[ -z "$issue" && "$anomaly" == 1 ]]; then
-    legacy_results="$(timeout 20 gh issue list --repo "$REPO" --state all --limit 1000 \
-      --search "in:title $title" --json number,title,body,state,labels)" || return 1
+  if [[ -z "$issue" ]]; then
+    legacy_results="$(health_prod_errors_title_search "$title")" || return $?
     jq -e 'type == "array"' <<< "$legacy_results" >/dev/null || return 1
     issue="$(jq -r --arg marker "$marker" '[.[] | select((.body // "") | contains($marker))][0].number // empty' <<< "$legacy_results")"
     [[ -z "$issue" ]] || lookup_results="$legacy_results"
@@ -322,10 +364,10 @@ health_prod_errors_upsert_issue() {
     # Missing-trace issues are this filer's work too: carry its own label from
     # creation (#349), so they are never filed label-less and identifiable
     # regardless of the stage label applied alongside.
-    health_prod_errors_ensure_anomaly_label || return 1
+    health_prod_errors_ensure_anomaly_label || return $?
     if [[ "$(roadmap_switch_value)" == true ]]; then
       health_prod_errors_ensure_roadmap_cache || return 1
-      issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" \
+      issue_url="$(health_prod_errors_issue_create --title "$title" \
         --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file")" || return 1
       issue="${issue_url##*/}"
       [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -336,7 +378,7 @@ health_prod_errors_upsert_issue() {
       printf '%s\n' "$issue"
       return 0
     fi
-    issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" --label needs-triage \
+    issue_url="$(health_prod_errors_issue_create --title "$title" --label needs-triage \
       --label "$PROD_ERRORS_ISSUE_LABEL" --body-file "$body_file")" || return 1
     issue="${issue_url##*/}"
     [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -347,6 +389,7 @@ health_prod_errors_upsert_issue() {
   state="$(jq -r --argjson issue "$issue" '[.[] | select(.number == $issue)][0].state // "" | ascii_downcase' <<< "$lookup_results")"
   if [[ "$state" == closed ]]; then
     [[ "$(roadmap_switch_value)" != true ]] || health_prod_errors_ensure_roadmap_cache || return 1
+    health_prod_errors_issue_list_drop
     issue_transition "$issue" needs-triage prod-anomaly-recurred . 0 "$issue_json" "" open || return 1
   fi
   guarded_issue_comment "$issue" "$(cat -- "$body_file")" >/dev/null || return 1
@@ -370,7 +413,7 @@ health_prod_errors_ensure_roadmap_cache() {
 
 health_prod_errors_route() {
   local result="$1" verdict="$2" detail="$3" state_file="$4" failed=0 event_failed
-  local alert key event_id container count first trace_id request_id service route evidence body_file marker title trace_output issue_id now next_update force_individual reason
+  local alert key event_id container count first trace_id request_id service route evidence body_file marker title trace_output issue_id now next_update force_individual reason label_rc upsert_rc skipped=0
   local anomaly_dir="$NIGHT/prod-anomalies"
   local -A inbox_ok=()
   mkdir -p -- "$anomaly_dir" || return 1
@@ -402,6 +445,8 @@ health_prod_errors_route() {
 
   exec 8>"$NIGHT/prod-errors-issues.lock"
   flock -n 8 || return 0
+  # One issue list per run, shared by every alert below; each issue create empties it. Removed on the way out.
+  PROD_ERRORS_ISSUE_LIST_FILE="$(mktemp "$anomaly_dir/.issue-list.XXXXXX")" || PROD_ERRORS_ISSUE_LIST_FILE=
   while IFS= read -r alert; do
     [[ -n "$alert" ]] || continue
     key="$(jq -r '.key // empty' <<< "$alert")"
@@ -437,9 +482,22 @@ health_prod_errors_route() {
     cat -- "$evidence" >> "$body_file"
     force_individual=0
     if [[ "$(jq -r '.reason // ""' <<< "$alert")" == production-down ]]; then force_individual=1; fi
-    # The upsert runs in a command substitution, so its READY flag dies with it: prime it here, once per run (#1038). A failure is retried inside the upsert.
-    health_prod_errors_ensure_anomaly_label || :
-    if ! issue_id="$(health_prod_errors_upsert_issue "$marker" "$title" "$body_file" "$force_individual")"; then
+    # The upsert runs in a command substitution, so its READY flag dies with it: prime it here, once per run (#1038).
+    label_rc=0
+    health_prod_errors_ensure_anomaly_label || label_rc=$?
+    if (( label_rc == 75 )); then
+      skipped=1
+      rm -f -- "$body_file"
+      break
+    fi
+    upsert_rc=0
+    issue_id="$(health_prod_errors_upsert_issue "$marker" "$title" "$body_file" "$force_individual")" || upsert_rc=$?
+    if (( upsert_rc == 75 )); then
+      # Rate-limited read: nothing was created and the event stays unacked, so the next run retries it.
+      skipped=1
+      rm -f -- "$body_file"
+      break
+    elif (( upsert_rc != 0 )); then
       failed=1
       event_failed=1
     elif [[ "$force_individual" == 1 ]]; then
@@ -487,8 +545,11 @@ health_prod_errors_route() {
         "$PROD_ERRORS_MISSING_TRACE_HEADING_ROUTE" "$route" \
         "$PROD_ERRORS_MISSING_TRACE_HEADING_FIRST" "$first" \
         "$PROD_ERRORS_MISSING_TRACE_HEADING_EVIDENCE" "$evidence" > "$missing_body"
-      if ! health_prod_errors_upsert_issue "$missing_marker" "$missing_title" "$missing_body" >/dev/null; then failed=1; event_failed=1; fi
+      upsert_rc=0
+      health_prod_errors_upsert_issue "$missing_marker" "$missing_title" "$missing_body" >/dev/null || upsert_rc=$?
       rm -f -- "$missing_body"
+      if (( upsert_rc == 75 )); then skipped=1; break; fi
+      if (( upsert_rc != 0 )); then failed=1; event_failed=1; fi
     fi
     if [[ "$event_failed" == 0 && "${inbox_ok[$event_id]:-}" == 1 ]]; then
       # Same lock file as the node-health monitor run: an ack must not interleave with a fresh probe writing state.
@@ -497,5 +558,8 @@ health_prod_errors_route() {
   done < <(jq -c '.alerts[]?' <<< "$result")
   flock -u 8
   exec 8>&-
+  [[ -z "$PROD_ERRORS_ISSUE_LIST_FILE" ]] || rm -f -- "$PROD_ERRORS_ISSUE_LIST_FILE"
+  PROD_ERRORS_ISSUE_LIST_FILE=
+  (( skipped == 0 )) || printf 'skipped: rate-limited\n'
   [ "$failed" -eq 0 ] || return 1
 }

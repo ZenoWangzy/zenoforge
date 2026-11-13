@@ -9,6 +9,11 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/merge-pr-bootstrap.sh"
 
 merge_pr_root() { git rev-parse --show-toplevel 2>/dev/null; }
 
+if ! source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/engine/land-admit.sh" 2>/dev/null; then
+  printf 'merge-pr: cannot load engine/land-admit.sh\n' >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 merge_pr_result_dir() {
   local repo="$1" git_dir
   git_dir="$(git -C "$repo" rev-parse --git-dir 2>/dev/null)" || return 1
@@ -217,21 +222,10 @@ merge_pr_test_receipt_ok() {
     merge_pr_refuse "$pr" "test receipt for $head_sha is empty or invalid" 'run the tests at this HEAD again through tools/test-receipt.sh <command...>'
     return 1
   fi
-  bad="$(awk '
-    index($0, "\t") == 0 { print "malformed receipt line " NR; next }
-    {
-      tab = index($0, "\t")
-      rc = substr($0, 1, tab - 1)
-      cmd = substr($0, tab + 1)
-      if (rc !~ /^[0-9]+$/ || cmd == "") { print "malformed receipt line " NR; next }
-      last[cmd] = rc
-    }
-    END { for (cmd in last) if (last[cmd] + 0 != 0) print cmd " (exit " last[cmd] ")" }
-  ' "$receipt")"
-  [[ -z "$bad" ]] || {
+  if ! bad="$(LAND_RECEIPT_STRICT=1 land_receipt_green "$receipt" 2>&1)"; then
     merge_pr_refuse "$pr" "test receipt for $head_sha has a failed last run: $bad" 'fix the failing command, then rerun it at this HEAD through tools/test-receipt.sh <command...>'
     return 1
-  }
+  fi
   printf 'merge-pr: receipt: local\n' >&2
 }
 
@@ -479,12 +473,8 @@ merge_pr_cancel_ci() {
 
 # GraphQL gh pr merge refused: squash over REST pinned to the head read here, then drop the head ref.
 merge_pr_squash() {
-  local pr="$1" sha="$2" head_ref out
-  gh pr merge "$pr" --squash --delete-branch --match-head-commit "$sha" && return 0
-  head_ref="$(merge_pr_view "$pr" headRefName 2>/dev/null | jq -er '.headRefName | select(type == "string" and length > 0)')" || return 1
-  out="$(gh api -X PUT "repos/{owner}/{repo}/pulls/$pr/merge" -f merge_method=squash -f sha="$sha" 2>&1)" \
-    || { [[ "$out" != *409* ]] || merge_pr_refuse "$pr" "head moved after the gate: $sha is no longer the head, not merged"; return 1; }
-  gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/$head_ref" >/dev/null 2>&1 || true
+  local pr="$1" sha="$2" LAND_MERGE_PR_REFUSAL=1
+  LAND_MERGE_REST_FALLBACK=1 land_merge_pr "$pr" "$sha" --delete-branch || return 1
 }
 
 # --delete-branch removes the head branch, and GitHub then closes every open PR based on it.
