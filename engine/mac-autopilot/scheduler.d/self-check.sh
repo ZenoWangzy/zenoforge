@@ -1,11 +1,12 @@
 self_check_run() (
   set -o pipefail
-  local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target
+  local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source
   local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
   local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
   local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg
   local delegate_tests=0
   local -a builds=()
+  runner_source="$(<"$HERE/escape-suite-runner.mjs")" || return 1
   cd "$dir" || return 1
   tree="$(git rev-parse "$sha^{tree}")" || return 1
   base="$(git merge-base origin/main "$sha")" || return 1
@@ -49,20 +50,25 @@ self_check_run() (
       || { rm -rf "$selection_dir"; return 1; }
     rm -rf "$selection_dir"
   fi
-  if [[ "$(jq '.rootNames | length' <<<"$selection")" == 0 ]]; then echo 'self-check: no workspace package touched'; return 0; fi
-  targets="$(jq -r '.affectedNames[]' <<<"$selection")" || return 1
+  if [[ "$(jq '.rootNames | length' <<<"$selection")" == 0 ]]; then
+    echo 'self-check: no workspace package touched'
+    targets=""
+  else
+    targets="$(jq -r '.affectedNames[]' <<<"$selection")" || return 1
+  fi
   test_targets=""
-  while IFS= read -r paths; do
-    # Selection from candidate code may be untrusted: read manifests only from
-    # the candidate Git tree, never from an arbitrary controller filesystem path.
-    manifest="$(command git -C "$dir" show "$sha:$paths/package.json")" || return 1
-    if [[ -n "$(jq -r '.scripts.test // empty' <<<"$manifest")" ]]; then
-      test_targets+="$(jq -r '.name' <<<"$manifest")"$'\n'
-    fi
-  done < <(jq -r '.affectedPaths[]' <<<"$selection")
-  [[ -n "$targets" ]] || return 1
+  if [[ -n "$targets" ]]; then
+    while IFS= read -r paths; do
+      # Selection from candidate code may be untrusted: read manifests only from
+      # the candidate Git tree, never from an arbitrary controller filesystem path.
+      manifest="$(command git -C "$dir" show "$sha:$paths/package.json")" || return 1
+      if [[ -n "$(jq -r '.scripts.test // empty' <<<"$manifest")" ]]; then
+        test_targets+="$(jq -r '.name' <<<"$manifest")"$'\n'
+      fi
+    done < <(jq -r '.affectedPaths[]' <<<"$selection")
+  fi
   [[ "$lane" == pr && "$pr_base" == main ]] && delegate_tests=1
-  while read -r pkg; do builds+=(--filter "$pkg..."); done <<<"$targets"
+  while read -r pkg; do [[ -n "$pkg" ]] || continue; builds+=(--filter "$pkg..."); done <<<"$targets"
   cached_tests=""
   while read -r pkg; do
     [[ -n "$pkg" ]] || continue
@@ -80,10 +86,13 @@ self_check_run() (
       export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 BASE_SHA="$1"
       step_s="$6" tree="$7" delegate_tests="$8"
       rc=0
-      # shellcheck disable=SC2086
-      timeout -k 10 "$step_s" pnpm $2 --workspace-concurrency=2 --if-present run build || { srg=$?; rc=1; (( srg != 124 )) || echo "self-check: build timed out after ${step_s}s"; }
+      if [[ -n "$2" ]]; then
+        # shellcheck disable=SC2086
+        timeout -k 10 "$step_s" pnpm $2 --workspace-concurrency=2 --if-present run build || { srg=$?; rc=1; (( srg != 124 )) || echo "self-check: build timed out after ${step_s}s"; }
+      fi
       for paths in typecheck test lint; do
         while read -r pkg; do
+          [[ -n "$pkg" ]] || continue
           if [[ "$paths" == test ]] && grep -Fxq "$pkg" <<<"$4"; then
             if (( delegate_tests )); then
               echo "self-check: test $pkg delegated to Touched packages PR gate tree=$tree"
@@ -102,7 +111,10 @@ self_check_run() (
           fi
         done <<<"$3"
       done
+      if ZF_ESCAPE_SUITE_RUNNER=1 ZF_ESCAPE_SUITE_BASE="$1" ZF_ESCAPE_SUITE_HEAD="$9" ZF_ESCAPE_SUITE_TIMEOUT_S="$step_s" node --input-type=module -e "${10}"; then :
+      else srg=$?; rc=1; fi
       exit "$rc"' self-check "$base" "$builds_arg" "$targets" "$test_targets" "$cached_tests" "$step_s" "$tree" "$delegate_tests" \
+      "$sha" "$runner_source" \
       | tee "$remote_output"; then
       rc=0
     else
@@ -117,30 +129,35 @@ self_check_run() (
     rm -f "$remote_output"
     return "$rc"
   fi
-  export VITEST_MAX_WORKERS=2 VITEST_MAX_FORKS=2 VITEST_MAX_THREADS=2 VITEST_MIN_FORKS=1
-  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 BASE_SHA="$base"
-  timeout 900 pnpm install --frozen-lockfile --offline || timeout 900 pnpm install --frozen-lockfile || return 1
-  timeout -k 10 "$step_s" pnpm "${builds[@]}" --workspace-concurrency=2 --if-present run build || { srg=$?; rc=1; (( srg != 124 )) || echo "self-check: build timed out after ${step_s}s"; }
-  for paths in typecheck test lint; do
-    while read -r pkg; do
-      if [[ "$paths" == test ]] && grep -Fxq "$pkg" <<<"$test_targets"; then
-        if (( delegate_tests )); then
-          echo "self-check: test $pkg delegated to Touched packages PR gate tree=$tree"
-          continue
+  if [[ -n "$targets" ]]; then
+    export VITEST_MAX_WORKERS=2 VITEST_MAX_FORKS=2 VITEST_MAX_THREADS=2 VITEST_MIN_FORKS=1
+    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 BASE_SHA="$base"
+    timeout 900 pnpm install --frozen-lockfile --offline || timeout 900 pnpm install --frozen-lockfile || return 1
+    timeout -k 10 "$step_s" pnpm "${builds[@]}" --workspace-concurrency=2 --if-present run build || { srg=$?; rc=1; (( srg != 124 )) || echo "self-check: build timed out after ${step_s}s"; }
+    for paths in typecheck test lint; do
+      while read -r pkg; do
+        [[ -n "$pkg" ]] || continue
+        if [[ "$paths" == test ]] && grep -Fxq "$pkg" <<<"$test_targets"; then
+          if (( delegate_tests )); then
+            echo "self-check: test $pkg delegated to Touched packages PR gate tree=$tree"
+            continue
+          fi
+          if test_evidence_has_pass "$tree" "test:$pkg"; then
+            echo "self-check: test $pkg reused tree=$tree"
+            continue
+          fi
         fi
-        if test_evidence_has_pass "$tree" "test:$pkg"; then
-          echo "self-check: test $pkg reused tree=$tree"
-          continue
+        echo "self-check: $paths $pkg"
+        if timeout -k 10 "$step_s" pnpm --filter "$pkg" --if-present run "$paths"; then
+          if [[ "$paths" == test ]] && grep -Fxq "$pkg" <<<"$test_targets"; then test_evidence_record_pass "$tree" "test:$pkg" self-check; fi
+        else
+          srg=$?; rc=1; (( srg != 124 )) || echo "self-check: $paths $pkg timed out after ${step_s}s"
         fi
-      fi
-      echo "self-check: $paths $pkg"
-      if timeout -k 10 "$step_s" pnpm --filter "$pkg" --if-present run "$paths"; then
-        if [[ "$paths" == test ]] && grep -Fxq "$pkg" <<<"$test_targets"; then test_evidence_record_pass "$tree" "test:$pkg" self-check; fi
-      else
-        srg=$?; rc=1; (( srg != 124 )) || echo "self-check: $paths $pkg timed out after ${step_s}s"
-      fi
-    done <<<"$targets"
-  done
+      done <<<"$targets"
+    done
+  fi
+  if ZF_ESCAPE_SUITE_RUNNER=1 ZF_ESCAPE_SUITE_BASE="$base" ZF_ESCAPE_SUITE_HEAD="$sha" ZF_ESCAPE_SUITE_TIMEOUT_S="$step_s" node --input-type=module -e "$runner_source"; then :
+  else rc=1; fi
   return "$rc"
 )
 

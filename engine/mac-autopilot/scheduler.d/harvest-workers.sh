@@ -232,7 +232,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       continue
     fi
     if [[ -s "$rep" ]]; then
-      v="$(verdict_of "$rep")"; [[ "$wtype" != review && "$wtype" != rereview ]] || review_decision_log_flags_append "$rep" "$unit"
+      v="$(verdict_of "$rep")"; [[ "$wtype" != review && "$wtype" != rereview ]] || review_report_harvest "$rep" "$unit"
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
         incident_unit_json="$(harvest_unit_snapshot "$unit")"
         incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json")"

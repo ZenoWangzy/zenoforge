@@ -274,6 +274,13 @@ review_verification_rule() { # unit-json dir log sha → status paragraph; copie
     *) printf '\nVerification evidence for head %s: SKIPPED. No verification result is recorded for this head; judge from the diff and the tests alone.' "$sha" ;;
   esac
 }
+escape_suite_review_rule() { # self-check log → required report content, including each escape test's exit code
+  local results
+  [[ -s "$1" ]] || return 0
+  results="$(grep -a '^escape-suite: ' "$1" || true)"
+  [[ -n "$results" ]] || return 0
+  printf '\nPre-review escape-suite results to inspect (the scheduler appends these under `## escape-suite` in the report):\n%s' "$results"
+}
 # Reviewers run with no read access under $SUP, so copy the unit's implementation report and latest self-check log into the review
 # clone (git-ignored) and name only the copies. Shared by every reviewer provider; a missing input is left out of the prompt.
 # The third argument is the head under review; the verification status paragraph is printed after the copies.
@@ -287,7 +294,10 @@ review_inputs_rule() { # unit-json workdir [head] → copies the inputs, git-ign
   [[ -z "$log" || "$log" == /* ]] || log="$SUP/$log"
   mkdir -p "$dir"
   if [[ -s "$rep" ]] && cp -f "$rep" "$dir/implementation-report.md"; then named+=("$dir/implementation-report.md（实现报告）"); fi
-  if [[ -s "$log" ]] && cp -f "$log" "$dir/self-check.log"; then named+=("$dir/self-check.log（最近一次自检日志）"); fi
+  if [[ -s "$log" ]] && cp -f "$log" "$dir/self-check.log"; then
+    named+=("$dir/self-check.log（最近一次自检日志）")
+    escape_suite_review_rule "$dir/self-check.log"
+  fi
   review_verification_rule "$unit_json" "$dir" "$log" "$sha"
   # The clone's info/exclude is shared by every worktree of it, so append the line only when it is absent.
   ex="$(git -C "$wd" rev-parse --git-path info/exclude 2>/dev/null)" && [[ -n "$ex" ]] || return 0
