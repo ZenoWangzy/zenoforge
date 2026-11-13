@@ -659,5 +659,9 @@ $deliver"
 
 dispatch_pending() {
   local TICK_STEP_LOCK_RESULT=""
-  tick_step_lock_run dispatch_pending dispatch_pending_pass "$@"
+  if declare -F tick_step_lock_run >/dev/null 2>&1; then
+    tick_step_lock_run dispatch_pending dispatch_pending_pass "$@"
+  else
+    dispatch_pending_pass "$@"
+  fi
 }

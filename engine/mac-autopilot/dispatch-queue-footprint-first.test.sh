@@ -21,6 +21,8 @@ CFG='{"advisor":false}'
 jq -nc --argjson u "$unit" '{units:[$u]}' > "$UNITS"
 
 source "$queue_source"
+declare -F tick_step_lock_run >/dev/null 2>&1 \
+  && { echo 'dispatch-queue-footprint-first: dispatch-queue.sh unexpectedly loaded tick-steps.sh' >&2; exit 1; }
 
 jqf() { jq "$@"; }
 dispatch_order() { printf '%s\n' "$unit"; }
