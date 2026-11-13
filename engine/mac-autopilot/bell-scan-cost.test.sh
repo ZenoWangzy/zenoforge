@@ -8,6 +8,7 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 unset AUTOPILOT_LOOP_UNIT
+export BELL_LIVE_EVIDENCE_DISABLE=1
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 bell="$script_dir/bell.sh"
@@ -17,7 +18,7 @@ mkdir -p "$bin"
 fixture_root="$tmp/repo"
 mkdir -p "$fixture_root/engine/mac-autopilot" "$fixture_root/engine/night"
 export MAC_AUTOPILOT_ROOT="$fixture_root"
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp" "$test_env_root"' EXIT
 
 cat > "$bin/ps" <<'SH'
 #!/usr/bin/env bash
