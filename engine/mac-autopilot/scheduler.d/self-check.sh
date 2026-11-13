@@ -432,7 +432,7 @@ priority_admission_has_room() { # priority age; dispatch_pending caches one reso
     LUNA_PRIORITY="$priority" box_has_room "$age"
     return $?
   fi
-  cache_key="$priority:$age"
+  cache_key="$priority:$age:${LUNA_CPU_TARGET:-85}" # the host-capacity start and the priority-wait check use different CPU targets
   result="${TICK_PRIORITY_ADMISSION_CACHE[$cache_key]:-}"
   if [[ -z "$result" ]]; then
     if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result=hold; fi
@@ -514,9 +514,13 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   fi
   if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; dispatch_why "$1" capacity; return 1; fi
   # Same host gate as bin/luna (CPU, memory, PSI, run cap); the waiter age keeps an aged waiter's admission rule.
+  # 11-13: CPU busy sat over 85% at the host baseline (load ~20 on 12 cores) and held live=0-2 of 8 with 31 pending for hours.
+  # Scheduler workers run at CPUWeight=10 (worker-scope.sh), so they already yield the CPU to sessions: this start ignores
+  # the CPU sample (AUTOPI_DISPATCH_CPU_TARGET, default 101 = never) while memory, PSI and the run cap stay hard.
+  # The priority-wait check above keeps the CPU target, because a waiter at bin/luna is still held by it.
   # Review and report-only resumes are exempt: a refused report resume would fall through to review with the stale report.
   # shortcut: no /proc/meminfo means no gate (box_has_room would refuse every start, issue #9), upgrade when the portable readers land
-  if [[ "$2" != review && "$2" != rereview && "${6:-false}" != true && -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] && ! priority_admission_has_room "$priority" "${PRIORITY_WAITING_AGE_SECONDS:-0}"; then
+  if [[ "$2" != review && "$2" != rereview && "${6:-false}" != true && -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] && ! LUNA_CPU_TARGET="${AUTOPI_DISPATCH_CPU_TARGET:-101}" priority_admission_has_room "$priority" "${PRIORITY_WAITING_AGE_SECONDS:-0}"; then
     say "skip dispatch unit=$1 priority=$priority (host capacity: CPU, memory or run cap)"; dispatch_why "$1" host-capacity; return 1
   fi
   impl_cap="$IMPLEMENT_CAP"
