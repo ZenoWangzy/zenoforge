@@ -57,4 +57,59 @@ fi
 [[ "$rc" == 1 ]] || fail "land_receipt_file returned $rc for an ordinary directory"
 [[ ! -s "$test_env_root/stdout" ]] || fail "land_receipt_file wrote unexpected output: $(cat "$test_env_root/stdout")"
 
+GH_LOG_DIR="$test_env_root/gh-calls"
+mkdir -p "$GH_LOG_DIR"
+GH_CALL_COUNT=0
+GH_RC=0
+GH_API_RC=0
+GH_DELETE_RC=0
+
+gh() {
+  GH_CALL_COUNT=$((GH_CALL_COUNT + 1))
+  printf '%s\0' "$@" > "$GH_LOG_DIR/call-$GH_CALL_COUNT"
+  case "${1-} ${2-} ${3-}" in
+    'pr merge '*) printf 'gh merge output\n'; return "$GH_RC" ;;
+    'pr view '*) printf '{"headRefName":"feature/topic"}\n'; return 0 ;;
+    'api -X PUT '*) return "$GH_API_RC" ;;
+    'api -X DELETE '*) return "$GH_DELETE_RC" ;;
+  esac
+  return 90
+}
+
+reset_gh_calls() {
+  GH_CALL_COUNT=0
+  rm -f "$GH_LOG_DIR"/call-*
+}
+
+assert_merge_rc() {
+  local expected_rc="$1" expected_stderr="$2" actual_rc
+  shift 2
+  if land_merge_pr "$@" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+    actual_rc=0
+  else
+    actual_rc=$?
+  fi
+  [[ "$actual_rc" == "$expected_rc" ]] || fail "expected land_merge_pr rc $expected_rc, got $actual_rc"
+  if [[ -n "$expected_stderr" ]]; then
+    [[ "$(cat "$test_env_root/stderr")" == *"$expected_stderr"* ]] \
+      || fail "land_merge_pr stderr lacks '$expected_stderr': $(cat "$test_env_root/stderr")"
+  fi
+}
+
+valid_sha='0123456789abcdef0123456789abcdef01234567'
+assert_merge_rc 64 'refuse:merge:bad-pr' abc "$valid_sha"
+[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an invalid PR number'
+
+reset_gh_calls
+assert_merge_rc 64 'refuse:merge:bad-head' 17 "${valid_sha:0:12}"
+[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for a short head SHA'
+
+reset_gh_calls
+assert_merge_rc 64 'refuse:merge:bad-head' 17 "${valid_sha^^}"
+[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an uppercase head SHA'
+
+reset_gh_calls
+assert_merge_rc 64 'refuse:merge:bad-option' 17 "$valid_sha" --unknown
+[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an unknown option'
+
 echo 'land-admit.test.sh: all assertions passed'
