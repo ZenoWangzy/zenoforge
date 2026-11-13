@@ -65,8 +65,15 @@ GH_API_RC=0
 GH_DELETE_RC=0
 
 gh() {
-  local method=""
-  GH_CALL_COUNT=$((GH_CALL_COUNT + 1))
+  local method="" call_number
+  if [[ -f "$GH_LOG_DIR/count" ]]; then
+    read -r call_number < "$GH_LOG_DIR/count"
+  else
+    call_number=0
+  fi
+  call_number=$((call_number + 1))
+  printf '%s\n' "$call_number" > "$GH_LOG_DIR/count"
+  GH_CALL_COUNT="$call_number"
   printf '%s\0' "$@" > "$GH_LOG_DIR/call-$GH_CALL_COUNT"
   case "${1-} ${2-} ${3-}" in
     'pr merge '*) printf 'gh merge output\n'; return "$GH_RC" ;;
@@ -91,6 +98,15 @@ gh() {
 reset_gh_calls() {
   GH_CALL_COUNT=0
   rm -f "$GH_LOG_DIR"/call-*
+  rm -f "$GH_LOG_DIR/count"
+}
+
+gh_call_count() {
+  if [[ -f "$GH_LOG_DIR/count" ]]; then
+    cat "$GH_LOG_DIR/count"
+  else
+    printf '0\n'
+  fi
 }
 
 assert_merge_rc() {
@@ -133,24 +149,24 @@ assert_gh_pair() {
 
 valid_sha='0123456789abcdef0123456789abcdef01234567'
 assert_merge_rc 64 'refuse:merge:bad-pr' abc "$valid_sha"
-[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an invalid PR number'
+[[ "$(gh_call_count)" == 0 ]] || fail 'land_merge_pr called gh for an invalid PR number'
 
 reset_gh_calls
 assert_merge_rc 64 'refuse:merge:bad-head' 17 "${valid_sha:0:12}"
-[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for a short head SHA'
+[[ "$(gh_call_count)" == 0 ]] || fail 'land_merge_pr called gh for a short head SHA'
 
 reset_gh_calls
 assert_merge_rc 64 'refuse:merge:bad-head' 17 "${valid_sha^^}"
-[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an uppercase head SHA'
+[[ "$(gh_call_count)" == 0 ]] || fail 'land_merge_pr called gh for an uppercase head SHA'
 
 reset_gh_calls
 assert_merge_rc 64 'refuse:merge:bad-option' 17 "$valid_sha" --unknown
-[[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an unknown option'
+[[ "$(gh_call_count)" == 0 ]] || fail 'land_merge_pr called gh for an unknown option'
 
 reset_gh_calls
 GH_RC=0
 assert_merge_rc 0 '' 17 "$valid_sha"
-[[ "$GH_CALL_COUNT" == 1 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls for a normal merge"
+[[ "$(gh_call_count)" == 1 ]] || fail "land_merge_pr made $(gh_call_count) gh calls for a normal merge"
 [[ "$(cat "$test_env_root/stdout")" == 'gh merge output' ]] || fail 'land_merge_pr did not pass gh output through'
 read_gh_call 1
 [[ "${GH_ARGS[0]}" == pr && "${GH_ARGS[1]}" == merge && "${GH_ARGS[2]}" == 17 ]] \
@@ -162,7 +178,7 @@ reset_gh_calls
 subject='ship the "quoted" change'
 body='release note with "quotes"'
 assert_merge_rc 0 '' 18 "$valid_sha" --repo owner/project --subject "$subject" --body "$body" --delete-branch
-[[ "$GH_CALL_COUNT" == 1 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls with merge options"
+[[ "$(gh_call_count)" == 1 ]] || fail "land_merge_pr made $(gh_call_count) gh calls with merge options"
 read_gh_call 1
 assert_gh_pair --repo owner/project
 assert_gh_pair --subject "$subject"
@@ -173,7 +189,7 @@ reset_gh_calls
 unset LAND_MERGE_REST_FALLBACK
 GH_RC=1
 assert_merge_rc 1 '' 19 "$valid_sha"
-[[ "$GH_CALL_COUNT" == 1 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls without REST fallback"
+[[ "$(gh_call_count)" == 1 ]] || fail "land_merge_pr made $(gh_call_count) gh calls without REST fallback"
 
 reset_gh_calls
 LAND_MERGE_REST_FALLBACK=1
@@ -181,7 +197,7 @@ GH_RC=1
 GH_API_RC=0
 GH_DELETE_RC=0
 assert_merge_rc 0 '' 20 "$valid_sha" --repo owner/project
-[[ "$GH_CALL_COUNT" == 4 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls with REST fallback"
+[[ "$(gh_call_count)" == 4 ]] || fail "land_merge_pr made $(gh_call_count) gh calls with REST fallback"
 read_gh_call 3
 assert_gh_arg 'repos/{owner}/{repo}/pulls/20/merge'
 assert_gh_arg "sha=$valid_sha"
