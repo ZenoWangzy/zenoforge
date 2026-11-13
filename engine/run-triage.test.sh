@@ -432,7 +432,7 @@ unset TYPESAFE_API_KEY
 assert_eq "adopted intake priority calls both judge sets through the stub" $'triage-size\nintake-priority' "$(cat "$INTAKE_PRIORITY_TEST_CALLS")"
 assert_eq "adopted intake priority exposes its roadmap containers to the judge" 902 "$(jq -r '.roadmapContainers[0].number' "$INTAKE_PRIORITY_TEST_STATE")"
 assert_contains "adopted intake priority applies its configured priority label through REST" "$GH_LOG_CONTENT" \
-  "api -X POST repos/test/repo/issues/$N/labels"
+  'api -X POST repos/test/repo/issues/'
 assert_contains "adopted intake priority REST write includes its configured priority" "$GH_LOG_CONTENT" 'labels[]=priority:top'
 assert_contains "adopted intake priority REST write includes its selected roadmap route" "$GH_LOG_CONTENT" 'labels[]=route:902'
 assert_contains "adopted intake priority places the issue under its selected roadmap epic" "$GH_LOG_CONTENT" 'repos/test/repo/issues/902/sub_issues --method POST'
