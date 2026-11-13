@@ -154,6 +154,14 @@ test_hold_requeue_child_status_consistency() {
     # #1598 had an expired local hold while GitHub retained product-stage labels.
     printf "%s\\n" enhancement\|awaiting-release\|ready-for-human > "$AGENT_HOME/fake-labels/740043"
     gh() {
+      if [[ "${1:-}" == api && "${2:-}" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)$ ]]; then
+        local child="${BASH_REMATCH[1]}" reads=0
+        [[ ! -f "$AGENT_HOME/child-reads/$child" ]] || reads="$(cat "$AGENT_HOME/child-reads/$child")"
+        printf "%s\\n" "$((reads + 1))" > "$AGENT_HOME/child-reads/$child"
+        case "$child:$reads" in 740141:0|740142:1) return 1 ;; esac
+        printf "{\"number\":%s,\"state\":\"closed\",\"labels\":[]}\\n" "$child"
+        return 0
+      fi
       if [[ "${1:-} ${2:-}" == "issue view" ]]; then
         local child="$3" reads=0
         [[ ! -f "$AGENT_HOME/child-reads/$child" ]] || reads="$(cat "$AGENT_HOME/child-reads/$child")"
