@@ -144,3 +144,22 @@ copy_agent_library() {
     cp -a -- "$src/$rel" "$dest/$rel"
   done
 }
+
+test_issue_rest_payload() {
+  local fixture_root="$1" number="$2" candidate issue_file=''
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 64
+  for candidate in "$fixture_root/issues/$number.json" "$fixture_root/intake-issue.json" "$fixture_root/intake-issues.json"; do
+    [[ -r "$candidate" ]] || continue
+    if jq -e --argjson number "$number" 'if type == "array" then any(.[]; .number == $number) else .number == $number end' \
+      "$candidate" >/dev/null; then
+      issue_file="$candidate"
+      break
+    fi
+  done
+  [[ -n "$issue_file" ]] || { printf 'missing REST issue fixture #%s\n' "$number" >&2; return 97; }
+  jq -c --argjson number "$number" '
+    (if type == "array" then [.[] | select(.number == $number)][0] else . end)
+    | . + {number:(.number // $number), state:((.state // "OPEN") | ascii_downcase),
+        labels:((.labels // []) | map(if type == "string" then {name:.} else {name:(.name // "")} end))}
+  ' "$issue_file"
+}

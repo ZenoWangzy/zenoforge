@@ -17,6 +17,16 @@ cat > "$test_env_bin/gh-real" <<'EOF'
 set -euo pipefail
 case "$1 $2" in
   'issue view') cat "$OWNER_TEST_ISSUES/$3.json" ;;
+  'api repos/test/repo/issues/'*)
+    issue_path="${2#repos/test/repo/issues/}"
+    issue_number="${issue_path%%/*}"
+    if [[ "$issue_path" == "$issue_number" && "$issue_number" =~ ^[1-9][0-9]*$ ]]; then
+      jq --argjson number "$issue_number" \
+        '. + {number:(.number // $number),state:((.state // "OPEN") | ascii_downcase),labels:(.labels // [])}' \
+        "$OWNER_TEST_ISSUES/$issue_number.json"
+    else
+      printf '[]\n'
+    fi ;;
   'pr list'|'api '*) printf '[]\n' ;;
   'label list') printf 'ready-for-agent\nneeds-triage\nneeds-info\nneeds-advisor\nneeds-recut\n' ;;
   'label create') : ;;

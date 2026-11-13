@@ -17,6 +17,10 @@ cat > "$test_env_bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_CALL_LOG"
+if [[ "$1" == api && "${2:-}" == repos/fixture/repo/issues/8124 ]]; then
+  printf '%s\n' '{"number":8124,"state":"closed","labels":[]}'
+  exit 0
+fi
 if [[ "$GH_MODE" == retry502 ]]; then
   echo 'gh: Bad Gateway (HTTP 502)' >&2
   exit 1
@@ -151,8 +155,8 @@ state_merge 5314 '{"state":"needs-triage","recut_children":[8124]}'
 OPEN_ISSUE_BLOCKER_GRAPH_JSON='[{"number":8124,"state":"CLOSED"}]' \
   issue_transition 5314 ready-for-agent focused-primary-label-write 2> "$AGENT_HOME/primary.err"
 [[ "$(grep -Fc 'issue edit 5314 ' "$GH_CALL_LOG")" == 1 ]]
-if grep -Eq '^api ' "$GH_CALL_LOG"; then
-  echo 'not ok - successful primary edit called the REST fallback' >&2
+if grep -Eq '^api .*repos/fixture/repo/issues/5314/labels' "$GH_CALL_LOG"; then
+  echo 'not ok - successful primary edit called the REST label fallback' >&2
   exit 1
 fi
 [[ "$(state_read 5314 | jq -r '.state')" == ready-for-agent ]]
@@ -258,7 +262,7 @@ if OPEN_ISSUE_BLOCKER_GRAPH_JSON='[{"number":8124,"state":"CLOSED"}]' \
   echo 'not ok - HTTP 404 write failure unexpectedly succeeded' >&2
   exit 1
 fi
-if grep -Eq '^api ' "$GH_CALL_LOG"; then
+if grep -Eq '^api .*repos/fixture/repo/issues/5314/labels' "$GH_CALL_LOG"; then
   echo 'not ok - non-GraphQL write failure used the REST fallback' >&2
   exit 1
 fi
