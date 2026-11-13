@@ -1104,7 +1104,7 @@ cat > "$rg/live/scheduler.sh" <<'SH'
 #!/usr/bin/env bash
 mkdir "$RG_LOCK" 2>/dev/null || exit 75
 printf '%s\n' "$BASHPID" > "$RG_LOCK/pid"
-trap 'rm -rf -- "$RG_LOCK"' EXIT
+trap 'rm -rf -- "$RG_LOCK" "$test_env_root"' EXIT
 printf '%s\n' "$*" >> "$RG_CALLS"
 if [[ "${RG_SLOW_PID:-}" =~ ^[1-9][0-9]*$ ]] && kill -0 "$RG_SLOW_PID" 2>/dev/null; then
   printf 'during-slow-tick\n' >> "$RG_DURING"

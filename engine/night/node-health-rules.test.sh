@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 config_root="$tmp/target/.zenoforge"
 pack_dir="$tmp/pack"
 mkdir -p "$config_root" "$pack_dir" "$tmp/agent-home"
