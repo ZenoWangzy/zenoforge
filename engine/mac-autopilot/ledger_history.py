@@ -151,13 +151,16 @@ def closed_units_open_issues(runtime, agent_home, units):
 
 
 def conflict_repairs(units, since, now, parse):
-    """Merge conflicts in [since, now] that a repair run followed: a later write-start in the same unit."""
+    """Repair runs that followed a merge conflict in [since, now]: one per (unit, first write-start after the conflict).
+    Two conflict events in one second (merge-tree sweep + "CI cannot start") share their repair and count once."""
     count = 0
     for unit in units:
         events = [(e.get("stage") or "", parse(e.get("at"))) for e in unit.get("history") or []]
+        repairs = set()
         for i, (stage, at) in enumerate(events):
-            if stage == "merge-conflict" and at and since <= at <= now and any(s == "write-start" for s, _ in events[i + 1:]):
-                count += 1
+            if stage == "merge-conflict" and at and since <= at <= now:
+                repairs.add(next((j for j in range(i + 1, len(events)) if events[j][0] == "write-start"), None))
+        count += len(repairs - {None})
     return count
 
 
