@@ -28,15 +28,15 @@ cat > "$audit" <<'JSON'
 JSON
 prs="$test_env_root/open-prs.json"
 cat > "$prs" <<'JSON'
-[{"number":111,"headRefName":"agent/issue-111","labels":[{"name":"agent/ci-gated"}]},
- {"number":112,"headRefName":"agent/issue-112","labels":[]},
- {"number":113,"headRefName":"hand/x","labels":[{"name":"agent/ci-gated"}]}]
+[{"number":111,"head":{"ref":"agent/issue-111"},"labels":[{"name":"agent/ci-gated"}]},
+ {"number":112,"head":{"ref":"agent/issue-112"},"labels":[]},
+ {"number":113,"head":{"ref":"hand/x"},"labels":[{"name":"agent/ci-gated"}]}]
 JSON
 mkdir -p "$test_env_root/bin"
 cat > "$test_env_root/bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}:${2:-}" == "pr:list" ]]; then cat "$NODE_HEALTH_PRS"; exit 0; fi
+if [[ "${1:-}" == api && "${2:-}" == repos/*/pulls\?state=open* ]]; then jq -c "${@: -1}" "$NODE_HEALTH_PRS"; exit 0; fi
 echo "unexpected fake gh call: $*" >&2
 exit 43
 GH
@@ -379,7 +379,7 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_CALLS"
 case "${1:-}:${2:-}:${3:-}" in
   issue:list:*) echo "${FAKE_ISSUE_LIST:-[]}" ;;
-  pr:list:*) cat "$NODE_HEALTH_PRS" ;;
+  api:repos/*/pulls\?state=open*) jq -c "${@: -1}" "$NODE_HEALTH_PRS" ;;
   issue:create:*)
     body_next=0
     for arg in "$@"; do
@@ -403,8 +403,8 @@ cat > "$audit" <<'JSON'
 {"when":"2026-10-19T10:00:00Z","run_id":"deferred-1","repo":"example-maintainer/example-repo","reason":"ci deferred"}
 JSON
 cat > "$prs" <<'JSON'
-[{"number":111,"headRefName":"agent/issue-111","labels":[{"name":"agent/ci-gated"}]},
- {"number":112,"headRefName":"agent/issue-112","labels":[{"name":"agent/ci-gated"}]}]
+[{"number":111,"head":{"ref":"agent/issue-111"},"labels":[{"name":"agent/ci-gated"}]},
+ {"number":112,"head":{"ref":"agent/issue-112"},"labels":[{"name":"agent/ci-gated"}]}]
 JSON
 nh() { PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now "$1" --file-issues >/dev/null; }
 rm -f "$a/node-health-state.json"; nh 2026-10-19T12:00:00Z

@@ -437,6 +437,8 @@ health_prod_errors_route() {
     cat -- "$evidence" >> "$body_file"
     force_individual=0
     if [[ "$(jq -r '.reason // ""' <<< "$alert")" == production-down ]]; then force_individual=1; fi
+    # The upsert runs in a command substitution, so its READY flag dies with it: prime it here, once per run (#1038). A failure is retried inside the upsert.
+    health_prod_errors_ensure_anomaly_label || :
     if ! issue_id="$(health_prod_errors_upsert_issue "$marker" "$title" "$body_file" "$force_individual")"; then
       failed=1
       event_failed=1

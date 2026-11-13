@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 config_root="$tmp/target/.zenoforge"
 pack_dir="$tmp/pack"
 mkdir -p "$config_root" "$pack_dir" "$tmp/agent-home"
@@ -133,6 +133,16 @@ grep -Fq 'route=/items request_id=none' "$inbox"
 # The supervisor inbox alert kind follows the configured anomaly issue label.
 grep -Fq "target-anomaly sig=$fixture_key container=service" "$inbox"
 ! grep -Fq 'production-anomaly sig=' "$inbox"
+
+# (#1038) The upsert runs in a command substitution, so its label-ready flag dies with it: the router primes the label
+# once per run in its own shell, and two alerts cost one `gh label list`, not one per alert.
+PROD_ANOMALY_LABEL_READY=0
+gh() { printf 'gh %s\n' "$*" >> "$calls"; } # sourcing the mail helper restored the real gh
+: > "$calls"
+two_alerts="$(jq -cn --arg a "$(printf 'one' | sha256sum | cut -c1-20)" --arg b "$(printf 'two' | sha256sum | cut -c1-20)" \
+  '{alerts:[$a,$b] | map({key:.,event_id:("first-seen-" + .),source:"log",reason:"first-seen",container:"service",service:"service",count:1,first:"2026-10-12T02:13:14Z",route:"/items",sample_request_id:"",trace_id:"",deduplicated_lines:["route=GET /items status=500"]})}')"
+health_prod_errors_route "$two_alerts" BROKEN '' "$tmp/state.json"
+[[ "$(grep -c '^gh label list' "$calls")" == 1 ]]
 [[ -f "$NIGHT/target-monitor.lock" ]]
 grep -Fq 'Target Service: service' "$tmp/last-issue-body"
 grep -Fq 'Target Route: /items' "$tmp/last-issue-body"
