@@ -46,6 +46,7 @@ assert_equal 'no matching event type' null "$(eval_history_jq "$events" 'last_ev
 assert_equal 'unit_last_event without types' "$event_last" "$(unit_last_event "$events")"
 assert_equal 'unit_last_event for B' "$event_b" "$(unit_last_event "$events" B)"
 assert_equal 'unit_last_event for A' "$event_a" "$(unit_last_event "$events" A)"
+assert_equal 'unit_last_event for unmatched type' null "$(unit_last_event "$events" C)"
 assert_equal 'unit_last_event on missing history' null "$(unit_last_event "$missing_history")"
 assert_equal 'unit_last_event on empty history' null "$(unit_last_event "$empty_history")"
 
