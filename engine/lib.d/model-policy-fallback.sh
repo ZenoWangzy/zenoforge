@@ -157,7 +157,11 @@ review_family_candidate_selected() { # <role> <issue> <unit> <author> <model> <r
   if [[ "$role" == review_fallback ]]; then
     reason="${reason:-cross reviewer unavailable}"
     review_family_log "review-family fallback unit=$unit author=$author reviewer=$model reason=$reason"
-    record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "$reason" 2>/dev/null || true
+    if declare -F scheduler_record_review_provider_fallback >/dev/null 2>&1; then
+      scheduler_record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "$reason" 2>/dev/null || true
+    else
+      record_review_provider_fallback "$issue" "cross-family-reviewer" "$candidate" "$reason" 2>/dev/null || true
+    fi
     glm_fallback_bell "${6:-}" || true
   else
     glm_fallback_streak_set 0

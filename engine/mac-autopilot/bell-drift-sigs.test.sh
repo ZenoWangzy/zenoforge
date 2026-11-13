@@ -2,12 +2,13 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 unset AUTOPILOT_LOOP_UNIT AGENT_HOME
+export BELL_LIVE_EVIDENCE_DISABLE=1
 
 # Bell fixtures have their own repo/runtime and no external side effects.
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 bell="$script_dir/bell.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp" "$test_env_root"' EXIT
 autopi="$tmp/autopi"
 fixture_root="$tmp/repo"
 bin="$tmp/bin"

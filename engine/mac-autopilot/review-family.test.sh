@@ -145,24 +145,35 @@ if dispatch_selected_review "$unit_json"; then fail 'same-family configuration d
 [[ "$DISPATCH_COUNT" == "$before_dispatch" ]] || fail 'same-family configuration reached dispatch_if_room'
 grep -Fq 'review-family refused unit=same-family author=codex reviewer=codex reason=same-family-or-unknown' "$LOG" || fail 'same-family refusal was not logged'
 
-# A zcode quota hold selects the named Sonnet fallback and logs one countable line.
-set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=["claude-sonnet-4-5","high"]'
-set_policy '.allow_roles.sonnet=["review_fallback"]'
+# A GLM hold selects Claude Haiku for Codex work and records the fallback.
+set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=["claude-haiku-5-5","high"]'
+set_policy '.'
 set_cooldowns "$((NOW_EPOCH + 1800))" 0
-unit_json="$(unit_for quota-fallback 'codex:gpt-6-luna:max')"
+unit_json="$(unit_for glm-held-haiku 'codex:gpt-6-luna:max')"
+unit_json="$(jq '.issue=91117' <<<"$unit_json")"
 write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
 write_workers '{workers:[]}'
-dispatch_selected_review "$unit_json" || fail 'Sonnet fallback did not dispatch during a GLM hold'
-[[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'claude-sonnet-4-5:high' ]] || fail "quota fallback selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
-grep -Fq 'review-family fallback unit=quota-fallback author=codex reviewer=claude-sonnet-4-5 reason=glm hold' "$LOG" || fail 'Sonnet fallback line did not record the GLM hold'
+dispatch_selected_review "$unit_json" || fail 'Haiku fallback did not dispatch during a GLM hold'
+[[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'claude-haiku-5-5:high' ]] || fail "GLM hold selected $DISPATCH_MODEL:$DISPATCH_EFFORT instead of Haiku"
+grep -Fq 'review-family fallback unit=glm-held-haiku author=codex reviewer=claude-haiku-5-5 reason=glm hold' "$LOG" || fail 'Haiku fallback line did not record the GLM hold'
+fallback_state="$AGENT_HOME/state/91117.json"
+jq -e '.review_provider_fallback_history[-1].used == "claude:claude-haiku-5-5:high"
+  and .review_provider_fallback_history[-1].reason == "glm hold"' "$fallback_state" >/dev/null \
+  || fail 'Haiku fallback was missing from the issue fallback history'
 
-# When GLM and Sonnet are both held, the unit stays pending, alerts once, and never uses Luna.
+# When GLM and Claude are both held, the unit stays pending with both reasons, alerts once, and never uses Luna.
 set_cooldowns "$((NOW_EPOCH + 1800))" "$((NOW_EPOCH + 1800))"
+set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=["claude-haiku-5-5","high"]'
+set_policy '.'
+TICK_REVIEW_WAITS=""
+: > "$LOG"
 unit_json="$(unit_for both-held 'codex:gpt-6-luna:max')"
 write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
 write_workers '{workers:[]}'
 before_dispatch="$DISPATCH_COUNT"
 if dispatch_selected_review "$unit_json"; then fail 'review dispatched while both independent families were held'; fi
+grep -Fq 'detail=no-cross-reviewer:glm-hold' "$LOG" && grep -Fq ',claude-hold' "$LOG" \
+  || fail 'held review did not record both GLM and Claude wait reasons'
 unit_json="$(jq -c '.units[0]' "$UNITS")"
 if dispatch_selected_review "$unit_json"; then fail 'review escaped its wait state on the next attempt'; fi
 [[ "$DISPATCH_COUNT" == "$before_dispatch" ]] || fail 'held review reached dispatch_if_room'
@@ -170,7 +181,20 @@ if dispatch_selected_review "$unit_json"; then fail 'review escaped its wait sta
 [[ "$(grep -Fc 'review-family wait unit=both-held ' "$LOG")" == 1 ]] || fail 'wait alert was not deduplicated to one line'
 grep -Fq 'review-family wait unit=' "$script_dir/bell.sh" && grep -Fq 'sched-review-family-wait' "$script_dir/bell.sh" || fail 'wait alert is not wired to bell incident intake'
 
+# A Luna-authored unit never falls back to Terra, which is both Codex-family and policy-forbidden.
+set_config '.models.review=["gpt-6-luna","max","fast"] | .models.review_cross=["GLM-5.3","max"] | .models.review_fallback=["gpt-6.1-terra","high"]'
+set_policy '.'
+set_cooldowns "$((NOW_EPOCH + 1800))" 0
+unit_json="$(unit_for luna-no-terra 'codex:gpt-6-luna:max')"
+write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
+write_workers '{workers:[]}'
+before_dispatch="$DISPATCH_COUNT"
+if dispatch_selected_review "$unit_json"; then fail 'a Luna-authored unit dispatched a Terra reviewer'; fi
+[[ "$DISPATCH_COUNT" == "$before_dispatch" && "$DISPATCH_MODEL" != gpt-6.1-terra ]] \
+  || fail 'a Luna-authored unit reached Terra review dispatch'
+
 # The Claude exception is limited to the fallback role and to Haiku or Sonnet; implement identity checks stay Codex-only.
+set_policy '.allow_roles.sonnet=["review_fallback"]'
 model_policy_model_allowed_for_role claude-sonnet-4-5 review_fallback || fail 'named Sonnet review role was not permitted by allow_roles'
 set_policy '.allow_roles.sonnet=["review_fallback"] | .allow_roles.haiku=["review_fallback"]'
 model_policy_model_allowed_for_role claude-haiku-5-5 review_fallback || fail 'a granted Haiku review role was not permitted'
@@ -199,7 +223,7 @@ grep -Fq 'FAIL planted pre-fix helper dispatched same-family reviewer=gpt-6-luna
 printf 'PLANTED_OLD_EXIT_CODE=%s\n%s\n' "$planted_status" "$planted_output"
 
 # Credits route: past the Codex hold only ZCode-authored review and the arbiter may run, up to a hard cap.
-set_config '.'; set_policy '.'
+set_config '.models.review_fallback=null'; set_policy '.'
 printf '%s\n' '{"zcode":0,"claude":0,"codex":0}' > "$COOLDOWN"
 rm -f "$(_quota_marker_file zcode)" "$(_quota_marker_file claude)"
 sessions="$fixture/sessions/2026/11/06"; mkdir -p "$sessions"
@@ -279,7 +303,7 @@ TICK_REVIEW_WAITS=""
 : > "$LOG"
 glm_quota 60
 if pick_review_for_unit "$(unit_for capped-reason 'codex:gpt-6-luna:max')"; then fail 'a review at the provider cap must wait'; fi
-[[ "$TICK_REVIEW_WAITS" == ' glm-hold:exhausted' ]] || fail "the wait reason must count every pass: $TICK_REVIEW_WAITS"
+[[ "$TICK_REVIEW_WAITS" == ' no-cross-reviewer:glm-hold:exhausted' ]] || fail "the wait reason must count every pass: $TICK_REVIEW_WAITS"
 glm_quota 0
 TICK_REVIEW_WAITS=' glm-hold:paced codex-hold glm-hold:paced'
 [[ "$(review_wait_summary)" == 'review_waits=3 review_wait_reasons=codex-hold=1,glm-hold:paced=2' ]] || fail "wait summary: $(review_wait_summary)"

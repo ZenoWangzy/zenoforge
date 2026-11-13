@@ -12,7 +12,7 @@ ROOT="$MAC_AUTOPILOT_ROOT"
 ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}"
 source "$HERE/incident-fingerprint.sh"
 source "$ENGINE_DIR/lib.d/transport.sh"
-source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"; source "$HERE/bell-history.sh"
+source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"; source "$HERE/bell-history.sh"; source "$HERE/live-evidence.sh"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
 CHECK_ONLY=0
 for arg in "$@"; do
@@ -828,7 +828,7 @@ if [[ "${BELL_STALE_CI_DISABLE:-0}" != "1" ]]; then
   [[ -n "$cancelled" ]] && add_event medium "stale-main-ci-canceled${cancelled}" "stale-main-ci: 取消被更新等待 run 取代、未被候选引用的祖先 run(在跑的不动):${cancelled}" "audited CI/Pipeline suites queue dedupe after candidate and ancestry checks: ${cancelled}"
 fi
 
-advisor_incident_scan; main_ci_incident_scan; auto_pin_scan; zf_main_ci_scan
+live_evidence_scan; advisor_incident_scan; main_ci_incident_scan; auto_pin_scan; zf_main_ci_scan
 
 if [[ "$CHECK_ONLY" == 1 ]]; then
   echo "bell check-only: ${#events[@]} candidate event(s); runtime state and files were not changed"

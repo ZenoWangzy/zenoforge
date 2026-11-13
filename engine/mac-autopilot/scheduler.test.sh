@@ -830,7 +830,8 @@ tick_gh() {
         echo '{}'
       fi ;;
     'api '*)
-      if [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
+      if [[ "${2:-}" =~ ^repos/example-maintainer/example-repo/issues/([0-9]+)$ ]]; then test_issue_rest_payload "$TF" "${BASH_REMATCH[1]}"
+      elif [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
         cat "$TF/main-check-runs.json"
       elif [[ "$*" == *'actions/runners?per_page=100'* ]]; then
         # PR CI 名额按在线 PR runner 算（60ba960cf）；无夹具时默认一个在线 PR runner
@@ -1028,7 +1029,7 @@ SH
   mkdir -p "$TF/repo/engine/bin"
   cp -a "$script_dir" "$TF/repo/engine/mac-autopilot"
   cp "$repo_root/engine/bin/luna-capacity.sh" "$TF/repo/engine/bin/luna-capacity.sh"
-  copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh lib.d/model-not-found-cache.bash
+  copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh lib.d/model-not-found-cache.bash intake-priority-policy.jq
   cp "$TF/supervisor/autopi/config.json" "$TF/repo/engine/mac-autopilot/config.template.json"
   # merge_candidates 每拍经 $HERE/../../ci/ 调 pr-required-aggregate.mjs（16e097913 起按 run/时间
   # 取同 head 最新检查行）；夹具 repo 是 engine 子集，需一并带上。
@@ -1090,10 +1091,11 @@ tick() (
     fi
   }
   export PATH="$repo_root/engine/gh-shim:$TF/bin:$PATH" AUTOPI_VIEWS_INLINE=true
-  export -f git jq node ps tick_gh tick_git tick_jq
+  export -f git jq node ps test_issue_rest_payload tick_gh tick_git tick_jq
   # 额外参数原样传给 scheduler.sh（如 --refill）；不带参数就是一整拍慢 tick。
   local rc=0
-  bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
+  # Fixture ticks assert step effects before exit; keep the production step lock but run them inline here.
+  AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
   if (( rc != 0 && rc != 75 )); then cat "$TF/tick.out" >&2; return 1; fi
   [[ ! -e "$TF/unexpected-host" ]] || { cat "$TF/unexpected-host" >&2; return 1; }
   return "$rc"

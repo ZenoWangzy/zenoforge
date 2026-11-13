@@ -61,6 +61,7 @@ declare -F gh_timeout >/dev/null 2>&1 || source "$HERE/../lib.d/transport.sh"
 declare -F issue_rest_view >/dev/null 2>&1 || source "$HERE/../lib.d/issue-rest.sh"
 source "$HERE/../land-admit.sh"
 source "$HERE/scheduler.d/core.sh"
+source "$HERE/scheduler.d/tick-steps.sh"
 ADVISOR_PROVIDER_SCRIPT="$(source "$HERE/../config.sh" && printf '%s' "$ZF_WEB_ADVISOR_PROVIDER_SCRIPT")"
 if [[ -z "${MODEL_POLICY_DEFAULT:-}" ]]; then
   MODEL_POLICY_DEFAULT="$(sched_config_file model-policy.default.json 2>/dev/null)" || MODEL_POLICY_DEFAULT="$HERE/../model-policy.default.json"
@@ -131,7 +132,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --release-deps && "${1:-}" != --rule && "${1:-}" != --size-waiver-check ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --release-deps && "${1:-}" != --tick-step && "${1:-}" != --rule && "${1:-}" != --size-waiver-check ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -579,7 +580,7 @@ paused_midrun() {
 }
 run_issue_intake_phases() {
   local rc=0
-  # A live station walks the existing units; the tick then only primes the census the new-issue walk reads and loads the rows the station walked.
+  # The detached intake worker preserves the old walk-then-register order; a live station supplies the walked rows.
   if existing_walk_fresh; then intake_census_prime; existing_walked_load; else phase register_new_issues 1 || rc=$?; fi
   phase register_new_issues || rc=$?
   return "$rc"
@@ -701,8 +702,9 @@ main() {
     # dispatch / CI 准入 / 合并车道就不用再为它们付每笔 2 秒的整文件读写。PAUSE 期间不动台账。
     phase retire_terminal_units
     phase stuck_worker_disposition
-    release_deps_tick_phase
-    phase_yield_lock_batch run_issue_intake_phases
+    start_detached_tick_step release_dependency_blocks
+    if existing_walk_fresh; then intake_census_prime; existing_walked_load; fi
+    start_detached_tick_step register_new_issues
     phase retire_landed_pr_units
     phase supersede_resolved_main_red_units
     # supervisor-owned 标记必须先于任何会动手的阶段（派发、快车道、CI 准入、合并车道）落进台账。
@@ -713,8 +715,7 @@ main() {
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
       say "acting phases held: supervisor-owned marking deferred"
     else
-      record_run_spend || :  # a plain call: phase() primes the PR cache first, which dispatch_pending does itself
-      phase_yield_lock dispatch_pending
+      start_detached_tick_step dispatch_pending
       if ! paused_midrun "acting phases"; then
         phase_yield_lock dispatch_supervisor_arbiters
         phase dispatch_prompt_evals
@@ -766,6 +767,7 @@ case "${1:-}" in
   --harvest-station) SCHED_STATION=true; harvest_station_tick ;;
   --existing-walk) SCHED_STATION=true; existing_walk_tick ;;
   --release-deps) release_deps_station_tick ;;
+  --tick-step) SCHED_STATION=true; tick_step_run "${2:-}" ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --size-waiver-check) size_waiver_range_check "${2:-}" ;; # hold.sh --rule --size-waiver: refuse a bad max_lines before any hold is released
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget

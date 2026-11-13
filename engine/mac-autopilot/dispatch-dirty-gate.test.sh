@@ -7,5 +7,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 fail() { echo "dispatch-dirty-gate.test.sh: $*" >&2; exit 1; }
 ! grep -qE 'dispatch_pending_if_dirty|dispatch_inputs_fingerprint|TICK_DISPATCH_FP' "$here/scheduler.sh" "$here"/scheduler.d/*.sh \
   || fail 'the dirty-gated second pass came back'
-[[ "$(grep -c 'phase_yield_lock dispatch_pending' "$here/scheduler.sh")" == 1 ]] || fail 'the full tick does not have exactly one dispatch pass'
+[[ "$(grep -c 'start_detached_tick_step dispatch_pending' "$here/scheduler.sh")" == 1 ]] \
+  && grep -Fq 'tick_step_lock_run dispatch_pending' "$here/scheduler.d/dispatch-queue.sh" \
+  || fail 'the full tick does not start exactly one locked dispatch step'
 echo 'dispatch-dirty-gate.test.sh: pass'

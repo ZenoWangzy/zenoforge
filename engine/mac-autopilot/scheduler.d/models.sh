@@ -531,14 +531,34 @@ unit_review_author_identity() { # unit JSON → the model/backend that last wrot
   fi
 }
 
-review_wait_reason() { # author codex-identity glm-identity -> one word for why the cross-family reviewer cannot start now
-  local cross reason
+review_wait_reason() { # author codex-identity glm-identity fallback-identity -> why all cross-family reviewers are unavailable
+  local cross cross_reason fallback_reason author_family fallback_family wait_reason=no-cross-reviewer
   cross="$(review_cross_identity_for "$1" "$2" "$3" 2>/dev/null || true)"
-  [[ -n "$cross" ]] || { echo no-cross-reviewer; return 0; }
-  reason="$(zcode_paced review_identity_unavailable_reason "$cross" review)"
-  [[ "$reason" != 'glm hold' ]] || reason+=":$(zcode_paced zcode_quota_status)"
-  echo "${reason// /-}"
+  if [[ -n "$cross" ]]; then
+    cross_reason="$(zcode_paced review_identity_unavailable_reason "$cross" review)"
+    [[ "$cross_reason" != 'glm hold' ]] || cross_reason+=":$(zcode_paced zcode_quota_status)"
+    wait_reason+=":${cross_reason// /-}"
+  fi
+  author_family="$(review_identity_family "$1" 2>/dev/null || true)"
+  fallback_family="$(review_identity_family "${4:-}" 2>/dev/null || true)"
+  if [[ "$author_family" != claude && "$fallback_family" == claude ]]; then
+    fallback_reason="$(zcode_paced review_identity_unavailable_reason "$4" review_fallback)"
+    if [[ "$fallback_reason" == 'sonnet unavailable' ]] && zcode_paced provider_quota_exhausted claude; then fallback_reason='claude hold'; fi
+    fallback_reason="${fallback_reason/sonnet cli missing/claude cli missing}"
+    fallback_reason="${fallback_reason/sonnet unavailable/claude unavailable}"
+    if [[ "$wait_reason" == no-cross-reviewer ]]; then wait_reason+=":"; else wait_reason+=","; fi
+    wait_reason+="${fallback_reason// /-}"
+  fi
+  echo "$wait_reason"
 }
+
+# The scheduler keeps issue-state lazy; fallback selection still needs #116's atomic record.
+scheduler_record_review_provider_fallback() (
+  STATE_DIR="${STATE_DIR:-$AGENT_HOME/state}"
+  DRY_RUN="${DRY_RUN:-0}"
+  source "${SCHEDULER_AGENT_LIB%/lib.sh}/lib.d/issue-state.sh" || return 1
+  record_review_provider_fallback "$@"
+)
 
 review_wait_summary() { # the waits of this pass, by reason
   local reasons
@@ -547,7 +567,7 @@ review_wait_summary() { # the waits of this pass, by reason
 }
 
 pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves the review pending and alerts once
-  local unit_json="$1" id issue author author_family codex_identity glm_identity sonnet_identity selected status wait_reason=author-unknown
+  local unit_json="$1" id issue author author_family codex_identity glm_identity fallback_identity selected status wait_reason=author-unknown
   id="$(jqf -r '.id // "unknown"' <<<"$unit_json")"
   issue="$(jqf -r '.issue // empty' <<<"$unit_json")"
   if ! author="$(unit_review_author_identity "$unit_json")"; then
@@ -557,9 +577,9 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
     author_family="$(review_identity_family "$author" 2>/dev/null || echo unknown)"
     codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
     glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
-    sonnet_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
+    fallback_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
     status=0
-    selected="$(zcode_paced review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$sonnet_identity" "$id")" || status=$?
+    selected="$(zcode_paced review_model_for_implementer "$issue" "$author" "$codex_identity" "$glm_identity" "$fallback_identity" "$id")" || status=$?
   fi
   if (( status == 0 )) && [[ -n "$selected" ]]; then
     PICK_MODEL="${selected#*:}"; PICK_EFFORT="${PICK_MODEL##*:}"; PICK_MODEL="${PICK_MODEL%:*}"
@@ -575,7 +595,7 @@ pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves 
     say "review-family refused unit=$id author=$author_family reviewer=unknown reason=identity-resolution-failed"
     return 1
   fi
-  [[ "$author_family" == unknown ]] || wait_reason="$(review_wait_reason "$author" "$codex_identity" "$glm_identity")"
+  [[ "$author_family" == unknown ]] || wait_reason="$(review_wait_reason "$author" "$codex_identity" "$glm_identity" "$fallback_identity")"
   TICK_REVIEW_WAITS+=" $wait_reason" # the alert below fires once per wait; this counts every pass
   if [[ "$(jqf -r '.review_family_wait_alerted // false' <<<"$unit_json")" != true ]]; then
     say "review-family wait unit=$id author=$author_family reason=no available different-family reviewer detail=$wait_reason"

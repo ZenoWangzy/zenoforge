@@ -232,6 +232,8 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       continue
     fi
     if [[ -s "$rep" ]]; then
+      v="$(verdict_of "$rep")"
+      [[ "$wtype" != review && "$wtype" != rereview ]] || review_report_harvest "$rep" "$unit"
       review_harvest_gate "$w" "$rep" "$unit" "$wtype" || { v=NOT_READY; say "review-fix gate failed unit=$unit report=$report"; }
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
         incident_unit_json="$(harvest_unit_snapshot "$unit")"

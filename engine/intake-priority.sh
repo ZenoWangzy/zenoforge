@@ -240,12 +240,20 @@ intake_priority_ensure_labels() {
   done
 }
 
+# A label is written when the judge is adopted, or when a code-owned overlay (founder ask, hotfix, bug, off-market,
+# fruit feature) decided it: the overlay is policy, not a model guess. 11-13: the judge never reached rollout (20 shadow
+# events at 90% agreement), so no overlay label was ever written and 0 of 1123 open issues had a priority label.
+# An unadopted answer keeps the shadow baseline in .decision; the overlaid decision is .candidate and its reason .overlay
+# (intake_priority_judge). 11-13: the first version read .decision.overlay, so 1000 backlog applies wrote nothing.
+INTAKE_PRIORITY_APPLICABLE='.status == "answered" and (.adopted == true or (.overlay // null) != null)'
+INTAKE_PRIORITY_LABEL_DECISION='if .adopted == true then .decision else .candidate end'
+
 intake_priority_apply_result() {
   local repo="$1" issue_file="$2" result="$3" config decision issue_json issue_number priority route route_label prefix top high normal low unsure_label unsure labels label
   local -a edit_args=() ensure_labels=()
   config="$(intake_priority_config)" || return 1
-  jq -e '.status == "answered" and .adopted == true' <<< "$result" >/dev/null || return 0
-  decision="$(jq -er '.decision | select(type == "string") | fromjson' <<< "$result")" || return 1
+  jq -e "$INTAKE_PRIORITY_APPLICABLE" <<< "$result" >/dev/null || return 0
+  decision="$(jq -er "$INTAKE_PRIORITY_LABEL_DECISION"' | select(type == "string") | fromjson' <<< "$result")" || return 1
   issue_json="$(jq -ce '.' "$issue_file")" || return 1
   issue_number="$(jq -er '.number | select(type == "number" and . > 0)' <<< "$issue_json")" || return 1
   top="$(jq -r '.labels.top' <<< "$config")"
@@ -320,9 +328,9 @@ intake_priority_triage() {
     echo "intake-priority: no adopted answer for issue #$issue_number" >&2
     return 0
   fi
-  if jq -e '.status == "answered" and .adopted == true' <<< "$result" >/dev/null 2>&1; then
+  if jq -e "$INTAKE_PRIORITY_APPLICABLE" <<< "$result" >/dev/null 2>&1; then
     if intake_priority_apply_result "$repo" "$issue_file" "$result"; then
-      decision="$(jq -r '.decision | fromjson' <<< "$result")"
+      decision="$(jq -r "$INTAKE_PRIORITY_LABEL_DECISION"' | fromjson' <<< "$result")"
       priority="$(jq -r '.priority' <<< "$decision")"
       echo "intake-priority: applied issue=#$issue_number priority=$priority route=$(jq -r '.route' <<< "$decision") overlay=$(jq -r '.overlay // "none"' <<< "$decision")" >&2
     else

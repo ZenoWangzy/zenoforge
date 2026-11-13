@@ -90,7 +90,7 @@ expect_eq() {
 issue_priority() { jq -r --argjson n "$1" '.issues[] | select(.number == $n) | .priority' <<< "$report"; }
 issue_overlay() { jq -r --argjson n "$1" '.issues[] | select(.number == $n) | (.overlay // "<none>")' <<< "$report"; }
 
-expect_eq 'founder issue seed' '[3066,5663,5665,6120,6121,6123,6124,6126,6130,6131,6133,6167,6226,6235,6237,6238,6601]' \
+expect_eq 'founder issue seed' '[3066,5663,5665,6120,6121,6123,6124,6126,6130,6131,6133,6167,6226,6235,6237,6238,6601,6611]' \
   "$(jq -c '.founder_issues // []' <<< "$config")"
 expect_eq 'off-market issue seed' '[1158,1159,3299,4620,5298,5329,5341,5421,6208,6288,6289]' \
   "$(jq -c '.off_market_issues // [] | sort' <<< "$config")"
@@ -141,6 +141,29 @@ bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$f
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$founder_issue_file" --result-file "$founder_result_file"
 expect_eq 'missing priority:high label is created before founder issue edit' true \
   "$(awk '$0 ~ /^label create priority:high / { created=NR } $0 ~ /^issue edit 3066 / { edited=NR } END { print (created > 0 && edited > created) ? "true" : "false" }' "$INTAKE_OVERLAY_WRITES")"
+
+# 11-13: the judge stays in shadow until rollout, so an unadopted answer must still write a code-owned overlay label,
+# and must not write a label that only the unadopted model chose.
+shadow_issue_file="$test_root/shadow-overlay.issue.json"
+jq -c '.[] | select(.number == 9007)' "$INTAKE_OVERLAY_ISSUES" > "$shadow_issue_file"
+# Real judge shape: .decision is the shadow baseline (no overlay), .candidate the overlaid decision, .overlay its reason.
+jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:"fruit-feature",
+  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
+  candidate:({priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:"fruit-feature"} | tojson)}' \
+  > "$test_root/shadow-overlay.result.json"
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$shadow_issue_file" --result-file "$test_root/shadow-overlay.result.json"
+expect_eq 'an unadopted answer still writes the overlay label' true \
+  "$(grep -E '^issue edit 9007 ' "$INTAKE_OVERLAY_WRITES" | grep -qF -- '--add-label priority:normal' && echo true || echo false)"
+expect_eq 'an unadopted answer does not write the shadow baseline label' false \
+  "$(grep -E '^issue edit 9007 ' "$INTAKE_OVERLAY_WRITES" | grep -qF -- '--add-label priority:top' && echo true || echo false)"
+jq -cn '{number:9020,title:"Tweak dashboard spacing",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"}' > "$test_root/shadow-plain.issue.json"
+jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:null,
+  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
+  candidate:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:null} | tojson)}' \
+  > "$test_root/shadow-plain.result.json"
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$test_root/shadow-plain.issue.json" --result-file "$test_root/shadow-plain.result.json"
+expect_eq 'an unadopted answer without an overlay writes no label' false \
+  "$(grep -qE '^issue edit 9020 ' "$INTAKE_OVERLAY_WRITES" && echo true || echo false)"
 
 # Verify ready-unit order through dispatch_pending, the scheduler's public dispatch entry point.
 scheduler_fixture="$test_root/scheduler"

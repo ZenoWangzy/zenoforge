@@ -160,7 +160,6 @@ review_harvest_gate() { # worker-json report-path unit worker-type; sets harvest
   local worker="$1" path="$2" unit="$3" type="$4" workdir base current pr provider model branch lane observed result report_name
   v="$(verdict_of "$path")"
   [[ "$type" == review || "$type" == rereview ]] || return 0
-  review_decision_log_flags_append "$path" "$unit"
   [[ "$v" == READY ]] || return 0
   workdir="$(jqf -r '.workdir // empty' <<<"$worker")"
   base="$(jqf -r '.sha // empty' <<<"$worker")"

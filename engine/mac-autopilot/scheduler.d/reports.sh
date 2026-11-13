@@ -191,6 +191,25 @@ review_decision_log_flags_append() { # review report unit → append marked entr
       '{at:$at,unit:$unit,report:$report,entry:$flag.entry,reason:$flag.reason}' >> "$SUP/decision-log-flags.jsonl"
   done <<<"$flags"
 }
+review_escape_suite_append() { # review report unit → append the pre-review escape test results to the report
+  local report="$1" unit="$2" log results line missing=0
+  [[ -s "$report" ]] || return 0
+  log="$(unit_field "$unit" '.self_check_output // empty')"
+  [[ -n "$log" && -s "$log" ]] || return 0
+  results="$(grep -a '^escape-suite: ' "$log" || true)"
+  [[ -n "$results" ]] || return 0
+  while IFS= read -r line; do grep -Fxq -- "$line" "$report" || missing=1; done <<<"$results"
+  (( missing )) || return 0
+  if grep -qE '^## escape-suite[[:space:]]*$' "$report"; then
+    printf '\n%s\n' "$results" >> "$report"
+  else
+    printf '\n\n## escape-suite\n%s\n' "$results" >> "$report"
+  fi
+}
+review_report_harvest() { # report unit → attach escape evidence, then record any decision-log flags
+  review_escape_suite_append "$1" "$2" || say "review escape-suite results could not be appended unit=$2 report=${1##*/}"
+  review_decision_log_flags_append "$1" "$2"
+}
 # Actionable blocking findings provide a concrete target for the repair worker.
 review_findings_hint_update() { # report → jq update fragment for open P0/P1 findings
   local findings hint

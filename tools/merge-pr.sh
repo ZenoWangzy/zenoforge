@@ -101,6 +101,15 @@ merge_pr_prior_art_ok() {
     merge_pr_refuse "$pr" '"## prior-art" needs a source URL or a line "no external prior art: <reason>"'
     return 1
   fi
+  if jq -e 'any(.files[].path;
+      (startswith("engine/") or startswith("tools/"))
+      and (test("(^|/)(tests?|__tests__|fixtures)/") | not)
+      and (test("\\.(test|spec)\\.[^/]+$") | not)
+      and (test("(^|/)test-env\\.sh$") | not)
+      and (test("\\.(md|rst|txt|log)$") | not))' <<<"$view" >/dev/null \
+    && ! grep -Eiq '^[[:space:]]*([-*][[:space:]]*)?live evidence:[[:space:]]+[^[:space:]]' <<<"$body"; then
+    printf 'merge-pr: warning: PR #%s changes engine runtime code but has no Live evidence line\n' "$pr" >&2
+  fi
 }
 
 # A merge must not follow a failed test: tools/test-receipt.sh records each test

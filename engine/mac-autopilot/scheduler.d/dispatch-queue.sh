@@ -103,7 +103,7 @@ dispatch_why_save() { # merges this pass's changes into the file as it is now; p
   DISPATCH_WHY_TOUCHED=(); DISPATCH_WHY_DIRTY=false
 }
 
-dispatch_pending() {
+dispatch_pending_pass() {
   TICK_DISPATCH_SKIPS=()
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
@@ -656,4 +656,13 @@ $deliver"
   dmark convoy_alert
   dispatch_why_save
   dispatch_steps_say
+}
+
+dispatch_pending() {
+  local TICK_STEP_LOCK_RESULT=""
+  if declare -F tick_step_lock_run >/dev/null 2>&1; then
+    tick_step_lock_run dispatch_pending dispatch_pending_pass "$@"
+  else
+    dispatch_pending_pass "$@"
+  fi
 }
