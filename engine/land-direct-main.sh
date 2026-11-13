@@ -225,10 +225,7 @@ land_phase() {
 }
 
 land_process_start_ticks() {
-  local stat_line rest
-  IFS= read -r stat_line < "/proc/$BASHPID/stat" || return 1
-  rest="${stat_line##*) }"
-  awk '{print $20}' <<< "$rest"
+  pid_start_id "$BASHPID"
 }
 
 land_register_post_push_range() {
@@ -1379,7 +1376,7 @@ fi
       echo "land-direct-main: engine pin preflight timed out pin=$engine duration_ms=$elapsed_ms deadline_seconds=$timeout_seconds; refusing push" >&2
     elif ((publish_failed == 1)); then
       echo "land-direct-main: publish preflight failed pin=$engine product=$head duration_ms=$elapsed_ms; refusing push (publish-preflight lines above)" >&2
-      echo "land-direct-main: next step: declare each engine-owned change in .zenoforge/build/intended-changes.tsv with a reason and matching engine SHA, or fix the engine-side change, then rerun the landing" >&2
+      echo "land-direct-main: next step: declare each engine-owned change in .zenoforge/build/intended-changes.tsv with a reason and a sha256:<first 12 hex of the new file hash> (preferred, survives main moving) or the matching engine SHA, or fix the engine-side change, then rerun the landing" >&2
     else
       echo "land-direct-main: engine pin preflight failed pin=$engine product=$head status=$status duration_ms=$elapsed_ms; refusing push (guard lines above)" >&2
       echo "land-direct-main: next step: adopt the engine version, re-override the changed file, or add a seam, then update the overrides.tsv row and rerun the landing" >&2

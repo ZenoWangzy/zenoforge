@@ -368,9 +368,13 @@ print_intended_rows() {
     detail=${line#resolved-config-check: CHANGED }
     path=${detail%%: live *}
     [[ "$path" != "$detail" && -n "$path" ]] || continue
+    # The last field is the first 12 hex of the new resolved file's sha256. A content row survives main moving; an engine SHA row does not.
+    new_hash=${detail##* }
+    scope=$engine_sha
+    [[ "$new_hash" =~ ^[0-9a-f]{12}$ ]] && scope="sha256:$new_hash"
     reason="engine pin $short_sha changes resolved config"
     echo "pin-vecta: add this row to $intended_file and rerun:" >&2
-    printf '%s\t%s\t%s\n' "$path" "$reason" "$engine_sha" >&2
+    printf '%s\t%s\t%s\n' "$path" "$reason" "$scope" >&2
   done < "$out_root/preflight.log"
 }
 

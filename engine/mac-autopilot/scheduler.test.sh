@@ -4482,6 +4482,51 @@ sched_case_hold_handoff_resume() {
     handoff_worktree_clone issue-783 agent/merge-test "$old_worktree" "$old_head" true 1 >/dev/null 2>&1 || status=$?
     [[ "$status" == 73 && "$(cat "$old_worktree/prior.txt")" == $'committed work\nuncommitted change' && "$(cat "$WT_ROOT/wt-issue-783/prior.txt")" == 'PR added prior file' ]] \
       || { echo 'not ok - conflicting commits did not preserve both versions' >&2; exit 1; }
+    # A supervisor ruling newer than the rescued commit: a conflicting rescue stays unapplied, not escalated (#1073); without one it still returns 73.
+    command git -C "$source_repo" checkout -q -b rescued/issue-790-old "$main_sha"
+    printf 'rescued\n' > "$source_repo/clash-790.txt"
+    command git -C "$source_repo" add clash-790.txt
+    command git -C "$source_repo" commit -q -m 'rescued work'
+    clash_rescue="$(command git -C "$source_repo" rev-parse HEAD)"
+    command git -C "$source_repo" push -q origin rescued/issue-790-old
+    command git -C "$source_repo" checkout -q -b main-moved "$main_sha"
+    printf 'main moved on\n' > "$source_repo/clash-790.txt"
+    command git -C "$source_repo" add clash-790.txt
+    command git -C "$source_repo" commit -q -m 'main moved'
+    moved_main="$(command git -C "$source_repo" rev-parse HEAD)"
+    command git -C "$source_repo" push -q origin main-moved:refs/heads/main
+    command git -C "$source_repo" checkout -q main
+    command git -C "$source_repo" fetch -q origin '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/rescued/issue-790-old:refs/remotes/origin/rescued/issue-790-old'
+    (
+      MAIN_HEAD="$moved_main"; say() { printf '%s\n' "$*" >> "$TF/say-790.log"; }
+      # VectA #6396: a recut ruling by issue comment (no ruling branch), then a hold-handoff re-fed the rescued ref.
+      unit_json='{"hold_handoff_episode":"2026-11-12T20:02:50Z","history":[{"stage":"hold-handoff","at":"2026-11-12T12:15:02Z"},{"stage":"supervisor-recut","result":"supervisor ruling: https://github.com/o/r/issues/6396#issuecomment-1","at":"2099-01-01T00:00:00Z"},{"stage":"hold-handoff","at":"2099-01-01T00:20:00Z"}]}'
+      ruled="$(handoff_ruling_epoch "$unit_json")"
+      [[ "$ruled" == 4070908800 ]] || { echo 'not ok - the comment ruling event was not read from the unit history' >&2; exit 1; }
+      status=0
+      wt="$(handoff_worktree_clone issue-790 agent/issue-790 "" "$clash_rescue" false 0 rescued/issue-790-old "$clash_rescue" "" "" "$ruled")" || status=$?
+      [[ "$status" == 0 && "$(command git -C "$wt" rev-parse HEAD)" == "$moved_main" && "$(cat "$wt/clash-790.txt")" == 'main moved on' && -z "$(command git -C "$wt" status --porcelain)" ]] \
+        || { echo 'not ok - a conflicting rescue did not leave the branch as it was after a newer ruling' >&2; exit 1; }
+      [[ "$(grep -c 'kept, not applied' "$TF/say-790.log")" == 1 ]] && grep -Fq "rescued ref rescued/issue-790-old ($clash_rescue) kept, not applied" "$TF/say-790.log" \
+        || { echo 'not ok - the kept rescue was not logged once by name' >&2; exit 1; }
+      [[ "$(command git --git-dir="$remote" rev-parse refs/heads/rescued/issue-790-old)" == "$clash_rescue" ]] \
+        || { echo 'not ok - the rescued ref did not stay on the remote' >&2; exit 1; }
+      # VectA #5730: a ruling-* episode counts as a ruling too.
+      ruled="$(handoff_ruling_epoch '{"hold_handoff_episode":"ruling-2099-01-01T00:00:00Z","history":[]}')"
+      status=0
+      handoff_worktree_clone issue-792 agent/issue-792-ruling-2099-01-01T000000Z "" "$clash_rescue" false 0 rescued/issue-790-old "$clash_rescue" "" "" "$ruled" >/dev/null 2>&1 || status=$?
+      [[ "$status" == 0 ]] || { echo 'not ok - a ruling episode did not keep the conflicting rescue unapplied' >&2; exit 1; }
+      # Controls: no ruling, an older ruling, and a requeue that is no ruling all still reach the supervisor.
+      for control in '{"history":[{"stage":"hold-handoff","at":"2026-11-12T20:03:34Z"}]}' \
+        '{"history":[{"stage":"supervisor-recut","result":"supervisor ruling: u","at":"2000-01-01T00:00:00Z"}]}' \
+        '{"history":[{"stage":"supervisor-requeue","result":"stop-loss hold expired; resumed once with a refilled budget","at":"2099-01-01T00:00:00Z"}]}'; do
+        status=0
+        handoff_worktree_clone issue-791 agent/issue-791 "" "$clash_rescue" false 0 rescued/issue-790-old "$clash_rescue" "" "" "$(handoff_ruling_epoch "$control")" >/dev/null 2>&1 || status=$?
+        [[ "$status" == 73 ]] || { echo "not ok - a rescue conflict without a newer ruling no longer reaches the supervisor: $control" >&2; exit 1; }
+      done
+    )
+    command git -C "$source_repo" push -q -f origin "$main_sha:refs/heads/main"
+    command git -C "$source_repo" fetch -q origin '+refs/heads/main:refs/remotes/origin/main'
     if ensure_clone issue-778 agent/issue-778 0 '' rescued/issue-777-new 0000000000000000000000000000000000000000 >/dev/null; then
       echo 'not ok - scheduler accepted a changed rescued commit' >&2; exit 1
     fi

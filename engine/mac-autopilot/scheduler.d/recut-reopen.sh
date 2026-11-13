@@ -83,7 +83,7 @@ intake_closed_unit_rows() { # issue...
     [[ -n "$row" ]] || continue
     units="$(jqf -c --argjson n "$n" --argjson row "$row" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
       | (($us | map((.history // [])[-1].at // "") | max) // "") as $at
-      | {ids: [$us[].id],
+      | {ids: [$us[].id], stages: ($us | map(.stage) | unique | join(",")),
          closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and (($us[0].history // []) as $h
            | ([$h | to_entries[] | select(.value.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut")) | .key] | max // -1) as $recut
            | $recut >= 0 and all($h[($recut + 1):][]; .stage | IN("supervisor-requeue", "pr-closed", "supervisor-cap-default")))),
@@ -102,6 +102,10 @@ intake_closed_unit_rows() { # issue...
       intake_reopen_episode "$n" "$STAMP" ruling
       [[ "$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r '.scheduler_handoff.episode // empty')" == "ruling-$STAMP" ]] \
         && set_unit "$id" ".closed_units_restored_at = $(js "$STAMP")"
+    else
+      # A delivered unit is not routed (triage would conclude on a partial PR) and a unit closed on purpose stays closed, so no
+      # label change: the row is named once per 6h instead of sitting silent. closed_units_open_issues still counts it.
+      intake_skip_note "$n" "all units terminal ($(jqf -r ".stages" <<<"$units")) and no restore path applies; no worker starts, a ruling is needed"
     fi
   done
   return 0

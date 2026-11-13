@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # Complete existing terminal-owner cleanup events; scheduler intake is separate.
+declare -F pid_live >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/proc.sh"
 hand_completion_event_dir() {
   printf '%s/hand-completion-events\n' "${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 }
 
 hand_completion_identity_terminal() {
-  local pid="$1" ticks="$2" fields
+  local pid="$1" ticks="$2" current
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$ticks" =~ ^[0-9]+$ ]] || return 2
-  if [ -d "/proc/$pid" ]; then
-    fields="$(cat "/proc/$pid/stat")" || return 75
-    fields="${fields##*) }"; read -r -a fields <<< "$fields"
-    [[ "${fields[19]}" != "$ticks" || "${fields[0]}" = Z ]] || return 75
-  fi
+  # Same identity and alive is still live (75); a reused, zombie or gone pid is terminal (0).
+  if current="$(pid_start_id "$pid" 2>/dev/null)" && [[ "$current" == "$ticks" ]] && pid_live "$pid"; then return 75; fi
+  return 0
 }
 
 # Atomic first publication precedes every heavy admission; duplicates cannot

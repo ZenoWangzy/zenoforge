@@ -101,7 +101,12 @@ scheduler_issue_state() (
   # Defer reconciliation while that transaction is in progress.
   mkdir -p "$STATE_DIR" || return 1
   exec {lock_fd}>"$f.lock" || return 1
-  flock -sn "$lock_fd" || return 1
+  # A transition holds the lock for milliseconds; wait it out so callers do not route past a live issue.
+  local tries=0
+  until flock -sn "$lock_fd"; do
+    (( ++tries < 5 )) || return 1
+    sleep 0.2
+  done
   state_read "$1"
 )
 scheduler_size_recut_active() (

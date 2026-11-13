@@ -14,6 +14,7 @@
     "engine/mac-autopilot/NODE-HEALTH.md": "健康标准的唯一表述文档",
     "engine/mac-autopilot/workorder_cost.py": "单元成本标准（UNIT_STANDARDS）",
     "tools/merge-pr.sh": "gate: engine PR merge helper",
+    "tools/merge-pr-bootstrap.sh": "gate: engine PR merge helper (test bootstrap check)",
     "engine/land-gate.sh": "gate: landing gate",
     "engine/land-direct-main.sh": "gate: direct-main landing chain (runs rule-lane)",
     "engine/land-direct-main-bootstrap.sh": "gate: direct-main landing bootstrap",

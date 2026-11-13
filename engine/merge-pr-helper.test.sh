@@ -4,6 +4,14 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
 merge_pr_static_scans() { return 0; }
 merge_pr_review_family() { return 0; }
+merge_pr_export_suites() { # the PR head's suites come from $fixture/head, not a fetch
+  local path
+  for path in "${@:3}"; do
+    [[ -f "$fixture/head/$path" ]] || continue
+    mkdir -p "$2/$(dirname "$path")"
+    cp "$fixture/head/$path" "$2/$path"
+  done
+}
 merge_pr_root() { printf '%s\n' "$repo"; } # the fixture repo stands in for the enclosing checkout: the host's size state and receipts must not reach these fixtures
 
 fixture="$test_env_root/merge-pr"
@@ -214,7 +222,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 # GraphQL refuses the head and `gh pr checks` (shared-account rate limit): the head, the checks and the squash merge all come from REST.
@@ -296,7 +304,7 @@ check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
 [[ "${check_output%%ZF_MERGE_OVERRIDE*}" == *'fix: read each failing check'* ]] || fail "failed-checks refusal does not name the corrective action before the override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -305,7 +313,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -401,6 +409,36 @@ PR_FILES='["tools/quick-land.sh"]'
 rm -f "$repo/tools/size-ratchet.sh" # the fake ratchet must not reach later merges
 ZF_MERGE_OVERRIDE=prior-art expect_prior_art_merge 'prior-art override'
 [[ "$(cat "$fixture/check-output")" == *'skips the prior-art check for PR #17'* ]] || fail 'override was not logged'
+
+# Test bootstrap: a PR suite without the test-env line is refused before the receipt check, and the refusal names it.
+mkdir -p "$repo/engine" "$fixture/head/engine"
+cp "$MODEL_POLICY_TEST_REPO/engine/test-bootstrap-check.sh" "$repo/engine/"
+printf '#!/usr/bin/env bash\nset -euo pipefail\necho ok\n' > "$fixture/head/engine/x.test.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\nsource "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"\necho ok\n' > "$fixture/head/engine/y.test.sh"
+PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
+PR_FILES='["engine/x.test.sh"]'
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+  fail 'suite without the bootstrap reached merge'
+fi
+[[ "$(cat "$fixture/check-output")" == *'engine/x.test.sh'*'test-env.sh'* ]] || fail "bootstrap refusal wrong: $(cat "$fixture/check-output")"
+[[ "$(cat "$fixture/gh-calls")" != *merge:* ]] || fail 'suite without the bootstrap reached the merge call'
+PR_FILES='["engine/y.test.sh"]'
+merge_pr_bootstrap_ok 17 >"$fixture/check-output" 2>&1 || fail "suite with the bootstrap refused: $(cat "$fixture/check-output")"
+
+# Trap guard: a suite that sources test-env.sh but whose EXIT trap does not name $test_env_root is refused, and the refusal names it.
+cp "$MODEL_POLICY_TEST_REPO/engine/test-exit-trap-check.sh" "$repo/engine/"
+{ # the trap is printf-built: a literal bare trap line here would fail exit-trap-lint on this file
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+  printf '%s\n' 'source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"'
+  printf 'trap %s EXIT\necho ok\n' "'rm -f x'"
+} > "$fixture/head/engine/z.test.sh"
+PR_FILES='["engine/z.test.sh"]'
+if merge_pr_bootstrap_ok 17 >"$fixture/check-output" 2>&1; then
+  fail 'bare EXIT trap passed the bootstrap check'
+fi
+[[ "$(cat "$fixture/check-output")" == *'$test_env_root'*'engine/z.test.sh'* ]] || fail "trap refusal wrong: $(cat "$fixture/check-output")"
+PR_FILES='["tools/quick-land.sh"]'
 
 # Test receipts: a merge must not follow a failed test run at the PR head.
 receipt_dir="$repo/.git/zf-test-receipts"
@@ -683,7 +721,7 @@ for path in .github/workflows/engine-tests.yml tools/run-engine-tests.sh .zenofo
   [[ -s "$fixture/prelude-calls" ]] || fail "CI suite-selection file $path incorrectly skipped the prelude"
 done
 
-# A real prelude timeout reports its exit code and the 300-second bound.
+# A real prelude timeout reports its exit code and the 900-second bound.
 (
   source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
   merge_pr_root() { printf '%s\n' "$repo"; }
@@ -693,7 +731,7 @@ done
   git -C "$repo" remote add origin "$repo"
   git -C "$repo" update-ref refs/pull/17/head "$sha"
   if merge_pr_scheduler_prelude_ok 17 >"$fixture/check-output" 2>&1; then fail 'a timed-out prelude did not refuse the merge'; fi
-  [[ "$(cat "$fixture/check-output")" == *'scheduler.test.sh prelude failed rc=124 (timeout 300s):'* ]] || fail "prelude refusal lost its rc or timeout: $(cat "$fixture/check-output")"
+  [[ "$(cat "$fixture/check-output")" == *'scheduler.test.sh prelude failed rc=124 (timeout 900s):'* ]] || fail "prelude refusal lost its rc or timeout: $(cat "$fixture/check-output")"
   git -C "$repo" remote remove origin
 )
 

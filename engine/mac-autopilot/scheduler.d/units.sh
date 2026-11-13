@@ -241,7 +241,7 @@ last_review_blocked() { # unit-json → 0 when the latest review verdict in its 
 no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approved), "review-pending" (no current approval), or nothing (a repair is right)
   # A repair with no red check and no open P0/P1 finding has nothing to fix (2026-11-08: issue-5306 went to repair three times on cancelled checks).
   # Other failures keep repair: a merge conflict, a land/precheck/CI red stage, or any lookup that fails.
-  local u="$1" pr head rows
+  local u="$1" pr head rows approved=false
   pr="$(jqf -r '.pr // empty' <<<"$u")"
   [[ "$pr" =~ ^[0-9]+$ ]] || return 0
   # A handoff (hold episode or handoff worktree/ref) must be integrated by the repair worker first.
@@ -251,13 +251,12 @@ no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approv
   head="$(tick_pr_head "$pr")"; [[ "$head" =~ $SHA_RE ]] || return 0
   rows="$(repair_check_rows "$pr")" || return 0
   jqf -e 'any(.[]; .bucket == "fail")' <<<"$rows" >/dev/null && return 0
+  jqf -e --arg h "$head" '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | (.stage == "review-approve" and .result == $h)' <<<"$u" >/dev/null && approved=true
+  # An approval of the open PR's current head supersedes the findings of earlier rounds and a review report with no findings record (#1077).
+  if [[ "$approved" == true && "$(pr_view "$pr" state)" == OPEN ]]; then printf 'ready-to-merge %s\n' "$head"; return 0; fi
   jqf -e '((.review_findings // []) | last // {}) | (.findings // []) | any(.status == "open" and (.severity == "P0" or .severity == "P1"))' <<<"$u" >/dev/null && return 0
   jqf -e '((.review_findings // []) | length == 0) and ((.review_report // "") != "" or ([(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | .stage) == "review-request-changes")' <<<"$u" >/dev/null && return 0
-  if jqf -e --arg h "$head" '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | (.stage == "review-approve" and .result == $h)' <<<"$u" >/dev/null; then
-    printf 'ready-to-merge %s\n' "$head"
-  else
-    printf 'review-pending\n'
-  fi
+  if [[ "$approved" == true ]]; then printf 'ready-to-merge %s\n' "$head"; else printf 'review-pending\n'; fi
 }
 supervisor_requeue_repair_route() { # unit-json guidance → target<TAB>jq update for a supervisor repair requeue
   local u="$1" route="" head="" target=repair-pending extra
@@ -657,7 +656,7 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
   if [[ -n "$pr" && "$allow_pr_close" != true ]]; then
     supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
   fi
-  # Once this unit's route created children, a close retry must bypass the permanent guard (#1167/#4840).
+  # Route first: a refused route must leave the PR open, or the slice has no owner. Once this unit's route created children, a close retry must bypass the permanent guard (#1167/#4840).
   if [[ "$(unit_field "$id" '.recut_routed // empty')" == true ]] \
       && issue_state="$(scheduler_issue_state "$issue" 2>/dev/null)" \
       && jqf -e 'type == "object" and has("recut_children")' <<<"$issue_state" >/dev/null 2>&1; then

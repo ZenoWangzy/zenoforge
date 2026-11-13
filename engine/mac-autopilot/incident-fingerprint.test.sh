@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$here/incident-fingerprint.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 key() { incident_class "$(incident_fingerprint "$1")"; }
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/incident-fp.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 
 sha1=0123456789abcdef0123456789abcdef01234567
 sha2=89abcdef0123456789abcdef0123456789abcdef

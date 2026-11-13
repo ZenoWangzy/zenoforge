@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Source this; checkpoints belong outside item bodies, never in a verdict/revert.
+declare -F pid_live >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/proc.sh"
 agent_reload_signature() {
   local files capacity="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}/capacity.env"
   files="$(sha256sum -- "$AGENT_RELOAD_SCRIPT" "$AGENT_RELOAD_LIB" "$AGENT_RELOAD_HELPER")" || return 1
@@ -22,11 +23,8 @@ agent_reload_init() {
   AGENT_RELOAD_SIGNATURE="$(agent_reload_signature)" || return 1
   AGENT_RELOAD_STATE_DIR="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}/state/runtime-code"
   mkdir -p -- "$AGENT_RELOAD_STATE_DIR" || return 1
-  local stat_fields ticks head tmp
-  stat_fields="$(cat "/proc/$AGENT_RELOAD_PID/stat")"
-  stat_fields="${stat_fields##*) }"
-  read -r -a stat_fields <<< "$stat_fields"
-  ticks="${stat_fields[19]}"
+  local ticks head tmp
+  ticks="$(pid_start_id "$AGENT_RELOAD_PID")" || return 1
   head="$(git -C "$AGENT_RELOAD_ROOT" rev-parse HEAD 2>/dev/null || printf unversioned)"
   tmp="$(mktemp "$AGENT_RELOAD_STATE_DIR/.record.XXXXXX")" || return 1
   printf '%s\t%s\t%s\t%s\t%s\n' "$ticks" "$head" "$AGENT_RELOAD_SIGNATURE" "$(date +%s)" "$AGENT_RELOAD_SCRIPT" > "$tmp"
