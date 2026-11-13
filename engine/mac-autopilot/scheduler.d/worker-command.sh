@@ -94,7 +94,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
 
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg review_allowed_tools claude_cli_tools
   local -a tier_args=() codex_config_args=() zcode_cmd=()
   local output_tokens
   CODEX_MODE=fresh
@@ -132,12 +132,17 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null  # Claude is not measured by Codex cumulative counters.
     # 用户级 PreToolUse hook（rtk）把 git log/diff 改写成 rtk git …，白名单不匹配，dontAsk 全拒：评审 worker 不加载 hook。
+    review_allowed_tools="$(claude_review_tools "$workdir" "$unit")"
+    claude_cli_tools="Read,Grep,Glob,Bash"
+    if [[ "$review_allowed_tools" == *"Edit(/$workdir/**)"* && "$review_allowed_tools" == *"Write(/$workdir/**)"* ]]; then
+      claude_cli_tools="Read,Edit,Write,Grep,Glob,Bash"
+    fi
     CODEX_COMMAND=(claude -p "$prompt_arg
 （把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。仅在 PR lane 的小型 fixed-in-review 修复中编辑当前工作目录，提交并 push 当前分支；工具白名单限制到当前 clone、当前分支和测试命令。
 当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」。可用命令：git diff/log/show/rev-parse/merge-base/ls-files/status/add/commit、git push origin 当前分支、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort、pnpm <script>、npx vitest <file>、node --test <file>、python3 <file>.test.py、bash <file>.test.sh、bash tools/test-receipt.sh <测试命令>。优先用 Read/Grep 工具读代码，并先运行聚焦测试；一条命令被拒就拆开重试。）" \
       --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
       --model "$model" --effort "$effort" --permission-mode dontAsk --strict-mcp-config \
-      --tools "Read,Edit,Write,Grep,Glob,Bash" --allowedTools "$(claude_review_tools "$workdir" "$unit")")
+      --tools "$claude_cli_tools" --allowedTools "$review_allowed_tools")
     return 0
   fi
   tier="$(jqf -r --arg m "$model" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
