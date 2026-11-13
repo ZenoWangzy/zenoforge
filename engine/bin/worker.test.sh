@@ -57,6 +57,12 @@ if [[ $mode == models_manager_401 ]]; then
   sleep 0.3
   mode=success
 fi
+if [[ $mode == router_noise ]]; then  # 11-13: a tool error echoing the worker's own patch text is not a quota error
+  printf '%s\n' '2026-11-13T23:06:51.939982Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines' \
+    "        if grep -Fq 'API rate limit already exceeded' \"\$log\"; then" '          : > "$rate_limit_signal"  # 429 unauthorized quota exceeded' >> "$d/stderr.log"
+  sleep 0.3
+  mode=success
+fi
 if [[ $mode == auth_turn_failed ]]; then
   printf 'codex_models_manager: failed to refresh available models: unexpected status 401\n' >> "$d/stderr.log"
   printf '%s\n' '{"type":"turn.failed","error":{"code":"authentication_error","message":"Authentication failed: token expired (401)"}}' > "$d/events.jsonl"
@@ -394,6 +400,9 @@ printf 'PASS zc Turn execution failed -> luna failover with reason; partial work
 run_case models-manager-401 0 success models_manager_401 8 4 luna
 [[ $(cat "$CASE_DIR/backend") == luna ]] || fail 'models_manager refresh 401 was treated as fatal'
 [[ ! -e $CASE_DIR/failover ]] || fail 'models_manager refresh 401 started backend failover'
+run_case router-tool-error-echo 0 success router_noise 8 4 luna
+[[ $(cat "$CASE_DIR/backend") == luna ]] || fail 'a codex tool error echoing rate-limit text was treated as a quota error'
+[[ ! -e $CASE_DIR/failover ]] || fail 'a codex tool error echo started backend failover'
 printf 'PASS models_manager refresh 401 is ignored without hiding other fatal turn events\n'
 
 run_case auth-turn-failed 0 success auth_turn_failed 8 4 luna
