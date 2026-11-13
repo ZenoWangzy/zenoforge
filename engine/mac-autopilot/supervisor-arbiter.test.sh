@@ -1116,7 +1116,7 @@ units "$(jq -cn '{units:[701,702,703] | map({id:("issue-"+tostring),issue:.,stag
 reconcile_size_recuts
 [[ "$(field issue-701 .stage)" == parked ]] || fail "a live hold must keep the size recut parked"
 for u in issue-702 issue-703; do
-  jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "blocked-external" and .note == null and .size_recut_pending == true and (has("parked_reason") | not) and ([.history[].stage] | index("size-recut-unheld") != null)' "$UNITS" >/dev/null \
+  jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "blocked-external" and .note == null and .size_recut_pending == true and (has("parked_reason") | not) and .history[-1].stage == "size-recut-unheld" and .history[-1].blocked_on == null and .history[-1].source == "size-recut-unhold"' "$UNITS" >/dev/null \
     || fail "$u: a lifted hold did not release the size recut: $(jq -c --arg id "$u" '.units[] | select(.id == $id)' "$UNITS")"
 done
 

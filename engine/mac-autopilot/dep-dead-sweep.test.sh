@@ -136,7 +136,7 @@ rm -f "$A/dep-check.cache.json" "$A/dep-check.epoch"
 
 # Proof is the only way past the marker, including a body dependency on the same predecessor.
 printf '{"states":{}}\n' > "$A/dep-check.cache.json"
-reset
+reset; CHILD=OPEN # no cache entry: the fresh read says the predecessor is open, so it is a real blocker
 [[ -n "$(dep_marker_open "$(jq -cn '{dep_wait_delivery:10}')")" ]] || fail 'no proof: the marker holds'
 ruled='[{"stage":"dep-dead-proved"},{"stage":"supervisor-requeue","decision":{"owner":"supervisor"}}]'
 [[ -n "$(dep_marker_open "$(jq -cn --argjson h "$ruled" '{dep_wait_delivery:10,dep_dead_proved:11,history:$h}')")" ]] || fail 'proof of another predecessor: the marker holds'
@@ -220,5 +220,34 @@ reset; nounit; closed_state CLOSED; CHILD=CLOSED
 reset; nounit; closed_state CLOSED; CHILD=MERGED; release_dependency_blocks
 jq -e '.units[] | select(.id=="issue-20") | .stage != "blocked-external" and any(.released_deps[]?; .issue == 10 and .kind == "delivered")' "$UNITS" >/dev/null \
   || fail "a fresh MERGED read must release through the delivered path: $(jq -c '.units[1]' "$UNITS")"
+
+# A requeue keeps the repointed blocker and brings back no old number (#3405: #2827 -> #5434 -> #5793 came back as #2827 after the requeue).
+run_end='{stage:"write-start",result:"[\"a\"]"},{stage:"write-end",result:"[]"},{stage:"blocked-on",result:"#2827"}'
+req='{stage:"supervisor-requeue",result:"hold.sh --rule requeue"}'
+rep() { printf '{stage:"blocker-repointed",result:"#%s closed in ledger after recut; now waits on child #%s"}' "$1" "$2"; }
+runjson() { jq -cn "{history:[$run_end,$1],dropped_deps:${2:-[]}}"; }
+[[ "$(unit_blocked_run_dep "$(runjson "$(rep 2827 5434),$(rep 5434 5793),$req")")" == 5793 ]] || fail 'a requeue must follow the repoint chain to its end'
+[[ "$(unit_blocked_run_dep "$(runjson "$(rep 2827 5434),$req,$(rep 2827 5434),$(rep 5434 5793)")")" == 5793 ]] || fail 'a repoint repeated from the old number must not undo the chain'
+[[ "$(unit_blocked_run_dep "$(runjson "$req")")" == 2827 ]] || fail 'a blocker that never moved still holds the unit after a requeue'
+[[ -z "$(unit_blocked_run_dep "$(runjson "$(rep 2827 5434),$req" '[5434]')")" ]] || fail 'a blocker dropped by a reroute is no wait'
+[[ "$(unit_blocked_run_dep "$(runjson "$(rep 2827 5434),$req" '[2827]')")" == 5434 ]] || fail 'dropping the old number must not drop the repointed blocker, which is a real one'
+# A blocker closed as not_planned (or done) does not hold; an open one does; a cache miss reads GitHub once (#1135 parked on closed #1133).
+printf '{"states":{"10":{"state":"CLOSED","state_reason":"NOT_PLANNED"},"11":{"state":"CLOSED","state_reason":"COMPLETED"},"12":{"state":"OPEN"}}}\n' > "$A/dep-check.cache.json"
+reset; CHILD=OPEN; printf '{"units":[]}\n' > "$UNITS"; u='{"id":"issue-30","issue":30}'
+dep_cleared "$u" 10 && dep_cleared "$u" 11 || fail 'a blocker closed as not planned or completed must not hold'
+dep_cleared "$u" 12 && fail 'an open blocker must hold'
+dep_cleared "$u" 13 && fail 'a blocker absent from the cache and open on GitHub must hold'
+CHILD=CLOSED; rm -f "$A"/dep-fresh-*; dep_cleared "$u" 13 || fail 'a blocker absent from the cache and closed on GitHub must not hold'
+CHILD=''; rm -f "$A"/dep-fresh-*; dep_cleared "$u" 13 && fail 'an unreadable blocker must hold'
+rm -f "$A/dep-check.cache.json"
+# Every transition into blocked-external names the blocker and its source in one event, and a repeat of the same block does not add one.
+reset; CHILD=OPEN; printf '{"units":[{"id":"issue-30","issue":30,"stage":"implement-pending","task":"t","history":[]}]}\n' > "$UNITS"
+park_blocked issue-30 13 issue-body
+jq -e '.units[0] | .stage=="blocked-external" and .blocked_on==13 and (.history | length)==1 and .history[0].stage=="blocked-on" and .history[0].result=="#13" and .history[0].blocked_on==13 and .history[0].source=="issue-body"' "$UNITS" >/dev/null \
+  || fail "park_blocked must write one event naming blocker and source: $(jq -c '.units[0].history' "$UNITS")"
+printf '{"units":[{"id":"issue-31","issue":31,"stage":"implement-pending","task":"t","history":[]}]}\n' > "$UNITS"
+set_unit issue-31 "$(hist_blocked blocker-held 14 last-run '#14: its last run ended blocked on it') | .blocked_on=14 | .stage=\"blocked-external\""
+jq -e '.units[0] | (.history | length)==1 and .history[0].stage=="blocker-held" and .history[0].blocked_on==14 and .history[0].source=="last-run" and (.history[0].result | startswith("#14"))' "$UNITS" >/dev/null \
+  || fail "a dispatch re-block must write one event naming blocker and source: $(jq -c '.units[0].history' "$UNITS")"
 
 echo 'dep-dead-sweep.test.sh: PASS'

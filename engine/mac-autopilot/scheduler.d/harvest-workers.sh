@@ -708,7 +708,7 @@ stuck_worker_disposition() {
         fi
       fi
       if (( cap_recut_ok )); then
-        set_unit "$cap_unit" "$(hist implement-command-cap "$cap_count/$IMPLEMENT_COMMAND_CAP -> needs-recut") | .stage=\"blocked-external\" | .size_recut_pending=true | del(.stuck_probe)"
+        set_unit "$cap_unit" "$(hist_blocked implement-command-cap '' implement-command-cap "$cap_count/$IMPLEMENT_COMMAND_CAP -> needs-recut") | .stage=\"blocked-external\" | .size_recut_pending=true | del(.stuck_probe)"
       else
         cap_summary+=$'\nrecut route failed'
         cap_summary+=$'\nlast 20 commands:\n'"${cap_commands:-none}"

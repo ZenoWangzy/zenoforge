@@ -137,6 +137,8 @@ rm -f "$fixture/recut-calls"
 run_repair "$H1" '[{"stage":"review-request-changes","result":"'"$H1"'"}]'
 [[ "$(field issue-9 '[.history[] | select(.stage=="size-recut")] | length')" == 1 && "$(field issue-9 .stage)" == blocked-external ]] \
   || fail "an over-limit repaired head must route to recut ($(field issue-9 '.history | tojson'))"
+jq -e '.units[] | select(.id=="issue-9") | .history[-1].stage == "size-recut" and .history[-1].blocked_on == null and .history[-1].source == "size-admission"' "$UNITS" >/dev/null \
+  || fail 'a size-admission transition must record a null blocker and its source'
 grep -q '^recut issue=9 lines=900 unit=issue-9$' "$fixture/recut-calls" && ! grep -q '^supervisor' "$fixture/recut-calls" \
   || fail "an over-limit repaired head escalated instead of recutting ($(cat "$fixture/recut-calls" 2>/dev/null))"
 # 10. A recheck with no head says so in the scheduler log instead of skipping the recut silently.

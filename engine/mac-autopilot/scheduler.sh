@@ -100,6 +100,7 @@ source "$HERE/scheduler.d/review-rules.sh"
 source "$HERE/scheduler.d/land-lane.sh"
 source "$HERE/scheduler.d/dependencies-fresh.sh"
 source "$HERE/scheduler.d/dependencies.sh"
+source "$HERE/scheduler.d/dependencies-history.sh"
 source "$HERE/scheduler.d/size-admission.sh"
 source "$HERE/scheduler.d/harvest-workers.sh"
 source "$HERE/scheduler.d/stop-loss.sh"
@@ -325,7 +326,7 @@ handle_worker_death() { # worker-json unit type log-path → diagnose and route 
     if [[ "$death_class" == oom-kill ]] && [[ "$(unit_field "$unit" '.issue // empty')" =~ ^[1-9][0-9]*$ ]] \
       && scheduler_recut_route "$(unit_field "$unit" '.issue')" "$(jq -cn --arg unit "$unit" --arg log "$(basename "$lg")" --argjson death "$death" '{kind:"worker-oom-death",unit:$unit,log:$log,death:$death}')" \
       && scheduler_issue_state "$(unit_field "$unit" '.issue')" | jq -e '.state == "needs-recut"' >/dev/null; then
-      set_unit "$unit" "$(hist worker-oom-recut "$death_summary") | .stage=\"blocked-external\" | .size_recut_pending=true"
+      set_unit "$unit" "$(hist_blocked worker-oom-recut '' worker-oom "$death_summary") | .stage=\"blocked-external\" | .size_recut_pending=true"
       say "unit=$unit worker died $death_summary -> needs-recut"
     elif [[ "$wtype" =~ ^(review|rereview|repair|implement)$ && "$(unit_retries "$unit" fresh-session-retry)" == 0 ]]; then
       set_unit "$unit" "$(hist fresh-session-retry "$no_output deaths") | .session_ids={} | .sessions={} | .session_id=null | .stage=\"${wtype}-pending\""

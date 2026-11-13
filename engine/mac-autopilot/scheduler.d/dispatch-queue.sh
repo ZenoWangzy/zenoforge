@@ -182,7 +182,7 @@ dispatch_pending() {
     if [[ "$stage" == *-pending && -n "$(jqf -r '.dep_wait_delivery // empty' <<<"$u")" ]]; then
       if marked_dep="$(dep_marker_open "$u")"; then
         if [[ "$local_refill" != true ]]; then
-          park_blocked "$id" "$marked_dep"
+          park_blocked "$id" "$marked_dep" dep-marker
           [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
         fi
         dispatch_skip dep-marker; continue
@@ -196,7 +196,7 @@ dispatch_pending() {
     if [[ "$stage" == implement-pending || "$stage" == repair-pending ]] && blocked_dep="$(unit_blocked_run_dep "$u")" \
       && [[ "$blocked_dep" =~ ^[0-9]+$ ]] && ! dep_cleared "$u" "$blocked_dep"; then
       if [[ "$local_refill" != true ]]; then
-        set_unit "$id" ".blocked_on=$blocked_dep | .note=$(js "waiting for predecessor #$blocked_dep") | .stage=\"blocked-external\""
+        set_unit "$id" "$(hist_blocked blocker-held "$blocked_dep" last-run "#$blocked_dep: its last run ended blocked on it and nothing cleared it") | .blocked_on=$blocked_dep | .note=$(js "waiting for predecessor #$blocked_dep") | .stage=\"blocked-external\""
         [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
         say "unit $id back to blocked-external: its last run ended blocked on #$blocked_dep and nothing cleared it"
       fi
