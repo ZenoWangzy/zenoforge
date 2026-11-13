@@ -17,8 +17,10 @@ issue_rest_view() {
   if [[ "$want_comments" == comments ]]; then
     comments="$(gh api --paginate --slurp "repos/$repo/issues/$n/comments?per_page=100" 2>/dev/null)" || return 1
   fi
-  jq -ce --argjson comments "$comments" --argjson n "$n" --argjson with_comments "$([[ "$want_comments" == comments ]] && echo true || echo false)" '
-    select(type == "object" and .number == $n and (.pull_request | not)
+  # Comments are unbounded (every page of a long thread), so they go through a file, not argv (jq-arg-safety.test.sh).
+  jq -ce --rawfile comments_raw <(printf '%s' "$comments") --argjson n "$n" --argjson with_comments "$([[ "$want_comments" == comments ]] && echo true || echo false)" '
+    ($comments_raw | fromjson) as $comments
+    | select(type == "object" and .number == $n and (.pull_request | not)
       and (.state | IN("open", "closed")) and (.labels | type == "array") and all(.labels[]; type == "object" and (.name | type == "string"))
       and ($comments | type == "array") and all($comments[]; type == "array" or type == "object"))
     | {number, title, body: (.body // ""), state: (.state | ascii_upcase),
