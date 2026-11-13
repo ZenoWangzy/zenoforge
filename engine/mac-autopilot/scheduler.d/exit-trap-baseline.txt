@@ -35,7 +35,6 @@ engine/mac-autopilot/advisor-incident.test.sh
 engine/mac-autopilot/bell-drift-sigs.test.sh
 engine/mac-autopilot/bell-incident-routing.test.sh
 engine/mac-autopilot/bell-scan-cost.test.sh
-engine/mac-autopilot/bell.test.sh
 engine/mac-autopilot/daemon-self-check.test.sh
 engine/mac-autopilot/dispatch-queue-footprint-first.test.sh
 engine/mac-autopilot/harvest-late-report.test.sh
