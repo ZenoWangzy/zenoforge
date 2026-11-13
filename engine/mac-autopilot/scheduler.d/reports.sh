@@ -100,7 +100,7 @@ harvest_input_incomplete() { # unit report-path report-name head reviewed-filter
     fi
     return 0
   fi
-  set_unit "$unit" "$(hist review-block "$wsha") | $reviewed | .approved_sha=null | .blocked_main_sha=$(js "$MAIN_HEAD") | .stage=\"blocked-external\""
+  set_unit "$unit" "$(hist_blocked review-block "$bdep" review-report "$wsha") | $reviewed | .approved_sha=null | .blocked_main_sha=$(js "$MAIN_HEAD") | .stage=\"blocked-external\""
   [[ -z "$bdep" ]] || park_blocked "$unit" "$bdep"
   cancel_unit_runs "$unit" "review blocked"
 }

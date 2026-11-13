@@ -45,9 +45,13 @@ BLOCKED-ON: #77
 
 VERDICT: INPUT_INCOMPLETE'
 [[ "$(field .blocked_on)" == 77 && "$(field .stage)" == blocked-external ]] || fail "BLOCKED-ON review must take the dependency hold ($(field .stage):$(field .blocked_on))"
+jq -e '.units[0].history[-1] | .stage == "review-block" and .blocked_on == 77 and .source == "review-report"' "$UNITS" >/dev/null \
+  || fail 'BLOCKED-ON review transition must record its blocker and source'
 echo 'ok - BLOCKED-ON review takes the existing dependency hold'
 
 printf '{"units":[{"id":"pr-9","pr":9,"lane":"pr","branch":"agent/issue-9","stage":"review","history":[]}]}' > "$UNITS"
 review_with_report 'VERDICT: INPUT_INCOMPLETE'
 [[ "$(field .stage)" == blocked-external && "$(field '[.history[] | select(.stage == "review-tools-denied")] | length')" == 0 ]] || fail "plain INPUT_INCOMPLETE keeps the blocked hold"
+jq -e '.units[0].history[-1] | .stage == "review-block" and .blocked_on == null and .source == "review-report"' "$UNITS" >/dev/null \
+  || fail 'a review hold without a named dependency must record null and its source'
 echo 'ok - plain INPUT_INCOMPLETE is not mistaken for a denial'

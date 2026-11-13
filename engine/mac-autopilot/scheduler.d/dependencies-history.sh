@@ -1,5 +1,11 @@
 # unit-json → N when the unit's last run ended blocked-on #N with no commit and nothing since cleared it: no release, no
 # supervisor or typesafe ruling. A handoff requeue is no ruling (see dep_dead_ruled), so it cannot free the unit by itself.
+hist_blocked() { # stage dep-or-empty source [result] → history event with blocker and transition source
+  local dep="${2:-}" blocked_on=null result="${4:-}"
+  [[ "$dep" =~ ^[0-9]+$ ]] && blocked_on="$dep"
+  [[ -n "$result" ]] || result="${dep:+#$dep}"
+  echo "$(hist "$1" "$result") | .history[-1] += {blocked_on: $blocked_on, source: $(js "$3")}"
+}
 unit_blocked_run_dep() {
   jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage == "write-start") | .key] | max) as $s
     | if $s == null then empty else $h[$s:] as $r

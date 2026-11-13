@@ -3223,7 +3223,8 @@ stack_child_new="$(command git -C "$stack_verify" rev-parse refs/remotes/origin/
 GH_PR_TABLE="$fixture/stack-closed-table"; echo '[]' > "$GH_PR_TABLE"
 pr_view() { case "$2" in state) echo CLOSED ;; esac; }
 reconcile_stacked_units
-[[ "$(field issue-2 .stage)" == blocked-external && "$(field issue-2 .blocked_on)" == 1 ]] \
+[[ "$(field issue-2 .stage)" == blocked-external && "$(field issue-2 .blocked_on)" == 1 \
+  && "$(field issue-2 '.history[-1].blocked_on')" == 1 && "$(field issue-2 '.history[-1].source')" == stacked-pr ]] \
   || fail 'dependent unit did not return to waiting when its predecessor PR closed'
 pr_view() { case "$2" in state) echo MERGED ;; esac; }
 dep_states() { printf '1\tMERGED\t\n'; }

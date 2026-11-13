@@ -7,9 +7,6 @@ blocked_on_of() {
   { head -12 "$1" | grep -oiE 'BLOCKED[- ]?(ON|BY)[^0-9#]{0,12}#?[0-9]+'; grep -oE 'BLOCKED-ON:[[:space:]]*#[0-9]+' "$1"; } 2>/dev/null \
     | grep -oE '[0-9]+$' | head -1
 }
-hist_blocked() { # stage dep source [result] → hist event that also names the blocker (blocked_on) and where it came from (source); readers of stage/result ignore both
-  echo "$(hist "$1" "${4:-#$2}") | .history[-1] += {blocked_on: $2, source: $(js "$3")}"
-}
 park_blocked() { # unit dep [source: worker-report | issue-body | dep-marker]
   local source="${3:-worker-report}"
   # supervisor 已在 reroute 中放弃的前置（dropped_deps）：worker 报告的 BLOCKED-ON 不停住单元，单元留在原环节再跑一次。
@@ -743,7 +740,7 @@ reconcile_stacked_units() {
     fi
     case "$parent_state" in
       CLOSED)
-        set_unit "$id" "$(hist stack-waiting predecessor-PR-$parent_pr-closed) | .stage=\"blocked-external\""
+        set_unit "$id" "$(hist_blocked stack-waiting "$dep" stacked-pr predecessor-PR-$parent_pr-closed) | .stage=\"blocked-external\""
         say "unit $id waits: stacked predecessor PR #$parent_pr closed"
         continue ;;
       MERGED)
@@ -751,7 +748,7 @@ reconcile_stacked_units() {
         issue_state="$(jqf -r '.issue_state // empty' <<<"$dep_info")"
         [[ -n "$issue_state" ]] || issue_state="$(gh issue view "$dep" --json state --jq .state 2>/dev/null)"
         [[ "$issue_state" == CLOSED && "$MAIN_HEAD" =~ $SHA_RE ]] || {
-          [[ "$child_stage" == blocked-external ]] || set_unit "$id" "$(hist stack-waiting predecessor-PR-$parent_pr-merged-waiting-for-release) | .stage=\"blocked-external\""
+          [[ "$child_stage" == blocked-external ]] || set_unit "$id" "$(hist_blocked stack-waiting "$dep" stacked-pr predecessor-PR-$parent_pr-merged-waiting-for-release) | .stage=\"blocked-external\""
           continue
         }
         if ! restack_branch "$id" main "$MAIN_HEAD"; then
@@ -763,7 +760,7 @@ reconcile_stacked_units() {
         continue ;;
       OPEN) ;;
       *)
-        [[ "$child_stage" == blocked-external ]] || set_unit "$id" "$(hist stack-waiting predecessor-PR-$parent_pr-state-$parent_state) | .stage=\"blocked-external\""
+        [[ "$child_stage" == blocked-external ]] || set_unit "$id" "$(hist_blocked stack-waiting "$dep" stacked-pr predecessor-PR-$parent_pr-state-$parent_state) | .stage=\"blocked-external\""
         continue ;;
     esac
     # A worker refused this release twice: an open parent frees nothing here, and the MERGED branch above is the delivery.
@@ -775,7 +772,7 @@ reconcile_stacked_units() {
         say "unit $id remains stacked: could not restack on $parent_id@$parent_head"
         continue
       fi
-      set_unit "$id" "$(hist stacked_on $parent_id@$parent_head) | .stacked_on=$(js "$parent_id@$parent_head") | .stacked_on_sha=$(js "$parent_head") | .stacked_on_branch=$(js "$parent_branch") | .approved_sha=null | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"blocked-external\""
+      set_unit "$id" "$(hist_blocked stacked_on "$dep" stacked-pr "$parent_id@$parent_head") | .stacked_on=$(js "$parent_id@$parent_head") | .stacked_on_sha=$(js "$parent_head") | .stacked_on_branch=$(js "$parent_branch") | .approved_sha=null | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"blocked-external\""
       child_stage=blocked-external
       say "unit $id restacked on $parent_id@$parent_head"
     fi
@@ -788,7 +785,7 @@ reconcile_stacked_units() {
         say "unit $id resumed on approved predecessor $parent_id@$parent_head"
       fi
     elif [[ "$child_stage" != blocked-external ]]; then
-      set_unit "$id" "$(hist stack-waiting predecessor-$parent_id-not-approved-at-$parent_head) | .stage=\"blocked-external\""
+      set_unit "$id" "$(hist_blocked stack-waiting "$dep" stacked-pr predecessor-$parent_id-not-approved-at-$parent_head) | .stage=\"blocked-external\""
       say "unit $id waits: predecessor $parent_id is not approved at $parent_head"
     fi
   done < <(jqf -c '.units[] | select(.stacked_on != null and .stacked_on_released != true)' "$UNITS")
