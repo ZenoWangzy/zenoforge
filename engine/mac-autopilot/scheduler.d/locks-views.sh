@@ -138,24 +138,30 @@ rule_supersede_handoff() { # unit ruling-comment-url：清掉已被当前 PR hea
   set_unit "$id" "$(hist handoff-superseded "ruling comment $comment_id superseded the handoff snapshot with PR #$pr head $head") | .history[-1].ruling_comment_id=$(js "$comment_id") | .history[-1].pr_head=$(js "$head") | .history[-1].superseded_by=$(js "$head") | del(.handoff_worktree, .handoff_worktree_sha, .handoff_worktree_dirty, .handoff_worktree_applied, .handoff_integration_sha, .handoff_original_pr_head, .handoff_delivery_verified_sha, .handoff_start_ref, .handoff_start_sha, .handoff_start_applied)"
 }
 
-closed_unit_stop_loss_open() { # id：已关闭单元的 issue 仍开着且挂着 scheduler-stop-loss hold，ruling 可以重开它
-  local issue state repo
+closed_unit_stop_loss_open() { # id：0 = 已关闭单元的 issue 仍开着且挂着 scheduler-stop-loss hold；1 = 不符合；2 = 读不到 GitHub 状态（GraphQL 读在 secondary rate limit 下返回空，故走 REST）
+  local issue state repo rest_state
   issue="$(unit_field "$1" '.issue // empty')"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
   state="$(scheduler_issue_state "$issue")" || return 1
   jqf -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' <<<"$state" >/dev/null || return 1
   repo="${REPO:-${ZF_REPO:-}}"; [[ -n "$repo" ]] || return 1
-  [[ "$(gh issue view "$issue" --repo "$repo" --json state --jq .state 2>/dev/null)" == OPEN ]]
+  rest_state="$(gh api "repos/$repo/issues/$issue" --jq .state 2>/dev/null)" || return 2
+  case "$rest_state" in open) return 0 ;; closed) return 1 ;; *) return 2 ;; esac
 }
-closed_unit_refusal() { # id：已关闭单元的拒绝语只指向本环节能用的动作
-  if closed_unit_stop_loss_open "$1"; then echo "rule: $1 is closed but its issue is on a stop-loss hold; use --requeue" >&2
-  else echo "rule: $1 is closed; use --recut to route its issue to recut" >&2; fi
+closed_unit_refusal() { # id [rc]：已关闭单元的拒绝语只指向本环节能用的动作；调用方给了 rc 就不再查 GitHub
+  local rc="${2:-}"
+  [[ -n "$rc" ]] || { rc=0; closed_unit_stop_loss_open "$1" || rc=$?; }
+  case "$rc" in
+    0) echo "rule: $1 is closed but its issue is on a stop-loss hold; use --requeue" >&2 ;;
+    2) echo "rule: $1 is closed and its GitHub issue state could not be read; retry the ruling" >&2 ;;
+    *) echo "rule: $1 is closed; use --recut to route its issue to recut" >&2 ;;
+  esac
 }
 
 rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready ref [guidance]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
   [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
-  local issue stage
+  local issue stage rc
   case "$2" in
     supersede-handoff) rule_supersede_handoff "$1" "$3" ;;
     reblock) issue="${5:-$(unit_field "$1" '.blocked_on // empty')}" # back to dependency wait; $5 names the blocker when the unit has none
@@ -172,7 +178,8 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
          stage="$(unit_field "$1" .stage)"
          case "$stage" in
            parked|supervisor-review) supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null ;;
-           closed) if closed_unit_stop_loss_open "$1"; then supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null; else closed_unit_refusal "$1"; return 1; fi ;; # the stop-loss ruling reopens the issue and releases its hold
+           closed) rc=0; closed_unit_stop_loss_open "$1" || rc=$?
+             if [[ "$rc" == 0 ]]; then supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null; else closed_unit_refusal "$1" "$rc"; return 1; fi ;; # the stop-loss ruling reopens the issue and releases its hold; rc 2 never requeues
            *) echo "rule: $1 is in $stage; use --reroute to move it" >&2; return 1 ;;
          esac
        else
