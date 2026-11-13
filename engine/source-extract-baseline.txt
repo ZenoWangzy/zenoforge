@@ -18,7 +18,7 @@
 1	engine/land-pipeline-suites-absent.test.sh
 1	engine/land-pipeline-suites-present.test.sh
 1	engine/lib-model-policy.test.sh
-21	engine/lib.test.sh
+16	engine/lib.test.sh
 7	engine/mac-autopilot/advisor-incident.test.sh
 2	engine/mac-autopilot/intake-units-view.test.sh
 1	engine/mac-autopilot/refill-merge-pass.test.sh

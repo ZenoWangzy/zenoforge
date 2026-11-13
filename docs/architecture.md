@@ -75,7 +75,7 @@ The scheduler also has an old-PR lifecycle section and derived views (health sco
 
 ### 1.3 How the loops meet
 
-They share GitHub labels and the per-issue state files. The issue loop never merges. Its header says merge is "owned by the autopilot scheduler, not by this script." The unit loop does not source `lib.sh`. It has its own transition helper (`scheduler_issue_transition` in `engine/mac-autopilot/scheduler.sh`), written to follow the same rules.
+They share GitHub labels and the per-issue state files. The issue loop never merges. Its header says merge is "owned by the autopilot scheduler, not by this script." The unit loop's `scheduler_issue_transition` wrapper (`engine/mac-autopilot/scheduler.d/lib-bridge.sh`) runs in a subshell, sources `$SCHEDULER_AGENT_LIB`, and calls `issue_transition`.
 
 ## 2. Stage chain and labels
 
@@ -158,7 +158,7 @@ There are two worker paths. The unit loop is the main one.
 
 ### 3.1 Unit loop workers
 
-`scheduler.sh` builds each worker command in `build_codex_command`:
+`engine/mac-autopilot/scheduler.d/worker-command.sh` builds each worker command in `build_codex_command`:
 
 - Fresh runs use `codex exec` with the model and reasoning effort from `config.json`, under the `models` key (`[model, effort]`).
 - Resumed runs use `codex exec resume <session>` when the unit already has a session.
@@ -169,7 +169,7 @@ There are two worker paths. The unit loop is the main one.
 
 Cooldowns come from `start_cooldown`. A provider goes on cooldown for 30 minutes when the error says a usage or quota limit was hit. Otherwise it is 5 minutes, which covers the short capacity and overload errors.
 
-The issue loop's codex sandbox mode is `ZF_CODEX_SANDBOX`, default `danger-full-access` (`CODEX_SANDBOX_MODE` in `engine/lib.sh`). The unit loop does not read it: `build_codex_command` in `scheduler.sh` always passes `-s danger-full-access`. See the security note in section 11.
+The issue loop's codex sandbox mode is `ZF_CODEX_SANDBOX`, default `danger-full-access` (`CODEX_SANDBOX_MODE` in `engine/lib.sh`). The unit loop does not read it: `build_codex_command` in `engine/mac-autopilot/scheduler.d/worker-command.sh` always passes `-s danger-full-access`. See the security note in section 11.
 
 ### 3.2 Wrapper workers: `engine/bin/worker`
 
@@ -214,7 +214,7 @@ The intent is that the reviewer uses a different provider from the implementer. 
 
 **Issue loop.** `review_model_for_implementer` (`engine/lib.sh`) takes the `review` role from the live policy. If that role names a different provider and the provider is available, it is used. Availability means the provider's quota is not exhausted and its CLI and config are present. For Codex, a probe must also pass. If the review role is unavailable or uses the same provider, the code records `review_provider_fallback` in the issue state and reviews on the implementer's own provider. A ZCode implementer can use the `work` role's provider instead (`review_cross_identity_for`).
 
-With the shipped `model-policy.default.json`, both `work` and `review` use the Codex provider. So the default lookup finds no different provider, and the review falls back to Codex. The `forbidden` list in the same file blocks any role whose model, effort, or fallback text contains `claude`, `sonnet`, `opus`, or the other listed words (`model_policy_validate_json` in `engine/lib.sh`). The availability check only knows Codex and ZCode, so ZCode is the only other provider the review path can use in this loop. If it is not available, the fallback is recorded.
+With the shipped `model-policy.default.json`, `work` uses Codex (`gpt-6-luna`) and `review` uses ZCode (`GLM-5.3`). The default lookup selects ZCode when it is available and records a fallback if it is not. The `forbidden` list in the same file rejects roles whose model, effort, or fallback text contains a listed word, except roles granted for `claude-sonnet-*` or `claude-haiku-*` models in `allow_roles.sonnet` or `allow_roles.haiku` (`model_policy_validate_json` in `engine/lib.sh`). The availability check only knows Codex and ZCode, so ZCode is the only other provider the review path can use in this loop. If it is not available, the fallback is recorded.
 
 **Unit loop.** `engine/mac-autopilot/config.template.json` sets the `review` model to a Claude model and the `implement` model to a Codex model. So the default unit-loop review is cross-provider, and the Claude reviewer runs read-only.
 

@@ -143,6 +143,22 @@ sched_dep_cache_refresh_merge() {
   return "$rc"
 }
 js() { jq -cn --arg v "$1" '$v'; }  # 任意文本 → jq 字符串字面量，供拼入 set_unit 表达式
+UNIT_HISTORY_JQ='
+def last_event: (.history // []) | last;
+def last_event_of($types): (.history // []) | map(select(.stage as $t | $types | index($t))) | last;
+def last_event_except($types): (.history // []) | map(select(.stage as $t | $types | index($t) | not)) | last;
+'
+unit_last_event() {
+  local unit="$1" filter
+  shift
+  if (($#)); then
+    filter="$UNIT_HISTORY_JQ last_event_of(\$ARGS.positional)"
+    jqf -c --args "$filter" "$@" <<<"$unit"
+  else
+    filter="$UNIT_HISTORY_JQ last_event"
+    jqf -c "$filter" <<<"$unit"
+  fi
+}
 # 旧单元形状归一（11-03 pr-3575：字符串 .cto_rulings 撞上数组追加，jqf rc=5，整笔更新被丢）。字段改形
 # （.cto_rulings 2026-10-21 起为累积数组；.ready_since 早期存过 ISO 字符串）后没有任何路径归一存量数据，
 # 追加与读取处共用这里的一条表达式，不再各写一份。

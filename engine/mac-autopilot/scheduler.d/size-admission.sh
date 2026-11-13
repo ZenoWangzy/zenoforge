@@ -99,7 +99,7 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   fi
   if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ && "$refused" == false ]] \
     && scheduler_size_recut "$issue" "$2" "$limit" "$1" "$3" "$5"; then
-    set_unit "$1" "$(hist size-recut "issue #$issue: $2 lines exceed $limit; head=$5") | .stage=\"blocked-external\" | .size_recut_pending=true"
+    set_unit "$1" "$(hist_blocked size-recut '' size-admission "issue #$issue: $2 lines exceed $limit; head=$5") | .stage=\"blocked-external\" | .size_recut_pending=true"
     if [[ "$8" == write-start ]]; then
       say "size admission write-start unit=$1 issue=#$issue estimate=${6:-unknown} actual=${7:-unknown} limit=$limit -> needs-recut"
     else
