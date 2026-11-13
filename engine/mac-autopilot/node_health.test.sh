@@ -206,14 +206,22 @@ delivered = [unit(rq("2026-11-08T01:00:00Z"), ev(s, "2026-11-08T02:00:00Z")) for
 failed = [unit(rq("2026-11-08T01:00:00Z"), ev(s, "2026-11-08T02:00:00Z")) for s in ("supervisor-review", "supervisor-budget-park", "closed")]
 assert metric(delivered + failed[:2]) is None            # 5 outcomes: not enough to judge
 assert metric(delivered + failed) == 50.0, metric(delivered + failed)
-assert metric(delivered[:2] + failed + failed[:2]) == 28.6   # 2 of 7
-# not counted: still waiting, an arbiter requeue (no prefix), a requeue older than 24 h
+# only the last 6 decided count, newest requeue first: an older delivery drops out
+older = [unit(rq("2026-11-08T00:00:00Z"), ev("merged", "2026-11-08T00:30:00Z"))]
+assert metric(older + delivered[:2] + failed + failed[:1]) == 33.3   # 7 decided, the last 6 count: 2 of 6
+# not counted: still waiting, an arbiter requeue (no prefix), a requeue older than 7 days
 noise = [unit(rq("2026-11-08T11:00:00Z")), unit({"stage": "supervisor-requeue", "result": "arbiter", "at": "2026-11-08T01:00:00Z"}, ev("supervisor-review", "2026-11-08T02:00:00Z")),
-         unit(rq("2026-11-07T11:59:00Z"), ev("supervisor-review", "2026-11-07T13:00:00Z"))]
+         unit(rq("2026-11-01T11:59:00Z"), ev("merged", "2026-11-01T13:00:00Z"))]
 assert metric(delivered + failed + noise) == 50.0
 # a second fresh requeue without a delivery ends the first as failed; the second then waits (not counted), or delivers
 twice = unit(rq("2026-11-08T01:00:00Z"), rq("2026-11-08T02:00:00Z", "merge-conflict"), ev("review-approve", "2026-11-08T03:00:00Z"))
-assert metric(delivered + failed[:2] + [twice]) == 57.1   # twice adds one failed (the first) and one delivered: 4 of 7
+assert metric(delivered[:2] + failed[:2] + [twice]) == 50.0   # twice adds one failed (the first) and one delivered: 3 of 6
+# measured 2026-11-13: 6 decided in 72 h (a 24 h window held fewer than 6, the rate was null and the 50% gate never closed), 1 delivered
+live = [unit(rq(f"2026-11-0{d}T10:00:00Z", "merge-conflict"), ev(s, f"2026-11-0{d}T11:00:00Z")) for d, s in
+        ((5, "supervisor-review"), (5, "merged"), (6, "supervisor-escalated"), (6, "closed"), (7, "size-recut"), (7, "supervisor-park"))]
+shown = n.ledger_metrics(live, now - dt.timedelta(hours=5), now)["supervisor.fresh_requeue_delivery_24h"]
+assert shown == 16.7 and n.status_of(shown, 50, 49.9, True) == "UNHEALTHY", shown   # 1 of 6 closes the gate
+assert metric(live[:5]) is None   # 5 decided in 7 days: below 6 the value stays null and stop-loss.sh fails open
 crit = n.CRITERIA["supervisor.fresh_requeue_delivery_24h"]
 assert [n.status_of(v, crit[2], crit[3], crit[4]) for v in (None, 100, 50.0, 49.9, 0)] == ["NO-DATA", "OK", "OK", "UNHEALTHY", "UNHEALTHY"]
 assert n.MEANING["supervisor.fresh_requeue_delivery_24h"] and n.SOURCE["supervisor.fresh_requeue_delivery_24h"]
@@ -1065,11 +1073,42 @@ def gh_timeout(args, timeout):
     spent.append(timeout)
     return None
 assert m.fetch("o/r", "2026-11-06", gh_timeout, timeout=5) is None and len(spent) == 2 and max(spent) <= 5  # retries share the caller's budget
-assert "reviews" not in m.QUERY and "first:50" in m.QUERY and "contexts(first:100)" in m.QUERY
+assert "reviews" not in m.QUERY and "first:25" in m.QUERY and "contexts(first:100)" in m.QUERY and m.TIMEOUT >= 90
 gh, seen = gh_pages(True)
 assert m.collect("o/r", now, sys.argv[1], gh)[0] == {"merge.green_to_merge_max_min": None}  # row value None -> NO-DATA, not 0
 assert n.status_of(None, healthy, unhealthy, False) == "NO-DATA"
 print("node_health green-to-merge truncated read is NO-DATA: PASS")
+CHECK
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'green-to-merge failure kind or last-good wrong'
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n, merge_wait as m
+req = ["Enforce branch delivery policy", "Required CI gates", "Required contract gates"]
+now = n.ts("2026-11-13T03:40:00Z")
+here = os.path.join(sys.argv[2], "mw-here"); os.makedirs(here, exist_ok=True)
+json.dump({"required": req}, open(os.path.join(here, "required-pr-checks.json"), "w"))
+cache = os.path.join(here, m.LAST_GOOD)
+def node(): return {"number": 7, "mergedAt": "2026-11-13T03:00:00Z", "labels": {"nodes": []}, "head": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
+    "totalCount": 3, "nodes": [{"name": x, "completedAt": "2026-11-13T02:50:00Z"} for x in req]}}}}]}}
+good = lambda args, t: {"data": {"search": {"nodes": [node()], "pageInfo": {"hasNextPage": False}}}}
+def failing(kind): return lambda args, t: {"gh_failure": kind}
+# measured 2026-11-13 03:35Z: a 504 on page 1 and the 30 s total spent made the row NO-DATA; now the kind is named
+assert m.collect("o/r", now, here, failing("504"), cache)[1]["failure"] == "504"  # no good read saved yet: NO-DATA, with the kind
+assert m.collect("o/r", now, here, failing("504"), cache)[0] == {"merge.green_to_merge_max_min": None}
+assert not os.path.exists(cache)
+assert m.collect("o/r", now, here, lambda a, t: {"errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]}, cache)[1]["failure"] == "rate-limit"
+assert m.collect("o/r", now, here, lambda a, t: None, cache)[1]["failure"] == "error"
+assert m.failure_kind("gh: HTTP 504: Gateway Timeout") == "504" and m.failure_kind("HTTP 403: API rate limit exceeded") == "rate-limit"
+fail = {}; assert m.fetch("o/r", "2026-11-12", good, timeout=0, fail=fail) is None and fail == {"kind": "timeout"}  # the budget was spent
+# a good read is saved, and a later failed read keeps it with its age and the failure kind
+value, details = m.collect("o/r", now, here, good, cache)
+assert value == {"merge.green_to_merge_max_min": 10.0} and "stale" not in details, (value, details)
+later = now + n.timedelta(minutes=35)
+value, details = m.collect("o/r", later, here, failing("504"), cache)
+assert value == {"merge.green_to_merge_max_min": 10.0} and details["stale"] is True and details["stale_age_min"] == 35.0 and details["failure"] == "504", (value, details)
+# past the 24 h window the saved value no longer describes it: NO-DATA again
+value, details = m.collect("o/r", now + n.timedelta(hours=25), here, failing("timeout"), cache)
+assert value == {"merge.green_to_merge_max_min": None} and details["failure"] == "timeout" and "stale" not in details, (value, details)
+print("node_health green-to-merge names the failure and keeps the last good value with its age: PASS")
 CHECK
 
 # ci.held_ready_pct: no ready units reads 0 when units.json was read, NO-DATA when it was missing or unreadable.

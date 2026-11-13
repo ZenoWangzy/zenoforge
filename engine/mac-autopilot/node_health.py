@@ -1098,6 +1098,20 @@ def _gh_json(command, timeout):
         return None
 
 
+def _gh_graphql(command, timeout):
+    """_gh_json that answers {"gh_failure": kind} instead of None, so merge_wait can say why a read failed."""
+    try:
+        result = subprocess.run(["gh", *command], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"gh_failure": "timeout"}
+    except OSError:
+        return {"gh_failure": "error"}
+    try:
+        return json.loads(result.stdout or "null") if result.returncode == 0 else {"gh_failure": merge_wait.failure_kind(result.stderr)}
+    except ValueError:
+        return {"gh_failure": "error"}
+
+
 def _parallel_gh_json(commands, call_timeout):
     """Run independent gh reads with bounded concurrency and a deadline for the batch."""
     if not commands:
@@ -1483,7 +1497,7 @@ def main():
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
-    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_json); metrics.update(merge_metrics)
+    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, _gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,

@@ -108,8 +108,9 @@ stop_loss_same_failure() { # unit-json → prints the failure's check label (the
 
 # A fresh signal (a first-time red check, a merge conflict, a review request-changes) at the round budget: row 90 saw the arbiter requeue 30 of 31
 # of them and 16 of 22 delivered, so the scheduler requeues without a model run, at most twice since the last real ruling (a repeat of the first
-# signal is stop_loss_same_failure, the other route). While the fresh requeues' own delivery rate sits under 50% on at least 6 outcomes
-# (the scorecard value is null below 6), they go back to the arbiter. rc 0 when it requeued.
+# signal is stop_loss_same_failure, the other route). While the fresh requeues' own delivery rate sits under 50% over the last 6 decided outcomes
+# within 7 days, they go back to the arbiter. Fewer than 6 decided in 7 days: the scorecard value is null, the rate reads empty and this
+# stays fail-open (requeues on) on purpose; an unreadable node-health.json fails open the same way. rc 0 when it requeued.
 stop_loss_fresh_requeue() { # id unit-json budget-reason
   local id="$1" signal count rate
   [[ "$3" == rounds* ]] && ! stop_loss_same_failure "$2" >/dev/null || return 1
