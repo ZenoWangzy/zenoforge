@@ -3370,6 +3370,11 @@ room_for issue-9 implement "" true false && fail 'a normal start with no waiter 
 grep -q 'dispatch why unit=issue-9 gate=host-capacity' "$A/scheduler.log" || fail 'host-capacity deferral left no dispatch why line'
 printf 'MemAvailable: 6291456 kB\n' > "$host_meminfo"
 room_for issue-9 implement "" true false || fail 'a normal start was refused with ample memory'
+# 11-13: CPU busy alone never defers a start (workers yield through CPUWeight=10); the dispatch CPU target stays settable.
+cpu_busy() { echo 100; }
+room_for issue-9 implement "" true false || fail 'a normal start was refused for CPU busy alone with ample memory'
+AUTOPI_DISPATCH_CPU_TARGET=85 room_for issue-9 implement "" true false && fail 'AUTOPI_DISPATCH_CPU_TARGET=85 did not defer a start at CPU 100'
+cpu_busy() { echo 0; }
 rm -f "$host_meminfo"; room_for issue-9 implement "" true false || fail 'a host without /proc/meminfo refused a normal start (the gate must stay off there)'
 unset LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_MIN LUNA_MAX LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET
 eval "$host_runs_fn"; eval "$host_cpu_fn"
