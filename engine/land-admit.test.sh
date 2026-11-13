@@ -96,6 +96,29 @@ assert_merge_rc() {
   fi
 }
 
+read_gh_call() {
+  local call_number="$1"
+  mapfile -d '' -t GH_ARGS < "$GH_LOG_DIR/call-$call_number"
+}
+
+assert_gh_arg() {
+  local expected="$1" arg
+  for arg in "${GH_ARGS[@]}"; do
+    [[ "$arg" == "$expected" ]] && return 0
+  done
+  fail "gh arguments lack '$expected'"
+}
+
+assert_gh_pair() {
+  local expected_flag="$1" expected_value="$2" i
+  for ((i = 0; i < ${#GH_ARGS[@]} - 1; i++)); do
+    if [[ "${GH_ARGS[$i]}" == "$expected_flag" && "${GH_ARGS[$((i + 1))]}" == "$expected_value" ]]; then
+      return 0
+    fi
+  done
+  fail "gh arguments lack '$expected_flag' followed by '$expected_value'"
+}
+
 valid_sha='0123456789abcdef0123456789abcdef01234567'
 assert_merge_rc 64 'refuse:merge:bad-pr' abc "$valid_sha"
 [[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an invalid PR number'
@@ -111,5 +134,27 @@ assert_merge_rc 64 'refuse:merge:bad-head' 17 "${valid_sha^^}"
 reset_gh_calls
 assert_merge_rc 64 'refuse:merge:bad-option' 17 "$valid_sha" --unknown
 [[ "$GH_CALL_COUNT" == 0 ]] || fail 'land_merge_pr called gh for an unknown option'
+
+reset_gh_calls
+GH_RC=0
+assert_merge_rc 0 '' 17 "$valid_sha"
+[[ "$GH_CALL_COUNT" == 1 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls for a normal merge"
+[[ "$(cat "$test_env_root/stdout")" == 'gh merge output' ]] || fail 'land_merge_pr did not pass gh output through'
+read_gh_call 1
+[[ "${GH_ARGS[0]}" == pr && "${GH_ARGS[1]}" == merge && "${GH_ARGS[2]}" == 17 ]] \
+  || fail 'land_merge_pr called gh with the wrong merge command'
+assert_gh_arg --squash
+assert_gh_pair --match-head-commit "$valid_sha"
+
+reset_gh_calls
+subject='ship the "quoted" change'
+body='release note with "quotes"'
+assert_merge_rc 0 '' 18 "$valid_sha" --repo owner/project --subject "$subject" --body "$body" --delete-branch
+[[ "$GH_CALL_COUNT" == 1 ]] || fail "land_merge_pr made $GH_CALL_COUNT gh calls with merge options"
+read_gh_call 1
+assert_gh_pair --repo owner/project
+assert_gh_pair --subject "$subject"
+assert_gh_pair --body "$body"
+assert_gh_arg --delete-branch
 
 echo 'land-admit.test.sh: all assertions passed'
