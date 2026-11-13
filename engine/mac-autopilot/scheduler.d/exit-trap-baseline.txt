@@ -1,5 +1,4 @@
 engine/advisor-plan-batch.test.sh
-engine/auto-pin.test.sh
 engine/bin/install-guard.test.sh
 engine/check-gh-flags.test.sh
 engine/check-pipeline-lesson-window.test.sh
