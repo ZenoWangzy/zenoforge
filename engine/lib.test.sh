@@ -6670,7 +6670,9 @@ printf '{"recut_children":[991202]}' > "$(state_file 991201)"
 assert_eq "recut umbrella with open child is not implement-eligible" 0 \
   "$(recut_parent_has_open_child 991201 '[{"number":991202,"state":"OPEN"}]' && echo 0 || echo $?)"
 assert_eq "recut umbrella with closed child reports completed parent" 3 \
-  "$(gh() { echo CLOSED; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+  "$(gh() { printf '{"number":991202,"title":"t","body":"","state":"closed","labels":[]}\n'; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+assert_eq "recut umbrella whose child state cannot be read is unreadable, not completed" 2 \
+  "$(gh() { return 1; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
 printf '{"state":"needs-advisor","recut_children":[]}\n' > "$(state_file 991205)"
 gh() { return 64; }
 assert_eq "ordinary empty recut list tolerates an unavailable live child read" 3 \

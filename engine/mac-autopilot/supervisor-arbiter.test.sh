@@ -58,12 +58,12 @@ gh() {
     printf '[]\n'
     return 0
   fi
+  if [[ "$1" == api && "${2:-}" == repos/*/issues/[0-9]* && $# == 2 ]]; then # the REST issue read (issue_rest_view)
+    jq -cn --argjson n "${2##*/}" '{number:$n,title:"fixture issue \($n)",body:"",state:"open",labels:([{name:"needs-advisor"}] + (if $n == 615 then [{name:"on-hold"}] else [] end))}'
+    return 0
+  fi
   case "$1 $2" in
     'issue view')
-      if [[ "$*" == *'issue view 615'* && "$*" == *'--json number,title,body,state,labels'* ]]; then
-        printf '%s\n' '{"number":615,"title":"fixture issue 615","body":"","state":"OPEN","labels":[{"name":"needs-advisor"},{"name":"on-hold"}]}'
-        return 0
-      fi
       if [[ "$*" == *'--json title,body,subIssuesSummary'* ]]; then
         if [[ "$*" == *'issue view 698'* ]]; then
           printf '%s\n' '{"title":"fixture parent","body":"- [ ] #797","subIssuesSummary":{"total":0}}'
@@ -73,9 +73,7 @@ gh() {
         return 0
       fi
       if [[ "$*" == *'--json state --jq .state'* ]]; then echo OPEN; return 0; fi
-      if [[ "$*" == *'--json number,title,body,state,labels'* ]]; then
-        printf '%s\n' '{"number":611,"title":"fixture issue 611","body":"","state":"OPEN","labels":[{"name":"needs-advisor"}]}'
-      elif [[ "$*" == *'--json labels -q .labels[].name'* ]]; then
+      if [[ "$*" == *'--json labels -q .labels[].name'* ]]; then
         if [[ "$*" == *'issue view 615'* ]]; then printf '%s\n' needs-advisor on-hold; else printf '%s\n' needs-advisor; fi
       else
         echo "supervisor-arbiter.test.sh: unexpected gh call: $*" >&2
@@ -650,6 +648,11 @@ printf 'REASON: r\nEVIDENCE: e\nVERDICT: RULE\n' > "$report"
 unrun_unit pr-686 686
 (REPO=""; ZF_REPO=""; if supervisor_apply_cap_verdict pr-686 "$report" RULE; then fail "a failed release must report failure"; fi)
 [[ "$(field pr-686 .stage)" == supervisor-review && "$(refills pr-686)" == 0 ]] || fail "a hold that was not released must not apply the RULE"
+# A release whose refresh read fails (REPO known, GitHub refuses the read) keeps the hold and the unit too.
+unrun_unit pr-686 686
+(REPO=test/repo; gh() { return 1; }; if supervisor_apply_cap_verdict pr-686 "$report" RULE; then fail "a failed refresh read must report failure"; fi)
+[[ "$(field pr-686 .stage)" == supervisor-review && "$(refills pr-686)" == 0 ]] || fail "an unreadable issue must not apply the RULE"
+jq -e '.state == "on-hold"' "$AGENT_HOME/state/686.json" >/dev/null || fail "an unreadable issue must keep its stop-loss hold"
 
 # A terminal park unparks only when its mark changes.
 units "$(jq -cn '{units:[{id:"pr-696",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[]}]}')"
@@ -741,6 +744,9 @@ tick_prs_changed() { :; }
 tick_pr_state() { printf 'OPEN\n'; }
 close_calls="$fixture/close-calls"; : > "$close_calls"
 gh() {
+  if [[ "$1" == api && "${2:-}" == repos/*/issues/[0-9]* && $# == 2 ]]; then # the REST issue read (issue_rest_view)
+    jq -cn --argjson n "${2##*/}" '{number:$n,title:"t",body:"",state:"open",labels:[]}'; return 0
+  fi
   case "$1 $2" in
     'issue close') printf 'issue-close: %s\n' "$*" >> "$close_calls"; return 0 ;;
     'pr close') printf 'pr-close: %s\n' "$*" >> "$close_calls"; [[ "${RECUT_CLOSE_RC:-0}" == 0 ]] && return 0; return 1 ;;
@@ -1057,13 +1063,25 @@ jq -e '.units[] | select(.id=="arbiter-read-failed") | has("arbiter_left_mark") 
   || fail "a failed gh issue view must not hold the next tick"
 jq -e '.units[] | select(.id=="arbiter-read-failed") | all(.history[]; .stage != "supervisor-requeue-failed")' "$UNITS" >/dev/null \
   || fail "a failed gh issue view must not record a durable requeue-failure park"
-grep -Fq 'gh issue view 9406 --repo ZenoWangzy/zenoforge --json number,title,body,state,labels' "$GH_CALLS" \
-  || fail "the retry case must exercise gh issue view rc 1"
+grep -Fxq 'gh api repos/ZenoWangzy/zenoforge/issues/9406' "$GH_CALLS" \
+  || fail "the retry case must exercise the REST issue read rc 1"
 ! grep -Fq '9406:ready-for-agent' "$REQUEUE_TRANSITIONS" \
   || fail "a failed gh issue view must not attempt the issue transition"
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
 jq -e 'any(.workers[]; .type=="supervise" and .unit=="arbiter-read-failed")' "$WORKERS" >/dev/null \
   || fail "tick two must dispatch the unit again after its transient requeue failure"
+
+# An unreadable continuation issue never reads as "no citation": the tracker unit is not closed, it waits in review for a retry.
+printf '%s\n' '{"state":"tracker","recut_children":[9406]}' > "$issue_states/9409.json"
+requeue_test_unit arbiter-cite-unread 9409 99409 9410
+saved_cite_gh="$(declare -f gh)"
+gh() { printf 'gh %s\n' "$*" >> "$GH_CALLS"; return 1; }
+supervisor_requeue_unit arbiter-cite-unread requeue "resume the first slice" "$requeue_decision" || :
+eval "$saved_cite_gh"
+[[ "$(field arbiter-cite-unread .stage)" == supervisor-review ]] \
+  || fail "an unreadable continuation issue must leave the tracker unit at supervisor-review"
+grep -Fxq 'gh api repos/ZenoWangzy/zenoforge/issues/9410' "$GH_CALLS" \
+  || fail "the continuation case must exercise the REST issue read rc 1"
 
 # A non-stop-loss hold is a deterministic refusal and must park for the regular dead-park recovery route.
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"manual","holder":"head"}}' > "$issue_states/9407.json"

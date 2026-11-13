@@ -142,7 +142,10 @@ printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-rev
   source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
   scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
   gh() { # the state check is REST only (the GraphQL issue view read is what the rate limit emptied); FAIL makes it unreadable
-    [[ "$1" == issue ]] && { printf '{}\n'; return; } # the requeue refresh; scheduler_issue_transition is stubbed and ignores it
+    if [[ "$1" == api && "$2" == repos/test/repo/issues/* && $# == 2 ]]; then # the requeue refresh (issue_rest_view); scheduler_issue_transition is stubbed and ignores it
+      [[ "${FAKE_REFRESH_READ:-}" != FAIL ]] || return 1
+      jq -cn --argjson n "${2##*/}" '{number:$n,title:"t",body:"",state:"open",labels:[]}'; return
+    fi
     [[ "$1" == api && "$2" == repos/test/repo/issues/* && "$4" == .state && "$FAKE_ISSUE_STATE" != FAIL ]] || return 1
     printf '%s\n' "$FAKE_ISSUE_STATE"; }
   scheduler_issue_transition() { jq '.state = "ready-for-agent" | .hold = null' "$AGENT_HOME/state/$1.json" > "$AGENT_HOME/state/$1.json.tmp" && mv "$AGENT_HOME/state/$1.json.tmp" "$AGENT_HOME/state/$1.json"; }
@@ -165,6 +168,11 @@ printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-rev
     [ "$rc" = 1 ] && grep -q -- 'could not be read' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--recut' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--requeue' "$test_env_root/closed-25-$act.out" || { echo "FAIL: unreadable closed state ($act) gave the wrong refusal" >&2; cat "$test_env_root/closed-25-$act.out" >&2; exit 1; }
     [ "$(jq -r '.units[]|select(.id=="issue-25")|.stage' "$UNITS")" = closed ] && jq -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' "$AGENT_HOME/state/25.json" >/dev/null || { echo "FAIL: unreadable closed state ($act) changed the unit or released its hold" >&2; exit 1; }
   done
+  # The state read works but the refresh read behind the requeue fails: refuse, keep the hold and the unit.
+  jq '.units += [{"id":"issue-26","issue":26,"stage":"closed","task":"t","branch":"b","history":[]}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"; stop_loss_state 26
+  FAKE_ISSUE_STATE=open FAKE_REFRESH_READ=FAIL; rc=0; rule_entry issue-26 requeue u "" "" > "$test_env_root/refresh-26.out" 2>&1 || rc=$?
+  FAKE_REFRESH_READ=
+  [ "$rc" != 0 ] && [ "$(jq -r '.units[]|select(.id=="issue-26")|.stage' "$UNITS")" = closed ] && jq -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' "$AGENT_HOME/state/26.json" >/dev/null || { echo "FAIL: a failed refresh read changed the unit, released the hold or reported success" >&2; cat "$test_env_root/refresh-26.out" >&2; exit 1; }
   FAKE_ISSUE_STATE=closed; rc=0; rule_entry issue-21 reroute u "dead" "" > "$test_env_root/closed-reroute.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-reroute.out" && ! grep -q -- '--reroute' "$test_env_root/closed-reroute.out" || { echo "FAIL: reroute hint on a closed unit names --reroute" >&2; cat "$test_env_root/closed-reroute.out" >&2; exit 1; }
   FAKE_ISSUE_STATE=open; rc=0; rule_entry issue-23 reroute u "dead" ""> "$test_env_root/closed-reroute-hold.out" 2>&1 || rc=$?
@@ -345,7 +353,7 @@ EOT2
     printf 'gh %s\n' "$*" >> "$READY_CALLS"
     case "$*" in
       'api repos/test/repo/issues/comments/9') printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/6299","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/6299#issuecomment-9","body":"ready for the agent"}' ;;
-      'issue view 6299 --repo test/repo --json state -q .state') printf '%s\n' "$READY_ISSUE_STATE" ;;
+      'api repos/test/repo/issues/6299') [ "$READY_ISSUE_STATE" != FAIL ] || return 1; jq -cn --arg s "$READY_ISSUE_STATE" '{number:6299,state:($s|ascii_downcase),labels:[]}' ;;
       *) return 0 ;;
     esac
   }
@@ -371,14 +379,14 @@ EOT2
     hold_rule 6299 ready 9 >/dev/null 2>&1 || { echo "FAIL: --ready refused $from" >&2; exit 1; }
     jq -e --arg from "$from" '.state == "ready-for-agent" and .state_changed_from == $from' "$AGENT_HOME/state/6299.json" >/dev/null || { echo "FAIL: --ready did not record $from" >&2; exit 1; }
   done
-  for case in '{"state":"ready-for-agent"}|OPEN' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}|OPEN' '{"state":"tracker"}|CLOSED' '{"state":"needs-info"}|OPEN'; do
+  for case in '{"state":"ready-for-agent"}|OPEN' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}|OPEN' '{"state":"tracker"}|CLOSED' '{"state":"needs-info"}|OPEN' '{"state":"tracker"}|FAIL'; do
     reset "${case%|*}" "${case##*|}"
     state_before="$(cat "$AGENT_HOME/state/6299.json")"; units_before="$(cat "$fixture_runtime/units.json")"
     rc=0; hold_rule 6299 ready 9 >/dev/null 2>&1 || rc=$?
     [ "$rc" != 0 ] && [ "$(cat "$AGENT_HOME/state/6299.json")" = "$state_before" ] && [ "$(cat "$fixture_runtime/units.json")" = "$units_before" ] \
       || { echo "FAIL: --ready accepted or wrote for ${case%|*} issue ${case##*|}" >&2; exit 1; }
   done
-  printf 'ok - hold --rule --ready refuses ready-for-agent, on-hold, other states and closed issues without writing\n'
+  printf 'ok - hold --rule --ready refuses ready-for-agent, on-hold, other states, closed and unreadable issues without writing\n'
 )
 rc=0; bash "$SCRIPT_DIR/hold.sh" --rule >"$test_env_root/hold-rule-ready-usage.out" 2>&1 || rc=$?
 [ "$rc" = 64 ] && grep -Fq -- '--ready' "$test_env_root/hold-rule-ready-usage.out" || { echo "FAIL: hold.sh --rule usage omits --ready" >&2; exit 1; }

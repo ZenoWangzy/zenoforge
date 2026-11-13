@@ -92,7 +92,7 @@ hold_issue() {
     echo "hold_issue: invalid state for #$n" >&2
     return 1
   fi
-  issue_json="$(gh issue view "$n" --repo "$REPO" --json state,labels 2>/dev/null)" || {
+  issue_json="$(issue_rest_view "$n" "$REPO")" || {
     echo "hold_issue: could not inspect #$n before applying hold" >&2
     return 1
   }
@@ -214,7 +214,7 @@ hold_has_durable_record() {
 hold_restore() {
   local n="$1" issue_json="${2:-}" state_json hold_json durable_record record_json status=0 stages stage_labels stage_before local_record_valid=0
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "hold_restore: valid issue number required" >&2; return 64; }
-  [ -n "$issue_json" ] || issue_json="$(gh issue view "$n" --repo "$REPO" --json state,labels,comments 2>/dev/null)" || {
+  [ -n "$issue_json" ] || issue_json="$(issue_rest_view "$n" "$REPO" comments)" || {
       echo "hold_restore: could not inspect #$n" >&2
       return 1
     }
@@ -479,7 +479,7 @@ hold_sweep() {
     if ! grep -Fxq "$n" <<< "$live_hold_numbers"; then
       [ "$(jq -r '.state // empty' <<< "$state_json")" = on-hold ] || continue
       if [ -z "$issue_json" ]; then
-        if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json number,state,stateReason,closedAt,labels,comments,title 2>/dev/null)"; then
+        if ! issue_json="$(issue_rest_view "$n" "$REPO" comments)"; then
           echo "hold_sweep: could not inspect state-only held #$n; leaving state untouched" >&2
           failure=1
           continue
@@ -559,7 +559,7 @@ hold_sweep() {
       fi
     fi
     if [ -z "$issue_json" ]; then
-      if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json state,labels,comments,title 2>/dev/null)"; then
+      if ! issue_json="$(issue_rest_view "$n" "$REPO" comments)"; then
         echo "hold_sweep: could not inspect #$n; leaving hold untouched" >&2
         failure=1
         continue
@@ -876,7 +876,7 @@ scheduler_requeue_issue() {
     return 1
   fi
   if [ -z "$issue_json" ]; then
-    issue_json="$(gh issue view "$n" --repo "$REPO" --json state,comments)" || return 1
+    issue_json="$(issue_rest_view "$n" "$REPO" comments)" || return 1
   fi
   # A previously closed issue must not be made schedulable by a stale handoff.
   if ! jq -e '(.state // "OPEN" | ascii_upcase) == "OPEN"' <<< "$issue_json" >/dev/null; then
