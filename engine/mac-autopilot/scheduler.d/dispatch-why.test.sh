@@ -86,6 +86,17 @@ TOKEN_RESULT=pass BUDGET_RESULT=stop-loss-budget
 pass_refill
 [[ "$(why_count)" == 3 ]] || fail "after a start the same gate must log again, got $(why_count)"
 
+# (e) A pass saves only its own changes: a refill that overlapped a full tick must not put its stale copy of the tick's units back.
+printf '{"units":[%s,{"id":"issue-101","issue":101,"stage":"implement-pending","history":[]}]}\n' "$UNIT" > "$UNITS" # live-only
+printf 'issue-100\tself-fix-refill\n' > "$A/.dispatch-why"
+dispatch_why_load
+printf 'issue-100\thost-capacity\n' > "$A/.dispatch-why" # the full tick saved while this refill ran
+dispatch_why issue-101 handoff-pending
+dispatch_why_save
+grep -qP '^issue-100\thost-capacity$' "$A/.dispatch-why" || fail "a stale refill overwrote the tick's gate: $(tr '\t\n' '= ' < "$A/.dispatch-why")"
+grep -qP '^issue-101\thandoff-pending$' "$A/.dispatch-why" || fail 'the refill lost its own gate'
+printf '{"units":[%s]}\n' "$UNIT" > "$UNITS" # live-only
+
 # (d) The refill's tick-phases line names the steps that phase() does not wrap.
 dispatch_pending() { :; }
 acquire_scheduler_lock() { return 0; }

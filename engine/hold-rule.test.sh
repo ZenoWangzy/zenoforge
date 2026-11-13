@@ -209,6 +209,12 @@ printf 'ok - reroute keeps a dropped body blocker off the unit until reblock nam
   report="$test_env_root/report-13.txt"; printf 'BLOCKED-ON: #5388\n' > "$report"
   park_blocked issue-13 "$(blocked_on_of "$report")"
   [ "$(jq -r '.units[]|select(.id=="issue-13")|.stage+"|"+(.history[-1].stage)' "$UNITS")" = "implement-pending|dropped-dep-ignored" ] || { echo "FAIL: dropped dependency parked the unit" >&2; exit 1; }
+  # The same ignore on the next tick changes nothing, so it writes no second event (issue-6164 got one every tick for 2 h).
+  unit_dep_dropped issue-13 5388 && ! unit_dep_dropped issue-13 9999 || { echo "FAIL: unit_dep_dropped does not read dropped_deps" >&2; exit 1; }
+  : > "$LOG"
+  park_blocked issue-13 5388
+  [ "$(jq -r '.units[]|select(.id=="issue-13")|.history|length' "$UNITS")" = 1 ] || { echo "FAIL: a repeated dropped dependency wrote a second history event" >&2; exit 1; }
+  ! grep -q 'ignores dropped dependency' "$LOG" || { echo "FAIL: a repeated dropped dependency logged again" >&2; exit 1; }
   rule_entry issue-14 reroute u "dead blocker" ""
   jq -e '.units[]|select(.id=="issue-14")|.task|contains("Supervisor ruling: dependency #5388 is resolved") and contains("do not report blocked on it")' "$UNITS" >/dev/null || { echo "FAIL: reroute task line missing" >&2; exit 1; }
   printf 'BLOCKED-ON: #9999\n' > "$report"

@@ -10,3 +10,6 @@ dep_fresh_closed() { # predecessor → 0 only when a fresh GitHub read says CLOS
   local fresh; fresh="$(dep_fresh_state "$1")"
   [[ "$fresh" == CLOSED || "$fresh" == MERGED ]]
 }
+unit_dep_dropped() { # unit dep → 0 when a supervisor reroute dropped dep for the unit (dropped_deps); any other blocker source asks this before it holds the unit
+  [[ "$2" =~ ^[0-9]+$ ]] && jqf -e --arg id "$1" --argjson d "$2" 'any(.units[]; .id == $id and ((.dropped_deps // []) | index($d) != null))' "$UNITS" >/dev/null
+}
