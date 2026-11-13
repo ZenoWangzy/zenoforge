@@ -2220,9 +2220,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
 fi
 args=("$@")
 for i in "${!args[@]}"; do
-  [ "${args[$i]}" = "--body-file" ] || continue
+  [ "${args[$i]}" = "--body" ] || continue
   printf 'args=%s\n' "$*" >> "$PR_MERGE_BODY_LOG"
-  printf 'body=%s\n' "$(cat "${args[$((i + 1))]}")" >> "$PR_MERGE_BODY_LOG"
+  printf 'body=%s\n' "${args[$((i + 1))]}" >> "$PR_MERGE_BODY_LOG"
   exit 0
 done
 exit 1
@@ -2258,9 +2258,8 @@ PR_MERGE_BODY_CONTENT="$(cat "$PR_MERGE_BODY_LOG")"
 PR_MERGE_MANIFEST="$(cat "$PR_MERGE_BODY_HOME/night/worktree-cleanup-manifest.txt")"
 rm -rf "$PR_MERGE_BODY_BIN" "$PR_MERGE_BODY_HOME"
 rm -f "$PR_MERGE_BODY_LOG"
-assert_contains "guarded_pr_merge passes a body file" "$PR_MERGE_BODY_CONTENT" "--body-file"
-assert_not_contains "guarded_pr_merge never passes literal --body" "$PR_MERGE_BODY_CONTENT" "--body body"
-assert_contains "guarded_pr_merge preserves body text through the file" "$PR_MERGE_BODY_CONTENT" "body=body from file"
+assert_contains "guarded_pr_merge passes its body through land_merge_pr" "$PR_MERGE_BODY_CONTENT" "--body"
+assert_contains "guarded_pr_merge preserves body text through land_merge_pr" "$PR_MERGE_BODY_CONTENT" "body=body from file"
 assert_eq "guarded_pr_merge detects the target config incident registry" 2 \
   "$(grep -c '^guard-path=true$' <<< "$PR_MERGE_BODY_CONTENT")"
 assert_contains "post-merge failure is retryable" "$PR_MERGE_RESULT" 'statuses=23,0'
