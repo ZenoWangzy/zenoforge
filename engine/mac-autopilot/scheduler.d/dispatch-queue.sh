@@ -353,7 +353,7 @@ dispatch_pending() {
         dmark handoff_head
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" "$((1 - prless))" "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" "$((1 - prless))" "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; else say "repair-pending unit=$id: previous worktree unavailable"; fi
             continue
@@ -361,7 +361,7 @@ dispatch_pending() {
           dstep handoff_integration record_handoff_integration "$id" "$wt" "$handoff_original" || { dispatch_skip handoff-integration; continue; }
         elif [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "" "$(jqf -r '.handoff_start_sha' <<<"$u")" false "$((1 - prless))" "$(jqf -r '.handoff_start_ref' <<<"$u")" "$(jqf -r '.handoff_start_sha' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "" "$(jqf -r '.handoff_start_sha' <<<"$u")" false "$((1 - prless))" "$(jqf -r '.handoff_start_ref' <<<"$u")" "$(jqf -r '.handoff_start_sha' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the existing branch; inspect the preserved rescue and PR"; else say "repair-pending unit=$id: rescued ref unavailable"; fi
             continue
@@ -538,7 +538,7 @@ $(decision_scope "$u")"
         dmark stack_fields
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" 0 "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$stack_branch" "$stack_sha")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" 0 "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$stack_branch" "$stack_sha" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; else say "implement-pending unit=$id: previous worktree unavailable"; fi
             continue
@@ -546,7 +546,7 @@ $(decision_scope "$u")"
           dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
         elif [[ -n "$resume_branch" && "$resume_sha" =~ $SHA_RE && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "" "$resume_sha" false 0 "$resume_branch" "$resume_sha" "$stack_branch" "$stack_sha")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "" "$resume_sha" false 0 "$resume_branch" "$resume_sha" "$stack_branch" "$stack_sha" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the stacked branch; inspect both histories"; else say "implement-pending unit=$id: rescued checkout unavailable"; fi
             continue
