@@ -37,3 +37,39 @@ land_receipt_file() {
   case "$git_common_dir" in /*) ;; *) git_common_dir="${clone%/}/$git_common_dir" ;; esac
   printf '%s/zf-test-receipts/%s\n' "${git_common_dir%/}" "$head_sha"
 }
+
+land_merge_pr() {
+  local pr="${1-}" head_sha="${2-}"
+  local -a merge_args
+  if [[ ! "$pr" =~ ^[0-9]+$ || ! "$pr" =~ [1-9] ]]; then
+    printf 'refuse:merge:bad-pr\n' >&2
+    return 64
+  fi
+  if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'refuse:merge:bad-head\n' >&2
+    return 64
+  fi
+  shift 2
+  merge_args=(pr merge "$pr" --squash --match-head-commit "$head_sha")
+  while (($#)); do
+    case "$1" in
+      --repo|--subject|--body)
+        if (($# < 2)); then
+          printf 'refuse:merge:bad-option\n' >&2
+          return 64
+        fi
+        merge_args+=("$1" "$2")
+        shift 2
+        ;;
+      --delete-branch)
+        merge_args+=("$1")
+        shift
+        ;;
+      *)
+        printf 'refuse:merge:bad-option\n' >&2
+        return 64
+        ;;
+    esac
+  done
+  gh "${merge_args[@]}"
+}
