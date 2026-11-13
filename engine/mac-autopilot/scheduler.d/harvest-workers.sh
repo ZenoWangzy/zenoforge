@@ -375,7 +375,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
           # f6 复查（#4482）：repair/self-fix 推的新 head 重新过尺寸准入；超线同样转 supervisor 拆分
           local recheck_dir recheck_branch
           recheck_dir="$(jqf -r '.workdir // empty' <<<"$w")"; recheck_branch="$(unit_field "$unit" '.branch // empty')"
-          if [[ "$(unit_field "$unit" '.history[-1].stage // empty')" != repair-no-push && "$(unit_field "$unit" '.lane // "pr"')" != direct-main ]] && [[ "$(unit_field "$unit" '.pr // empty')" =~ ^[0-9]+$ ]]; then
+          if [[ "$(unit_field "$unit" "$UNIT_HISTORY_JQ"'last_event.stage // empty')" != repair-no-push && "$(unit_field "$unit" '.lane // "pr"')" != direct-main ]] && [[ "$(unit_field "$unit" '.pr // empty')" =~ ^[0-9]+$ ]]; then
             size_admission_recheck "$unit" "$recheck_dir" "$recheck_branch" "on $recheck_branch after repair" "${recheck_dir:+$(git -C "$recheck_dir" rev-parse -q --verify HEAD 2>/dev/null)}" || :
           fi
           # The report check runs before the breaker: a continuation fixing the report is part of this round, so the breaker waits for the next one.
