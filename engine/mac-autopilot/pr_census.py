@@ -8,7 +8,7 @@ PR_CENSUS_QUERY = ("query($q:String!,$after:String){search(query:$q,type:ISSUE,f
 PAGES = 20  # 2,000 merged PRs in the window; past that the census is unavailable, not cut short
 
 
-def fetch(repo, cutoff, gh_json, timeout):
+def fetch(repo, cutoff, gh_json, timeout, on_unavailable=None):
     """Merged PRs since cutoff in the shape gh pr list gave (number, mergedAt, mergeCommit), or None."""
     rows, after = [], None
     for _ in range(PAGES):
@@ -19,6 +19,8 @@ def fetch(repo, cutoff, gh_json, timeout):
         page = gh_json(args, timeout)
         search = ((page or {}).get("data") or {}).get("search") if isinstance(page, dict) else None
         if not isinstance(search, dict):
+            if on_unavailable:
+                on_unavailable("invalid json")
             return None
         for node in search.get("nodes") or []:
             if not isinstance(node, dict) or node.get("number") is None:
@@ -29,4 +31,6 @@ def fetch(repo, cutoff, gh_json, timeout):
         if not info.get("hasNextPage"):
             return rows
         after = info.get("endCursor")
+    if on_unavailable:
+        on_unavailable(f"page limit {PAGES} reached")
     return None

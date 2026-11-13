@@ -15,9 +15,9 @@ issue body routes the worker to the behavioural root cause (#4487); an issue clo
 unhealthy episode (triaged onto a root-cause ticket) is not re-filed until the metric recovers and relapses.
 """
 import argparse, glob, json, os, re, socket, subprocess, sys, urllib.parse, urllib.request
-from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from threading import Lock
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, release_deps_health, metric_windows
 import line_holds, intake_laneless_health
 import release_age
@@ -26,6 +26,7 @@ import release_retained
 import rulings_copies
 import station_standards
 import pr_census
+import delivery_diagnostics
 import watch_alerts
 import health_standards
 import worker_cost
@@ -131,6 +132,7 @@ GH_DELIVERY_FANOUT = 8
 GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
+_DELIVERY_UNAVAILABLE_LOCK = Lock()
 
 
 def resolve_health_standards(criteria=None):
@@ -1055,13 +1057,29 @@ def gated_agent_pr_share(repo):
         return None
 
 
-def gh_delivery_rows(repo, now, units=None, release_events=None):
+def _record_delivery_unavailable(name, reason, details):
+    with _DELIVERY_UNAVAILABLE_LOCK:
+        if name in details:
+            return
+        details[name] = reason
+        print(f"node_health: delivery input {name} unavailable: {reason}", file=sys.stderr)
+
+
+def gh_delivery_rows(repo, now, units=None, release_events=None, delivery_unavailable=None):
     """Fetch issue creation times and recent merged-PR review activity for delivery metrics."""
+    delivery_unavailable = delivery_unavailable if delivery_unavailable is not None else {}
+    note = lambda name, reason: _record_delivery_unavailable(name, reason, delivery_unavailable)
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
     issues = _gh_json(["issue", "list", "--repo", repo, "--state", "closed", "--search", f"closed:>={cutoff}",
-                       "--limit", "1000", "--json", "number,createdAt"], GH_DELIVERY_CENSUS_TIMEOUT)
+                       "--limit", "1000", "--json", "number,createdAt"], GH_DELIVERY_CENSUS_TIMEOUT,
+                      lambda reason: note("issues", reason))
+    if issues is not None and not isinstance(issues, list):
+        note("issues", "invalid json")
+    pr_unavailable = lambda reason: note("prs", reason)
     rows = {"issues": issues if isinstance(issues, list) else None,
-            "prs": pr_census.fetch(repo, cutoff, _gh_json, GH_DELIVERY_CENSUS_TIMEOUT)}
+            "prs": pr_census.fetch(repo, cutoff,
+                                   lambda command, timeout: _gh_json(command, timeout, pr_unavailable),
+                                   GH_DELIVERY_CENSUS_TIMEOUT, pr_unavailable)}
     if rows["issues"] is not None and rows["prs"] is not None and units is not None and release_events is not None:
         since = now - timedelta(days=30)
         accepted_issues = {_number(event.get("issue")) for event in release_events
@@ -1080,37 +1098,25 @@ def gh_delivery_rows(repo, now, units=None, release_events=None):
             fallback_commands.append(("prs", number,
                                       ["pr", "view", str(number), "--repo", repo, "--json",
                                        "number,mergedAt,mergeCommit"]))
-        results = _parallel_gh_json([command for _, _, command in fallback_commands], GH_DELIVERY_CALL_TIMEOUT)
+        fallback_names = [key for key, _, _ in fallback_commands]
+        results = _parallel_gh_json([command for _, _, command in fallback_commands], GH_DELIVERY_CALL_TIMEOUT,
+                                    lambda index, reason: note(fallback_names[index], reason))
         for (key, number, _), row in zip(fallback_commands, results):
             if not isinstance(row, dict) or _number(row.get("number")) != number:
+                note(key, "invalid json")
                 rows[key] = None
             elif rows[key] is not None:
                 rows[key].append(row)
     return rows["issues"], rows["prs"]
 
 
-def _gh_json(command, timeout):
-    try:
-        result = subprocess.run(["gh", *command], capture_output=True, text=True, timeout=timeout)
-        return json.loads(result.stdout or "null") if result.returncode == 0 else None
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return None
+def _gh_json(command, timeout, on_unavailable=None):
+    return delivery_diagnostics.gh_json(command, timeout, on_unavailable)
 
 
-def _parallel_gh_json(commands, call_timeout):
-    """Run independent gh reads with bounded concurrency and a deadline for the batch."""
-    if not commands:
-        return []
-    pool = ThreadPoolExecutor(max_workers=min(GH_DELIVERY_FANOUT, len(commands)))
-    futures = {pool.submit(_gh_json, command, call_timeout): index for index, command in enumerate(commands)}
-    done, pending = wait(futures, timeout=GH_DELIVERY_BATCH_TIMEOUT)
-    results = [None] * len(commands)
-    for future in done:
-        results[futures[future]] = future.result()
-    for future in pending:
-        future.cancel()
-    pool.shutdown(wait=False, cancel_futures=True)
-    return results
+def _parallel_gh_json(commands, call_timeout, on_unavailable=None):
+    return delivery_diagnostics.parallel_gh_json(
+        commands, call_timeout, GH_DELIVERY_FANOUT, GH_DELIVERY_BATCH_TIMEOUT, _gh_json, on_unavailable)
 
 
 def _number(value):
@@ -1138,41 +1144,21 @@ def revert_root(runtime, here):
     return os.path.abspath(os.path.join(here, "..", "..", ".."))
 
 
-def git_revert_times(root, tip="HEAD"):
-    """Map reverted merge SHAs to their newest revert commit time on a Git tip."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", root, "log", "--format=%ct%x00%B%x1e", "--grep=This reverts commit", tip],
-            capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"node_health: revert markers unread in {root}: {exc}", file=sys.stderr)
-        return None
-    if result.returncode != 0:
-        print(f"node_health: revert markers unread, git log rc={result.returncode} in {root}: {result.stderr.strip()[:200]}", file=sys.stderr)
-        return None
-    reverted = {}
-    for record in result.stdout.split("\x1e"):
-        epoch, separator, message = record.partition("\x00")
-        if not separator:
-            continue
-        try:
-            at = datetime.fromtimestamp(int(epoch.strip()), timezone.utc)
-        except (ValueError, OverflowError, OSError):
-            continue
-        for merge_sha in re.findall(r"This reverts commit ([0-9a-f]{40})\.", message):
-            if merge_sha not in reverted or at > reverted[merge_sha]:
-                reverted[merge_sha] = at
-    return reverted
+def git_revert_times(root, tip="HEAD", delivery_unavailable=None):
+    delivery_unavailable = delivery_unavailable if delivery_unavailable is not None else {}
+    return delivery_diagnostics.git_revert_times(
+        root, tip, lambda reason: _record_delivery_unavailable("reverts", reason, delivery_unavailable))
 
 
 def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo="",
-                     reverted_merge_times=None, window_hours=None):
+                     reverted_merge_times=None, window_hours=None, delivery_unavailable=None):
     """Join recorded issue/unit/PR/merge/release IDs and summarize the last 7/30 days."""
     since_7d, since_30d = (now - timedelta(hours=window_hours),) * 2 if window_hours else (now - timedelta(days=7), now - timedelta(days=30))
     values = {key: None for key in CRITERIA if key.startswith("delivery.")}
     details = {
         "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
         "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None, "lead_time_samples_7d": None, "lead_time_samples_30d": None,
+        "delivery_unavailable": dict(delivery_unavailable or {}),
     }
 
     accepted = []
@@ -1476,11 +1462,13 @@ def main():
     log = os.path.join(a, "scheduler.log")
     log_rows, future_stamped = ledger_history.scheduler_log_lines(log, now)
     release_events = ledger_history.release_acceptances(a, now=now, scheduler_rows=log_rows)
-    issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
+    delivery_unavailable = {}
+    issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events, delivery_unavailable)
     incidents = load_prod_incidents(agent_home)
     repo_root = revert_root(a, here)
-    reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
-    delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
+    reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main", delivery_unavailable)
+    delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times,
+                                delivery_unavailable=delivery_unavailable); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
     metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); merge_metrics, merge_details = merge_wait.collect(repo, now, here, merge_wait.gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
