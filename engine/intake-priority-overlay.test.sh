@@ -146,15 +146,20 @@ expect_eq 'missing priority:high label is created before founder issue edit' tru
 # and must not write a label that only the unadopted model chose.
 shadow_issue_file="$test_root/shadow-overlay.issue.json"
 jq -c '.[] | select(.number == 9007)' "$INTAKE_OVERLAY_ISSUES" > "$shadow_issue_file"
-jq -cn '{status:"answered",adopted:false,confidence:0.4,
-  decision:({priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:"fruit-feature"} | tojson)}' \
+# Real judge shape: .decision is the shadow baseline (no overlay), .candidate the overlaid decision, .overlay its reason.
+jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:"fruit-feature",
+  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
+  candidate:({priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:"fruit-feature"} | tojson)}' \
   > "$test_root/shadow-overlay.result.json"
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$shadow_issue_file" --result-file "$test_root/shadow-overlay.result.json"
 expect_eq 'an unadopted answer still writes the overlay label' true \
   "$(grep -E '^issue edit 9007 ' "$INTAKE_OVERLAY_WRITES" | grep -qF -- '--add-label priority:normal' && echo true || echo false)"
+expect_eq 'an unadopted answer does not write the shadow baseline label' false \
+  "$(grep -E '^issue edit 9007 ' "$INTAKE_OVERLAY_WRITES" | grep -qF -- '--add-label priority:top' && echo true || echo false)"
 jq -cn '{number:9020,title:"Tweak dashboard spacing",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"}' > "$test_root/shadow-plain.issue.json"
-jq -cn '{status:"answered",adopted:false,confidence:0.4,
-  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:null} | tojson)}' \
+jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:null,
+  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
+  candidate:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:null} | tojson)}' \
   > "$test_root/shadow-plain.result.json"
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$test_root/shadow-plain.issue.json" --result-file "$test_root/shadow-plain.result.json"
 expect_eq 'an unadopted answer without an overlay writes no label' false \
