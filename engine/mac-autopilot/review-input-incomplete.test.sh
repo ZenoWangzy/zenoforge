@@ -14,7 +14,6 @@ source "$script_dir/scheduler.sh"
 tick_prs_prime() { :; }
 session_usage_for_id() { echo null; }
 cancel_unit_runs() { :; }
-park_blocked() { set_unit "$1" ".blocked_on=$2"; }
 fail() { echo "review-input-incomplete.test.sh: $*" >&2; exit 1; }
 field() { jq -r ".units[0] | $1" "$UNITS"; }
 bash -c true & DEAD_PID=$!; wait "$DEAD_PID"
@@ -45,7 +44,9 @@ BLOCKED-ON: #77
 
 VERDICT: INPUT_INCOMPLETE'
 [[ "$(field .blocked_on)" == 77 && "$(field .stage)" == blocked-external ]] || fail "BLOCKED-ON review must take the dependency hold ($(field .stage):$(field .blocked_on))"
-jq -e '.units[0].history[-1] | .stage == "review-block" and .blocked_on == 77 and .source == "review-report"' "$UNITS" >/dev/null \
+jq -e '.units[0] | ([.history[] | select(.stage=="review-block")] | length)==1
+  and ([.history[] | select(.stage=="review-block")][0] | .blocked_on==77 and .source=="review-report")
+  and .history[-1].stage=="blocked-on" and .history[-1].blocked_on==77 and .history[-1].source=="review-report"' "$UNITS" >/dev/null \
   || fail 'BLOCKED-ON review transition must record its blocker and source'
 echo 'ok - BLOCKED-ON review takes the existing dependency hold'
 

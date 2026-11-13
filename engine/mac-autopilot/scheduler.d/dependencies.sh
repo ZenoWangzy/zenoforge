@@ -7,7 +7,7 @@ blocked_on_of() {
   { head -12 "$1" | grep -oiE 'BLOCKED[- ]?(ON|BY)[^0-9#]{0,12}#?[0-9]+'; grep -oE 'BLOCKED-ON:[[:space:]]*#[0-9]+' "$1"; } 2>/dev/null \
     | grep -oE '[0-9]+$' | head -1
 }
-park_blocked() { # unit dep [source: worker-report | issue-body | dep-marker]
+park_blocked() { # unit dep [source: worker-report | review-report | issue-body | dep-marker]
   local source="${3:-worker-report}"
   # supervisor 已在 reroute 中放弃的前置（dropped_deps）：worker 报告的 BLOCKED-ON 不停住单元，单元留在原环节再跑一次。
   # 调用方若刚把单元标成 blocked-external（评审路径），这里还原成可继续的环节。
