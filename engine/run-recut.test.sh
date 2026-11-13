@@ -97,12 +97,11 @@ assert_not_contains() {
 FAKE_BIN="$(mktemp -d)"
 TMP_DIRS+=("$FAKE_BIN")
 
-# Fake gh: issue view's labels come from $FAKE_ISSUE_LABELS (space-separated,
-# set per test case) so has_label()/is_on_hold() (lib.sh, both go through
-# `gh issue view --json labels -q '.labels[].name'`) see exactly what each
-# case needs -- real gh applies -q itself, so this fake has to too, not just
-# echo the raw object the way run-advisor.test.sh's fake gh can get away
-# with (run-advisor.sh never calls has_label/is_on_hold itself).
+# Fake gh: REST issue reads return the issue shape; `issue view` labels come
+# from $FAKE_ISSUE_LABELS (space-separated, set per case), so has_label() and
+# is_on_hold() see exactly what each case needs. Real gh applies -q itself, so
+# this fake does too, unlike run-advisor.test.sh's simpler fake (run-advisor.sh
+# never calls has_label/is_on_hold itself).
 cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -u
@@ -123,10 +122,36 @@ if [ "${1:-}" = api ]; then
     requested="${BASH_REMATCH[1]}"
     first_child="${FAKE_NEXT_CHILD_ISSUE:-90099}"
     created="$(cat "${FAKE_GH_LOG:-/dev/null}.issue-create-count" 2>/dev/null || echo 0)"
-    if [ "$requested" -ge "$first_child" ] && [ "$requested" -lt "$((first_child + created))" ]; then
-      printf '%s\n' "$requested"
+    query=""
+    previous=""
+    for arg in "$@"; do
+      [ "$previous" = "--jq" ] && query="$arg"
+      previous="$arg"
+    done
+    if [ -n "$query" ]; then
+      if [ "$requested" -ge "$first_child" ] && [ "$requested" -lt "$((first_child + created))" ]; then
+        printf '%s\n' "$requested"
+      else
+        echo '[]'
+      fi
     else
-      echo '[]'
+      state_view_file="${FAKE_GH_LOG:-$TMPDIR/run-recut-gh.log}.state-views"
+      state_view_count="$(cat "$state_view_file" 2>/dev/null || echo 0)"
+      state_view_count=$((state_view_count + 1))
+      printf '%s\n' "$state_view_count" > "$state_view_file"
+      state=open
+      labels_json='[]'
+      if [ "${FAKE_RECUIT_STALE_AFTER_SNAPSHOT:-0}" = 1 ] && [ "$state_view_count" -gt 1 ]; then
+        state=closed
+        labels_json='[{"name":"priority:top"},{"name":"released"}]'
+      else
+        for label in ${FAKE_ISSUE_LABELS:-}; do
+          labels_json="$(jq -cn --argjson labels "$labels_json" --arg label "$label" '$labels + [{name:$label}]')"
+        done
+      fi
+      jq -cn --argjson number "$requested" --arg state "$state" --argjson labels "$labels_json" \
+        --arg title "${FAKE_ISSUE_TITLE:-}" --arg body "${FAKE_ISSUE_BODY:-}" \
+        '{number:$number,title:$title,body:$body,state:$state,state_reason:null,closed_at:null,labels:$labels}'
     fi
   else
     echo '[]'

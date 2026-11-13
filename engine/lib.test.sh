@@ -127,6 +127,14 @@ test_hold_requeue_child_status_consistency() {
     # #1598 had an expired local hold while GitHub retained product-stage labels.
     printf "%s\\n" enhancement\|awaiting-release\|ready-for-human > "$AGENT_HOME/fake-labels/740043"
     gh() {
+      if [[ "${1:-}" == api && "${2:-}" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)$ ]]; then
+        local child="${BASH_REMATCH[1]}" reads=0
+        [[ ! -f "$AGENT_HOME/child-reads/$child" ]] || reads="$(cat "$AGENT_HOME/child-reads/$child")"
+        printf "%s\\n" "$((reads + 1))" > "$AGENT_HOME/child-reads/$child"
+        case "$child:$reads" in 740141:0|740142:1) return 1 ;; esac
+        printf "{\"number\":%s,\"state\":\"closed\",\"labels\":[]}\\n" "$child"
+        return 0
+      fi
       if [[ "${1:-} ${2:-}" == "issue view" ]]; then
         local child="$3" reads=0
         [[ ! -f "$AGENT_HOME/child-reads/$child" ]] || reads="$(cat "$AGENT_HOME/child-reads/$child")"
@@ -6690,7 +6698,9 @@ printf '{"recut_children":[991202]}' > "$(state_file 991201)"
 assert_eq "recut umbrella with open child is not implement-eligible" 0 \
   "$(recut_parent_has_open_child 991201 '[{"number":991202,"state":"OPEN"}]' && echo 0 || echo $?)"
 assert_eq "recut umbrella with closed child reports completed parent" 3 \
-  "$(gh() { echo CLOSED; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+  "$(gh() { printf '{"number":991202,"title":"t","body":"","state":"closed","labels":[]}\n'; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
+assert_eq "recut umbrella whose child state cannot be read is unreadable, not completed" 2 \
+  "$(gh() { return 1; }; recut_parent_has_open_child 991201 '[]' && echo 0 || echo $?)"
 printf '{"state":"needs-advisor","recut_children":[]}\n' > "$(state_file 991205)"
 gh() { return 64; }
 assert_eq "ordinary empty recut list tolerates an unavailable live child read" 3 \

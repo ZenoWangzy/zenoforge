@@ -10,14 +10,15 @@ assert_true "conclude still leaves on-hold for finish-first" issue_transition_al
 assert_false "other reasons stay refused for finish-first" issue_transition_allowed on-hold finish-first hold-release
 assert_false "hold-expired does not conclude a ticket" issue_transition_allowed on-hold concluded hold-expired
 
-gh() {
+gh() { # REST only: issue_rest_view reads the issue, then its comments (slurped pages)
   case "$1 $2" in
     "issue list") echo '[]' ;;
-    "issue view")
-      local fields="" previous=""
-      for arg in "$@"; do [ "$previous" != --json ] || fields="$arg"; previous="$arg"; done
-      jq -cn --arg fields "$fields" '{number:910801,state:"CLOSED",stateReason:"COMPLETED",closedAt:"2026-10-29T06:12:09Z",labels:[{name:"concluded"}],comments:[],title:"t"}
-        | with_entries(select(.key as $k | $fields | split(",") | index($k)))' ;;
+    "api "*)
+      case "${*: -1}" in
+        */comments\?*) echo '[[]]' ;;
+        */issues/910801) jq -cn '{number:910801,state:"closed",state_reason:"completed",closed_at:"2026-10-29T06:12:09Z",labels:[{name:"concluded"}],title:"t",body:""}' ;;
+        *) return 1 ;;
+      esac ;;
     *) return 0 ;;
   esac
 }
@@ -25,6 +26,15 @@ state_merge 910801 '.state = "on-hold" | .hold = {kind:"stop-loss",holder:"sched
 status=0; hold_sweep 2>"$AGENT_HOME/sweep.err" || status=$?
 assert_eq "a closed state-only hold reconciles" 0 "$status"
 assert_not_contains "the closed snapshot carries its number" "$(cat "$AGENT_HOME/sweep.err")" 'invalid closed issue snapshot'
+
+# An unreadable state-only hold is left on hold: the sweep reports failure and writes nothing for it.
+state_merge 910803 '.state = "on-hold" | .hold = {kind:"stop-loss",holder:"scheduler-stop-loss",expires_at:"2026-10-31T00:00:00Z",stage_before:"ready-for-agent"}' >/dev/null
+gh() { case "$1 $2" in "issue list") echo '[]' ;; *) return 1 ;; esac; }
+status=0; hold_sweep 2>"$AGENT_HOME/sweep.err" || status=$?
+assert_eq "an unreadable state-only hold fails the sweep" 1 "$status"
+assert_contains "the unreadable hold is reported" "$(cat "$AGENT_HOME/sweep.err")" 'could not inspect state-only held #910803; leaving state untouched'
+assert_eq "an unreadable state-only hold stays on-hold" on-hold "$(jq -r .state "$AGENT_HOME/state/910803.json")"
+rm -f "$AGENT_HOME/state/910803.json"
 
 # Past the slice deadline every read is refused: the sweep stops and says so, it does not report owners unreadable.
 supervisor_holds_snapshot() { jq -cn '[{issue:910802,kind:"external-deliverable",age_seconds:99,owner:"none",holder:"supervisor",hold:{}}]'; }

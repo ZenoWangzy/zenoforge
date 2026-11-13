@@ -5,7 +5,6 @@ engine/check-pipeline-lesson-window.test.sh
 engine/check-rulings.test.sh
 engine/closing-keyword-gate.test.sh
 engine/codex-usage-budget.test.sh
-engine/concluded-root-unblock.test.sh
 engine/entry-symlink.test.sh
 engine/gh-measure/gh-measure.test.sh
 engine/gitnexus-refresh-target.test.sh
@@ -22,7 +21,6 @@ engine/hotfix/hf-supersede.test.sh
 engine/hotfix/hf-worker-stuck.test.sh
 engine/hotfix/prepush-gates.test.sh
 engine/hotfix/validate-acceptance.test.sh
-engine/issue-pipeline.test.sh
 engine/join-plan-package-trailer.test.sh
 engine/jq-arg-safety.test.sh
 engine/jq-regex-safety.test.sh

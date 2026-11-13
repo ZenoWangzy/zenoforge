@@ -4,7 +4,9 @@
 set -euo pipefail
 for file in "$@"; do
   grep -q 'test-env\.sh' "$file" || continue
-  if grep -E "trap +['\"].*EXIT" "$file" | grep -v test_env_root >/dev/null; then
+  # A trap inside a ( ) subshell body cannot replace the parent's cleanup; naming the root there would delete it
+  # mid-file (11-13 #1105: issue-pipeline.test.sh lost its test dir). Such lines end in "# subshell trap".
+  if grep -E "trap +['\"].*EXIT" "$file" | grep -v test_env_root | grep -v '# subshell trap' >/dev/null; then
     printf '%s\n' "$file"
   fi
 done

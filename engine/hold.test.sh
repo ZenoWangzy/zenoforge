@@ -44,6 +44,25 @@ case "$command:$subcommand" in
         else
           printf '[]\n'
         fi ;;
+      repos/*/issues/[0-9]*|--paginate)
+        # issue_rest_view: the stored GraphQL-shaped issue answered as REST, then its comments as slurped pages
+        url="${*: -1}"; [ $# -gt 0 ] || url="$subcommand"
+        [[ "$url" =~ /issues/([0-9]+) ]] || { echo "unexpected fake gh API call: $subcommand $*" >&2; exit 64; }
+        number="${BASH_REMATCH[1]}"
+        if [[ "$url" == */comments\?* ]]; then
+          jq -c '[[.comments // [] | .[] | {node_id:(.id // null), body:(.body // ""), created_at:.createdAt, html_url:.url, user:{login:(.author.login // "x")}}]]' "$FAKE_GH_ROOT/issues/$number.json"
+        else
+          printf 'view %s\n' "$number" >> "$FAKE_GH_LOG"
+          if [[ " ${FAKE_GH_VIEW_FAILURES:-} " == *" $number "* ]]; then
+            echo "fixture issue read failed for #$number" >&2
+            exit 1
+          fi
+          if [ -f "$FAKE_GH_ROOT/replacement-$number.json" ]; then
+            cp "$FAKE_GH_ROOT/replacement-$number.json" "$AGENT_HOME/state/$number.json"
+            rm "$FAKE_GH_ROOT/replacement-$number.json"
+          fi
+          jq -c '{number, title:(.title // "t"), body:(.body // ""), state:(.state | ascii_downcase), state_reason:(.stateReason | if type == "string" then ascii_downcase else null end), closed_at:.closedAt, labels:(.labels // []), user:{login:"x"}}' "$FAKE_GH_ROOT/issues/$number.json"
+        fi ;;
       *) echo "unexpected fake gh API call: $subcommand $*" >&2; exit 64 ;;
     esac
     ;;
@@ -859,6 +878,28 @@ test_closed_hold_read_failure_preserves_evidence() {
   assert_contains "failed read is reported without provider response data" "$(cat "$test_env_root/hold.out")" \
     'could not inspect state-only held #4197; leaving state untouched'
   assert_not_contains "failed read output omits credential sentinel" "$(cat "$test_env_root/hold.out")" 'token='
+}
+
+test_unreadable_issue_refuses_hold_restore_and_requeue() {
+  local before_issue before_state status
+  reset_fixture
+  write_issue 4180 '[{"name":"on-hold"}]' '[]' 'unreadable issue'
+  write_state 4180 '{"state":"on-hold","hold":{"holder":"supervisor","kind":"external-deliverable"}}'
+  before_issue="$(jq -S '.' "$FAKE_GH_ROOT/issues/4180.json")"
+  before_state="$(jq -S '.' "$AGENT_HOME/state/4180.json")"
+  export FAKE_GH_VIEW_FAILURES=4180
+  status=0; scheduler_requeue_issue 4180 'unreadable' 2>/dev/null || status=$?
+  assert_eq "requeue refuses an issue it cannot read" 1 "$status"
+  assert_eq "requeue leaves an unreadable issue unmarked" failed "$SCHEDULER_REQUEUE_RESULT"
+  status=0; hold_restore 4180 2>/dev/null || status=$?
+  assert_eq "hold restore refuses an issue it cannot read" 1 "$status"
+  run_hold_cli --hold 4180 --holder operator --release 'approval arrives' --expires 24h
+  assert_eq "hold refuses an issue it cannot read" 1 "$LAST_STATUS"
+  assert_contains "hold names the failed read" "$(cat "$test_env_root/hold.out")" 'could not inspect #4180 before applying hold'
+  assert_eq "unreadable issue is not edited or commented" "$before_issue" "$(jq -S '.' "$FAKE_GH_ROOT/issues/4180.json")"
+  assert_eq "unreadable issue keeps its local state" "$before_state" "$(jq -S '.' "$AGENT_HOME/state/4180.json")"
+  assert_not_contains "no write follows a failed read" "$(cat "$FAKE_GH_LOG")" 'edit 4180'
+  unset FAKE_GH_VIEW_FAILURES
 }
 
 test_unexpired_hold_is_untouched() {
@@ -1818,6 +1859,7 @@ run_case "manual hold release reconciles persisted state" test_manual_hold_relea
 run_case "durable hold release resolves conflicting labels" test_durable_hold_release_uses_recorded_stage_when_labels_conflict
 run_case "closed holds reconcile once by GitHub reason" test_closed_holds_reconcile_once_by_github_reason
 run_case "closed-hold GitHub read failure preserves evidence" test_closed_hold_read_failure_preserves_evidence
+run_case "unreadable issue refuses hold, restore and requeue" test_unreadable_issue_refuses_hold_restore_and_requeue
 run_case "unexpired hold stays untouched" test_unexpired_hold_is_untouched
 run_case "missing hold record remains ownerless" test_missing_hold_record_stays_ownerless
 run_case "marked hold without metadata remains ownerless" test_marked_hold_without_record_stays_ownerless
