@@ -54,6 +54,6 @@ done
 unset -f state_read gh
 
 assert_true "the sweep shuffles so a deadline cannot starve one tail" grep -Eq 'sort -u \| shuf\)' "$SCRIPT_DIR/lib.d/holds.sh"
-assert_true "blocker roots run last in the suffix" grep -Eq 'suffix_steps=\(.*batch-state needs-info-blocker-roots\)' "$SCRIPT_DIR/issue-pipeline.sh"
+assert_true "blocker roots run last in the suffix" grep -Eq 'suffix_steps=\(.*batch-state needs-info-blocker-roots\)' "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh"
 
 lib_case_exit

@@ -3109,7 +3109,7 @@ NOW_EPOCH=$((300000 + 301))
 # #4356 moves product Postsubmit recovery to issue-pipeline's durable tick;
 # the old scheduler watcher would create a second owner and duplicate PRs.
 ! grep -q 'phase watch_main_postsubmit' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh || fail 'scheduler still dispatches the retired main Postsubmit watcher'
-grep -q 'main-red-bisect' "$script_dir/../issue-pipeline.sh" \
+grep -q 'main-red-bisect' "$script_dir/../issue-pipeline.d/maintenance.sh" \
   || fail 'issue-pipeline maintenance does not own main-red recovery'
 # L71：没有 pid 文件时 CI 花费采样必须启动（kill -0 0 恒成功曾让它永不启动）
 here_saved="$HERE"; HERE="$fixture/health-code"; mkdir -p "$HERE"

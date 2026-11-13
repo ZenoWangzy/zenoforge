@@ -1787,7 +1787,10 @@ run_case "expired and ownerless ops acceptance stays held for supervisor" test_o
 run_case "closed handoff stays closed" test_closed_handoff_is_not_reopened
 run_case "reverted landing reopens before publishing handoff" test_reverted_landing_reopens_before_handoff
 run_case "maintenance tick requeues ownerless external hold" test_maintenance_tick_requeues_ownerless_hold
-run_case "existing ticket tick sweeps holds" test_existing_tick_runs_hold_sweep
+HOLD_SWEEP_SOURCE_VIEW="$test_env_root/hold-sweep-source"
+mkdir -p "$HOLD_SWEEP_SOURCE_VIEW"
+ln -s "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh" "$HOLD_SWEEP_SOURCE_VIEW/issue-pipeline.sh"
+SCRIPT_DIR="$HOLD_SWEEP_SOURCE_VIEW" run_case "existing ticket tick sweeps holds" test_existing_tick_runs_hold_sweep
 run_case "guarded recut hold sweep queues once" test_guarded_recut_sweep_queues_once
 run_case "orphaned hand-dispatch hold requeues its named owner once" test_orphaned_hand_dispatch_hold_requeues_named_owner_once
 run_case "supervisor hold sweep uses one current issue snapshot" test_supervisor_holds_uses_batch_issue_snapshot
