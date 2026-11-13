@@ -44,6 +44,7 @@ cleanup() {
     [ -n "$d" ] && rm -rf "$d"
   done
   rm -rf "$HOME/wt/triage-$N"
+  rm -rf -- "$test_env_root"
 }
 trap cleanup EXIT
 
@@ -119,7 +120,7 @@ if [ "${1:-}" = api ] && [[ "${2:-}" =~ ^repos/.*/issues/[0-9]+$ ]]; then
     printf '%s\n' "$((related * 10))"
     exit 0
   fi
-  jq -n --argjson related "$related" '{id:($related * 10),number:$related,state:"open"}'
+  jq -n --argjson related "$related" '{id:($related * 10),number:$related,title:"triage test issue",body:"",state:"open",labels:[]}'
   exit 0
 fi
 set -u

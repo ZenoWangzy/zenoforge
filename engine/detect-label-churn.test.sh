@@ -40,6 +40,7 @@ cleanup() {
   for d in "${TMP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
+  rm -rf -- "$test_env_root"
 }
 trap cleanup EXIT
 
@@ -98,10 +99,27 @@ if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   exit 0
 fi
 if [ "$1" = "api" ]; then
-  path="$2"
-  n="$(echo "$path" | grep -oE '/issues/[0-9]+/' | grep -oE '[0-9]+')"
+  path="" method="" input="" previous=""
+  for arg in "$@"; do
+    case "$previous" in --method) method="$arg" ;; --input) input="$arg" ;; esac
+    case "$arg" in repos/*/issues/*) path="$arg" ;; esac
+    previous="$arg"
+  done
+  n="$(sed -nE 's#.*\/issues\/([0-9]+)(\/.*)?$#\1#p' <<< "$path")"
   if [[ "$path" == */sub_issues\?* ]]; then
     echo '[]'
+    exit 0
+  fi
+  if [[ "$path" =~ /issues/([0-9]+)$ ]]; then
+    n="${BASH_REMATCH[1]}"
+    label_file="${FAKE_GH_ISSUE_LABELS_DIR:-}/$n.json"
+    if [[ -r "$label_file" ]]; then
+      labels="$(cat "$label_file")"
+    else
+      labels='[{"name":"ready-for-agent"}]'
+      [[ "$n" != 103 ]] || labels='[{"name":"needs-advisor"}]'
+    fi
+    printf '{"number":%s,"state":"open","labels":%s}\n' "$n" "$labels"
     exit 0
   fi
   if [[ "$path" == *timeline && " $* " == *'"on-hold"'* ]]; then
@@ -127,10 +145,32 @@ if [ "$1" = "api" ]; then
     fi
     exit 0
   fi
-  if [[ "$path" == *comments ]]; then
+  if [[ "$path" == *comments* ]]; then
+    if [[ " $* " == *' --slurp '* ]]; then
+      echo '[]'
+      exit 0
+    fi
     var="FAKE_COMMENTS_$n"
     printf '%s\n' "${!var:-}"
     exit 0
+  fi
+  if [[ "$path" == */labels ]]; then
+    label_file="${FAKE_GH_ISSUE_LABELS_DIR:-}/$n.json"
+    if [[ "$method" == GET ]]; then
+      if [[ -r "$label_file" ]]; then
+        labels="$(cat "$label_file")"
+      else
+        labels='[{"name":"ready-for-agent"}]'
+        [[ "$n" != 103 ]] || labels='[{"name":"needs-advisor"}]'
+      fi
+      jq -cn --argjson labels "$labels" '[$labels]'
+      exit 0
+    fi
+    if [[ "$method" == PUT && -r "$input" ]]; then
+      jq -c '.labels | map({name:.})' "$input" > "$label_file"
+      echo '[]'
+      exit 0
+    fi
   fi
   exit 0
 fi
@@ -154,6 +194,14 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
   exit 0
 fi
 if [ "$1" = "issue" ] && { [ "$2" = "edit" ] || [ "$2" = "comment" ] || [ "$2" = "close" ]; }; then
+  if [ "$2" = "edit" ]; then
+    issue="$3"
+    if [[ " $* " == *' --add-label on-hold '* ]]; then
+      printf '%s\n' '[{"name":"on-hold"}]' > "$FAKE_GH_ISSUE_LABELS_DIR/$issue.json"
+    elif [[ " $* " == *' --remove-label on-hold '* ]]; then
+      printf '%s\n' '[{"name":"ready-for-agent"}]' > "$FAKE_GH_ISSUE_LABELS_DIR/$issue.json"
+    fi
+  fi
   if [ -n "${FAKE_GH_WRITE_LOG:-}" ]; then
     printf 'gh' >> "$FAKE_GH_WRITE_LOG"
     printf ' %q' "$@" >> "$FAKE_GH_WRITE_LOG"
@@ -197,6 +245,8 @@ export REPO="test/repo"
 export ZF_REPO_DIR="$FAKE_BIN/repo"
 export AGENT_DRY_RUN=1
 export FAKE_GH_WRITE_LOG="$FAKE_BIN/writes.log"
+export FAKE_GH_ISSUE_LABELS_DIR="$FAKE_BIN/issue-labels"
+mkdir -p "$FAKE_GH_ISSUE_LABELS_DIR"
 : > "$FAKE_GH_WRITE_LOG"
 export ZF_AGENT_RECIPIENTS_FILE="/nonexistent/recipients.json"
 
