@@ -121,6 +121,10 @@ check 'optional GitHub and Gmail work share the earlier cutoff' \
   "$CAPTURED_OPTIONAL_GMAIL_DEADLINE" "$CAPTURED_OPTIONAL_GH_DEADLINE"
 
 source "$SCRIPT_DIR/issue-pipeline.d/maintenance.sh"
+maintenance_now_epoch_ms() {
+  printf '%s\n' "$((MAINTENANCE_TEST_EPOCH_MS + SECONDS * 1000))"
+}
+reconcile_needs_info_issues() { CALLS+=(needs-info-loop); }
 GH_LIST_CALLS=0
 gh() { GH_LIST_CALLS=$((GH_LIST_CALLS + 1)); return 1; }
 SECONDS=87
