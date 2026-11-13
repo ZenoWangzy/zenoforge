@@ -147,11 +147,36 @@ closed_unit_stop_loss_open() { # id：0 = 已关闭单元的 issue 仍开着且�
   rest_state="$(gh api "repos/$repo/issues/$issue" --jq .state 2>/dev/null)" || return 2
   case "$rest_state" in open) return 0 ;; closed) return 1 ;; *) return 2 ;; esac
 }
+closed_unit_recut_open() { # id：0 = recut 关掉的单元，issue 仍开着、ready-for-agent、无 hold、无 recut 子单；1 = 不符合；2 = 读不到状态（只有 issue 开着才有路：#3405/#1135/#6206）
+  local issue state repo rest_state last
+  issue="$(unit_field "$1" '.issue // empty')"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
+  state="$(scheduler_issue_state "$issue")" || return 2
+  jqf -e '.state == "ready-for-agent" and .hold == null and (has("recut_children") | not)' <<<"$state" >/dev/null || return 1
+  # a delivered unit (merged/landed/done anywhere in its history) stays closed; the close must come from a recut event
+  last="$(unit_field "$1" '(.history // []) as $h | if any($h[]; .stage | IN("merged", "landed", "done")) then empty else ($h | map(.stage | select(. != "supervisor-cap-default")) | last // empty) end')"
+  case "$last" in
+    supervisor-cap-triage-recut|supervisor-budget-recut|supervisor-recut) ;;
+    hold-handoff|supervisor-requeue) jqf -e '(.recut_refused_at // "") != ""' <<<"$state" >/dev/null || return 1 ;; # a refused recut with no children, then only a handoff or requeue
+    *) return 1 ;;
+  esac
+  repo="${REPO:-${ZF_REPO:-}}"; [[ -n "$repo" ]] || return 2
+  rest_state="$(gh api "repos/$repo/issues/$issue" --jq .state 2>/dev/null)" || return 2
+  case "$rest_state" in open) return 0 ;; closed) return 1 ;; *) return 2 ;; esac
+}
+closed_unit_route() { # id：0 = stop-loss hold 路，3 = recut 路（都用 --requeue 重开）；1 = 无路；2 = 读不到 GitHub 状态
+  local rc=0
+  closed_unit_stop_loss_open "$1" || rc=$?
+  [[ "$rc" == 1 ]] || return "$rc"
+  rc=0; closed_unit_recut_open "$1" || rc=$?
+  [[ "$rc" == 0 ]] && return 3
+  return "$rc"
+}
 closed_unit_refusal() { # id [rc]：已关闭单元的拒绝语只指向本环节能用的动作；调用方给了 rc 就不再查 GitHub
   local rc="${2:-}"
-  [[ -n "$rc" ]] || { rc=0; closed_unit_stop_loss_open "$1" || rc=$?; }
+  [[ -n "$rc" ]] || { rc=0; closed_unit_route "$1" || rc=$?; }
   case "$rc" in
     0) echo "rule: $1 is closed but its issue is on a stop-loss hold; use --requeue" >&2 ;;
+    3) echo "rule: $1 was closed by a recut and its issue is open and ready-for-agent; use --requeue" >&2 ;;
     2) echo "rule: $1 is closed and its GitHub issue state could not be read; retry the ruling" >&2 ;;
     *) echo "rule: $1 is closed; use --recut to route its issue to recut" >&2 ;;
   esac
@@ -178,8 +203,8 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
          stage="$(unit_field "$1" .stage)"
          case "$stage" in
            parked|supervisor-review) supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null ;;
-           closed) rc=0; closed_unit_stop_loss_open "$1" || rc=$?
-             if [[ "$rc" == 0 ]]; then supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null; else closed_unit_refusal "$1" "$rc"; return 1; fi ;; # the stop-loss ruling reopens the issue and releases its hold; rc 2 never requeues
+           closed) rc=0; closed_unit_route "$1" || rc=$?
+             if [[ "$rc" == 0 || "$rc" == 3 ]]; then supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null; else closed_unit_refusal "$1" "$rc"; return 1; fi ;; # the stop-loss ruling reopens the issue and releases its hold, the recut route (rc 3) requeues a recut-closed unit; rc 2 never requeues
            *) echo "rule: $1 is in $stage; use --reroute to move it" >&2; return 1 ;;
          esac
        else

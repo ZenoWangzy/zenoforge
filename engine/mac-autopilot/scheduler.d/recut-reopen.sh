@@ -105,7 +105,7 @@ intake_closed_unit_rows() { # issue...
     else
       # A delivered unit is not routed (triage would conclude on a partial PR) and a unit closed on purpose stays closed, so no
       # label change: the row is named once per 6h instead of sitting silent. closed_units_open_issues still counts it.
-      intake_skip_note "$n" "all units terminal ($(jqf -r ".stages" <<<"$units")) and no restore path applies; no worker starts, a ruling is needed"
+      intake_skip_note "$n" "all units terminal ($(jqf -r ".stages" <<<"$units")) and no restore path applies; no worker starts, a ruling is needed (a unit closed by a recut: hold.sh --rule $(jqf -r '.ids[0] // empty' <<<"$units") requeue)"
     fi
   done
   return 0
