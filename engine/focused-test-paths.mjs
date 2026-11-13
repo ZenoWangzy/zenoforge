@@ -473,7 +473,7 @@ export function shellFunctionRanges(source) {
 
   const ranges = [];
   const pendingHereDocs = [];
-  let quote = '';
+  let quote = '', substitutions = [];
   let depth = 0;
   let currentFunction = null;
 
@@ -486,10 +486,10 @@ export function shellFunctionRanges(source) {
       continue;
     }
 
-    const declaration = depth === 0 && !quote
+    const declaration = depth === 0 && !quote && substitutions.length === 0
       ? /^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?|([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\))\s*\{/.exec(line)
       : null;
-    const functionLike = depth === 0 && !quote
+    const functionLike = depth === 0 && !quote && substitutions.length === 0
       && /^\s*function\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*\(\s*\))?\b/.test(line);
     if (functionLike && !declaration) return null;
     if (declaration) currentFunction = { name: declaration[1] ?? declaration[2], start: index + 1 };
@@ -502,8 +502,7 @@ export function shellFunctionRanges(source) {
         continue;
       }
       if (quote === '"' || quote === '`') {
-        if (char === '\\') cursor += 1;
-        else if (char === quote) quote = '';
+        if (char === '\\') cursor += 1; else if (char === '$' && line[cursor + 1] === '(') { substitutions.push({ depth: 1, outerQuote: quote }); quote = ''; cursor += 1; } else if (char === quote) quote = '';
         continue;
       }
       if (char === '\\') {
@@ -534,8 +533,9 @@ export function shellFunctionRanges(source) {
           continue;
         }
       }
-      if (char === '{') lineDelta += 1;
-      if (char === '}') lineDelta -= 1;
+      if (char === '$' && line[cursor + 1] === '(') { substitutions.push({ depth: 1, outerQuote: '' }); cursor += 1; continue; }
+      if (substitutions.length > 0) { const substitution = substitutions.at(-1); if (char === '(') substitution.depth += 1; else if (char === ')' && --substitution.depth === 0) quote = substitutions.pop().outerQuote; continue; }
+      if (char === '{') lineDelta += 1; if (char === '}') lineDelta -= 1;
     }
 
     depth += lineDelta;
@@ -546,7 +546,7 @@ export function shellFunctionRanges(source) {
     }
   }
 
-  if (quote || depth !== 0 || currentFunction || pendingHereDocs.length > 0) return null;
+  if (quote || depth !== 0 || currentFunction || pendingHereDocs.length > 0 || substitutions.length > 0) return null;
   return ranges;
 }
 
