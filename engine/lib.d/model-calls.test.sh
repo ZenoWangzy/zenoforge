@@ -2,7 +2,8 @@
 # Regression tests for model calls.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"; source "$SCRIPT_DIR/lib-test-setup.sh"; LIB_TEST_SETUP_DEFERRED=1; source "$SCRIPT_DIR/test-lib-helpers.sh"; unset LIB_TEST_SETUP_DEFERRED; lib_test_setup "$SCRIPT_DIR"; LIB_TEST_SETUP_COMPLETE=1
+LIB_TEST_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$LIB_TEST_ROOT/lib-test-setup.sh"; LIB_TEST_SETUP_DEFERRED=1; source "$LIB_TEST_ROOT/test-lib-helpers.sh"; unset LIB_TEST_SETUP_DEFERRED; lib_test_setup "$LIB_TEST_ROOT"; LIB_TEST_SETUP_COMPLETE=1
 
 test_provider_quota_classification() {
   local refusal="ERROR: You’ve hit your usage limit. Try again at Oct 19th, 2099 1:13 AM." event
