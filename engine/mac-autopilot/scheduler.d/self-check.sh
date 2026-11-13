@@ -191,6 +191,10 @@ self_check_verification_run() ( # unit head clone config output metadata; succes
   jq -cn --argjson argv "$argv_json" --argjson files "$files_json" --arg dir "$evidence_dir" --arg sha "$sha" \
     '{argv:$argv,exit_code:0,evidence_dir:$dir,evidence_files:$files,sha:$sha}' > "$metadata" \
     || { printf 'verification failed unit=%s: could not record evidence path=%s\n' "$id" "$evidence_dir"; return 1; }
+  for arg in "${evidence_files[@]:0:5}"; do # evidence is often untracked, so the review clone lacks it: keep a bounded excerpt now
+    [[ -f "$dir/$arg" && ! -L "$dir/$arg" ]] || continue
+    { printf '\n=== evidence %s (first 4000 bytes) ===\n' "$arg"; head -c 4000 -- "$dir/$arg" | tr -d '\0' || true; printf '\n'; } >> "$command_output"
+  done
   printf 'verification passed unit=%s exit_code=0 argv=%s evidence=%s files=%s\n' "$id" "$argv_json" "$evidence_dir" "$files_json"
 )
 self_check_verification_body() { # unit JSON → the PR's verification section when this head passed

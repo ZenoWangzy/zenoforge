@@ -440,7 +440,7 @@ register_new_prs() {
     checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "new PR unit=pr-$pr_num: PR head unavailable; stays review-pending"; continue; }
     rep="review-${pr_num}-${TAG}.md"
     dispatch_if_room "pr-$pr_num" "review" "review" "${rep%.md}.worker.log" "$rep" \
-      "$PICK_MODEL" "$PICK_EFFORT" "$(review_prompt "$pr_num" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt")" "$sha" "$wt" "$pr_head" || true
+      "$PICK_MODEL" "$PICK_EFFORT" "$(review_prompt "$pr_num" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt" "$sha")" "$sha" "$wt" "$pr_head" || true
   done
 }
 

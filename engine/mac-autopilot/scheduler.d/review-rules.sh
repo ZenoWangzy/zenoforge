@@ -262,10 +262,24 @@ review_prompt() { # pr-or-subject title sha report [lane] [checkout]
 效率纪律：不重述代码内容；不展开未变更文件的细节；低风险样式性改动一行带过。目标 15-25 分钟内交付。
 只读边界：不编辑/commit/push/merge/评论。报告写到 $SUP/$4。落盘后交付完即结束。$(risk_class_safety_rule "${6:-}")$(lane_rule "${5:-}" "$3")"
 }
+review_verification_rule() { # unit-json dir log sha → status paragraph; copies the verification output when the command ran
+  local u="$1" dir="$2" log="$3" sha="$4" state ev
+  rm -f "$dir/verification.txt" # the clone is reused: never leave an older head's evidence behind
+  state="$(jqf -r --arg sha "$sha" 'if .self_check_status == "red" then "red" elif .self_check_status == "pass" and .verification.exit_code == 0 and .verification.sha == $sha then "passed" else "skipped" end' <<<"$u")"
+  [[ "$state" == skipped || -z "$log" || ! -s "$log.verification-output" ]] || cp -f "$log.verification-output" "$dir/verification.txt"
+  ev="$dir/verification.txt"; [[ -s "$ev" ]] || ev="not available (verification output was not copied)" # name the copy only when it exists
+  case "$state" in
+    passed) printf '\nVerification evidence for head %s: passed. Command argv (JSON): %s; exit code 0. Command output and evidence excerpts: %s. Check them against the acceptance criteria; a claimed behaviour the evidence does not show is a finding.' "$sha" "$(jqf -c '.verification.argv' <<<"$u")" "$ev" ;;
+    red) printf '\nVerification evidence for head %s: RED. The self-check failed for this head (failing output, when the verification command ran: %s). Treat the claimed behaviour as unproven.' "$sha" "$ev" ;;
+    *) printf '\nVerification evidence for head %s: SKIPPED. No verification result is recorded for this head; judge from the diff and the tests alone.' "$sha" ;;
+  esac
+}
 # Reviewers run with no read access under $SUP, so copy the unit's implementation report and latest self-check log into the review
 # clone (git-ignored) and name only the copies. Shared by every reviewer provider; a missing input is left out of the prompt.
-review_inputs_rule() { # unit-json workdir → copies the two inputs, git-ignores the copy dir, prints the prompt paragraph
-  local unit_json="$1" wd="$2" dir rep log ex list named=()
+# The third argument is the head under review; the verification status paragraph is printed after the copies.
+review_inputs_rule() { # unit-json workdir [head] → copies the inputs, git-ignores the copy dir, prints the prompt paragraph
+  local unit_json="$1" wd="$2" sha dir rep log ex list named=()
+  sha="${3:-$(jqf -r '.self_check_sha // empty' <<<"$unit_json")}"
   dir="$wd/.zf-review-inputs"
   rep="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
   log="$(jqf -r '.self_check_output // empty' <<<"$unit_json")"
@@ -274,6 +288,7 @@ review_inputs_rule() { # unit-json workdir → copies the two inputs, git-ignore
   mkdir -p "$dir"
   if [[ -s "$rep" ]] && cp -f "$rep" "$dir/implementation-report.md"; then named+=("$dir/implementation-report.md（实现报告）"); fi
   if [[ -s "$log" ]] && cp -f "$log" "$dir/self-check.log"; then named+=("$dir/self-check.log（最近一次自检日志）"); fi
+  review_verification_rule "$unit_json" "$dir" "$log" "$sha"
   # The clone's info/exclude is shared by every worktree of it, so append the line only when it is absent.
   ex="$(git -C "$wd" rev-parse --git-path info/exclude 2>/dev/null)" && [[ -n "$ex" ]] || return 0
   [[ "$ex" == /* ]] || ex="$wd/$ex"
