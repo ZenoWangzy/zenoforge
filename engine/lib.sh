@@ -335,7 +335,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/gh-auto-merge-guard.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/hand-dependency.sh"
-
+source "$(dirname -- "${BASH_SOURCE[0]}")/land-admit.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/merge-lane.sh"
 
 # Same threshold/window/recency reasoning as detect-label-churn.sh's own
