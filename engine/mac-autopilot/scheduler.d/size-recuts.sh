@@ -65,7 +65,7 @@ reconcile_size_recuts() {
       fi
     elif [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked && "$(jqf -r '.note // ""' <<<"$u")" == "issue #$issue recut is on hold" ]]; then
       # The hold is gone and no branch above claimed the state: size-recut-held lifts on its own.
-      set_unit "$id" "$(hist size-recut-unheld "issue #$issue hold lifted") | .stage=\"blocked-external\" | .note=null | del(.parked_reason, .unpark_condition)"
+      set_unit "$id" "$(hist_blocked size-recut-unheld '' size-recut-unhold "issue #$issue hold lifted") | .stage=\"blocked-external\" | .note=null | del(.parked_reason, .unpark_condition)"
       say "unit $id recut hold lifted; back to waiting for issue #$issue recut"
     fi
   done

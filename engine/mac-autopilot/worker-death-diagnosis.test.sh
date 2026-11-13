@@ -142,7 +142,8 @@ harvest_workers
 [[ "$(unit_field "$unit_c" .stage)" != supervisor-review ]] || fail "an OOM death must not escalate to supervisor-review"
 [[ "$(unit_field "$unit_c" .stage)" == blocked-external ]] || fail "an OOM death must route to the size stop-loss (blocked-external), got $(unit_field "$unit_c" .stage)"
 jq -e --arg id "$unit_c" '.units[] | select(.id==$id) | .size_recut_pending == true
-  and ((.history // []) | any(.stage == "worker-oom-recut"))' "$UNITS" >/dev/null \
+  and ((.history // []) | any(.stage == "worker-oom-recut"))
+  and .history[-1].blocked_on == null and .history[-1].source == "worker-oom"' "$UNITS" >/dev/null \
   || fail "the OOM death must be recorded as a size recut"
 jq -e '.issue == "5303" and (.evidence | fromjson | .kind == "worker-oom-death")' "$FIXTURE_RECUT_LOG" >/dev/null \
   || fail "the recut route must receive the issue and the death evidence"

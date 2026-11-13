@@ -28,6 +28,8 @@ ROWS='[]'
 # Stubs for the census-backed lookups: the current head, mergeability and the check rows of the PR.
 tick_pr_head() { printf '%s' "$head_now"; }
 tick_pr_mergeable() { printf '%s' MERGEABLE; }
+PR_STATE=OPEN
+pr_view() { printf '%s' "$PR_STATE"; }
 repair_check_rows() { printf '%s' "$ROWS"; }
 pass_row='[{"name":"gate","bucket":"pass","link":""}]'
 cancel_row='[{"name":"gate","bucket":"cancel","link":""}]'
@@ -105,6 +107,43 @@ jq --arg now "$head_now" '.units += [{id:"pr-report-only",pr:14,lane:"pr",branch
 ROWS="$cancel_row"; supervisor_requeue_unit pr-report-only requeue 'repair the report' null
 [[ "$(field pr-report-only .stage)" == repair-pending ]] \
   || fail "a findingless review report must stay in repair (got: $(field pr-report-only .stage))"
+
+# 8b. An approval of the open PR's current head goes to CI admission (the land stage), not to repair, even when an earlier
+# rejected round left an open P1 record or the approval's review report has no findings record (#1077). No worker starts.
+jq --arg now "$head_now" --arg old "$head_old" --argjson p1 "$p1_open" '.units += [
+  {id:"pr-reapproved",pr:16,lane:"pr",branch:"agent/j",stage:"supervisor-review",review_report:"review-16.md",
+    history:[{stage:"review-request-changes",result:$old},{stage:"repair-delivered"},{stage:"review-approve",result:$now},{stage:"supervisor-escalated"}],
+    review_findings:[{round:1,block:"ok",findings:$p1,all_findings:$p1}]},
+  {id:"pr-first-round-approve",pr:17,lane:"pr",branch:"agent/k",stage:"supervisor-review",review_report:"review-17.md",
+    history:[{stage:"review-approve",result:$now},{stage:"supervisor-escalated"}]},
+  {id:"pr-approved-head-moved",pr:18,lane:"pr",branch:"agent/l",stage:"supervisor-review",review_report:"review-18.md",
+    history:[{stage:"review-request-changes",result:$old},{stage:"repair-delivered"},{stage:"review-approve",result:$old},{stage:"supervisor-escalated"}],
+    review_findings:[{round:1,block:"ok",findings:$p1,all_findings:$p1}]},
+  {id:"pr-approved-closed",pr:19,lane:"pr",branch:"agent/m",stage:"supervisor-review",review_report:"review-19.md",
+    history:[{stage:"review-request-changes",result:$old},{stage:"repair-delivered"},{stage:"review-approve",result:$now},{stage:"supervisor-escalated"}],
+    review_findings:[{round:1,block:"ok",findings:$p1,all_findings:$p1}]},
+  {id:"pr-approved-head-gone",pr:20,lane:"pr",branch:"agent/n",stage:"supervisor-review",review_report:"review-20.md",
+    history:[{stage:"review-request-changes",result:$old},{stage:"repair-delivered"},{stage:"review-approve",result:$now},{stage:"supervisor-escalated"}],
+    review_findings:[{round:1,block:"ok",findings:$p1,all_findings:$p1}]}
+]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+ROWS="$pass_row"
+for id in pr-reapproved pr-first-round-approve; do
+  supervisor_requeue_unit "$id" requeue 'just re-land the approved head' null
+  [[ "$(field "$id" .stage)" == ready-to-merge ]] || fail "$id: an approved current head must go to the land stage, not repair (got: $(field "$id" .stage))"
+  [[ "$(field "$id" .approved_sha)" == "$head_now" && "$(field "$id" '.repair_hint // "none"')" == none ]] || fail "$id: the land stage must carry the approved head and no repair hint"
+done
+[[ "$(jq '.workers | length' "$WORKERS")" == 0 ]] || fail 're-landing an approved head launched a worker'
+# Approved head differs from the PR head: today's repair route.
+supervisor_requeue_unit pr-approved-head-moved requeue 'fix it' null
+[[ "$(field pr-approved-head-moved .stage)" == repair-pending ]] || fail "an approval of an older head must keep the repair route (got: $(field pr-approved-head-moved .stage))"
+# PR not open: today's repair route.
+PR_STATE=CLOSED supervisor_requeue_unit pr-approved-closed requeue 'fix it' null
+[[ "$(field pr-approved-closed .stage)" == repair-pending ]] || fail "an approval on a PR that is not open must keep the repair route (got: $(field pr-approved-closed .stage))"
+# Approved head gone from GitHub (head lookup fails): today's repair route.
+tick_pr_head_ok="$(declare -f tick_pr_head)"; tick_pr_head() { return 1; }
+supervisor_requeue_unit pr-approved-head-gone requeue 'fix it' null
+eval "$tick_pr_head_ok"
+[[ "$(field pr-approved-head-gone .stage)" == repair-pending ]] || fail "an approved head that no longer resolves must keep the repair route (got: $(field pr-approved-head-gone .stage))"
 
 # 9. Dispatch consults the route only after the room gate admits a repair.
 dispatch_trace="$fixture/dispatch-route-order"

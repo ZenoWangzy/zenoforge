@@ -2,6 +2,8 @@
 # Single-host ticket claims shared by the issue feeder and autopilot scheduler.
 # Source through lib.sh; writes are serialized by flock and published by rename.
 
+declare -F pid_start_id >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/proc.sh" # lazy: tests source coord.sh alone
+
 COORD_DIR="${AGENT_HOME:?AGENT_HOME must be set before loading coord.sh}/coord/claims"
 COORD_LEASE_SECONDS="${ZF_COORD_LEASE_SECONDS:-900}"
 # Keep released claims briefly for inspection; readers treat them as absent and sweeps scan every claim file.
@@ -26,7 +28,7 @@ coord_new_owner() {
 coord_process_start_ticks() { # pid -> /proc start ticks, distinguishing a reused PID
   local pid="${1:-}" ticks
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  ticks="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}')" || return 1
+  ticks="$(pid_start_id "$pid" 2>/dev/null)" || return 1
   [[ "$ticks" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$ticks"
 }

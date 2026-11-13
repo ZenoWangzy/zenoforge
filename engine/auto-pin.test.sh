@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 # tools/auto-pin.sh: a pass pins main's newest commit (a batch is pinned once); a failed pin neither exits nor loops on the same commit.
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/auto-pin-test.XXXXXX"); trap 'kill $(jobs -p) 2>/dev/null || :; rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/auto-pin-test.XXXXXX"); trap 'kill $(jobs -p) 2>/dev/null || :; rm -rf -- "$tmp" "$test_env_root"' EXIT
 fail() { echo "auto-pin.test.sh: $*" >&2; exit 1; }
 g() { git -c user.name=t -c user.email=t@example.invalid "$@"; }
 
@@ -11,7 +11,7 @@ git init -q --bare "$tmp/origin.git"; g clone -q "$tmp/origin.git" "$tmp/work" 2
 mkdir -p "$tmp/work/tools"
 cat > "$tmp/work/tools/pin-vecta.sh" <<'STUB'
 #!/usr/bin/env bash
-echo "$1" >> "$PIN_CALLS"; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
+echo "$1" >> "$PIN_CALLS"; [[ ! -e "$PIN_RC.rate" ]] || echo 'pin-vecta: GraphQL: API rate limit already exceeded' >&2; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
 STUB
 commit() { echo "$1" > "$tmp/work/f"; g -C "$tmp/work" add -A; g -C "$tmp/work" commit -qm "$1"; g -C "$tmp/work" push -q origin main; g -C "$tmp/work" rev-parse HEAD; }
 c1=$(commit one)
@@ -19,7 +19,7 @@ g clone -q "$tmp/origin.git" "$tmp/clone"
 mkdir -p "$tmp/agent/checkout/.zenoforge/build"
 printf '#!/usr/bin/env bash\necho converge >> "$PIN_CALLS"\n' > "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"; chmod +x "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"
 
-export ZF_AUTO_PIN_HOME=$tmp/home AGENT_HOME=$tmp/agent ZF_AUTO_PIN_CLONE=$tmp/clone ZF_AUTO_PIN_IDLE_SECS=0 ZF_AUTO_PIN_RETRY_SECS=0.2
+export ZF_AUTO_PIN_HOME=$tmp/home AGENT_HOME=$tmp/agent ZF_AUTO_PIN_CLONE=$tmp/clone ZF_AUTO_PIN_IDLE_SECS=0 ZF_AUTO_PIN_RETRY_SECS=0.2 ZF_AUTO_PIN_RATE_SECS=0.1
 export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc
 mkdir -p "$ZF_AUTO_PIN_HOME/auto-pin-logs"; echo "$c1" > "$ZF_AUTO_PIN_HOME/auto-pin.last"; : > "$PIN_CALLS"
 source "$repo/tools/auto-pin.sh"; set +e  # the daemon runs without -e
@@ -97,7 +97,7 @@ wait "$pass" 2>/dev/null
 # The next failure at that moved head waits until another head or main change.
 cat > "$tmp/clone/tools/pin-vecta.sh" <<'STUB'
 #!/usr/bin/env bash
-echo "$1" >> "$PIN_CALLS"; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
+echo "$1" >> "$PIN_CALLS"; [[ ! -e "$PIN_RC.rate" ]] || echo 'pin-vecta: GraphQL: API rate limit already exceeded' >&2; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
 STUB
 : > "$PIN_CALLS"; c7=$(commit vecta-move-retry); echo 1 > "$PIN_RC"
 vecta_before=$(g -C "$tmp/agent/checkout" rev-parse HEAD)
@@ -112,6 +112,30 @@ echo 0 > "$PIN_RC"
 auto_pin_pass > /dev/null
 [[ $(last) == "$c7" ]] || fail 'VectA move retry did not pin the same commit'
 [[ $(grep -Fc "$c7" "$PIN_CALLS") == 2 ]] || fail "VectA move calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+
+# A rate-limited pin retries the same commit after a backoff, at most 3 times, then waits; a non-rate-limit failure waits at once.
+: > "$PIN_CALLS"; c12=$(commit rate-limited); echo 1 > "$PIN_RC"; : > "$PIN_RC.rate"; before=$(last)
+for _ in 1 2 3; do auto_pin_pass > "$tmp/out"; grep -q RATE-LIMIT-RETRY "$tmp/out" || fail 'rate-limited pin did not log a retry'; done
+[[ $(last) == "$before" ]] || fail 'state moved during rate-limit retries'
+auto_pin_pass > "$tmp/out" & pass=$!
+sleep 1
+kill -0 "$pass" 2>/dev/null || fail 'a fourth rate-limited pin did not wait'
+[[ $(grep -Fc "$c12" "$PIN_CALLS") == 4 ]] || fail "rate-limit calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+! grep -q RATE-LIMIT-RETRY "$tmp/out" || fail 'a fourth rate-limited pin retried again'
+c13=$(commit after-rate-limit)
+wait "$pass" || fail 'rate-limit wait did not end after main advanced'
+[[ $(last) == "$c12" ]] || fail "rate-limited commit was not skipped when main advanced: $(last)"
+rm -f "$PIN_RC.rate"; : > "$PIN_CALLS"; echo 1 > "$PIN_RC"; c14=$(commit plain-failure)
+auto_pin_pass > "$tmp/out" & pass=$!
+wait_for_pin_calls "$c14" 1 || fail 'plain failure did not start its pin'
+sleep 0.5
+kill -0 "$pass" 2>/dev/null || fail 'a plain failure ended the wait'
+! grep -q RATE-LIMIT-RETRY "$tmp/out" || fail 'a non-rate-limit failure was retried as a rate limit'
+[[ $(grep -Fc "$c14" "$PIN_CALLS") == 1 ]] || fail 'a non-rate-limit failure retried'
+c15=$(commit advance-after-plain-failure)
+wait "$pass" || fail 'plain-failure wait did not end after main advanced'
+echo 0 > "$PIN_RC"; auto_pin_pass > /dev/null
+[[ $(last) == "$c15" ]] || fail "main advance after plain failure did not pin: $(last)"
 
 # With no VectA head movement, a refusal waits and is not retried.
 : > "$PIN_CALLS"; c8=$(commit vecta-stays-put); echo 1 > "$PIN_RC"
@@ -157,12 +181,16 @@ kill -0 "$daemon" 2>/dev/null && { kill "$daemon"; fail 'a daemon behind its clo
 wait "$daemon" || fail 'the self-restart exit was not clean'
 grep -q 'newer script' "$tmp/out" || fail "no self-restart line: $(cat "$tmp/out")"
 # merge_override_pin: a base-only override move (clean three-way, pack copy byte-identical) has no pack file in the PR and must still merge
-gh() { # stub: the PR's file list comes from GH_FILES; checks are green and the merge completes at once
+green_checks='[{"check_runs":[{"status":"completed","conclusion":"success"}]}]'
+gh() { # stub of the REST reads: files from GH_FILES, check runs from GH_CHECKS (default green), the merge completes at once
   case "$*" in
-    *"--json files"*) printf '%s\n' "$GH_FILES" ;;
-    *statusCheckRollup*) echo 0 ;;
+    *"/files"*) printf '%s\n' "$GH_FILES" ;;
+    *"--jq .head.sha"*) echo deadbeef ;;
+    *"/check-runs"*) printf '%s\n' "${GH_CHECKS:-$green_checks}" ;;
+    *"/status"*) echo 0 ;;
     *"pr merge"*) echo merged ;;
-    *"--json state"*) echo MERGED ;;
+    *"--jq .merged"*) echo true ;;
+    *) echo "gh stub: unexpected $*" >&2; return 1 ;;
   esac
 }
 ovlog=$tmp/override.log
@@ -174,4 +202,12 @@ GH_FILES=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv en
 if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an unrelated file in the override PR was merged'; fi
 GH_FILES=.zenoforge/build.json
 if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an override PR without overrides.tsv was merged'; fi
+# checks: a completed failing check refuses the merge; a pending check is not a failure
+GH_FILES=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv)
+GH_CHECKS='[{"check_runs":[{"status":"completed","conclusion":"failure"}]}]'
+if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an override PR with a failed check was merged'; fi
+grep -q 'failed check' "$tmp/ov.out" || fail 'failed check was not named'
+GH_CHECKS='[{"check_runs":[{"status":"in_progress","conclusion":null}]}]'
+merge_override_pin "$ovlog" > "$tmp/ov.out" || fail "override PR with a pending check was refused: $(cat "$tmp/ov.out")"
+unset GH_CHECKS
 echo "auto-pin.test.sh: ok"

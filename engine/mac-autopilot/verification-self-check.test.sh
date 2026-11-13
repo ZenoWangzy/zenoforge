@@ -79,6 +79,15 @@ run_gate issue-87001 87001 impl-87001.md
 [[ "$(field issue-87001 .self_check_status)" == pass ]] || fail 'green verification did not reach pass'
 jqf -e '.units[0].verification.exit_code == 0 and .units[0].verification.argv[1] == "--green" and .units[0].verification.evidence_files == ["evidence/user-path.log"]' "$UNITS" >/dev/null \
   || fail "green verification did not retain command and evidence: $(jqf -c '.units[0]' "$UNITS")"
+rp="$(review_inputs_rule "$(jqf -c '.units[0]' "$UNITS")" "$repo" "$sha")"
+[[ "$rp" == *"Verification evidence for head $sha: passed"* && "$rp" == *'--green'* ]] || fail "review inputs lack the passed verification: $rp"
+grep -Fq 'visited /welcome' "$repo/.zf-review-inputs/verification.txt" || fail 'review inputs lack the evidence content'
+vo="$(jqf -r '.units[0].self_check_output' "$UNITS")"
+mv "$vo.verification-output" "$repo/verification-output.saved" || fail 'no verification output to hide'
+rp="$(review_inputs_rule "$(jqf -c '.units[0]' "$UNITS")" "$repo" "$sha")"
+mv "$repo/verification-output.saved" "$vo.verification-output"
+[[ "$rp" == *"Verification evidence for head $sha: passed"* && "$rp" == *'Command output and evidence excerpts: not available'* && ! -e "$repo/.zf-review-inputs/verification.txt" ]] \
+  || fail "passed review names an evidence copy that does not exist: $rp"
 : > "$gh_calls"
 refill_stopped() { return 1; }
 dispatches=()
@@ -118,6 +127,9 @@ run_gate issue-87002 87002 impl-87002.md
 jqf -e '.units[0].self_fix_pending == true' "$UNITS" >/dev/null || fail 'nonzero verification did not queue self-fix'
 out="$(field issue-87002 .self_check_output)"
 grep -Fq 'verification failed on /welcome' "$out" && grep -Fq 'evidence=evidence' "$out" || fail 'red verification log lacks command output or evidence path'
+rp="$(review_inputs_rule "$(jqf -c '.units[0]' "$UNITS")" "$repo" "$sha")"
+[[ "$rp" == *"Verification evidence for head $sha: RED"* ]] || fail "review inputs do not state the red verification: $rp"
+grep -Fq 'verification failed on /welcome' "$repo/.zf-review-inputs/verification.txt" || fail 'red review inputs lack the failing output'
 : > "$runs_file"
 dispatches=()
 dispatch_if_room issue-87002 review-pending review review.log impl-87002.md gpt-6-luna high prompt "$sha" "$repo" "" "" "$(jqf -c '.units[0]' "$UNITS")" false codex false configured codex && fail 'red verification dispatched review'
@@ -133,6 +145,8 @@ self_check_harvest
 [[ "$(self_check_runs)" == 1 ]] || fail 'no-config path changed normal self-check behavior'
 [[ "$(grep -Fc 'verification: skipped unit=issue-87003 (no state/verification.json)' "$LOG")" == 1 ]] || fail 'no-config skip was not logged exactly once'
 jqf -e '.units[0].verification_skip_logged == true' "$UNITS" >/dev/null || fail 'no-config skip guard was not stored on the unit'
+rp="$(review_inputs_rule "$(jqf -c '.units[0]' "$UNITS")" "$repo" "$sha")"
+[[ "$rp" == *"Verification evidence for head $sha: SKIPPED"* && ! -e "$repo/.zf-review-inputs/verification.txt" ]] || fail "no-config review inputs are not SKIPPED: $rp"
 
 # Malformed JSON and a string argv are refused before the marker command can run.
 marker="$repo/verification-command-ran"

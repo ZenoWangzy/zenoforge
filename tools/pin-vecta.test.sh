@@ -66,7 +66,8 @@ case "${1:-}" in
 set -euo pipefail
 printf 'candidate:%s\n' "$*" >> "${PIN_CALLS:?}"
 if [[ "${1:-}" == --preflight && "${PIN_PREFLIGHT_FAIL:-0}" == 1 ]]; then
-  echo 'resolved-config-check: CHANGED hotfix.json: live aaaa -> new bbbb' >&2
+  echo 'resolved-config-check: CHANGED hotfix.json: live engine aaaaaaaaaaaa -> new engine bbbbbbbbbbbb' >&2
+  echo 'resolved-config-check: CHANGED gone.json: live engine aaaaaaaaaaaa -> new missing -' >&2
   echo 'publish-preflight: resolved-config check failed' >&2
   exit 1
 fi
@@ -117,8 +118,12 @@ cat > "$tmp/bin/gh" <<'GH'
 set -euo pipefail
 printf 'gh:%s\n' "$*" >> "${PIN_CALLS:?}"
 printf 'gh-cwd:%s\n' "$PWD" >> "${PIN_CALLS:?}"
+if [[ "${1:-}" == pr && "${PIN_GH_PR_FAIL:-0}" == 1 ]]; then
+  echo 'GraphQL: API rate limit already exceeded for user ID 1.' >&2; exit 1
+fi
 if [[ "${1:-}" == api ]]; then
   [[ "${PIN_GH_API_FAIL:-0}" != 1 ]] || exit 1
+  if [[ "$*" == *'/pulls'* ]]; then printf '%s\n' '{"html_url":"https://github.com/ZenoWangzy/vecta/pull/9001"}'; exit 0; fi
   if [[ -n "${PIN_WORKFLOW_RUNS+x}" ]]; then
     printf '%s\n' "$PIN_WORKFLOW_RUNS"
   else
@@ -366,8 +371,10 @@ pack_subject=$(git -C "$pack_target" log -1 --format=%s "$pack_branch")
 [[ "$pack_subject" != '[skip ci]'* ]] || fail "pack-touching PR commit unexpectedly has [skip ci]: $pack_subject"
 grep -Fq 'candidate:--preflight ' "$pack_calls" || fail 'publish preflight was skipped for the PR route'
 grep -Fq 'resolved-config-check: CHANGED hotfix.json' "$tmp/pack.out" || fail 'fixture did not reach the intended publish-preflight failure'
-expected_row=$(printf 'hotfix.json\tengine pin %s changes resolved config\t%s' "${new_engine:0:12}" "$new_engine")
-grep -Fq "$expected_row" "$tmp/pack.out" || fail 'preflight failure did not print the exact intended-changes row'
+expected_row=$(printf 'hotfix.json\tengine pin %s changes resolved config\tsha256:bbbbbbbbbbbb' "${new_engine:0:12}")
+grep -Fq "$expected_row" "$tmp/pack.out" || fail 'preflight failure did not print the exact content-hash intended-changes row'
+expected_row=$(printf 'gone.json\tengine pin %s changes resolved config\t%s' "${new_engine:0:12}" "$new_engine")
+grep -Fq "$expected_row" "$tmp/pack.out" || fail 'a path with no new hash did not fall back to the engine SHA row'
 if [[ -e "$pack_calls" ]]; then ! grep -q '^gh:pr create ' "$pack_calls" || fail 'failed preflight still created a PR'; fi
 [[ "$(git --git-dir="$tmp/pack-origin.git" for-each-ref --format='%(refname)' refs/heads | wc -l | tr -d '[:space:]')" == 1 ]] \
   || fail 'failed preflight pushed a topic branch'
@@ -410,6 +417,33 @@ grep -Eq '^pin-vecta: result=pr-open route=PR landed=no ' "$tmp/pr.out" \
   || fail 'PR route did not say the pin is not landed'
 ! grep -q 'result=landed' "$tmp/pr.out" || fail 'PR route claimed landed'
 ok 'passing PR pin uses the topic publish preflight and creates a PR'
+
+# A rate-limited gh pr create falls back to Vecta's REST pulls API; the PR and the parseable result line are the same as the gh route.
+rl_target=$(setup_target prrate)
+git -C "$rl_target" checkout -q -b product-change
+printf '# existing override row\n' > "$rl_target/.zenoforge/build/overrides.tsv"
+mkdir -p "$rl_target/packages/fixture"
+printf 'product line\n' > "$rl_target/packages/fixture/product-touch.js"
+git -C "$rl_target" add -A
+git -C "$rl_target" commit -qm 'fixture: reviewed product change'
+rl_agent=$(setup_agent prrate)
+rl_calls="$tmp/prrate.calls"
+rl_scopes="$tmp/prrate.scopes"
+: > "$rl_calls"
+: > "$rl_scopes"
+set +e
+PIN_GH_PR_FAIL=1 run_pin "$rl_calls" "$rl_scopes" "$rl_agent" "$rl_target" --land > "$tmp/prrate.out" 2>&1
+rl_status=$?
+set -e
+((rl_status == 75)) || { cat "$tmp/prrate.out" >&2; fail "REST fallback PR pin must exit 75, got $rl_status"; }
+grep -Fq 'gh:pr create --base main' "$rl_calls" || fail 'REST fallback test did not try gh pr create first'
+grep -Fq 'gh:api -X POST repos/ZenoWangzy/vecta/pulls -f title=chore(engine): pin zenoforge' "$rl_calls" \
+  || fail 'rate-limited gh pr create did not fall back to the REST pulls API'
+grep -Fxq 'pin-vecta: result=pr-open route=PR landed=no pr=https://github.com/ZenoWangzy/vecta/pull/9001 (NOT landed: the pin is live only after this PR merges)' "$tmp/prrate.out" \
+  || { cat "$tmp/prrate.out" >&2; fail 'REST fallback did not print the pr-open result line with the PR URL'; }
+[[ "$(sed -n 's/.*result=pr-open route=PR landed=no pr=\([^ ]*\).*/\1/p' "$tmp/prrate.out")" == https://github.com/ZenoWangzy/vecta/pull/9001 ]] \
+  || fail 'REST fallback line is not parseable by zf-auto-pin'
+ok 'rate-limited gh pr create falls back to REST and prints the parseable result line'
 
 # land-direct-main refuses a detached HEAD, so it must run in the pin worktree,
 # never in the caller's engine checkout.

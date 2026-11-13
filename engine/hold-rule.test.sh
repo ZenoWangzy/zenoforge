@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-# hold.sh --rule refuses a hold that is not scheduler-stop-loss and a non-owner comment.
+# hold.sh --rule refuses a hold that is neither scheduler-stop-loss nor on the supervisor/head allowlist, and a non-owner comment.
 export ZF_REPO=test/repo ZF_REPO_DIR="$MODEL_POLICY_TEST_REPO" AGENT_DRY_RUN=0
 source "$SCRIPT_DIR/lib.sh"
 cat > "$test_env_bin/gh" <<'EOT'
@@ -17,6 +17,7 @@ echo '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/6.json
 ! hold_rule 6 requeue 7 2>/dev/null || { echo "FAIL: foreign hold accepted" >&2; exit 1; }
 ! hold_rule 5 requeue 7 2>/dev/null || { echo "FAIL: non-owner comment accepted" >&2; exit 1; }
 ! hold_rule pr-9 recut 7 2>/dev/null || { echo "FAIL: comment on another number accepted for pr-9" >&2; exit 1; }
+! hold_rule 5 requeue 7 "" 800 2>/dev/null || { echo "FAIL: size waiver accepted on a non-owner comment" >&2; exit 1; }
 (
   fixture_engine="$test_env_root/hold-rule-engine"
   fixture_runtime="$test_env_root/hold-rule-autopi"
@@ -61,6 +62,44 @@ EOT
     exit 1
   }
   printf 'ok - hold --rule remains non-zero when scheduler requeue fails\n'
+  # An allowlisted (holder, kind) pair is released by an owner ruling and recorded; every other holder stays refused.
+  cat > "$fixture_bin/gh" <<'EOT'
+#!/usr/bin/env bash
+case "${2:-}" in
+  repos/test/repo/issues/comments/9) a=OWNER ;;
+  repos/test/repo/issues/comments/10) a=NONE ;;
+  *) exit 64 ;;
+esac
+printf '%s\n' "{\"issue_url\":\"https://api.github.com/repos/test/repo/issues/7\",\"author_association\":\"$a\",\"html_url\":\"https://github.com/test/repo/issues/7#issuecomment-9\",\"body\":\"requeue\"}"
+EOT
+  unset HOLD_RULE_FAKE_FAIL
+  release_calls="$test_env_root/hold-rule-release.calls"
+  state_requeue() { printf '%s\n' "$1 $2" >> "$release_calls"; jq "$4 | .state = \"ready-for-agent\" | .hold = null" "$AGENT_HOME/state/$1.json" > "$AGENT_HOME/state/$1.json.tmp"; mv "$AGENT_HOME/state/$1.json.tmp" "$AGENT_HOME/state/$1.json"; }
+  allow_case() { # holder kind comment expect(released|refused|foreign)
+    : > "$release_calls"
+    jq -cn --arg h "$1" --arg k "$2" '{state:"on-hold",hold:{holder:$h,kind:$k,release_condition:"why held",created_at:"before"},recut_children:[]}' > "$AGENT_HOME/state/7.json"
+    printf '%s\n' '{"units":[{"id":"issue-7","issue":7,"stage":"supervisor-review","pr":12,"lane":"pr","branch":"agent/issue-7","history":[{"stage":"review-request-changes"}]}]}' > "$fixture_runtime/units.json"
+    rc=0; hold_rule 7 requeue "$3" > "$test_env_root/hold-rule-allow.out" 2>&1 || rc=$?
+    case "$4" in
+      released)
+        [ "$rc" = 0 ] && [ "$(cat "$release_calls")" = "7 release-hold" ] \
+          && jq -e --arg h "$1" --arg k "$2" '.state == "ready-for-agent" and .hold == null and .hold_release_rulings[0].holder == $h and .hold_release_rulings[0].kind == $k and .hold_release_rulings[0].reason == "why held" and .hold_release_rulings[0].comment_id == 9' "$AGENT_HOME/state/7.json" >/dev/null \
+          && jq -e '.units[0].stage == "rereview-pending" and .units[0].history[-1].stage == "supervisor-requeue"' "$fixture_runtime/units.json" >/dev/null || { echo "FAIL: $1/$2 hold not released, recorded and ruled" >&2; cat "$test_env_root/hold-rule-allow.out" >&2; exit 1; } ;;
+      *)
+        [ "$rc" -ne 0 ] && [ ! -s "$release_calls" ] && jq -e --arg h "$1" '.state == "on-hold" and .hold.holder == $h and (has("hold_release_rulings") | not)' "$AGENT_HOME/state/7.json" >/dev/null \
+          && jq -e '.units[0].stage == "supervisor-review"' "$fixture_runtime/units.json" >/dev/null || { echo "FAIL: $1/$2 with comment $3 was not refused untouched" >&2; cat "$test_env_root/hold-rule-allow.out" >&2; exit 1; }
+        [ "$4" != foreign ] || grep -Fq 'is held by someone other than scheduler-stop-loss' "$test_env_root/hold-rule-allow.out" || { echo "FAIL: $1/$2 refusal message changed" >&2; exit 1; } ;;
+    esac
+  }
+  for pair in supervisor:production-access supervisor:guarded-recut-repeat supervisor:manual head:manual; do allow_case "${pair%%:*}" "${pair#*:}" 9 released; done
+  for pair in supervisor:production-access head:manual; do allow_case "${pair%%:*}" "${pair#*:}" 10 refused; done
+  for pair in founder:manual unknown:production-access supervisor:external-deliverable head:production-access vecta-aa:manual supervisor-inbox:supervisor-inbox; do allow_case "${pair%%:*}" "${pair#*:}" 9 foreign; done
+  # scheduler-stop-loss: today's path, the fixture scheduler releases the hold and no ruling record or state_requeue is written.
+  : > "$release_calls"
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss","kind":"conclusion","created_at":"before"},"recut_children":[]}' > "$AGENT_HOME/state/7.json"
+  printf '%s\n' '{"units":[{"id":"issue-7","issue":7,"stage":"supervisor-review","pr":12,"lane":"pr","branch":"agent/issue-7","history":[{"stage":"review-request-changes"}]}]}' > "$fixture_runtime/units.json"
+  hold_rule 7 requeue 9 >/dev/null 2>&1 && [ ! -s "$release_calls" ] && jq -e '.hold == null and (has("hold_release_rulings") | not)' "$AGENT_HOME/state/7.json" >/dev/null || { echo "FAIL: stop-loss release changed" >&2; exit 1; }
+  printf 'ok - hold --rule releases allowlisted supervisor/head holds on an owner comment and refuses every other holder\n'
 )
 printf 'ok - hold --rule refuses foreign holds and non-owner comments\n'
 # --reblock returns a unit to dependency wait, naming the blocker when the unit has none.
@@ -100,30 +139,160 @@ printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-rev
   mkdir -p "$test_env_root/repo" "$test_env_root/sup/autopi/alerts"
   cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup/autopi/config.json"
   echo '{"workers":[]}' > "$test_env_root/sup/autopi/workers.json"
-  echo '{"units":[{"id":"issue-20","issue":20,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-21","issue":21,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-22","issue":22,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-23","issue":23,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-24","issue":24,"stage":"closed","task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
+  echo '{"units":[{"id":"issue-20","issue":20,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-21","issue":21,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-22","issue":22,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-23","issue":23,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-24","issue":24,"stage":"closed","task":"t","branch":"b","history":[]},{"id":"issue-25","issue":25,"stage":"closed","task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
   source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
   scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
-  gh() { printf '%s\n' "$FAKE_ISSUE_STATE"; }
+  gh() { # the state check is REST only (the GraphQL issue view read is what the rate limit emptied); FAIL makes it unreadable
+    [[ "$1" == issue ]] && { printf '{}\n'; return; } # the requeue refresh; scheduler_issue_transition is stubbed and ignores it
+    [[ "$1" == api && "$2" == repos/test/repo/issues/* && "$4" == .state && "$FAKE_ISSUE_STATE" != FAIL ]] || return 1
+    printf '%s\n' "$FAKE_ISSUE_STATE"; }
   scheduler_issue_transition() { jq '.state = "ready-for-agent" | .hold = null' "$AGENT_HOME/state/$1.json" > "$AGENT_HOME/state/$1.json.tmp" && mv "$AGENT_HOME/state/$1.json.tmp" "$AGENT_HOME/state/$1.json"; }
   stop_loss_state() { printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}' > "$AGENT_HOME/state/$1.json"; }
-  stop_loss_state 20; stop_loss_state 21; stop_loss_state 23
+  stop_loss_state 20; stop_loss_state 21; stop_loss_state 23; stop_loss_state 25
   printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/22.json"
   printf '%s\n' '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/24.json"
-  FAKE_ISSUE_STATE=OPEN; rule_entry issue-20 requeue u "" ""
+  FAKE_ISSUE_STATE=open; rule_entry issue-20 requeue u "" ""
   [ "$(jq -r '.units[]|select(.id=="issue-20")|.stage' "$UNITS")" = implement-pending ] && jq -e '.state == "ready-for-agent" and .hold == null' "$AGENT_HOME/state/20.json" >/dev/null || { echo "FAIL: closed stop-loss unit did not requeue with its hold released" >&2; exit 1; }
-  FAKE_ISSUE_STATE=CLOSED; rc=0; rule_entry issue-21 requeue u "" "" > "$test_env_root/closed-21.out" 2>&1 || rc=$?
+  FAKE_ISSUE_STATE=closed; rc=0; rule_entry issue-21 requeue u "" "" > "$test_env_root/closed-21.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-21.out" && ! grep -q -- '--reroute' "$test_env_root/closed-21.out" || { echo "FAIL: closed issue requeue hint" >&2; cat "$test_env_root/closed-21.out" >&2; exit 1; }
   [ "$(jq -r '.units[]|select(.id=="issue-21")|.stage' "$UNITS")" = closed ] || { echo "FAIL: refused closed issue requeue changed the unit" >&2; exit 1; }
-  FAKE_ISSUE_STATE=OPEN; rc=0; rule_entry issue-22 requeue u "" "" > "$test_env_root/closed-22.out" 2>&1 || rc=$?
+  FAKE_ISSUE_STATE=open; rc=0; rule_entry issue-22 requeue u "" "" > "$test_env_root/closed-22.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-22.out" && ! grep -q -- '--reroute' "$test_env_root/closed-22.out" || { echo "FAIL: closed unit without a hold requeue hint" >&2; cat "$test_env_root/closed-22.out" >&2; exit 1; }
   rc=0; rule_entry issue-24 requeue u "" "" > "$test_env_root/closed-24.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-24.out" || { echo "FAIL: closed unit with a non-stop-loss hold was not refused" >&2; exit 1; }
-  FAKE_ISSUE_STATE=CLOSED; rc=0; rule_entry issue-21 reroute u "dead" "" > "$test_env_root/closed-reroute.out" 2>&1 || rc=$?
+  # An unreadable GitHub state (the read fails) refuses both ways without recut or requeue advice, and never releases the hold.
+  for act in requeue reroute; do
+    FAKE_ISSUE_STATE=FAIL; rc=0; rule_entry issue-25 "$act" u "dead" "" > "$test_env_root/closed-25-$act.out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] && grep -q -- 'could not be read' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--recut' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--requeue' "$test_env_root/closed-25-$act.out" || { echo "FAIL: unreadable closed state ($act) gave the wrong refusal" >&2; cat "$test_env_root/closed-25-$act.out" >&2; exit 1; }
+    [ "$(jq -r '.units[]|select(.id=="issue-25")|.stage' "$UNITS")" = closed ] && jq -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' "$AGENT_HOME/state/25.json" >/dev/null || { echo "FAIL: unreadable closed state ($act) changed the unit or released its hold" >&2; exit 1; }
+  done
+  FAKE_ISSUE_STATE=closed; rc=0; rule_entry issue-21 reroute u "dead" "" > "$test_env_root/closed-reroute.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--recut' "$test_env_root/closed-reroute.out" && ! grep -q -- '--reroute' "$test_env_root/closed-reroute.out" || { echo "FAIL: reroute hint on a closed unit names --reroute" >&2; cat "$test_env_root/closed-reroute.out" >&2; exit 1; }
-  FAKE_ISSUE_STATE=OPEN; rc=0; rule_entry issue-23 reroute u "dead" ""> "$test_env_root/closed-reroute-hold.out" 2>&1 || rc=$?
+  FAKE_ISSUE_STATE=open; rc=0; rule_entry issue-23 reroute u "dead" ""> "$test_env_root/closed-reroute-hold.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/closed-reroute-hold.out" && ! grep -q -- '--reroute' "$test_env_root/closed-reroute-hold.out" || { echo "FAIL: reroute on a closed stop-loss unit must name --requeue" >&2; cat "$test_env_root/closed-reroute-hold.out" >&2; exit 1; }
 )
 printf 'ok - rule_entry requeues a closed unit whose issue is on a stop-loss hold; other closed units refuse with a working hint\n'
+# A unit closed by a recut (cap-triage-recut, or a recut that refused to cut) whose issue stays open and ready-for-agent with no hold
+# has no other way forward (#3405, #1135, #6206): the same requeue reopens it. Any other closed unit keeps the --recut refusal.
+(
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo2" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup2" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup2/autopi"
+  mkdir -p "$test_env_root/repo2" "$test_env_root/sup2/autopi/alerts"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup2/autopi/config.json"
+  echo '{"workers":[]}' > "$test_env_root/sup2/autopi/workers.json"
+  cu() { printf '{"id":"issue-%s","issue":%s,"stage":"closed","task":"t","branch":"b","history":[%s]}' "$1" "$1" "$2"; }
+  hs() { local out="" s; for s; do out+="${out:+,}{\"stage\":\"$s\",\"at\":\"2026-11-13T00:00:00Z\"}"; done; printf '%s' "$out"; }
+  printf '{"units":[%s,%s,%s,%s,%s,%s,%s,%s]}\n' \
+    "$(cu 30 "$(hs supervisor-escalated supervisor-cap-triage-recut supervisor-cap-default)")" \
+    "$(cu 31 "$(hs supervisor-cap-triage-recut merged)")" \
+    "$(cu 32 "$(hs supervisor-cap-triage-recut)")" \
+    "$(cu 33 "$(hs supervisor-cap-triage-recut)")" \
+    "$(cu 34 "$(hs supervisor-cap-triage-recut)")" \
+    "$(cu 35 "$(hs supervisor-recut hold-handoff)")" \
+    "$(cu 36 "$(hs obsolete)")" \
+    "$(cu 37 "$(hs supervisor-cap-triage-recut)")" > "$test_env_root/sup2/autopi/units.json" # live-only
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+  scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
+  gh() { [[ "$1" == issue ]] && { printf '{}\n'; return; }
+    [[ "$1" == api && "$2" == repos/test/repo/issues/* && "$4" == .state && "$FAKE_ISSUE_STATE" != FAIL ]] || return 1
+    printf '%s\n' "$FAKE_ISSUE_STATE"; }
+  scheduler_issue_transition() { echo "FAIL: a ready issue must not be transitioned" >&2; return 1; }
+  for n in 30 31 32 34 36; do printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/$n.json"; done
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/33.json"
+  printf '%s\n' '{"state":"ready-for-agent","recut_refused_at":"2026-11-13T00:00:01Z"}' > "$AGENT_HOME/state/35.json"
+  printf '%s\n' '{"state":"ready-for-agent","recut_children":[1]}' > "$AGENT_HOME/state/37.json"
+  stage() { jq -r --arg id "$1" '.units[]|select(.id==$id)|.stage' "$UNITS"; } # live-only
+  refused() { # unit issue-state text: rc 1, the message has text, the unit stays closed
+    FAKE_ISSUE_STATE="$2"; rc=0; rule_entry "$1" requeue u "" "" > "$test_env_root/recut-$1.out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] && [ "$(stage "$1")" = closed ] && grep -q -- "$3" "$test_env_root/recut-$1.out" || { echo "FAIL: $1 (issue $2) was not refused with '$3'" >&2; cat "$test_env_root/recut-$1.out" >&2; exit 1; }
+  }
+  # the #3405 shape: closed by cap-triage-recut, issue open, no hold -> requeued
+  FAKE_ISSUE_STATE=open; rule_entry issue-30 requeue u "" ""
+  [ "$(stage issue-30)" = implement-pending ] && [ "$(jq -r '.units[]|select(.id=="issue-30")|.history[-1].stage' "$UNITS")" = supervisor-requeue ] || { echo "FAIL: recut-closed unit did not requeue" >&2; exit 1; } # live-only
+  # a refused recut (marker, no children) followed only by a handoff is the same shape (#1135, #6206)
+  FAKE_ISSUE_STATE=open; rule_entry issue-35 requeue u "" ""
+  [ "$(stage issue-35)" = implement-pending ] || { echo "FAIL: refused-recut unit did not requeue" >&2; exit 1; }
+  refused issue-31 open -- '--recut'        # delivered: merged in its history
+  refused issue-32 closed -- '--recut'      # issue closed
+  refused issue-33 open -- '--recut'        # issue on a hold
+  refused issue-36 open -- '--recut'        # closed on purpose, no recut event
+  refused issue-37 open -- '--recut'        # the recut produced children
+  refused issue-34 FAIL 'could not be read' # unreadable GitHub state: retry the ruling
+  # the reroute refusal names the route that works
+  FAKE_ISSUE_STATE=open; rc=0; rule_entry issue-32 reroute u "dead" "" > "$test_env_root/recut-reroute.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/recut-reroute.out" && ! grep -q -- '--reroute' "$test_env_root/recut-reroute.out" || { echo "FAIL: reroute hint on a recut-closed unit" >&2; cat "$test_env_root/recut-reroute.out" >&2; exit 1; }
+)
+printf 'ok - rule_entry requeues a recut-closed unit whose issue is open, ready and unheld; delivered, held, closed-issue, on-purpose, children and unreadable cases refuse\n'
+# hold.sh --rule --requeue --size-waiver N: the comment author and first line become by/reason, one size-waiver event rides the
+# requeue (before supervisor-requeue), and the unit's size limit is raised; out-of-range N, non-owner comments and other kinds refuse.
+(
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo3" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup3" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup3/autopi"
+  mkdir -p "$test_env_root/repo3" "$test_env_root/sup3/autopi/alerts"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup3/autopi/config.json"
+  echo '{"workers":[]}' > "$test_env_root/sup3/autopi/workers.json"
+  w() { printf '{"id":"issue-%s","issue":%s,"stage":"%s","task":"t","branch":"b","history":[{"stage":"supervisor-cap-triage-recut","at":"2026-11-13T00:00:00Z"}]}' "$1" "$1" "$2"; }
+  printf '{"units":[%s,%s,%s,%s]}\n' "$(w 40 closed)" "$(w 41 closed)" "$(w 42 closed)" "$(w 43 parked)" > "$test_env_root/sup3/autopi/units.json" # live-only
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+  scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
+  gh() { [[ "$1" == issue ]] && { printf '{}\n'; return; }; [[ "$1" == api ]] && [[ "$4" == .state ]] && { echo open; return; }; return 1; }
+  scheduler_issue_transition() { echo "FAIL: a ready issue must not be transitioned" >&2; return 1; }
+  for n in 40 41 42 43; do printf '%s\n' '{"state":"ready-for-agent","recut_refused_at":"2026-11-13T02:46:11Z"}' > "$AGENT_HOME/state/$n.json"; done
+  unit() { jq -c --arg id "$1" '.units[]|select(.id==$id)' "$UNITS"; } # live-only
+  # the #6273 shape: closed, recut refused with 0 children; whole ticket at 740 lines against the 640 estimate line
+  rule_entry issue-40 requeue u $'  Take it whole, 740 lines.  \nsecond line is not kept' "" 800 head-owner
+  [ "$(unit issue-40 | jq -r '.stage')" = implement-pending ] \
+    && unit issue-40 | jq -e '.size_waiver == {max_lines: 800, by: "head-owner", at: .size_waiver.at, reason: "Take it whole, 740 lines."} and (.size_waiver.at | length > 0)' >/dev/null \
+    && [ "$(unit issue-40 | jq -r '[.history[].stage] | map(select(. == "size-waiver")) | length')" = 1 ] \
+    && [ "$(unit issue-40 | jq -r '.history[-2].stage + "|" + .history[-1].stage')" = size-waiver\|supervisor-requeue ] || { echo "FAIL: waiver on a closed recut-refused unit did not reopen it with the waiver set" >&2; unit issue-40 >&2; exit 1; }
+  # size admission: 740 estimated lines against the 640 line is cut without the waiver and passes with it
+  TICK_DISPATCH_LOCAL_REFILL=false; rejects=0
+  size_admission_reject() { rejects=$((rejects + 1)); return 1; }
+  size_admission_write_start issue-40 "" "$(unit issue-40 | jq -c '.estimated_changed_lines = 740')" || :
+  [ "$rejects" = 0 ] || { echo "FAIL: size admission cut a waived 740-line ticket" >&2; exit 1; }
+  size_admission_write_start issue-40 "" "$(unit issue-40 | jq -c '.estimated_changed_lines = 740 | del(.size_waiver)')" || :
+  [ "$rejects" = 1 ] || { echo "FAIL: an unwaived 740-line ticket was not cut at the 640 line" >&2; exit 1; }
+  size_admission_write_start issue-40 "" "$(unit issue-40 | jq -c '.estimated_changed_lines = 801')" || :
+  [ "$rejects" = 2 ] || { echo "FAIL: a waived 801-line ticket was not cut at the 800 waiver" >&2; exit 1; }
+  # out of range: refused, nothing written, the unit stays closed
+  for bad in 640 641x 0 -5 1281 abc; do
+    rc=0; rule_entry issue-41 requeue u "waiver" "" "$bad" owner > "$test_env_root/waiver-bad.out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] && grep -q 'must be an integer above 640 and at most 1280' "$test_env_root/waiver-bad.out" && [ "$(unit issue-41 | jq -r '.stage')" = closed ] && unit issue-41 | jq -e 'has("size_waiver") | not' >/dev/null || { echo "FAIL: size waiver '$bad' was not refused untouched" >&2; cat "$test_env_root/waiver-bad.out" >&2; exit 1; }
+  done
+  rule_entry issue-42 requeue u "top of the range" "" 1280 owner && unit issue-42 | jq -e '.size_waiver.max_lines == 1280' >/dev/null || { echo "FAIL: 2x the estimate line was refused" >&2; exit 1; }
+  # a waiver rides only a requeue
+  rc=0; rule_entry issue-43 reroute u "x" "" 800 owner >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 64 ] && [ "$(unit issue-43 | jq -r '.stage')" = parked ] || { echo "FAIL: waiver with --reroute was not refused" >&2; exit 1; }
+  # a parked unit takes the same route
+  rule_entry issue-43 requeue u "parked too" "" 900 owner && unit issue-43 | jq -e '.size_waiver.max_lines == 900 and .stage != "parked"' >/dev/null || { echo "FAIL: waiver on a parked unit" >&2; exit 1; }
+)
+# hold_rule hands the waiver and the comment author to scheduler.sh after checking the range; a bad range releases nothing.
+(
+  fe="$test_env_root/hold-waiver-engine"; fb="$test_env_root/hold-waiver-bin"; mkdir -p "$fe/mac-autopilot" "$fb"
+  cat > "$fe/mac-autopilot/scheduler.sh" <<'EOT'
+#!/usr/bin/env bash
+if [[ "$1" == --size-waiver-check ]]; then [[ "$2" -le 1280 ]] || { echo "rule: out of range" >&2; exit 1; }; exit 0; fi
+printf '%s|' "$@" > "$AGENT_HOME/waiver.args"
+EOT
+  cat > "$fb/gh" <<'EOT'
+#!/usr/bin/env bash
+[[ "$1:${2:-}" == api:repos/test/repo/issues/comments/9 ]] || exit 64
+printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/8","author_association":"OWNER","user":{"login":"head-owner"},"html_url":"https://github.com/test/repo/issues/8#issuecomment-9","body":"whole ticket"}'
+EOT
+  chmod +x "$fe/mac-autopilot/scheduler.sh" "$fb/gh"; PATH="$fb:$PATH"; _AGENT_LIB_DIR="$fe"
+  printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/8.json"
+  hold_rule 8 requeue 9 "" 800
+  [ "$(cat "$AGENT_HOME/waiver.args")" = '--rule|issue-8|requeue|https://github.com/test/repo/issues/8#issuecomment-9|whole ticket||800|head-owner|' ] || { echo "FAIL: hold_rule did not pass the waiver and author: $(cat "$AGENT_HOME/waiver.args")" >&2; exit 1; }
+  rm -f "$AGENT_HOME/waiver.args"; rc=0; hold_rule 8 requeue 9 "" 1281 >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] && [ ! -e "$AGENT_HOME/waiver.args" ] || { echo "FAIL: hold_rule ran the ruling with a bad waiver" >&2; exit 1; }
+  rc=0; hold_rule 8 reroute 9 "" 800 >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 64 ] || { echo "FAIL: hold_rule took a waiver with --reroute" >&2; exit 1; }
+  rc=0; hold_cli_main --rule issue-8 --reroute --comment 9 --size-waiver 800 >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 64 ] || { echo "FAIL: hold.sh took --size-waiver with --reroute" >&2; exit 1; }
+  rc=0; hold_cli_main --rule issue-8 --requeue --comment 9 --size-waiver 0 >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 64 ] || { echo "FAIL: hold.sh took --size-waiver 0" >&2; exit 1; }
+  rm -f "$AGENT_HOME/waiver.args"; hold_cli_main --rule issue-8 --requeue --comment 9 --size-waiver 800
+  grep -q '|800|head-owner|$' "$AGENT_HOME/waiver.args" || { echo "FAIL: hold.sh --size-waiver did not reach hold_rule" >&2; exit 1; }
+)
+printf 'ok - hold --rule --requeue --size-waiver writes the unit waiver in one event, reopens a recut-closed unit, and refuses a bad range, a non-owner comment and other kinds\n'
 # hold.sh --rule accepts --reroute: it gets past the usage check (64) and stops at the owner-comment check.
 rc=0; hold_cli_main --rule issue-5 --reroute --comment 7 2>/dev/null || rc=$?
 [ "$rc" != 64 ] || { echo "FAIL: hold.sh rejects --reroute" >&2; exit 1; }
@@ -162,6 +331,12 @@ printf 'ok - reroute keeps a dropped body blocker off the unit until reblock nam
   report="$test_env_root/report-13.txt"; printf 'BLOCKED-ON: #5388\n' > "$report"
   park_blocked issue-13 "$(blocked_on_of "$report")"
   [ "$(jq -r '.units[]|select(.id=="issue-13")|.stage+"|"+(.history[-1].stage)' "$UNITS")" = "implement-pending|dropped-dep-ignored" ] || { echo "FAIL: dropped dependency parked the unit" >&2; exit 1; }
+  # The same ignore on the next tick changes nothing, so it writes no second event (issue-6164 got one every tick for 2 h).
+  unit_dep_dropped issue-13 5388 && ! unit_dep_dropped issue-13 9999 || { echo "FAIL: unit_dep_dropped does not read dropped_deps" >&2; exit 1; }
+  : > "$LOG"
+  park_blocked issue-13 5388
+  [ "$(jq -r '.units[]|select(.id=="issue-13")|.history|length' "$UNITS")" = 1 ] || { echo "FAIL: a repeated dropped dependency wrote a second history event" >&2; exit 1; }
+  ! grep -q 'ignores dropped dependency' "$LOG" || { echo "FAIL: a repeated dropped dependency logged again" >&2; exit 1; }
   rule_entry issue-14 reroute u "dead blocker" ""
   jq -e '.units[]|select(.id=="issue-14")|.task|contains("Supervisor ruling: dependency #5388 is resolved") and contains("do not report blocked on it")' "$UNITS" >/dev/null || { echo "FAIL: reroute task line missing" >&2; exit 1; }
   printf 'BLOCKED-ON: #9999\n' > "$report"

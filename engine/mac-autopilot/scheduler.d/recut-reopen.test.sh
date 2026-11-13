@@ -112,6 +112,12 @@ intake_closed_unit_rows 21 22 23 24 25 26 27 28
 [[ "$(cu_episode 22)" == "ruling-$STAMP" ]] || fail "a recut-closed unit must be restored"
 [[ "$(unit_json issue-22 | jq -r .closed_units_restored_at)" == "$STAMP" ]] || fail "restore must be marked on the unit"
 for n in 21 23 25 26 27 28; do [[ "$(cu_episode $n)" == none ]] || fail "issue $n must take no episode"; done
+# A terminal row no path restores is named once, not left silent (a delivered unit and a unit closed on purpose); acted, held and ruled rows are not.
+intake_closed_unit_rows 21 22 23 24 25 26 27 28
+[[ "$(grep -c 'intake skip issue #21: all units terminal (merged) and no restore path' "$LOG")" == 1 ]] || fail "delivered row not named exactly once: $(grep 'intake skip' "$LOG")"
+[[ "$(grep -c 'intake skip issue #23: all units terminal (closed) and no restore path' "$LOG")" == 1 ]] || fail "closed-on-purpose row not named exactly once"
+grep -q 'intake skip issue #23: .*hold.sh --rule issue-23 requeue' "$LOG" || fail "no-restore line must name the ruling that works for a recut-closed unit"
+for n in 22 24 25 26 27 28; do ! grep -q "intake skip issue #$n:" "$LOG" || fail "issue $n must not get the no-restore line"; done
 # One restore per unit: the unit closes again, a later tick leaves it closed and says so once.
 set_unit issue-22 '.stage = "closed" | .history += [{stage:"supervisor-cap-triage-recut",at:"2026-01-04T00:00:00Z"}]'
 cu_state 22 needs-hold

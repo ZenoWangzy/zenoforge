@@ -1,5 +1,4 @@
 engine/advisor-plan-batch.test.sh
-engine/auto-pin.test.sh
 engine/bin/install-guard.test.sh
 engine/check-gh-flags.test.sh
 engine/check-pipeline-lesson-window.test.sh
@@ -15,7 +14,6 @@ engine/gitnexus-wrapper.test.sh
 engine/hand-completion-refill.test.sh
 engine/hotfix/hf-brief-lint.test.sh
 engine/hotfix/hf-install-gate.test.sh
-engine/hotfix/hf-merge.test.sh
 engine/hotfix/hf-pr.test.sh
 engine/hotfix/hf-source-check.test.sh
 engine/hotfix/hf-stale.test.sh
@@ -48,7 +46,6 @@ engine/mac-autopilot/review-contract.test.sh
 engine/mac-autopilot/scheduler.d/jqf-argv-growth.test.sh
 engine/mac-autopilot/scheduler.d/locks-views-trap.test.sh
 engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
-engine/mac-autopilot/scheduler-gates.test.sh
 engine/mac-autopilot/station-standards.test.sh
 engine/main-ci-red-scope.test.sh
 engine/main-red-bisect.test.sh
@@ -61,7 +58,6 @@ engine/night/hand-owned-issues.test.sh
 engine/night/maintainer-health-mail-idempotency.test.sh
 engine/night/maintainer-health-mail-incident.test.sh
 engine/night/maintainer-health-mail.test.sh
-engine/night/node-health-rules.test.sh
 engine/night/outcomes-audit.test.sh
 engine/night/outcomes-pagination-budget.test.sh
 engine/night/outcomes-reconciliation.test.sh

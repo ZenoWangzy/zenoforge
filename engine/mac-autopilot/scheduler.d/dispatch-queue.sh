@@ -60,33 +60,47 @@ EOF
 # footprint_room pass the unit as why_unit (dynamic scope). The last gate per unit lives in $A/.dispatch-why (unit TAB gate); a start clears it.
 declare -gA DISPATCH_WHY_LAST=()
 DISPATCH_WHY_DIRTY=false
+# Units this pass set or cleared (value gate, or "-" for cleared). Save merges only these into the file: a refill that overlaps a full tick
+# saved its whole stale map over the tick's newer gates (issue-5802 stayed on self-fix-refill in the file after host-capacity was logged),
+# so the next change for that unit was judged "same gate" and never logged.
+declare -gA DISPATCH_WHY_TOUCHED=()
 dispatch_why() { # unit gate [detail]
   [[ -n "${1:-}" && -n "${2:-}" && "${DISPATCH_WHY_LAST[$1]:-}" != "$2" ]] || return 0
-  DISPATCH_WHY_LAST[$1]="$2"; DISPATCH_WHY_DIRTY=true
+  DISPATCH_WHY_LAST[$1]="$2"; DISPATCH_WHY_TOUCHED[$1]="$2"; DISPATCH_WHY_DIRTY=true
   say "dispatch why unit=$1 gate=$2${3:+ detail=$3}"
 }
 dispatch_why_clear() { # unit: it started, so its next skip is news again
   [[ -n "${1:-}" && -n "${DISPATCH_WHY_LAST[$1]:-}" ]] || return 0
-  unset "DISPATCH_WHY_LAST[$1]"; DISPATCH_WHY_DIRTY=true
+  unset "DISPATCH_WHY_LAST[$1]"; DISPATCH_WHY_TOUCHED[$1]=-; DISPATCH_WHY_DIRTY=true
 }
 dispatch_why_load() {
   local unit gate
-  DISPATCH_WHY_LAST=(); DISPATCH_WHY_DIRTY=false
+  DISPATCH_WHY_LAST=(); DISPATCH_WHY_TOUCHED=(); DISPATCH_WHY_DIRTY=false
   [[ -n "${A:-}" && -r "$A/.dispatch-why" ]] || return 0
   while IFS=$'\t' read -r unit gate; do [[ -n "$unit" && -n "$gate" ]] && DISPATCH_WHY_LAST[$unit]="$gate"; done < "$A/.dispatch-why"
   return 0
 }
-dispatch_why_save() { # prunes units that left units.json; rewrites the file only when a gate or a prune changed it
-  local unit ids
+dispatch_why_save() { # merges this pass's changes into the file as it is now; prunes units that left the ledger; rewrites only when something changed
+  local unit gate ids
+  local -A merged=()
   [[ -n "${A:-}" && -n "${UNITS:-}" ]] || return 0 # a caller without a state dir (a pack stub test) keeps no file
   ids="$(jqf -r '.units[].id' "$UNITS" 2>/dev/null)" || return 0
+  if [[ -r "$A/.dispatch-why" ]]; then
+    while IFS=$'\t' read -r unit gate; do [[ -n "$unit" && -n "$gate" ]] && merged[$unit]="$gate"; done < "$A/.dispatch-why"
+  fi
+  for unit in "${!DISPATCH_WHY_TOUCHED[@]}"; do
+    if [[ "${DISPATCH_WHY_TOUCHED[$unit]}" == - ]]; then unset "merged[$unit]"; else merged[$unit]="${DISPATCH_WHY_TOUCHED[$unit]}"; fi
+  done
+  for unit in "${!merged[@]}"; do
+    grep -qxF -- "$unit" <<<"$ids" || { unset "merged[$unit]"; DISPATCH_WHY_DIRTY=true; }
+  done
   for unit in "${!DISPATCH_WHY_LAST[@]}"; do
     grep -qxF -- "$unit" <<<"$ids" || { unset "DISPATCH_WHY_LAST[$unit]"; DISPATCH_WHY_DIRTY=true; }
   done
   [[ "$DISPATCH_WHY_DIRTY" == true ]] || return 0
-  for unit in "${!DISPATCH_WHY_LAST[@]}"; do printf '%s\t%s\n' "$unit" "${DISPATCH_WHY_LAST[$unit]}"; done > "$A/.dispatch-why.tmp" \
+  for unit in "${!merged[@]}"; do printf '%s\t%s\n' "$unit" "${merged[$unit]}"; done > "$A/.dispatch-why.tmp" \
     && mv -f -- "$A/.dispatch-why.tmp" "$A/.dispatch-why" || :
-  DISPATCH_WHY_DIRTY=false
+  DISPATCH_WHY_TOUCHED=(); DISPATCH_WHY_DIRTY=false
 }
 
 dispatch_pending() {
@@ -168,7 +182,7 @@ dispatch_pending() {
     if [[ "$stage" == *-pending && -n "$(jqf -r '.dep_wait_delivery // empty' <<<"$u")" ]]; then
       if marked_dep="$(dep_marker_open "$u")"; then
         if [[ "$local_refill" != true ]]; then
-          park_blocked "$id" "$marked_dep"
+          park_blocked "$id" "$marked_dep" dep-marker
           [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
         fi
         dispatch_skip dep-marker; continue
@@ -182,7 +196,7 @@ dispatch_pending() {
     if [[ "$stage" == implement-pending || "$stage" == repair-pending ]] && blocked_dep="$(unit_blocked_run_dep "$u")" \
       && [[ "$blocked_dep" =~ ^[0-9]+$ ]] && ! dep_cleared "$u" "$blocked_dep"; then
       if [[ "$local_refill" != true ]]; then
-        set_unit "$id" ".blocked_on=$blocked_dep | .note=$(js "waiting for predecessor #$blocked_dep") | .stage=\"blocked-external\""
+        set_unit "$id" "$(hist_blocked blocker-held "$blocked_dep" last-run "#$blocked_dep: its last run ended blocked on it and nothing cleared it") | .blocked_on=$blocked_dep | .note=$(js "waiting for predecessor #$blocked_dep") | .stage=\"blocked-external\""
         [[ "$stage" != repair-pending ]] || set_unit "$id" '.blocked_resume_stage="repair-pending"'
         say "unit $id back to blocked-external: its last run ended blocked on #$blocked_dep and nothing cleared it"
       fi
@@ -353,7 +367,7 @@ dispatch_pending() {
         dmark handoff_head
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" "$((1 - prless))" "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" "$((1 - prless))" "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; else say "repair-pending unit=$id: previous worktree unavailable"; fi
             continue
@@ -361,7 +375,7 @@ dispatch_pending() {
           dstep handoff_integration record_handoff_integration "$id" "$wt" "$handoff_original" || { dispatch_skip handoff-integration; continue; }
         elif [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "" "$(jqf -r '.handoff_start_sha' <<<"$u")" false "$((1 - prless))" "$(jqf -r '.handoff_start_ref' <<<"$u")" "$(jqf -r '.handoff_start_sha' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "" "$(jqf -r '.handoff_start_sha' <<<"$u")" false "$((1 - prless))" "$(jqf -r '.handoff_start_ref' <<<"$u")" "$(jqf -r '.handoff_start_sha' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")" "$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the existing branch; inspect the preserved rescue and PR"; else say "repair-pending unit=$id: rescued ref unavailable"; fi
             continue
@@ -475,7 +489,7 @@ $(decision_scope "$u")"
           || ! git -C "$wt" merge-base --is-ancestor "$prev_sha" "$sha" 2>/dev/null; then
           # 没有可核销的上一轮基线：做一次完整评审，不允许空 diff 的"增量复审"放行。
           rep="review-${key}-${TAG}.md"
-          prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt")$(sweep_rule "$u" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+          prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt" "$sha")$(sweep_rule "$u" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
           prompt+="$(ci_red_evidence_rule "$u" "$sha" "$prev_sha")"
         dmark prompt
         dispatch_if_room "$id" "review" "review" "${rep%.md}.worker.log" "$rep" \
@@ -486,7 +500,7 @@ $(decision_scope "$u")"
         prompt="你是 the product 流水线的独立代码评审 subagent，只读增量复审。当前目录是隔离 clone，已检出 PR 当前 head（detached），origin/main 为最新 main。
 复审 ${subject}（${title}）当前 head ${sha}，上轮 head ${prev_sha}。按正式契约中的 Targeted re-review 流程，仅检查 ${prev_sha}..${sha} 的 PR 增量及其直接依赖闭包；报告写到 $SUP/${rep}。
 读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule)
-只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(review_inputs_rule "$u" "$wt")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(review_inputs_rule "$u" "$wt" "$sha")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         prompt+="$(ci_red_evidence_rule "$u" "$sha" "$prev_sha")"
         dmark prompt
         dispatch_if_room "$id" "rereview" "rereview" "${rep%.md}.worker.log" "$rep" \
@@ -504,7 +518,7 @@ $(decision_scope "$u")"
         dcapture wt clone ensure_clone "$id" || { say "review-pending unit=$id: clone unavailable"; continue; }
         dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"
-        prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+        prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         prompt+="$(ci_red_evidence_rule "$u" "$sha" "$(jqf -r '.reviewed_sha // empty' <<<"$u")")"
         # 打回报告缺可解析发现块后的同 head 重问：history 尾事件就是重问标记（重交合规报告后即被新事件取代）。
         [[ "$(jqf -r '(.history // [])[-1].stage // empty' <<<"$u")" == review-findings-missing ]] && prompt+="$(findings_reask_rule "$u")"
@@ -538,7 +552,7 @@ $(decision_scope "$u")"
         dmark stack_fields
         if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" 0 "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$stack_branch" "$stack_sha")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" 0 "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$stack_branch" "$stack_sha" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; else say "implement-pending unit=$id: previous worktree unavailable"; fi
             continue
@@ -546,7 +560,7 @@ $(decision_scope "$u")"
           dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
         elif [[ -n "$resume_branch" && "$resume_sha" =~ $SHA_RE && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
-          wt="$(handoff_worktree_clone "$id" "$branch" "" "$resume_sha" false 0 "$resume_branch" "$resume_sha" "$stack_branch" "$stack_sha")" || handoff_status=$?; dmark clone
+          wt="$(handoff_worktree_clone "$id" "$branch" "" "$resume_sha" false 0 "$resume_branch" "$resume_sha" "$stack_branch" "$stack_sha" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
             if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the stacked branch; inspect both histories"; else say "implement-pending unit=$id: rescued checkout unavailable"; fi
             continue

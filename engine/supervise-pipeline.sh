@@ -288,8 +288,8 @@ check_recut_marker_regression() {
 # waiting between ticks; a floor of 5 stays clear of that while still
 # catching a real pile-up. DISPATCH_STALL_MINUTES=60: comfortably above
 # both ADVISOR_CAP and RECUT_CAP's normal ~5min per-dispatch cadence
-# (issue-pipeline.sh: ADVISOR_CAP=2, RECUT_CAP=1 -- two advisor tickets and
-# one recut ticket in flight per leg, next work starts on later ticks),
+# (issue-pipeline.sh: ADVISOR_CAP=2, RECUT_CAP=3 -- two advisor tickets and
+# up to three recut tickets in flight per leg, next work starts on later ticks),
 # comfortably below what a real stall looks like. A prior recut
 # stall showed a substantial needs-recut queue whose tickets already carried
 # recut_children or recut_refused_at (issue-pipeline.sh's own pre-dispatch
@@ -697,11 +697,11 @@ hand_dispatch_pid_state() {
     [ -e "/proc/$pid" ] && echo unknown || echo dead
     return 0
   fi
-  if ! [ -r "/proc/$pid/stat" ] || ! [ -r "/proc/$pid/cmdline" ]; then
+  if ! [ -r "/proc/$pid/cmdline" ]; then
     echo unknown
     return 0
   fi
-  observed_ticks="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+  observed_ticks="$(pid_start_id "$pid" 2>/dev/null || true)"
   [ "$observed_ticks" = "$expected_ticks" ] || { echo unknown; return 0; }
   sid="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
   [ "$sid" = "$pid" ] || { echo unknown; return 0; }

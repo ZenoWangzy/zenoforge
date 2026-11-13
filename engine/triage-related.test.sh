@@ -65,8 +65,8 @@ assert_eq() {
   echo "ok - $description"
 }
 
-if ! grep -Fq 'record_triage_related_issues "$N" "$RESULT"' "$SCRIPT_DIR/run-triage.sh"; then
-  echo 'not ok - run-triage records the related issue group' >&2
+if ! grep -Fq 'record_triage_related_issues "$N" "$RESULT" || echo "run-triage: #$N related not recorded" >&2' "$SCRIPT_DIR/run-triage.sh"; then
+  echo 'not ok - run-triage records the related issue group without aborting the run' >&2
   exit 1
 fi
 echo 'ok - run-triage records the related issue group'

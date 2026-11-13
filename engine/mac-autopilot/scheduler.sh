@@ -100,6 +100,7 @@ source "$HERE/scheduler.d/review-rules.sh"
 source "$HERE/scheduler.d/land-lane.sh"
 source "$HERE/scheduler.d/dependencies-fresh.sh"
 source "$HERE/scheduler.d/dependencies.sh"
+source "$HERE/scheduler.d/dependencies-history.sh"
 source "$HERE/scheduler.d/size-admission.sh"
 source "$HERE/scheduler.d/harvest-workers.sh"
 source "$HERE/scheduler.d/stop-loss.sh"
@@ -127,7 +128,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --release-deps && "${1:-}" != --rule ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --release-deps && "${1:-}" != --rule && "${1:-}" != --size-waiver-check ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -325,7 +326,7 @@ handle_worker_death() { # worker-json unit type log-path → diagnose and route 
     if [[ "$death_class" == oom-kill ]] && [[ "$(unit_field "$unit" '.issue // empty')" =~ ^[1-9][0-9]*$ ]] \
       && scheduler_recut_route "$(unit_field "$unit" '.issue')" "$(jq -cn --arg unit "$unit" --arg log "$(basename "$lg")" --argjson death "$death" '{kind:"worker-oom-death",unit:$unit,log:$log,death:$death}')" \
       && scheduler_issue_state "$(unit_field "$unit" '.issue')" | jq -e '.state == "needs-recut"' >/dev/null; then
-      set_unit "$unit" "$(hist worker-oom-recut "$death_summary") | .stage=\"blocked-external\" | .size_recut_pending=true"
+      set_unit "$unit" "$(hist_blocked worker-oom-recut '' worker-oom "$death_summary") | .stage=\"blocked-external\" | .size_recut_pending=true"
       say "unit=$unit worker died $death_summary -> needs-recut"
     elif [[ "$wtype" =~ ^(review|rereview|repair|implement)$ && "$(unit_retries "$unit" fresh-session-retry)" == 0 ]]; then
       set_unit "$unit" "$(hist fresh-session-retry "$no_output deaths") | .session_ids={} | .sessions={} | .session_id=null | .stage=\"${wtype}-pending\""
@@ -766,6 +767,7 @@ case "${1:-}" in
   --existing-walk) SCHED_STATION=true; existing_walk_tick ;;
   --release-deps) release_deps_station_tick ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
-  --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
+  --size-waiver-check) size_waiver_range_check "${2:-}" ;; # hold.sh --rule --size-waiver: refuse a bad max_lines before any hold is released
+  --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;
 esac

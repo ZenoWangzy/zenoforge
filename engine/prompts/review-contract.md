@@ -33,6 +33,7 @@ preference.
   issue names an undelivered prerequisite, write `BLOCKED-ON: #<number>` and
   report `INPUT_INCOMPLETE`.
 - When the prompt includes `INCIDENT_RULE`, apply its report requirements before `READY`; the incident report gate requires `NOT_READY` and a reason naming any missing section or invalid recurrence-guard kind.
+- When the prompt carries a `Verification evidence for head <sha>` paragraph, it is an input: read the command, exit code and excerpts it names for that exact head and check them against the acceptance criteria. `RED` or `SKIPPED` means the behaviour is unproven by evidence, not a finding by itself. If `passed` evidence contradicts a behaviour an acceptance criterion needs, or does not show it, report a finding (`rule` `Spec`, `file` the evidence copy the prompt names, `line` 1; P1 when it contradicts, else P2). Evidence never replaces reading the diff.
 
 ## Review in this order
 

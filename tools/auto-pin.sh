@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pins the newest zenoforge main commit as soon as main moves (rulings zenoforge-instant-effect-2026-11-05, zenoforge-batch-land-2026-11-08:
 # "Pin follows the batch at once"). Commits merged together are pinned once, at main's head: walking them one by one cost ~500 s each.
-# A failed pin waits for the next main commit, then moves on; dirty-checkout and changed-VectA-head refusals retry once per fix. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
+# A failed pin waits for the next main commit, then moves on; dirty-checkout and changed-VectA-head refusals retry once per fix; rate limits retry the same commit up to 3 times. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
 # Run a copy, not the clone's file: the loop checks out new commits in its clone (see tools/zf-auto-pin.service).
 # State and stop file live in ZF_AUTO_PIN_HOME; engine/mac-autopilot/pin-lag.sh (bell) reads auto-pin.last to alert on a stall.
 set -u
@@ -15,22 +15,26 @@ logdir=$ZF_AUTO_PIN_HOME/auto-pin-logs
 # Only a PR holding build.json, overrides.tsv and, optionally, the pack copies merged by this pin, with no failed check.
 # A clean three-way merge that leaves a pack copy byte-identical adds no pack file, so the PR is base-only.
 merge_override_pin() { # log -> 0 merged, 1 leave for head
-  local log=$1 url pr allowed files bad state i
+  local log=$1 url pr allowed files bad head_sha checks i
   url=$(sed -n 's/.*result=pr-open route=PR landed=no pr=\([^ ]*\).*/\1/p' "$log" | tail -1)
   pr=${url##*/}; [[ $pr =~ ^[1-9][0-9]*$ ]] || { echo 'override-pin: no PR number in the pin log'; return 1; }
   allowed=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv; sed -n 's#^pin-vecta: merged override \([^ ]*\) base=.*#.zenoforge/build/pack/scripts/agent/\1#p' "$log")
   [[ $(wc -l <<<"$allowed") -ge 3 ]] || { echo "override-pin: #$pr merged no override"; return 1; }
-  files=$(gh pr view "$pr" -R ZenoWangzy/vecta --json files -q '.files[].path') || return 1
+  files=$(gh api --paginate "repos/ZenoWangzy/vecta/pulls/$pr/files" --jq '.[].filename') || return 1
   if [[ -n $(comm -23 <(sort <<<"$files") <(sort <<<"$allowed")) \
      || -n $(comm -13 <(sort <<<"$files") <(sort <<<".zenoforge/build.json"$'\n'".zenoforge/build/overrides.tsv")) ]]; then
     echo "override-pin: #$pr files are not the pin, its overrides and their pack copies"; return 1
   fi
-  bad=$(gh pr view "$pr" -R ZenoWangzy/vecta --json statusCheckRollup -q '[.statusCheckRollup[] | select((.conclusion // .state // "") | test("^(FAILURE|ERROR|CANCELLED|TIMED_OUT|ACTION_REQUIRED|STARTUP_FAILURE)$"))] | length') || return 1
+  # Failed = a completed check run or a legacy commit status in failure/error. Pending runs are not failed.
+  head_sha=$(gh api "repos/ZenoWangzy/vecta/pulls/$pr" --jq .head.sha) || return 1
+  checks=$(gh api --paginate --slurp "repos/ZenoWangzy/vecta/commits/$head_sha/check-runs?per_page=100") || return 1
+  bad=$(jq '[.[].check_runs[] | select(.status == "completed") | select((.conclusion // "") | test("^(failure|cancelled|timed_out|action_required|startup_failure)$"))] | length' <<<"$checks") || return 1
+  statuses=$(gh api "repos/ZenoWangzy/vecta/commits/$head_sha/status" --jq '[.statuses[] | select(.state == "failure" or .state == "error")] | length') || return 1
+  bad=$((bad + statuses))
   [[ $bad == 0 ]] || { echo "override-pin: #$pr has $bad failed check(s)"; return 1; }
   gh pr merge "$pr" -R ZenoWangzy/vecta --squash >>"$log" 2>&1 || { echo "override-pin: gh pr merge #$pr failed"; return 1; }
   for ((i = 0; i < 20; i++)); do
-    state=$(gh pr view "$pr" -R ZenoWangzy/vecta --json state -q .state 2>/dev/null)
-    [[ $state == MERGED ]] && return 0
+    [[ $(gh api "repos/ZenoWangzy/vecta/pulls/$pr" --jq .merged 2>/dev/null) == true ]] && return 0
     sleep 6
   done
   echo "override-pin: #$pr not MERGED after the wait"; return 1
@@ -57,6 +61,15 @@ auto_pin_pass() {
   else
     vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
     echo "$(date -u +%H:%M:%S) PIN-FAILED ${next:0:12} log=$log"; grep -E 'pin-vecta:|refus|add this row' "$log" | tail -4 | cut -c1-200
+    # A rate limit (GraphQL or REST, primary or secondary) clears with time, not with a new main commit: pin this commit again after a backoff, at most 3 times.
+    if grep -qi 'rate limit' "$log"; then
+      tries=$(ls "$log".rate-retry-* 2>/dev/null | wc -l)
+      if ((tries < 3)); then
+        : > "$log.rate-retry-$((tries + 1))"
+        echo "$(date -u +%H:%M:%S) RATE-LIMIT-RETRY ${next:0:12} attempt=$((tries + 1))"
+        sleep "${ZF_AUTO_PIN_RATE_SECS:-300}"; return 0
+      fi
+    fi
     # Fix forward: a failed pin must not stop the daemon, the next main commit carries the repair.
     while [[ ! -e $stop ]]; do
       sleep "$retry"; git -C "$C" fetch -q origin main || continue
@@ -65,7 +78,7 @@ auto_pin_pass() {
       grep -q 'source checkout has changes' "$log" && [[ -z "$(git -C "$AGENT_HOME/checkout" status --porcelain 2>/dev/null)" ]] && return 0
       # A row declared for this commit after the refusal: try it again, since a new main commit would make the row stale. Once only.
       if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
-        && grep -q "$next" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" 2>/dev/null; then
+        && grep -Eq "$next|sha256:" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" 2>/dev/null; then
         : > "$log.row-retried"; return 0
       fi
       # A moved VectA checkout may fix a refusal; retry this commit once for each new checkout head.

@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as temporary:
     home = Path(temporary) / 'home'
     home.mkdir()
     (home / 'capacity.env').write_text('DQ_MAX_AGENTS=8\n')
-    for file in ('runtime-reload.sh', 'runtime-code-health.py'):
+    for file in ('runtime-reload.sh', 'proc.sh', 'runtime-code-health.py'):
         shutil.copyfile(source / 'engine' / file, agent / file)
     shutil.copyfile(source / 'engine/hand-completion-refill.sh', home / 'hand-completion-refill.sh')
     (agent / 'lib.sh').write_text('# fixture lib\n')

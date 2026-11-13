@@ -413,7 +413,7 @@ health_prod_errors_ensure_roadmap_cache() {
 
 health_prod_errors_route() {
   local result="$1" verdict="$2" detail="$3" state_file="$4" failed=0 event_failed
-  local alert key event_id container count first trace_id request_id service route evidence body_file marker title trace_output issue_id now next_update force_individual reason upsert_rc skipped=0
+  local alert key event_id container count first trace_id request_id service route evidence body_file marker title trace_output issue_id now next_update force_individual reason label_rc upsert_rc skipped=0
   local anomaly_dir="$NIGHT/prod-anomalies"
   local -A inbox_ok=()
   mkdir -p -- "$anomaly_dir" || return 1
@@ -482,6 +482,14 @@ health_prod_errors_route() {
     cat -- "$evidence" >> "$body_file"
     force_individual=0
     if [[ "$(jq -r '.reason // ""' <<< "$alert")" == production-down ]]; then force_individual=1; fi
+    # The upsert runs in a command substitution, so its READY flag dies with it: prime it here, once per run (#1038).
+    label_rc=0
+    health_prod_errors_ensure_anomaly_label || label_rc=$?
+    if (( label_rc == 75 )); then
+      skipped=1
+      rm -f -- "$body_file"
+      break
+    fi
     upsert_rc=0
     issue_id="$(health_prod_errors_upsert_issue "$marker" "$title" "$body_file" "$force_individual")" || upsert_rc=$?
     if (( upsert_rc == 75 )); then

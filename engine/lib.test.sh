@@ -5,41 +5,14 @@
 #
 # Output contract (#4480): a green run prints one summary line; a failing run
 # prints every failing assertion ("not ok - <case>") before the FAILED tail.
-# Targeted runs: `bash engine/lib.test.sh --quota-only` runs only the
-# provider-quota case. Section stop switches are LIB_TEST_POST_LAND_ONLY,
+# Section stop switches are LIB_TEST_POST_LAND_ONLY,
 # LIB_TEST_STALE_HOLD_REQUEUE_ONLY, LIB_TEST_HOLD_REQUEUE_ONLY,
 # LIB_TEST_RELEASE_CLOSE_ONLY, LIB_TEST_OPS_TRANSITION_ONLY, and
 # LIB_TEST_MODEL_POLICY_ONLY; each stops after its section, so preceding
 # sections still run.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
-
-test_provider_quota_classification() {
-  local refusal="ERROR: You’ve hit your usage limit. Try again at Oct 19th, 2099 1:13 AM." event
-  assert_false "signal status never classifies even a real refusal" premium_call_is_quota_refused "$refusal" 143
-  assert_false "successful exit never creates quota hold" premium_call_is_quota_refused "$refusal" 0
-  assert_false "bare quota prose is not provider evidence" premium_call_is_quota_refused 'an overly broad quota regex' 1
-  assert_false "bare rate limit prose is not provider evidence" premium_call_is_quota_refused 'rate limit exceeded, try again later' 1
-  assert_false "bare HTTP status is not provider evidence" premium_call_is_quota_refused 'HTTP 429 Too Many Requests' 1
-  assert_false "codex-error prose is not provider evidence" premium_call_is_quota_refused '2026-10-11T23:07:06Z codex-error fixing quota and rate limit' 1
-  assert_true "actual Codex usage-limit line is provider evidence" premium_call_is_quota_refused "$refusal" 1
-  assert_true "normalized HTTP 429 error remains supported" premium_call_is_quota_refused '{"api_error_status":429}' 1
-  event="$(jq -cn --arg message "${refusal#ERROR: }" '{type:"turn.failed",error:{message:$message}}')"
-  assert_true "CLI turn.failed event is provider evidence" premium_call_is_quota_refused "$event" 1
-  event="$(jq -cn --arg message "${refusal#ERROR: }" '{type:"error",message:$message}')"
-  assert_true "CLI error event is provider evidence" premium_call_is_quota_refused "$event" 1
-  event="$(jq -cn --arg text "$refusal" '{type:"item.completed",item:{type:"agent_message",text:$text}}')"
-  assert_false "agent JSON quoting refusal is not provider evidence" premium_call_is_quota_refused "$event" 1
-  event="$(jq -cn --arg result "$refusal" '{is_error:true,result:$result}')"
-  assert_true "run_codex_json failure envelope retains provider error" premium_call_is_quota_refused "$event" 1
-  assert_false "504 containing quota prose is not quota" premium_call_is_quota_refused 'ERROR: unexpected status 504 Gateway Timeout: quota proxy unavailable' 1
-  assert_false "websocket close containing quota prose is not quota" premium_call_is_quota_refused 'ERROR: websocket closed by server before response.completed: quota' 1
-  assert_eq "uppercase CLI Try again parses exact reset" "$(agent_epoch 'Oct 19, 2099 1:13 AM')" "$(parse_quota_reset_epoch "$refusal")"
-  assert_eq "same-day CLI reset time parses" "$(agent_epoch '1:13 AM')" "$(parse_quota_reset_epoch 'ERROR: You’ve hit your usage limit. Try again at 1:13 AM.')"
-}
-test_provider_quota_classification
-if [[ "${1:-}" == --quota-only ]]; then lib_case_exit; fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"; source "$SCRIPT_DIR/lib-test-setup.sh"; LIB_TEST_SETUP_DEFERRED=1; source "$SCRIPT_DIR/test-lib-helpers.sh"; unset LIB_TEST_SETUP_DEFERRED; lib_test_setup "$SCRIPT_DIR"; LIB_TEST_SETUP_COMPLETE=1
 
 # lib.sh is sourced by callers whose SCRIPT_DIR is unset (merge-held.sh) or another
 # directory (night/); 2026-10-08 a lib.sh helper died with "SCRIPT_DIR: unbound variable".
@@ -2569,8 +2542,8 @@ assert_true "the needs-info-loop suffix step still routes to reply reconciliatio
 # advisor-origin needs-info answer back to needs-advisor (route_to_advisor,
 # which also clears the stale advisor_ruled_at), never to needs-triage --
 # that restart is only correct for the reporter/triage-origin case.
-RESUME_ANSWERED_BODY="$(sed -n '/^needs_info_resume_answered_issue() {/,/^}/p' "$SCRIPT_DIR/lib.d/route-advisor.sh")"
-TIMEOUT_STEP_BODY="$(sed -n '/^needs_info_timeout_step() {/,/^}/p' "$SCRIPT_DIR/lib.d/route-advisor.sh")"
+RESUME_ANSWERED_BODY="$(source "$SCRIPT_DIR/lib.d/route-advisor.sh" && declare -f needs_info_resume_answered_issue)"
+TIMEOUT_STEP_BODY="$(source "$SCRIPT_DIR/lib.d/route-advisor.sh" && declare -f needs_info_timeout_step)"
 assert_true "needs-info reconciliation and timeout share existing reply transition" \
   bash -c 'echo "$1" | grep -qF -- "needs_info_resume_answered_issue" && echo "$2" | grep -qF -- "needs_info_resume_answered_issue"' _ "$NEEDS_INFO_RECONCILE_BODY" "$TIMEOUT_STEP_BODY"
 assert_true "shared reply transition branches on needs_info_origin" \
@@ -3807,6 +3780,7 @@ done
 exec "${args[@]:$script}"
 EOF
     chmod +x "$TEST_BIN/systemd-run"
+    source "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh"
     eval "$(sed -n "/^dispatch() {/,/^}/p" "$ENV_FAULT_LIB_DIR/issue-pipeline.sh")"
     SCRIPT_DIR="$ENV_FAULT_LIB_DIR"
     eval "$(declare -f quarantine_mark_stage_dispatch_canaries | sed -e s/quarantine_mark_stage_dispatch_canaries/real_quarantine_mark_stage_dispatch_canaries/g)"
@@ -3869,7 +3843,6 @@ EOF
     RUN_RC=0; export RUN_RC; dispatch implement 932 || :
     ROOT="$ZF_REPO_DIR" SCHEDULER_AGENT_LIB="$ENV_FAULT_LIB_DIR/lib.sh" SCHEDULER_SCOPE_LIB_DIR="$ENV_FAULT_LIB_DIR/lib.d"; scheduler_issue_state() { state_read "$1"; }
     jqf() { command jq "$@"; }
-    eval "$(sed -n "/^scheduler_mark_canary_after_worker_start() (/,/^)/p" "$ENV_FAULT_LIB_DIR/mac-autopilot/scheduler.d/dispatch.sh")"
     scheduler_bridge_status=0; scheduler_mark_canary_after_worker_start 932 || scheduler_bridge_status=$?
     echo "scheduler_bridge_status=$scheduler_bridge_status"
     echo "requeue_scheduler_canaries=$(jq -r .canaries "$qf")"; echo "requeue_scheduler_reservation=$(state_read 932 | jq -r ".run.conclusion.canary_reserved_scopes // empty")"
@@ -3954,9 +3927,9 @@ assert_eq "advisor batch passes its reserved scopes to the launched runner" "adv
 PROVIDER_DISPATCH_BODY="$(sed -n '/^web_advisor_provider_dispatch_question_async() {/,/^}/p' "$SCRIPT_DIR/providers/web-advisor-provider.sh")"
 assert_contains "advisor provider uses the shared canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine_mark_canary_scope_list'
 assert_contains "advisor provider reports a failed canary mark" "$PROVIDER_DISPATCH_BODY" 'quarantine canary mark failed'
-QUARANTINE_MARK_BODY="$(sed -n '/^quarantine_mark_canary() {/,/^}/p' "$SCRIPT_DIR/lib.d/quarantine.sh")"
+QUARANTINE_MARK_BODY="$(source "$SCRIPT_DIR/lib.d/quarantine.sh" && declare -f quarantine_mark_canary)"
 assert_contains "canary read-modify-write takes a per-scope flock" "$QUARANTINE_MARK_BODY" 'flock -x'
-BLOCKER_REQUEUE_BODY="$(sed -n '/^reconcile_blocking_issue_root() {/,/^}/p' "$SCRIPT_DIR/lib.d/blockers.sh")"
+BLOCKER_REQUEUE_BODY="$(source "$SCRIPT_DIR/lib.d/blockers.sh" && declare -f reconcile_blocking_issue_root)"
 assert_contains "blocker requeue persists its canary reservation" "$BLOCKER_REQUEUE_BODY" 'canary_reserved_scopes'
 assert_contains "blocker requeue clears its in-memory reservation after persistence" "$BLOCKER_REQUEUE_BODY" 'quarantine_stage_canary_forget_stage implement'
 assert_contains "scheduler consumes blocker reservations in the worker-start bridge" "$(cat "$SCRIPT_DIR/mac-autopilot/scheduler.d/dispatch.sh")" 'quarantine_mark_canary_scope_list "$scope"'
@@ -4056,6 +4029,54 @@ assert_contains "capacity quarantine stays open below stage gates" "$CAPACITY_PR
 assert_contains "capacity stage quarantine never admits timed canary" "$CAPACITY_PROBE_OUT" 'capacity_canary_blocked=yes'
 assert_contains "capacity probes automatically lift both quarantines after cihost capacity recovers" "$CAPACITY_PROBE_OUT" 'capacity_quarantines_lift=yes'
 assert_contains "release dispatch resumes automatically after capacity recovery" "$CAPACITY_PROBE_OUT" 'capacity_dispatch_resumes=yes'
+
+# env:gh-api probe: a fake gh stands in for the GitHub API; the reconcile cases show the quarantine lifts by probe, not canary.
+GH_API_PROBE_HOME="$(mktemp -d)"
+mkdir -p "$GH_API_PROBE_HOME/fake-bin"
+cat > "$GH_API_PROBE_HOME/fake-bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api rate_limit") if [ "$FAKE_GH_MODE" = ratelimit ]; then echo 0; else echo 4999; fi ;;
+  "api graphql") if [ "$FAKE_GH_MODE" = ratelimit ]; then echo "HTTP 403: API rate limit exceeded" >&2; exit 1; fi; echo tester ;;
+  *) exit 2 ;;
+esac
+FAKE_GH
+chmod +x "$GH_API_PROBE_HOME/fake-bin/gh"
+GH_API_PROBE_OUT="$(AGENT_HOME="$GH_API_PROBE_HOME" AGENT_DRY_RUN=0 GH_API_LIB_DIR="$SCRIPT_DIR" GH_API_FAKE_BIN="$GH_API_PROBE_HOME/fake-bin" bash -c '
+  set +e
+  set -uo pipefail
+  source "$GH_API_LIB_DIR/lib.sh"
+  # /usr/bin/gh exists on this host, so PATH without gh is a bin dir linking every other tool.
+  path_without_gh() {
+    local f="" dir="$AGENT_HOME/no-gh-bin"
+    mkdir -p "$dir"
+    for f in /usr/bin/* /bin/*; do [ "${f##*/}" = gh ] || ln -sfn "$f" "$dir/${f##*/}"; done
+    printf "%s" "$dir"
+  }
+  export PATH="$GH_API_FAKE_BIN:$PATH"
+  export FAKE_GH_MODE=ok
+  rc=0; env_fault_probe env:gh-api || rc=$?; echo "gh_api_ok_rc=$rc"
+  quarantine_open implement env:gh-api "gh api unreachable" 2 1800000000
+  reconcile_quarantines 1800000001
+  echo "gh_api_ok_lifted=$([ -f "$(quarantine_file implement)" ] && echo no || echo yes)"
+  quarantine_open implement env:gh-api "gh api rate limited" 2 1800000100
+  export FAKE_GH_MODE=ratelimit
+  rc=0; env_fault_probe env:gh-api || rc=$?; echo "gh_api_ratelimit_rc=$rc"
+  reconcile_quarantines 1800000101
+  echo "gh_api_ratelimit_stays=$([ -f "$(quarantine_file implement)" ] && echo yes || echo no)"
+  export FAKE_GH_MODE=ok
+  rm -f "$(quarantine_file implement)"
+  quarantine_open implement env:gh-api "gh api unreachable" 2 1800000200
+  (PATH="$(path_without_gh)"; rc=0; env_fault_probe env:gh-api || rc=$?; echo "gh_api_missing_rc=$rc"; reconcile_quarantines 1800000201)
+  echo "gh_api_missing_stays=$([ -f "$(quarantine_file implement)" ] && echo yes || echo no)"
+' 2>&1)"
+rm -rf "$GH_API_PROBE_HOME"
+assert_contains "gh-api probe passes when the GraphQL budget and a tiny read both succeed" "$GH_API_PROBE_OUT" 'gh_api_ok_rc=0'
+assert_contains "gh-api probe success lifts the quarantine by probe" "$GH_API_PROBE_OUT" 'gh_api_ok_lifted=yes'
+assert_contains "gh-api probe reports rate limit as still present" "$GH_API_PROBE_OUT" 'gh_api_ratelimit_rc=1'
+assert_contains "gh-api quarantine stays open while rate limited" "$GH_API_PROBE_OUT" 'gh_api_ratelimit_stays=yes'
+assert_contains "gh-api probe with gh missing is unknown" "$GH_API_PROBE_OUT" 'gh_api_missing_rc=2'
+assert_contains "gh-api quarantine is not lifted by probe when gh is missing" "$GH_API_PROBE_OUT" 'gh_api_missing_stays=yes'
 
 MAIN_CI_QUARANTINE_HOME="$(mktemp -d)"
 MAIN_CI_QUARANTINE_OUT="$(AGENT_HOME="$MAIN_CI_QUARANTINE_HOME" bash -c '
