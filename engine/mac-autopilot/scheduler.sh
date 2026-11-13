@@ -82,6 +82,7 @@ fi
 source "$HERE/scheduler.d/reports.sh"
 source "$HERE/review-contract.sh"
 source "$HERE/scheduler.d/units.sh"
+source "$HERE/scheduler.d/supervisor-units.sh"
 source "$HERE/scheduler.d/dead-park-salvage.sh"
 source "$HERE/scheduler.d/worker-outcomes.sh"
 source "$HERE/scheduler.d/usage-sessions.sh"
