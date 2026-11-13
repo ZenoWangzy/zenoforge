@@ -330,7 +330,7 @@ health_prod_errors_rollup_issue() {
 
 health_prod_errors_upsert_issue() {
   local marker="$1" title="$2" body_file="$3" force_individual="${4:-0}"
-  local anomaly=0 results lookup_results issue state issue_json issue_url legacy_results recent_count
+  local anomaly=0 results lookup_results issue state issue_json issue_url legacy_results recent_count held live_labels labels_json
   [[ "$marker" != "$PROD_ERRORS_SIGNATURE_MARKER_PREFIX"* ]] || anomaly=1
   results="$(health_prod_errors_issue_list)" || return $?
   jq -e 'type == "array"' <<< "$results" >/dev/null || return 1
@@ -388,6 +388,24 @@ health_prod_errors_upsert_issue() {
   issue_json="$(jq -c --argjson issue "$issue" '[.[] | select(.number == $issue)][0]' <<< "$lookup_results")" || return 1
   state="$(jq -r --argjson issue "$issue" '[.[] | select(.number == $issue)][0].state // "" | ascii_downcase' <<< "$lookup_results")"
   if [[ "$state" == closed ]]; then
+    if jq -e '(.labels | type) == "array" and (.labels | length) > 0' <<< "$issue_json" >/dev/null 2>&1; then
+      held="$(jq -r '[.labels[]? | if type == "string" then . else (.name // "") end] | index("on-hold") != null' <<< "$issue_json")" || return 1
+    else
+      issue_label_read_live "$issue" || return 1
+      live_labels="${ISSUE_LABEL_VIEW_LABELS[$issue]:-}"
+      if grep -Fqx -- on-hold <<< "$live_labels"; then
+        held=true
+      else
+        held=false
+      fi
+      labels_json="$(printf '%s\n' "$live_labels" | jq -Rsc 'split("\n") | map(select(length > 0) | {name:.})')" || return 1
+      issue_json="$(jq -c --argjson labels "$labels_json" '.labels = $labels' <<< "$issue_json")" || return 1
+    fi
+    if [[ "$held" == true ]]; then
+      printf 'prod-anomaly: #%s on-hold; recurrence recorded, not reopened\n' "$issue" >&2
+      printf '%s\n' "$issue"
+      return 0
+    fi
     [[ "$(roadmap_switch_value)" != true ]] || health_prod_errors_ensure_roadmap_cache || return 1
     health_prod_errors_issue_list_drop
     issue_transition "$issue" needs-triage prod-anomaly-recurred . 0 "$issue_json" "" open || return 1
