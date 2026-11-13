@@ -40,7 +40,7 @@ if grep -nF "$unsafe_update_pattern" "$scheduler"; then
   echo 'not ok - scheduler.test.sh: jq select update can delete unmatched units' >&2
   exit 1
 fi
-grep -Fq 'gh pr merge "$pr" --squash' "$merge_lane"
+grep -Fq 'land_merge_pr "$pr" "$approved"' "$merge_lane"
 grep -Fq 'resume "$session_id" -m "$model"' "$worker_command"
 grep -Fq 'focus_mode' "$scheduler"
 grep -Fq 'session id: ' "$worker_harvest"

@@ -758,7 +758,7 @@ run_merge_lane_pass() {
     # and post-merge exact-SHA CI verifies the resulting main commit without a stable-main barrier.
     if [[ "$pre_merge_sha" =~ $SHA_RE ]]; then
       tick_prs_changed
-      if gh pr merge "$pr" --squash --match-head-commit "$approved" >/dev/null 2>&1; then
+      if source "$HERE/../land-admit.sh" && land_merge_pr "$pr" "$approved" >/dev/null 2>&1; then
         merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"
         [[ "$merge_sha" =~ $SHA_RE ]] || merge_sha=""
         if [[ -n "$merge_sha" ]]; then
