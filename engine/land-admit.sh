@@ -39,8 +39,8 @@ land_receipt_file() {
 }
 
 land_merge_pr() {
-  local pr="${1-}" head_sha="${2-}"
-  local -a merge_args
+  local pr="${1-}" head_sha="${2-}" repo="" gh_rc head_json head_ref out
+  local -a merge_args=() repo_args=() view_args=() api_args=()
   if [[ ! "$pr" =~ ^[0-9]+$ || ! "$pr" =~ [1-9] ]]; then
     printf 'refuse:merge:bad-pr\n' >&2
     return 64
@@ -59,6 +59,10 @@ land_merge_pr() {
           return 64
         fi
         merge_args+=("$1" "$2")
+        if [[ "$1" == --repo ]]; then
+          repo="$2"
+          repo_args=(--repo "$repo")
+        fi
         shift 2
         ;;
       --delete-branch)
@@ -71,5 +75,28 @@ land_merge_pr() {
         ;;
     esac
   done
-  gh "${merge_args[@]}"
+  if gh "${merge_args[@]}"; then
+    return 0
+  else
+    gh_rc=$?
+  fi
+  [[ "${LAND_MERGE_REST_FALLBACK:-}" == 1 ]] || return "$gh_rc"
+  view_args=(pr view "$pr")
+  view_args+=("${repo_args[@]}" --json headRefName)
+  head_json="$(gh "${view_args[@]}" 2>/dev/null)" || return 1
+  head_ref="$(jq -er '.headRefName | select(type == "string" and length > 0)' <<<"$head_json")" || return 1
+  api_args=(api)
+  api_args+=("${repo_args[@]}" -X PUT "repos/{owner}/{repo}/pulls/$pr/merge" -f merge_method=squash -f "sha=$head_sha")
+  if out="$(gh "${api_args[@]}" 2>&1)"; then
+    api_args=(api)
+    api_args+=("${repo_args[@]}" -X DELETE "repos/{owner}/{repo}/git/refs/heads/$head_ref")
+    if gh "${api_args[@]}" >/dev/null 2>&1; then
+      :
+    fi
+    return 0
+  fi
+  if [[ "$out" == *409* ]]; then
+    printf 'refuse:merge:head-moved:%s is no longer the head, not merged\n' "$head_sha" >&2
+  fi
+  return 1
 }
