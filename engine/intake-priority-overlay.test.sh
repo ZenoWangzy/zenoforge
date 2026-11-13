@@ -90,7 +90,7 @@ expect_eq() {
 issue_priority() { jq -r --argjson n "$1" '.issues[] | select(.number == $n) | .priority' <<< "$report"; }
 issue_overlay() { jq -r --argjson n "$1" '.issues[] | select(.number == $n) | (.overlay // "<none>")' <<< "$report"; }
 
-expect_eq 'founder issue seed' '[3066,5663,5665,6120,6121,6123,6124,6126,6130,6131,6133,6167,6226,6235,6237,6238]' \
+expect_eq 'founder issue seed' '[3066,5663,5665,6120,6121,6123,6124,6126,6130,6131,6133,6167,6226,6235,6237,6238,6601]' \
   "$(jq -c '.founder_issues // []' <<< "$config")"
 expect_eq 'off-market issue seed' '[1158,1159,3299,4620,5298,5329,5341,5421,6208,6288,6289]' \
   "$(jq -c '.off_market_issues // [] | sort' <<< "$config")"
@@ -118,7 +118,8 @@ expect_eq 'fruit issue keeps judge score' 'priority:high' "$(issue_priority 9004
 expect_eq 'hotfix tier' 'priority:top' "$(issue_priority 9005)"
 expect_eq 'hotfix stays above off-market cap' 'priority:top' "$(issue_priority 9008)"
 expect_eq 'bug tier' 'priority:high' "$(issue_priority 9006)"
-expect_eq 'bug stays above off-market cap' 'priority:high' "$(issue_priority 9009)"
+expect_eq 'sports-titled bug is capped at low' 'priority:low' "$(issue_priority 9009)"
+expect_eq 'sports-titled bug records off-market overlay' 'off-market' "$(issue_overlay 9009)"
 expect_eq 'fruit feature tier' 'priority:normal' "$(issue_priority 9007)"
 expect_eq 'prod-anomaly label is hotfix tier' 'priority:top' "$(issue_priority 9010)"
 expect_eq 'Incident title is hotfix tier' 'priority:top' "$(issue_priority 9011)"
@@ -132,6 +133,14 @@ bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$i
 bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$issue_file" --result-file "$result_file"
 expect_eq 'label writer uses the off-market overlay decision' true \
   "$(grep -F -- '--add-label priority:low' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
+
+founder_issue_file="$test_root/founder.issue.json"
+founder_result_file="$test_root/founder.result.json"
+jq -c '.[] | select(.number == 3066)' "$INTAKE_OVERLAY_ISSUES" > "$founder_issue_file"
+bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$founder_issue_file" --dry-stub > "$founder_result_file"
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$founder_issue_file" --result-file "$founder_result_file"
+expect_eq 'missing priority:high label is created before founder issue edit' true \
+  "$(awk '$0 ~ /^label create priority:high / { created=NR } $0 ~ /^issue edit 3066 / { edited=NR } END { print (created > 0 && edited > created) ? "true" : "false" }' "$INTAKE_OVERLAY_WRITES")"
 
 # Verify ready-unit order through dispatch_pending, the scheduler's public dispatch entry point.
 scheduler_fixture="$test_root/scheduler"
@@ -182,6 +191,7 @@ dispatches=()
 dispatch_if_room() { dispatches+=("$1"); return 0; }
 jq -n '{units:[
   {id:"off-market",issue:8201,title:"Sports broadcast rights",labels:["enhancement"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/off-market",main_red:true,critical:true,history:[]},
+  {id:"off-market-bug",issue:8205,title:"Sports league totals bug",labels:["bug"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/off-market-bug",history:[]},
   {id:"fruit-feature",issue:8202,title:"Fruit feature",labels:["enhancement"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/fruit",history:[]},
   {id:"bug",issue:8203,title:"Bug fix",labels:["bug"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/bug",history:[]},
   {id:"hotfix",issue:8204,title:"Production incident",labels:["hotfix"],stage:"implement-pending",lane:"pr",task:"fixture",branch:"agent/hotfix",history:[]},
@@ -189,7 +199,7 @@ jq -n '{units:[
  ]}' > "$UNITS"
 dispatch_pending true
 # The founder fixture shares the fruit tier; its priority:high label sorts it before the normal fruit feature.
-expect_eq 'ready units dispatch in factory tier order' 'hotfix bug founder fruit-feature off-market' \
+expect_eq 'ready units dispatch in factory tier order' 'hotfix bug founder fruit-feature off-market off-market-bug' \
   "${dispatches[*]}"
 
 # TypeSafe logs the code-owned overlay reason with the decision event without seeing or choosing the policy.

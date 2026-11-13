@@ -38,6 +38,7 @@ def intake_priority_overlay($issue; $decision; $config):
   | intake_bug($issue) as $bug
   | intake_fruit_feature($issue) as $fruit_feature
   | (if $hotfix_incident then $labels_config.top
+     elif $off_market and ($founder | not) then $labels_config.low
      elif $bug then $labels_config.high
      elif $off_market then $labels_config.low
      elif $fruit_feature then $labels_config.normal
@@ -49,15 +50,15 @@ def intake_priority_overlay($issue; $decision; $config):
      else $classified_priority end) as $priority
   | (if $founder then "founder-ask"
      elif $hotfix_incident then "hotfix-incident"
-     elif $bug then "bug"
      elif $off_market then "off-market"
+     elif $bug then "bug"
      elif $fruit_feature then "fruit-feature"
      else null end) as $overlay
   | $decision + {priority:$priority,overlay:$overlay};
 
 def intake_dispatch_tier($unit; $config):
   if intake_hotfix_incident($unit) then 0
-  elif intake_bug($unit) then 1
   elif intake_off_market($unit; $config) and (intake_founder_ask($unit; $config) | not) then 3
+  elif intake_bug($unit) then 1
   else 2
   end;
