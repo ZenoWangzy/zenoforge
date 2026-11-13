@@ -2344,8 +2344,8 @@ BUDGET_DISPATCH_OUT="$(
   gh() {
     if { [ "${1:-}" = api ] && [[ "${*: -1}" == */issues/[0-9]* ]]; } || { [ "${1:-}" = issue ] && [ "${2:-}" = view ]; }; then
       # `api` is issue_rest_view (the issue, then its comments as slurped pages); `issue view` is the label cache read
-      local url="${*: -1}" number label='{"name":"ready-for-agent"}' comments='[]'
-      if [ "${1:-}" = api ]; then number="${url#*/issues/}"; number="${number%%/*}"; else number="${3:-}"; url=''; fi
+      local url="${*: -1}" number label='{"name":"ready-for-agent"}' comments='[]' state
+      if [ "${1:-}" = api ]; then number="${url#*/issues/}"; number="${number%%/*}"; state=open; else number="${3:-}"; url=''; state=OPEN; fi
       case "$number" in
         991301|991303)
           if jq -e '.state == "on-hold"' "$(state_file "$number")" >/dev/null 2>&1; then
@@ -2357,7 +2357,7 @@ BUDGET_DISPATCH_OUT="$(
         comments="$(jq -cn --arg marker "$ISSUE_SPEND_BUDGET_MARKER" '[{body:$marker}]')"
       fi
       if [[ "$url" == */comments\?* ]]; then jq -cn --argjson comments "$comments" '[$comments]'
-      else printf '{"number":%s,"state":"%s","state_reason":null,"labels":[%s],"comments":%s}\n' "$number" "${url:+open}${url:-OPEN}" "$label" "$comments"; fi
+      else printf '{"number":%s,"state":"%s","state_reason":null,"labels":[%s],"comments":%s}\n' "$number" "$state" "$label" "$comments"; fi
     elif [ "${1:-}" = issue ] && [ "${2:-}" = list ]; then
       for number in 991301 991303; do
         if jq -e '.state == "on-hold"' "$(state_file "$number")" >/dev/null 2>&1; then
