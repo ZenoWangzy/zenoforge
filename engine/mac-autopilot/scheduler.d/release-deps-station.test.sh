@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # release_dependency_blocks runs as its own station (scheduler.sh --release-deps), not in the full tick's acting phases.
-# Replays: the station runs the pass with no scheduler lock held and logs its line; the full tick skips the pass while a station pass is fresh,
-# and runs it through phase_yield_lock once the heartbeat is stale; PAUSE stops the station; a failing pass keeps its rc in the line.
+# Replays: the station runs the pass with no scheduler lock held and logs its line; the full tick launches the same step detached,
+# under its per-step flock; PAUSE stops the station; a failing pass keeps its rc in the line.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -54,14 +54,11 @@ line="$(cat "$LOG")"
 [[ "$line" =~ release-deps\ done\ secs=[0-9]+\ gh_calls=[0-9]+\ rc=0\ ended=[0-9:]+Z$ ]] || fail "the pass line lacks its fields: $line"
 [[ "$(wc -l < "$LOG")" == 1 ]] || fail "a pass must log one line: $(cat "$LOG")"
 
-# --- case 2: a live station, the full tick skips the pass; a stale heartbeat, the tick runs it through phase_yield_lock. ---
-reset; date +%s > "$A/.release-deps-epoch"
-release_deps_tick_phase
-[[ ! -s "$calls" ]] || fail "the full tick ran the pass beside a live station: $(paste -sd, "$calls")"
-reset; echo $(( $(date +%s) - 1000 )) > "$A/.release-deps-epoch"
-release_deps_tick_phase
-[[ "$(paste -sd, "$calls")" == 'yield release_dependency_blocks,pass held=false' ]] \
-  || fail "a stale station did not leave the pass to the tick: $(paste -sd, "$calls")"
+# --- case 2: the full tick launches dependency release as the same detached step used by the loop station. ---
+grep -Fq 'start_detached_tick_step release_dependency_blocks' "$engine_dir/mac-autopilot/scheduler.sh" \
+  || fail 'the full tick does not launch dependency release detached'
+grep -Fq 'tick_step_lock_run release_dependency_blocks' "$engine_dir/mac-autopilot/scheduler.d/dependencies.sh" \
+  || fail 'dependency release does not use its per-step flock'
 
 # --- case 3: PAUSE stops the station pass: no pass, no done line, a paused line instead. ---
 reset; touch "$PAUSE_FILE"
@@ -82,4 +79,4 @@ grep -Fq -- '--release-deps) release_deps_station_tick ;;' "$engine_dir/mac-auto
 grep -Fq '"${1:-}" != --release-deps' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'a station pass would reconcile the tick runtime config'
 grep -Fq 'launch_release_deps' "$engine_dir/mac-autopilot/loop.sh" || fail 'loop.sh does not launch the release-deps station'
 
-echo 'release-deps-station.test.sh: pass (station runs the pass unlocked, full tick skips it while live and runs it when stale, PAUSE, failing rc kept, routing and launch)'
+echo 'release-deps-station.test.sh: pass (station runs the pass unlocked, full tick launches detached under a shared step flock, PAUSE, failing rc kept, routing and launch)'

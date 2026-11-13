@@ -118,13 +118,13 @@ existing_walked_load
 rm -f "$A/.existing-walked"; INTAKE_EXISTING_WALKED=([1]=ok); existing_walked_load
 [[ ${#INTAKE_EXISTING_WALKED[@]} == 0 ]] || fail 'a missing walked file left rows behind'
 
-# --- case 7: the tick walks the existing units itself only when the heartbeat is stale, and primes the census either way. ---
+# --- case 7: the detached intake worker walks stale rows before new intake; a fresh station supplies its census and walked rows. ---
 phase() { echo "phase $*" >> "$calls"; }
 intake_census_prime() { echo census >> "$calls"; }
 existing_walked_load() { echo load >> "$calls"; }
 reset; echo $(( $(date +%s) - 1000 )) > "$A/.existing-walk-epoch"
 run_issue_intake_phases
-[[ "$(paste -sd, "$calls")" == 'phase register_new_issues 1,phase register_new_issues' ]] || fail "a stale station did not leave the walk to the tick: $(paste -sd, "$calls")"
+[[ "$(paste -sd, "$calls")" == 'phase register_new_issues 1,phase register_new_issues' ]] || fail "a stale walk did not finish before new intake: $(paste -sd, "$calls")"
 reset; echo $(( $(date +%s) - 10 )) > "$A/.existing-walk-epoch"
 run_issue_intake_phases
 [[ "$(paste -sd, "$calls")" == 'census,load,phase register_new_issues' ]] || fail "a live station did not take the walk from the tick: $(paste -sd, "$calls")"

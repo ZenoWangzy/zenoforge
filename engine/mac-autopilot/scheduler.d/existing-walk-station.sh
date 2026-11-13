@@ -1,12 +1,10 @@
 # ---------- Existing-walk station (scheduler.sh --existing-walk) ----------
 # Units already in the ledger waited for the full tick (a 636 s median gap, 1151 s p90, 2026-11-08/09) to be walked through intake's
 # handoff block: register_new_issues 1, 43 s median per tick for about 38 rows, always a complete lap. The station runs that walk alone,
-# on loop.sh's short cadence, under its own lock. The walk never holds the ledger lock across a row's GitHub reads (the tick runs it with
-# the lock yielded too): each ledger write takes the lock for that one write (units_update, set_unit), so the tick, the refill and the
-# merge lane run between writes. lock_wait / lock_hold in the pass line sum those takes. The tick runs the walk itself only while no
-# pass started within AUTOPI_EXISTING_WALK_FRESH_SECONDS (an older loop.sh without the launcher, or a stuck station); while the station
-# is live the tick reads what it left: the rows it walked (INTAKE_EXISTING_WALKED, so the new-issue walk still skips them) and the PRs and
-# branches the walk found handoffs waiting on (HANDOFF_WAIT_PRS / HANDOFF_WAIT_BRANCHES, which handoff_pr_waiting reads in later phases).
+# on loop.sh's short cadence, under its own lock. The walk never holds the ledger lock across a row's GitHub reads: each ledger write
+# takes the lock for that one write (units_update, set_unit), so the tick, the refill and the merge lane run between writes. lock_wait /
+# lock_hold in the pass line sum those takes. The detached intake worker runs a stale walk before new-issue intake; when a pass is fresh,
+# it reads what the station left: walked rows (INTAKE_EXISTING_WALKED, so new-issue intake still skips them) and waiting PRs/branches.
 existing_walk_fresh() { # 0 = a station pass started within the freshness window, so the tick skips the existing walk
   local at; at="$(cat "$A/.existing-walk-epoch" 2>/dev/null)"
   [[ "$at" =~ ^[0-9]+$ ]] && (( $(date +%s) - at < ${AUTOPI_EXISTING_WALK_FRESH_SECONDS:-600} ))
@@ -22,7 +20,7 @@ existing_walked_load() { # tick: what the last finished station pass left, while
     while IFS= read -r n; do [[ "$n" =~ ^(0|[1-9][0-9]*)$ ]] && INTAKE_EXISTING_WALKED["$n"]=ok; done; } 2>/dev/null < "$A/.existing-walked" || :
 }
 ew_secs() { printf '%d.%d' "$(($1 / 1000000))" "$(($1 % 1000000 / 100000))"; } # microseconds as seconds with one decimal
-existing_walk_tick() {
+existing_walk_tick_pass() {
   local old limit rc=0 gh_calls n tmp ok_rows=() GH_ETAG_DIR="$A/.gh-etag-existing-walk"
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   if ! mkdir "$EXISTING_WALK_LOCK" 2>/dev/null; then
@@ -53,4 +51,8 @@ existing_walk_tick() {
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$EXISTING_WALK_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$EXISTING_WALK_LOCK"
+}
+existing_walk_tick() {
+  local TICK_STEP_LOCK_RESULT=""
+  tick_step_lock_run existing_walk existing_walk_tick_pass "$@"
 }

@@ -242,9 +242,9 @@ The intake existing walk is a station process too (`scheduler.sh --existing-walk
 starts a detached pass every 60 s (`AUTOPI_EXISTING_WALK_SECONDS`, minimum 30, kill at 600 s) that runs `register_new_issues 1`, the walk
 that takes units already in the ledger through the handoff block, with a 240 s bound (`AUTOPI_EXISTING_WALK_LIMIT_SECONDS`). It does not
 hold the ledger lock across a row's GitHub reads; each ledger write takes the lock for that one write, and the pass line sums those waits
-and holds. The full tick runs the walk itself only while no pass started within 600 s (`AUTOPI_EXISTING_WALK_FRESH_SECONDS`); while the
-station is live the tick loads the rows the last pass walked (`.existing-walked`), so the new-issue walk still skips them. A PAUSE stops
-the station, as it stops the tick's intake. Each pass logs `existing-walk done secs= rows= lock_wait= lock_hold= lap_done= walked=
+and holds. When no pass started within 600 s (`AUTOPI_EXISTING_WALK_FRESH_SECONDS`), the detached intake step walks existing rows before
+new-issue intake; while the station is fresh it loads the rows the last pass walked (`.existing-walked`), so new-issue intake still skips
+them. A PAUSE stops the station, as it stops intake. Each pass logs `existing-walk done secs= rows= lock_wait= lock_hold= lap_done= walked=
 gh_calls= rc= limit= ended=` (the stamp is the pass start); `scheduler.existing_walk_gap_p50` is the median gap between those stamps.
 Its bounds are 120 / 300 as for the harvest station (the pass runs every 60 s, so a median above 2 min means it lags), not measured:
 re-measure on the first 7 live days, and change them only with that measurement and this table. Before the split the walk was the
@@ -253,8 +253,8 @@ a tick gap for its next walk (636 s median, 1151 s p90), measured 2026-11-08 07:
 
 The dependency release is a station too (`scheduler.d/release-deps-station.sh`, `scheduler.sh --release-deps`): `loop.sh` starts a
 detached pass every 60 s (`AUTOPI_RELEASE_DEPS_SECONDS`, minimum 30, kill at 600 s) that runs `release_dependency_blocks` with no scheduler
-lock held across it, as the tick already runs it. The full tick runs the pass itself only while no pass started within 600 s
-(`AUTOPI_RELEASE_DEPS_FRESH_SECONDS`). Each pass logs `release-deps done secs= gh_calls= rc= ended=` (the stamp is the pass start);
+lock held across it. The full tick also starts this step detached; the shared per-step flock skips an overlapping launch. Each pass logs
+`release-deps done secs= gh_calls= rc= ended=` (the stamp is the pass start);
 `scheduler.release_deps_gap_p50` is the median gap between those stamps. Its bounds are 120 / 300, not measured: re-measure on the first
 7 live days. Before the split the pass took 101-129 s of each full tick, and 341 s with 39 gh calls on 2026-11-12 10:45Z, when the tick was killed in it.
 

@@ -337,7 +337,7 @@ dep_now() { # run a command that reads the ledger it just wrote (to_supervisor c
   local SET_UNIT_QUEUE=0
   "$@"
 }
-release_dependency_blocks() {
+release_dependency_blocks_pass() {
   local id dep issue state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u line fresh
   local blocker_issue pair_key real_wait recut stacked bb has_info pilot has_note epic_seen marked pilot_label delivered_note
   local -a deps=() unique_deps=()
@@ -515,6 +515,10 @@ release_dependency_blocks() {
     park_label_sweep || :; intake_mark park_label_sweep
   fi
   intake_steps_say "dep detail steps"
+}
+release_dependency_blocks() {
+  local TICK_STEP_LOCK_RESULT=""
+  tick_step_lock_run release_dependency_blocks release_dependency_blocks_pass "$@"
 }
 dep_rows_prime() { # one history pass for every waiter's predecessor; the sweeps call it in the main shell, dep_rows_json reads it from a subshell
   local n rows need
