@@ -32,8 +32,15 @@ size_admission_exempt_unit() { # unit-json → true when the configured hotpatch
       and (if ($sa | has("exempt_hotpatch")) then $sa.exempt_hotpatch == true else true end)' <<<"$1" >/dev/null
 }
 
-# 监督者手工写入的 .size_waiver = {max_lines, by, at, reason}（scheduler 锁内，无工具）：只抬高该
+# 监督者写入的 .size_waiver = {max_lines, by, at, reason}：owner 评论后用 hold.sh --rule <issue> --requeue --comment <id>
+# --size-waiver <max_lines>，由 scheduler.sh --rule 在 scheduler 锁内写（rule_entry，范围见 size_waiver_range_check）：只抬高该
 # unit 的上限，不是豁免——复查仍计数，改动行数超过 max_lines 的 head 照样拒绝。字段缺失或非数值时回落默认上限。
+size_admission_estimate_line() { printf '%s\n' $((SIZE_ADMISSION_LINES * 80 / 100)); } # an unwaived estimate past this line is cut before a worker starts
+size_waiver_range_check() { # max_lines → 0 when an integer above the estimate line (what stops an unwaived ticket) and at most twice it; else says why, 1
+  local lo hi; lo="$(size_admission_estimate_line)"; hi=$((lo * 2))
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] && (( $1 > lo && $1 <= hi )) && return 0
+  echo "rule: --size-waiver must be an integer above $lo and at most $hi (the size limit is $SIZE_ADMISSION_LINES), got '${1:-}'" >&2; return 1
+}
 size_admission_limit_for() { # unit-json → effective limit: a supervisor size_waiver.max_lines raises the configured floor
   local waived
   waived="$(jqf -r '.size_waiver.max_lines | select(type == "number") // empty' <<<"$1")"
@@ -141,7 +148,7 @@ size_admission_recheck() { # Keep the per-candidate diff+fetch visible inside di
   return "$rc"
 }
 size_admission_write_start() { # unit workdir unit-json → block before worker launch when estimate or current diff is oversized
-  local issue estimate actual="" lines="" source="" branch base_branch head state limit est_limit reject_limit
+  local issue estimate actual="" lines="" source="" branch base_branch head state limit est_limit reject_limit waived
   size_admission_exempt_unit "$3" && return 0
   issue="$(jqf -r '.issue // empty' <<<"$3")"
   estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"$3")"
@@ -157,7 +164,9 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   head="$(git -C "$2" rev-parse -q --verify HEAD 2>/dev/null || true)"
   limit="$(size_admission_limit_for "$3")"
   # An unwaived ticket whose estimate passes 80% of the limit is cut before a worker starts (row 117: 41.2% of 641-800 estimates needed a size recut later, only 20.9% of 481-640); a waiver already means the recut ran out.
-  est_limit="$limit"; (( limit != SIZE_ADMISSION_LINES )) || est_limit=$((limit * 80 / 100))
+  est_limit="$limit"; (( limit != SIZE_ADMISSION_LINES )) || est_limit="$(size_admission_estimate_line)"
+  waived="$(jqf -r '.size_waiver.max_lines | select(type == "number") // empty' <<<"$3")" # a waiver between the 80% line and the limit lifts the estimate line to itself
+  [[ ! "$waived" =~ ^[0-9]+$ ]] || (( waived <= est_limit )) || est_limit="$waived"
   if [[ "$estimate" =~ ^[0-9]+$ ]] && (( estimate > est_limit )); then
     lines="$estimate"; source=estimate
   fi
