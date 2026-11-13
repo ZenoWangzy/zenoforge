@@ -464,7 +464,7 @@ function hereDocAt(line, index) {
   return delimiter ? { delimiter, stripTabs, end: cursor + (quote && line[cursor] === quote ? 1 : 0) } : null;
 }
 
-function shellFunctionRanges(source) {
+export function shellFunctionRanges(source) {
   try {
     execFileSync('bash', ['-n'], { input: source, stdio: ['pipe', 'ignore', 'ignore'] });
   } catch {
