@@ -60,33 +60,47 @@ EOF
 # footprint_room pass the unit as why_unit (dynamic scope). The last gate per unit lives in $A/.dispatch-why (unit TAB gate); a start clears it.
 declare -gA DISPATCH_WHY_LAST=()
 DISPATCH_WHY_DIRTY=false
+# Units this pass set or cleared (value gate, or "-" for cleared). Save merges only these into the file: a refill that overlaps a full tick
+# saved its whole stale map over the tick's newer gates (issue-5802 stayed on self-fix-refill in the file after host-capacity was logged),
+# so the next change for that unit was judged "same gate" and never logged.
+declare -gA DISPATCH_WHY_TOUCHED=()
 dispatch_why() { # unit gate [detail]
   [[ -n "${1:-}" && -n "${2:-}" && "${DISPATCH_WHY_LAST[$1]:-}" != "$2" ]] || return 0
-  DISPATCH_WHY_LAST[$1]="$2"; DISPATCH_WHY_DIRTY=true
+  DISPATCH_WHY_LAST[$1]="$2"; DISPATCH_WHY_TOUCHED[$1]="$2"; DISPATCH_WHY_DIRTY=true
   say "dispatch why unit=$1 gate=$2${3:+ detail=$3}"
 }
 dispatch_why_clear() { # unit: it started, so its next skip is news again
   [[ -n "${1:-}" && -n "${DISPATCH_WHY_LAST[$1]:-}" ]] || return 0
-  unset "DISPATCH_WHY_LAST[$1]"; DISPATCH_WHY_DIRTY=true
+  unset "DISPATCH_WHY_LAST[$1]"; DISPATCH_WHY_TOUCHED[$1]=-; DISPATCH_WHY_DIRTY=true
 }
 dispatch_why_load() {
   local unit gate
-  DISPATCH_WHY_LAST=(); DISPATCH_WHY_DIRTY=false
+  DISPATCH_WHY_LAST=(); DISPATCH_WHY_TOUCHED=(); DISPATCH_WHY_DIRTY=false
   [[ -n "${A:-}" && -r "$A/.dispatch-why" ]] || return 0
   while IFS=$'\t' read -r unit gate; do [[ -n "$unit" && -n "$gate" ]] && DISPATCH_WHY_LAST[$unit]="$gate"; done < "$A/.dispatch-why"
   return 0
 }
-dispatch_why_save() { # prunes units that left units.json; rewrites the file only when a gate or a prune changed it
-  local unit ids
+dispatch_why_save() { # merges this pass's changes into the file as it is now; prunes units that left the ledger; rewrites only when something changed
+  local unit gate ids
+  local -A merged=()
   [[ -n "${A:-}" && -n "${UNITS:-}" ]] || return 0 # a caller without a state dir (a pack stub test) keeps no file
   ids="$(jqf -r '.units[].id' "$UNITS" 2>/dev/null)" || return 0
+  if [[ -r "$A/.dispatch-why" ]]; then
+    while IFS=$'\t' read -r unit gate; do [[ -n "$unit" && -n "$gate" ]] && merged[$unit]="$gate"; done < "$A/.dispatch-why"
+  fi
+  for unit in "${!DISPATCH_WHY_TOUCHED[@]}"; do
+    if [[ "${DISPATCH_WHY_TOUCHED[$unit]}" == - ]]; then unset "merged[$unit]"; else merged[$unit]="${DISPATCH_WHY_TOUCHED[$unit]}"; fi
+  done
+  for unit in "${!merged[@]}"; do
+    grep -qxF -- "$unit" <<<"$ids" || { unset "merged[$unit]"; DISPATCH_WHY_DIRTY=true; }
+  done
   for unit in "${!DISPATCH_WHY_LAST[@]}"; do
     grep -qxF -- "$unit" <<<"$ids" || { unset "DISPATCH_WHY_LAST[$unit]"; DISPATCH_WHY_DIRTY=true; }
   done
   [[ "$DISPATCH_WHY_DIRTY" == true ]] || return 0
-  for unit in "${!DISPATCH_WHY_LAST[@]}"; do printf '%s\t%s\n' "$unit" "${DISPATCH_WHY_LAST[$unit]}"; done > "$A/.dispatch-why.tmp" \
+  for unit in "${!merged[@]}"; do printf '%s\t%s\n' "$unit" "${merged[$unit]}"; done > "$A/.dispatch-why.tmp" \
     && mv -f -- "$A/.dispatch-why.tmp" "$A/.dispatch-why" || :
-  DISPATCH_WHY_DIRTY=false
+  DISPATCH_WHY_TOUCHED=(); DISPATCH_WHY_DIRTY=false
 }
 
 dispatch_pending() {
