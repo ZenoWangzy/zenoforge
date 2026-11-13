@@ -157,6 +157,7 @@ dispatch_pending_pass() {
     paused_midrun dispatch && break
     [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || break # footprint_room said why
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"; why_unit="$id"
+    branch="$(jqf -r '.branch // empty' <<<"$u")"
     # The kill counts from the refill's start, and one start can take a minute under load. 90 matches the merge pass stop.
     if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
       say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"
@@ -480,7 +481,7 @@ $(decision_scope "$u")"
         fi
         dmark head_compare
         dcapture wt clone ensure_clone "$id" || { say "rereview-pending unit=$id: clone unavailable"; continue; }
-        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "rereview-pending unit=$id: PR head $sha unavailable"; continue; }
+        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" "$branch" || { say "rereview-pending unit=$id: PR head $sha unavailable"; continue; }
         prev_report="$(jqf -r '.review_report // empty' <<<"$u")"
         # 增量复审的前提是上轮 head 是当前 head 的真祖先（prev..sha 即修复增量）。PR head 随每次修复推送而变，
         # 不能用"PR head 未变"当前提：7c38abda0 那样判定后，2026-10-20 起 PR 车道零增量复审，每轮都是重新抽样的全量评审，
@@ -497,10 +498,10 @@ $(decision_scope "$u")"
           continue
         fi
         rep="review-${key}-r-${TAG}.md"
-        prompt="你是 the product 流水线的独立代码评审 subagent，只读增量复审。当前目录是隔离 clone，已检出 PR 当前 head（detached），origin/main 为最新 main。
+        prompt="你是 the product 流水线的独立代码评审 subagent，进行增量复审。当前目录是隔离 clone，已检出 PR 当前 head，origin/main 为最新 main。
 复审 ${subject}（${title}）当前 head ${sha}，上轮 head ${prev_sha}。按正式契约中的 Targeted re-review 流程，仅检查 ${prev_sha}..${sha} 的 PR 增量及其直接依赖闭包；报告写到 $SUP/${rep}。
 读取上轮报告 $SUP/${prev_report} 和单元历史中的作者处置，再按处置逐条核验。$(review_contract_rule)
-只读边界：不编辑/commit/push/merge/评论。$(review_dispositions_context "$u")$(review_inputs_rule "$u" "$wt" "$sha")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
+$(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inputs_rule "$u" "$wt" "$sha")$(risk_class_safety_rule "$wt")$(lane_rule "$lane" "$sha")$(sweep_rule "$u" "$sha")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         prompt+="$(ci_red_evidence_rule "$u" "$sha" "$prev_sha")"
         dmark prompt
         dispatch_if_room "$id" "rereview" "rereview" "${rep%.md}.worker.log" "$rep" \
@@ -516,7 +517,7 @@ $(decision_scope "$u")"
         [[ "$lane" == direct-main ]] || ! dstep pr_conflict review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
         dstep reviewer_pick pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
         dcapture wt clone ensure_clone "$id" || { say "review-pending unit=$id: clone unavailable"; continue; }
-        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
+        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" "$branch" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"
         prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         prompt+="$(ci_red_evidence_rule "$u" "$sha" "$(jqf -r '.reviewed_sha // empty' <<<"$u")")"

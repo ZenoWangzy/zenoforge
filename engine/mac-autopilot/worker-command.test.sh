@@ -8,7 +8,7 @@ source "$script_dir/scheduler.d/worker-command.sh"
 # Keep this focused on the command builder's public boundary; unrelated scheduler policy is stubbed.
 jqf() { command jq "$@"; }
 provider_of() { [[ "$1" == claude-* ]] && printf claude || printf codex; }
-unit_field() { case "$2" in *sessions*) printf '{}' ;; *) printf false ;; esac; }
+unit_field() { case "$2" in .lane*) printf '%s' "${TEST_LANE:-pr}" ;; *sessions*) printf '{}' ;; *) printf false ;; esac; }
 worker_rules() { :; }
 fail() { printf 'worker-command.test.sh: %s\n' "$*" >&2; exit 1; }
 SESSION_RE='^[0-9a-f-]{36}$'
@@ -72,10 +72,12 @@ contains_arg " ${CODEX_COMMAND[*]} " 'BASH_MAX_OUTPUT_LENGTH=8192' \
 grep -q 'tool_output_token_limit=$(worker_output_cap_tokens)' "$script_dir/../bin/luna" || fail 'bin/luna does not pass the output cap'
 grep -q 'BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)"' "$script_dir/../bin/zc" || fail 'bin/zc does not pass the output cap'
 provider_of() { [[ "$1" == claude-* ]] && printf claude || printf codex; }
-
-eval "$(sed -n '/^CLAUDE_REVIEW_TOOLS=/p' "$script_dir/scheduler.sh")"
 ENGINE_ROOT="$(cd -- "$script_dir/../.." && pwd -P)"
-build_codex_command review claude-sonnet-4-5 high review-1 'Sonnet fallback review prompt'
+review_repo="$test_env_root/review-repo"
+git init -q -b agent/review-1 "$review_repo"
+git -C "$review_repo" config user.name reviewer-fixture
+git -C "$review_repo" config user.email reviewer@example.invalid
+TEST_LANE=pr build_codex_command review claude-sonnet-4-5 high review-1 'Sonnet fallback review prompt' '' "$review_repo" claude
 allowed_tools=""
 for ((i = 0; i < ${#CODEX_COMMAND[@]}; i++)); do
   if [[ "${CODEX_COMMAND[i]}" == --allowedTools ]]; then
@@ -88,8 +90,10 @@ done
 for runner in 'Bash(pnpm:*)' 'Bash(npx vitest:*)' 'Bash(bash *.test.sh)'; do
   [[ "$allowed_tools" == *"$runner"* ]] || fail "Sonnet fallback omitted test runner $runner: $allowed_tools"
 done
-for push_grant in 'Bash(git push' 'Bash(git:*)' 'Bash(git *)' 'Bash(git*)'; do
-  [[ "$allowed_tools" != *"$push_grant"* ]] || fail "Sonnet fallback must not be allowed to push: $allowed_tools"
+[[ "$allowed_tools" == *'Edit(/'*'/**)'* && "$allowed_tools" == *'Write(/'*'/**)'* ]] || fail "reviewer cannot edit its clone: $allowed_tools"
+[[ "$allowed_tools" == *'Bash(git push origin agent/review-1)'* ]] || fail "PR reviewer cannot push its own branch: $allowed_tools"
+for push_grant in 'Bash(git push:*)' 'Bash(git push origin *)' 'Bash(git push -f' 'Bash(git push --force'; do
+  [[ "$allowed_tools" != *"$push_grant"* ]] || fail "reviewer has an unscoped push grant: $allowed_tools"
 done
 gh_permissions=()
 IFS=',' read -r -a permission_entries <<<"$allowed_tools"
@@ -110,8 +114,18 @@ for runner in 'pnpm <script>' 'npx vitest <file>' 'node --test <file>' 'bash <fi
   [[ "$review_prompt" == *"$runner"* ]] || fail "Sonnet fallback prompt omitted test runner $runner"
 done
 review_command=" ${CODEX_COMMAND[*]} "
-[[ "$review_command" == *' --tools Read,Grep,Glob,Bash '* ]] || fail 'Sonnet fallback tool surface changed'
+[[ "$review_command" == *' --tools Read,Edit,Write,Grep,Glob,Bash '* ]] || fail 'Sonnet fallback tool surface changed'
 [[ "$review_command" == *' --permission-mode dontAsk '* ]] || fail 'Sonnet fallback permission mode changed'
+git -C "$review_repo" checkout -q -b main
+TEST_LANE=direct-main build_codex_command review claude-sonnet-4-5 high review-1 'direct-main review prompt' '' "$review_repo" claude
+direct_main_tools=""
+for ((i = 0; i < ${#CODEX_COMMAND[@]}; i++)); do
+  if [[ "${CODEX_COMMAND[i]}" == --allowedTools ]]; then direct_main_tools="${CODEX_COMMAND[i + 1]:-}"; break; fi
+done
+[[ "$direct_main_tools" != *'Bash(git push'* ]] || fail "direct-main review may push: $direct_main_tools"
+for write_grant in 'Edit(/' 'Write(/' 'Bash(git add:' 'Bash(git commit:'; do
+  [[ "$direct_main_tools" != *"$write_grant"* ]] || fail "direct-main review has a write grant: $direct_main_tools"
+done
 
 # Claude implement: stream-json, isolated from user settings, write/push confined to the unit worktree and branch.
 SESSION_RE='^[[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}$'
@@ -188,5 +202,5 @@ build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fa
 [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == session-too-large ]] || fail "codex repair above the cutoff resumed ($CODEX_MODE/$CODEX_PATH_REASON)"
 
 printf '%s\n' 'PASS scheduler Codex commands disable configured MCP servers and cap tool output (64 KB default, implement 8000 tokens)'
-printf '%s\n' 'PASS Sonnet fallback allows focused test runners and does not allow git push'
+printf '%s\n' 'PASS Sonnet fallback allows focused tests and confines review fixes to the PR branch'
 printf '%s\n' 'PASS Claude implement is stream-json, worktree-scoped, branch-only push, resumes its own session'
