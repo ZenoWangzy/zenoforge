@@ -67,3 +67,14 @@ main_red_attribution() { MAIN_RED_REVERTED=0; MAIN_RED_PENDING=0; }
 # This suite tests scheduler gates and state transitions; reviewer-family
 # availability is covered by review-family.test.sh.
 pick_review_for_unit() { PICK_MODEL="GLM-5.3"; PICK_EFFORT=max; return 0; }
+
+# Dispatch cases that do not test admission must not sample the host's load or processes.
+# The focused admission cases replace these probes and files with their own inputs.
+scheduler_gate_capacity_fixture() {
+  LUNA_PROC_MEMINFO="$fixture/dispatch-meminfo" LUNA_PROC_PSI_MEMORY="$fixture/dispatch-psi"
+  LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85 LUNA_AGE_ADMIT_SECONDS=1200
+  printf 'MemAvailable: 6291456 kB\n' > "$LUNA_PROC_MEMINFO"
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$LUNA_PROC_PSI_MEMORY"
+  codex_runs() { echo 0; }
+  cpu_busy() { echo 0; }
+}
