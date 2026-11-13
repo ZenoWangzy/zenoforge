@@ -799,8 +799,8 @@ hold_cli_main() {
     (($# == 2)) || { echo "usage: hold.sh --restore <issue>" >&2; return 64; }
     hold_restore "$2"
   elif [ "${1:-}" = --rule ]; then
-    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ]; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock|--supersede-handoff|--ready --comment <id> [--blocked-on <N>]" >&2; echo "--ready moves a tracker, needs-advisor or needs-triage issue to ready-for-agent (open issues only)." >&2; echo 'A report-only --requeue on an unchanged PR head needs a comment body containing "report only" or "report-only"; report_only_pr_requeue_harvest matches that text.' >&2; return 64; }
-    hold_rule "$2" "${3#--}" "$5" "${7:-}"
+    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready)$ && "$4" = --comment ]] && { (($# == 5)) || [ "$6" = --blocked-on ] || { [ "$6" = --size-waiver ] && [ "$3" = --requeue ] && [[ "$7" =~ ^[1-9][0-9]*$ ]]; }; } || { echo "usage: hold.sh --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock|--supersede-handoff|--ready --comment <id> [--blocked-on <N>]" >&2; echo "--requeue also takes --size-waiver <max_lines>: raises that unit's size limit (above the 80% estimate line, at most twice it); owner comment required." >&2; echo "--ready moves a tracker, needs-advisor or needs-triage issue to ready-for-agent (open issues only)." >&2; echo 'A report-only --requeue on an unchanged PR head needs a comment body containing "report only" or "report-only"; report_only_pr_requeue_harvest matches that text.' >&2; return 64; }
+    if [ "${6:-}" = --size-waiver ]; then hold_rule "$2" "${3#--}" "$5" "" "$7"; else hold_rule "$2" "${3#--}" "$5" "${7:-}"; fi
   elif [ "${1:-}" = --answer ]; then
     (($# == 4)) && [ "$3" = --comment ] || { echo "usage: hold.sh --answer <issue> --comment <id>" >&2; return 64; }
     hold_answer "$2" "$4"

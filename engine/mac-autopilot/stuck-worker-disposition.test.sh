@@ -302,7 +302,7 @@ jq -e --argjson pid "$fail_pid" '.workers[] | select(.pid==$pid) | .harvested ==
   || fail "worker whose recut route fails must be harvested with its command count and cap"
 jq -e --argjson pid "$exact_pid" '.workers[] | select(.pid==$pid) | .harvested != true' "$WORKERS" >/dev/null \
   || fail "worker exactly at the cap must stay unharvested"
-jq -e '.units[] | select(.id=="cmdcap-over") | .stage == "blocked-external" and .size_recut_pending == true and .branch == "command-cap-worker" and any(.history[]; .stage=="implement-command-cap" and .result=="231/230 -> needs-recut") and (has("stuck_probe") | not)' "$UNITS" >/dev/null \
+jq -e '.units[] | select(.id=="cmdcap-over") | .stage == "blocked-external" and .size_recut_pending == true and .branch == "command-cap-worker" and any(.history[]; .stage=="implement-command-cap" and .result=="231/230 -> needs-recut") and .history[-1].blocked_on == null and .history[-1].source == "implement-command-cap" and (has("stuck_probe") | not)' "$UNITS" >/dev/null \
   || fail "over-cap unit must be blocked for recut with its branch and history"
 jq -e '.units[] | select(.id=="cmdcap-fail") | .stage == "supervisor-review" and .note == "implement-command-cap: split" and any(.history[]; .stage=="implement-command-cap" and .result=="231/230")' "$UNITS" >/dev/null \
   || fail "failed recut route must fall back to supervisor review"

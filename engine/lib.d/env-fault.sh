@@ -241,8 +241,18 @@ env_fault_latest_scope() {
 # EnvironmentFile, not this process's environment (V86); web session probes hold
 # the shared transport lease and inspect the existing account target.
 env_fault_probe() {
-  local env_file="${ENV_FAULT_ENV_FILE:-$AGENT_HOME/env}" tab_status=0 df_line total_kb avail_kb free_gib required_kb
+  local env_file="${ENV_FAULT_ENV_FILE:-$AGENT_HOME/env}" tab_status=0 df_line total_kb avail_kb free_gib required_kb remaining
   case "$1" in
+    env:gh-api)
+      # Two bounded calls: the GraphQL budget has room, and one tiny GraphQL
+      # read succeeds. Without this probe the quarantine lifts only by canary.
+      # type -P: lib.sh defines a gh shell function, which command -v would find.
+      type -P gh >/dev/null 2>&1 || return 2
+      remaining="$(timeout 20 gh api rate_limit --jq .resources.graphql.remaining 2>/dev/null)" || return 1
+      [[ "$remaining" =~ ^[0-9]+$ ]] && [ "$remaining" -gt 0 ] || return 1
+      timeout 20 gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login >/dev/null 2>&1 || return 1
+      return 0
+      ;;
     env:network-timeout)
       # A failed per-call read is not proof the whole stage is offline. Use
       # an independent, bounded GitHub API request to confirm the shared

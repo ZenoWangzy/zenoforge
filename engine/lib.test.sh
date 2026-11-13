@@ -4057,6 +4057,54 @@ assert_contains "capacity stage quarantine never admits timed canary" "$CAPACITY
 assert_contains "capacity probes automatically lift both quarantines after cihost capacity recovers" "$CAPACITY_PROBE_OUT" 'capacity_quarantines_lift=yes'
 assert_contains "release dispatch resumes automatically after capacity recovery" "$CAPACITY_PROBE_OUT" 'capacity_dispatch_resumes=yes'
 
+# env:gh-api probe: a fake gh stands in for the GitHub API; the reconcile cases show the quarantine lifts by probe, not canary.
+GH_API_PROBE_HOME="$(mktemp -d)"
+mkdir -p "$GH_API_PROBE_HOME/fake-bin"
+cat > "$GH_API_PROBE_HOME/fake-bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api rate_limit") if [ "$FAKE_GH_MODE" = ratelimit ]; then echo 0; else echo 4999; fi ;;
+  "api graphql") if [ "$FAKE_GH_MODE" = ratelimit ]; then echo "HTTP 403: API rate limit exceeded" >&2; exit 1; fi; echo tester ;;
+  *) exit 2 ;;
+esac
+FAKE_GH
+chmod +x "$GH_API_PROBE_HOME/fake-bin/gh"
+GH_API_PROBE_OUT="$(AGENT_HOME="$GH_API_PROBE_HOME" AGENT_DRY_RUN=0 GH_API_LIB_DIR="$SCRIPT_DIR" GH_API_FAKE_BIN="$GH_API_PROBE_HOME/fake-bin" bash -c '
+  set +e
+  set -uo pipefail
+  source "$GH_API_LIB_DIR/lib.sh"
+  # /usr/bin/gh exists on this host, so PATH without gh is a bin dir linking every other tool.
+  path_without_gh() {
+    local f="" dir="$AGENT_HOME/no-gh-bin"
+    mkdir -p "$dir"
+    for f in /usr/bin/* /bin/*; do [ "${f##*/}" = gh ] || ln -sfn "$f" "$dir/${f##*/}"; done
+    printf "%s" "$dir"
+  }
+  export PATH="$GH_API_FAKE_BIN:$PATH"
+  export FAKE_GH_MODE=ok
+  rc=0; env_fault_probe env:gh-api || rc=$?; echo "gh_api_ok_rc=$rc"
+  quarantine_open implement env:gh-api "gh api unreachable" 2 1800000000
+  reconcile_quarantines 1800000001
+  echo "gh_api_ok_lifted=$([ -f "$(quarantine_file implement)" ] && echo no || echo yes)"
+  quarantine_open implement env:gh-api "gh api rate limited" 2 1800000100
+  export FAKE_GH_MODE=ratelimit
+  rc=0; env_fault_probe env:gh-api || rc=$?; echo "gh_api_ratelimit_rc=$rc"
+  reconcile_quarantines 1800000101
+  echo "gh_api_ratelimit_stays=$([ -f "$(quarantine_file implement)" ] && echo yes || echo no)"
+  export FAKE_GH_MODE=ok
+  rm -f "$(quarantine_file implement)"
+  quarantine_open implement env:gh-api "gh api unreachable" 2 1800000200
+  (PATH="$(path_without_gh)"; rc=0; env_fault_probe env:gh-api || rc=$?; echo "gh_api_missing_rc=$rc"; reconcile_quarantines 1800000201)
+  echo "gh_api_missing_stays=$([ -f "$(quarantine_file implement)" ] && echo yes || echo no)"
+' 2>&1)"
+rm -rf "$GH_API_PROBE_HOME"
+assert_contains "gh-api probe passes when the GraphQL budget and a tiny read both succeed" "$GH_API_PROBE_OUT" 'gh_api_ok_rc=0'
+assert_contains "gh-api probe success lifts the quarantine by probe" "$GH_API_PROBE_OUT" 'gh_api_ok_lifted=yes'
+assert_contains "gh-api probe reports rate limit as still present" "$GH_API_PROBE_OUT" 'gh_api_ratelimit_rc=1'
+assert_contains "gh-api quarantine stays open while rate limited" "$GH_API_PROBE_OUT" 'gh_api_ratelimit_stays=yes'
+assert_contains "gh-api probe with gh missing is unknown" "$GH_API_PROBE_OUT" 'gh_api_missing_rc=2'
+assert_contains "gh-api quarantine is not lifted by probe when gh is missing" "$GH_API_PROBE_OUT" 'gh_api_missing_stays=yes'
+
 MAIN_CI_QUARANTINE_HOME="$(mktemp -d)"
 MAIN_CI_QUARANTINE_OUT="$(AGENT_HOME="$MAIN_CI_QUARANTINE_HOME" bash -c '
   set -euo pipefail

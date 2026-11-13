@@ -768,6 +768,7 @@ gh() {
     'pr edit') printf '%s\n' "$*" >> "$fixture/stack-pr-edit.args" ;;
   esac
 }
+stack_tick_prs="$TICK_PRS"; TICK_PRS='' # the stub answers the live per-head lookup; a census left by an earlier case would answer instead
 scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
 [[ "$SCHED_PR_NUM" == 102 && "$(cat "$fixture/stack-pr-create.args")" == *'--draft --label agent/ci-gated --base agent/issue-1'* ]] \
   || fail 'stacked unit PR did not target its predecessor branch'
@@ -775,6 +776,13 @@ STACK_PR_EXISTING=1
 scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
 [[ "$SCHED_PR_NUM" == 102 && "$(tail -1 "$fixture/stack-pr-edit.args")" == 'pr edit 102 --base agent/issue-1' ]] \
   || fail 'an existing stacked unit PR did not retarget its predecessor branch'
+# #1038: with the census loaded the same PR is found without the live lookup (the stub would answer none and create).
+STACK_PR_EXISTING=0; rm -f "$fixture/stack-pr-edit.args" "$fixture/stack-pr-create.args"
+TICK_PRS='[{"number":102,"headRefName":"agent/issue-23","isDraft":true}]'
+scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
+[[ "$SCHED_PR_NUM" == 102 && ! -e "$fixture/stack-pr-create.args" && "$(tail -1 "$fixture/stack-pr-edit.args")" == 'pr edit 102 --base agent/issue-1' ]] \
+  || fail 'a census-known stacked unit PR did not retarget its predecessor branch'
+TICK_PRS="$stack_tick_prs"
 eval "$stack_gh_real"; eval "$stack_pr_changed_real"; eval "$stack_gated_label_real"
 
 units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[]}]}"
@@ -1096,7 +1104,7 @@ cat > "$rg/live/scheduler.sh" <<'SH'
 #!/usr/bin/env bash
 mkdir "$RG_LOCK" 2>/dev/null || exit 75
 printf '%s\n' "$BASHPID" > "$RG_LOCK/pid"
-trap 'rm -rf -- "$RG_LOCK"' EXIT
+trap 'rm -rf -- "$RG_LOCK" "$test_env_root"' EXIT
 printf '%s\n' "$*" >> "$RG_CALLS"
 if [[ "${RG_SLOW_PID:-}" =~ ^[1-9][0-9]*$ ]] && kill -0 "$RG_SLOW_PID" 2>/dev/null; then
   printf 'during-slow-tick\n' >> "$RG_DURING"
@@ -3223,7 +3231,8 @@ stack_child_new="$(command git -C "$stack_verify" rev-parse refs/remotes/origin/
 GH_PR_TABLE="$fixture/stack-closed-table"; echo '[]' > "$GH_PR_TABLE"
 pr_view() { case "$2" in state) echo CLOSED ;; esac; }
 reconcile_stacked_units
-[[ "$(field issue-2 .stage)" == blocked-external && "$(field issue-2 .blocked_on)" == 1 ]] \
+[[ "$(field issue-2 .stage)" == blocked-external && "$(field issue-2 .blocked_on)" == 1 \
+  && "$(field issue-2 '.history[-1].blocked_on')" == 1 && "$(field issue-2 '.history[-1].source')" == stacked-pr ]] \
   || fail 'dependent unit did not return to waiting when its predecessor PR closed'
 pr_view() { case "$2" in state) echo MERGED ;; esac; }
 dep_states() { printf '1\tMERGED\t\n'; }

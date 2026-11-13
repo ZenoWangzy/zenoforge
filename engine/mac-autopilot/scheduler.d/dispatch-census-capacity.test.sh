@@ -387,11 +387,14 @@ ticket_budget_reason() { printf 'wall 300min of 240min after 3 rounds\n'; }
 stop_loss_case issue-4929 "[$rework]" 529 repair-pending
 [[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4929 | grep -c "$fresh_prefix")" == 0 ]] || fail "a wall-budget stop-loss was requeued by the scheduler (calls=$stop_loss_calls)"
 ticket_budget_reason() { printf 'rounds 3 of 3\n'; }
-# Delivery rate: under 50% on the scorecard (it is null below 6 outcomes) sends fresh signals back to the arbiter; 50% or null requeues.
+# Delivery rate: under 50% on the scorecard (the last 6 decided outcomes within 7 days; null below 6) sends fresh signals back to the arbiter; 50% or null requeues.
 fresh_rate() { printf '{"metrics":[{"id":"supervisor.fresh_requeue_delivery_24h","value":%s}]}\n' "$1" > "$MAC_AUTOPILOT_RUNTIME_DIR/node-health.json"; }
 fresh_rate 33.3
 stop_loss_case issue-4931 "[$rework]" 531 repair-pending
 [[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4931 | grep -c "$fresh_prefix")" == 0 ]] || fail "a delivery rate of 33.3% still requeued in the scheduler (calls=$stop_loss_calls)"
+fresh_rate 16.7   # measured 2026-11-13: 1 of the last 6 decided outcomes delivered; the gate must be closed
+stop_loss_case issue-4940 "[$rework]" 540 repair-pending
+[[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4940 | grep -c "$fresh_prefix")" == 0 ]] || fail "a 1-of-6 delivery rate (16.7%) still requeued in the scheduler (calls=$stop_loss_calls)"
 fresh_rate 50
 stop_loss_case issue-4932 "[$rework]" 532 repair-pending
 [[ "$stop_loss_calls" == 0 && "$(fresh_events issue-4932 | grep -c "$fresh_prefix")" == 1 ]] || fail "a delivery rate of 50% did not requeue (calls=$stop_loss_calls)"

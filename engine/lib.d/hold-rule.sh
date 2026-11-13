@@ -3,11 +3,13 @@
 # hold_rule N|issue-N|pr-N requeue|approve|arbiter|recut|ready COMMENT: a supervisor ruling. Records supervisor-<action> in the
 # unit history (refills the stop-loss/arbitration budgets; a parked unit is moved by scheduler.sh --rule) and releases a
 # scheduler-stop-loss hold, or a supervisor/head hold on the allowlist below, if the issue has one. COMMENT must be an owner comment on the issue (or the PR for pr-N).
+# A fifth argument (hold.sh --requeue --size-waiver N) sets the unit's .size_waiver with the comment author and first line as the reason.
 hold_rule() {
-  local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" unit n state="" current_state comment sched issue_state allow_release=0 release_patch=.
+  local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" waiver="${5:-}" unit n state="" current_state comment sched issue_state allow_release=0 release_patch=.
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
   [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
   unit="$target"; n="${unit#*-}"
+  [[ -z "$waiver" || ( "$action" == requeue && "$waiver" =~ ^[1-9][0-9]*$ ) ]] || { echo "hold_rule: --size-waiver takes a number and goes with --requeue" >&2; return 64; }
   [[ "$action" != ready || "$unit" == issue-* ]] || { echo "hold_rule: --ready takes an issue, not a PR" >&2; return 64; }
   if [[ "$unit" == issue-* ]]; then
     state="$(state_read "$n")" || return 1
@@ -35,6 +37,7 @@ hold_rule() {
     [[ "$issue_state" == OPEN ]] || { echo "hold_rule: #$n is closed; --ready needs an open issue" >&2; return 1; }
   fi
   sched="$(dirname -- "$_AGENT_LIB_DIR/lib.sh")/mac-autopilot/scheduler.sh"
+  [[ -z "$waiver" ]] || bash "$sched" --size-waiver-check "$waiver" || return 1 # before any hold is released
   # recut needs the issue out of on-hold first, or route_to_recut leaves it on-hold
   # An allowlisted hold is released on any action, and the old holder, kind, reason and comment id are kept in the issue state.
   if [[ "$allow_release" == 1 ]]; then
@@ -44,7 +47,7 @@ hold_rule() {
     state_requeue "$n" release-hold hold-requeue "$release_patch" "$(jq -c .hold <<< "$state")" || return 1
     state=""
   fi
-  bash "$sched" --rule "$unit" "$action" "$(jq -r .html_url <<< "$comment")" "$(jq -r '.body[0:4000]' <<< "$comment")" "$blocker" || return 1
+  bash "$sched" --rule "$unit" "$action" "$(jq -r .html_url <<< "$comment")" "$(jq -r '.body[0:4000]' <<< "$comment")" "$blocker" "$waiver" "$(jq -r '.user.login // empty' <<< "$comment")" || return 1
   # ready writes the state the intake ruling episode reads (state_changed_from/state_changed_at); a label-only edit does not.
   if [[ "$action" == ready ]]; then issue_transition "$n" ready-for-agent "ruling-ready:$comment_id" || return 1; fi
   if [[ -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then current_state="$(state_read "$n")" || return 1

@@ -22,7 +22,7 @@ _AGENT_LIB_DIR="${_AGENT_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 # missing one at removal time.
 ensure_state_labels() {
   local existing name labels=("${ALL_STATE_LABELS[@]}"); [ "${1:-}" != tracker ] || labels+=(tracker)
-  existing="$(gh label list --repo "$REPO" --limit 200 --json name -q '.[].name' 2>/dev/null)" || existing=""
+  existing="$(gh label list --repo "$REPO" --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 0 # a failed list is not "all missing": 16 blind creates per failure (#1038)
   for name in "${labels[@]}"; do
     grep -qx -- "$name" <<< "$existing" && continue
     guarded_write gh label create "$name" --repo "$REPO" --color ededed \
