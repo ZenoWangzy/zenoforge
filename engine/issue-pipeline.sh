@@ -393,11 +393,9 @@ ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS="${ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS
 # signal line -- younger than the discard bound above, so a ticket repeatedly
 # failing to complete its Apply is visible before the verdict is thrown away.
 ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS="${ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS:-$((6 * 60 * 60))}"
-# recut=1: one parent-state mutation at a time. Its author's
-# own caveat (run-recut.sh's header) is that it has been run for real exactly
-# once and proven to refuse well, not yet proven to produce a dispatchable
-# child — a low cap costs little while that's still true.
-RECUT_CAP=1
+# recut=3: 11-13 measured 161 parents with recut children, and a 19-deep needs-recut queue waited hours at cap 1
+# (24 runs in 4.5 h). stage_unit_active keeps one recut per parent, so parallel runs never share a parent's state.
+RECUT_CAP="${RECUT_CAP:-3}"
 
 # 2026-09-12 review, item 2: with a fixed cap per stage, one hung dispatched
 # unit permanently consumes a slot and nothing notices — none of the three
