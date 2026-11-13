@@ -3,6 +3,7 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 unset AUTOPILOT_LOOP_UNIT
+export BELL_LIVE_EVIDENCE_DISABLE=1
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 bell="$script_dir/bell.sh"
@@ -15,7 +16,7 @@ fixture_root="$tmp/repo"
 mkdir -p "$fixture_root/engine/mac-autopilot" "$fixture_root/engine/night"
 export MAC_AUTOPILOT_ROOT="$fixture_root"
 printf 'window.DASH={};\n' > "$autopi/dashboard.data.js"
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp" "$test_env_root"' EXIT
 
 cat > "$autopi/config.json" <<'JSON'
 {"bell":{"enabled":true,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}
@@ -668,6 +669,51 @@ jq -se '.[0].number == 6100 and (.[0].body | contains("Occurrence count: 2") and
   "$INCIDENT_COMMENTS" >/dev/null
 [[ "$(grep -c '^issue create ' "$INCIDENT_GH_CALLS")" == 1 ]]
 grep -Fq 'incident filed class=verdicts-backlog-stale count=2' "$incident_autopi/bell.log"
+
+# A planted engine PR with no matching line creates one incident; a second PR
+# whose line appears in the journal is observed and creates none.
+live_fixture="$tmp/live-evidence"
+mkdir -p "$live_fixture"
+live_now="$(date +%s)"
+python3 - "$live_fixture" "$live_now" <<'PY'
+from datetime import datetime, timezone
+import json, os, sys
+root, now = sys.argv[1], int(sys.argv[2])
+def iso(value):
+    return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+missing_pin, present_pin = now - 90000, now - 36000
+prs = [
+    {"number":17001, "mergedAt":iso(missing_pin - 60), "body":"Live evidence: feature-one: applied"},
+    {"number":17002, "mergedAt":iso(present_pin - 60), "body":"Live evidence: feature-two: applied"},
+]
+pins = [
+    {"timestamp":iso(missing_pin), "message":"10:00:00 PINNED aaaaaaaaaaaa committed=x"},
+    {"timestamp":iso(present_pin), "message":"11:00:00 PINNED bbbbbbbbbbbb committed=y"},
+]
+journal = [
+    {"timestamp":iso(missing_pin + 600), "message":"feature-one: skipped"},
+    {"timestamp":iso(present_pin + 600), "message":"feature-two: applied"},
+]
+for name, value in (("prs.json", prs), ("pins.json", pins), ("journal.json", journal)):
+    with open(os.path.join(root, name), "w", encoding="utf-8") as stream:
+        json.dump(value, stream)
+with open(os.path.join(root, "engine.log"), "w", encoding="utf-8") as stream:
+    stream.write(f"[{iso(missing_pin + 600)}] feature-one: skipped\n")
+PY
+export ZF_LIVE_EVIDENCE_PR_FIXTURE="$live_fixture/prs.json"
+export ZF_LIVE_EVIDENCE_PIN_FIXTURE="$live_fixture/pins.json"
+export ZF_LIVE_EVIDENCE_JOURNAL_FIXTURE="$live_fixture/journal.json"
+export ZF_LIVE_EVIDENCE_ENGINE_LOGS="$live_fixture/engine.log"
+unset BELL_LIVE_EVIDENCE_DISABLE
+bash "$bell" > "$tmp/live-evidence-first.out" 2>&1
+[[ "$(jq '[.[] | select(.title | contains("PR #17001"))] | length' "$INCIDENT_ISSUES")" == 1 ]] \
+  || { echo 'bell.test.sh: missing live evidence did not create one PR incident' >&2; cat "$tmp/live-evidence-first.out" "$incident_autopi/bell.log" >&2; exit 1; }
+[[ "$(jq '[.[] | select(.title | contains("PR #17002"))] | length' "$INCIDENT_ISSUES")" == 0 ]] \
+  || { echo 'bell.test.sh: observed live evidence created an incident' >&2; exit 1; }
+bash "$bell" > "$tmp/live-evidence-repeat.out" 2>&1
+[[ "$(jq '[.[] | select(.title | contains("PR #17001"))] | length' "$INCIDENT_ISSUES")" == 1 \
+  && "$(grep -c '^issue create ' "$INCIDENT_GH_CALLS")" == 2 ]] \
+  || { echo 'bell.test.sh: repeated missing evidence opened a duplicate issue' >&2; cat "$tmp/live-evidence-repeat.out" "$INCIDENT_GH_CALLS" >&2; exit 1; }
 
 watch_home="$tmp/advisor-watch-home"
 mkdir -p "$watch_home/logs"
