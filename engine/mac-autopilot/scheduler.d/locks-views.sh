@@ -6,6 +6,32 @@ scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's s
   now="$(coord_process_start_ticks "$1" 2>/dev/null)" || return 1 # unreadable: keep the pid test
   [[ "$now" != "$want" ]]
 }
+# TERM from loop.sh's `timeout --foreground` (or a kill): stop this holder's own children, bounded, before the EXIT trap frees the lock.
+# A foreground ledger write finishes first (bash runs a trap only after its foreground command), so a stale write cannot land after the release.
+# Children in another session (setsid workers, stations) are never touched.
+scheduler_proc_field() { # $1 pid, $2 field of /proc/<pid>/stat after the comm (1 state, 2 ppid, 3 pgrp, 4 session); empty when unreadable
+  local st f=()
+  st="$(cat "/proc/$1/stat" 2>/dev/null)" || return 0
+  read -ra f <<<"${st##*) }"; printf '%s' "${f[$(( $2 - 1 ))]:-}"
+}
+scheduler_term_stop() {
+  local me=$BASHPID c s kids=() alive=() i me_sid wait_s="${AUTOPI_TERM_CHILD_WAIT_SECONDS:-10}" # BASHPID changes inside $(...)
+  me_sid="$(scheduler_proc_field "$me" 4)"
+  for c in $(pgrep -P "$me" 2>/dev/null); do
+    [[ -n "$me_sid" && "$(scheduler_proc_field "$c" 4)" == "$me_sid" ]] && kids+=("$c") # same session only: setsid workers stay
+  done
+  (( ${#kids[@]} )) && kill -TERM "${kids[@]}" 2>/dev/null
+  for (( i = 0; i < wait_s * 10; i++ )); do
+    alive=()
+    for c in "${kids[@]}"; do # a zombie has exited: it no longer writes
+      s="$(scheduler_proc_field "$c" 1)"; [[ "$s" != Z && "$s" != X ]] && kill -0 "$c" 2>/dev/null && alive+=("$c")
+    done
+    (( ${#alive[@]} )) || break
+    sleep 0.1
+  done
+  (( ${#alive[@]} )) && kill -KILL "${alive[@]}" 2>/dev/null
+  exit 143 # the EXIT trap (release_scheduler_lock) runs after the children are gone
+}
 acquire_scheduler_lock() {
   local old start age owner="$BASHPID"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
@@ -27,6 +53,7 @@ acquire_scheduler_lock() {
   [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$owner" ]] || return 1
   if start="$(coord_process_start_ticks "$owner" 2>/dev/null)"; then printf '%s\n' "$start" > "$SCHED_LOCK/start"; fi
   SCHED_LOCK_HELD=true
+  trap scheduler_term_stop TERM # stops this holder's children before the EXIT trap releases the lock
   lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
   chain_exit_trap 'release_scheduler_lock'
 }
