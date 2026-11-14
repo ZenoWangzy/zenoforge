@@ -7,6 +7,8 @@ do not create a contract file in the repository or try to edit the PR yourself.
 A ticket closed under the optimization-premise rule below delivers the
 `OBSOLETE:` first line instead of a contract block.
 
+**No change on purpose.** When you judge that the issue has no independently deliverable slice, or a prerequisite is missing, and you change nothing, make the first line of the report `NO-CHANGE: <reason>` with the reason in the same line. Use it only when the worktree has no commit and no edit; if you changed or committed anything, do not use it.
+
 **Do the work yourself; do not start sub-agents.** Whatever tools you have for spawning or messaging
 another agent, don't use them: a sub-agent inherits your model and effort, and 72 worker sessions in three days
 spawned 78 of them, paying a second worker's tokens and CPU for one ticket.

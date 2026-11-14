@@ -152,5 +152,9 @@ harvest_pr_implement issue-911 "$sup/impl-911.md" || :
 [[ "$(field issue-911 .note)" == *'decision'* && "$(field issue-911 .note)" == *'拆出授权范围切片'* ]] \
   || fail "deliberate no-change did not reach the supervisor as a decision with its reason ($(field issue-911 .note))"
 
+# 8) 提示词协议：implement 契约必须写明 NO-CHANGE: 首行协议，否则首轮 worker 不知道有这个出口。
+prompt="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/prompts/implement-contract.md"
+grep -Fq 'NO-CHANGE: <reason>' "$prompt" || fail "implement contract does not name the NO-CHANGE: first-line protocol ($prompt)"
+
 eval "$np_gh_saved"; WT_ROOT="$WT_ROOT_SAVED"
 echo 'implement-no-push-recovery.test.sh: PASS'
