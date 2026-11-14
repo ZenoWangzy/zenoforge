@@ -32,6 +32,22 @@ closed_unit() {
     '{id:$id,issue:$n,branch:("agent/issue-"+($n|tostring)),stage:"closed",history:($starts+[{stage:$last,at:$at}])}'
 }
 state_file() { jq -n --arg s "$2" --arg r "$3" '{state:$s} + (if $r == "" then {} else {recut_refused_at:$r} end)' > "$AGENT_HOME/state/$1.json"; }
+CU_ROUTED=""
+CU_REFUSE=""
+scheduler_issue_transition() {
+  CU_ROUTED+=" $1:$2:${3:-}"
+  [[ "$1" != "$CU_REFUSE" ]]
+}
+# A closed unit with no restore path and no merged unit is a stopped ticket: send it to triage.
+closed_unit 32 supervisor-close 2026-01-02T00:00:00Z | jq -s '{units:.}' > "$UNITS"
+state_file 32 ready-for-agent ""
+intake_closed_unit_rows 32
+[[ "$CU_ROUTED" == " 32:needs-triage:closed-units-no-path" ]] || fail "a supervisor-closed unit must route to needs-triage with closed-units-no-path, got:$CU_ROUTED"
+[[ "$(unit_json issue-32 | jq -r '.closed_units_restored_at // "none"')" == "$STAMP" ]] || fail "triage route must be marked on the unit"
+intake_closed_unit_rows 32
+[[ "$CU_ROUTED" == " 32:needs-triage:closed-units-no-path" ]] || fail "a marked unit set must not route a second time, got:$CU_ROUTED"
+[[ "$(grep -c 'intake skip issue #32: all units terminal (closed) and no restore path applies' "$LOG")" == 1 ]] || fail "a marked unit set must keep the terminal skip note once"
+CU_ROUTED=""
 
 { closed_unit 11 supervisor-budget-recut 2026-01-02T00:00:00Z
   closed_unit 12 supervisor-budget-recut 2026-01-02T00:00:00Z
@@ -86,6 +102,9 @@ grep -qF '(( existing_only )) || ! intake_reopen_refused_recut' "$engine_dir/mac
 cu_unit() { # issue stage last-history-stage [extra jq]
   jq -n --argjson n "$1" --arg stage "$2" --arg last "$3" '{id:("issue-"+($n|tostring)),issue:$n,branch:("agent/issue-"+($n|tostring)),stage:$stage,history:[{stage:$last,at:"2026-01-02T00:00:00Z"}]}'
 }
+cu_issue_unit() { # issue id stage last-history-stage
+  jq -n --argjson n "$1" --arg id "$2" --arg stage "$3" --arg last "$4" '{id:$id,issue:$n,branch:("agent/issue-"+($n|tostring)),stage:$stage,history:[{stage:$last,at:"2026-01-02T00:00:00Z"}]}'
+}
 cu_recut_requeue_pr_closed() {
   cu_unit "$1" closed supervisor-cap-triage-recut \
     | jq '.history += [{stage:"supervisor-requeue",at:"2026-01-02T00:01:00Z"},{stage:"pr-closed",at:"2026-01-02T00:02:00Z"}]'
@@ -103,16 +122,14 @@ cu_state 26 needs-hold '{"external_deliverable":{"required":true}}'
 cu_state 27 needs-hold '{"attempts":4}'                  # at CONCLUDE_RUN_ATTEMPT_CAP
 cu_state 28 needs-triage '{"state_changed_at":"2026-01-03T00:00:00Z"}'  # ruled after the merge, but still owed its awaiting-release write
 set_unit issue-28 '.awaiting_release_pending = 99'
-CU_ROUTED=""
-scheduler_issue_transition() { CU_ROUTED+=" $1:$2"; }
 intake_ruling_episodes 21 22 23 24 25 26 27 28
 intake_closed_unit_rows 21 22 23 24 25 26 27 28
-[[ -z "$CU_ROUTED" ]] || fail "no closed-unit path may route a delivered issue to triage (it would conclude on a partial PR), got:$CU_ROUTED"
+[[ "$CU_ROUTED" == " 23:needs-triage:closed-units-no-path" ]] || fail "only the unmerged obsolete unit should route to triage, got:$CU_ROUTED"
 [[ "$(cu_episode 24)" == ruling-2026-01-03T00:00:00Z ]] || fail "a triage ruling after a merge must restore it as the next slice"
 [[ "$(cu_episode 22)" == "ruling-$STAMP" ]] || fail "a recut-closed unit must be restored"
 [[ "$(unit_json issue-22 | jq -r .closed_units_restored_at)" == "$STAMP" ]] || fail "restore must be marked on the unit"
 for n in 21 23 25 26 27 28; do [[ "$(cu_episode $n)" == none ]] || fail "issue $n must take no episode"; done
-# A terminal row no path restores is named once, not left silent (a delivered unit and a unit closed on purpose); acted, held and ruled rows are not.
+# A merged or already-handled terminal row keeps the existing note; a fresh unmerged row has already gone to triage.
 intake_closed_unit_rows 21 22 23 24 25 26 27 28
 [[ "$(grep -c 'intake skip issue #21: all units terminal (merged) and no restore path' "$LOG")" == 1 ]] || fail "delivered row not named exactly once: $(grep 'intake skip' "$LOG")"
 [[ "$(grep -c 'intake skip issue #23: all units terminal (closed) and no restore path' "$LOG")" == 1 ]] || fail "closed-on-purpose row not named exactly once"
@@ -148,4 +165,55 @@ intake_ruling_episodes 31
 [[ "$(cu_episode 31)" == "ruling-2026-01-03T00:00:00Z" ]] || fail "a ready ruling from tracker must record a ruling episode"
 intake_ruling_episodes 31
 [[ "$(cu_episode 31)" == "ruling-2026-01-03T00:00:00Z" ]] || fail "a repeated tick must not move the ruling episode"
+# 5832's budget-recut is already recognized; the prior dead-park-exit does not hide it.
+cu_unit 38 closed supervisor-budget-recut | jq '.history = [{stage:"supervisor-budget-park",at:"2026-01-01T23:58:00Z"},{stage:"dead-park-exit",at:"2026-01-01T23:59:00Z"},{stage:"supervisor-budget-recut",at:"2026-01-02T00:00:00Z"}]' > "$UNITS.tmp"
+jq -s '{units:.}' "$UNITS.tmp" > "$UNITS"
+rm -f "$UNITS.tmp"
+cu_state 38 needs-hold
+CU_ROUTED=""
+intake_closed_unit_rows 38
+[[ "$(cu_episode 38)" == "ruling-$STAMP" ]] || fail "a budget-recut after dead-park-exit should use the existing restore path"
+[[ "$(unit_json issue-38 | jq -r '.closed_units_restored_at // "none"')" == "$STAMP" ]] || fail "recognized budget recut must be marked restored"
+[[ -z "$CU_ROUTED" ]] || fail "recognized budget recut should not route through the no-path fallback: $CU_ROUTED"
+# 6329's supervisor-recut is a recut event even though it is not a budget-recut spelling.
+cu_unit 39 closed supervisor-recut | jq '.history = [{stage:"supervisor-budget-park",at:"2026-01-01T23:58:00Z"},{stage:"supervisor-cap-default",at:"2026-01-01T23:59:00Z"},{stage:"supervisor-recut",at:"2026-01-02T00:00:00Z"}]' | jq -s '{units:.}' > "$UNITS"
+cu_state 39 needs-hold
+CU_ROUTED=""
+intake_closed_unit_rows 39
+[[ "$(cu_episode 39)" == "ruling-$STAMP" ]] || fail "supervisor-recut after budget park must use the closed-by-recut restore path"
+[[ -z "$CU_ROUTED" ]] || fail "supervisor-recut must not route through the no-path fallback: $CU_ROUTED"
+# 3201's cap-triage park followed by pr-closed has no recut event and therefore uses triage.
+cu_unit 40 closed pr-closed | jq '.history = [{stage:"supervisor-arbiter",at:"2026-01-01T23:58:00Z"},{stage:"supervisor-cap-triage-park",at:"2026-01-01T23:59:00Z"},{stage:"pr-closed",at:"2026-01-02T00:00:00Z"}]' | jq -s '{units:.}' > "$UNITS"
+cu_state 40 needs-hold
+CU_ROUTED=""
+intake_closed_unit_rows 40
+[[ "$CU_ROUTED" == " 40:needs-triage:closed-units-no-path" ]] || fail "park then pr-closed without a recut must route to triage, got:$CU_ROUTED"
+[[ "$(unit_json issue-40 | jq -r '.closed_units_restored_at // "none"')" == "$STAMP" ]] || fail "park then pr-closed route must be marked"
+# An obsolete unit stays note-only when another unit in the issue already merged.
+{ cu_issue_unit 33 issue-33-merged merged merged; cu_issue_unit 33 issue-33-obsolete closed obsolete; } | jq -s '{units:.}' > "$UNITS"
+cu_state 33 needs-hold
+CU_ROUTED=""
+intake_closed_unit_rows 33
+[[ -z "$CU_ROUTED" ]] || fail "an issue with a merged unit must not route to triage: $CU_ROUTED"
+[[ "$(grep -c 'intake skip issue #33: all units terminal (closed,merged) and no restore path applies' "$LOG")" == 1 ]] || fail "merged plus obsolete must keep the existing note"
+[[ "$(unit_json issue-33-obsolete | jq -r '.closed_units_restored_at // "none"')" == none ]] || fail "merged plus obsolete must not record a routing marker"
+# Both a durable hold and the on-hold state keep the issue out of this route.
+{ cu_unit 34 closed supervisor-close; cu_unit 35 closed supervisor-close; } | jq -s '{units:.}' > "$UNITS"
+cu_state 34 needs-hold '{"hold":{"holder":"head"}}'
+jq -n '{state:"on-hold"}' > "$AGENT_HOME/state/35.json"
+CU_ROUTED=""
+intake_closed_unit_rows 34 35
+[[ -z "$CU_ROUTED" ]] || fail "held issues must not route to triage: $CU_ROUTED"
+# A transition refusal is logged once and does not stop the next candidate in the same tick.
+{ cu_unit 36 closed supervisor-close; cu_unit 37 closed supervisor-close; } | jq -s '{units:.}' > "$UNITS"
+cu_state 36 needs-hold
+cu_state 37 needs-hold
+CU_ROUTED=""
+CU_REFUSE=36
+intake_closed_unit_rows 36 37
+CU_REFUSE=""
+[[ "$CU_ROUTED" == " 36:needs-triage:closed-units-no-path 37:needs-triage:closed-units-no-path" ]] || fail "a refused transition must not stop later issues: $CU_ROUTED"
+[[ "$(grep -c 'intake closed-units issue #36: needs-triage transition refused (closed-units-no-path); retry next tick' "$LOG")" == 1 ]] || fail "a refused transition must log one line"
+[[ "$(unit_json issue-36 | jq -r '.closed_units_restored_at // "none"')" == none ]] || fail "a refused transition must leave its marker unset"
+[[ "$(unit_json issue-37 | jq -r '.closed_units_restored_at // "none"')" == "$STAMP" ]] || fail "later successful transition must record its marker"
 echo "recut-reopen.test.sh ok"
