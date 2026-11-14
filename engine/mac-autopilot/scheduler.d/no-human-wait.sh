@@ -1,3 +1,22 @@
+# 终局裁决（cap triage）的落地统一走这里：set_unit 失败时绝不照旧记成功日志（11-03 pr-3575：RULE 的
+# jqf rc=5 让整笔更新被丢，没有 history、没有裁决，下一行却仍打 "RULE -> repair-pending"，付费裁决丢失）。
+# 失败记 NOT applied，决策文本追加进该单元的报告文件（显式路径或 .supervise_report；都没有时落 alerts），
+# 单元留在原 stage，由 cap-triage 的重试标记（supervisor-arbitration-cap）下一拍重试。
+cap_set_unit() { # id verb decision-text report-path jq_update_expression
+  local id="$1" verb="$2" text="$3" rep="$4" keep
+  if set_unit "$id" "$5"; then return 0; fi
+  say "cap triage unit=$id: $verb NOT applied (set_unit failed)"
+  keep="$rep"
+  [[ -n "$keep" ]] || keep="$SUP/$(unit_field "$id" '.supervise_report // empty')"
+  if [[ -n "$keep" && "$keep" != "$SUP/" && -d "${keep%/*}" ]]; then
+    printf '\n[%s] cap triage unit=%s: %s NOT applied (set_unit failed); decision text kept:\n%s\n' \
+      "$STAMP" "$id" "$verb" "$text" >> "$keep"
+  else
+    echo "[$STAMP] CAP-TRIAGE-DECISION-KEPT unit=$id verb=$verb: $text" >> "$A/alerts/state.md"
+  fi
+  return 1
+}
+
 # hold.sh --rule requeue records the owner's comment id (issue 5742: "supervisor ruling 6736537359: ...", decision null); plain requeue has no id.
 # The next supervisor-arbiter row consumes that ruling, granting one run without resetting lifetime spend.
 supervisor_arbiter_owner_ruling_pending() { # unit-json → 0 when an owner ruling came after the unit's last supervisor-arbiter run

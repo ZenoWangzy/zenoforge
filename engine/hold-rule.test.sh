@@ -180,6 +180,28 @@ printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-rev
   [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/closed-reroute-hold.out" && ! grep -q -- '--reroute' "$test_env_root/closed-reroute-hold.out" || { echo "FAIL: reroute on a closed stop-loss unit must name --requeue" >&2; cat "$test_env_root/closed-reroute-hold.out" >&2; exit 1; }
 )
 printf 'ok - rule_entry requeues a closed unit whose issue is on a stop-loss hold; other closed units refuse with a working hint\n'
+# The unit is archived after rule_entry restores it and before the write (the GitHub refresh stands in for the gap): the write matches no row, so the ruling fails.
+(
+  export AUTOPI_TEST_LIBRARY_ONLY=true MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/sup" MAC_AUTOPILOT_RUNTIME_DIR="$test_env_root/sup/autopi"
+  mkdir -p "$test_env_root/repo" "$test_env_root/sup/autopi/alerts"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$test_env_root/sup/autopi/config.json"
+  echo '{"workers":[]}' > "$test_env_root/sup/autopi/workers.json"
+  echo '{"units":[{"id":"issue-50","issue":50,"stage":"supervisor-review","task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
+  scheduler_issue_state() { printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}'; }
+  scheduler_issue_transition() { return 0; }
+  gh() {
+    if [[ "$1" == api && "$2" == repos/test/repo/issues/* && $# == 2 ]]; then
+      jq -c '.units = []' "$UNITS" > "$UNITS.archived" && mv "$UNITS.archived" "$UNITS"
+      jq -cn --argjson n "${2##*/}" '{number:$n,title:"t",body:"",state:"open",labels:[]}'; return
+    fi
+    return 1
+  }
+  rc=0; rule_entry issue-50 requeue u "" "" > "$test_env_root/archived-50.out" 2>&1 || rc=$?
+  [ "$rc" != 0 ] || { echo "FAIL: a ruling whose unit was archived before its write reported success" >&2; cat "$test_env_root/archived-50.out" >&2; exit 1; }
+  grep -Fq 'ledger-write-missed unit=issue-50' "$LOG" || { echo "FAIL: missed write was not logged" >&2; exit 1; }
+)
+printf 'ok - rule_entry returns non-zero when the unit is archived before the requeue write\n'
 # A unit closed by a recut (cap-triage-recut, or a recut that refused to cut) whose issue stays open and ready-for-agent with no hold
 # has no other way forward (#3405, #1135, #6206): the same requeue reopens it. Any other closed unit keeps the --recut refusal.
 (

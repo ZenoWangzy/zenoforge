@@ -640,7 +640,9 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
     workers_update --arg owner "$owner" '(.workers[] |= (if .claim_owner==$owner and .harvested!=true then .lease_expired=true else . end))' || return 1
   fi
   if [[ "$type" == implement || "$type" == repair ]]; then
-    [[ -n "$unit" ]] && set_unit "$unit" '.footprint=[]' || return 1
+    [[ -n "$unit" ]] || return 1
+    # An archived unit has no footprint left to clear; its expired claim must still be freed.
+    [[ -z "$(unit_field "$unit" .id)" ]] || set_unit "$unit" '.footprint=[]' || return 1
     TICK_ACTIVE_FOOTPRINTS_VALID=false
     unset "TICK_FOOTPRINT_CACHE[$unit]" "TICK_CHECK_SCOPE_SOURCE[$unit]" "TICK_CHECK_SCOPE[$unit]"
   fi

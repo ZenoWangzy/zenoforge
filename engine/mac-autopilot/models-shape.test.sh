@@ -89,6 +89,7 @@ pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'exp
 [[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "expired cache must restore the configured terra tuple ($PICK_MODEL/$PICK_EFFORT)"
 rm -f "$cache"
 printf '%s\n' '{"error":{"code":"model_not_found"}}' > "$sup/terra.worker.log"
+printf '%s\n' '{"units":[{"id":"terra-hard-repair","stage":"repair-pending","history":[]}]}' > "$runtime/units.json" # a worker death writes its unit's row
 jq -cn --argjson pid "$$" '{workers:[{pid:$pid,unit:"terra-hard-repair",type:"repair",log:"terra.worker.log",report:"terra-worker.md",started:"2026-11-09T00:00:00Z",provider:"codex",model:"gpt-6.1-terra"}]}' > "$WORKERS"
 harvest_workers
 awk -F '\t' -v now="$(date +%s)" '$1 == "gpt-6.1-terra" && $2 ~ /^[0-9]+$/ && $2 > now && $2 <= now + 86400 {found=1} END {exit !found}' "$cache" \

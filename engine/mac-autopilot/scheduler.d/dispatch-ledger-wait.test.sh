@@ -38,4 +38,11 @@ line="$(grep -F 'dispatch detail ledger_write unit=issue-1' "$LOG" || true)"
 [[ "$line" == *'holder_phase=dispatch_pending'* ]] || fail "ledger_write line has no holder_phase= of the lock holder: $line"
 [[ "$(jq -r '.units[0].note' "$UNITS")" == 'waited for the lock' ]] || fail "the write itself did not land"
 
+# A write to an id with no row fails with rc 3, is logged, and leaves units.json byte-identical.
+cp "$UNITS" "$A/units.before"
+rc=0; set_unit issue-404 '.note="lost"' || rc=$?
+[[ "$rc" == 3 ]] || fail "set_unit on a missing id returned rc $rc, want 3"
+grep -Fq 'ledger-write-missed unit=issue-404 caller=' "$LOG" || fail "no ledger-write-missed line: $(cat "$LOG")"
+cmp -s "$A/units.before" "$UNITS" || fail "units.json changed on a write that matched no row"
+
 echo "dispatch-ledger-wait.test.sh ok"
