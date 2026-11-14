@@ -49,4 +49,34 @@ reconcile_size_recuts
 [[ "$(field issue-6292 '[.history[] | select(.stage == "size-recut-resumed")] | length')" == 1 ]] \
   || fail "second round trip must not resume the unit: $(field issue-6292 '[.history[].stage]' | tr -d '\n')"
 [[ "$(field issue-6292 .size_recut_roundtrips)" == 2 ]] || fail "second round trip must count 2"
+# Waiver alone (row 451, head 15:21Z): an implement unit that is past the limit gets .size_waiver without leaving its stage,
+# and the next size admission reads the raised limit. Only *-pending and implement units take it; parked ones need requeue.
+jq -n '{units:[{id:"issue-6300",issue:6300,branch:"agent/issue-6300",stage:"implement-pending",history:[]}]}' > "$UNITS"
+printf '%s\n' '{"state":"ready-for-agent","recut_rounds":2}' > "$AGENT_HOME/state/6300.json"
+rc=0; rule_entry issue-6300 waiver 6300 "owner: size limit for this round" "" 1000 owner || rc=$?
+[[ "$rc" == 0 ]] || fail "waiver alone must be accepted on an implement unit: rc=$rc"
+[[ "$(field issue-6300 .stage)" == implement-pending ]] || fail "waiver alone must not change the stage: $(field issue-6300 .stage)"
+[[ "$(field issue-6300 .size_waiver.max_lines)" == 1000 ]] || fail "waiver alone must write .size_waiver: $(field issue-6300 .size_waiver)"
+[[ "$(field issue-6300 '.history[-1].stage')" == size-waiver ]] || fail "waiver alone must log one size-waiver event: $(field issue-6300 '[.history[].stage]' | tr -d '\n')"
+[[ "$(jq -r '.recut_rounds' "$AGENT_HOME/state/6300.json")" == 0 ]] || fail "a waiver must clear the issue recut round count"
+[[ "$(size_admission_limit_for "$(jq -c '.units[0]' "$UNITS")")" == 1000 ]] || fail "the next size admission must use the waived limit"
+set_unit issue-6300 '.stage="parked"'
+rc=0; rule_entry issue-6300 waiver 6300 "owner: size limit" "" 1000 owner >/dev/null 2>&1 || rc=$?
+[[ "$rc" != 0 && "$(field issue-6300 .stage)" == parked ]] || fail "waiver alone must refuse a parked unit and leave it parked"
+# An explicit supervisor recut ruling is the one ruling the recut-loop hold asks for: it clears the round count before the route (row 451 fix).
+ROUTED_WITH_ROUNDS=""
+scheduler_route_to_recut() { ROUTED_WITH_ROUNDS="$(jq -r '.recut_rounds // 0' "$AGENT_HOME/state/$1.json")"; }
+jq -n '{units:[{id:"issue-6301",issue:6301,branch:"agent/issue-6301",stage:"supervisor-review",history:[]}]}' > "$UNITS"
+printf '%s\n' '{"state":"needs-recut","recut_rounds":2}' > "$AGENT_HOME/state/6301.json"
+rc=0; rule_entry issue-6301 recut 6301 "head: split into four children" "" "" owner || rc=$?
+[[ "$rc" == 0 ]] || fail "explicit recut ruling must be accepted: rc=$rc"
+[[ "$ROUTED_WITH_ROUNDS" == 0 ]] || fail "explicit recut ruling must reach the route with the round count cleared, got $ROUTED_WITH_ROUNDS"
+[[ "$(jq -r '.recut_rounds' "$AGENT_HOME/state/6301.json")" == 0 ]] || fail "explicit recut ruling must leave the round count at zero"
+
+# Waiver action without --size-waiver is refused before any unit write (row 451 fix).
+jq -n '{units:[{id:"issue-6302",issue:6302,branch:"agent/issue-6302",stage:"implement-pending",history:[]}]}' > "$UNITS"
+before="$(jq -c '.units' "$UNITS")"
+rc=0; rule_entry issue-6302 waiver 6302 "owner: limit" "" "" owner >/dev/null 2>&1 || rc=$?
+[[ "$rc" == 64 ]] || fail "waiver without a size waiver must return 64, got $rc"
+[[ "$(jq -c '.units' "$UNITS")" == "$before" ]] || fail "waiver without a size waiver must leave the unit unchanged"
 echo "size-recut-cap.test.sh: ok"

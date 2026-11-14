@@ -25,7 +25,7 @@ retire_recut_parent() {
 
 complete_recut_parent() {
   local n="$1" children_json="$2"
-  state_merge "$n" ". + {recut_children: $children_json}" || {
+  state_merge "$n" ". + {recut_children: $children_json, recut_rounds: 0}" || {
     echo "complete_recut_parent: state_merge failed to record recut_children for #$n -- ABORTING the label move" >&2
     return 1
   }
@@ -462,8 +462,38 @@ route_to_recut() {
   if is_on_hold "$n"; then
     issue_transition "$n" on-hold hold-backfill "$transition_filter"
   else
-    issue_transition "$n" needs-recut recut-route "$transition_filter"
+    if recut_loop_limit_reached "$n"; then
+      recut_loop_hold "$n" "$size_evidence"
+      return $?
+    fi
+    issue_transition "$n" needs-recut recut-route "$transition_filter | .recut_rounds = ((.recut_rounds // 0) + 1)"
   fi
+}
+
+# recut_loop_limit_reached <n> -- true when this route would be the RECUT_LOOP_LIMIT-th recut round of the issue
+# (default 3, so two rounds may route). The count lives on the issue state, not the unit: a new unit, a cap-triage
+# RECUT or a size recut all route through route_to_recut, and each used to start the count over (6351: 14 recut runs).
+recut_loop_limit_reached() {
+  local rounds
+  rounds="$(state_read "$1" | jq -r '.recut_rounds // 0' 2>/dev/null)" || return 1
+  [[ "$rounds" =~ ^[0-9]+$ ]] || rounds=0
+  (( rounds + 1 >= ${RECUT_LOOP_LIMIT:-3} ))
+}
+
+# recut_loop_hold <n> [size-evidence-json] -- the issue cannot be cut again: hold it for a supervisor size ruling.
+# The hold resumes at ready-for-agent, not needs-recut, so a release cannot run one more uncounted recut; a size
+# waiver (locks-views.sh rule_entry) or a completed split (complete_recut_parent) clears recut_rounds.
+recut_loop_hold() {
+  local n="$1" evidence="${2:-}" rounds limit lines=unknown cap=unknown
+  rounds="$(state_read "$n" | jq -r '.recut_rounds // 0')"
+  limit="${RECUT_LOOP_LIMIT:-3}"
+  if [[ -n "$evidence" ]]; then
+    lines="$(jq -r '.lines // "unknown"' <<<"$evidence")"; cap="$(jq -r '.limit // "unknown"' <<<"$evidence")"
+  fi
+  hold_issue "$n" --holder supervisor --expires 168h --kind recut-loop --stage-before ready-for-agent \
+    --release "recut loop: $((rounds + 1)) recut rounds without delivered children (limit $limit); supervisor rules the size (hold.sh --rule <unit> requeue --size-waiver <lines>), or rules recut, or cuts the split by hand" || return 1
+  [[ -z "$evidence" ]] || state_merge "$n" ". + {size_admission: $evidence}" || return 1
+  echo "recut loop stop issue=#$n rounds=$((rounds + 1)) estimate=$lines limit=$cap" >&2
 }
 
 
