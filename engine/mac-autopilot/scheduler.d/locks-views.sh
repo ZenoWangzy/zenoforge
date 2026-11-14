@@ -43,6 +43,9 @@ refill_lock_wait_spent() {
 refill_stopped() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
 }
+ledger_lock_holder_phase() { # the phase the lock holder is in, read from .tick-phase; set_unit reads it before its wait, REFILL-TIMEOUT after it
+  local p; p="$(cat "$A/.tick-phase" 2>/dev/null || true)"; printf '%s' "${p:-unknown}"
+}
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
   local t0=$SECONDS
   refill_stopped && return 1
@@ -53,7 +56,7 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
       : > "$A/.refill-stop"
       local holder holder_phase
       holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"; holder="${holder:-none}"
-      holder_phase="$(cat "$A/.tick-phase" 2>/dev/null || true)"; holder_phase="${holder_phase:-unknown}"
+      holder_phase="$(ledger_lock_holder_phase)"
       say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): holder=$holder holder_phase=$holder_phase: the refill limit is near, the refill ends here and the next one resumes"
       return 1
     fi
