@@ -9,6 +9,7 @@ hold_rule() {
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
   [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|waiver)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
   unit="$target"; n="${unit#*-}"
+  [[ "$action" != waiver || -n "$waiver" ]] || { echo "hold_rule: waiver needs --size-waiver N" >&2; return 64; }
   [[ -z "$waiver" || ( ( "$action" == requeue || "$action" == waiver ) && "$waiver" =~ ^[1-9][0-9]*$ ) ]] || { echo "hold_rule: --size-waiver takes a number and goes with --requeue, or alone as waiver" >&2; return 64; }
   [[ "$action" != ready || "$unit" == issue-* ]] || { echo "hold_rule: --ready takes an issue, not a PR" >&2; return 64; }
   if [[ "$unit" == issue-* && "$action" != waiver ]]; then # a waiver releases no hold, so the holder gate does not apply to it

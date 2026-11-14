@@ -224,6 +224,7 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
   local issue stage rc waiver="${6:-}" author="${7:-}" reason patch=""
+  [[ "$2" != waiver || -n "$waiver" ]] || { echo "rule: waiver needs --size-waiver <max_lines>" >&2; return 64; }
   if [[ -n "$waiver" ]]; then # size waiver ($6 max_lines, $7 comment author): rides the requeue's single unit write, one size-waiver event before supervisor-requeue
     [[ "$2" == requeue || "$2" == waiver ]] || { echo "rule: --size-waiver goes with --requeue, or alone on an implement or *-pending unit" >&2; return 64; }
     if [[ "$2" == waiver ]]; then # waiver alone: the unit keeps its stage and its work; only the size limit moves
@@ -247,6 +248,8 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
     waiver) set_unit "$1" "$patch" ;; # size waiver alone (checked above): .size_waiver and one size-waiver event, stage unchanged
     recut) issue="$(unit_field "$1" '.issue // empty')"
       [[ "$issue" =~ ^[0-9]+$ ]] || { echo "rule: $1 has no issue to recut" >&2; return 1; }
+      # The explicit recut ruling is the one the recut-loop hold asks for: its round count starts over before the route (row 451).
+      ( source "$SCHEDULER_AGENT_LIB" && state_merge "$issue" '.recut_rounds = 0' ) || return 1
       scheduler_route_to_recut "$issue" || return 1
       set_unit "$1" "$(hist supervisor-recut "supervisor ruling: $3") | .stage=\"closed\" | .note=$(js "supervisor ruling sent issue #$issue to recut: $3")" ;;
     reroute) [[ "$(unit_field "$1" .stage)" != closed ]] || { closed_unit_refusal "$1"; return 1; }

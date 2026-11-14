@@ -491,7 +491,7 @@ recut_loop_hold() {
     lines="$(jq -r '.lines // "unknown"' <<<"$evidence")"; cap="$(jq -r '.limit // "unknown"' <<<"$evidence")"
   fi
   hold_issue "$n" --holder supervisor --expires 168h --kind recut-loop --stage-before ready-for-agent \
-    --release "recut loop: $((rounds + 1)) recut rounds without delivered children (limit $limit); supervisor rules the size (hold.sh --rule <unit> requeue --size-waiver <lines>) or cuts the split by hand" || return 1
+    --release "recut loop: $((rounds + 1)) recut rounds without delivered children (limit $limit); supervisor rules the size (hold.sh --rule <unit> requeue --size-waiver <lines>), or rules recut, or cuts the split by hand" || return 1
   [[ -z "$evidence" ]] || state_merge "$n" ". + {size_admission: $evidence}" || return 1
   echo "recut loop stop issue=#$n rounds=$((rounds + 1)) estimate=$lines limit=$cap" >&2
 }
