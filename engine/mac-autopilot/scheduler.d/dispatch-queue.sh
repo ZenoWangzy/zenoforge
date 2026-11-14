@@ -663,7 +663,11 @@ $deliver"
 dispatch_pending() {
   local TICK_STEP_LOCK_RESULT=""
   if declare -F tick_step_lock_run >/dev/null 2>&1; then
-    tick_step_lock_run dispatch_pending dispatch_pending_pass "$@"
+    local rc=0
+    tick_step_lock_run dispatch_pending dispatch_pending_pass "$@" || rc=$?
+    # The pass never ran, so no row skip counts it: it goes to the skip summary the refill line prints (dispatch-lock:N).
+    [[ "$TICK_STEP_LOCK_RESULT" != skipped ]] || TICK_DISPATCH_SKIPS[dispatch-lock]=$(( ${TICK_DISPATCH_SKIPS[dispatch-lock]:-0} + 1 ))
+    return "$rc"
   else
     dispatch_pending_pass "$@"
   fi

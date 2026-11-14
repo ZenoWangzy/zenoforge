@@ -331,6 +331,14 @@ printf '%s\n' '[2026-11-03T00:00:00Z] execution admission decision mode=run-unit
 metrics="$(refill_dispatch_metrics "$log_start" 3)"
 [[ "$metrics" == 'free_slots=5 pending=3 skips=footprint:1,handoff:1,memory:1' ]] \
   || fail "refill metrics were incomplete: $metrics"
+# A dispatch_pending whose tick-step lock was held never ran, so no row skip counts it: the wrapper adds dispatch-lock to the summary.
+tick_step_lock_run() { TICK_STEP_LOCK_RESULT=skipped; return 0; }
+dispatch_pending true || fail 'a held dispatch lock returned an error'
+unset -f tick_step_lock_run
+metrics="$(refill_dispatch_metrics "$log_start" 3)"
+[[ "$metrics" == 'free_slots=5 pending=3 skips=footprint:1,handoff:1,memory:1,dispatch-lock:1' ]] \
+  || fail "refill metrics hid a held dispatch lock: $metrics"
+TICK_DISPATCH_SKIPS=()
 
 # Expansion cache: the same head and main hit without the expensive step; a moved main, a new head, another hotspot floor and require_fresh miss.
 git -C "$ROOT" init -q

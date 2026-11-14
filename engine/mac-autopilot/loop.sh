@@ -16,6 +16,7 @@ run_tick() {
     echo "[$(date -u +%FT%TZ)] TICK-TIMEOUT scheduler tick killed after ${AUTOPI_TICK_LIMIT_SECONDS:-1800}s in phase $(cat "$A/.tick-phase" 2>/dev/null || echo unknown) after done: $(paste -sd, "$A/.tick-phases" 2>/dev/null || echo none); the next tick clears the stale lock" \
       | tee -a "$A/scheduler.log" >> "$A/alerts/waste.md"
   fi
+  (( rc == 75 )) && return 75 # another tick holds .scheduler.lock: loop_cycle retries soon instead of waiting a whole window
   return 0
 }
 # 补派 tick（#4628）：单独限时，避免本地 clone/dispatch 卡住 refill controller。
@@ -164,6 +165,33 @@ sync_from_main() {
     echo "[$(date -u +%FT%TZ)] SYNC runtime from main $head" >> "$A/scheduler.log"
   fi
 }
+# A full tick that found the scheduler lock held (exit 75) did nothing. Waiting out a whole tick window after it made the gap a multiple of
+# 120 s (2026-11-14: tick_gap_p50 492 s, full tick median 160 s). Retry after this many seconds instead (floor 5).
+tick_lock_retry_seconds() {
+  local s="${AUTOPI_TICK_LOCK_RETRY_SECONDS:-15}"
+  [[ "$s" =~ ^[0-9]+$ ]] && (( s >= 5 )) || s=15
+  printf '%s' "$s"
+}
+# One full tick plus the wait before the next. A real tick waits the tick window. A lock-held skip waits the retry, unless PAUSE is set:
+# a paused loop keeps the window. The first skip of a run of skips is logged, then every tenth.
+loop_cycle() {
+  local slow_pid slow_rc=0 tick wait_for
+  run_tick & slow_pid=$!
+  tick="$(jq -r '.tick_seconds // 120' "$A/config.json" 2>/dev/null)"
+  [[ "$tick" =~ ^[0-9]+$ ]] && (( tick >= 30 )) || tick=120
+  refill_window 0 "$slow_pid"
+  wait "$slow_pid" || slow_rc=$?
+  wait_for="$tick"
+  if (( slow_rc == 75 )); then
+    LOCK_SKIPS=$(( ${LOCK_SKIPS:-0} + 1 ))
+    [[ -e "${AUTOPILOT_PAUSE_FILE:-$AGENT_HOME/PAUSE}" ]] || wait_for="$(tick_lock_retry_seconds)"
+    (( LOCK_SKIPS == 1 || LOCK_SKIPS % 10 == 0 )) \
+      && echo "[$(date -u +%FT%TZ)] loop: full tick skipped, scheduler lock held ($LOCK_SKIPS in a row); next try in ${wait_for}s" >> "$A/scheduler.log"
+  else
+    LOCK_SKIPS=0
+  fi
+  refill_window "$wait_for"
+}
 [[ "${AUTOPI_LOOP_LIBRARY_ONLY:-false}" == true ]] && return 0
 loop_start_checksum="$(cksum "$LIVE/loop.sh" 2>/dev/null)"
 bash "$HERE/wait-scheduler-lock.sh" || : # a restart keeps the old tick (KillMode=process); do not start a tick that must skip on its lock
@@ -178,12 +206,7 @@ while true; do
     exit 0
   fi
   sync_from_main
-  run_tick & slow_pid=$!
-  tick="$(jq -r '.tick_seconds // 120' "$A/config.json" 2>/dev/null)"
-  [[ "$tick" =~ ^[0-9]+$ ]] && (( tick >= 30 )) || tick=120
-  refill_window 0 "$slow_pid"
-  wait "$slow_pid" || :
-  refill_window "$tick"
+  loop_cycle
   n=$((n+1))
   watcher="$MAC_AUTOPILOT_SUPERVISOR_DIR/watcher/watch.sh"
   if (( n % 15 == 0 )) && [[ -f "$watcher" ]]; then

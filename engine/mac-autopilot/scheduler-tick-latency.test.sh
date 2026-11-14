@@ -224,6 +224,30 @@ SH
   grep -Fxq 'finish dispatch_pending' "$TICK_STEP_CALLS" || fail 'the slow detached dispatch worker did not finish'
 )
 
+# loop.sh: a full tick that finds the scheduler lock held (exit 75) retries after AUTOPI_TICK_LOCK_RETRY_SECONDS, not after a whole tick window.
+lr="$test_env_root/loop-lock-retry"; calls="$lr/calls"
+rm -rf "$lr"; mkdir -p "$lr/sup/autopi" "$lr/home"; echo '{"tick_seconds":120}' > "$lr/sup/autopi/config.json"
+lock_retry_case() { # subshell: the loop's own functions with the tick command and the wait stubbed
+  export MAC_AUTOPILOT_SUPERVISOR_DIR="$lr/sup" MAC_AUTOPILOT_RUNTIME_DIR="$lr/sup/autopi" AGENT_HOME="$lr/home" ZF_ENGINE_DIR="$lr/sup" ZF_PACK_DIR="$lr/sup"
+  AUTOPI_LOOP_LIBRARY_ONLY=true source "$script_dir/loop.sh"
+  local stub_rc=0 seq log="$lr/sup/autopi/scheduler.log"
+  timeout() { echo tick >> "$calls"; return "$stub_rc"; } # run_tick's command: its exit code is the scheduler's
+  refill_window() { [[ "$1" == 0 ]] || echo "window $1" >> "$calls"; } # the wait; the refill inside it is not under test
+  : > "$calls"; stub_rc=75; loop_cycle; stub_rc=0; loop_cycle
+  seq="$(paste -sd' ' "$calls")"
+  [[ "$seq" == 'tick window 15 tick window 120' ]] || { echo "lock held, then free: got '$seq'" >&2; exit 1; }
+  : > "$calls"; : > "$lr/home/PAUSE"; stub_rc=75; loop_cycle; rm -f "$lr/home/PAUSE"
+  seq="$(paste -sd' ' "$calls")"; [[ "$seq" == 'tick window 120' ]] || { echo "PAUSE keeps the window: got '$seq'" >&2; exit 1; }
+  : > "$calls"; stub_rc=75; AUTOPI_TICK_LOCK_RETRY_SECONDS=30 loop_cycle
+  seq="$(paste -sd' ' "$calls")"; [[ "$seq" == 'tick window 30' ]] || { echo "retry override: got '$seq'" >&2; exit 1; }
+  : > "$calls"; AUTOPI_TICK_LOCK_RETRY_SECONDS=2 loop_cycle; seq="$(paste -sd' ' "$calls")"
+  [[ "$seq" == 'tick window 15' ]] || { echo "retry below floor: got '$seq'" >&2; exit 1; }
+  LOCK_SKIPS=0; : > "$calls"; : > "$log"; stub_rc=75
+  for _ in $(seq 12); do loop_cycle; done
+  [[ "$(grep -c 'loop: full tick skipped' "$log")" == 2 ]] || { echo "skip log not throttled: $(grep -c 'loop: full tick skipped' "$log") lines for 12 skips" >&2; exit 1; }
+}
+if ! lock_retry_case; then failures+=('a full tick that finds the scheduler lock held must retry in the retry window, not wait a tick window (loop.sh loop_cycle)'); fi
+
 if ((${#failures[@]})); then
   printf 'not ok - %s\n' "${failures[@]}" >&2
   exit 1
