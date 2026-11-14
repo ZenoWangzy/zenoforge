@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 test_tmp="$TMPDIR/roadmap-issue-create"
 mkdir -p "$test_tmp/bin" "$test_tmp/agent"
-trap 'rm -rf -- "$test_tmp"' EXIT
+trap 'rm -rf -- "$test_tmp" "$test_env_root"' EXIT
 
 assert_eq() {
   local name="$1" expected="$2" actual="$3"
@@ -78,6 +78,33 @@ export FAKE_ISSUE_BODY='Observed evidence with no category keyword.'
 printf '%s\n' needs-triage pipeline-system > "$FAKE_LABELS"
 
 source "$SCRIPT_DIR/lib.sh"
+
+: > "$FAKE_GH_LOG"
+if guarded_write gh issue create --repo "$REPO" --title 'Empty body must be refused' --body "" \
+  > "$test_tmp/empty-body.stdout" 2> "$test_tmp/empty-body.stderr"; then
+  empty_body_rc=0
+else
+  empty_body_rc=$?
+fi
+assert_eq 'empty --body is refused with rc 64' 64 "$empty_body_rc"
+assert_eq 'empty --body does not call gh issue create' false \
+  "$(grep -Eq '^issue create ' "$FAKE_GH_LOG" && echo true || echo false)"
+
+printf ' \t\n\r\n' > "$test_tmp/whitespace-body.md"
+: > "$FAKE_GH_LOG"
+if guarded_write gh issue create --repo "$REPO" --title 'Whitespace body must be refused' \
+  --body-file "$test_tmp/whitespace-body.md" > "$test_tmp/whitespace-body.stdout" \
+  2> "$test_tmp/whitespace-body.stderr"; then
+  whitespace_body_rc=0
+else
+  whitespace_body_rc=$?
+fi
+assert_eq 'whitespace-only --body-file is refused with rc 64' 64 "$whitespace_body_rc"
+assert_eq 'whitespace-only --body-file does not call gh issue create' false \
+  "$(grep -Eq '^issue create ' "$FAKE_GH_LOG" && echo true || echo false)"
+
+FAKE_ISSUE_TITLE='Unrelated follow-up'
+: > "$FAKE_GH_LOG"
 created_url="$(guarded_write gh issue create --repo "$REPO" --title "$FAKE_ISSUE_TITLE" \
   --body "$FAKE_ISSUE_BODY" --label needs-triage)"
 assert_eq 'guarded issue creation returns URL after linking' \
