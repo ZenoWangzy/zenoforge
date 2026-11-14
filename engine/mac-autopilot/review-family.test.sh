@@ -122,12 +122,24 @@ dispatch_selected_review "$unit_json" || fail 'Claude-authored review did not di
 # A PR with no worker record: Co-Authored-By on all its commits names the author, and without that it waits.
 outside_pr='{"id":"pr-901","pr":901,"stage":"review-pending"}'
 write_units "$(jq -cn --argjson unit "$outside_pr" '{units:[$unit]}')"
-gh() { printf '%s\n' "$ALL_COMMITS_CLAUDE"; }
+HEAD_BODY=""
+gh() { case "$*" in *messageBody*) printf '%s\n' "$HEAD_BODY" ;; *) printf '%s\n' "$ALL_COMMITS_CLAUDE" ;; esac; }
 ALL_COMMITS_CLAUDE=true
 dispatch_selected_review "$outside_pr" || fail 'a Claude-authored PR from outside the pipeline never reached a reviewer'
 [[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'GLM-5.3:max' ]] || fail "outside PR review selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
+# An orphan PR whose head has no Co-Authored-By trailer has an unknown author: the fallback reviewer takes it and the fallback is logged.
 ALL_COMMITS_CLAUDE=false
-if dispatch_selected_review "$outside_pr"; then fail 'a PR with any commit lacking the Claude trailer must keep waiting'; fi
+: > "$LOG"
+dispatch_selected_review "$outside_pr" || fail 'an orphan PR with no author trailer never got the fallback reviewer'
+[[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'claude-sonnet-5-5:high' ]] || fail "orphan PR without trailer selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
+grep -Fq 'review-family fallback unit=pr-901 author=unknown reviewer=claude-sonnet-5-5 reason=author-unknown' "$LOG" || fail 'orphan fallback line was not logged'
+# An orphan PR whose head Co-Authored-By names Claude has a known author: a non-Claude reviewer is picked.
+outside_trailer='{"id":"pr-902","pr":902,"stage":"review-pending"}'
+write_units "$(jq -cn --argjson unit "$outside_trailer" '{units:[$unit]}')"
+HEAD_BODY=$'Fix the outage\n\nCo-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>'
+dispatch_selected_review "$outside_trailer" || fail 'an orphan PR whose head trailer names Claude never reached a reviewer'
+[[ "$DISPATCH_MODEL:$DISPATCH_EFFORT" == 'GLM-5.3:max' ]] || fail "orphan PR with Claude trailer selected $DISPATCH_MODEL:$DISPATCH_EFFORT"
+HEAD_BODY=""
 unset -f gh
 write_units "$(jq -cn --argjson unit "$unit_json" '{units:[$unit]}')"
 set_cooldowns "$((NOW_EPOCH + 1800))" 0
