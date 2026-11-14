@@ -529,7 +529,7 @@ review_identity_for_model() { # model effort → backend:model:effort, or empty 
 }
 
 unit_review_author_identity() { # unit JSON → the model/backend that last wrote its current head
-  local unit_json="$1" identity backend model effort unit_id worker
+  local unit_json="$1" identity backend model effort unit_id worker trailer name provider
   identity="$(jqf -r '.implement_identity // empty' <<<"$unit_json")"
   [[ -n "$identity" ]] && { review_identity_family "$identity" >/dev/null 2>&1 && { printf '%s\n' "$identity"; return 0; }; }
   backend="$(jqf -r '.implement_backend // empty' <<<"$unit_json")"
@@ -552,9 +552,20 @@ unit_review_author_identity() { # unit JSON → the model/backend that last wrot
   if [[ -n "$backend" && -n "$model" ]]; then
     printf '%s:%s:%s\n' "$backend" "$model" "$effort"
   elif [[ -z "$model" && "$unit_id" == pr-* ]]; then
-    # No worker wrote this PR, so only its commits can name the author: all of them must carry Claude's trailer, else the review waits.
-    [[ "$(gh pr view "${unit_id#pr-}" --json commits -q '[.commits[] | any(.authors[]; .email=="noreply@anthropic.com")] | all' 2>/dev/null)" == true ]] \
-      && printf 'claude:unknown:max\n'
+    # No worker wrote this PR: its commits name the author when all carry Claude's email; else the head's Co-Authored-By names it (a hand-made hotfix PR).
+    if [[ "$(gh pr view "${unit_id#pr-}" --json commits -q '[.commits[] | any(.authors[]; .email=="noreply@anthropic.com")] | all' 2>/dev/null)" == true ]]; then
+      printf 'claude:unknown:max\n'
+      return 0
+    fi
+    while IFS= read -r trailer; do
+      name="$(sed -E 's/^[Cc]o-[Aa]uthored-[Bb]y: *//; s/ *<.*$//' <<<"$trailer" | tr '[:upper:] ' '[:lower:]-')"
+      case "$(review_identity_family "$name" 2>/dev/null || true)" in
+        codex) provider=codex ;; glm) provider=zcode ;; claude) provider=claude ;; *) continue ;;
+      esac
+      printf '%s:%s:max\n' "$provider" "$name"
+      return 0
+    done < <(gh pr view "${unit_id#pr-}" --json commits -q '.commits[-1].messageBody // ""' 2>/dev/null | grep -i '^co-authored-by:')
+    return 1
   else
     review_identity_for_model "$model" "$effort"
   fi
@@ -596,12 +607,19 @@ review_wait_summary() { # the waits of this pass, by reason
 }
 
 pick_review_for_unit() { # unit JSON → sets PICK_MODEL/PICK_EFFORT, or leaves the review pending and alerts once
-  local unit_json="$1" id issue author author_family codex_identity glm_identity fallback_identity selected status wait_reason=author-unknown
+  local unit_json="$1" id issue author author_family codex_identity glm_identity fallback_identity fallback_model selected status wait_reason=author-unknown
   id="$(jqf -r '.id // "unknown"' <<<"$unit_json")"
   issue="$(jqf -r '.issue // empty' <<<"$unit_json")"
   if ! author="$(unit_review_author_identity "$unit_json")"; then
     author_family=unknown
     status=75
+    # An unknown author cannot be proven other-family, but a review that never runs costs more: take the fallback reviewer.
+    fallback_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
+    if [[ -n "$fallback_identity" ]] && zcode_paced review_identity_available "$fallback_identity" review_fallback unknown; then
+      fallback_model="${fallback_identity#*:}"; fallback_model="${fallback_model%:*}"
+      review_family_candidate_selected review_fallback "$issue" "$id" unknown "$fallback_model" author-unknown "$fallback_identity"
+      selected="$fallback_identity"; status=0
+    fi
   else
     author_family="$(review_identity_family "$author" 2>/dev/null || echo unknown)"
     codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
