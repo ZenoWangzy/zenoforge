@@ -6,6 +6,7 @@ incident_report_resume_prompt() { # gate reason source report destination report
   printf 'Continue the same implementer session only to complete its required report sections.\n'
   printf 'The implementation report failed this structural check: %s\n' "$reason"
   printf 'Return a complete replacement report for %s. Preserve existing content and satisfy the check, including non-empty ## how and ## why sections (with a commit SHA or #N issue citation) and a non-empty ## decision-log with attempts, failure reasons, final choice, and verification.\n' "$destination_report"
+  printf 'The check accepts exactly these formats: a non-empty `## decision-log`; under `## recurrence-guard`, a line beginning `kind: ` followed by one of architecture, state, script, lint, test; under `## prior-art`, at least one direct https:// URL, plus an `Escalation reference: <https:// URL or #N>` line when escalation is mentioned.\n'
   printf 'Do not edit source, tests, configuration, Git state, or any other file. Do not run tests, commit, push, or call GitHub write operations. The scheduler saves your final answer as the replacement report.\n\n'
   printf '%s\n' 'Existing report:' "$body"
 }
@@ -20,7 +21,8 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
   hard="$(jqf -r '.hard_escalation // false' <<<"$w")"; route_provider="$(jqf -r '.provider // empty' <<<"$w")"
   [[ -n "$provider" ]] || provider="$(provider_of "$model")"
   [[ -n "$route_provider" ]] || route_provider="$provider"
-  [[ "$provider" == codex && "$session_id" =~ $SESSION_RE && -n "$model" && -n "$workdir" ]] || return 1
+  [[ "$provider" == codex || "$provider" == claude ]] || return 1 # claude sessions resume through build_claude_implement_command, which accepts a failure prompt
+  [[ "$session_id" =~ $SESSION_RE && -n "$model" && -n "$workdir" ]] || return 1
   [[ "$(unit_field "$unit" '.sessions.repair.id // empty')" == "$session_id" ]] || return 1
   pending_stage="$(unit_field "$unit" .stage)"
   [[ "$pending_stage" == review-pending || "$pending_stage" == rereview-pending || "$pending_stage" == repair-pending ]] || return 1 # repair-pending: a repair that pushed nothing; the harvest sends the fixed report to rereview
@@ -28,7 +30,7 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
   safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$unit" | sed 's/-$//')"
   output_report="incident-report-${safe_id}-${TAG}.md"
   output_log="incident-report-${safe_id}-${TAG}.worker.log"
-  prompt="$(incident_report_resume_prompt "$reason" "$SUP/$source_report" "$output_report")" || return 1
+  prompt="$(incident_report_resume_prompt "$reason" "$SUP/$source_report" "$SUP/$output_report")" || return 1
   context="$(jqf -cn --arg source_type "$(jqf -r '.type' <<<"$w")" --arg source_report "$source_report" \
     --arg pending_stage "$pending_stage" --arg session_id "$session_id" \
     '{incident_report_resume:true,incident_report_resume_source_type:$source_type,incident_report_resume_source_report:$source_report,incident_report_resume_pending_stage:$pending_stage,incident_report_resume_session_id:$session_id}')"

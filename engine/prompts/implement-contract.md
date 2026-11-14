@@ -104,4 +104,6 @@ Every implement report must also include a non-empty `## decision-log` section:
 what was tried, what failed and why, the final choice, and how it was verified.
 
 When the incident rule applies, include its exact `## root-cause`,
-`## recurrence-guard`, and `## prior-art` sections too.
+`## recurrence-guard`, and `## prior-art` sections too. Under `## recurrence-guard`,
+put `kind: <architecture|state|script|lint|test>` on its own line. Under
+`## prior-art`, cite at least one direct `https://` URL.
