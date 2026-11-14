@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,8 +7,18 @@ import { judge, questionFor, recordShadowComparison, SHADOW_EVENTS_REQUIRED, typ
 
 async function fixture(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "ts-judge-test-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  return { dir, log: path.join(dir, "ts-judge.jsonl") };
+  const savedAgentHome = process.env.AGENT_HOME;
+  process.env.AGENT_HOME = dir;
+  t.after(async () => {
+    if (savedAgentHome === undefined) delete process.env.AGENT_HOME;
+    else process.env.AGENT_HOME = savedAgentHome;
+    await rm(dir, { recursive: true, force: true });
+  });
+  return {
+    dir,
+    log: path.join(dir, "ts-judge.jsonl"),
+    outcomeFile: path.join(dir, "state", "ts-judge-last.json"),
+  };
 }
 
 function fakeClient(answer) {
@@ -44,8 +54,119 @@ test("missing key uses the caller's decision without constructing a client", asy
   assert.equal(result.adopted, false);
 });
 
+test("an answered call records its outcome without retaining request data", async (t) => {
+  const { log, outcomeFile } = await fixture(t);
+  const at = "2026-11-14T00:00:00.000Z";
+  const mock = fakeClient({ classification: { choice: "infra", confidence: 0.95 } });
+  const result = await judge({
+    questionSet: "ci-failure",
+    state: { currentDecision: "code", event_id: "ci:42:1", detail: "private message" },
+    apiKey: "mock-secret-key",
+    client: mock.client,
+    file: log,
+    now: new Date(at),
+  });
+
+  assert.equal(result.status, "answered");
+  assert.deepEqual(JSON.parse(await readFile(outcomeFile, "utf8")), {
+    updated_at: at,
+    last: { at, status: "answered", reason: null },
+    window: [{ at, status: "answered", reason: null }],
+  });
+});
+
+test("outcome history drops entries older than one hour", async (t) => {
+  const { dir, log, outcomeFile } = await fixture(t);
+  const at = "2026-11-14T01:00:00.000Z";
+  const recent = { at: "2026-11-14T00:30:00.000Z", status: "fallback", reason: "credits-exhausted" };
+  await mkdir(path.dirname(outcomeFile), { recursive: true });
+  await writeFile(outcomeFile, JSON.stringify({
+    updated_at: "2026-11-14T00:30:00.000Z",
+    last: recent,
+    window: [
+      { at: "2026-11-13T23:59:59.999Z", status: "fallback", reason: "rate-limited" },
+      recent,
+    ],
+  }));
+
+  await judge({
+    questionSet: "ci-failure",
+    state: { currentDecision: "code", event_id: "ci:43:1" },
+    apiKey: "mock-key",
+    client: fakeClient({ classification: { choice: "infra", confidence: 0.95 } }).client,
+    file: log,
+    now: new Date(at),
+  });
+
+  const record = JSON.parse(await readFile(outcomeFile, "utf8"));
+  assert.deepEqual(record.window, [
+    recent,
+    { at, status: "answered", reason: null },
+  ]);
+});
+
+test("outcome history keeps only its newest 200 entries", async (t) => {
+  const { log, outcomeFile } = await fixture(t);
+  const now = new Date("2026-11-14T01:00:00.000Z");
+  const entries = Array.from({ length: 205 }, (_, index) => ({
+    at: new Date(Date.parse("2026-11-14T00:30:00.000Z") + index * 1000).toISOString(),
+    status: "fallback",
+    reason: "credits-exhausted",
+  }));
+  await mkdir(path.dirname(outcomeFile), { recursive: true });
+  await writeFile(outcomeFile, JSON.stringify({ updated_at: entries.at(-1).at, last: entries.at(-1), window: entries }));
+
+  await judge({
+    questionSet: "ci-failure",
+    state: {},
+    apiKey: "mock-key",
+    client: fakeClient({ classification: { choice: "infra", confidence: 0.95 } }).client,
+    file: log,
+    now,
+  });
+
+  const record = JSON.parse(await readFile(outcomeFile, "utf8"));
+  assert.equal(record.window.length, 200);
+  assert.equal(record.window[0].at, entries[6].at);
+  assert.deepEqual(record.window.at(-1), { at: now.toISOString(), status: "answered", reason: null });
+});
+
+test("an unavailable outcome directory does not change the judge result", async (t) => {
+  const { dir, log } = await fixture(t);
+  const blocker = path.join(dir, "not-a-directory");
+  await writeFile(blocker, "occupied");
+  process.env.AGENT_HOME = blocker;
+  const originalWrite = process.stderr.write;
+  let stderr = "";
+  process.stderr.write = (chunk) => {
+    stderr += chunk;
+    return true;
+  };
+
+  let result;
+  try {
+    result = await judge({
+      questionSet: "ci-failure",
+      state: {},
+      apiKey: "mock-key",
+      client: fakeClient({ classification: { choice: "infra", confidence: 0.95 } }).client,
+      file: log,
+      now: new Date("2026-11-14T00:00:00.000Z"),
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.equal(result.status, "answered");
+  assert.equal(result.candidate, "infra");
+  assert.equal(result.decision, "infra");
+  assert.equal(result.adopted, false);
+  assert.equal(stderr, "ts-judge: outcome record unavailable\n");
+});
+
 test("a 402 credit error stays classified and is logged without credentials", async (t) => {
-  const { log } = await fixture(t);
+  const { log, outcomeFile } = await fixture(t);
+  const at = "2026-11-14T00:00:00.000Z";
   const originalWrite = process.stderr.write;
   let stderr = "";
   process.stderr.write = (chunk) => {
@@ -83,6 +204,7 @@ test("a 402 credit error stays classified and is logged without credentials", as
         },
       },
       file: log,
+      now: new Date(at),
     });
   } finally {
     process.stderr.write = originalWrite;
@@ -93,6 +215,11 @@ test("a 402 credit error stays classified and is logged without credentials", as
   assert.match(stderr, /^ts-judge: credits-exhausted \(402\): Your organization has no available TypeSafe API credits\./);
   assert.equal(stderr.trim().split(/\r?\n/).length, 1);
   assert.doesNotMatch(stderr, /mock-secret-key|authorization|Bearer/);
+  assert.deepEqual(JSON.parse(await readFile(outcomeFile, "utf8")), {
+    updated_at: at,
+    last: { at, status: "fallback", reason: "credits-exhausted" },
+    window: [{ at, status: "fallback", reason: "credits-exhausted" }],
+  });
 });
 
 test("high confidence answers shadow the baseline until 20 events agree, then can be adopted", async (t) => {
