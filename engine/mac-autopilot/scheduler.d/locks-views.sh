@@ -9,22 +9,22 @@ scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's s
 # TERM from loop.sh's `timeout --foreground` (or a kill): stop this holder's own children, bounded, before the EXIT trap frees the lock.
 # A foreground ledger write finishes first (bash runs a trap only after its foreground command), so a stale write cannot land after the release.
 # Children in another session (setsid workers, stations) are never touched.
-scheduler_proc_field() { # $1 pid, $2 field of /proc/<pid>/stat after the comm (1 state, 2 ppid, 3 pgrp, 4 session); empty when unreadable
-  local st f=()
-  st="$(cat "/proc/$1/stat" 2>/dev/null)" || return 0
-  read -ra f <<<"${st##*) }"; printf '%s' "${f[$(( $2 - 1 ))]:-}"
+scheduler_proc_field() { # $1 pid, $2 ps keyword (stat, sid); empty when the pid is gone. ps, not /proc: proc.test.sh keeps /proc parsing in proc.sh
+  local v
+  v="$(LC_ALL=C ps -o "$2=" -p "$1" 2>/dev/null)" || return 0
+  printf '%s' "${v// /}"
 }
 scheduler_term_stop() {
   local me=$BASHPID c s kids=() alive=() i me_sid wait_s="${AUTOPI_TERM_CHILD_WAIT_SECONDS:-10}" # BASHPID changes inside $(...)
-  me_sid="$(scheduler_proc_field "$me" 4)"
+  me_sid="$(scheduler_proc_field "$me" sid)"
   for c in $(pgrep -P "$me" 2>/dev/null); do
-    [[ -n "$me_sid" && "$(scheduler_proc_field "$c" 4)" == "$me_sid" ]] && kids+=("$c") # same session only: setsid workers stay
+    [[ -n "$me_sid" && "$(scheduler_proc_field "$c" sid)" == "$me_sid" ]] && kids+=("$c") # same session only: setsid workers stay
   done
   (( ${#kids[@]} )) && kill -TERM "${kids[@]}" 2>/dev/null
   for (( i = 0; i < wait_s * 10; i++ )); do
     alive=()
     for c in "${kids[@]}"; do # a zombie has exited: it no longer writes
-      s="$(scheduler_proc_field "$c" 1)"; [[ "$s" != Z && "$s" != X ]] && kill -0 "$c" 2>/dev/null && alive+=("$c")
+      s="$(scheduler_proc_field "$c" stat)"; [[ "$s" != Z* && "$s" != X* ]] && kill -0 "$c" 2>/dev/null && alive+=("$c")
     done
     (( ${#alive[@]} )) || break
     sleep 0.1
