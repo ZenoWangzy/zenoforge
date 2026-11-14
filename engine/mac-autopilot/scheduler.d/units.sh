@@ -112,13 +112,18 @@ retire_terminal_units() {
   return 0
 }
 
-set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
+set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）; rc 3 when no row has the id (logged ledger-write-missed, nothing written)
   [[ "${SET_UNIT_QUEUE:-0}" != 1 ]] || { dep_q_enqueue "$@"; return 0; } # release_dependency_blocks batches its writes, see dep_q_flush
   local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage="" lock_secs write_secs write_started holder_phase=unknown
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || ! declare -F ledger_lock_holder_phase >/dev/null || holder_phase="$(ledger_lock_holder_phase)"; if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi; lock_secs=$((SECONDS - started)); write_started=$SECONDS
   if declare -F harvest_unit_cas_check >/dev/null; then harvest_unit_cas_check "$1" || { if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi; return 1; }; fi
   [[ "$2" == *".stage"* ]] && old_stage="$(unit_field "$1" '.stage')"
-  jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
+  # No row with this id: the update would match nothing, and write_state takes the unchanged bytes as success.
+  if [[ "$(jqf --arg id "$1" '[.units[] | select(.id==$id)] | length' "$UNITS")" == 0 ]]; then
+    say "ledger-write-missed unit=$1 caller=${FUNCNAME[1]:-top}"; rc=3
+  else
+    jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
+  fi
   if (( rc == 0 )) && declare -F harvest_unit_cas_advance >/dev/null; then harvest_unit_cas_advance "$1" || rc=$?; fi
   if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi
   write_secs=$((SECONDS - write_started)); elapsed=$((SECONDS - started))
@@ -129,24 +134,6 @@ set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
       || say "footprint wait cleanup failed owner=$1 stage=$new_stage"
   fi
   return "$rc"
-}
-# 终局裁决（cap triage）的落地统一走这里：set_unit 失败时绝不照旧记成功日志（11-03 pr-3575：RULE 的
-# jqf rc=5 让整笔更新被丢，没有 history、没有裁决，下一行却仍打 "RULE -> repair-pending"，付费裁决丢失）。
-# 失败记 NOT applied，决策文本追加进该单元的报告文件（显式路径或 .supervise_report；都没有时落 alerts），
-# 单元留在原 stage，由 cap-triage 的重试标记（supervisor-arbitration-cap）下一拍重试。
-cap_set_unit() { # id verb decision-text report-path jq_update_expression
-  local id="$1" verb="$2" text="$3" rep="$4" keep
-  if set_unit "$id" "$5"; then return 0; fi
-  say "cap triage unit=$id: $verb NOT applied (set_unit failed)"
-  keep="$rep"
-  [[ -n "$keep" ]] || keep="$SUP/$(unit_field "$id" '.supervise_report // empty')"
-  if [[ -n "$keep" && "$keep" != "$SUP/" && -d "${keep%/*}" ]]; then
-    printf '\n[%s] cap triage unit=%s: %s NOT applied (set_unit failed); decision text kept:\n%s\n' \
-      "$STAMP" "$id" "$verb" "$text" >> "$keep"
-  else
-    echo "[$STAMP] CAP-TRIAGE-DECISION-KEPT unit=$id verb=$verb: $text" >> "$A/alerts/state.md"
-  fi
-  return 1
 }
 units_update() { # jq args; transactionally update the unit ledger under the shared scheduler lock
   local own_lock=false rc=0 new
