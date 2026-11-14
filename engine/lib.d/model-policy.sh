@@ -1,3 +1,4 @@
+source "$(dirname -- "${BASH_SOURCE[0]}")/model-routing.sh"
 model_policy_validate_json() {
   jq -e --slurpfile canonical "$MODEL_POLICY_DEFAULT" '
     . as $policy
@@ -908,6 +909,7 @@ review_model_for_implementer() {
     [[ -z "$second" || "$second" == "$cross" ]] || candidates+=("$second")
   fi
   [[ -z "$sonnet_identity" ]] || candidates+=("$sonnet_identity")
+  if routing_configured; then mapfile -t candidates < <(routing_review_candidates "$author_family" "$codex_identity" "$glm_identity" "$sonnet_identity"); fi
 
   for candidate in "${candidates[@]}"; do
     [[ -n "$candidate" ]] || continue

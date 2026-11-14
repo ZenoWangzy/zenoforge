@@ -169,7 +169,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     (( $(live_workers) < MAX )) || { say "supervisor arbitration pending unit=$id: worker capacity full"; return 0; }
     if [[ "$over_stop" == true ]]; then
       # Weekly Codex stop: the arbiter runs on the hand-claude role. No Claude share or a Claude hold defers the unit to a later tick.
-      if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] && pick_claude_implementer; then
+      if claude_share_allowed && pick_claude_implementer; then
         arbiter_profile="$PICK_MODEL"; arbiter_effort="$PICK_EFFORT"
       else
         say "supervisor arbitration pending unit=$id: weekly Codex stop and Claude unavailable"
