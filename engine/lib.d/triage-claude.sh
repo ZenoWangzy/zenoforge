@@ -12,17 +12,18 @@ triage_claude_identity() {
     && printf '%s\n' "$identity"
 }
 
-# claude_triage_call <cwd> <identity> <timeout_minutes> <settings_file> <prompt_file> [schema_file] -> claude's raw
+# claude_triage_call <cwd> <identity> <timeout_minutes> <settings_file> <prompt_file> [schema_file] [tools] -> claude's raw
 # `--output-format json` result on stdout. Read-only like the Codex triage sandbox: the settings allow-list gates Bash, no
 # Edit/Write tool is offered, and the prompt rides stdin because the batch prompt is far larger than one argv word.
+# tools defaults to Read,Grep,Glob,Bash; pass "" for a call that must not touch tools (untrusted issue text in the prompt).
 claude_triage_call() {
-  local cwd="$1" identity="$2" timeout_minutes="$3" settings_file="$4" prompt_file="$5" schema_file="${6:-}" model
+  local cwd="$1" identity="$2" timeout_minutes="$3" settings_file="$4" prompt_file="$5" schema_file="${6:-}" tools="${7-Read,Grep,Glob,Bash}" model
   local -a schema_args=()
   model="${identity#*:}"; model="${model%:*}"
   [ -z "$schema_file" ] || schema_args=(--json-schema "$(cat "$schema_file")")
   ( cd "$cwd" && timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN claude -p \
       --model "$model" --output-format json --settings "$settings_file" --setting-sources project,local \
-      --strict-mcp-config --permission-mode dontAsk --tools "Read,Grep,Glob,Bash" ${schema_args[@]+"${schema_args[@]}"} < "$prompt_file" )
+      --strict-mcp-config --permission-mode dontAsk --tools "$tools" ${schema_args[@]+"${schema_args[@]}"} < "$prompt_file" )
 }
 
 # claude_tokens_used < <claude json result> -> fresh tokens of that call (input + output; cache read and creation stay out,
