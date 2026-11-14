@@ -122,7 +122,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
   pid="$WORKER_SCOPE_PID"
   rm -f -- "$worker_pid_file"
-  local pid_started
+  local pid_started scope_name
   pid_started="${WORKER_SCOPE_PID_START:-}"
   [[ "$pid_started" =~ ^[0-9]+$ ]] || pid_started="$(coord_process_start_ticks "$pid" 2>/dev/null)" || {
     stuck_worker_stop "$pid" || :
@@ -148,6 +148,11 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   [[ -z "$worker_context" ]] || w="$(jqf --argjson context "$worker_context" '. + $context' <<<"$w")"
   if [[ ( "${WORKER_STDOUT_REPORT:-0}" == 1 || "$provider" == claude ) && ${#launcher[@]} -gt 0 ]]; then
     w="$(jqf --argjson pgid "$pid" '. + {process_group:$pgid}' <<<"$w")"
+  fi
+  # Harvest stops this scope once the worker is finished (harvest-scope.sh); read it while the leader still lives.
+  if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
+    scope_name="$(worker_scope_of_pid "$pid")"
+    [[ -z "$scope_name" ]] || w="$(jqf --arg scope "$scope_name" '. + {scope:$scope}' <<<"$w")"
   fi
   if ! jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"; then
     stuck_worker_stop "$pid" || :
