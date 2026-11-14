@@ -653,7 +653,7 @@ refill_tick() {
 main() {
   local views_mode=dashboard gh_calls=0 tick_harvests=false
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
-  acquire_scheduler_lock || { echo "[$STAMP] scheduler tick skipped: another tick holds $SCHED_LOCK" >> "$LOG"; return 0; }
+  acquire_scheduler_lock || { echo "[$STAMP] scheduler tick skipped: another tick holds $SCHED_LOCK" >> "$LOG"; return 75; } # loop.sh retries soon
   if ! state_schema_ok; then
     say "state schema invalid; tick stopped before external actions"
     echo "[$STAMP] invalid units/workers schema; supervisor recovery required" >> "$A/alerts/state.md"
