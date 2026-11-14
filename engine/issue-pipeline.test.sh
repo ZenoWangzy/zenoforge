@@ -2126,6 +2126,26 @@ assert_eq 'release walk deadline logs progress and still dispatches the collecte
   $'issue-pipeline: release-walk deadline hit after 2/3 issues\ndispatch:release-batch:910103:candidate-sha' \
   "$(RELEASE_WALK_DEADLINE_SECONDS=250 run_release_selection '[{"number":910101},{"number":910102},{"number":910103}]' all 2>&1 | grep -E '^(dispatch:|issue-pipeline: release-walk)')"
 unset RELEASE_WALK_CLOCK_FILE
+# Merged-PR map: a cached PR answers without a pulls read; a miss falls back to one read.
+source "$SCRIPT_DIR/lib.d/release-walk.sh"
+RELEASE_WALK_LOG="$AGENT_HOME/release-walk-gh.log"
+assert_eq 'merged-PR map answers a cached PR without a pulls read and a miss falls back to one' \
+  $'910301\t1111111111111111111111111111111111111111\n910302\t2222222222222222222222222222222222222222\napi-calls:1' \
+  "$(
+    REPO=test/repo
+    gh() {
+      case "$1 ${2:-}" in
+        'pr list') printf '%s\n' '[{"number":910301,"mergeCommit":{"oid":"1111111111111111111111111111111111111111"},"mergedAt":"2026-11-13T00:00:00Z"}]' ;;
+        api*) printf 'api %s\n' "$2" >> "$RELEASE_WALK_LOG"
+          printf '%s\n' '{"number":910302,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"2222222222222222222222222222222222222222","merged_at":"2026-11-13T00:00:00Z"}' ;;
+        *) return 1 ;;
+      esac
+    }
+    release_walk_begin 910301
+    merged_pr_main_row 910301
+    merged_pr_main_row 910302
+    printf 'api-calls:%s\n' "$(grep -c '^api ' "$RELEASE_WALK_LOG" || true)"
+  )"
 RELEASE_SELECTION_FAILURE_STATUS=0
 RELEASE_SELECTION_FAILURE_OUT="$(RELEASE_BATCH_LAUNCH_STATUS=1 run_release_selection '[{"number":910101}]' 910101)" || RELEASE_SELECTION_FAILURE_STATUS=$?
 assert_eq 'release selector preserves a genuine launch failure' 1 "$RELEASE_SELECTION_FAILURE_STATUS"

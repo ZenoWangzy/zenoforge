@@ -159,10 +159,12 @@ merge_pr_and_reconcile() {
 # merged_pr_main_row <pr-number> [issue-number] -> <pr-number><TAB><merge-sha>
 # Only a merged PR targeting main can enter release state. A PR merged into
 # another feature branch is not proof its code reached production.
+declare -gA RELEASE_PR_CACHE=()  # filled by release_walk_begin (release-walk.sh); empty elsewhere
 merged_pr_main_row() {
   local pr_number="$1" n="${2:-}" pr_json row merge_evidence
   [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
-  pr_json="$(gh api "repos/$REPO/pulls/$pr_number")" || return 1
+  pr_json="${RELEASE_PR_CACHE[$pr_number]:-}"
+  [ -n "$pr_json" ] || pr_json="$(gh api "repos/$REPO/pulls/$pr_number")" || return 1
   row="$(jq -er --arg p "$pr_number" '
     select((.number | tostring) == $p and .merged == true and .base.ref == "main" and (.merge_commit_sha // "") != "")
     | "\(.number)\t\(.merge_commit_sha)"
