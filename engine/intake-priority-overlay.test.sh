@@ -198,6 +198,25 @@ expect_eq 'stale priority labels are removed through URL-encoded REST paths' tru
 expect_eq 'stale route labels are removed through URL-encoded REST paths' true \
   "$(grep -F 'api -X DELETE repos/fixture/repo/issues/9022/labels/route%3Aold' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
 
+# 427: a re-judged tier must leave one tier label; the unsure marker goes unless this answer is unsure.
+jq -cn '{number:9023,title:"Unsure then normal",body:"",labels:[{name:"priority:unsure"},{name:"priority:normal"}]}' > "$test_root/dual-priority.issue.json"
+jq -cn '{status:"answered",adopted:true,confidence:0.99,
+  decision:({priority:"priority:high",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson)}' \
+  > "$test_root/dual-priority.result.json"
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$test_root/dual-priority.issue.json" --result-file "$test_root/dual-priority.result.json"
+expect_eq 'stale unsure marker is removed when a tier is written' true \
+  "$(grep -F 'api -X DELETE repos/fixture/repo/issues/9023/labels/priority%3Aunsure' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
+expect_eq 'stale normal tier is removed beside the new tier' true \
+  "$(grep -F 'api -X DELETE repos/fixture/repo/issues/9023/labels/priority%3Anormal' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
+
+jq -cn '{number:9024,title:"Still unsure",body:"",labels:[{name:"priority:unsure"},{name:"priority:normal"}]}' > "$test_root/still-unsure.issue.json"
+jq -cn '{status:"answered",adopted:true,confidence:0.5,
+  decision:({priority:"priority:normal",unsure:"priority:unsure",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson)}' \
+  > "$test_root/still-unsure.result.json"
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$test_root/still-unsure.issue.json" --result-file "$test_root/still-unsure.result.json"
+expect_eq 'unsure marker is kept while the answer is unsure' false \
+  "$(grep -F 'api -X DELETE repos/fixture/repo/issues/9024/labels/priority%3Aunsure' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
+
 # 11-13: replay the real shadow result shape. .decision remains the model baseline,
 # .candidate carries the policy decision, and .overlay carries its code-owned reason.
 cat > "$test_root/shadow-ts-judge.sh" <<'EOF'
