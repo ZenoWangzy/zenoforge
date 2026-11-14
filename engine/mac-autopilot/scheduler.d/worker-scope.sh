@@ -121,8 +121,8 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
   exec "${launcher[@]}" "${worker_command[@]}"
 }
 
-worker_scope_launch() { # pid-file workdir output-file launcher... -- command...; sets WORKER_SCOPE_PID, WORKER_SCOPE_PID_START (scope only) and WORKER_SCOPE_LAUNCHER_PID
-  local pid_file="$1" workdir="$2" output_file="$3" scope_client status state
+worker_scope_launch() { # pid-file workdir output-file launcher... -- command...; sets WORKER_SCOPE_PID, WORKER_SCOPE_PID_START (scope only) and WORKER_SCOPE_LAUNCHER_PID; returns 3 on a scope start timeout (WORKER_SCOPE_TIMEOUT_SCOPE, WORKER_SCOPE_WAITED), never an unscoped retry
+  local pid_file="$1" workdir="$2" output_file="$3" scope_client status state scope_started bound scope_name
   shift 3
   local -a launcher=() worker_command=()
   while (($#)) && [[ "$1" != -- ]]; do launcher+=("$1"); shift; done
@@ -139,6 +139,9 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
       >"$output_file" 2>&1 < /dev/null &
     scope_client=$!
     WORKER_SCOPE_LAUNCHER_PID="$scope_client"
+    bound="${WORKER_SCOPE_START_TIMEOUT:-20}"
+    [[ "$bound" =~ ^[1-9][0-9]*$ ]] || bound=20
+    scope_started=$SECONDS
     while [[ ! -s "$pid_file" ]]; do
       state="$(ps -o stat= -p "$scope_client" 2>/dev/null | tr -d '[:space:]' || true)"
       if [[ -z "$state" || "$state" == Z* ]]; then
@@ -148,6 +151,16 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
         worker_scope_unavailable "systemd-run scope launch failed (exit $status)"
         rm -f -- "$pid_file"
         break
+      fi
+      if (( SECONDS - scope_started >= bound )); then
+        # The scope may still start the worker late: stop it, so no worker outlives this launch. No unscoped retry (a second worker).
+        scope_name="$(worker_scope_of_pid "$scope_client")"
+        WORKER_SCOPE_TIMEOUT_SCOPE="$scope_name" WORKER_SCOPE_WAITED=$((SECONDS - scope_started))
+        [[ -z "$scope_name" ]] || systemctl --user stop "$scope_name" >/dev/null 2>&1 || :
+        kill "$scope_client" 2>/dev/null || :
+        wait "$scope_client" 2>/dev/null || :
+        rm -f -- "$pid_file"
+        return 3
       fi
       sleep 0.02
     done
