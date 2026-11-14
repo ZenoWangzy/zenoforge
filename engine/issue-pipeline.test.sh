@@ -1969,7 +1969,6 @@ fi
 # dispatches one release unit for the whole eligible cohort.
 RELEASE_SELECTION_FN="$(sed -n '/^select_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
 RELEASE_CADENCE_FN="$(sed -n '/^release_batch_cadence_mark() {/,/^}/p; /^release_batch_cadence_open() {/,/^}/p' "$PIPELINE_SRC")"
-RELEASE_WALK_FN="$(sed -n '/^release_walk_[a-z]*() {/,/^}/p' "$SCRIPT_DIR/lib.d/release-walk.sh")"
 PRODUCTION_DEPLOYMENT_SHA_FN="$(sed -n '/^latest_production_deployment_sha() {/,/^}/p' "$PIPELINE_SRC")"
 mkdir -p "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh"
 cat > "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh/gh" <<'GH'
@@ -2046,7 +2045,7 @@ run_release_selection() (
       *) echo "unexpected gh invocation: $*" >&2; return 1 ;;
     esac
   }
-  eval "$RELEASE_WALK_FN"
+  source "$SCRIPT_DIR/lib.d/release-walk.sh"
   if [ -n "${RELEASE_WALK_CLOCK_FILE:-}" ]; then
     # Each clock read advances 100 s, so the deadline test is deterministic.
     release_walk_now() { local k; k="$(cat "$RELEASE_WALK_CLOCK_FILE")"; echo $((1000 + 100 * k)); echo $((k + 1)) > "$RELEASE_WALK_CLOCK_FILE"; }
