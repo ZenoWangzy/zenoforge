@@ -87,7 +87,8 @@ intake_priority_duplicate_candidates() {
   query="$(jq -r '[(.title // "" | ascii_downcase | scan("[a-z0-9]{3,}"))][0:4] | join(" ")' <<< "$issue_json")"
   [[ -n "$query" ]] || query="${title:0:80}"
   [[ -n "$query" ]] || { printf '[]\n'; return 0; }
-  if ! raw="$(gh issue list --repo "$repo" --state open --limit 10 --search "$query in:title" --json number,title 2>/dev/null)"; then
+  if ! raw="$(gh issue list --repo "$repo" --state open --limit 10 --search "$query in:title" --json number,title 2>&1)"; then
+    if [[ "$raw" == *"API rate limit already exceeded"* ]]; then printf '%s\n' "$raw" >&2; fi
     printf '[]\n'
     return 0
   fi
@@ -249,8 +250,8 @@ INTAKE_PRIORITY_APPLICABLE='.status == "answered" and (.adopted == true or (.ove
 INTAKE_PRIORITY_LABEL_DECISION='if .adopted == true then .decision else .candidate end'
 
 intake_priority_apply_result() {
-  local repo="$1" issue_file="$2" result="$3" config decision issue_json issue_number priority route route_label prefix top high normal low unsure_label unsure labels label
-  local -a edit_args=() ensure_labels=()
+  local repo="$1" issue_file="$2" result="$3" config decision issue_json issue_number priority route route_label prefix top high normal low unsure_label unsure labels label encoded_label route_error
+  local -a add_labels=() remove_labels=() api_args=() ensure_labels=()
   config="$(intake_priority_config)" || return 1
   jq -e "$INTAKE_PRIORITY_APPLICABLE" <<< "$result" >/dev/null || return 0
   decision="$(jq -er "$INTAKE_PRIORITY_LABEL_DECISION"' | select(type == "string") | fromjson' <<< "$result")" || return 1
@@ -270,33 +271,52 @@ intake_priority_apply_result() {
   if [[ "$route" != none-fits ]]; then
     jq -e --arg route "$route" 'any(.intake_context.roadmap_containers[]?; (.number | tostring) == $route)' <<< "$result" >/dev/null || return 1
   fi
-  intake_priority_place_route "$repo" "$issue_file" "$issue_number" "$route" || return 1
   route_label="$prefix$route"
   labels="$(jq -c '[.labels[]? | if type == "string" then . else .name // "" end]' <<< "$issue_json")"
   for label in "$top" "$high" "$normal" "$low"; do
     if [[ "$label" != "$priority" ]] && jq -e --arg label "$label" 'index($label) != null' <<< "$labels" >/dev/null; then
-      edit_args+=(--remove-label "$label")
+      remove_labels+=("$label")
     fi
   done
   while IFS= read -r label; do
     [[ -n "$label" ]] || continue
-    [[ "$label" == "$route_label" ]] || edit_args+=(--remove-label "$label")
+    [[ "$label" == "$route_label" ]] || remove_labels+=("$label")
   done < <(jq -r --arg prefix "$prefix" '.[] | select(startswith($prefix))' <<< "$labels")
   if ! jq -e --arg label "$priority" 'index($label) != null' <<< "$labels" >/dev/null; then
-    edit_args+=(--add-label "$priority")
+    add_labels+=("$priority")
     ensure_labels+=("$priority")
   fi
   if [[ -n "$route_label" ]] && ! jq -e --arg label "$route_label" 'index($label) != null' <<< "$labels" >/dev/null; then
-    edit_args+=(--add-label "$route_label")
+    add_labels+=("$route_label")
     ensure_labels+=("$route_label")
   fi
   if [[ -n "$unsure" ]] && ! jq -e --arg label "$unsure_label" 'index($label) != null' <<< "$labels" >/dev/null; then
-    edit_args+=(--add-label "$unsure_label")
+    add_labels+=("$unsure_label")
     ensure_labels+=("$unsure_label")
   fi
-  if (( ${#edit_args[@]} == 0 )); then return 0; fi
-  intake_priority_ensure_labels "$repo" "${ensure_labels[@]}" || return 1
-  guarded_write gh issue edit "$issue_number" --repo "$repo" "${edit_args[@]}"
+  if (( ${#ensure_labels[@]} > 0 )); then
+    intake_priority_ensure_labels "$repo" "${ensure_labels[@]}" || return 1
+  fi
+  if (( ${#add_labels[@]} > 0 )); then
+    api_args=(gh api -X POST "repos/$repo/issues/$issue_number/labels")
+    for label in "${add_labels[@]}"; do api_args+=(-f "labels[]=$label"); done
+    guarded_write "${api_args[@]}" >/dev/null || return 1
+  fi
+  for label in "${remove_labels[@]}"; do
+    encoded_label="$(jq -rn --arg label "$label" '$label | @uri')" || return 1
+    guarded_write gh api -X DELETE "repos/$repo/issues/$issue_number/labels/$encoded_label" >/dev/null || return 1
+  done
+  if ! route_error="$(intake_priority_place_route "$repo" "$issue_file" "$issue_number" "$route" 2>&1)"; then
+    route_error="${route_error//$'\n'/; }"
+    printf 'intake-priority: route placement failed for #%s: %s\n' \
+      "$issue_number" "${route_error:-unknown error}" >&2
+    if [[ "$route_error" == *'API rate limit already exceeded'* && -n "${ZF_INTAKE_RATE_LIMIT_SIGNAL:-}" ]]; then
+      if ! printf 'rate-limit\n' > "$ZF_INTAKE_RATE_LIMIT_SIGNAL"; then
+        echo 'intake-priority: could not set backlog rate-limit stop signal' >&2
+      fi
+    fi
+  fi
+  return 0
 }
 
 # Called by run-triage after its verdict. Intake priority only adds labels; it never changes STATE.

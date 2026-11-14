@@ -104,6 +104,10 @@ if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then
   if [[ "$*" == *'--method POST'* ]]; then echo "gh $*" >> "$FAKE_GH_LOG"; else echo '[]'; fi
   exit 0
 fi
+if [ "${1:-}" = api ] && [[ "$*" == *"-X POST repos/"*"/issues/"*"/labels"* ]]; then
+  echo "gh $*" >> "$FAKE_GH_LOG"
+  exit 0
+fi
 if [ "${1:-}" = api ] && [[ "${2:-}" == *'/comments?per_page=100'* ]]; then echo '[]'; exit 0; fi
 if [ "${1:-}" = api ] && [[ "$*" == *'/relates_to'* ]]; then
   if [[ " $* " == *' --method POST '* ]]; then
@@ -427,13 +431,15 @@ run_once "$RAW_BODY"
 unset TYPESAFE_API_KEY
 assert_eq "adopted intake priority calls both judge sets through the stub" $'triage-size\nintake-priority' "$(cat "$INTAKE_PRIORITY_TEST_CALLS")"
 assert_eq "adopted intake priority exposes its roadmap containers to the judge" 902 "$(jq -r '.roadmapContainers[0].number' "$INTAKE_PRIORITY_TEST_STATE")"
-assert_contains "adopted intake priority applies its configured priority label" "$GH_LOG_CONTENT" '--add-label priority:top'
-assert_contains "adopted intake priority applies its selected roadmap route" "$GH_LOG_CONTENT" '--add-label route:902'
+assert_contains "adopted intake priority applies its configured priority label through REST" "$GH_LOG_CONTENT" \
+  'api -X POST repos/test/repo/issues/'
+assert_contains "adopted intake priority REST write includes its configured priority" "$GH_LOG_CONTENT" 'labels[]=priority:top'
+assert_contains "adopted intake priority REST write includes its selected roadmap route" "$GH_LOG_CONTENT" 'labels[]=route:902'
 assert_contains "adopted intake priority places the issue under its selected roadmap epic" "$GH_LOG_CONTENT" 'repos/test/repo/issues/902/sub_issues --method POST'
-assert_contains "low-confidence intake adds the unsure marker" "$GH_LOG_CONTENT" '--add-label priority:unsure'
-assert_not_contains "low-confidence intake never adds the needs-triage state label" "$GH_LOG_CONTENT" '--add-label needs-triage'
+assert_contains "low-confidence intake adds the unsure marker through REST" "$GH_LOG_CONTENT" 'labels[]=priority:unsure'
+assert_not_contains "low-confidence intake never adds the needs-triage state label" "$GH_LOG_CONTENT" 'labels[]=needs-triage'
 assert_eq "low-confidence intake leaves the triage state unchanged" ready-for-agent "$(jq -r '.state' <<< "$STATE_CONTENT")"
-if [[ "$GH_LOG_CONTENT" != *'--add-label priority:top'* ]]; then printf 'intake-priority apply stderr:\n%s\n' "$RUN_STDERR_CONTENT" >&2; fi
+if [[ "$GH_LOG_CONTENT" != *'labels[]=priority:top'* ]]; then printf 'intake-priority apply stderr:\n%s\n' "$RUN_STDERR_CONTENT" >&2; fi
 export TYPESAFE_API_KEY=fixture-only
 export FAKE_PRIORITY_LABEL=priority:normal
 : > "$INTAKE_PRIORITY_TEST_CALLS"
