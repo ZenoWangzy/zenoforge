@@ -9,7 +9,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 
 test_root="${test_env_root:?}"
-trap 'rm -rf -- "$test_root"' EXIT
+trap 'rm -rf -- "$test_root" "$test_env_root"' EXIT
 
 SCRIPT_DIR="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="test/repo"
@@ -149,12 +149,12 @@ chmod +x "$FAKE_BIN/gh"
 printf '{}' > "$FAKE_GH_STATE/per-sha-runs.json"
 printf '{"workflow_runs":[]}\n' > "$FAKE_GH_STATE/pipeline-suites-runs.json"
 
-main_runs() { # <green-conclusion> <red-conclusion> -> completed-runs.json
+main_runs() { # <green-conclusion> <red-conclusion> [red run_attempt] -> completed-runs.json
   jq -cn --arg green "$GREEN_SHA" --arg red "$RED_SHA" \
-    --arg gc "${1:-success}" --arg rc "${2:-failure}" \
+    --arg gc "${1:-success}" --arg rc "${2:-failure}" --argjson ra "${3:-1}" \
     '{workflow_runs:[
       {id:400,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:$gc,created_at:"2026-10-27T09:00:00Z"},
-      {id:501,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:$rc,created_at:"2026-10-27T10:00:00Z"}]}'
+      {id:501,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:$rc,run_attempt:$ra,created_at:"2026-10-27T10:00:00Z"}]}'
 }
 # Set the per-SHA run history for one SHA (write is tmp+mv so a caller can
 # never redirect-read the same file into truncation).
@@ -232,7 +232,7 @@ assert_contains "tick 1 requests the one same-SHA rerun" "$(cat "$FAKE_GH_STATE/
 assert_eq "tick 1 opens a rerun-requested session" rerun-requested "$(session_json | jq -r .status)"
 
 # Tick 2: the rerun finished red; the bisect window opens. The bound stops new sessions only: this one is older than it and still advances.
-main_runs failure failure > "$FAKE_GH_STATE/completed-runs.json"
+main_runs failure failure 2 > "$FAKE_GH_STATE/completed-runs.json"
 MAIN_RED_MAX_RUN_AGE_SECONDS=86400
 maintenance_tick
 MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400))
@@ -396,7 +396,7 @@ git -C "$repo" push -q origin main
 FLAKY_SHA="$FLAKY_SHA" RED_SHA="$FLAKY_SHA" main_runs > "$FAKE_GH_STATE/completed-runs.json"
 maintenance_tick
 assert_contains "flaky tick 1 requests the same-SHA rerun" "$(cat "$FAKE_GH_STATE/actions.log")" "rerun 501"
-FLAKY_SHA="$FLAKY_SHA" RED_SHA="$FLAKY_SHA" main_runs failure success > "$FAKE_GH_STATE/completed-runs.json"
+FLAKY_SHA="$FLAKY_SHA" RED_SHA="$FLAKY_SHA" main_runs failure success 2 > "$FAKE_GH_STATE/completed-runs.json"
 probe_runs "$FLAKY_SHA" completed success
 maintenance_tick
 assert_eq "a red that reruns green is recorded flaky" flaky \
@@ -450,6 +450,9 @@ jq -cn --arg red "$NO_BASE_SHA" \
   > "$FAKE_GH_STATE/completed-runs.json"
 maintenance_tick
 assert_contains "unanchored red requests the same-SHA rerun" "$(cat "$FAKE_GH_STATE/actions.log")" "rerun 501"
+jq -cn --arg red "$NO_BASE_SHA" \
+  '{workflow_runs:[{id:501,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",run_attempt:2,created_at:"2026-10-28T10:00:00Z"}]}' \
+  > "$FAKE_GH_STATE/completed-runs.json"
 maintenance_tick
 assert_contains "unanchored red emits one supervisor event" "$(cat "$EVENTS")" "reason=no-green-baseline"
 if main_merge_clear >/dev/null 2>&1; then GATE_UNANCHORED=clear; else GATE_UNANCHORED=held; fi
@@ -475,7 +478,7 @@ FAKE_FAIL_WORKFLOW_DISPATCH=1 maintenance_tick
 jq -cn --arg green "$GREEN_SHA" --arg red "$DISPATCH_RED_SHA" \
   '{workflow_runs:[
     {id:400,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-27T09:00:00Z"},
-    {id:501,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-28T10:00:00Z"}]}' \
+    {id:501,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",run_attempt:2,created_at:"2026-10-28T10:00:00Z"}]}' \
   > "$FAKE_GH_STATE/completed-runs.json"
 FAKE_FAIL_WORKFLOW_DISPATCH=1 maintenance_tick
 # Tick 3 attempts the first midpoint dispatch.
@@ -510,7 +513,7 @@ maintenance_tick
 jq -cn --arg green "$UNOWNED_BASE" --arg red "$UNOWNED_SHA" \
   '{workflow_runs:[
     {id:600,head_sha:$green,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-28T11:00:00Z"},
-    {id:601,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",created_at:"2026-10-28T12:00:00Z"}]}' \
+    {id:601,head_sha:$red,head_branch:"main",event:"push",status:"completed",conclusion:"failure",run_attempt:2,created_at:"2026-10-28T12:00:00Z"}]}' \
   > "$FAKE_GH_STATE/completed-runs.json"
 maintenance_tick
 maintenance_tick
@@ -671,7 +674,7 @@ main_red_bisect_sweep
 assert_eq "a rerun cancelled again closes the session unattributed" unattributed "$(jq -r .status "$CANCEL_FILE")"
 assert_eq "the exhausted cap does not re-request again" 1 "$(grep -c '^rerun 701$' "$FAKE_GH_STATE/actions.log")"
 assert_contains "the closed session reaches the supervisor" "$(cat "$EVENTS")" \
-  "red=${CANCEL_SHA:0:12} status=unattributed reason=rerun-no-verdict run=701"
+  "red=${CANCEL_SHA:0:12} status=unattributed reason=rerun-not-found run=701"
 
 # --- Pipeline-suites session: a post-land run is green only for the suites its own range maps to, so a green post-land run on a descendant alone does not close it.
 # The session's own range is re-run on the descendant (a probe); only that probe going green closes it as recovered.
@@ -683,12 +686,38 @@ commit "fix(#4107): suites fix forward"
 PS_DESC="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" push -q origin main
 printf '{"workflow_runs":[]}\n' > "$FAKE_GH_STATE/completed-runs.json"
-ps_runs() { # <probe-conclusion or empty> ; green post-land run on the descendant, plus an optional finished probe of the red range
-  jq -cn --arg red "$PS_RED" --arg desc "$PS_DESC" --arg pc "${1:-}" \
+ps_runs() { # recovery probe, same-SHA rerun, and baseline probe conclusions
+  jq -cn --arg red "$PS_RED" --arg base "$GREEN_SHA" --arg desc "$PS_DESC" \
+    --arg pc "${1:-}" --arg rc "${2:-}" --arg bc "${3:-}" \
     '{workflow_runs:([{id:910,head_sha:$desc,head_branch:"main",event:"workflow_dispatch",path:".github/workflows/pipeline-suites.yml",status:"completed",conclusion:"success",created_at:"2026-11-09T04:00:00Z",display_title:("Pipeline suites post-land " + $desc + " " + $red)}]
-      + (if $pc == "" then [] else [{id:911,head_sha:$desc,head_branch:"main",event:"workflow_dispatch",path:".github/workflows/pipeline-suites.yml",status:"completed",conclusion:$pc,created_at:"2026-11-09T04:10:00Z",display_title:("Pipeline suites post-land probe " + $desc + " " + $red)}] end))}' \
+      + (if $pc == "" then [] else [{id:911,head_sha:$desc,head_branch:"main",event:"workflow_dispatch",path:".github/workflows/pipeline-suites.yml",status:"completed",conclusion:$pc,run_attempt:1,created_at:"2026-11-09T04:10:00Z",display_title:("Pipeline suites post-land probe " + $desc + " " + $red)}] end)
+      + (if $rc == "" then [] else [{id:912,head_sha:$red,head_branch:"main",event:"workflow_dispatch",path:".github/workflows/pipeline-suites.yml",status:"completed",conclusion:$rc,run_attempt:2,created_at:"2026-11-09T03:50:00Z",display_title:("Pipeline suites post-land " + $red + " " + $base)}] end)
+      + (if $bc == "" then [] else [{id:913,head_sha:$base,head_branch:"main",event:"workflow_dispatch",path:".github/workflows/pipeline-suites.yml",status:"completed",conclusion:$bc,run_attempt:1,created_at:"2026-11-09T03:40:00Z",display_title:("Pipeline suites post-land probe " + $base + " " + $red)}] end))}' \
     > "$FAKE_GH_STATE/pipeline-suites-runs.json"
 }
+# A red post-land rerun must advance even when a descendant's focused probe is
+# red. This mirrors the real run/attempt/title fields returned by Actions.
+rm -rf "$AGENT_HOME/main-red"
+printf '{"workflow_runs":[]}\n' > "$FAKE_GH_STATE/completed-runs.json"
+main_red_session_write "$PS_RED" rerun-requested \
+  ".red_run_id = \"912\" | .red_run_attempt = 1 | .red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$GREEN_SHA\" | .focused_head_sha = \"$PS_RED\" | .recovery_probe_sha = \"$PS_DESC\" | .recovery_probe_attempts = 1"
+ps_runs failure failure success
+main_red_bisect_sweep
+assert_eq "a red post-land rerun advances a rerun-requested session to bisect" bisecting \
+  "$(jq -r .status "$AGENT_HOME/main-red/$PS_RED.json")"
+
+# A descendant passing the original focused range closes a rerun-requested
+# session even if its original same-SHA rerun stayed red.
+rm -rf "$AGENT_HOME/main-red"
+main_red_session_write "$PS_RED" rerun-requested \
+  ".red_run_id = \"912\" | .red_run_attempt = 1 | .red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$GREEN_SHA\" | .focused_head_sha = \"$PS_RED\" | .recovery_probe_sha = \"$PS_DESC\" | .recovery_probe_attempts = 1"
+ps_runs success failure success
+main_red_bisect_sweep
+assert_eq "a passing descendant focused probe recovers a rerun-requested session" recovered \
+  "$(jq -r .status "$AGENT_HOME/main-red/$PS_RED.json")"
+
+# Keep the existing recovery cases independent of the rerun fixtures above.
+rm -rf "$AGENT_HOME/main-red"
 PS_FILE="$AGENT_HOME/main-red/$PS_RED.json"
 main_red_session_write "$PS_RED" bisecting ".red_workflow = \"pipeline-suites.yml\" | .focused_base_sha = \"$GREEN_SHA\" | .focused_head_sha = \"$PS_RED\""
 ps_runs
