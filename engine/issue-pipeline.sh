@@ -3056,6 +3056,21 @@ select_release_batch() {
   # Pin one candidate SHA for the whole cohort. Tickets merged after it wait
   # for the next batch, even if main advances while this selector runs.
   release_candidate_sha="$(git -C "$REPO_DIR" rev-parse origin/main)" || return 1
+  # A closed cadence window lets only a pending Fleet roll dispatch, so pick those tickets from local state
+  # before the gh-reading walk (11-14: three ticks spent 313-316 s walking 133/582 tickets, all cadence skips).
+  if ! release_batch_cadence_open; then
+    local release_fleet_ids=""
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[0-9]+$ ]] || continue
+      if [ "$(state_read "$n" | jq -r '.fleet_roll_pending.status // empty')" = pending ]; then
+        release_fleet_ids+="$n"$'\n'
+      else
+        record_release_decision "$n" skipped release-cadence ${UNIT_PREFIX_TRANSIENT}-release-batch "window-not-elapsed"
+      fi
+    done <<< "$release_issue_numbers"
+    [ -n "$release_fleet_ids" ] || return 0
+    release_issue_numbers="$release_fleet_ids"
+  fi
   release_walk_begin "$release_issue_numbers"
   while IFS= read -r n; do
     release_walk_expired && break
