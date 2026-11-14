@@ -93,6 +93,16 @@ TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
 [[ -z $sched_log ]] || echo "[$now] worker cost $tag wall=${SECONDS} cpu=$((u / 1000000)).$((u / 100000 % 10))" >> "$sched_log"
 WATCH
 
+# The run-p scope a live pid sits in (systemd-run --scope names it run-p<pid>-i<id>.scope); empty for any other cgroup.
+worker_scope_of_pid() { # pid -> scope unit name
+  local line
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 0
+  read -r line < "/proc/$1/cgroup" 2>/dev/null || return 0
+  line="${line##*/}"
+  [[ "$line" =~ ^run-p[1-9][0-9]*-i[^/]*\.scope$ ]] && printf '%s\n' "$line"
+  return 0
+}
+
 worker_scope_exec() { # pid-file output-file launcher... -- command...; executed inside the worker's output/session wrapper
   local pid_file="$1" label="${2##*/}"; shift 2
   local -a launcher=() worker_command=()

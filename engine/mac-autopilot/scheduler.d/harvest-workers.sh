@@ -226,6 +226,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         set_unit "$unit" ".stage=$(js "$report_resume_stage")"
         say "report resume failed unit=$unit reason=$incident_gate_reason; sending to review with the existing report"
       fi
+      harvest_scope_stop "$w"
       workers_update --argjson accounting "$accounting" --arg finished "$STAMP" \
         --argjson pid "$pid" --arg unit "$unit" \
         '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))'
@@ -438,6 +439,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         [[ -n "$report_resume_source" ]] && set_unit "$unit" ".implementation_report=$(js "$report_resume_source")"
         set_unit "$unit" ".stage=$(js "$report_resume_stage")"
         say "incident report resume produced no report unit=$unit; sending to review with the existing report"
+        harvest_scope_stop "$w"
         workers_update --argjson accounting "$accounting" --arg finished "$STAMP" \
           --argjson pid "$pid" --arg unit "$unit" \
           '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))'
@@ -455,11 +457,13 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         # The scheduler does not load lib.sh, so note_provider_quota_exhausted (locks, env faults) is unavailable here: write the hold directly.
         [[ "$worker_provider" != claude ]] || provider_quota_write_until claude "$((NOW_EPOCH + 1800))" || :
         set_unit "$unit" "$(hist worker-provider-limit "$limit_hit")"
+        harvest_scope_stop "$w"
         workers_update --argjson accounting "$accounting" --arg finished "$STAMP" --argjson pid "$pid" --arg unit "$unit" '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))'
         continue
       fi
       handle_worker_no_output "$w" "$unit" "$wtype" "$lg" "$pid" "$(jqf -r 'if (.pr_head // "") != "" then .pr_head else .sha // "" end' <<<"$w")"
     fi
+    harvest_scope_stop "$w"
     workers_update --argjson accounting "$accounting" --arg finished "$STAMP" --argjson pid "$pid" --arg unit "$unit" '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))'
   done < <(if [[ -n "$worker_snapshot" ]]; then printf '%s\n' "$worker_snapshot"; else jqf -c '.workers[]' "$WORKERS"; fi)
 }
