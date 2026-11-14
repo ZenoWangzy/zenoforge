@@ -115,7 +115,7 @@ retire_terminal_units() {
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
   [[ "${SET_UNIT_QUEUE:-0}" != 1 ]] || { dep_q_enqueue "$@"; return 0; } # release_dependency_blocks batches its writes, see dep_q_flush
   local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage="" lock_secs write_secs write_started holder_phase=unknown
-  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then holder_phase="$(ledger_lock_holder_phase)"; if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi; lock_secs=$((SECONDS - started)); write_started=$SECONDS
+  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || ! declare -F ledger_lock_holder_phase >/dev/null || holder_phase="$(ledger_lock_holder_phase)"; if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi; lock_secs=$((SECONDS - started)); write_started=$SECONDS
   if declare -F harvest_unit_cas_check >/dev/null; then harvest_unit_cas_check "$1" || { if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi; return 1; }; fi
   [[ "$2" == *".stage"* ]] && old_stage="$(unit_field "$1" '.stage')"
   jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
