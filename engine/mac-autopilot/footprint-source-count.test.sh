@@ -246,6 +246,7 @@ start s2 docs/third.md
 
 # The fresh check wrote its conflict for a rescoped candidate; the merge must not forget it.
 merge_tick '[{"id":"held","footprint":["packages/cold/src/a.ts"]}]' c=docs/x.md
+printf '%s\n' '{"units":[{"id":"c","stage":"implement-pending","history":[]}]}' > "$UNITS" # the wait mark writes the unit's row, as dispatch always passes a ledger unit
 TICK_CHECK_SCOPE[c]='["packages/cold/src/a.ts"]'; TICK_HOTSPOT_COUNTS[c]='{}'
 footprint_wait_mark c held '{"id":"c"}' >/dev/null
 start s1 docs/other.md
