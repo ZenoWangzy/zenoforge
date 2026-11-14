@@ -44,6 +44,57 @@ test("missing key uses the caller's decision without constructing a client", asy
   assert.equal(result.adopted, false);
 });
 
+test("a 402 credit error stays classified and is logged without credentials", async (t) => {
+  const { log } = await fixture(t);
+  const originalWrite = process.stderr.write;
+  let stderr = "";
+  process.stderr.write = (chunk) => {
+    stderr += chunk;
+    return true;
+  };
+
+  let result;
+  try {
+    result = await judge({
+      questionSet: "intake-priority",
+      state: {
+        currentDecision: "priority:normal",
+        event_id: "intake:42",
+        policy: {
+          labels: {
+            top: "priority:top",
+            high: "priority:high",
+            normal: "priority:normal",
+            low: "priority:low",
+            needsTriage: "priority:unsure",
+            routePrefix: "route:",
+          },
+          scoreThresholds: { normal: 0.5, high: 1.5, top: 2.5 },
+          minimumConfidence: 0.9,
+        },
+      },
+      apiKey: "mock-secret-key",
+      client: {
+        async systemOne() {
+          const error = new Error("Your organization has no available TypeSafe API credits. Add credits at https://console.typesafe.ai/settings/billing");
+          error.status = 402;
+          error.headers = { authorization: "Bearer mock-secret-key" };
+          throw error;
+        },
+      },
+      file: log,
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.equal(result.status, "fallback");
+  assert.equal(result.reason, "credits-exhausted");
+  assert.match(stderr, /^ts-judge: credits-exhausted \(402\): Your organization has no available TypeSafe API credits\./);
+  assert.equal(stderr.trim().split(/\r?\n/).length, 1);
+  assert.doesNotMatch(stderr, /mock-secret-key|authorization|Bearer/);
+});
+
 test("high confidence answers shadow the baseline until 20 events agree, then can be adopted", async (t) => {
   const { log } = await fixture(t);
   const mock = fakeClient({ classification: { choice: "infra", confidence: 0.93 } });

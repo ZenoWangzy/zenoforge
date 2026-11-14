@@ -307,6 +307,29 @@ function fallbackResult(questionSet, state, reason) {
   };
 }
 
+function requestFailure(error, apiKey) {
+  const statusValue = error?.status ?? error?.statusCode ?? error?.response?.status;
+  const statusNumber = Number(statusValue);
+  const status = Number.isInteger(statusNumber) && statusNumber > 0 ? statusNumber : null;
+  let message = typeof error?.message === "string" ? error.message : String(error ?? "unknown error");
+  const mentionsNoCredits = /\bno\b.{0,100}\bcredits?\b/i.test(message);
+  if (apiKey) message = message.split(apiKey).join("[redacted]");
+  message = message
+    .replace(/\bheaders?\s*[:=]\s*\{[^}]*\}/gi, "[redacted headers]")
+    .replace(/\b(?:authorization|proxy-authorization|x-api-key|api-key)\s*[:=]\s*[^,;\r\n]*/gi, "[redacted header]")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, 200);
+  const reason = status === 402 || mentionsNoCredits
+    ? "credits-exhausted"
+    : status === 401 || status === 403
+      ? "auth-failed"
+      : status === 429
+        ? "rate-limited"
+        : "request-failed";
+  return { reason, status: status === null ? "unknown" : String(status), message: message || "unknown error" };
+}
+
 export async function recordShadowComparison({
   questionSet,
   eventId,
@@ -438,8 +461,10 @@ export async function judge({
       agreement_rate: history.length ? history.filter((row) => row.agreement).length / history.length : null,
       logging,
     };
-  } catch {
-    return fallbackResult(questionSet, state, "request-failed");
+  } catch (error) {
+    const failure = requestFailure(error, apiKey);
+    process.stderr.write(`ts-judge: ${failure.reason} (${failure.status}): ${failure.message}\n`);
+    return fallbackResult(questionSet, state, failure.reason);
   }
 }
 

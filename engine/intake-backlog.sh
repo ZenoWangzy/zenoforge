@@ -54,14 +54,21 @@ fi
 
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT
-rate_limit_signal="$temp_dir/rate-limit.signal"
+stop_signal="$temp_dir/stop.signal"
 rate_limit_cache="$temp_dir/rate-limit.cache"
 rate_limit_cache_lock="$temp_dir/rate-limit-cache.lock"
-export ZF_INTAKE_RATE_LIMIT_SIGNAL="$rate_limit_signal"
+export ZF_INTAKE_RATE_LIMIT_SIGNAL="$stop_signal"
 records_file="$temp_dir/records.jsonl"
+judge_results_file="$temp_dir/judge-results.jsonl"
 : > "$records_file"
+: > "$judge_results_file"
 partial=false
 stop_reason=''
+
+intake_backlog_signal_stop() {
+  local reason="$1"
+  (set -o noclobber; printf '%s\n' "$reason" > "$stop_signal") 2>/dev/null || true
+}
 
 write_report() {
   local report output_dir report_temp
@@ -86,7 +93,7 @@ write_report() {
 
 intake_backlog_rate_allows_apply() {
   local lock_fd='' now='' checked_at='' response='' cache_temp='' core='' graphql='' rc=0
-  [[ ! -e "$rate_limit_signal" ]] || return 1
+  [[ ! -e "$stop_signal" ]] || return 1
   exec {lock_fd}>"$rate_limit_cache_lock" || return 1
   if ! flock -x "$lock_fd"; then
     exec {lock_fd}>&-
@@ -103,17 +110,17 @@ intake_backlog_rate_allows_apply() {
     if ! response="$(gh api rate_limit 2>&1)"; then
       if [[ "$response" == *'API rate limit already exceeded'* ]]; then
         printf 'intake-backlog: %s\n' "$response" >&2
-        printf 'rate-limit\n' > "$rate_limit_signal"
+        intake_backlog_signal_stop rate-limit
       else
         printf 'intake-backlog: rate-limit check failed: %s\n' "${response//$'\n'/; }" >&2
-        printf 'rate-check-failed\n' > "$rate_limit_signal"
+        intake_backlog_signal_stop rate-check-failed
       fi
       rc=1
     elif ! jq -e 'type == "object"
       and (.resources.core.remaining | type == "number" and . >= 0 and floor == .)
       and (.resources.graphql.remaining | type == "number" and . >= 0 and floor == .)' <<< "$response" >/dev/null; then
       echo 'intake-backlog: invalid gh api rate_limit response' >&2
-      printf 'rate-check-failed\n' > "$rate_limit_signal"
+      intake_backlog_signal_stop rate-check-failed
       rc=1
     else
       cache_temp="$rate_limit_cache.tmp.$$"
@@ -124,7 +131,7 @@ intake_backlog_rate_allows_apply() {
       else
         rm -f -- "$cache_temp"
         echo 'intake-backlog: could not cache gh api rate_limit response' >&2
-        printf 'rate-check-failed\n' > "$rate_limit_signal"
+        intake_backlog_signal_stop rate-check-failed
         rc=1
       fi
     fi
@@ -135,7 +142,7 @@ intake_backlog_rate_allows_apply() {
     if (( rc == 0 && (core < rate_floor || graphql < rate_floor) )); then
       printf 'intake-backlog: rate floor reached (core=%s graphql=%s floor=%s)\n' \
         "$core" "$graphql" "$rate_floor" >&2
-      printf 'rate-limit\n' > "$rate_limit_signal"
+      intake_backlog_signal_stop rate-limit
       rc=1
     fi
   fi
@@ -159,7 +166,7 @@ fi
 if [[ "$stop_reason" == rate-limit ]]; then
   echo 'intake-backlog: API rate limit exceeded; writing partial report' >&2
   write_report || exit 1
-  printf 'intake-backlog: report=%s scanned=0 apply=%s partial=true\n' "$output" "$apply"
+  printf 'intake-backlog: report=%s scanned=0 apply=%s partial=true stop_reason=%s\n' "$output" "$apply" "$stop_reason"
   exit 0
 fi
 
@@ -170,7 +177,7 @@ if ! issues="$(gh issue list --repo "$repo" --state open --limit "$limit" --json
     stop_reason=rate-limit
     echo 'intake-backlog: API rate limit exceeded; writing partial report' >&2
     write_report || exit 1
-    printf 'intake-backlog: report=%s scanned=0 apply=%s partial=true\n' "$output" "$apply"
+    printf 'intake-backlog: report=%s scanned=0 apply=%s partial=true stop_reason=%s\n' "$output" "$apply" "$stop_reason"
     exit 0
   fi
   echo 'intake-backlog: could not read open issues' >&2
@@ -193,23 +200,27 @@ while IFS= read -r issue_json; do
 done < <(jq -c '.[]' "$temp_dir/selected-issues.json")
 
 run_issue() {
-  local number="$1" status status_temp
+  local number="$1" status status_temp judge_reason
   local args=(judge --repo "$repo" --issue-file "$temp_dir/$number.issue.json")
-  if [[ ! -e "$rate_limit_signal" ]]; then
+  if [[ ! -e "$stop_signal" ]]; then
     if (( dry_stub == 1 )); then args+=(--dry-stub); fi
     if ! bash "$SCRIPT_DIR/intake-priority.sh" "${args[@]}" > "$temp_dir/$number.result.json" 2> "$temp_dir/$number.log"; then
-      printf '%s\n' '{"status":"fallback","adopted":false,"candidate":null,"confidence":null,"intake_context":{"duplicate_candidates":[],"roadmap_containers":[]}}' > "$temp_dir/$number.result.json"
+      printf '%s\n' '{"status":"fallback","reason":"judge-command-failed","adopted":false,"candidate":null,"confidence":null,"intake_context":{"duplicate_candidates":[],"roadmap_containers":[]}}' > "$temp_dir/$number.result.json"
     fi
+    judge_reason="$(jq -r 'if .status == "fallback" then .reason // empty else empty end' "$temp_dir/$number.result.json" 2>/dev/null || true)"
+    case "$judge_reason" in
+      credits-exhausted|auth-failed) intake_backlog_signal_stop "$judge_reason" ;;
+    esac
     if grep -Fq 'API rate limit already exceeded' "$temp_dir/$number.log"; then
-      printf 'rate-limit\n' > "$rate_limit_signal"
+      intake_backlog_signal_stop rate-limit
     fi
-    if (( apply == 1 )) && [[ ! -e "$rate_limit_signal" ]] \
+    if (( apply == 1 )) && [[ ! -e "$stop_signal" ]] \
       && ! grep -Fq 'API rate limit already exceeded' "$temp_dir/$number.log"; then
       if intake_backlog_rate_allows_apply; then
         if ! bash "$SCRIPT_DIR/intake-priority.sh" apply --repo "$repo" --issue-file "$temp_dir/$number.issue.json" \
           --result-file "$temp_dir/$number.result.json" >> "$temp_dir/$number.log" 2>&1; then
           if grep -Fq 'API rate limit already exceeded' "$temp_dir/$number.log"; then
-            printf 'rate-limit\n' > "$rate_limit_signal"
+            intake_backlog_signal_stop rate-limit
           else
             printf 'intake-backlog: label update failed for issue #%s\n' "$number" >&2
           fi
@@ -218,8 +229,7 @@ run_issue() {
     fi
   fi
   status=done
-  if grep -Fq 'API rate limit already exceeded' "$temp_dir/$number.log"; then status=rate-limit; fi
-  if [[ -e "$rate_limit_signal" ]]; then status=rate-limit; fi
+  if [[ -e "$stop_signal" ]]; then status=stop; fi
   status_temp="$temp_dir/$number.status.tmp.$$"
   printf '%s\n' "$status" > "$status_temp"
   mv -f -- "$status_temp" "$temp_dir/$number.status"
@@ -228,10 +238,10 @@ run_issue() {
 active_pids=()
 active_numbers=()
 next_issue=0
-rate_limited=0
+stop_requested=0
 while (( next_issue < ${#issue_numbers[@]} || ${#active_pids[@]} > 0 )); do
-  while (( rate_limited == 0 && next_issue < ${#issue_numbers[@]} && ${#active_pids[@]} < concurrency )) \
-    && [[ ! -e "$rate_limit_signal" ]]; do
+  while (( stop_requested == 0 && next_issue < ${#issue_numbers[@]} && ${#active_pids[@]} < concurrency )) \
+    && [[ ! -e "$stop_signal" ]]; do
     number="${issue_numbers[$next_issue]}"
     run_issue "$number" &
     active_pids+=("$!")
@@ -240,7 +250,7 @@ while (( next_issue < ${#issue_numbers[@]} || ${#active_pids[@]} > 0 )); do
   done
   if (( ${#active_pids[@]} == 0 )); then break; fi
   completed=0
-  [[ -e "$rate_limit_signal" ]] && rate_limited=1
+  [[ -e "$stop_signal" ]] && stop_requested=1
   remaining_pids=()
   remaining_numbers=()
   for index in "${!active_pids[@]}"; do
@@ -250,7 +260,7 @@ while (( next_issue < ${#issue_numbers[@]} || ${#active_pids[@]} > 0 )); do
     if [[ -s "$status_file" ]]; then
       wait "$pid" || true
       completed=1
-      if [[ "$(cat -- "$status_file")" == rate-limit ]]; then rate_limited=1; fi
+      if [[ "$(cat -- "$status_file")" == stop ]]; then stop_requested=1; fi
     else
       remaining_pids+=("$pid")
       remaining_numbers+=("$number")
@@ -287,14 +297,29 @@ for number in "${issue_numbers[@]}"; do
        stale:($decision.stale // false)}
   ')"
   printf '%s\n' "$record" >> "$records_file"
+  jq -cn --arg status "$(jq -r '.status // "fallback"' <<< "$result")" \
+    --arg reason "$(jq -r '.reason // "unknown"' <<< "$result")" '{status:$status,reason:$reason}' >> "$judge_results_file"
 done
 
-if (( rate_limited == 1 )) || [[ -e "$rate_limit_signal" ]]; then
+if (( stop_requested == 1 )) || [[ -e "$stop_signal" ]]; then
   partial=true
-  stop_reason="$(cat -- "$rate_limit_signal" 2>/dev/null || true)"
+  stop_reason="$(cat -- "$stop_signal" 2>/dev/null || true)"
   [[ -n "$stop_reason" ]] || stop_reason=rate-limit
-  echo 'intake-backlog: rate guard stopped the pass; writing partial report' >&2
+  printf 'intake-backlog: stopped the pass (%s); writing partial report\n' "$stop_reason" >&2
 fi
+judge_summary="$(jq -s '
+  map({status:(.status // "fallback"),reason:(.reason // "unknown")}) as $rows
+  | ($rows | map(select(.status == "answered")) | length) as $answered
+  | ($rows | map(select(.status != "answered"))) as $fallbacks
+  | {judged:($rows | length),answered:$answered,fallbacks:($fallbacks | length),
+     fallback_reasons:($fallbacks | group_by(.reason) | map({key:.[0].reason,value:length}) | from_entries)}
+' "$judge_results_file")" || exit 1
 write_report || exit 1
-printf 'intake-backlog: report=%s scanned=%s apply=%s partial=%s\n' \
-  "$output" "$(jq -r '.scanned' "$output")" "$apply" "$partial"
+printf 'intake-backlog: report=%s scanned=%s apply=%s partial=%s stop_reason=%s\n' \
+  "$output" "$(jq -r '.scanned' "$output")" "$apply" "$partial" "${stop_reason:-none}"
+if [[ "$(jq -r '.judged > 0 and .answered == 0' <<< "$judge_summary")" == true ]]; then
+  fallback_count="$(jq -r '.fallbacks' <<< "$judge_summary")"
+  fallback_reasons="$(jq -r '.fallback_reasons | to_entries | sort_by(.key) | map("\(.key)=\(.value)") | join(", ")' <<< "$judge_summary")"
+  printf 'intake-backlog: no judge answered (%s fallbacks: %s)\n' "$fallback_count" "$fallback_reasons" >&2
+  exit 1
+fi

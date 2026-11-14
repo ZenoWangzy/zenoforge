@@ -80,6 +80,11 @@ state="$(cat)"
 number="$(jq -r '.issue.number' <<< "$state")"
 printf '%s %s\n' "$1" "$number" >> "$INTAKE_BACKLOG_JUDGE_LOG"
 printf 'judge:%s\n' "$number" >> "$INTAKE_BACKLOG_EVENTS"
+if [[ -n "${INTAKE_BACKLOG_JUDGE_FALLBACK:-}" ]]; then
+  jq -cn --arg reason "$INTAKE_BACKLOG_JUDGE_FALLBACK" \
+    '{status:"fallback",reason:$reason,adopted:false,candidate:null,confidence:null}'
+  exit 0
+fi
 case "$number" in
   11) decision='{"priority":"priority:top","route":"101","duplicate":false,"duplicateCandidates":[],"stale":false}'; confidence=0.95 ;;
   12) decision='{"priority":"priority:high","route":"102","duplicate":true,"duplicateCandidates":[11],"stale":false}'; confidence=0.96 ;;
@@ -109,6 +114,41 @@ report="$(cat "$test_root/report.json")"
 [[ "$(grep -F 'issue list' "$INTAKE_BACKLOG_GH_LOG")" == *'--json number,title,body,labels'* ]]
 [[ "$(grep -E '^(issue edit|label create)' "$INTAKE_BACKLOG_GH_LOG" 2>/dev/null || true)" == '' ]]
 [[ "$(wc -l < "$INTAKE_BACKLOG_JUDGE_LOG")" == 3 ]]
+
+export INTAKE_BACKLOG_JUDGE_FALLBACK=credits-exhausted
+: > "$INTAKE_BACKLOG_JUDGE_LOG"
+: > "$INTAKE_BACKLOG_EVENTS"
+set +e
+bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/credits-exhausted.json" --limit 3 --concurrency 1 --dry-stub \
+  > "$test_root/credits-exhausted.out" 2> "$test_root/credits-exhausted.err"
+credits_rc=$?
+set -e
+credits_report="$(cat "$test_root/credits-exhausted.json")"
+[[ "$credits_rc" == 1 ]] || {
+  printf 'credits-exhausted regression: expected stop after one judge with rc=1; got rc=%s scanned=%s stop_reason=%s judge_calls=%s\n' \
+    "$credits_rc" "$(jq -r '.scanned' <<< "$credits_report")" "$(jq -r '.stop_reason // "null"' <<< "$credits_report")" \
+    "$(wc -l < "$INTAKE_BACKLOG_JUDGE_LOG")" >&2
+  exit 1
+}
+[[ "$(jq -r '.partial' <<< "$credits_report")" == true ]]
+[[ "$(jq -r '.stop_reason' <<< "$credits_report")" == credits-exhausted ]]
+[[ "$(jq -r '.scanned' <<< "$credits_report")" == 1 ]]
+[[ "$(wc -l < "$INTAKE_BACKLOG_JUDGE_LOG")" == 1 ]]
+[[ "$(grep -F 'intake-backlog: report=' "$test_root/credits-exhausted.out")" == *'partial=true stop_reason=credits-exhausted'* ]]
+
+export INTAKE_BACKLOG_JUDGE_FALLBACK=request-failed
+: > "$INTAKE_BACKLOG_JUDGE_LOG"
+: > "$INTAKE_BACKLOG_EVENTS"
+set +e
+bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/all-fallbacks.json" --limit 3 --concurrency 1 --dry-stub \
+  > "$test_root/all-fallbacks.out" 2> "$test_root/all-fallbacks.err"
+all_fallbacks_rc=$?
+set -e
+[[ "$all_fallbacks_rc" == 1 ]]
+[[ "$(jq -r '.scanned' "$test_root/all-fallbacks.json")" == 3 ]]
+grep -Fx 'intake-backlog: no judge answered (3 fallbacks: request-failed=3)' "$test_root/all-fallbacks.err" >/dev/null
+[[ "$(wc -l < "$INTAKE_BACKLOG_JUDGE_LOG")" == 3 ]]
+unset INTAKE_BACKLOG_JUDGE_FALLBACK
 
 : > "$INTAKE_BACKLOG_JUDGE_LOG"
 : > "$INTAKE_BACKLOG_EVENTS"
@@ -175,6 +215,15 @@ judge_rate_report="$(cat "$test_root/rate-limit-judge.json")"
 [[ "$(grep -F 'labels:11' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
 [[ "$(grep -F 'judge:13' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
 unset TYPESAFE_API_KEY INTAKE_BACKLOG_RATE_LIMIT_SEARCH INTAKE_BACKLOG_DELAY_SEARCH
+
+export TYPESAFE_API_KEY=fixture-key
+export INTAKE_BACKLOG_JUDGE_FALLBACK=credits-exhausted
+jq -cn '{number:14,title:"Credits depleted fixture",body:"",labels:[]}' \
+  | bash "$SCRIPT_DIR/intake-priority.sh" triage 14 needs-triage fixture/repo \
+    > "$test_root/triage-fallback.out" 2> "$test_root/triage-fallback.err"
+grep -Fx 'intake-priority: answer not adopted for issue #14 reason=credits-exhausted' \
+  "$test_root/triage-fallback.err" >/dev/null
+unset TYPESAFE_API_KEY INTAKE_BACKLOG_JUDGE_FALLBACK
 jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
 
 set +e
