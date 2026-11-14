@@ -1177,7 +1177,7 @@ assert_cond "fastlane stage no longer routes pipeline-system tickets to a hand" 
 assert_cond "path-only ticket routing reuses shared delivery classifier" \
   "$(route_body="$(sed -n '/^route_nonproduct_path_issue_rows() {/,/^}/p; /^route_nonproduct_path_candidates() {/,/^}/p' "$PIPELINE_SRC")"; grep -qF 'issue_body_is_direct_main_lane' <<< "$route_body" && grep -qF 'pipeline_system_issue_matches' <<< "$route_body" && echo 1 || echo 0)"
 assert_cond "configured non-product tickets are excluded from recut and release dispatch snapshots" \
-  "$(grep -A3 -F 'for next_recut in $(gh issue list' "$PIPELINE_SRC" | grep -qF '$lane_labels' && grep -A4 -F 'if ! release_issue_numbers=' "$PIPELINE_SRC" | grep -qF '$lane_labels' && echo 1 || echo 0)"
+  "$(grep -A3 -F 'for next_recut in $(gh issue list' "$PIPELINE_SRC" | grep -qF '$lane_labels' && grep -A8 -F 'if ! release_list_json=' "$PIPELINE_SRC" | grep -qF '$lane_labels' && echo 1 || echo 0)"
 assert_cond "pipeline-system triage uses lightweight classification before model prompt" \
   "$(classify_line="$(grep -nF 'prepare_pipeline_system_issue "$N" "$ISSUE_JSON"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; prompt_line="$(grep -nF 'cat "$(zf_config_file prompts/triage.md)"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; [ -n "$classify_line" ] && [ -n "$prompt_line" ] && [ "$classify_line" -lt "$prompt_line" ] && echo 1 || echo 0)"
 assert_cond "technical advisor routes return pipeline-system tickets to implementation" \
@@ -1969,6 +1969,7 @@ fi
 # dispatches one release unit for the whole eligible cohort.
 RELEASE_SELECTION_FN="$(sed -n '/^select_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
 RELEASE_CADENCE_FN="$(sed -n '/^release_batch_cadence_mark() {/,/^}/p; /^release_batch_cadence_open() {/,/^}/p' "$PIPELINE_SRC")"
+RELEASE_WALK_FN="$(sed -n '/^release_walk_[a-z]*() {/,/^}/p' "$SCRIPT_DIR/lib.d/release-walk.sh")"
 PRODUCTION_DEPLOYMENT_SHA_FN="$(sed -n '/^latest_production_deployment_sha() {/,/^}/p' "$PIPELINE_SRC")"
 mkdir -p "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh"
 cat > "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh/gh" <<'GH'
@@ -2041,11 +2042,22 @@ run_release_selection() (
   gh() {
     case "$1 ${2:-}" in
       'issue list') printf '%s\n' "$issue_json" ;;
+      'pr list') printf '[]\n' ;;
       *) echo "unexpected gh invocation: $*" >&2; return 1 ;;
     esac
   }
+  eval "$RELEASE_WALK_FN"
+  if [ -n "${RELEASE_WALK_CLOCK_FILE:-}" ]; then
+    # Each clock read advances 100 s, so the deadline test is deterministic.
+    release_walk_now() { local k; k="$(cat "$RELEASE_WALK_CLOCK_FILE")"; echo $((1000 + 100 * k)); echo $((k + 1)) > "$RELEASE_WALK_CLOCK_FILE"; }
+  fi
   git() {
     if [[ " $* " == *" merge-base --is-ancestor "* ]]; then
+      # Fleet roll shas are roll-<issue>; a higher issue number is the newer image.
+      if [[ "$5" == roll-* && "$6" == roll-* ]]; then
+        [ "${5#roll-}" -lt "${6#roll-}" ]
+        return
+      fi
       [ "$n" != "$invalid_ancestor_issue" ]
     else
       printf 'candidate-sha\n'
@@ -2101,8 +2113,19 @@ assert_eq 'release timing debt reads the deployed SHA from GitHub Deployments' \
   'release-decision issue=#910102 outcome=skipped gate=timing-debt object=#1449 reason=already-deployed-waiting-next-deploy' \
   "$(FAKE_DEPLOYMENT_SHA="$timing_wait_sha" run_release_selection '[{"number":910102}]' 910102 '' 1 '' 1 910202 '' '' 10 '' '' 0 0 '' merged pending '' "$timing_wait_sha")"
 assert_eq 'release batch deferral logs pending candidates without dispatched or batched claims' \
-  $'release-decision issue=#910101 outcome=skipped gate=execution-admission object=zf-release-batch reason=temporarily-unavailable\nrelease-decision issue=#910102 outcome=skipped gate=execution-admission object=zf-release-batch reason=temporarily-unavailable' \
+  $'release-decision issue=#910102 outcome=skipped gate=execution-admission object=zf-release-batch reason=temporarily-unavailable\nrelease-decision issue=#910101 outcome=skipped gate=execution-admission object=zf-release-batch reason=temporarily-unavailable' \
   "$(RELEASE_BATCH_LAUNCH_STATUS=75 run_release_selection '[{"number":910101},{"number":910102}]' all)"
+# Release walk: the newest awaiting-release issue goes first, and an expired
+# budget stops the walk but keeps what it collected.
+assert_eq 'release walk takes the newest awaiting-release issue first' \
+  'dispatch:release-batch:910102:candidate-sha' \
+  "$(run_release_selection '[{"number":910101},{"number":910102}]' all | grep '^dispatch:')"
+RELEASE_WALK_CLOCK_FILE="$AGENT_HOME/release-walk-clock"
+printf '0\n' > "$RELEASE_WALK_CLOCK_FILE"
+assert_eq 'release walk deadline logs progress and still dispatches the collected candidates' \
+  $'issue-pipeline: release-walk deadline hit after 2/3 issues\ndispatch:release-batch:910103:candidate-sha' \
+  "$(RELEASE_WALK_DEADLINE_SECONDS=250 run_release_selection '[{"number":910101},{"number":910102},{"number":910103}]' all 2>&1 | grep -E '^(dispatch:|issue-pipeline: release-walk)')"
+unset RELEASE_WALK_CLOCK_FILE
 RELEASE_SELECTION_FAILURE_STATUS=0
 RELEASE_SELECTION_FAILURE_OUT="$(RELEASE_BATCH_LAUNCH_STATUS=1 run_release_selection '[{"number":910101}]' 910101)" || RELEASE_SELECTION_FAILURE_STATUS=$?
 assert_eq 'release selector preserves a genuine launch failure' 1 "$RELEASE_SELECTION_FAILURE_STATUS"
@@ -2124,12 +2147,9 @@ assert_eq 'invalid deploy state logs its release skip' \
 assert_eq 'on-hold does not block release dispatch for merged code' \
   $'dispatch:release-batch:910103:candidate-sha\nrelease-decision issue=#910103 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha' \
   "$(run_release_selection '[{"number":910103}]' 910103 910103)"
-assert_eq 'an unreadable ready-for-human label remains fail-closed' \
-  'release-decision issue=#910104 outcome=skipped gate=ready-for-human-label object=label reason=label-unavailable' \
-  "$(run_release_selection '[{"number":910104}]' 910104 '' 2)"
-assert_eq 'ready-for-human label presence logs its release skip' \
+assert_eq 'ready-for-human label on the awaiting-release list logs its release skip' \
   'release-decision issue=#910123 outcome=skipped gate=ready-for-human object=label reason=present' \
-  "$(run_release_selection '[{"number":910123}]' 910123 '' 0)"
+  "$(run_release_selection '[{"number":910123,"labels":[{"name":"ready-for-human"}]}]' 910123)"
 assert_eq 'released state remains a release-selection skip' \
   'release-decision issue=#910105 outcome=skipped gate=released object=state reason=already-released' \
   "$(run_release_selection '[{"number":910105}]' 910105 '' 1 910105)"
@@ -2166,19 +2186,19 @@ assert_eq 'a merge commit absent from main is skipped' \
   'release-decision issue=#910112 outcome=skipped gate=main-ancestry object=#910201 reason=merge-not-ancestor-of-origin-main' \
   "$(run_release_selection '[{"number":910112}]' 910112 '' 1 '' 1 910201 '' '' 10 '' 910112)"
 assert_eq 'one release capacity slot batches all eligible tickets at one SHA' \
-  $'dispatch:release-batch:910109:candidate-sha\nrelease-decision issue=#910109 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910110 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910109' \
+  $'dispatch:release-batch:910110:candidate-sha\nrelease-decision issue=#910110 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910109 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910110' \
   "$(run_release_selection '[{"number":910110},{"number":910109}]' all '' 1 '' 1 910201 '' '' 1)"
 assert_eq 'duplicate candidate IDs produce one decision per ticket per tick' \
   $'dispatch:release-batch:910113:candidate-sha\nrelease-decision issue=#910113 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha' \
   "$(run_release_selection '[{"number":910113},{"number":910113}]' 910113)"
 assert_eq 'three awaiting tickets dispatch exactly one batch and get individual verdicts' \
-  $'dispatch:release-batch:910131:candidate-sha\nrelease-decision issue=#910131 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910132 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910131\nrelease-decision issue=#910133 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910131' \
+  $'dispatch:release-batch:910133:candidate-sha\nrelease-decision issue=#910133 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910132 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910133\nrelease-decision issue=#910131 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910133' \
   "$(run_release_selection '[{"number":910131},{"number":910132},{"number":910133}]' all '' 1 '' 1 910201 '' '' 1)"
 assert_eq 'ticket merged after captured batch SHA waits for next batch' \
   $'release-decision issue=#910142 outcome=skipped gate=main-ancestry object=#910201 reason=merge-not-ancestor-of-origin-main\ndispatch:release-batch:910141:candidate-sha\nrelease-decision issue=#910141 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha' \
   "$(run_release_selection '[{"number":910141},{"number":910142}]' all '' 1 '' 1 910201 '' '' 1 '' 910142)"
 assert_eq 'stage gate logs each eligible ticket it blocks' \
-  $'release-decision issue=#910114 outcome=skipped gate=stage-dispatch object=release reason=quarantine-or-policy-block\nrelease-decision issue=#910115 outcome=skipped gate=stage-dispatch object=release reason=release-dispatch-blocked' \
+  $'release-decision issue=#910115 outcome=skipped gate=stage-dispatch object=release reason=quarantine-or-policy-block\nrelease-decision issue=#910114 outcome=skipped gate=stage-dispatch object=release reason=release-dispatch-blocked' \
   "$(run_release_selection '[{"number":910114},{"number":910115}]' all '' 1 '' 1 910201 '' '' 10 '' '' 1)"
 
 CAPACITY_SCHEDULER_HOME="$(mktemp -d)"
@@ -2201,13 +2221,13 @@ assert_eq "an open build-capacity episode prevents another release/build dispatc
   $'waiting\ndispatched' "$CAPACITY_SCHEDULER_OUT"
 
 assert_eq 'memory gate logs each eligible ticket it blocks' \
-  $'release-decision issue=#910116 outcome=skipped gate=memory-floor object=release reason=minimum-memory-unavailable\nrelease-decision issue=#910117 outcome=skipped gate=memory-floor object=release reason=release-dispatch-blocked' \
+  $'release-decision issue=#910117 outcome=skipped gate=memory-floor object=release reason=minimum-memory-unavailable\nrelease-decision issue=#910116 outcome=skipped gate=memory-floor object=release reason=release-dispatch-blocked' \
   "$(run_release_selection '[{"number":910116},{"number":910117}]' all '' 1 '' 1 910201 '' '' 10 '' '' 0 1)"
 assert_eq 'active release unit is logged as a per-ticket skip' \
   'release-decision issue=#910118 outcome=skipped gate=active-unit object=zf-release-batch reason=already-running' \
   "$(run_release_selection '[{"number":910118}]' 910118 '' 1 '' 1 910201 '' '' 10 '' '' 0 0 910118)"
 assert_eq 'zero release capacity logs each unique pending ticket' \
-  $'release-decision issue=#910119 outcome=skipped gate=capacity object=RELEASE_CAP reason=slots-exhausted\nrelease-decision issue=#910120 outcome=skipped gate=capacity object=RELEASE_CAP reason=slots-exhausted' \
+  $'release-decision issue=#910120 outcome=skipped gate=capacity object=RELEASE_CAP reason=slots-exhausted\nrelease-decision issue=#910119 outcome=skipped gate=capacity object=RELEASE_CAP reason=slots-exhausted' \
   "$(run_release_selection '[{"number":910119},{"number":910120}]' all '' 1 '' 1 910201 '' '' 0)"
 assert_eq 'zero release capacity does not turn a stale awaiting-release label into pending work' \
   'release-decision issue=#910102 outcome=skipped gate=release-state object=state reason=not-awaiting-release' \
@@ -2218,11 +2238,11 @@ RELEASE_CADENCE_FILE="$ISSUE_PIPELINE_TEST_AGENT_HOME/release-batch-last-dispatc
 RELEASE_CADENCE_TEST_NOW=1800000000
 printf '%s\n' "$(( RELEASE_CADENCE_TEST_NOW - 7199 ))" > "$RELEASE_CADENCE_FILE"
 assert_eq 'tickets merged inside one window trigger no second release' \
-  $'release-decision issue=#910151 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed\nrelease-decision issue=#910152 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed' \
+  $'release-decision issue=#910152 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed\nrelease-decision issue=#910151 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed' \
   "$(run_release_selection '[{"number":910151},{"number":910152}]' all)"
 printf '%s\n' "$(( RELEASE_CADENCE_TEST_NOW - 7200 ))" > "$RELEASE_CADENCE_FILE"
 assert_eq 'an elapsed window dispatches the whole batch once' \
-  $'dispatch:release-batch:910151:candidate-sha\nrelease-decision issue=#910151 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910152 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910151' \
+  $'dispatch:release-batch:910152:candidate-sha\nrelease-decision issue=#910152 outcome=dispatched gate=release-batch object=zf-release-batch reason=sha=candidate-sha\nrelease-decision issue=#910151 outcome=batched gate=release-batch object=zf-release-batch reason=shared-sha=candidate-sha anchor=#910152' \
   "$(run_release_selection '[{"number":910151},{"number":910152}]' all)"
 unset RELEASE_CADENCE_TEST_NOW
 printf '%s\n' "$(date +%s)" > "$RELEASE_CADENCE_FILE"

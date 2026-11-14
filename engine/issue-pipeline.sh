@@ -40,6 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 source "$SCRIPT_DIR/hand-completion-refill.sh"
+source "$SCRIPT_DIR/lib.d/release-walk.sh"
 PIPELINE_CLAIM_KEY=""
 PIPELINE_CLAIM_OWNER=""
 PIPELINE_CLAIM_UNIT=""
@@ -3035,24 +3036,29 @@ release_batch_cadence_open() {
 
 select_release_batch() {
   local release_slots release_issue_numbers release_candidate_sha release_dispatch_block_gate=""
-  local n state deploy_state fleet_roll_status pr_number release_pr_row release_pr_number release_merge_sha hl_rc release_wait_sha current_deployed_sha
+  local n state deploy_state fleet_roll_status pr_number release_pr_row release_pr_number release_merge_sha release_list_json release_hold_ids release_wait_sha current_deployed_sha
   local release_batch_anchor="" release_batch_anchor_fleet=0 release_batch_anchor_roll_sha="" fleet_roll_sha=""
   local -a release_batch_issues=()
   local -A release_issue_seen=()
 
   release_slots="$(cap_slots_remaining "$RELEASE_CAP" "$(stage_unit_count release)")"
-  if ! release_issue_numbers="$(gh issue list --repo "$REPO" --state open \
-      --label awaiting-release --limit 1000 --json number,labels \
-      | jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" '
-        map(select((any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null)) | not))
-        | .[].number' | sort -n)"; then
+  if ! release_list_json="$(gh issue list --repo "$REPO" --state open \
+      --label awaiting-release --limit 1000 --json number,labels)"; then
     echo "issue-pipeline: could not read awaiting-release issues; refusing release selection" >&2
     return 1
   fi
+  # Newest first: a fresh fix is a candidate before the walk budget can run out.
+  release_issue_numbers="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" '
+        map(select((any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null)) | not))
+        | .[].number' <<< "$release_list_json" | sort -rn)" || return 1
+  # Labels come from this same list, so the ready-for-human gate costs no per-issue read.
+  release_hold_ids="$(jq -r '.[] | select(any(.labels[]?; .name == "ready-for-human")) | .number' <<< "$release_list_json")"
   # Pin one candidate SHA for the whole cohort. Tickets merged after it wait
   # for the next batch, even if main advances while this selector runs.
   release_candidate_sha="$(git -C "$REPO_DIR" rev-parse origin/main)" || return 1
+  release_walk_begin "$release_issue_numbers"
   while IFS= read -r n; do
+    release_walk_expired && break
     [[ "$n" =~ ^[0-9]+$ ]] || continue
     [ -n "${release_issue_seen[$n]:-}" ] && continue
     release_issue_seen["$n"]=1
@@ -3096,13 +3102,8 @@ select_release_batch() {
     fi
     # `on-hold` blocks new issue work, not deploy-time closure after functional E2E.
     # run-release.sh clears the hold when it closes the deployed ticket.
-    hl_rc=0; has_label "$n" ready-for-human || hl_rc=$?
-    if [ "$hl_rc" -eq 0 ]; then
+    if grep -qxF "$n" <<< "$release_hold_ids"; then
       record_release_decision "$n" skipped ready-for-human label present
-      continue
-    fi
-    if [ "$hl_rc" -ne 1 ]; then
-      record_release_decision "$n" skipped ready-for-human-label label label-unavailable
       continue
     fi
     release_wait_sha="$(jq -r '.release_timing_wait_sha // empty' <<< "$state")"
