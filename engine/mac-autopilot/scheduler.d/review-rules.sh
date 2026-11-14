@@ -107,6 +107,13 @@ how_why_gate_reason() { # unit-json [implementation report] → missing/empty ho
   grep -Eq '(^|[^[:xdigit:]])[[:xdigit:]]{7,}([^[:xdigit:]]|$)|#[0-9]+' <<<"$why_section" \
     || printf '## why lacks a commit SHA (7+ hex characters) or #N issue reference'
 }
+incident_report_reason() { # unit-json report-path → the first report gate reason, empty when the report passes
+  local r
+  r="$(decision_log_gate_reason "$1" "$2")"
+  [[ -n "$r" ]] || r="$(how_why_gate_reason "$1" "$2")"
+  [[ -n "$r" ]] || r="$(incident_report_gate_reason "$1" "$2")"
+  printf '%s' "$r"
+}
 incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
   [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }

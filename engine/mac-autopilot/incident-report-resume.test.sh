@@ -225,6 +225,51 @@ harvest_workers
   || fail "the breaker parked the unit instead of letting the continuation finish the round (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES)"
 [[ "$(jqf -r '[.units[0].history[] | select(.stage=="repair-breaker")] | length' "$UNITS")" == 0 ]] || fail 'the breaker fired while a continuation was running'
 
+# A repair that wrote the missing sections into its own fix note (the 6597 shape) is adopted as the implementation report: the gate reads the fix note, and no continuation or escalation follows.
+adopted_fix_name=impl-71001-fix-adopted.md
+cat > "$sup/$adopted_fix_name" <<'REPORT'
+## decision-log
+Tried the repair in the fix note and verified the recurrence guard and prior-art sections.
+
+## how
+The scheduler adopts a repair report that passes the gate.
+
+## why
+Commit 97ed8be added this report gate for issue #880.
+
+## root-cause
+The persisted state was selected incorrectly.
+
+## recurrence-guard
+kind: test
+
+## prior-art
+Source: https://example.invalid/incident-reference
+
+VERDICT: READY
+REPORT
+write_unit "$missing_report_name"
+jqf '.units[0].pr=71001 | .units[0].stage="repair"' "$UNITS" | write_state "$UNITS"
+write_worker repair "$adopted_fix_name" impl-71001-fix-adopted.worker.log
+printf 'tokens used\n1,020\nFixed the sections in the fix note.\n' > "$sup/impl-71001-fix-adopted.worker.log"
+before_resumes=$RESUME_DISPATCHES
+harvest_workers || :
+[[ "$RESUME_DISPATCHES" == "$before_resumes" && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$adopted_fix_name" ]] \
+  || fail "a repair that fixed the sections in its fix note was gated on the old report (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
+[[ "$(jqf -r '.units[0] | has("report_gate_fail")' "$UNITS")" == false ]] || fail 'an adopted repair report left a gate failure counter'
+
+# A repair whose fix note has no gated sections still fails the gate on the unit's report, as before.
+nothing_fix_name=impl-71001-fix-nothing.md
+printf 'Fixed nothing; see the summary.\n' > "$sup/$nothing_fix_name"
+write_unit "$missing_report_name"
+jqf '.units[0].pr=71001 | .units[0].stage="repair"' "$UNITS" | write_state "$UNITS"
+write_worker repair "$nothing_fix_name" impl-71001-fix-nothing.worker.log
+printf 'tokens used\n1,020\nNo change.\n' > "$sup/impl-71001-fix-nothing.worker.log"
+before_resumes=$RESUME_DISPATCHES
+harvest_workers || :
+[[ "$RESUME_DISPATCHES" == $((before_resumes + 1)) && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$missing_report_name" ]] \
+  || fail "a repair that fixed nothing was not still gated on the unit report (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
+
 how_why_report_name=impl-71001-how-why.md
 cat > "$sup/$how_why_report_name" <<'REPORT'
 ## decision-log
