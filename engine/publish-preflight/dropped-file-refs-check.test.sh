@@ -33,4 +33,9 @@ rc=0; out=$(run 2>&1) || rc=$?
 out=$(run "$t/intended.tsv" 2>&1) || { echo "FAIL: intended drop still flagged for consumer: $out"; exit 1; }
 rm -rf -- "$t/new/.agents"
 out=$(run 2>&1) && grep -q 'OK (1 dropped' <<<"$out" || { echo "FAIL: unreferenced drop after consumer removed: $out"; exit 1; }
+# 2026-11-14 ENGINE-CONVERGE-FAIL: the version dir links the checkout's top level, and gitnexus's temp index dir
+# (.gitnexus-next.*) was gone by open(); a dangling link (script-named or not) must not crash the check.
+ln -s "$t/gone/.gitnexus-next.h1zEIc" "$t/new/.gitnexus-next.h1zEIc"
+ln -s "$t/gone/release.sh" "$t/new/release.sh"
+out=$(run 2>&1) && grep -q 'OK (1 dropped' <<<"$out" || { echo "FAIL: dangling link: $out"; exit 1; }
 echo "dropped-file-refs-check.test.sh: PASS"
