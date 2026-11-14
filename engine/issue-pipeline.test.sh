@@ -2146,6 +2146,26 @@ assert_eq 'merged-PR map answers a cached PR without a pulls read and a miss fal
     merged_pr_main_row 910302
     printf 'api-calls:%s\n' "$(grep -c '^api ' "$RELEASE_WALK_LOG" || true)"
   )"
+# Lifecycle sync: evidence the state already holds starts no node; new evidence starts one.
+lifecycle_node_calls() {
+  local log="$AGENT_HOME/lifecycle-node.log"
+  rm -f "$log"
+  (
+    REPO=test/repo
+    gh() { printf '%s\n' '{"number":910401,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"3333333333333333333333333333333333333333","merged_at":"2026-11-13T00:00:00Z"}'; }
+    state_read() { printf '%s\n' "$LIFECYCLE_STATE"; }
+    state_merge() { :; }
+    # The sync sends node's stdout to /dev/null, so the stub records its call in a file.
+    node() { echo node >> "$log"; }
+    merged_pr_main_row 910401 910402 >/dev/null
+  )
+  if [ -f "$log" ]; then wc -l < "$log"; else echo 0; fi
+}
+LIFECYCLE_EVIDENCE='{"number":910401,"merge_sha":"3333333333333333333333333333333333333333","merged_at":"2026-11-13T00:00:00Z"}'
+assert_eq 'lifecycle sync starts no node when the state already holds this PR evidence' \
+  '0' "$(LIFECYCLE_STATE="{\"run\":{\"evidence\":{\"merged_pr\":$LIFECYCLE_EVIDENCE}}}" lifecycle_node_calls)"
+assert_eq 'lifecycle sync starts one node when the PR evidence is new' \
+  '1' "$(LIFECYCLE_STATE='{"run":{"evidence":{}}}' lifecycle_node_calls)"
 RELEASE_SELECTION_FAILURE_STATUS=0
 RELEASE_SELECTION_FAILURE_OUT="$(RELEASE_BATCH_LAUNCH_STATUS=1 run_release_selection '[{"number":910101}]' 910101)" || RELEASE_SELECTION_FAILURE_STATUS=$?
 assert_eq 'release selector preserves a genuine launch failure' 1 "$RELEASE_SELECTION_FAILURE_STATUS"
