@@ -171,8 +171,11 @@ merged_pr_main_row() {
   ' <<< "$pr_json")" || return 1
   if [ -n "$n" ]; then
     merge_evidence="$(jq -c '{number,merge_sha:.merge_commit_sha,merged_at:.merged_at}' <<< "$pr_json")" || return 1
-    state_merge "$n" ".run.evidence.pr_number = $(jq -n --arg p "$pr_number" '$p') | .run.evidence.merged_pr = $merge_evidence | if (($merge_evidence.merged_at // \"\") | type == \"string\" and length > 0) then .run.merged_at = $merge_evidence.merged_at else del(.run.merged_at) end" || return 1
-    efficiency_metrics_sync_issue_lifecycle "$n"
+    # Already recorded for this PR: no state write and no lifecycle sync (a failed state read counts as new).
+    if ! jq -e --argjson ev "$merge_evidence" '.run.evidence.merged_pr == $ev' <<< "$(state_read "$n")" >/dev/null; then
+      state_merge "$n" ".run.evidence.pr_number = $(jq -n --arg p "$pr_number" '$p') | .run.evidence.merged_pr = $merge_evidence | if (($merge_evidence.merged_at // \"\") | type == \"string\" and length > 0) then .run.merged_at = $merge_evidence.merged_at else del(.run.merged_at) end" || return 1
+      efficiency_metrics_sync_issue_lifecycle "$n"
+    fi
   fi
   printf '%s\n' "$row"
 }
