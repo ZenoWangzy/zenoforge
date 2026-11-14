@@ -88,7 +88,7 @@ intake_closed_unit_rows() { # issue...
            | ([$h | to_entries[] | select(.value.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut", "supervisor-recut")) | .key] | max // -1) as $recut
            | $recut >= 0 and all($h[($recut + 1):][]; .stage | IN("supervisor-requeue", "pr-closed", "supervisor-cap-default")))),
          spent: any($us[]; .closed_units_restored_at != null),
-         merged: any($us[]; .stage == "merged"),
+         merged: any($us[]; .stage == "merged" or any((.history // [])[]; .stage == "merged")),
          skip: (($row.episode != "" and any($us[]; (.hold_handoff_episode // "") != $row.episode))
            or (($row.from | IN("needs-advisor", "needs-triage")) and $row.at > $at))}' <(units_history_doc))" || continue
     jqf -e '.skip | not' <<<"$units" >/dev/null || continue # a newer ruling or a pending episode already owns this row

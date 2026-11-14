@@ -201,6 +201,12 @@ intake_closed_unit_rows 33
 [[ -z "$CU_ROUTED" ]] || fail "an issue with a merged unit must not route to triage: $CU_ROUTED"
 [[ "$(grep -c 'intake skip issue #33: all units terminal (closed,merged) and no restore path applies' "$LOG")" == 1 ]] || fail "merged plus obsolete must keep the existing note"
 [[ "$(unit_json issue-33-obsolete | jq -r '.closed_units_restored_at // "none"')" == none ]] || fail "merged plus obsolete must not record a routing marker"
+# 11-14 vecta#6294 shape: one unit merged, then hold-handoff, then obsolete; its stage is closed but it delivered, so note only.
+cu_issue_unit 34 issue-34 closed merged | jq '.history += [{stage:"hold-handoff",at:"2026-01-02T00:01:00Z"},{stage:"obsolete",at:"2026-01-02T00:02:00Z"}]' | jq -s '{units:.}' > "$UNITS"
+cu_state 34 needs-hold
+CU_ROUTED=""
+intake_closed_unit_rows 34
+[[ -z "$CU_ROUTED" ]] || fail "a unit whose history merged must not route to triage: $CU_ROUTED"
 # Both a durable hold and the on-hold state keep the issue out of this route.
 { cu_unit 34 closed supervisor-close; cu_unit 35 closed supervisor-close; } | jq -s '{units:.}' > "$UNITS"
 cu_state 34 needs-hold '{"hold":{"holder":"head"}}'
