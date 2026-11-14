@@ -75,6 +75,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
       elif [[ "$(jqf -r '.model // empty' <<<"$prior")" != "$model" ]]; then CODEX_PATH_REASON=model-changed
       elif [[ -z "$(claude_session_file_for_id "$session_id")" ]]; then CODEX_PATH_REASON=session-files-missing
       elif [[ -z "$failure" ]]; then CODEX_PATH_REASON=no-new-failure
+      elif last_review_side_failed "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"; then CODEX_PATH_REASON=review-side-failure
       else
         CODEX_MODE=resume; CODEX_PATH_REASON=same-provider-model; CODEX_SESSION_ID="$session_id"
         resume=(--resume "$session_id"); prompt="$failure$note"
@@ -170,6 +171,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_PATH_REASON=session-files-missing
       elif [[ -z "$failure" ]]; then
         CODEX_PATH_REASON=no-new-failure
+      elif last_review_side_failed "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"; then
+        CODEX_PATH_REASON=review-side-failure
       elif [[ "$self_fix" != true ]] && ! { usage="$(session_tokens_for_id "$session_id")"; [[ "$usage" =~ ^[0-9]+$ ]] && (( usage < ${REPAIR_RESUME_MAX_RAW:-20000000} )); }; then
         # Repair cutoff on cumulative raw (cached input counts, so it is no context size). 2026-11-05..08: 93 cold repairs after the old 8M cutoff cost 208k fresh each; resumes at 8-20M cost 116k. A self-fix always continues.
         CODEX_PATH_REASON=session-too-large

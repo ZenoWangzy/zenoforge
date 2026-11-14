@@ -10,7 +10,7 @@ sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo" "$fixture/bin" "$fixture/worker-scratch/luna"
 # Stage-transition fixtures are already roadmap leaves; this suite covers arbitration effects.
 export ZF_ROADMAP_TREE_CACHE_FILE="$fixture/roadmap-tree.json"
-jq -cn '{roots:[611,615,618,622,623,683,684,686,687,688,689,690,699] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+jq -cn '{roots:[611,615,618,622,623,654,655,683,684,686,687,688,689,690,699] |map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq '.auto_merge = false | .advisor = false | .precheck = false | .supervisor_arbiter.enabled = true | .supervisor_arbiter.cap_triage = false' "$script_dir/config.template.json" > "$sup/autopi/config.json"
 echo '{"units":[]}' > "$sup/autopi/units.json"
@@ -303,6 +303,28 @@ GUIDANCE: 再评审一次'
 blocked_unit="$(jq -cn --argjson sha "$SHA1" '{id:"pr-617",pr:617,stage:"blocked-external",history:[{stage:"review-block",result:$sha}]}')"
 [[ "$(supervisor_return_stage "$blocked_unit")" == review-pending ]] || fail "cap return after review-block must be review-pending"
 [[ "$(supervisor_return_stage "$(jq -c '.history=[{stage:"review-request-changes"}]' <<<"$blocked_unit")")" == repair-pending ]] || fail "cap return after a real NOT_READY stays repair-pending"
+
+# row 440 (PR 6654, 2026-11-14): a review that never gave a VERDICT line is a review failure. The requeue goes back to review, never to a repair resumed in the implementer's session.
+mkdir -p "$AGENT_HOME/state"; jq -n '{state:"needs-advisor",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/654.json"
+units "$(jq -cn '{units:[{id:"pr-654",issue:654,pr:654,lane:"pr",branch:"agent/issue-654",stage:"supervisor-review",repair_hint:"stale repair hint",
+  history:[{stage:"review-request-changes",result:"F1",at:"2026-11-14T08:00:00Z"},{stage:"verdict-missing",result:"review-654-r.md",at:"2026-11-14T08:50:00Z"},
+           {stage:"supervisor-escalated",result:"review report review-654-r.md has no single VERDICT line (twice)",at:"2026-11-14T09:01:35Z"}]}]}')"
+harvest_with_reply pr-654 'ACTION: requeue
+REASON: 评审未给结论行，重新完整评审当前 head
+EVIDENCE: supervisor-escalated review-654-r.md
+REJECTED: repair（评审者不是实现者，不能修）
+GUIDANCE: 对当前 head 重新执行完整评审'
+[[ "$(field pr-654 .stage)" == review-pending && "$(field pr-654 .repair_hint)" == null ]] || fail "a requeue after a verdict-missing review must go to review-pending with no repair_hint, got $(field pr-654 .stage)/$(field pr-654 .repair_hint)"
+
+# A review with real open P1 findings still goes to repair.
+units "$(jq -cn '{units:[{id:"pr-655",issue:655,pr:655,lane:"pr",branch:"agent/issue-655",stage:"supervisor-review",
+  review_findings:[{round:1,block:"ok",findings:[{id:"F1",status:"open",severity:"P1"}]}],
+  history:[{stage:"review-request-changes",result:"F1",at:"2026-11-14T08:00:00Z"},{stage:"supervisor-escalated",result:"repair breaker: three repairs without a new head",at:"2026-11-14T09:01:00Z"}]}]}')"
+jq -n '{state:"needs-advisor",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/655.json"
+harvest_with_reply pr-655 'ACTION: requeue
+REASON: 真实评审发现待修
+GUIDANCE: 按 F1 修复后重推'
+[[ "$(field pr-655 .stage)" == repair-pending && "$(field pr-655 .repair_hint)" == *'按 F1 修复'* ]] || fail "real review findings must still go to repair, got $(field pr-655 .stage)"
 
 units "$(jq -cn --argjson sha "$SHA1" --argjson head "$SHA2" '{units:[{id:"pr-613",issue:613,pr:613,lane:"pr",branch:"agent/issue-613",stage:"supervisor-review",
   reviewed_sha:$sha,reviewed_pr_head:$head,approved_sha:null,
