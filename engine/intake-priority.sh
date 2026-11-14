@@ -277,6 +277,10 @@ intake_priority_apply_result() {
       remove_labels+=("$label")
     fi
   done
+  # The unsure marker stays only while this answer is unsure; otherwise a re-judged tier left it beside the new one.
+  if [[ -z "$unsure" ]] && jq -e --arg label "$unsure_label" 'index($label) != null' <<< "$labels" >/dev/null; then
+    remove_labels+=("$unsure_label")
+  fi
   while IFS= read -r label; do
     [[ -n "$label" ]] || continue
     [[ "$label" == "$route_label" ]] || remove_labels+=("$label")
