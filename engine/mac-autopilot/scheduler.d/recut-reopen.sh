@@ -85,9 +85,10 @@ intake_closed_unit_rows() { # issue...
       | (($us | map((.history // [])[-1].at // "") | max) // "") as $at
       | {ids: [$us[].id], stages: ($us | map(.stage) | unique | join(",")),
          closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and (($us[0].history // []) as $h
-           | ([$h | to_entries[] | select(.value.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut")) | .key] | max // -1) as $recut
+           | ([$h | to_entries[] | select(.value.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut", "supervisor-recut")) | .key] | max // -1) as $recut
            | $recut >= 0 and all($h[($recut + 1):][]; .stage | IN("supervisor-requeue", "pr-closed", "supervisor-cap-default")))),
          spent: any($us[]; .closed_units_restored_at != null),
+         merged: any($us[]; .stage == "merged" or any((.history // [])[]; .stage == "merged")),
          skip: (($row.episode != "" and any($us[]; (.hold_handoff_episode // "") != $row.episode))
            or (($row.from | IN("needs-advisor", "needs-triage")) and $row.at > $at))}' <(units_history_doc))" || continue
     jqf -e '.skip | not' <<<"$units" >/dev/null || continue # a newer ruling or a pending episode already owns this row
@@ -103,9 +104,20 @@ intake_closed_unit_rows() { # issue...
       [[ "$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -r '.scheduler_handoff.episode // empty')" == "ruling-$STAMP" ]] \
         && set_unit "$id" ".closed_units_restored_at = $(js "$STAMP")"
     else
-      # A delivered unit is not routed (triage would conclude on a partial PR) and a unit closed on purpose stays closed, so no
-      # label change: the row is named once per 6h instead of sitting silent. closed_units_open_issues still counts it.
-      intake_skip_note "$n" "all units terminal ($(jqf -r ".stages" <<<"$units")) and no restore path applies; no worker starts, a ruling is needed (a unit closed by a recut: hold.sh --rule $(jqf -r '.ids[0] // empty' <<<"$units") requeue)"
+      # A delivered unit is not routed (triage would conclude on a partial PR); a handled unit set also stays closed. Route
+      # every other terminal set back to automated triage, and mark it so a later ready-for-agent state cannot loop.
+      if jqf -e '.merged or .spent' <<<"$units" >/dev/null; then
+        intake_skip_note "$n" "all units terminal ($(jqf -r ".stages" <<<"$units")) and no restore path applies; no worker starts, a ruling is needed (a unit closed by a recut: hold.sh --rule $(jqf -r '.ids[0] // empty' <<<"$units") requeue)"
+      elif scheduler_issue_transition "$n" needs-triage closed-units-no-path >/dev/null 2>&1; then
+        while IFS= read -r id; do
+          [[ -n "$id" ]] || continue
+          if ! restore_archived_unit "$id" || ! set_unit "$id" ".closed_units_restored_at = $(js "$STAMP")"; then
+            say "intake closed-units unit=$id issue=#$n: needs-triage route succeeded but the routing marker could not be written"
+          fi
+        done < <(jqf -r '.ids[]' <<<"$units")
+      else
+        say "intake closed-units issue #$n: needs-triage transition refused (closed-units-no-path); retry next tick"
+      fi
     fi
   done
   return 0
