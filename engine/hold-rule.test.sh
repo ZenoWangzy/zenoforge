@@ -225,6 +225,13 @@ printf 'ok - rule_entry requeues a closed unit whose issue is on a stop-loss hol
   refused issue-36 open -- '--recut'        # closed on purpose, no recut event
   refused issue-37 open -- '--recut'        # the recut produced children
   refused issue-34 FAIL 'could not be read' # unreadable GitHub state: retry the ruling
+  # the arbitration cap closed it (supervisor-close) and a ruling released the hold, but the reopen was lost (#6530): the same requeue reopens it
+  jq --argjson add "[$(cu 38 "$(hs supervisor-cap-default supervisor-close)"),$(cu 39 "$(hs supervisor-close)")]" '.units += $add' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS" # live-only
+  printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/38.json"
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/39.json"
+  FAKE_ISSUE_STATE=open; rule_entry issue-38 requeue u "" ""
+  [ "$(stage issue-38)" = implement-pending ] && [ "$(jq -r '.units[]|select(.id=="issue-38")|.history[-1].stage' "$UNITS")" = supervisor-requeue ] || { echo "FAIL: cap-closed unit with a released hold did not requeue" >&2; exit 1; } # live-only
+  refused issue-39 open -- '--recut'        # cap-closed, but its issue is on another hold
   # the reroute refusal names the route that works
   FAKE_ISSUE_STATE=open; rc=0; rule_entry issue-32 reroute u "dead" "" > "$test_env_root/recut-reroute.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/recut-reroute.out" && ! grep -q -- '--reroute' "$test_env_root/recut-reroute.out" || { echo "FAIL: reroute hint on a recut-closed unit" >&2; cat "$test_env_root/recut-reroute.out" >&2; exit 1; }
