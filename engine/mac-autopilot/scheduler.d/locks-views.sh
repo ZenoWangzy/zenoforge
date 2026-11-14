@@ -7,17 +7,24 @@ scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's s
   [[ "$now" != "$want" ]]
 }
 acquire_scheduler_lock() {
-  local old start owner="$BASHPID"
+  local old start age owner="$BASHPID"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
     old="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
     if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then
       scheduler_lock_pid_reused "$old" || return 1
       say "scheduler lock: reclaimed from pid $old, its start time does not match the lock (pid reused)"
+    elif [[ -z "$old" ]]; then
+      # a holder that just made the dir has not written its pid yet: only a dir older than the grace is abandoned
+      age=$(( $(date +%s) - $(stat -c %Y "$SCHED_LOCK" 2>/dev/null || date +%s) ))
+      (( age < ${SCHED_LOCK_EMPTY_PID_GRACE:-30} )) && return 1
+      say "scheduler lock: reclaimed an abandoned lock with no pid (age ${age}s)"
     fi
     rm -rf -- "$SCHED_LOCK"
     mkdir "$SCHED_LOCK" 2>/dev/null || return 1
   fi
-  echo "$owner" > "$SCHED_LOCK/pid"
+  echo "$owner" > "$SCHED_LOCK/pid" 2>/dev/null || return 1
+  # a rival that wrote its own pid after ours won the lock: this holder must not run
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$owner" ]] || return 1
   if start="$(coord_process_start_ticks "$owner" 2>/dev/null)"; then printf '%s\n' "$start" > "$SCHED_LOCK/start"; fi
   SCHED_LOCK_HELD=true
   lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
