@@ -187,11 +187,13 @@ jq -e 'type == "array" and all(.[]; (.number | type == "number" and . > 0) and (
   echo 'intake-backlog: invalid open issue response' >&2
   exit 1
 }
-jq -c --argjson skip_labelled "$skip_labelled" '
-  def has_priority_label:
-    [(.labels // [])[] | if type == "string" then . else .name // "" end]
-    | any(startswith("priority:"));
-  [.[] | select(($skip_labelled != 1) or (has_priority_label | not))]
+# An issue with the judge:fallback marker is re-judged even when it already has a priority label.
+fallback_marker="$(jq -r '.labels.fallback_marker' <<< "$config")"
+jq -c --argjson skip_labelled "$skip_labelled" --arg marker "$fallback_marker" '
+  def label_names: [(.labels // [])[] | if type == "string" then . else .name // "" end];
+  def has_priority_label: label_names | any(startswith("priority:"));
+  def has_fallback_marker: label_names | index($marker) != null;
+  [.[] | select(($skip_labelled != 1) or (has_priority_label | not) or has_fallback_marker)]
 ' <<< "$issues" > "$temp_dir/selected-issues.json"
 mapfile -t issue_numbers < <(jq -r '.[].number' "$temp_dir/selected-issues.json")
 while IFS= read -r issue_json; do

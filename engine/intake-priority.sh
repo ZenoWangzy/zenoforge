@@ -185,7 +185,8 @@ intake_priority_haiku_fallback() { # issue-file judge-result state-json config -
     printf 'Roadmap containers: %s\n' "$(jq -c '[.roadmapContainers[]? | {number,title}]' <<< "$state")"
     printf 'Issue: %s\n' "$(jq -c '{number,title,body:((.body // "") | .[0:4000]),labels:[.labels[]? | if type == "string" then . else .name // "" end]}' "$issue_file")"
   } > "$work/prompt.txt"
-  if claude_triage_call "$work" "$identity" 2 "$(zf_config_file prompts/agent-settings.json)" "$work/prompt.txt" > "$work/out.json" 2>/dev/null; then
+  # No tools: the issue text is in the prompt and the answer is only JSON, so nothing here needs a tool.
+  if claude_triage_call "$work" "$identity" 2 "$(zf_config_file prompts/agent-settings.json)" "$work/prompt.txt" "" "" > "$work/out.json" 2>/dev/null; then
     text="$(jq -r 'select(.is_error == false) | .result // empty' "$work/out.json" 2>/dev/null)" || text=''
   else
     text=''
@@ -342,9 +343,14 @@ intake_priority_apply_result() {
     ensure_labels+=("$unsure_label")
   fi
   fallback_label="$(jq -r '.labels.fallback_marker' <<< "$config")"
-  if [[ "$(jq -r '.judge_fallback == true' <<< "$result")" == true ]] && ! jq -e --arg label "$fallback_label" 'index($label) != null' <<< "$labels" >/dev/null; then
-    add_labels+=("$fallback_label")
-    ensure_labels+=("$fallback_label")
+  if [[ "$(jq -r '.judge_fallback == true' <<< "$result")" == true ]]; then
+    if ! jq -e --arg label "$fallback_label" 'index($label) != null' <<< "$labels" >/dev/null; then
+      add_labels+=("$fallback_label")
+      ensure_labels+=("$fallback_label")
+    fi
+  elif jq -e --arg label "$fallback_label" 'index($label) != null' <<< "$labels" >/dev/null; then
+    # A real TypeSafe answer replaces the haiku label, so the marker goes and the issue stops counting as fallback.
+    remove_labels+=("$fallback_label")
   fi
   if (( ${#ensure_labels[@]} > 0 )); then
     intake_priority_ensure_labels "$repo" "${ensure_labels[@]}" || return 1
