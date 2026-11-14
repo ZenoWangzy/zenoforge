@@ -1875,3 +1875,27 @@ PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "
   --main-red-dir "$w24/autopi/main-red" --hours 5 --now 2026-10-19T12:00:00Z --json "$w24/node-health.json" >/dev/null
 jq -e '.metrics[] | select(.id == "implement.wall_p50") | .value == 90' "$w24/node-health.json" >/dev/null \
   || fail "implement wall p50 ignored a run inside the 24 h window: $(jq -c '.metrics[] | select(.id == "implement.wall_p50")' "$w24/node-health.json")"
+# A unit on a supervisor hold is waiting, not the worst stage: the 88 h hold must not set the WIP age p90.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'held unit still sets the WIP age p90'
+import datetime as dt, json, os, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+home = os.path.join(sys.argv[2], "wip-home"); os.makedirs(os.path.join(home, "state"), exist_ok=True)
+now = dt.datetime(2026, 11, 14, 13, 0, tzinfo=dt.timezone.utc)
+at = lambda hours: (now - dt.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+state = os.path.join(home, "state", "4354.json")
+units = [{"id": "held", "issue": 4354, "stage": "supervisor-review", "history": [{"at": at(88)}]},
+         {"id": "fresh", "issue": 4400, "stage": "supervisor-review", "history": [{"at": at(0.3)}]}]
+json.dump({"hold": {"holder": "nexus"}}, open(state, "w"))
+rows, worst = n.wip_stage_ages(units, now, home)
+held = [r for r in rows if r["stage"] == "supervisor-review(on-hold)"]
+assert held and held[0]["waiting"] is True and held[0]["count"] == 1, rows
+assert abs(worst - 0.3) < 0.05, worst
+json.dump({"state": "on-hold"}, open(state, "w"))
+assert abs(n.wip_stage_ages(units, now, home)[1] - 0.3) < 0.05
+open(state, "w").write("{not json")  # unreadable state: not on hold
+assert n.wip_stage_ages(units, now, home)[1] > 80
+os.remove(state)
+rows, worst = n.wip_stage_ages(units, now, home)
+assert worst > 80 and not [r for r in rows if r["stage"].endswith("(on-hold)")], rows
+print("node_health wip age on hold: PASS")
+CHECK

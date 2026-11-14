@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, release_deps_health, metric_windows
-import line_holds, intake_laneless_health
+import line_holds, intake_laneless_health, wip_hold
 import release_age
 import release_batch
 import release_retained
@@ -422,11 +422,12 @@ def merge_flow(units, since, now):
 WIP_WAITING = ("blocked-external", "parked")
 
 
-def wip_stage_ages(units, now):
+def wip_stage_ages(units, now, agent_home):
     """Each open unit's age in its current stage (last ledger event -> now), grouped by stage.
 
     The worst p90 skips WIP_WAITING stages: 54 units waiting on one parked predecessor read 228 h
-    on 2026-11-07 and hid the one stage a worker could move (supervisor-review, 8 h)."""
+    on 2026-11-07 and hid the one stage a worker could move (supervisor-review, 8 h).
+    A unit whose issue is on hold is grouped as "<stage>(on-hold)", waiting, for the same reason."""
     ages = {}
     for u in units:
         if u.get("stage") in UNIT_DONE:
@@ -434,14 +435,17 @@ def wip_stage_ages(units, now):
         times = [t for t in (ts(h.get("at")) for h in u.get("history") or []) if t]
         if not times:
             continue
-        ages.setdefault(u.get("stage") or "unknown", []).append(
+        stage = u.get("stage") or "unknown"
+        if wip_hold.on_hold(agent_home, u.get("issue")):
+            stage += "(on-hold)"
+        ages.setdefault(stage, []).append(
             ((now - max(times)).total_seconds() / 3600, u.get("id")))
     rows = []
     for stage in sorted(ages):
         hours = sorted(h for h, _ in ages[stage])
         oldest = sorted(ages[stage], key=lambda h: h[0], reverse=True)[:5]
         rows.append({"stage": stage, "count": len(hours), "p90_hours": round(pct(hours, .9), 1),
-                     "waiting": stage in WIP_WAITING,
+                     "waiting": stage in WIP_WAITING or stage.endswith("(on-hold)"),
                      "oldest": [{"id": uid, "age_hours": round(h, 1)} for h, uid in oldest]})
     worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None and not r["waiting"]), default=None)
     return rows, worst
@@ -1528,7 +1532,7 @@ def main():
     metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
     _, entered, merged = merge_flow(units, since, now)
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
-    wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now); sample_counts["flow.wip_age_stage_p90_hours"] = max((row for row in wip_rows if not row["waiting"]), key=lambda row: row["p90_hours"], default={"count": 0})["count"]
+    wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now, agent_home); sample_counts["flow.wip_age_stage_p90_hours"] = max((row for row in wip_rows if not row["waiting"]), key=lambda row: row["p90_hours"], default={"count": 0})["count"]
     metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now); sample_counts["flow.wait_stage_p90_hours"] = metrics["flow.wait_stage_units"]
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
