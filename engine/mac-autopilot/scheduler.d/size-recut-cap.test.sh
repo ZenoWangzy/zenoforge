@@ -49,4 +49,18 @@ reconcile_size_recuts
 [[ "$(field issue-6292 '[.history[] | select(.stage == "size-recut-resumed")] | length')" == 1 ]] \
   || fail "second round trip must not resume the unit: $(field issue-6292 '[.history[].stage]' | tr -d '\n')"
 [[ "$(field issue-6292 .size_recut_roundtrips)" == 2 ]] || fail "second round trip must count 2"
+# Waiver alone (row 451, head 15:21Z): an implement unit that is past the limit gets .size_waiver without leaving its stage,
+# and the next size admission reads the raised limit. Only *-pending and implement units take it; parked ones need requeue.
+jq -n '{units:[{id:"issue-6300",issue:6300,branch:"agent/issue-6300",stage:"implement-pending",history:[]}]}' > "$UNITS"
+printf '%s\n' '{"state":"ready-for-agent","recut_rounds":2}' > "$AGENT_HOME/state/6300.json"
+rc=0; rule_entry issue-6300 waiver 6300 "owner: size limit for this round" "" 1000 owner || rc=$?
+[[ "$rc" == 0 ]] || fail "waiver alone must be accepted on an implement unit: rc=$rc"
+[[ "$(field issue-6300 .stage)" == implement-pending ]] || fail "waiver alone must not change the stage: $(field issue-6300 .stage)"
+[[ "$(field issue-6300 .size_waiver.max_lines)" == 1000 ]] || fail "waiver alone must write .size_waiver: $(field issue-6300 .size_waiver)"
+[[ "$(field issue-6300 '.history[-1].stage')" == size-waiver ]] || fail "waiver alone must log one size-waiver event: $(field issue-6300 '[.history[].stage]' | tr -d '\n')"
+[[ "$(jq -r '.recut_rounds' "$AGENT_HOME/state/6300.json")" == 0 ]] || fail "a waiver must clear the issue recut round count"
+[[ "$(size_admission_limit_for "$(jq -c '.units[0]' "$UNITS")")" == 1000 ]] || fail "the next size admission must use the waived limit"
+set_unit issue-6300 '.stage="parked"'
+rc=0; rule_entry issue-6300 waiver 6300 "owner: size limit" "" 1000 owner >/dev/null 2>&1 || rc=$?
+[[ "$rc" != 0 && "$(field issue-6300 .stage)" == parked ]] || fail "waiver alone must refuse a parked unit and leave it parked"
 echo "size-recut-cap.test.sh: ok"

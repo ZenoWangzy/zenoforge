@@ -61,7 +61,10 @@ cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 printf 'gh %s\n' "$*" >> "$FAKE_GH_LOG"
 if [ "${1:-} ${2:-}" = "issue view" ]; then
-  printf '%s\n' '{"labels":[]}'
+  printf '%s\n' '{"labels":[],"comments":[]}'
+fi
+if [ "${1:-}" = api ]; then
+  printf '{"number":%s,"state":"open","pull_request":null,"labels":[]}\n' "${2##*/}"
 fi
 EOF
 chmod +x "$FAKE_BIN/gh"
@@ -161,6 +164,30 @@ assert_contains "dry-run prints the planned label edit" "$RUN_OUTPUT" "[dry-run]
 assert_contains "dry-run prints the planned label removal" "$RUN_OUTPUT" "--remove-label needs-recut"
 assert_eq "dry-run does not change the parent state" "$BEFORE_7004" "$AFTER_7004"
 assert_eq "dry-run does not execute gh" "" "$GH_AFTER_7004"
+
+# Recut loop: the third recut route for one issue is held for a size ruling, whichever unit asks for it.
+# State already holds two recut rounds (7010), so this route would be the third: it holds, keeps its size numbers and stops.
+printf '%s\n' '{"attempts":0,"state":"ready-for-agent","recut_rounds":2}' > "$TEST_HOME/state/7010.json"
+: > "$GH_LOG"
+run_lib "route_to_recut 7010 '' '{\"kind\":\"size-admission\",\"lines\":650,\"limit\":640}'" env
+STATE_7010="$(cat "$TEST_HOME/state/7010.json")"
+assert_eq "third recut route is held, not routed" "0" "$RUN_STATUS"
+assert_eq "recut loop hold has kind recut-loop" "recut-loop" "$(echo "$STATE_7010" | jq -r '.hold.kind // empty')"
+assert_eq "recut loop hold resumes at ready-for-agent, not needs-recut" "ready-for-agent" "$(echo "$STATE_7010" | jq -r '.hold.stage_before // empty')"
+assert_eq "recut loop hold keeps the round counter at two" "2" "$(echo "$STATE_7010" | jq -r '.recut_rounds')"
+assert_eq "recut loop hold keeps the size numbers for reconcile" "650" "$(echo "$STATE_7010" | jq -r '.size_admission.lines')"
+assert_contains "recut loop hold does not apply needs-recut" "$(cat "$GH_LOG")" "--add-label on-hold"
+assert_not_contains "recut loop hold adds no needs-recut label" "$(cat "$GH_LOG")" "--add-label needs-recut"
+assert_contains "recut loop stop logs the issue, rounds, estimate and limit" "$RUN_OUTPUT" \
+  "recut loop stop issue=#7010 rounds=3 estimate=650 limit=640"
+
+# One earlier round still routes, and the route counts it.
+printf '%s\n' '{"attempts":0,"state":"ready-for-agent","recut_rounds":1}' > "$TEST_HOME/state/7011.json"
+: > "$GH_LOG"
+run_lib 'route_to_recut 7011' env
+assert_eq "second recut route still goes to recut" "0" "$RUN_STATUS"
+assert_eq "second recut route applies needs-recut" "true" "$(jq '.state == "needs-recut"' "$TEST_HOME/state/7011.json")"
+assert_eq "second recut route counts its round" "2" "$(jq -r '.recut_rounds' "$TEST_HOME/state/7011.json")"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "FAILED"

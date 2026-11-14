@@ -3,20 +3,20 @@
 # hold_rule N|issue-N|pr-N requeue|approve|arbiter|recut|ready COMMENT: a supervisor ruling. Records supervisor-<action> in the
 # unit history (refills the stop-loss/arbitration budgets; a parked unit is moved by scheduler.sh --rule) and releases a
 # scheduler-stop-loss hold, or a supervisor/head hold on the allowlist below, if the issue has one. COMMENT must be an owner comment on the issue (or the PR for pr-N).
-# A fifth argument (hold.sh --requeue --size-waiver N) sets the unit's .size_waiver with the comment author and first line as the reason.
+# A fifth argument (hold.sh --requeue --size-waiver N, or hold.sh --waiver --size-waiver N for an implement or *-pending unit) sets the unit's .size_waiver with the comment author and first line as the reason; the waiver alone keeps the stage and the hold.
 hold_rule() {
   local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" waiver="${5:-}" unit n state="" current_state comment sched issue_state allow_release=0 release_patch=.
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
-  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
+  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|waiver)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || return 64
   unit="$target"; n="${unit#*-}"
-  [[ -z "$waiver" || ( "$action" == requeue && "$waiver" =~ ^[1-9][0-9]*$ ) ]] || { echo "hold_rule: --size-waiver takes a number and goes with --requeue" >&2; return 64; }
+  [[ -z "$waiver" || ( ( "$action" == requeue || "$action" == waiver ) && "$waiver" =~ ^[1-9][0-9]*$ ) ]] || { echo "hold_rule: --size-waiver takes a number and goes with --requeue, or alone as waiver" >&2; return 64; }
   [[ "$action" != ready || "$unit" == issue-* ]] || { echo "hold_rule: --ready takes an issue, not a PR" >&2; return 64; }
-  if [[ "$unit" == issue-* ]]; then
+  if [[ "$unit" == issue-* && "$action" != waiver ]]; then # a waiver releases no hold, so the holder gate does not apply to it
     state="$(state_read "$n")" || return 1
     jq -e '.state != "on-hold" or .hold.holder == "scheduler-stop-loss"' <<< "$state" >/dev/null || {
       # Allowlist of (holder, kind) pairs a ruling may release, from real hold records: supervisor holds written by run-recut.sh
       # and head/supervisor manual holds. Founder, other humans and unknown holders are never here. The owner-comment check below still runs first.
-      jq -e '.hold | (.holder == "supervisor" and (.kind | IN("production-access", "guarded-recut-repeat", "manual"))) or (.holder == "head" and .kind == "manual")' <<< "$state" >/dev/null || {
+      jq -e '.hold | (.holder == "supervisor" and (.kind | IN("production-access", "guarded-recut-repeat", "manual", "recut-loop"))) or (.holder == "head" and .kind == "manual")' <<< "$state" >/dev/null || {
         echo "hold_rule: #$n is held by someone other than scheduler-stop-loss" >&2
         return 1
       }
@@ -50,7 +50,7 @@ hold_rule() {
   bash "$sched" --rule "$unit" "$action" "$(jq -r .html_url <<< "$comment")" "$(jq -r '.body[0:4000]' <<< "$comment")" "$blocker" "$waiver" "$(jq -r '.user.login // empty' <<< "$comment")" || return 1
   # ready writes the state the intake ruling episode reads (state_changed_from/state_changed_at); a label-only edit does not.
   if [[ "$action" == ready ]]; then issue_transition "$n" ready-for-agent "ruling-ready:$comment_id" || return 1; fi
-  if [[ -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then current_state="$(state_read "$n")" || return 1
+  if [[ "$action" != waiver && -n "$state" ]] && jq -e '.state == "on-hold"' <<< "$state" >/dev/null; then current_state="$(state_read "$n")" || return 1
     jq -e '.state != "on-hold" and .hold == null' <<< "$current_state" >/dev/null || state_requeue "$n" release-hold hold-requeue . "$(jq -c .hold <<< "$state")"
   fi
 }
