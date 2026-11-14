@@ -280,10 +280,16 @@ harvest_pr_implement() { # unit report-path
     elif [[ "$local_head" =~ $SHA_RE && -z "$dirty" ]]; then
       # 空交付是独立的 no changes 类（改动落在了别的 checkout/远端，指定 worktree 既无提交
       # 也无未提交改动）：提示语点名原因，两次空交付才转 supervisor，消息同样带原因。
+      if [[ "$first" == NO-CHANGE:* ]]; then
+        # 实现者有意不改代码（如 SPLIT 无可独立交付切片）是决定，不是交付失败：不重试，连同原因交 supervisor。
+        to_supervisor "$1" "decision: implementer chose no change on purpose:${first#NO-CHANGE:} (report $(basename "$2"))"
+        return 0
+      fi
       if [[ "$(unit_retries "$1" implement-no-changes)" == 0 ]]; then
+        # 重试提示给出绝对 worktree 路径与分支，并要求报告前核对提交，使 worker 知道改动该落在哪里。
         set_unit "$1" "$(hist implement-no-changes "$(basename "$2")") | .task += $(js "
 
-上一轮交付了报告，但指定 worktree 的 ${branch} 上既没有本地提交也没有未提交改动（改动可能落在了别的 checkout 或别的远端）。本轮必须在指定 worktree 内完成并提交改动（或按协议写 OBSOLETE:）。") | .stage=\"implement-pending\""
+上一轮交付了报告，但指定 worktree 的 ${branch} 上既没有本地提交也没有未提交改动（改动可能落在了别的 checkout 或别的远端）。指定 worktree 绝对路径：${dir}，分支：${branch}。本轮必须在该路径内完成并提交到该分支（或按协议写 OBSOLETE:），报告前运行 git -C ${dir} log -1 核对提交。若确认本轮有意不改代码，报告首行写 NO-CHANGE: <原因>。") | .stage=\"implement-pending\""
       else
         implement_nothing_escalate "$1" "implement delivered no changes in the assigned worktree twice: $branch has no local commits and a clean tree, so the work likely landed in another checkout or remote (report $(basename "$2"))"
       fi

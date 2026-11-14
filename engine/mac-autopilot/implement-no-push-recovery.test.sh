@@ -128,5 +128,33 @@ harvest_pr_implement issue-906 "$sup/impl-905.md" || :
 [[ "$(field issue-906 .stage)" == supervisor-review && "$(cat "$routed")" == '905 ' ]] \
   || fail "a unit that already had a recut must go to the supervisor ($(field issue-906 .stage))"
 
+# 6) 6662 形状：工作提交在别的分支，指定分支本地无提交、树干净。第一轮重试提示必须点名指定 worktree 的绝对路径、分支与核对命令。
+command git clone -q "$np/origin.git" "$WT_ROOT/wt-issue-910"
+np_wt issue-910 checkout -q -b agent/issue-910
+printf 'landed elsewhere\n' > "$WT_ROOT/wt-issue-910/f"; np_wt issue-910 add -A; np_wt issue-910 commit -qm landed
+np_wt issue-910 checkout -q -b agent/issue-910-ruling origin/main
+units '{"units":[{"id":"issue-910","issue":910,"title":"ruling branch","branch":"agent/issue-910-ruling","lane":"pr","stage":"implement","history":[]}]}'
+printf 'report only\n' > "$sup/impl-910.md"
+harvest_pr_implement issue-910 "$sup/impl-910.md" || :
+[[ "$(stage_of issue-910 implement-no-changes)" == 1 && "$(field issue-910 .stage)" == implement-pending ]] \
+  || fail "6662-shaped empty delivery was not retried once ($(field issue-910 .stage))"
+[[ "$(field issue-910 .task)" == *"$WT_ROOT/wt-issue-910"* && "$(field issue-910 .task)" == *'git -C'*'log -1'* && "$(field issue-910 .task)" == *'agent/issue-910-ruling'* ]] \
+  || fail "retry note does not name the worktree path, branch and check ($(field issue-910 .task))"
+
+# 7) 报告首行 NO-CHANGE:（SPLIT 或拆分尝试后有意不改代码）：空交付直接作为决定交给 supervisor，附原因，不计入空交付重试。
+command git clone -q "$np/origin.git" "$WT_ROOT/wt-issue-911"
+np_wt issue-911 checkout -q -b agent/issue-911
+units '{"units":[{"id":"issue-911","issue":911,"title":"deliberate no change","branch":"agent/issue-911","lane":"pr","stage":"implement","history":[]}]}'
+printf 'NO-CHANGE: 需先拆出授权范围切片，本轮有意不改代码\n' > "$sup/impl-911.md"
+harvest_pr_implement issue-911 "$sup/impl-911.md" || :
+[[ "$(field issue-911 .stage)" == supervisor-review && "$(stage_of issue-911 implement-no-changes)" == 0 ]] \
+  || fail "deliberate no-change was retried as a delivery failure ($(field issue-911 .stage))"
+[[ "$(field issue-911 .note)" == *'decision'* && "$(field issue-911 .note)" == *'拆出授权范围切片'* ]] \
+  || fail "deliberate no-change did not reach the supervisor as a decision with its reason ($(field issue-911 .note))"
+
+# 8) 提示词协议：implement 契约必须写明 NO-CHANGE: 首行协议，否则首轮 worker 不知道有这个出口。
+prompt="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/prompts/implement-contract.md"
+grep -Fq 'NO-CHANGE: <reason>' "$prompt" || fail "implement contract does not name the NO-CHANGE: first-line protocol ($prompt)"
+
 eval "$np_gh_saved"; WT_ROOT="$WT_ROOT_SAVED"
 echo 'implement-no-push-recovery.test.sh: PASS'
