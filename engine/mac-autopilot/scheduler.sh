@@ -730,13 +730,14 @@ main() {
     phase aged_pr_lifecycle
     phase run_release_train
     phase stage_slo_watch
-    phase footprint_hog_alert
     views_mode=full
   fi
   # Views and the snapshot come before cleanup: a slow worktree walk under load used to eat the tick and lose them (2026-11-07).
   # The closing steps write no ledger row except cleanup's one workers trim, which takes the lock itself. Measured 2026-11-07 16:14-16:16Z:
   # the tick held the lock for 128s here (cleanup_tick alone 88s) and a refill's ledger writes waited behind it.
   release_scheduler_lock
+  # Read-only hog alert after the lock (it was the last locked phase): it reads the unit and worker snapshots and appends one alert line. Not while paused, as before.
+  [[ -e "$PAUSE_FILE" ]] || phase footprint_hog_alert
   phase_mark flush_focus_alert
   flush_focus_alert
   phase_mark publish_pr_run_snapshot

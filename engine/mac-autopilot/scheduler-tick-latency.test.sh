@@ -248,6 +248,14 @@ lock_retry_case() { # subshell: the loop's own functions with the tick command a
 }
 if ! lock_retry_case; then failures+=('a full tick that finds the scheduler lock held must retry in the retry window, not wait a tick window (loop.sh loop_cycle)'); fi
 
+# main(): footprint_hog_alert reads snapshots and appends one line, so it runs after the scheduler lock is released, not under it.
+main_src="$script_dir/scheduler.sh"
+rel_line="$(awk '/^main\(\) \{/{m=1} m && /^  release_scheduler_lock$/{print NR; exit}' "$main_src")"
+hog_line="$(awk '/^main\(\) \{/{m=1} m && /phase footprint_hog_alert/{print NR; exit}' "$main_src")"
+if [[ -z "$rel_line" || -z "$hog_line" ]] || (( hog_line <= rel_line )); then
+  failures+=("footprint_hog_alert runs under the scheduler lock (release at line '${rel_line:-none}', hog alert at '${hog_line:-none}')")
+fi
+
 if ((${#failures[@]})); then
   printf 'not ok - %s\n' "${failures[@]}" >&2
   exit 1
