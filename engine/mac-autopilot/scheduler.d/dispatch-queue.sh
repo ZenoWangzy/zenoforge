@@ -123,6 +123,8 @@ dispatch_pending_pass() {
   revalidate_secs=$((SECONDS - pending_started))
   dmark revalidate
   local TICK_FOOTPRINT_MAIN # rows are memoised against this main; leaving the pass drops the key, so a later phase never reuses them
+  local -A TICK_SIZE_RECHECK_MEMO=() # size rechecks of one unit at one head share their read within this pass only
+  local TICK_SIZE_RECHECK_PASS=true
   TICK_FOOTPRINT_MAIN="$(git -C "${ROOT:-.}" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" || TICK_FOOTPRINT_MAIN=''
   if [[ "$local_refill" != true ]]; then
     dispatch_live_prime

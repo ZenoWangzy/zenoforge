@@ -119,24 +119,34 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   return 1
 }
 size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-current]
-  local lines base_branch head="${5:-}" files pr unit_json limit
+  local lines base_branch head="${5:-}" files pr unit_json limit memo
   unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   size_admission_exempt_unit "$unit_json" && return 0
   [[ -n "${head}" ]] || say "size recheck without head: $1 $4"
   [[ -n "$2" && -n "$3" ]] || return 0
   base_branch="$(unit_field "$1" '.stacked_on_branch // "main"')"
-  lines="$(changed_lines_of "$2" "$3" "$base_branch" "${6:-false}")"
-  [[ "$lines" =~ ^[0-9]+$ ]] || return 0
-  # PR 自己的文件清单（GitHub 权威，不依赖本地 refs 的新旧）；本地 refs 过期时 merge-base 退回旧提交，
-  # 把合入分支的 main 改动算进来（#4631 实 13 个文件却记成 362）。超过 100 个文件 gh 会截断，退回 git diff。
-  pr="$(unit_field "$1" '.pr // empty')"
-  files=""
-  if [[ "$pr" =~ ^[0-9]+$ ]]; then
-    files="$(gh pr view "$pr" --json files --jq '.files[].path' | jqf -Rsc '[split("\n")[] | select(length > 0)]' || true)"
+  memo="$1|$head"
+  # 同一 pass 内同一 unit、同一 head 已读过：复用行数与文件清单，不再 fetch 也不调 gh（TICK_SIZE_RECHECK_MEMO 与 TICK_SIZE_RECHECK_PASS 由 dispatch_pending_pass 声明，pass 外不生效；${x+set} 对关联数组只看 0 号键，故另设标记）。
+  if [[ -n "$head" && "${TICK_SIZE_RECHECK_PASS:-false}" == true && -n "${TICK_SIZE_RECHECK_MEMO[$memo]+set}" ]]; then
+    lines="${TICK_SIZE_RECHECK_MEMO[$memo]%%$'\t'*}"; files="${TICK_SIZE_RECHECK_MEMO[$memo]#*$'\t'}"
+  else
+    lines="$(changed_lines_of "$2" "$3" "$base_branch" "${6:-false}")"
+    [[ "$lines" =~ ^[0-9]+$ ]] || return 0
+    # PR 自己的文件清单（GitHub 权威，不依赖本地 refs 的新旧）；本地 refs 过期时 merge-base 退回旧提交，
+    # 把合入分支的 main 改动算进来（#4631 实 13 个文件却记成 362）。超过 100 个文件 gh 会截断，退回 git diff。
+    pr="$(unit_field "$1" '.pr // empty')"
+    files=""
+    if [[ "$pr" =~ ^[0-9]+$ ]]; then
+      files="$(gh pr view "$pr" --json files --jq '.files[].path' | jqf -Rsc '[split("\n")[] | select(length > 0)]' || true)"
+    fi
+    jqf -e 'type == "array" and length > 0 and length < 100' <<<"$files" >/dev/null 2>&1 || files="$(changed_files_of "$2" "$3" "$base_branch")"
+    if [[ -n "$head" && "${TICK_SIZE_RECHECK_PASS:-false}" == true ]]; then TICK_SIZE_RECHECK_MEMO[$memo]="$lines"$'\t'"$files"; fi
   fi
-  jqf -e 'type == "array" and length > 0 and length < 100' <<<"$files" >/dev/null 2>&1 || files="$(changed_files_of "$2" "$3" "$base_branch")"
   if jqf -e 'type == "array"' <<<"$files" >/dev/null 2>&1; then
-    set_unit "$1" ".footprint=$files | .footprint_source=\"pr-diff\""
+    # set_unit 要抢调度锁：footprint 没变就不写（每个候选每 pass 都写一次，ledger_write 中位 16 s）。
+    if [[ "$(jqf -c '.footprint // null' <<<"$unit_json")" != "$(jqf -c . <<<"$files")" || "$(jqf -r '.footprint_source // empty' <<<"$unit_json")" != pr-diff ]]; then
+      set_unit "$1" ".footprint=$files | .footprint_source=\"pr-diff\""
+    fi
   fi
   limit="$(size_admission_limit_for "$unit_json")"
   (( lines > limit )) || return 0
