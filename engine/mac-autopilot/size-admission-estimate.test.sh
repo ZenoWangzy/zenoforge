@@ -35,6 +35,19 @@ ws 641; [[ "$rejects" == 1 && "$rejected_lines" == 641 && "$rejected_limit" == 6
 rejects=0; size_admission_write_start u "" '{"id":"u","estimated_changed_lines":null}' || :; [[ "$rejects" == 0 ]] || fail 'a null estimate was refused'
 ws 700 '"size_waiver":{"max_lines":1000}'; [[ "$rejects" == 0 ]] || fail 'a waived ticket was cut at 80% of the configured limit'
 ws 1001 '"size_waiver":{"max_lines":1000}'; [[ "$rejects" == 1 && "$rejected_limit" == 1000 ]] || fail 'a waived ticket was not refused at its waiver'
+# Two rechecks of one unit at one head in one pass: one gh read, at most one fetch, one footprint write (units.json is the stub's state).
+calls="$fixture/recheck.calls"; : > "$calls"
+echo '{"units":[{"id":"issue-7","pr":77,"stage":"implement-pending"}]}' > "$UNITS"
+gh() { echo gh >> "$calls"; printf 'a/src/x.ts\n'; }
+git() { if [[ "$3" == fetch ]]; then echo fetch >> "$calls"; return 0; fi; case "$3" in merge-base) echo abc ;; diff) printf '100\t0\ta/src/x.ts\n' ;; esac; }
+set_unit() { echo "set $1" >> "$calls"; jq --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"; }
+pass_recheck() { local -A TICK_SIZE_RECHECK_MEMO=(); local TICK_SIZE_RECHECK_PASS=true; size_admission_recheck issue-7 "$fixture/repo" feat ctx abc1234 false; size_admission_recheck issue-7 "$fixture/repo" feat ctx abc1234 false; }
+pass_recheck || fail 'a recheck in a pass failed'
+[[ "$(grep -c '^gh$' "$calls")" == 1 ]] || fail "a repeated recheck of one unit and head read gh $(grep -c '^gh$' "$calls") times"
+[[ "$(grep -c '^fetch$' "$calls")" -le 1 ]] || fail 'a repeated recheck of one unit and head fetched more than once'
+[[ "$(grep -c '^set ' "$calls")" == 1 ]] || fail "an unchanged footprint was written again ($(grep -c '^set ' "$calls") writes)"
+unset -f gh git set_unit pass_recheck
+
 # A split delivery moves its parent to tracker; a failed move goes to the supervisor and the split still returns 0.
 gh() { return 1; }
 scheduler_auto_filed_issue_create() { echo "https://github.com/o/r/issues/41"; }
