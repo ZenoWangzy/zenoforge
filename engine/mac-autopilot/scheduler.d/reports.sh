@@ -138,12 +138,13 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
   local raw
   # 11-08：gpt-6-luna 评审员把块写成 ~~~review-findings（合法的 CommonMark 围栏），旧 awk 只认反引号，两份报告都记 block=missing。
   # 收栏必须与开栏同一围栏字符。
+  # 11-14 issue-6638：产品测试是 .test.ts，旧扩展名表 sh|mjs|py 把合法块整块丢成 block=missing（findings_missing_pct 20%）。
   raw="$(awk '/^(```|~~~)review-findings[[:space:]]*$/{on=1;buf="";last="";f=substr($0,1,3);next} on&&$0 ~ ("^" f "[[:space:]]*$"){last=buf;on=0;next} on{buf=buf $0 "\n"} END{printf "%s", last}' "$1" 2>/dev/null)"
   [[ -n "${raw//[[:space:]]/}" ]] || return 1
   jq -ce '
     def test_case: type=="object" and keys==["name","path"]
       and (.name|type)=="string" and (.name|test("\\S")) and (.name|test("^[^\\r\\n]+$"))
-      and (.path|type)=="string" and (.path|test("\\S")) and (.path|test("^[^/].*\\.test\\.(sh|mjs|py)$"))
+      and (.path|type)=="string" and (.path|test("\\S")) and (.path|test("^[^/].*\\.test\\.(sh|mjs|py|ts|tsx|js)$"))
       and ((.path|split("/"))|all(.[]; .!=".." and .!="."));
     def finding($legacy): type=="object"
       and (.id|type)=="string" and (.id|length)>0
