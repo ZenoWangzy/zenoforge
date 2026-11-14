@@ -114,15 +114,15 @@ retire_terminal_units() {
 
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
   [[ "${SET_UNIT_QUEUE:-0}" != 1 ]] || { dep_q_enqueue "$@"; return 0; } # release_dependency_blocks batches its writes, see dep_q_flush
-  local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage=""
-  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi
+  local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage="" lock_secs write_secs write_started holder_phase=unknown
+  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || ! declare -F ledger_lock_holder_phase >/dev/null || holder_phase="$(ledger_lock_holder_phase)"; if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi; lock_secs=$((SECONDS - started)); write_started=$SECONDS
   if declare -F harvest_unit_cas_check >/dev/null; then harvest_unit_cas_check "$1" || { if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi; return 1; }; fi
   [[ "$2" == *".stage"* ]] && old_stage="$(unit_field "$1" '.stage')"
   jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
   if (( rc == 0 )) && declare -F harvest_unit_cas_advance >/dev/null; then harvest_unit_cas_advance "$1" || rc=$?; fi
   if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi
-  elapsed=$((SECONDS - started))
-  [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( elapsed < 2 )) || say "dispatch detail ledger_write unit=$1 secs=${elapsed}s"
+  write_secs=$((SECONDS - write_started)); elapsed=$((SECONDS - started))
+  [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]] && (( lock_secs >= 2 || write_secs >= 2 )) && say "dispatch detail ledger_write unit=$1 secs=${elapsed}s lock_wait=${lock_secs}s write=${write_secs}s holder_phase=$holder_phase"
   if (( rc == 0 )) && [[ -n "$old_stage" ]] && declare -F footprint_owner_transition >/dev/null; then
     new_stage="$(unit_field "$1" '.stage')" || new_stage=""
     footprint_owner_transition "$1" "$old_stage" "$new_stage" \
