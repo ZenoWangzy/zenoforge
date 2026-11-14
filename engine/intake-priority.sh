@@ -241,11 +241,10 @@ intake_priority_ensure_labels() {
   done
 }
 
-# A label is written when the judge is adopted, or when a code-owned overlay (founder ask, hotfix, bug, off-market,
-# fruit feature) decided it: the overlay is policy, not a model guess. 11-13: the judge never reached rollout (20 shadow
-# events at 90% agreement), so no overlay label was ever written and 0 of 1123 open issues had a priority label.
-# An unadopted answer keeps the shadow baseline in .decision; the overlaid decision is .candidate and its reason .overlay
-# (intake_priority_judge). 11-13: the first version read .decision.overlay, so 1000 backlog applies wrote nothing.
+# An answered label is written when the judge is adopted or when an unadopted answer has a policy overlay. The
+# default-tier overlay caps model-selected top/high at normal, so every unadopted answer gets a priority label.
+# An unadopted answer keeps the shadow baseline in .decision; the policy decision is .candidate and its reason .overlay
+# (intake_priority_judge). Signal overlays still select founder, hotfix, bug, off-market and fruit-feature tiers.
 INTAKE_PRIORITY_APPLICABLE='.status == "answered" and (.adopted == true or (.overlay // null) != null)'
 INTAKE_PRIORITY_LABEL_DECISION='if .adopted == true then .decision else .candidate end'
 
