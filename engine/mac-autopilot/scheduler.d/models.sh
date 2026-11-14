@@ -320,7 +320,9 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
       ;;
     *) IMPLEMENT_REVIEWER_REASON=review-config; return 1 ;;
   esac
-  for candidate in "$cross" "$other" "$sonnet_identity"; do
+  local -a pool=("$cross" "$other" "$sonnet_identity")
+  if routing_configured; then mapfile -t pool < <(routing_review_candidates "$family" "$codex_identity" "$glm_identity" "$sonnet_identity"); fi
+  for candidate in "${pool[@]}"; do
     candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"; [[ -n "$candidate_family" && "$candidate_family" != "$family" ]] && candidate_role=review || continue
     if [[ "$candidate_family" == claude ]]; then candidate_role=review_fallback; [[ "$family" != claude && "$candidate" =~ ^claude:claude-(haiku|sonnet)- ]] || continue; fi
     if implement_route_review_identity_available "$candidate" "$candidate_role" "$family"; then return 0; fi
@@ -352,6 +354,32 @@ implement_route_family_reviewable() { # family -> log the skip and alert head-wa
   return 1
 }
 
+claude_share_allowed() { # routed Claude is allowed by its quota order; otherwise models.implement_share.claude must be set
+  routing_configured || [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]]
+}
+
+pick_routed_implementer() { # unit sticky-provider -> PICK_* from the first routed family (most quota first) that runs and has a reviewer
+  local u="$1" sticky="$2" fam
+  local -a order=() ranked=()
+  mapfile -t order < <(routing_family_order | sed 's/^glm$/zcode/')
+  if [[ -n "$sticky" && " ${order[*]} " == *" $sticky "* ]]; then # a repair stays on its provider while that provider is still routed
+    ranked=("$sticky"); for fam in "${order[@]}"; do [[ "$fam" == "$sticky" ]] || ranked+=("$fam"); done; order=("${ranked[@]}")
+  fi
+  for fam in "${order[@]}"; do
+    implement_route_family_reviewable "$fam" || continue
+    case "$fam" in
+      claude) pick_claude_implementer ;;
+      codex) pick_codex_work_identity "$u" ;;
+      zcode) pick_zcode_implementer "$u" ;;
+    esac || continue
+    PICK_ROUTE_PROVIDER="$fam"; PICK_HARD=false; PICK_REASON=routed-primary
+    [[ "$fam" == "${order[0]}" ]] || PICK_REASON="routed-fallback-$fam"
+    return 0
+  done
+  say "no implementation provider available (routing: no routed family runnable with an other-family reviewer)"
+  return 1
+}
+
 pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
   local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum=0 status arbiter=false
   local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS=""
@@ -361,7 +389,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     actual="$PICK_PROVIDER"
     [[ "$(command jq -r '.hard_escalated // false' <<<"$u")" == true ]] || arbiter=true
     implement_route_family_reviewable "$actual" && provider_runtime_ready "$actual" "$PICK_MODEL" production "$u" || {
-      if [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]] \
+      if claude_share_allowed \
           && implement_route_family_reviewable claude && pick_claude_implementer; then
         PICK_ROUTE_PROVIDER=claude; PICK_HARD=true; PICK_REASON=hard-fallback-claude
         return 0
@@ -380,6 +408,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
 
   assigned="$(jqf -r '.implement_route_provider // empty' <<<"$u")"
   actual="$(jqf -r '.implement_provider // empty' <<<"$u")"
+  if routing_configured; then pick_routed_implementer "$u" "$actual"; return $?; fi
   claude_share="$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")"  # absent = off: an engine upgrade alone never routes to Claude
   zcode_share="$(jqf -r '.models.implement_share.zcode // 0' <<<"$CFG")"
   codex_share="$(jqf -r '.models.implement_share.codex // 100' <<<"$CFG")"

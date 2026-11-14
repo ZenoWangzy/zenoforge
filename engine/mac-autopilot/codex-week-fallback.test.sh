@@ -126,4 +126,54 @@ if pick_implementer '{"id":"probe-latched-zcode","implement_provider":"zcode"}';
 grep -Fq 'no implementation family has an eligible other-family reviewer reason=codex-probe-required' "$LOG" \
   || fail 'route refusal omitted the Codex probe-latch reason'
 
+# Quota routing (models.routing_file): the most-quota family leads, reserved or stale families sit out, Sonnet is the last reviewer.
+(
+  now_real="$(date +%s)"; R="$A/routing"; mkdir -p "$R"; rq() { jq -n --argjson p "$2" --argjson r "$now_real" '{week_pct:$p,read_at:$r}' > "$R/$1.json"; }
+  rq claude 4; rq codex 90; rq glm 10 # week left: claude 96, codex 10, glm 90
+  routing() { # glm-reserve claude-read-at glm-week-pct → writes the routing file and quota files
+    rq glm "$3"; jq --argjson r "$2" '.read_at=$r' "$R/claude.json" > "$R/claude.tmp" && mv "$R/claude.tmp" "$R/claude.json"
+    jq -n --argjson g "$1" --arg d "$R" '{stale_after_seconds:3600,families:{claude:{quota_file:($d+"/claude.json"),reserve:null},codex:{quota_file:($d+"/codex.json"),reserve:null},glm:{quota_file:($d+"/glm.json"),reserve:$g}}}' > "$R/model-routing.json"
+  }
+  RESERVED='{"for":"production","until":null}'
+  CFG='{"models":{"review":["gpt-6-luna","max"],"review_cross":["GLM-5.3","max"],"review_fallback":["claude-sonnet-5-5","high"],"implement_share":{"claude":0,"codex":100,"zcode":0}}}'
+  UNAVAIL=""; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+  review_identity_available() { [[ " $UNAVAIL " != *" ${1%%:*} "* ]]; }
+  implement_route_review_identity_available() { [[ " $UNAVAIL " != *" ${1%%:*} "* ]]; }
+  review_identity_unavailable_reason() { echo "${1%%:*} hold"; }
+  review_family_candidate_selected() { :; }
+  pick_claude_implementer() { [[ " $UNAVAIL " != *" claude "* ]] && { PICK_PROVIDER=claude; PICK_MODEL=claude-haiku-5-5; PICK_EFFORT=max; PICK_HARD=false; }; }
+  pick_codex_work_identity() { [[ " $UNAVAIL " != *" codex "* ]] && { PICK_PROVIDER=codex; PICK_MODEL=gpt-6-luna; PICK_EFFORT=max; PICK_HARD=false; }; }
+  pick_zcode_implementer() { [[ " $UNAVAIL " != *" zcode "* ]] && { PICK_PROVIDER=zcode; PICK_MODEL=GLM-5.3; PICK_EFFORT=max; PICK_HARD=false; }; }
+
+  # glm reserved, Claude has the most week quota: implement goes to Claude.
+  routing "$RESERVED" "$now_real" 10; CFG="$(jq --arg f "$R/model-routing.json" '.models.routing_file=$f' <<<"$CFG")"
+  pick_implementer '{"id":"routed-claude"}' && [[ "$PICK_PROVIDER" == claude && "$PICK_ROUTE_PROVIDER" == claude && "$PICK_REASON" == routed-primary ]] \
+    || fail "routed implement did not pick the most-quota family: $PICK_PROVIDER/$PICK_REASON"
+  # Claude unavailable: the next routed helper (Codex, glm unreserved as its reviewer) takes it.
+  routing null "$now_real" 100
+  UNAVAIL=claude; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+  pick_implementer '{"id":"routed-codex"}' && [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == routed-fallback-codex ]] \
+    || fail "routed implement did not fall back to the next helper: $PICK_PROVIDER/$PICK_REASON"
+  UNAVAIL=""; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=(); routing "$RESERVED" "$now_real" 10
+
+  # Reviewer for a Codex author with glm reserved: the routed Claude, as Sonnet.
+  codex_id=codex:gpt-6-luna:max; glm_id=zcode:GLM-5.3:max; sonnet_id=claude:claude-sonnet-5-5:high
+  got="$(review_model_for_implementer 1 "$codex_id" "$codex_id" "$glm_id" "$sonnet_id" u1)" && [[ "$got" == "$sonnet_id" ]] \
+    || fail "Codex author with glm reserved did not get the Sonnet reviewer: $got"
+
+  # Everything except the fallback out (Claude stale, glm reserved, Codex the author): Sonnet still reviews, no refusal.
+  routing "$RESERVED" 1 10; CFG="$(jq --arg f "$R/model-routing.json" '.models.routing_file=$f' <<<"$CFG")"
+  got="$(review_model_for_implementer 2 "$codex_id" "$codex_id" "$glm_id" "$sonnet_id" u2)" && [[ "$got" == "$sonnet_id" ]] \
+    || fail "stale-family routing refused the review instead of the Sonnet fallback: rc=$? got=$got"
+  UNAVAIL=claude; if review_model_for_implementer 3 "$codex_id" "$codex_id" "$glm_id" "$sonnet_id" u3; then fail 'a review was picked with the Sonnet fallback unavailable'; fi
+
+  # No routing_file: the legacy cross-family order is untouched, so the reserved glm is still the Codex author's reviewer.
+  CFG='{"models":{"review":["gpt-6-luna","max"],"review_cross":["GLM-5.3","max"],"review_fallback":["claude-sonnet-5-5","high"],"implement_share":{"claude":0,"codex":100,"zcode":0}}}'
+  if routing_configured; then fail 'routing_configured without routing_file'; fi
+  got="$(review_model_for_implementer 4 "$codex_id" "$codex_id" "$glm_id" "$sonnet_id" u4)" && [[ "$got" == "$glm_id" ]] \
+    || fail "legacy reviewer changed without routing_file: $got"
+  pick_implementer '{"id":"legacy"}' && [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == share-codex ]] \
+    || fail "legacy implement changed without routing_file: $PICK_PROVIDER/$PICK_REASON"
+)
+
 printf 'ok - codex weekly fallback preserves sticky routes, reviewer independence, and nonblocking recovery checks\n'
