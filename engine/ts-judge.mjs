@@ -274,21 +274,30 @@ const outcomeReasons = new Set([
   "request-failed",
 ]);
 
+// Outcome fields that reach the file are short identifiers only, so no key or message text can ride along.
+function cleanField(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(value) ? value : "none";
+}
+
 function cleanOutcome(row) {
   if (!row || !["answered", "fallback"].includes(row.status)
     || !(row.reason === null || typeof row.reason === "string")) return null;
   if (row.status === "answered" ? row.reason !== null : !outcomeReasons.has(row.reason)) return null;
   const at = Date.parse(row.at);
   if (!Number.isFinite(at)) return null;
-  return { at: new Date(at).toISOString(), status: row.status, reason: row.reason };
+  const failure = row.status === "fallback" && row.http !== undefined
+    ? { http: cleanField(row.http), error: cleanField(row.error) }
+    : {};
+  return { at: new Date(at).toISOString(), status: row.status, reason: row.reason, ...failure };
 }
 
-async function writeJudgeOutcome(file, result, now) {
+async function writeJudgeOutcome(file, result, now, detail = {}) {
   const at = now.toISOString();
   const reason = result.status === "answered"
     ? null
     : outcomeReasons.has(result.reason) ? result.reason : "request-failed";
-  const last = { at, status: result.status === "answered" ? "answered" : "fallback", reason };
+  const failure = result.status === "answered" ? {} : { http: cleanField(detail.http), error: cleanField(detail.error) };
+  const last = { at, status: result.status === "answered" ? "answered" : "fallback", reason, ...failure };
   let previousWindow = [];
   try {
     const previous = JSON.parse(await readFile(file, "utf8"));
@@ -315,9 +324,9 @@ async function writeJudgeOutcome(file, result, now) {
   }
 }
 
-async function finishJudge(result, file, now) {
+async function finishJudge(result, file, now, detail) {
   try {
-    await writeJudgeOutcome(file, result, now);
+    await writeJudgeOutcome(file, result, now, detail);
   } catch {
     try {
       process.stderr.write("ts-judge: outcome record unavailable\n");
@@ -397,7 +406,23 @@ function requestFailure(error, apiKey) {
       : status === 429
         ? "rate-limited"
         : "request-failed";
-  return { reason, status: status === null ? "unknown" : String(status), message: message || "unknown error" };
+  return {
+    reason,
+    status: status === null ? "unknown" : String(status),
+    http: status === null ? "none" : String(status),
+    error: failureClass(error, apiKey),
+    message: message || "unknown error",
+  };
+}
+
+// Exception class only (timeout/abort collapse to "timeout"); never the message, so a key cannot appear here.
+function failureClass(error, apiKey) {
+  const code = typeof error?.code === "string" ? error.code : typeof error?.cause?.code === "string" ? error.cause.code : "";
+  const name = typeof error?.name === "string" ? error.name : "";
+  if (["TimeoutError", "AbortError"].includes(name) || /time(?:d)?out/i.test(code)) return "timeout";
+  const raw = code || name;
+  if (apiKey && raw.includes(apiKey)) return "none";
+  return cleanField(raw.slice(0, 40));
 }
 
 export async function recordShadowComparison({
@@ -535,7 +560,7 @@ export async function judge({
   } catch (error) {
     const failure = requestFailure(error, apiKey);
     process.stderr.write(`ts-judge: ${failure.reason} (${failure.status}): ${failure.message}\n`);
-    return finishJudge(fallbackResult(questionSet, state, failure.reason), outcomeFile, now);
+    return finishJudge(fallbackResult(questionSet, state, failure.reason), outcomeFile, now, failure);
   }
 }
 

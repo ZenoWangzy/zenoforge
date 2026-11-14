@@ -217,9 +217,38 @@ test("a 402 credit error stays classified and is logged without credentials", as
   assert.doesNotMatch(stderr, /mock-secret-key|authorization|Bearer/);
   assert.deepEqual(JSON.parse(await readFile(outcomeFile, "utf8")), {
     updated_at: at,
-    last: { at, status: "fallback", reason: "credits-exhausted" },
-    window: [{ at, status: "fallback", reason: "credits-exhausted" }],
+    last: { at, status: "fallback", reason: "credits-exhausted", http: "402", error: "Error" },
+    window: [{ at, status: "fallback", reason: "credits-exhausted", http: "402", error: "Error" }],
   });
+});
+
+test("a timeout or network failure records its class, never the key or message", async (t) => {
+  const { log, outcomeFile } = await fixture(t);
+  const at = "2026-11-14T00:00:00.000Z";
+  const originalWrite = process.stderr.write;
+  process.stderr.write = () => true;
+  const timeout = new Error("request timed out for mock-secret-key");
+  timeout.name = "TimeoutError";
+  const reset = Object.assign(new Error("socket hang up mock-secret-key"), { code: "ECONNRESET" });
+  const base = {
+    questionSet: "ci-failure",
+    state: { currentDecision: "code", event_id: "ci:44:1" },
+    apiKey: "mock-secret-key",
+    file: log,
+    now: new Date(at),
+  };
+  try {
+    await judge({ ...base, client: { async systemOne() { throw timeout; } } });
+    await judge({ ...base, client: { async systemOne() { throw reset; } } });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  const contents = await readFile(outcomeFile, "utf8");
+  const record = JSON.parse(contents);
+  assert.deepEqual(record.last, { at, status: "fallback", reason: "request-failed", http: "none", error: "ECONNRESET" });
+  assert.deepEqual(record.window.map((entry) => entry.error), ["timeout", "ECONNRESET"]);
+  assert.doesNotMatch(contents, /mock-secret-key/);
 });
 
 test("high confidence answers shadow the baseline until 20 events agree, then can be adopted", async (t) => {
