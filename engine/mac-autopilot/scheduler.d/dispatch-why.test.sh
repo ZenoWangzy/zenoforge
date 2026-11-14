@@ -68,6 +68,7 @@ pass_refill
 grep -q 'dispatch why unit=issue-100 gate=stop-loss-refill$' "$SAY_LOG" || fail 'the changed gate must be named'
 
 # (c) A start clears the unit's entry, so its next skip is logged again.
+size_admission_real="$(declare -f size_admission_write_start)"
 dispatch_if_room_stubs() {
   room_for() { return 0; }
   size_admission_write_start() { return 0; }
@@ -171,5 +172,16 @@ phase() { [[ "$1" == dispatch_pending ]] || return 64; phase_calls=$((phase_call
 tick_step_run dispatch_pending
 [[ "$phase_calls" == 1 ]] || fail "the dispatch_pending tick-step did not run its phase ($phase_calls calls)"
 [[ "$(cat "$SKIP_COUNTER")" == 0 ]] || fail "the dispatch_pending tick-step did not reset the skip counter: $(cat "$SKIP_COUNTER")"
+
+# (g) A local-refill deferral of an oversized estimate is not a rejection: it logs size-admission-deferred, never size-admission-start.
+dispatch_if_room_stubs
+eval "$size_admission_real"
+SIZE_ADMISSION_LINES=800; TICK_DISPATCH_LOCAL_REFILL=true
+: > "$SAY_LOG"
+deferred_unit='{"id":"issue-100","issue":100,"stage":"implement-pending","title":"t","lane":"pull-request","estimated_changed_lines":1000,"history":[]}'
+dispatch_if_room issue-100 implement implement "$fixture/w.log" "$fixture/w.md" model effort prompt "" "" "" prompt "$deferred_unit" false codex false configured codex >/dev/null
+grep -q 'dispatch why unit=issue-100 gate=size-admission-deferred$' "$SAY_LOG" || fail "a local-refill deferral must log size-admission-deferred ($(cat "$SAY_LOG"))"
+! grep -q 'gate=size-admission-start' "$SAY_LOG" || fail 'a local-refill deferral was logged as size-admission-start'
+TICK_DISPATCH_LOCAL_REFILL=false
 
 printf 'PASS: dispatch why-log, gate change, start clear, prune and refill phase names all hold\n'

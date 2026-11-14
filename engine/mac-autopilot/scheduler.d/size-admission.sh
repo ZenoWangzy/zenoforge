@@ -55,12 +55,14 @@ size_admission_limit_for() { # unit-json → effective limit: a supervisor size_
 # repair-pending 的超线 PR 先走现有 needs-recut 通道，不占 worker；同一 head 已拒过或不能路由时转 supervisor。
 # repair/self-fix 仍需复查新 head（#4482：PR #4396 从 611 增到 1090、#4403 从 796 增到 1063）。返回 1 = 已升级。
 # A head already sent to recut routes again after a held or resumed recut; only a refused recut (recut_refused_at on the
-# issue state) makes it a person's problem. An unreadable state stays refused.
-size_recut_refused_on_head() { # unit head issue
+# issue state) makes it a person's problem. An unreadable state stays refused. The head moves with main while a
+# write-start has no worktree (its head is the checkout's HEAD), so a recut at the same line count (the estimate) also counts
+# as already sent: 6570 went through four refused recuts at 1100 lines on four different heads (11-14).
+size_recut_refused_on_head() { # unit head issue lines
   local state
-  jqf -e --arg id "$1" --arg head "$2" 'any(.units[] | select(.id==$id) | .history[]?; .stage=="size-recut" and (.result | contains("head="+$head)))' "$UNITS" >/dev/null || return 1
+  jqf -e --arg id "$1" --arg head "$2" --arg lines "$4" 'any(.units[] | select(.id==$id) | .history[]?; .stage=="size-recut" and ((.result | contains("head="+$head)) or (.result | contains(" "+$lines+" lines exceed "))))' "$UNITS" >/dev/null || return 1
   state="$(scheduler_issue_state "$3" 2>/dev/null)" || return 0
-  jqf -e 'has("recut_refused_at")' <<<"$state" >/dev/null
+  jqf -e 'has("recut_refused_at") or has("recut_children")' <<<"$state" >/dev/null
 }
 unit_history_count() { # unit stage [result-regex] → history entries of that stage whose result matches
   jqf -r --arg id "$1" --arg st "$2" --arg re "${3:-}" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage==$st and ((.result // "") | test($re)))] | length' "$UNITS"
@@ -87,7 +89,7 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   local issue limit="${9:-$SIZE_ADMISSION_LINES}" refused=false
   issue="$(unit_field "$1" '.issue // empty')"
   if [[ "$5" =~ $SHA_RE && "$issue" =~ ^[0-9]+$ ]]; then
-    ! size_recut_refused_on_head "$1" "$5" "$issue" || refused=true
+    ! size_recut_refused_on_head "$1" "$5" "$issue" "$2" || refused=true
   fi
   # Repair-pending dispatch (5374: the repair that trims the PR was refused on every tick) gets the same one admission.
   if [[ ( "$8" == write-start || "$4" == repair-pending* ) && "$refused" == true ]] \
@@ -179,7 +181,7 @@ size_admission_write_start() { # unit workdir unit-json → block before worker 
   # The 30-second refill may start implement workers using local data only. It
   # defers an oversized ticket for the slow tick, which owns the existing recut
   # issue transition and records the decision once.
-  [[ "${TICK_DISPATCH_LOCAL_REFILL:-false}" != true ]] || return 1
+  [[ "${TICK_DISPATCH_LOCAL_REFILL:-false}" != true ]] || return 2 # 2 = deferred, not a rejection (dispatch_if_room logs it apart)
   size_admission_reject "$1" "$lines" "$branch" "write-start ($source)" "$head" "${estimate:-unknown}" "${actual:-unknown}" write-start "$reject_limit"
 }
 pre_dispatch_pr_admission() { # unit branch PR context → prepared clone; nonzero means defer or recut

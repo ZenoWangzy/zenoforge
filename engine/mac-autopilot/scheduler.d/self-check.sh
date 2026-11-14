@@ -615,7 +615,10 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]] && jqf -e '.pr == null' <<<"$unit_json" >/dev/null && pre_dispatch_skip "$unit_json"; then return 1; fi
   room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || return 1
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
-    size_admission_write_start "$1" "${10:-}" "$unit_json" || { dispatch_why "$1" size-admission-start; return 1; }
+    local sa_rc=0
+    size_admission_write_start "$1" "${10:-}" "$unit_json" || sa_rc=$?
+    if (( sa_rc == 2 )); then dispatch_why "$1" size-admission-deferred; return 1; fi # local refill: the slow tick records the rejection
+    (( sa_rc == 0 )) || { dispatch_why "$1" size-admission-start; return 1; }
   fi
   if [[ "$3" == implement ]]; then
     lesson_brief="$(footprint_recurrence_brief "$unit_json")"
