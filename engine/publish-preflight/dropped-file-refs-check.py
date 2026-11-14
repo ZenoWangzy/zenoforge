@@ -22,8 +22,19 @@ def files(version):
     return {os.path.relpath(os.path.join(d, f), root) for d, _, fs in os.walk(root, onerror=suite_set._raise) for f in fs}
 
 
-def is_script(path):
-    return path.endswith(('.sh', '.py', '.mjs', '.js')) or open(path, 'rb').read(2) == b'#!'
+def script_lines(path):
+    """Lines of a script, or None when path is not one. A dangling link or a file deleted mid-walk is not a script:
+    the version dir links the checkout's top level, where gitnexus keeps a temp index dir (.gitnexus-next.*)."""
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, 'rb') as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if not (path.endswith(('.sh', '.py', '.mjs', '.js')) or data[:2] == b'#!'):
+        return None
+    return data.decode(errors='ignore').splitlines(keepends=True)
 
 
 def consumer_scripts(version):
@@ -36,8 +47,9 @@ def consumer_scripts(version):
             dirs[:] = [x for x in dirs if x != 'engine']
         for f in fs:
             p = os.path.join(d, f)
-            if is_script(p):
-                out.append((os.path.relpath(p, root), p))
+            text = None if f.startswith('.gitnexus') else script_lines(p)
+            if text is not None:
+                out.append((os.path.relpath(p, root), text))
     return out
 
 
@@ -58,11 +70,11 @@ def main(argv):
     dropped = sorted(r for r in base - new if isfile(r))
     lines = []
     for r in sorted(new):
-        p = os.path.join(nver, 'engine', r)
-        if is_script(p):
-            lines += [(r, i, t) for i, t in enumerate(open(p, errors='ignore'), 1)]
-    for rel, p in sorted(consumer_scripts(nver)):
-        lines += [(rel, i, t) for i, t in enumerate(open(p, errors='ignore'), 1)]
+        text = script_lines(os.path.join(nver, 'engine', r))
+        if text is not None:
+            lines += [(r, i, t) for i, t in enumerate(text, 1)]
+    for rel, text in sorted(consumer_scripts(nver)):
+        lines += [(rel, i, t) for i, t in enumerate(text, 1)]
     bad = 0
     for r in dropped:
         hit = next(((f, i) for f, i, t in lines if os.path.basename(r) in t), None)
