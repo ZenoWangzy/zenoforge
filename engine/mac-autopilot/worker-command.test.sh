@@ -10,6 +10,7 @@ jqf() { command jq "$@"; }
 provider_of() { [[ "$1" == claude-* ]] && printf claude || printf codex; }
 unit_field() { case "$2" in .lane*) printf '%s' "${TEST_LANE:-pr}" ;; *sessions*) printf '{}' ;; *) printf false ;; esac; }
 worker_rules() { :; }
+last_review_side_failed() { [[ "${TEST_REVIEW_SIDE:-}" == true ]]; }
 fail() { printf 'worker-command.test.sh: %s\n' "$*" >&2; exit 1; }
 SESSION_RE='^[0-9a-f-]{36}$'
 contains_arg() { [[ " $1 " == *" $2 "* ]]; }
@@ -176,6 +177,9 @@ build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$
 mkdir -p "$CLAUDE_CONFIG_DIR/projects/-x" && : > "$CLAUDE_CONFIG_DIR/projects/-x/$claude_sid.jsonl"
 build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair resume was refused'
 [[ "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$claude_sid" && "$(impl_value --resume)" == "$claude_sid" ]] || fail 'Claude repair did not --resume the recorded session'
+# row 440: a repair after a review-side failure never resumes the implementer's session.
+TEST_REVIEW_SIDE=true build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair after a review-side failure was refused'
+[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == review-side-failure ]] || fail "Claude repair resumed after a review-side failure ($CODEX_MODE/$CODEX_PATH_REASON)"
 unset CODEX_FRESH_COMMAND
 build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair resume was refused'
 [[ "${CODEX_COMMAND[2]}" == 'new failure'* ]] || fail 'Claude resume did not send the new failure'

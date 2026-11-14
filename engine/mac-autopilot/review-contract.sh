@@ -97,3 +97,9 @@ review_findings_record_classes() { # normalized findings JSON, state file, upser
     exit "$rc"
   ) 9>"$state.lock"
 }
+# row 440 (PR 6654, 2026-11-14): a review that gave no VERDICT, no findings block or INPUT_INCOMPLETE judged nothing; its escalation names the report. Repairs must not resume the implementer's session for it.
+last_review_side_failed() { # unit-json → 0 when the latest review-side event is a review failure
+  jqf -e '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block", "verdict-missing", "review-findings-missing", "supervisor-escalated"))] | last
+    | (.stage == "verdict-missing" or .stage == "review-findings-missing" or .stage == "review-block"
+       or (.stage == "supervisor-escalated" and ((.result // "") | test("review[^ ]*\\.md"))))' <<<"$1" >/dev/null 2>&1
+}
