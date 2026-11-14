@@ -570,8 +570,9 @@ roadmap_issue_create() {
       --) break ;;
     esac
   done
-  if [[ -z "$title" || -z "$body_file" || ! -r "$body_file" ]]; then
-    echo "roadmap: refusing to create issue in $target_repo without explicit title and readable body" >&2
+  if [[ -z "$title" || -z "$body_file" || ! -r "$body_file" ]] \
+    || ! grep -q '[^[:space:]]' "$body_file"; then
+    echo "roadmap: refusing to create issue in $target_repo without explicit title and readable, non-empty body" >&2
     rm -rf -- "$temp_dir"
     return 64
   fi

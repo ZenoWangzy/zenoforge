@@ -68,7 +68,6 @@ engine/pipeline-system-close-evidence.test.sh
 engine/pre-push-guard.test.sh
 engine/proc.test.sh
 engine/queue-order.test.sh
-engine/roadmap-issue-create.test.sh
 engine/roadmap-order.test.sh
 engine/rule-lane.test.sh
 engine/run-advisor-batch.test.sh
