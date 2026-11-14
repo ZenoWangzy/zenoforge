@@ -72,6 +72,8 @@ dep_delivered_snapshot() {
     | ((.issue | select(type == "number")),
        (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))
     | "\(.)\t\($p)\t\($s)"' <(units_history_index))
+  # cached MERGED (awaiting-release) is delivered for release too; the gate must agree or it flaps (#4381)
+  while IFS= read -r dep; do [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1; done < <(jqf_optional_file "$A/dep-check.cache.json" -r '(.states // {}) | to_entries[] | select(.value.state == "MERGED") | .key' 2>/dev/null)
 }
 dep_delivered_in_ledger() { # release_dependency_blocks 从台账建一次快照，避免每个 blocker 重读全文件
   [[ "${DEP_DELIVERED_CACHE[$1]:-}" == 1 ]]
