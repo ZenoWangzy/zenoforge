@@ -118,8 +118,16 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   WORKER_COST_TAG="type=$type unit=$unit"
   worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || { [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
   rm -f -- "$worker_pid_file"
+  local scope_rc=0
   worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
-    "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
+    "${worker_env[@]}" "${launch_command[@]}" || scope_rc=$?
+  if (( scope_rc != 0 )); then
+    rm -f -- "$worker_pid_file"
+    if (( scope_rc == 3 )); then say "worker scope start timeout unit=$unit scope=${WORKER_SCOPE_TIMEOUT_SCOPE:-none} waited=${WORKER_SCOPE_WAITED:-0}s"; fi
+    coord_release "$claim_key" "$claim_owner" >/dev/null 2>&1 || :
+    [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :
+    return 1
+  fi
   pid="$WORKER_SCOPE_PID"
   rm -f -- "$worker_pid_file"
   local pid_started scope_name
