@@ -60,7 +60,7 @@ echo 'ok - empty scope: no stop call'
 
 # 3. Live leader: harvest_scope_stop never stops its scope, even with a process in it.
 sleep 60 & live_pid=$!
-trap 'kill "$live_pid" 2>/dev/null || :' EXIT
+trap 'kill "$live_pid" 2>/dev/null || :; rm -rf "$test_env_root"' EXIT
 live_start="$(coord_process_start_ticks "$live_pid")"
 printf '%s\n' "$live_pid" > "$procs"
 : > "$calls"
