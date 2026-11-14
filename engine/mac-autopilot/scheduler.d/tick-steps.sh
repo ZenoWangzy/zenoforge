@@ -1,6 +1,60 @@
 # ---------- Detached full-tick steps ----------
 # Full-tick heavy passes run in separate scheduler processes. Each step has its own
 # nonblocking flock, shared with its loop station and refill call sites.
+tick_step_dispatch_pending_skip_count() { # consecutive dispatch_pending lock-held skips, defaulting to zero
+  local file="$A/.tick-step-dispatch_pending-skips" count
+  if [[ -r "$file" ]] && IFS= read -r count < "$file" && [[ "$count" =~ ^[0-9]+$ ]]; then
+    count="${count#"${count%%[!0]*}"}"
+    [[ -n "$count" ]] || count=0
+  else
+    count=0
+  fi
+  printf '%s\n' "$count"
+}
+
+tick_step_dispatch_pending_skips_update() { # increment on contention; reset when the detached dispatch phase starts
+  local action="$1" file="$A/.tick-step-dispatch_pending-skips" lock_fd="" count tmp rc=0
+  if ! exec {lock_fd}>>"$file.lock" || ! flock -x "$lock_fd"; then
+    [[ -z "$lock_fd" ]] || exec {lock_fd}>&-
+    return 1
+  fi
+  case "$action" in
+    increment)
+      count="$(tick_step_dispatch_pending_skip_count)"
+      if ((${#count} > 10)) || { ((${#count} == 10)) && [[ "$count" > "2147483646" ]]; }; then
+        count=2147483647
+      else
+        count=$((10#$count + 1))
+      fi
+      ;;
+    reset) count=0 ;;
+    *) rc=64 ;;
+  esac
+  if (( rc == 0 )); then
+    tmp="$(mktemp "$file.XXXXXX")" || rc=1
+    if (( rc == 0 )); then
+      if ! printf '%s\n' "$count" > "$tmp" || ! mv -f -- "$tmp" "$file"; then
+        rm -f -- "$tmp"
+        rc=1
+      fi
+    fi
+  fi
+  flock -u "$lock_fd" || :
+  exec {lock_fd}>&-
+  return "$rc"
+}
+
+tick_step_dispatch_pending_skip_count_at_least() { # threshold; compare decimal strings without arithmetic overflow
+  local count threshold="${1:-2}"
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=2
+  threshold="${threshold#"${threshold%%[!0]*}"}"
+  [[ -n "$threshold" ]] || threshold=0
+  count="$(tick_step_dispatch_pending_skip_count)"
+  if ((${#count} > ${#threshold})); then return 0; fi
+  if ((${#count} < ${#threshold})); then return 1; fi
+  [[ "$count" == "$threshold" || "$count" > "$threshold" ]]
+}
+
 tick_step_lock_run() { # step command...; the caller's dynamic lock marker prevents nested flock opens
   local step="$1" lock_fd rc=0; shift
   case "$step" in dispatch_pending | register_new_issues | release_dependency_blocks | existing_walk) ;; *) return 64 ;; esac
@@ -9,6 +63,9 @@ tick_step_lock_run() { # step command...; the caller's dynamic lock marker preve
   if ! flock -n "$lock_fd"; then
     TICK_STEP_LOCK_RESULT=skipped
     say "tick-step skipped step=$step reason=lock-held"
+    if [[ "$step" == dispatch_pending ]] && ! tick_step_dispatch_pending_skips_update increment; then
+      say 'tick-step skip counter update failed step=dispatch_pending'
+    fi
     exec {lock_fd}>&-
     return 0
   fi
@@ -34,6 +91,7 @@ tick_step_execute() { # step: initialize an independent scheduler context, then 
     dispatch_pending)
       if existing_walk_fresh; then intake_census_prime; existing_walked_load; fi
       record_run_spend || :
+      if ! tick_step_dispatch_pending_skips_update reset; then say 'tick-step skip counter reset failed step=dispatch_pending'; fi
       phase dispatch_pending || rc=$?
       ;;
   esac
