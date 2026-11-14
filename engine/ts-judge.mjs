@@ -2,7 +2,8 @@
 import { realpathSync, existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from "node:child_process";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -250,10 +251,79 @@ function typesafeKeyFromEnvFile(file = process.env.TYPESAFE_ENV_FILE) {
   }
 }
 
+function agentHomePath() {
+  return process.env.AGENT_HOME || path.join(os.homedir(), ".zenoforge");
+}
+
 function logPath() {
   if (process.env.TYPESAFE_JUDGE_LOG) return process.env.TYPESAFE_JUDGE_LOG;
-  const agentHome = process.env.AGENT_HOME || path.join(os.homedir(), ".zenoforge");
-  return path.join(agentHome, "logs", "ts-judge.jsonl");
+  return path.join(agentHomePath(), "logs", "ts-judge.jsonl");
+}
+
+function judgeOutcomePath() {
+  return path.join(agentHomePath(), "state", "ts-judge-last.json");
+}
+
+const outcomeReasons = new Set([
+  "missing-api-key",
+  "redaction-failed",
+  "invalid-answer",
+  "credits-exhausted",
+  "auth-failed",
+  "rate-limited",
+  "request-failed",
+]);
+
+function cleanOutcome(row) {
+  if (!row || !["answered", "fallback"].includes(row.status)
+    || !(row.reason === null || typeof row.reason === "string")) return null;
+  if (row.status === "answered" ? row.reason !== null : !outcomeReasons.has(row.reason)) return null;
+  const at = Date.parse(row.at);
+  if (!Number.isFinite(at)) return null;
+  return { at: new Date(at).toISOString(), status: row.status, reason: row.reason };
+}
+
+async function writeJudgeOutcome(file, result, now) {
+  const at = now.toISOString();
+  const reason = result.status === "answered"
+    ? null
+    : outcomeReasons.has(result.reason) ? result.reason : "request-failed";
+  const last = { at, status: result.status === "answered" ? "answered" : "fallback", reason };
+  let previousWindow = [];
+  try {
+    const previous = JSON.parse(await readFile(file, "utf8"));
+    if (Array.isArray(previous.window)) previousWindow = previous.window.map(cleanOutcome).filter(Boolean);
+  } catch {}
+
+  const cutoff = now.getTime() - 60 * 60 * 1000;
+  const window = [...previousWindow, last]
+    .filter((entry) => {
+      const timestamp = Date.parse(entry.at);
+      return timestamp >= cutoff && timestamp <= now.getTime();
+    })
+    .slice(-200);
+  const contents = `${JSON.stringify({ updated_at: at, last, window })}\n`;
+  const directory = path.dirname(file);
+  await mkdir(directory, { recursive: true });
+  const temporary = path.join(directory, `.ts-judge-last-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, contents, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(temporary, file);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function finishJudge(result, file, now) {
+  try {
+    await writeJudgeOutcome(file, result, now);
+  } catch {
+    try {
+      process.stderr.write("ts-judge: outcome record unavailable\n");
+    } catch {}
+  }
+  return result;
 }
 
 async function shadowHistory(questionSet, file) {
@@ -386,13 +456,14 @@ export async function judge({
   file = logPath(),
   now = new Date(),
 }) {
-  if (!apiKey) return fallbackResult(questionSet, state, "missing-api-key");
+  const outcomeFile = judgeOutcomePath();
+  if (!apiKey) return finishJudge(fallbackResult(questionSet, state, "missing-api-key"), outcomeFile, now);
 
   let safeState;
   try {
     safeState = redactState(state, apiKey);
   } catch {
-    return fallbackResult(questionSet, state, "redaction-failed");
+    return finishJudge(fallbackResult(questionSet, state, "redaction-failed"), outcomeFile, now);
   }
 
   try {
@@ -405,7 +476,7 @@ export async function judge({
     const normalized = extract(response.answers);
     const confidence = normalized.confidence;
     if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1 || normalized.answer == null) {
-      return fallbackResult(questionSet, state, "invalid-answer");
+      return finishJudge(fallbackResult(questionSet, state, "invalid-answer"), outcomeFile, now);
     }
 
     const history = await shadowHistory(questionSet, file);
@@ -445,7 +516,7 @@ export async function judge({
       }
     }
 
-    return {
+    return finishJudge({
       status: "answered",
       question_set: questionSet,
       candidate: normalized.answer,
@@ -460,11 +531,11 @@ export async function judge({
       sample_count: history.length,
       agreement_rate: history.length ? history.filter((row) => row.agreement).length / history.length : null,
       logging,
-    };
+    }, outcomeFile, now);
   } catch (error) {
     const failure = requestFailure(error, apiKey);
     process.stderr.write(`ts-judge: ${failure.reason} (${failure.status}): ${failure.message}\n`);
-    return fallbackResult(questionSet, state, failure.reason);
+    return finishJudge(fallbackResult(questionSet, state, failure.reason), outcomeFile, now);
   }
 }
 
