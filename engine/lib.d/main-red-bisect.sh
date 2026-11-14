@@ -33,7 +33,7 @@ main_red_focused_suite_step_failed() {
 
 main_red_step_session() { # sha run_json run_history ; advances one session by one step
   local red_sha="$1" run="$2"
-  local red_run_id session status green_sha red_created history lo hi count mid verdict culprit issue
+  local red_run_id session status green_sha red_created history lo hi count mid verdict culprit issue rerun_verdict
   history="$3"
   local subject subject_json attempts age issue_pr pr_state subject_issue direct_request revert_sha direct_request_status focused_base focused_head direct_base direct_landed focused_update baseline_verdict baseline_attempts baseline_age red_run_attempt
   local workflow
@@ -41,6 +41,9 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
   case "$workflow" in ci.yml|pipeline-suites.yml) ;; *) return 0 ;; esac
   red_run_id="$(jq -r '.id // empty' <<< "$run")"
   session="$(main_red_session_read "$red_sha" 2>/dev/null || true)"
+  if [ -n "$session" ] && jq -e '.workflow_runs | type == "array"' >/dev/null 2>&1 <<< "$history"; then
+    history="$(jq -c --argjson run "$run" '.workflow_runs += [$run]' <<< "$history" 2>/dev/null || printf '%s' "$history")"
+  fi
   if [ -z "$session" ]; then
     # A red at or after a landed revert is never attributed again: one event, then terminal.
     if main_red_revert_covers "$red_sha"; then
@@ -71,8 +74,10 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
         | sort_by([.created_at // "", .id // 0, .run_attempt // 0])
         | last | .head_sha // empty' <<< "$history" 2>/dev/null)" || green_sha=""
     fi
+    red_run_attempt="$(jq -r '.run_attempt // 1' <<< "$run")"
+    [[ "$red_run_attempt" =~ ^[1-9][0-9]*$ ]] || red_run_attempt=1
     if ! main_red_session_write "$red_sha" rerun-requested \
-      ".red_run_id = \"${red_run_id}\" | .green_sha = \"${green_sha:-}\" | .red_workflow = \"$workflow\"$focused_update"; then
+      ".red_run_id = \"${red_run_id}\" | .red_run_attempt = $red_run_attempt | .green_sha = \"${green_sha:-}\" | .red_workflow = \"$workflow\"$focused_update"; then
       echo "main-red-bisect: could not open a session for $red_sha" >&2
       return 0
     fi
@@ -82,11 +87,19 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
   status="$(jq -r '.status' <<< "$session")"
   case "$status" in
     rerun-requested)
-      # Reached only while the latest completed verdict is still this red:
-      # the rerun finished red, so the window is deterministic. (A rerun
-      # that goes green leaves the latest verdict green and is closed as
-      # flaky by the sweep's own pass below, never here.) A missing or
-      # non-ancestor baseline cannot anchor a bisect.
+      # Only a newer same-SHA attempt is the rerun verdict. GitHub keeps the
+      # original failed run in history, so that failure alone cannot advance
+      # this session to bisect or make it wait for a probe forever.
+      rerun_verdict="$(main_red_session_rerun_verdict "$red_sha" "$session" "$history")" || return 0
+      case "$rerun_verdict" in
+        success)
+          main_red_session_write "$red_sha" flaky || return 0
+          main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
+          return 0
+          ;;
+        pending|none) return 0 ;;
+        failure) ;;
+      esac
       green_sha="$(jq -r '.green_sha // empty' <<< "$session")"
       focused_base="$(jq -r '.focused_base_sha // empty' <<< "$session")"
       focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
@@ -390,6 +403,61 @@ main_red_latest_failed_run() {
 }
 
 
+# Find a completed, newer same-SHA rerun for an open session. `gh run rerun`
+# keeps the run id and increments run_attempt; older sessions do not have the
+# saved attempt, so they use the initial attempt as the compatibility default.
+main_red_session_rerun_run() { # red_sha session_json completed_runs_json -> run JSON
+  local run_id attempt workflow created_at
+  run_id="$(jq -r '.red_run_id // empty' <<< "$2")"
+  attempt="$(jq -r '.red_run_attempt // 1' <<< "$2")"
+  workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$2")"
+  created_at="$(jq -r '.created_at // empty' <<< "$2")"
+  [[ "$run_id" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  jq -ce --arg sha "$1" --arg id "$run_id" --arg workflow "$workflow" \
+    --arg created_at "$created_at" --argjson attempt "$attempt" '
+    [.workflow_runs[]?
+      | select(.red_workflow == $workflow and .head_sha == $sha
+        and .status == "completed"
+        and (.conclusion == "success" or .conclusion == "failure")
+        and (
+          (((.id | tostring) == $id) and ((.run_attempt // 1) > $attempt))
+          or (
+            ((.id | tostring) != $id)
+            and .event == "workflow_dispatch"
+            and (.created_at // "") > $created_at
+            and ((.display_title // "") | startswith("Pipeline suites post-land probe ") | not)
+          )
+        ))]
+    | sort_by([.created_at // "", .id // 0, .run_attempt // 0]) | last // empty
+  ' <<< "$3" 2>/dev/null
+}
+
+
+# A plain post-land run is the same-SHA rerun verdict. If history has no newer
+# completed attempt, only an in-flight run is pending; the original failure is
+# not evidence that the requested rerun completed.
+main_red_session_rerun_verdict() { # red_sha session_json completed_runs_json
+  local rerun workflow focus_head verdict
+  if rerun="$(main_red_session_rerun_run "$1" "$2" "$3")"; then
+    jq -r '.conclusion' <<< "$rerun"
+    return 0
+  fi
+  workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$2")"
+  focus_head="$(jq -r '.focused_head_sha // empty' <<< "$2")"
+  if [[ "$workflow" == pipeline-suites.yml && "$focus_head" == "$1" ]]; then
+    focus_head="__rerun__"
+  elif [[ "$workflow" == pipeline-suites.yml && ! "$focus_head" =~ ^[0-9a-f]{40}$ ]]; then
+    focus_head="__full__"
+  fi
+  verdict="$(main_red_probe_verdict "$1" "$workflow" "$focus_head")" || return 1
+  if [[ "$verdict" == pending ]]; then
+    printf 'pending\n'
+  else
+    printf 'none\n'
+  fi
+}
+
+
 # An old red may not start anything: pipeline-suites.yml was deleted with a failed last run, which would open a session on a week-old SHA.
 # A session already open keeps advancing on its own run. Fails closed: with no clock, no new session.
 main_red_run_is_current() { # run_json
@@ -483,7 +551,7 @@ main_red_rerun_retry() { # red_sha session_json
   attempts="$(jq -r '.rerun_attempts // 1' <<< "$session")"
   if [ -z "$run_id" ] || [[ ! "$attempts" =~ ^[0-9]+$ ]] || [ "$attempts" -ge "$MAIN_RED_PROBE_DISPATCH_ATTEMPTS" ]; then
     main_red_session_write "$red_sha" unattributed || return 1
-    main_red_supervisor_event "$red_sha" "status=unattributed reason=rerun-no-verdict run=${run_id:-none} attempts=$attempts"
+    main_red_supervisor_event "$red_sha" "status=unattributed reason=rerun-not-found run=${run_id:-none} attempts=$attempts"
     return 0
   fi
   age=$(( $(date +%s) - $(stat -c %Y "$(main_red_session_file "$red_sha")" 2>/dev/null || echo 0) ))
@@ -568,7 +636,7 @@ main_red_revert_verify_sweep() { # completed_runs_json
 # (that red was flaky and the latest verdict is green again, so the step
 # path above can no longer see it).
 main_red_bisect_sweep() {
-  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status status idle green_sha fetched=0
+  local runs run verdict sha session_file session red_sha rerun_verdict rerun_run workflow recovery_status status idle green_sha fetched=0
   if [ "${MAIN_CI_RED_RECONCILIATION_DONE:-0}" = 1 ]; then
     [ "${MAIN_CI_RED_RECOVERY_HELD:-0}" != 1 ] || return 0
   elif ZF_REPO_DIR="$REPO_DIR" bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/night/main-ci-recovery.sh" reconcile-red; then
@@ -613,13 +681,7 @@ main_red_bisect_sweep() {
     [[ "$red_sha" =~ ^[0-9a-f]{40}$ ]] || continue
     workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
     if [ "$status" = rerun-requested ]; then
-      focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
-      if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
-        focused_head="__full__"
-      elif [[ "$workflow" == pipeline-suites.yml && "$focused_head" == "$red_sha" ]]; then
-        focused_head="__rerun__"
-      fi
-      rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow" "$focused_head")" || rerun_verdict=""
+      rerun_verdict="$(main_red_session_rerun_verdict "$red_sha" "$session" "$runs")" || rerun_verdict=""
       if [ "$rerun_verdict" = success ]; then
         if main_red_session_write "$red_sha" flaky; then
           main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
@@ -640,10 +702,15 @@ main_red_bisect_sweep() {
         continue
       fi
     fi
+    if [ "$status" = rerun-requested ] && [ "$rerun_verdict" = failure ] \
+        && rerun_run="$(main_red_session_rerun_run "$red_sha" "$session" "$runs")"; then
+      main_red_step_session "$red_sha" "$rerun_run" "$runs"
+      continue
+    fi
     if [ "$status" = rerun-requested ] && [ "$rerun_verdict" = none ] && main_red_rerun_retry "$red_sha" "$session"; then
       continue
     fi
-    # A session steps only while its run is the latest verdict, so it can stop with nobody told. Alert only: a pending probe or an open revert PR writes nothing either, and a terminal status would strand them.
+    # Pending probes and open revert PRs are owned by their bounded stages.
     idle=$(( $(date +%s) - $(stat -c %Y "$session_file" 2>/dev/null || date +%s) ))
     if [ "$idle" -ge "$MAIN_RED_MAX_RUN_AGE_SECONDS" ]; then
       supervisor_inbox_append_once "main-red-session-idle:$red_sha" \

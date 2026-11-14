@@ -42,7 +42,6 @@ engine/mac-autopilot/scheduler.d/locks-views-trap.test.sh
 engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
 engine/mac-autopilot/station-standards.test.sh
 engine/main-ci-red-scope.test.sh
-engine/main-red-bisect.test.sh
 engine/main-release-ready-cache.test.sh
 engine/merge-gate-checks-fail-closed.test.sh
 engine/night/authorization-readonly.test.sh
