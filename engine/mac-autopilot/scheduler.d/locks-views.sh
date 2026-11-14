@@ -6,6 +6,23 @@ scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's s
   now="$(coord_process_start_ticks "$1" 2>/dev/null)" || return 1 # unreadable: keep the pid test
   [[ "$now" != "$want" ]]
 }
+# The ledger holder record: pid, comm and the step it is in, beside the lock. Only the owner writes it (a $(...) subshell or a
+# lock-free phase leaves it alone); a waiter past 30s reads it. A killed owner leaves a file whose pid no longer matches the lock's.
+scheduler_holder_write() { # $1: the step the holder is in
+  local me=$BASHPID comm tmp="$SCHED_LOCK.holder.$BASHPID"
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$me" ]] || return 0
+  comm="$(cat "/proc/$me/comm" 2>/dev/null || ps -o comm= -p "$me" 2>/dev/null || true)"
+  comm="${comm//[[:space:]]/}"
+  printf 'pid=%s\ncomm=%s\nstep=%s\n' "$me" "${comm:-unknown}" "$1" > "$tmp" && mv -f -- "$tmp" "$SCHED_LOCK.holder" || :
+}
+scheduler_holder_info() { # "pid comm step" of the ledger holder; the record counts only when it names the lock's pid
+  local pid comm=unknown step=unknown
+  pid="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"; pid="${pid:-none}"
+  if [[ -f "$SCHED_LOCK.holder" && "$(sed -n 1p "$SCHED_LOCK.holder")" == "pid=$pid" ]]; then
+    comm="$(sed -n 2p "$SCHED_LOCK.holder" | sed 's/^comm=//')"; step="$(sed -n 3p "$SCHED_LOCK.holder" | sed 's/^step=//')"
+  fi
+  printf '%s %s %s\n' "$pid" "${comm:-unknown}" "${step:-unknown}"
+}
 acquire_scheduler_lock() {
   local old start owner="$BASHPID"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
@@ -18,6 +35,7 @@ acquire_scheduler_lock() {
     mkdir "$SCHED_LOCK" 2>/dev/null || return 1
   fi
   echo "$owner" > "$SCHED_LOCK/pid"
+  scheduler_holder_write acquire
   if start="$(coord_process_start_ticks "$owner" 2>/dev/null)"; then printf '%s\n' "$start" > "$SCHED_LOCK/start"; fi
   SCHED_LOCK_HELD=true
   lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
@@ -26,16 +44,19 @@ acquire_scheduler_lock() {
 release_scheduler_lock() {
   [[ "${SCHED_LOCK_HELD:-false}" == true ]] || return 0
   if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then
+    rm -f -- "$SCHED_LOCK.holder"
     rm -rf -- "$SCHED_LOCK"
   fi
   lock_us_now; LOCK_HOLD_US=$((${LOCK_HOLD_US:-0} + LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US}))
   SCHED_LOCK_HELD=false
 }
-# A refill waits for the ledger lock only until its own deadline, like a lock_timeout under a statement deadline: the full tick holds the lock for
-# minutes (a refill's ledger write waited 93 to 158s on 2026-11-07), and a wait that outlasts the 300s kill loses the refill's closing lines.
-# After the deadline a free lock is still taken; only the wait is refused. A full tick waits as before.
-refill_lock_wait_spent() {
-  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - ${AUTOPI_REFILL_LOCK_MARGIN_SECONDS:-15} ))
+# A refill waits for the ledger lock at most AUTOPI_REFILL_LOCK_WAIT_SECONDS (default 60) per wait: the full tick holds the lock for minutes
+# (a refill's ledger write waited 93 to 158s on 2026-11-07), and a long wait ends the refill early instead of waiting for the 300s kill.
+# The refill deadline still applies as a backstop. After it a free lock is still taken; only the wait is refused. A full tick waits as before.
+refill_lock_wait_spent() { # $1: SECONDS when this wait began
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || return 1
+  (( SECONDS - $1 >= ${AUTOPI_REFILL_LOCK_WAIT_SECONDS:-60} )) && return 0
+  (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - ${AUTOPI_REFILL_LOCK_MARGIN_SECONDS:-15} ))
 }
 # The first refused wait ENDS the refill: a write that depends on one refused ledger write must not run after it (a worker started whose stage
 # write was refused would stay *-pending). The marker is a file because the wait can run in a $(...) subshell; refill_tick clears it at its start.
@@ -44,18 +65,23 @@ refill_stopped() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
 }
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
-  local t0=$SECONDS
+  local t0=$SECONDS logged=false holder_pid holder_comm holder_step
   refill_stopped && return 1
   lock_us_now; local w0=$LOCK_US
   until acquire_scheduler_lock; do
     lock_us_now; LOCK_WAIT_US=$((${LOCK_WAIT_US:-0} + LOCK_US - w0)); w0=$LOCK_US # waited so far, to the last refused try
-    if refill_lock_wait_spent; then
+    if refill_lock_wait_spent "$t0"; then
       : > "$A/.refill-stop"
+      TICK_DISPATCH_SKIPS[ledger-lock]=$(( ${TICK_DISPATCH_SKIPS[ledger-lock]:-0} + 1 )) # the refill summary names it: skips=...,ledger-lock:1
       local holder holder_phase
       holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"; holder="${holder:-none}"
       holder_phase="$(cat "$A/.tick-phase" 2>/dev/null || true)"; holder_phase="${holder_phase:-unknown}"
       say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): holder=$holder holder_phase=$holder_phase: the refill limit is near, the refill ends here and the next one resumes"
       return 1
+    fi
+    if [[ "$logged" == false ]] && (( SECONDS - t0 >= 30 )); then
+      logged=true; read -r holder_pid holder_comm holder_step <<< "$(scheduler_holder_info)"
+      say "ledger lock wait $((SECONDS - t0))s holder_pid=$holder_pid holder_comm=$holder_comm holder_step=$holder_step"
     fi
     if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then return 1; fi
     sleep 0.05

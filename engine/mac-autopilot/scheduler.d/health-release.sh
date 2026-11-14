@@ -44,6 +44,7 @@ log_reliability_breach() {
 phase_mark() {
   local f=.tick-phase
   [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || f=.refill-phase
+  scheduler_holder_write "$1" # the holder record names the step for a waiter's log line; a lock-free caller writes nothing
   # A station runs beside the tick and shares the file: its phases named the tick's phase in the kill line.
   [[ "${SCHED_STATION:-false}" != true ]] || return 0
   printf '%s\n' "$1" > "$A/$f" || :

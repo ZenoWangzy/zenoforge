@@ -212,4 +212,47 @@ AP_SYSTEM_TMP="$sys_tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || : # its last step
 [[ "$(jq '.workers | length' "$WORKERS")" == 60 ]] || fail 'cleanup_tick did not trim the workers ledger without the lock held'
 [[ ! -e "$SCHED_LOCK" && "$SCHED_LOCK_HELD" == false ]] || fail 'cleanup_tick kept the ledger lock'
 SCHED_LOCK_HELD=true
+# Ledger holder record: the owner writes pid, comm and step beside the lock, and release removes it.
+rm -rf "$SCHED_LOCK" "$SCHED_LOCK.holder"; rm -f "$A/.refill-stop"; TICK_DISPATCH_SKIPS=(); TICK_LOCAL_REFILL=false
+( acquire_scheduler_lock || fail 'could not take the ledger lock for the holder record'
+  phase_mark ledger_holder_probe
+  grep -qx "pid=$BASHPID" "$SCHED_LOCK.holder" || fail 'the holder record must name the owner pid'
+  grep -qx 'step=ledger_holder_probe' "$SCHED_LOCK.holder" || fail 'the holder record must name the current step'
+  grep -q '^comm=.' "$SCHED_LOCK.holder" || fail 'the holder record must carry the owner comm'
+  release_scheduler_lock )
+[[ ! -e "$SCHED_LOCK.holder" && ! -e "$SCHED_LOCK" ]] || fail 'release must remove the holder record and the lock'
+
+# A full-tick waiter past 30s logs the holder from the holder record, not from the shared .tick-phase.
+rm -rf "$SCHED_LOCK" "$SCHED_LOCK.holder"; : > "$LOG"
+( acquire_scheduler_lock && phase_mark dispatch_supervisor_arbiters; while :; do sleep 1; done ) & holder=$!
+for _ in $(seq 200); do grep -qx 'step=dispatch_supervisor_arbiters' "$SCHED_LOCK.holder" 2>/dev/null && grep -qx dispatch_supervisor_arbiters "$A/.tick-phase" 2>/dev/null && break; sleep 0.05; done
+echo decoy_tick_phase > "$A/.tick-phase"
+kill_stub_calls=0
+kill() { # the holder looks alive for four checks, each costing 15s of SECONDS; then it is gone and the lock is reclaimed
+  if [[ "${1:-}" == -0 && "${2:-}" == "$holder" ]]; then
+    SECONDS=$((SECONDS + 15)); kill_stub_calls=$((kill_stub_calls + 1)); (( kill_stub_calls <= 4 )); return
+  fi
+  builtin kill "$@"
+}
+TICK_LOCAL_REFILL=false; SECONDS=0
+acquire_scheduler_lock_wait || fail 'a full tick must take the lock once the holder is gone'
+unset -f kill; builtin kill "$holder" 2>/dev/null || :; wait "$holder" 2>/dev/null || :
+[[ "$(grep -c 'ledger lock wait' "$LOG")" == 1 ]] || fail "a waiter past 30s must log once: $(cat "$LOG")"
+grep -q "ledger lock wait [0-9]*s holder_pid=$holder holder_comm=[^ ]* holder_step=dispatch_supervisor_arbiters\$" "$LOG" \
+  || fail "the waiter log must name the holder pid and its holder-record step: $(cat "$LOG")"
+grep -q 'holder_step=decoy' "$LOG" && fail 'the waiter must not name the shared .tick-phase as the holder step'
+release_scheduler_lock; rm -f "$SCHED_LOCK.holder"
+
+# A refill's ledger wait ends at the default 60s cap with a clean stop and one counted ledger-lock skip.
+rm -rf "$SCHED_LOCK" "$SCHED_LOCK.holder"; rm -f "$A/.refill-stop"; : > "$LOG"; TICK_DISPATCH_SKIPS=()
+mkdir "$SCHED_LOCK"; echo 4242 > "$SCHED_LOCK/pid"; TICK_LOCAL_REFILL=true; SECONDS=0; unset AUTOPI_REFILL_LOCK_WAIT_SECONDS
+kill() { if [[ "${1:-}" == -0 && "${2:-}" == 4242 ]]; then SECONDS=$((SECONDS + 15)); return 0; fi; builtin kill "$@"; }
+rc=0; acquire_scheduler_lock_wait || rc=$?
+unset -f kill
+[[ "$rc" == 1 ]] || fail "a refill past its 60s wait cap must end the wait (rc=$rc)"
+(( SECONDS < 100 )) || fail "the refill waited past its 60s cap: ${SECONDS}s"
+[[ -e "$A/.refill-stop" ]] || fail 'the refill must end on the stop marker'
+[[ "$(dispatch_skip_summary)" == ledger-lock:1 ]] || fail "the refill must count one ledger-lock skip: [$(dispatch_skip_summary)]"
+grep -q 'REFILL-TIMEOUT stop: ledger lock wait stopped' "$LOG" || fail 'the stop must be logged'
+rm -rf "$SCHED_LOCK" "$SCHED_LOCK.holder"; rm -f "$A/.refill-stop"; TICK_LOCAL_REFILL=false; TICK_DISPATCH_SKIPS=()
 echo 'refill-room.test.sh: ok'
