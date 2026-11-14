@@ -99,4 +99,21 @@ for automatic_result in "${automatic_requeues[@]}"; do
   [[ "$rc" == 1 && "$(jqf -r '[.units[0].history[] | select(.stage=="size-split-admitted")] | length' "$UNITS")" == 1 ]] \
     || fail "automatic requeue reset the split admission: $automatic_result (rc=$rc)"
 done
+# Main moves the checkout head while a ticket waits (11-14: 6570 saw four heads at 1100 lines). A recut already sent at this
+# estimate is not sent again on the new head, refused or completed; a new estimate still routes to recut.
+command git -C "$sa/wt" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m moved
+scheduler_size_recut() { fail 'a recut already sent at this estimate was routed to recut again on a moved head'; }
+SA_ACTUAL=
+for sized_state in '{"state":"ready-for-agent","recut_refused_at":"2026-11-06T00:00:00Z"}' '{"state":"ready-for-agent","recut_children":[71]}'; do
+  scheduler_issue_state() { echo "$sized_state"; }
+  printf '%s\n' '{"units":[{"id":"issue-62","issue":62,"estimated_changed_lines":1000,"stage":"implement-pending","history":['"$sa_hist"']}]}' > "$UNITS"
+  rc=0; size_admission_write_start issue-62 "$sa/wt" '{"id":"issue-62","issue":62,"estimated_changed_lines":1000}' || rc=$?
+  [[ "$rc" == 1 && "$(jqf -r '.units[0].stage' "$UNITS")" == supervisor-review ]] \
+    || fail "a recut already sent at this estimate was not sent to the arbiter on a moved head (rc=$rc state=$sized_state)"
+done
+scheduler_size_recut() { return 0; }
+printf '%s\n' '{"units":[{"id":"issue-62","issue":62,"estimated_changed_lines":1100,"stage":"implement-pending","history":['"$sa_hist"']}]}' > "$UNITS"
+rc=0; size_admission_write_start issue-62 "$sa/wt" '{"id":"issue-62","issue":62,"estimated_changed_lines":1100}' || rc=$?
+[[ "$rc" == 1 && "$(jqf -r '.units[0].stage' "$UNITS")" == blocked-external ]] \
+  || fail "a new estimate after a refused recut was not routed to recut (rc=$rc)"
 echo "split-followup.test.sh: all assertions passed"
