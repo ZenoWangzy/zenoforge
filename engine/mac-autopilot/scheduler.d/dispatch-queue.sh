@@ -274,7 +274,9 @@ dispatch_pending_pass() {
       fi
     fi
     if [[ "$self_fix" == true ]]; then
-      [[ "$local_refill" != true ]] || { dispatch_skip self-fix-refill; continue; }
+      if [[ "$local_refill" == true ]] && ! tick_step_dispatch_pending_skip_count_at_least "${AUTOPI_SELFFIX_REFILL_AFTER_SKIPS:-2}"; then
+        dispatch_skip self-fix-refill; continue
+      fi
       self_fix_dispatch "$u" || true; dmark self_fix
       continue
     fi
