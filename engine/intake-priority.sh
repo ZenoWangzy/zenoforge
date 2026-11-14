@@ -311,7 +311,8 @@ intake_priority_apply_result() {
     printf 'intake-priority: route placement failed for #%s: %s\n' \
       "$issue_number" "${route_error:-unknown error}" >&2
     if [[ "$route_error" == *'API rate limit already exceeded'* && -n "${ZF_INTAKE_RATE_LIMIT_SIGNAL:-}" ]]; then
-      if ! printf 'rate-limit\n' > "$ZF_INTAKE_RATE_LIMIT_SIGNAL"; then
+      if ! (set -o noclobber; printf 'rate-limit\n' > "$ZF_INTAKE_RATE_LIMIT_SIGNAL") 2>/dev/null \
+        && [[ ! -e "$ZF_INTAKE_RATE_LIMIT_SIGNAL" ]]; then
         echo 'intake-priority: could not set backlog rate-limit stop signal' >&2
       fi
     fi
@@ -321,7 +322,7 @@ intake_priority_apply_result() {
 
 # Called by run-triage after its verdict. Intake priority only adds labels; it never changes STATE.
 intake_priority_triage() {
-  local issue_number="$1" triage_state="$2" repo="$3" config enabled issue_file result decision priority
+  local issue_number="$1" triage_state="$2" repo="$3" config enabled issue_file result decision priority reason
   config="$(intake_priority_config)" || { echo 'intake-priority: skipped (invalid-config)' >&2; return 0; }
   enabled="$(jq -r '.enabled' <<< "$config")"
   if [[ "$enabled" != true ]]; then
@@ -357,7 +358,8 @@ intake_priority_triage() {
       echo "intake-priority: label update failed for issue #$issue_number" >&2
     fi
   else
-    echo "intake-priority: answer not adopted for issue #$issue_number" >&2
+    reason="$(jq -r '.reason // "none"' <<< "$result")"
+    echo "intake-priority: answer not adopted for issue #$issue_number reason=$reason" >&2
   fi
   rm -f -- "$issue_file"
 }
