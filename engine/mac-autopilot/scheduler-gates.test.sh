@@ -2446,6 +2446,17 @@ eval "$dep_states_saved"
 units '{"units":[{"id":"issue-148","issue":148,"stage":"merged","history":[]}]}'
 DEP_DELIVERED_CACHE=(); dep_delivered_snapshot
 dep_delivered_in_ledger 148 || fail 'the snapshot must name a merged unit'
+# awaiting-release is MERGED in the cache, and the release pass frees a unit on it. The dispatch gate reads the same snapshot, so it must agree,
+# or it parks the unit again next tick (#4381 on #4879: held and unblocked alternated on 11-13).
+printf '{"states":{"4879":{"state":"MERGED","labels":"bug,awaiting-release,focus"}}}\n' > "$A/dep-check.cache.json"
+units '{"units":[{"id":"issue-4381","issue":4381,"title":"t","task":"t","stage":"blocked-external","blocked_on":4879,"branch":"agent/issue-4381","history":[]}]}'
+DEP_CHECK_SECONDS=600; printf '%s\n' "$NOW_EPOCH" > "$A/dep-check.epoch"; DEP_DELIVERED_CACHE=(); release_dependency_blocks || :; DEP_CHECK_SECONDS=0
+[[ "$(field issue-4381 .stage)" == implement-pending ]] || fail "an awaiting-release blocker must free the unit: $(field issue-4381 .stage)"
+DEP_DELIVERED_CACHE=(); dep_delivered_snapshot
+dep_delivered_in_ledger 4879 || fail 'the dispatch gate must count an awaiting-release blocker as delivered, or release and gate flap'
+DEP_CHECK_SECONDS=600; DEP_DELIVERED_CACHE=(); release_dependency_blocks || :; DEP_CHECK_SECONDS=0
+[[ "$(field issue-4381 .stage)" == implement-pending ]] || fail "the next tick must leave the freed unit alone: $(field issue-4381 .stage)"
+[[ "$(grep -Fc 'unit issue-4381 unblocked: #4879' "$LOG")" == 1 ]] || fail 'the blocker must release the unit once, not on every tick (held/unblocked flap)'
 # Every path that frees a marked unit ends at dispatch: a marked unit starts only after delivery, whatever moved it.
 printf '{"states":{"146":{"state":"OPEN","labels":""}}}\n' > "$A/dep-check.cache.json"
 for marked in '"stage":"implement-pending","branch":"agent/issue-61"' '"stage":"repair-pending","pr":61,"branch":"agent/issue-61"' '"stage":"review-pending","pr":61,"branch":"agent/issue-61"'; do
