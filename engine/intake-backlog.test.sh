@@ -95,9 +95,12 @@ export ZF_TS_JUDGE_SCRIPT="$test_root/ts-judge.sh"
 bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/report.json" --limit 3 --concurrency 2 --dry-stub
 report="$(cat "$test_root/report.json")"
 [[ "$(jq -r '.scanned' <<< "$report")" == 3 ]]
-[[ "$(jq -r '.priority_counts["priority:top"]' <<< "$report")" == 1 ]]
-[[ "$(jq -r '.priority_counts["priority:high"]' <<< "$report")" == 1 ]]
+[[ "$(jq -r '.priority_counts["priority:top"] // 0' <<< "$report")" == 0 ]]
+[[ "$(jq -r '.priority_counts["priority:high"] // 0' <<< "$report")" == 0 ]]
+[[ "$(jq -r '.priority_counts["priority:normal"]' <<< "$report")" == 2 ]]
 [[ "$(jq -r '.priority_counts["priority:low"]' <<< "$report")" == 1 ]]
+[[ "$(jq -r '.issues[] | select(.number == 11) | .overlay' <<< "$report")" == default-tier ]]
+[[ "$(jq -r '.issues[] | select(.number == 12) | .overlay' <<< "$report")" == default-tier ]]
 [[ "$(jq -r '.issues[] | select(.number == 13) | .low_confidence' <<< "$report")" == true ]]
 [[ "$(jq -r '.route_counts["101"]' <<< "$report")" == 1 ]]
 [[ "$(jq -r '.route_counts["102"]' <<< "$report")" == 1 ]]

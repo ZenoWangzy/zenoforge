@@ -123,8 +123,9 @@ expect_eq 'off-market reason reaches decision event' 'off-market' \
 expect_eq 'sports label cap' 'priority:low' "$(issue_priority 9003)"
 expect_eq 'configured off-market issue cap' 'priority:low' "$(issue_priority 6289)"
 
-# A fruit issue without a tier marker keeps the judge score; business classes impose hotfix > bug > fruit feature > off-market.
-expect_eq 'fruit issue keeps judge score' 'priority:high' "$(issue_priority 9004)"
+# An unclassified issue is capped at normal; business classes impose hotfix > bug > fruit feature.
+expect_eq 'unclassified issue is capped at normal' 'priority:normal' "$(issue_priority 9004)"
+expect_eq 'unclassified issue reports default-tier' 'default-tier' "$(issue_overlay 9004)"
 expect_eq 'hotfix tier' 'priority:top' "$(issue_priority 9005)"
 expect_eq 'hotfix stays above off-market cap' 'priority:top' "$(issue_priority 9008)"
 expect_eq 'bug tier' 'priority:high' "$(issue_priority 9006)"
@@ -197,28 +198,69 @@ expect_eq 'stale priority labels are removed through URL-encoded REST paths' tru
 expect_eq 'stale route labels are removed through URL-encoded REST paths' true \
   "$(grep -F 'api -X DELETE repos/fixture/repo/issues/9022/labels/route%3Aold' "$INTAKE_OVERLAY_WRITES" >/dev/null && echo true || echo false)"
 
-# 11-13: the judge stays in shadow until rollout, so an unadopted answer must still write a code-owned overlay label,
-# and must not write a label that only the unadopted model chose.
-shadow_issue_file="$test_root/shadow-overlay.issue.json"
-jq -c '.[] | select(.number == 9007)' "$INTAKE_OVERLAY_ISSUES" > "$shadow_issue_file"
-# Real judge shape: .decision is the shadow baseline (no overlay), .candidate the overlaid decision, .overlay its reason.
-jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:"fruit-feature",
-  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
-  candidate:({priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:"fruit-feature"} | tojson)}' \
-  > "$test_root/shadow-overlay.result.json"
-bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$shadow_issue_file" --result-file "$test_root/shadow-overlay.result.json"
-expect_eq 'an unadopted answer still writes the overlay label' true \
-  "$(grep -E '^api -X POST repos/fixture/repo/issues/9007/labels ' "$INTAKE_OVERLAY_WRITES" | grep -qF 'labels[]=priority:normal' && echo true || echo false)"
-expect_eq 'an unadopted answer does not write the shadow baseline label' false \
-  "$(grep -E '^api -X POST repos/fixture/repo/issues/9007/labels ' "$INTAKE_OVERLAY_WRITES" | grep -qF 'labels[]=priority:top' && echo true || echo false)"
-jq -cn '{number:9020,title:"Tweak dashboard spacing",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"}' > "$test_root/shadow-plain.issue.json"
+# 11-13: replay the real shadow result shape. .decision remains the model baseline,
+# .candidate carries the policy decision, and .overlay carries its code-owned reason.
+cat > "$test_root/shadow-ts-judge.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$(cat)"
+number="$(jq -r '.issue.number' <<< "$state")"
+case "$number" in
+  9020) priority=priority:high ;;
+  9023) priority=priority:low ;;
+  9006) priority=priority:high ;;
+  9010) priority=priority:low ;;
+  9001) priority=priority:high ;;
+  *) exit 3 ;;
+esac
+decision="$(jq -cn --arg priority "$priority" \
+  '{priority:$priority,route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false}')"
+jq -cn --arg decision "$decision" \
+  '{status:"answered",adopted:false,confidence:0.4,decision:$decision,candidate:$decision}'
+EOF
+chmod +x "$test_root/shadow-ts-judge.sh"
+export ZF_TS_JUDGE_SCRIPT="$test_root/shadow-ts-judge.sh"
+
+# The legacy policy result for an unclassified high answer had no overlay, so apply wrote no label.
+legacy_issue_file="$test_root/shadow-9020.issue.json"
+jq -cn '{number:9020,title:"Tweak dashboard spacing",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"}' > "$legacy_issue_file"
 jq -cn '{status:"answered",adopted:false,confidence:0.4,overlay:null,
-  decision:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
-  candidate:({priority:"priority:top",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:null} | tojson)}' \
-  > "$test_root/shadow-plain.result.json"
-bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$test_root/shadow-plain.issue.json" --result-file "$test_root/shadow-plain.result.json"
-expect_eq 'an unadopted answer without an overlay writes no label' false \
+  decision:({priority:"priority:high",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
+  candidate:({priority:"priority:high",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false,overlay:null} | tojson)}' \
+  > "$test_root/shadow-legacy.result.json"
+bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$legacy_issue_file" --result-file "$test_root/shadow-legacy.result.json"
+expect_eq 'legacy unclassified high answer writes no label' false \
   "$(grep -qE '^api -X (POST|DELETE) repos/fixture/repo/issues/9020/labels' "$INTAKE_OVERLAY_WRITES" && echo true || echo false)"
+
+shadow_case() {
+  local number="$1" model_priority="$2" expected_priority="$3" expected_overlay="$4"
+  local issue_file="$test_root/shadow-$number.issue.json" result_file="$test_root/shadow-$number.result.json"
+  if [[ "$number" == 9020 || "$number" == 9023 ]]; then
+    jq -cn --argjson number "$number" '{number:$number,title:"Tweak dashboard spacing",body:"",labels:[{name:"ready-for-agent"}],state:"OPEN"}' > "$issue_file"
+  else
+    jq -c --argjson number "$number" '.[] | select(.number == $number)' "$INTAKE_OVERLAY_ISSUES" > "$issue_file"
+  fi
+  bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$issue_file" --dry-stub > "$result_file"
+  expect_eq "shadow #$number keeps the model baseline" "$model_priority" \
+    "$(jq -r '.decision | fromjson | .priority' "$result_file")"
+  expect_eq "shadow #$number candidate priority" "$expected_priority" \
+    "$(jq -r '.candidate | fromjson | .priority' "$result_file")"
+  expect_eq "shadow #$number candidate overlay" "$expected_overlay" \
+    "$(jq -r '.candidate | fromjson | .overlay // "<none>"' "$result_file")"
+  expect_eq "shadow #$number result overlay" "$expected_overlay" \
+    "$(jq -r '.overlay // "<none>"' "$result_file")"
+  bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$issue_file" --result-file "$result_file"
+  expect_eq "shadow #$number writes its priority label" true \
+    "$(grep -F -- "api -X POST repos/fixture/repo/issues/$number/labels" "$INTAKE_OVERLAY_WRITES" \
+      | grep -qF "labels[]=$expected_priority" && echo true || echo false)"
+}
+
+# The generated default-tier result admits the same issue to the label writer.
+shadow_case 9020 priority:high priority:normal default-tier
+shadow_case 9023 priority:low priority:low default-tier
+shadow_case 9006 priority:high priority:high bug
+shadow_case 9010 priority:low priority:top hotfix-incident
+shadow_case 9001 priority:high priority:top founder-ask
 
 # Verify ready-unit order through dispatch_pending, the scheduler's public dispatch entry point.
 scheduler_fixture="$test_root/scheduler"

@@ -42,7 +42,8 @@ def intake_priority_overlay($issue; $decision; $config):
      elif $bug then $labels_config.high
      elif $off_market then $labels_config.low
      elif $fruit_feature then $labels_config.normal
-     else $decision.priority end) as $classified_priority
+     else (if $decision.priority == $labels_config.top or $decision.priority == $labels_config.high
+           then $labels_config.normal else $decision.priority end) end) as $classified_priority
   | (if $founder then
        (if $decision.priority == $labels_config.high or $decision.priority == $labels_config.top
            or $classified_priority == $labels_config.top
@@ -53,7 +54,7 @@ def intake_priority_overlay($issue; $decision; $config):
      elif $off_market then "off-market"
      elif $bug then "bug"
      elif $fruit_feature then "fruit-feature"
-     else null end) as $overlay
+     else "default-tier" end) as $overlay
   | $decision + {priority:$priority,overlay:$overlay};
 
 def intake_dispatch_tier($unit; $config):
