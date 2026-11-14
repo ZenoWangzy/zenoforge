@@ -20,6 +20,10 @@ parsed="$(findings_block_of "$report")" || fail 'fixed-in-review finding with co
 [[ "$(jq -r '.findings[0].status' <<<"$parsed")" == fixed-in-review ]] || fail 'fixed-in-review status was lost'
 [[ "$(jq -r '.findings[0].commit_sha' <<<"$parsed")" == 1111111111111111111111111111111111111111 ]] || fail 'fixed commit SHA was lost'
 [[ "$(jq -r '.findings[0].test.path' <<<"$parsed")" == src/example.test.mjs ]] || fail 'test path was lost'
+# Product repos name TypeScript tests (issue-6638 review 2026-11-14 lost its whole block on a .test.ts path).
+sed "s#src/example.test.mjs#src/example.test.ts#" "$report" > "$test_env_root/review-ts.md"
+parsed_ts="$(findings_block_of "$test_env_root/review-ts.md")" || fail "fixed-in-review finding with a .test.ts path was rejected"
+[[ "$(jq -r ".findings[0].test.path" <<<"$parsed_ts")" == src/example.test.ts ]] || fail "ts test path was lost"
 
 jqf() { jq "$@"; }
 unit_field() {
