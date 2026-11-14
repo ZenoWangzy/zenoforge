@@ -2288,6 +2288,10 @@ printf '%s\n' "$(date +%s)" > "$RELEASE_CADENCE_FILE"
 assert_eq 'a persisted fleet roll resumes without waiting for a window' \
   $'dispatch:release-batch:910107:candidate-sha\nrelease-decision issue=#910107 outcome=dispatched gate=fleet-roll object=zf-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
   "$(run_release_selection '[{"number":910107}]' 910107 '' 1 '' 1 910107 910107)"
+# A closed window walks only Fleet-roll tickets; the rest log the cadence skip from local state, unwalked.
+assert_eq 'a closed window dispatches the Fleet roll and skips other tickets before the walk' \
+  $'release-decision issue=#910161 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed\ndispatch:release-batch:910162:candidate-sha\nrelease-decision issue=#910162 outcome=dispatched gate=fleet-roll object=zf-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
+  "$(run_release_selection '[{"number":910161},{"number":910162}]' all '' 1 '' 1 910201 910162)"
 rm -f "$RELEASE_CADENCE_FILE"
 
 RELEASE_LOOP_BODY="$(sed -n '/^while IFS= read -r n; do$/,/^done <<< "\$release_issue_numbers"$/p' "$PIPELINE_SRC")"

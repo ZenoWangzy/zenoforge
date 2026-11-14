@@ -3056,6 +3056,8 @@ select_release_batch() {
   # Pin one candidate SHA for the whole cohort. Tickets merged after it wait
   # for the next batch, even if main advances while this selector runs.
   release_candidate_sha="$(git -C "$REPO_DIR" rev-parse origin/main)" || return 1
+  # Closed cadence window: walk only pending Fleet-roll tickets (release_cadence_keep_fleet, lib.d/release-walk.sh).
+  if ! release_batch_cadence_open; then release_cadence_keep_fleet "$release_issue_numbers" || return 0; release_issue_numbers="$RELEASE_FLEET_IDS"; fi
   release_walk_begin "$release_issue_numbers"
   while IFS= read -r n; do
     release_walk_expired && break

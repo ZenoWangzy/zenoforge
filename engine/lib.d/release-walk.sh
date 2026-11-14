@@ -36,3 +36,21 @@ release_walk_expired() {
   echo "issue-pipeline: release-walk deadline hit after $RELEASE_WALK_DONE/$RELEASE_WALK_TOTAL issues" >&2
   return 0
 }
+
+# release_cadence_keep_fleet <newline-separated issue numbers>: for a closed cadence window, where only a
+# pending Fleet roll can dispatch. Sets RELEASE_FLEET_IDS to the tickets with one (local state, no gh read),
+# logs the cadence skip for the rest, and exits 1 when none remain to walk (11-14: three ticks spent
+# 313-316 s walking 133/582 tickets that were all cadence skips).
+release_cadence_keep_fleet() {
+  local n
+  RELEASE_FLEET_IDS=""
+  while IFS= read -r n; do
+    [[ "$n" =~ ^[0-9]+$ ]] || continue
+    if [ "$(state_read "$n" | jq -r '.fleet_roll_pending.status // empty')" = pending ]; then
+      RELEASE_FLEET_IDS+="$n"$'\n'
+    else
+      record_release_decision "$n" skipped release-cadence ${UNIT_PREFIX_TRANSIENT}-release-batch "window-not-elapsed"
+    fi
+  done <<< "$1"
+  [ -n "$RELEASE_FLEET_IDS" ]
+}
