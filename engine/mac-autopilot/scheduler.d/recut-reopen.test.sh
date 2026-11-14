@@ -36,7 +36,9 @@ CU_ROUTED=""
 CU_REFUSE=""
 scheduler_issue_transition() {
   CU_ROUTED+=" $1:$2:${3:-}"
-  [[ "$1" != "$CU_REFUSE" ]]
+  [[ "$1" != "$CU_REFUSE" ]] || return 1
+  local state_file="$AGENT_HOME/state/$1.json" tmp="$AGENT_HOME/state/$1.json.tmp"
+  jq --arg state "$2" '.state = $state' "$state_file" > "$tmp" && mv -f -- "$tmp" "$state_file"
 }
 # A closed unit with no restore path and no merged unit is a stopped ticket: send it to triage.
 closed_unit 32 supervisor-close 2026-01-02T00:00:00Z | jq -s '{units:.}' > "$UNITS"
@@ -44,6 +46,9 @@ state_file 32 ready-for-agent ""
 intake_closed_unit_rows 32
 [[ "$CU_ROUTED" == " 32:needs-triage:closed-units-no-path" ]] || fail "a supervisor-closed unit must route to needs-triage with closed-units-no-path, got:$CU_ROUTED"
 [[ "$(unit_json issue-32 | jq -r '.closed_units_restored_at // "none"')" == "$STAMP" ]] || fail "triage route must be marked on the unit"
+[[ "$(jq -r '.state' "$AGENT_HOME/state/32.json")" == needs-triage ]] || fail "a successful route must move the issue out of ready-for-agent"
+# If the issue later returns to ready-for-agent with the same terminal unit set, the marker keeps it note-only.
+state_file 32 ready-for-agent ""
 intake_closed_unit_rows 32
 [[ "$CU_ROUTED" == " 32:needs-triage:closed-units-no-path" ]] || fail "a marked unit set must not route a second time, got:$CU_ROUTED"
 [[ "$(grep -c 'intake skip issue #32: all units terminal (closed) and no restore path applies' "$LOG")" == 1 ]] || fail "a marked unit set must keep the terminal skip note once"
@@ -132,8 +137,7 @@ for n in 21 23 25 26 27 28; do [[ "$(cu_episode $n)" == none ]] || fail "issue $
 # A merged or already-handled terminal row keeps the existing note; a fresh unmerged row has already gone to triage.
 intake_closed_unit_rows 21 22 23 24 25 26 27 28
 [[ "$(grep -c 'intake skip issue #21: all units terminal (merged) and no restore path' "$LOG")" == 1 ]] || fail "delivered row not named exactly once: $(grep 'intake skip' "$LOG")"
-[[ "$(grep -c 'intake skip issue #23: all units terminal (closed) and no restore path' "$LOG")" == 1 ]] || fail "closed-on-purpose row not named exactly once"
-grep -q 'intake skip issue #23: .*hold.sh --rule issue-23 requeue' "$LOG" || fail "no-restore line must name the ruling that works for a recut-closed unit"
+[[ "$(jq -r '.state' "$AGENT_HOME/state/23.json")" == needs-triage ]] || fail "the obsolete unit set should return to automated triage"
 for n in 22 24 25 26 27 28; do ! grep -q "intake skip issue #$n:" "$LOG" || fail "issue $n must not get the no-restore line"; done
 # One restore per unit: the unit closes again, a later tick leaves it closed and says so once.
 set_unit issue-22 '.stage = "closed" | .history += [{stage:"supervisor-cap-triage-recut",at:"2026-01-04T00:00:00Z"}]'
