@@ -333,7 +333,7 @@ check 'the killed step remains as the maintenance resume cursor' \
   "$(cat "$AGENT_HOME/night/maintenance-resume")" hold-sweep
 check 'the killed step remains visible to the next maintenance tick' \
   "$(cat "$AGENT_HOME/night/maintenance-current-step")" hold-sweep
-HOLD_SWEEP_SLEEPS=0; export HOLD_SWEEP_SLEEPS
+HOLD_SWEEP_SLEEPS=0 TEST_MAINTENANCE_TIMEOUT=30s; export HOLD_SWEEP_SLEEPS TEST_MAINTENANCE_TIMEOUT # the resumed pass has no sleeping step; a 0.2s wall budget killed it on a loaded runner (main 23b9e1164)
 : > "$AGENT_HOME/night/slice-calls"
 slice_runner_status=0
 run_pipeline_slices "$slice_scheduler" triage > "$slice_output" 2>&1 || slice_runner_status=$?
