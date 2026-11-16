@@ -940,6 +940,9 @@ while IFS=$'\t' read -r incident_key incident_severity incident_summary incident
   fi
 done < <(jq -r '.incident_filing // {} | to_entries[] | [.key,.value.severity,.value.summary,.value.evidence,.value.first_seen,(.value.count|tostring)] | @tsv' <<<"$STATE_JSON")
 
+# A stall kind that keeps recurring in the supervisor alert log becomes one engine issue (rate limited inside).
+[[ ! -r "$ENGINE_DIR/engine-stall-issue.sh" ]] || bash "$ENGINE_DIR/engine-stall-issue.sh" >> "$LOG" 2>&1 || true
+
 if [[ -r "$A/BELL-RESOLUTION.md" ]]; then
   # 2026-11-04：pending 积到 3500+ 条后，逐条 grep BELL-RESOLUTION.md 是每拍 7000 个进程、
   # CPU 的大头。这里改为一次提取全部裁决，再单趟 jq 批量改状态；匹配语义与逐条
