@@ -76,7 +76,7 @@ case "$stage" in
         codex_args+=(--cd "$wt")
       fi
       status=0
-      (cd "$wt"; codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 120m env "CONTEXT_MODE_MCP_SENTINEL_DIR=$CONTEXT_MODE_MCP_SENTINEL_DIR" codex "${codex_args[@]}" \
+      (cd "$wt"; codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 120m codex "${codex_args[@]}" \
         --skip-git-repo-check -m "$model" -c "model_reasoning_effort=$effort" \
         "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false --json \
         --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1) || status=$?
@@ -97,7 +97,7 @@ case "$stage" in
       codex)
         tier=$(model_policy tier "$identity")
         tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
-        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m env "CONTEXT_MODE_MCP_SENTINEL_DIR=$CONTEXT_MODE_MCP_SENTINEL_DIR" codex exec --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
+        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
           --skip-git-repo-check --ephemeral -m "$model" -c "model_reasoning_effort=$effort" \
           "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false \
           --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1
@@ -130,7 +130,7 @@ case "$stage" in
       record_identity "codex:profile:$profile"
     fi
     status=0
-    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m env "CONTEXT_MODE_MCP_SENTINEL_DIR=$CONTEXT_MODE_MCP_SENTINEL_DIR" codex exec -p "$profile" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec -p "$profile" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
       --skip-git-repo-check --ephemeral --json \
       --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1 || status=$?
     [[ -z "$swap_log" ]] || printf '%s\n' "$swap_log" >> "$artifact/worker.log"

@@ -86,7 +86,7 @@ bad="$(scan_root "$root")"
 context_mode_bad="$(scan_context_mode_root "$root")"
 [[ -z "$context_mode_bad" ]] || { printf 'codex-plugins-off-lint.test.sh: codex run without a per-run context-mode sentinel directory:\n%s\n' "$context_mode_bad" >&2; exit 1; }
 
-# Fixture repo: both launch linters name unguarded starts, then accept the shared helper/env.
+# Fixture repo: both launch linters name unguarded starts, then accept the shared helper alone.
 fx="$test_env_root/codex-lint-fixture"
 mkdir -p "$fx/engine/bin"
 git -C "$fx" init -q
@@ -100,8 +100,8 @@ context_mode_bad="$(scan_context_mode_root "$fx")"
 grep -qx 'engine/probe.sh:2' <<< "$context_mode_bad" || fail "Codex array launch without context-mode helper not named: $context_mode_bad"
 grep -qx 'engine/bin/extless:2' <<< "$context_mode_bad" || fail "extensionless Codex launch without context-mode helper not named: $context_mode_bad"
 
-printf '%s\n' 'CODEX_ARGS=(exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox read-only --cd "$PROBE_DIR")' 'codex_mcp_context_mode_sentinel_dir "$TMPDIR" && timeout 10m env "CONTEXT_MODE_MCP_SENTINEL_DIR=$CONTEXT_MODE_MCP_SENTINEL_DIR" codex "${CODEX_ARGS[@]}" - <<< "$PROMPT"' > "$fx/engine/probe.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'codex_mcp_context_mode_sentinel_dir "$TMPDIR" && env "CONTEXT_MODE_MCP_SENTINEL_DIR=$CONTEXT_MODE_MCP_SENTINEL_DIR" codex exec -c features.plugins=false --json "$@"' > "$fx/engine/bin/extless"
+printf '%s\n' 'CODEX_ARGS=(exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox read-only --cd "$PROBE_DIR")' 'codex_mcp_context_mode_sentinel_dir "$TMPDIR" && timeout 10m codex "${CODEX_ARGS[@]}" - <<< "$PROMPT"' > "$fx/engine/probe.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'codex_mcp_context_mode_sentinel_dir "$TMPDIR" && codex exec -c features.plugins=false --json "$@"' > "$fx/engine/bin/extless"
 git -C "$fx" add -A
 [[ -z "$(scan_root "$fx")" ]] || fail "flagged fixture still reported: $(scan_root "$fx")"
 [[ -z "$(scan_context_mode_root "$fx")" ]] || fail "context-mode guarded fixture still reported: $(scan_context_mode_root "$fx")"
