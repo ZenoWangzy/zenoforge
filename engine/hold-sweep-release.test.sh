@@ -61,9 +61,108 @@ for run in 1 2 3 4 5 6 7 8; do
   ( hold_sweep ) 2>/dev/null || true
   assert_eq "run $run reaches the expired hold first" 910840 "$(head -n 1 "$AGENT_HOME/walk.log")"
 done
-unset -f state_read gh
+unset -f gh
+state_read() { orig_state_read "$@"; }
+for n in $(seq 910810 910840); do rm -f "$AGENT_HOME/state/$n.json"; done
 
 assert_true "the sweep shuffles so a deadline cannot starve one tail" grep -Eq 'sort -u \| shuf\)' "$SCRIPT_DIR/lib.d/holds.sh"
 assert_true "blocker roots run last in the suffix" grep -Eq 'suffix_steps=\(.*batch-state needs-info-blocker-roots\)' "$SCRIPT_DIR/issue-pipeline.sh"
+
+# A slow all-comments snapshot consumes the short tick before expiry writes. The retry must
+# put the already-read hold first and reuse its pending marker body on the next sweep.
+FAKE_GH_LOG="$AGENT_HOME/gh.log" FAKE_GH_MARKERS="$AGENT_HOME/comments"
+mkdir -p "$FAKE_GH_MARKERS"
+FAKE_GH_NOW_FILE="$AGENT_HOME/gh-now" FAKE_GH_FAIL_ISSUE="" FAKE_GH_SHUFFLE_RUN=0
+printf '1800000000000\n' > "$FAKE_GH_NOW_FILE"
+fake_advance_ms() { printf '%s\n' "$(( $(cat "$FAKE_GH_NOW_FILE") + $1 ))" > "$FAKE_GH_NOW_FILE"; }
+gh_call_now_ms() { cat "$FAKE_GH_NOW_FILE"; }
+gh_tick_attempt_timeout_sec() {
+  local allowed=$((ZF_GH_CALL_DEADLINE_EPOCH_MS - $(gh_call_now_ms) - 6000))
+  (( allowed >= 1000 )) || return 1
+  printf '%s\n' "$((allowed / 1000))"
+}
+gh() {
+  local n path body list='[]' comments item
+  printf 'gh %s\n' "$*" >> "$FAKE_GH_LOG"
+  if ! gh_tick_attempt_timeout_sec >/dev/null; then
+    case "${1:-}:${2:-}" in api:*|issue:list) echo 'gh: refusing read because the owner-admission deadline cannot fit one bounded attempt' >&2 ;; *) echo 'gh: refusing call because the owner-admission deadline cannot fit one bounded attempt' >&2 ;; esac
+    return 124
+  fi
+  case "${1:-}:${2:-}" in
+    issue:list)
+      [[ "$*" != *comments* ]] || fake_advance_ms 5000
+      [[ "$*" == *comments* ]] || fake_advance_ms 1000
+      for n in 910810 910811 910812; do
+        [[ "$(jq -r '.state // empty' "$AGENT_HOME/state/$n.json" 2>/dev/null || true)" == on-hold ]] || continue
+        if [[ "$*" == *comments* ]]; then
+          comments='[]'
+          [[ ! -f "$FAKE_GH_MARKERS/$n" ]] || comments="$(jq -cn --rawfile body "$FAKE_GH_MARKERS/$n" '[{body:$body}]')"
+          item="$(jq -cn --argjson n "$n" --argjson comments "$comments" '{number:$n,state:"OPEN",stateReason:null,closedAt:null,labels:[{name:"on-hold"}],comments:$comments,title:"fixture",updatedAt:"2026-11-16T00:00:00Z"}')"
+        else
+          item="$(jq -cn --argjson n "$n" '{number:$n,state:"OPEN",stateReason:null,closedAt:null,labels:[{name:"on-hold"}],title:"fixture",updatedAt:"2026-11-16T00:00:00Z"}')"
+        fi
+        list="$(jq -cn --argjson list "$list" --argjson item "$item" '$list + [$item]')"
+      done
+      printf '%s\n' "$list"
+      ;;
+    api:--paginate)
+      path="${!#}"
+      n="$(sed -n 's#.*issues/\([0-9][0-9]*\)/comments.*#\1#p' <<< "$path")"
+      fake_advance_ms 2000
+      if [[ -f "$FAKE_GH_MARKERS/$n" ]]; then
+        jq -cn --rawfile body "$FAKE_GH_MARKERS/$n" '[[{node_id:"fixture",body:$body,user:{login:"bot"}}]]'
+      else
+        echo '[[]]'
+      fi
+      ;;
+    api:*)
+      n="${2##*/}"
+      fake_advance_ms 2000
+      jq -cn --argjson n "$n" '{number:$n,title:"fixture",body:"",state:"open",labels:[{name:"on-hold"}]}'
+      ;;
+    issue:comment)
+      n="$3"; body="${@: -1}"
+      if [[ "$n" == "$FAKE_GH_FAIL_ISSUE" ]]; then echo 'simulated comment API failure' >&2; return 1; fi
+      cat "$body" > "$FAKE_GH_MARKERS/$n"
+      fake_advance_ms 1000
+      ;;
+    issue:edit) fake_advance_ms 1000 ;;
+    *) return 0 ;;
+  esac
+}
+shuf() {
+  FAKE_GH_SHUFFLE_RUN=$((FAKE_GH_SHUFFLE_RUN + 1))
+  if (( FAKE_GH_SHUFFLE_RUN == 1 )); then tac; else cat; fi
+}
+for n in 910810 910811; do
+  state_merge "$n" '.state = "on-hold" | .hold = {kind:"stop-loss",holder:"scheduler-stop-loss",release_condition:"stop-loss ended",expires_at:"2026-10-31T00:00:00Z",stage_before:"finish-first",durable_record:true}' >/dev/null
+done
+run_short_hold_sweep() {
+  ZF_GH_CALL_DEADLINE_EPOCH_MS=$(($(gh_call_now_ms) + 11000))
+  export ZF_GH_CALL_DEADLINE_EPOCH_MS
+  hold_sweep 2>> "$AGENT_HOME/short-sweep.err" || true
+}
+: > "$FAKE_GH_LOG"
+run_short_hold_sweep
+pending_issue="$(jq -r 'select(.hold_sweep_refusal.reason == "expiry-comment-pending") | input_filename | split("/")[-1] | rtrimstr(".json")' "$AGENT_HOME/state/910810.json" "$AGENT_HOME/state/910811.json" | head -n 1)"
+assert_eq "a refused expiry write is retained for the next tick" 910811 "$pending_issue"
+: > "$FAKE_GH_LOG"
+run_short_hold_sweep
+first_issue_action="$(grep -E '^gh (issue comment|api )' "$FAKE_GH_LOG" | head -n 1 | sed -E 's/^gh //')"
+assert_contains "the pending hold retries before another detail read" "$first_issue_action" 'issue comment 910811 '
+for run in 3 4; do run_short_hold_sweep; done
+assert_eq "repeated short sweeps release the first expired hold" finish-first "$(jq -r '.state' "$AGENT_HOME/state/910810.json")"
+assert_eq "repeated short sweeps release the pending expired hold" finish-first "$(jq -r '.state' "$AGENT_HOME/state/910811.json")"
+
+for n in $(seq 910810 910840); do rm -f "$AGENT_HOME/state/$n.json" "$FAKE_GH_MARKERS/$n"; done
+state_merge 910812 '.state = "on-hold" | .hold = {kind:"stop-loss",holder:"scheduler-stop-loss",release_condition:"stop-loss ended",expires_at:"2026-10-31T00:00:00Z",stage_before:"finish-first",durable_record:true}' >/dev/null
+FAKE_GH_FAIL_ISSUE=910812
+ZF_GH_CALL_DEADLINE_EPOCH_MS=$(($(gh_call_now_ms) + 60000)); export ZF_GH_CALL_DEADLINE_EPOCH_MS
+: > "$FAKE_GH_LOG"
+status=0; hold_sweep 2>"$AGENT_HOME/comment-failure.err" || status=$?
+assert_eq "a real expiry comment failure is returned" 1 "$status"
+assert_eq "a real expiry comment failure leaves the hold" on-hold "$(jq -r '.state' "$AGENT_HOME/state/910812.json")"
+assert_contains "a real expiry comment failure is logged" "$(cat "$AGENT_HOME/comment-failure.err")" 'could not record expiry for #910812; leaving hold untouched'
+assert_contains "the fake API reports a real write failure" "$(cat "$AGENT_HOME/comment-failure.err")" 'simulated comment API failure'
 
 lib_case_exit
