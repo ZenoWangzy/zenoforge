@@ -39,6 +39,7 @@ merge_agent_pr() {
 }
 conclude_merged_run() { printf '%s\n' "$*" >> "$AGENT_HOME/conclude-calls"; }
 LIB
+export ZF_ENGINE_LIVE="$AGENT_HOME/checkout/engine"
 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 bash "$entry" merge-one merge 42 101 "$sha" > "$test_env_root/result"
 bash "$entry" merge-one merge 42 101 "$sha" > "$test_env_root/replay"
@@ -94,4 +95,19 @@ rm "$AGENT_HOME/delivery-requests/land-new.json"
 bash "$entry" land-new land codex/fixture "$head" fixture > /dev/null
 [[ "$(wc -l < "$AGENT_HOME/land-calls" | tr -d ' ')" == 1 ]]
 echo 'ok - a fresh branch is imported into an isolated worktree; ack recovery never enqueues twice'
+
+# The documented engine-live entrypoint derives both its engine and request home from its path.
+no_env_home="$test_env_root/no-env-home"
+no_env_engine="$test_env_root/engine-live-copy"
+no_env_id=documented-status
+mkdir -p "$no_env_home/delivery-requests"
+cp -a "$MODEL_POLICY_TEST_ENGINE" "$no_env_engine"
+ln -s "$no_env_engine" "$no_env_home/engine-live"
+printf '{"id":"%s","status":"accepted"}\n' "$no_env_id" > "$no_env_home/delivery-requests/$no_env_id.json"
+no_env_rc=0
+env -u AGENT_HOME -u ZF_ENGINE_LIVE HOME="$no_env_home" ZF_AGENT_TEST_MODE=1 \
+  bash "$no_env_home/engine-live/delivery-request.sh" "$no_env_id" status > "$test_env_root/documented-status" || no_env_rc=$?
+[[ "$no_env_rc" == 0 ]] || { printf 'FAIL documented engine-live call without env: rc=%s\n' "$no_env_rc" >&2; exit 1; }
+cmp "$no_env_home/delivery-requests/$no_env_id.json" "$test_env_root/documented-status"
+echo 'ok - documented engine-live call finds its engine and request without env overrides'
 
