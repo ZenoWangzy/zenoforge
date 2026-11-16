@@ -113,12 +113,12 @@ tick_step_cleanup() {
 }
 
 tick_step_run() { # scheduler.sh --tick-step step
-  local step="$1" started=$SECONDS rc=0 gh_calls=0 TICK_STEP_LOCK_RESULT=""
+  local step="$1" started=$SECONDS rc=0 gh_calls="gh_calls=0 gql=0 rest=0" TICK_STEP_LOCK_RESULT=""
   tick_step_lock_run "$step" tick_step_execute "$step" || rc=$?
   [[ "$TICK_STEP_LOCK_RESULT" == acquired ]] || return "$rc"
-  if declare -F tick_gh_calls_count >/dev/null; then gh_calls="$(tick_gh_calls_count 2>/dev/null)" || gh_calls=0; fi
-  say "tick-phases kind=detached step=$step secs=$((SECONDS - started)) gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none} rc=$rc"
-  say "tick-step done step=$step secs=$((SECONDS - started)) gh_calls=$gh_calls rc=$rc ended=$(date -u +%H:%M:%SZ)"
+  if declare -F tick_gh_calls_summary >/dev/null; then gh_calls="$(tick_gh_calls_summary 2>/dev/null)" || gh_calls='gh_calls=0 gql=0 rest=0'; fi
+  say "tick-phases kind=detached step=$step secs=$((SECONDS - started)) $gh_calls phases=${TICK_PHASE_DETAILS:-none} rc=$rc"
+  say "tick-step done step=$step secs=$((SECONDS - started)) $gh_calls rc=$rc ended=$(date -u +%H:%M:%SZ)"
   declare -F tick_step_cleanup >/dev/null && tick_step_cleanup
   return "$rc"
 }

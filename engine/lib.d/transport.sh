@@ -101,11 +101,95 @@ gh_tick_retry_fits() {
 }
 
 
+gh_rate_limit_api_class() {
+  local arg
+  case "${1:-}" in
+    pr|issue|search) printf 'graphql\n' ;;
+    api)
+      shift
+      for arg in "$@"; do
+        case "$arg" in
+          graphql|*/graphql|https://*/graphql) printf 'graphql\n'; return 0 ;;
+        esac
+      done
+      printf 'rest\n'
+      ;;
+    --version|version|help|-h|--help) printf 'none\n' ;;
+    *) printf 'rest\n' ;;
+  esac
+}
+
+gh_rate_limit_marker() {
+  [[ -n "${AGENT_HOME:-}" && ( "$1" == graphql || "$1" == rest ) ]] || return 1
+  printf '%s/gh-rate-limit-until.%s\n' "${AGENT_HOME%/}" "$1"
+}
+
+gh_rate_limit_active() {
+  local marker reset_epoch now
+  [[ "$1" == graphql || "$1" == rest ]] || return 1
+  marker="$(gh_rate_limit_marker "$1")" || return 1
+  [[ -r "$marker" ]] && IFS= read -r reset_epoch < "$marker" || return 1
+  [[ "$reset_epoch" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)" || return 1
+  if (( reset_epoch > now )); then
+    echo "gh: $1 rate-limit backoff active until epoch=$reset_epoch (rc 75)" >&2
+    return 0
+  fi
+  return 1
+}
+
+gh_rate_limit_write() {
+  local marker tmp
+  marker="$(gh_rate_limit_marker "$1")" || return 1
+  mkdir -p -- "$AGENT_HOME" 2>/dev/null || return 1
+  tmp="$marker.$BASHPID.$RANDOM"
+  if ! printf '%s\n' "$2" > "$tmp" || ! mv -f -- "$tmp" "$marker"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+gh_rate_limit_reset_epoch() {
+  local reset
+  case "$1" in
+    graphql)
+      reset="$(command timeout --kill-after=1s 10s gh api graphql \
+        -f 'query={rateLimit{remaining resetAt used}}' --jq '.data.rateLimit.resetAt' 2>/dev/null)" || return 1
+      jq -Rer 'fromdateiso8601' <<< "$reset"
+      ;;
+    rest)
+      reset="$(command timeout --kill-after=1s 10s gh api rate_limit --jq '.resources.core.reset' 2>/dev/null)" || return 1
+      [[ "$reset" =~ ^[0-9]+$ ]] || return 1
+      printf '%s\n' "$reset"
+      ;;
+  esac
+}
+
+gh_rate_limit_handle_failure() {
+  local api="$1" error="$2" now reset_epoch
+  [[ "$api" == graphql || "$api" == rest ]] || return 1
+  grep -qiE 'API rate limit (already )?exceeded|primary rate limit' <<< "$error" || return 1
+  now="$(date +%s)" || return 1
+  reset_epoch=$((now + 900))
+  gh_rate_limit_write "$api" "$reset_epoch" || {
+    echo "gh: could not write $api rate-limit backoff marker under AGENT_HOME" >&2
+    return 0
+  }
+  if reset_epoch="$(gh_rate_limit_reset_epoch "$api")" && [[ "$reset_epoch" =~ ^[0-9]+$ ]] && (( reset_epoch > now )); then
+    gh_rate_limit_write "$api" "$reset_epoch" || :
+  else
+    reset_epoch=$((now + 900))
+  fi
+  echo "gh: $api primary rate limit exhausted; shared backoff until epoch=$reset_epoch" >&2
+  return 0
+}
+
+
 gh() {
   local status attempt retry_read=0 stderr_file stderr i api_method="" api_fields=0 arg attempt_timeout
   local max_attempts="${ZF_GH_RETRY_MAX_ATTEMPTS:-3}" base_backoff="${ZF_GH_RETRY_BACKOFF_SECONDS:-2}" retry_delay
   local profile_source="" profile_function="" profile_line=0 profile_started_us="" profile_ended_us
-  local args=("$@")
+  local api_class args=("$@")
   if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
@@ -117,6 +201,15 @@ gh() {
     fi
     profile_source="${profile_source##*/}"
     profile_started_us="${EPOCHREALTIME/./}"
+  fi
+  api_class="$(gh_rate_limit_api_class "${args[@]}")"
+  if gh_rate_limit_active "$api_class"; then
+    if [ -n "$profile_started_us" ]; then
+      profile_ended_us="${EPOCHREALTIME/./}"
+      _call_profile_record gh "$profile_started_us" "$profile_ended_us" 75 \
+        "$profile_source" "$profile_function" "$profile_line" "${args[@]}"
+    fi
+    return 75
   fi
   case "${1:-}:${2:-}" in
     issue:view|issue:list|pr:view|pr:list|pr:checks|pr:diff|pr:status|run:view|run:list|label:list|repo:view|repo:list|workflow:view|workflow:list|release:view|release:list|variable:get|variable:list|auth:status)
@@ -194,6 +287,11 @@ gh() {
       fi
     fi
     stderr="$(cat "$stderr_file")"
+    if gh_rate_limit_handle_failure "$api_class" "$stderr"; then
+      gh_failure_log "$stderr" >&2
+      rm -f -- "$stderr_file"
+      return 75
+    fi
     gh_failure_log "$stderr" >&2
     rm -f -- "$stderr_file"
     [ "$status" -eq 124 ] && _bounded_call_timed_out \
@@ -234,6 +332,11 @@ gh() {
       fi
     fi
     stderr="$(cat "$stderr_file")"
+    if gh_rate_limit_handle_failure "$api_class" "$stderr"; then
+      gh_failure_log "$stderr" >&2
+      rm -f -- "$stderr_file"
+      return 75
+    fi
     if [ "$attempt" -lt "$max_attempts" ] && { [ "$status" -eq 124 ] || gh_failure_is_transient "$stderr"; }; then
       retry_delay=$((base_backoff * (1 << (attempt - 1))))
       (( retry_delay > 30 )) && retry_delay=30
@@ -264,7 +367,7 @@ gh() {
 # profiler observe the actual bounded GitHub invocation at its callsite.
 gh_timeout() {
   local timeout_value profile_source="" profile_function="" profile_line=0
-  local profile_started_us="" profile_ended_us status=0
+  local profile_started_us="" profile_ended_us status=0 api_class stderr_file stderr
   local -a timeout_options=()
   while [[ "${1:-}" == -k || "${1:-}" == --kill-after ]]; do
     [ "$#" -ge 2 ] || return 2
@@ -281,7 +384,26 @@ gh_timeout() {
     profile_source="${profile_source##*/}"
     profile_started_us="${EPOCHREALTIME/./}"
   fi
-  if command timeout "${timeout_options[@]}" "$timeout_value" gh "$@"; then status=0; else status=$?; fi
+  api_class="$(gh_rate_limit_api_class "$@")"
+  if gh_rate_limit_active "$api_class"; then
+    status=75
+  else
+    stderr_file="$(mktemp)" || return 1
+    if command timeout "${timeout_options[@]}" "$timeout_value" gh "$@" 2>"$stderr_file"; then
+      status=0
+      cat "$stderr_file" >&2
+    else
+      status=$?
+      stderr="$(cat "$stderr_file")"
+      if gh_rate_limit_handle_failure "$api_class" "$stderr"; then
+        gh_failure_log "$stderr" >&2
+        status=75
+      else
+        cat "$stderr_file" >&2
+      fi
+    fi
+    rm -f -- "$stderr_file"
+  fi
   if [ -n "$profile_started_us" ]; then
     profile_ended_us="${EPOCHREALTIME/./}"
     _call_profile_record gh "$profile_started_us" "$profile_ended_us" "$status" \

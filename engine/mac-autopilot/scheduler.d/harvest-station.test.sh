@@ -66,7 +66,7 @@ done
 [[ "$(jq '[.workers[] | select(.harvested == true)] | length' "$WORKERS")" == 2 ]] || fail 'workers left unharvested'
 [[ ! -e "$SCHED_LOCK" && ! -e "$HARVEST_STATION_LOCK" ]] || fail 'a finished pass left a lock'
 line="$(grep 'harvest-station done' "$LOG")"
-[[ "$line" =~ secs=[0-9]+\ gh_calls=[0-9]+\ lock_wait=[0-9]+\ lock_hold=[0-9]+\ workers=2\ harvested=2\ deferred=0\ limit=240s\ ended=[0-9:]+Z\ phases=harvest_workers:[0-9]+s/[0-9]+gh,coord_reap:[0-9]+s/[0-9]+gh,coord_systemd: ]] \
+[[ "$line" =~ secs=[0-9]+\ gh_calls=[0-9]+\ gql=[0-9]+\ rest=[0-9]+\ lock_wait=[0-9]+\ lock_hold=[0-9]+\ workers=2\ harvested=2\ deferred=0\ limit=240s\ ended=[0-9:]+Z\ phases=harvest_workers:[0-9]+s/[0-9]+gh,coord_reap:[0-9]+s/[0-9]+gh,coord_systemd: ]] \
   || fail "the pass line lacks its measured fields: $line"
 
 # --- case 2: a worker another pass harvested after the list was read is not harvested twice. ---
