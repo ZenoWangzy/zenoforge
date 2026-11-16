@@ -104,8 +104,8 @@ footprint_filter_rows_main_fallback() { # preserve the old per-scope fallback if
     fi
     records+="$i"$'\t'"$filtered"$'\t'"$has_old"$'\t'"$filtered_old"$'\n'
   done < <(jqf -j 'to_entries[] as $r | ($r.key|tostring),"\u0000",($r.value.scope|tojson),"\u0000",($r.value.old_scope|tojson),"\u0000",(($r.value.preserve // false)|tostring),"\u0000",(($r.value|has("old_scope"))|tostring),"\u0000"' <<<"$rows")
-  jqf -Rn --argjson rows "$rows" '[inputs | split("\t") | select(length >= 4) as $p | ($p[0]|tonumber) as $i
-    | $rows[$i] + {scope:($p[1]|fromjson)}
+  jqf -Rn --slurpfile rows <(printf '%s' "$rows") '[inputs | split("\t") | select(length >= 4) as $p | ($p[0]|tonumber) as $i
+    | $rows[0][$i] + {scope:($p[1]|fromjson)}
     | if $p[2] == "true" then . + {old_scope:($p[3]|fromjson)} else . end]' <<<"$records"
 }
 
@@ -138,8 +138,8 @@ footprint_filter_rows_main() { # filter scope and optional old_scope for every r
     field_name="${path_rows[$i]#*$'\t'}"; field_name="${field_name%%$'\t'*}"
     records+="$row_index"$'\t'"$field_name"$'\t'"$kind"$'\t'"${path_values[$i]}"$'\n'
   done
-  jqf -Rn --argjson rows "$rows" '[inputs | split("\t") | select(length >= 4) | {row:(.[0]|tonumber),field:.[1],kind:.[2],path:(.[3:]|join("\t"))}] as $paths
-    | [$rows | to_entries[] as $entry | $entry.value as $row
+  jqf -Rn --slurpfile rows <(printf '%s' "$rows") '[inputs | split("\t") | select(length >= 4) | {row:(.[0]|tonumber),field:.[1],kind:.[2],path:(.[3:]|join("\t"))}] as $paths
+    | [$rows[0] | to_entries[] as $entry | $entry.value as $row
        | reduce ["scope","old_scope"][] as $field ($row;
            if (.preserve // false) == true or (.[$field]|type) != "array" or any(.[$field][]; type != "string") then .
            else ([$paths[] | select(.row == $entry.key and .field == $field)] as $found
@@ -154,7 +154,7 @@ footprint_classify_scope_list() { # classify all candidate and original scopes w
   while IFS= read -r -d '' index && IFS= read -r -d '' path; do
     scope_indexes+=("$index"); paths+=("$path"); specs+="refs/remotes/origin/main:$path"$'\n'
   done < <(jqf -j 'to_entries[] as $scope | $scope.value[] as $path | ($scope.key|tostring),"\u0000",$path,"\u0000"' <<<"$scopes")
-  ((${#paths[@]})) || { jqf -cn --argjson scopes "$scopes" '[range(0;($scopes|length)) | []]'; return; }
+  ((${#paths[@]})) || { jqf -cn --slurpfile scopes <(printf '%s' "$scopes") '[range(0;($scopes[0]|length)) | []]'; return; }
   records="$(printf '%s' "$specs" | git -C "$ROOT" cat-file --batch-check='%(objecttype)' 2>/dev/null)" || records=''
   mapfile -t objects <<<"$records"
   records=''
@@ -163,9 +163,9 @@ footprint_classify_scope_list() { # classify all candidate and original scopes w
     [[ -d "$ROOT/${paths[$index]}" || "${objects[$index]:-}" == tree ]] && type=directory
     records+="${scope_indexes[$index]}"$'\t'"$type"$'\t'"${paths[$index]}"$'\n'
   done
-  jqf -Rn --argjson scopes "$scopes" '[inputs | split("\t") | select(length >= 3)
+  jqf -Rn --slurpfile scopes <(printf '%s' "$scopes") '[inputs | split("\t") | select(length >= 3)
     | {scope:(.[0]|tonumber),type:.[1],path:(.[2:]|join("\t"))}] as $paths
-    | [range(0;($scopes|length)) as $scope
+    | [range(0;($scopes[0]|length)) as $scope
        | [$paths[] | select(.scope == $scope) | {path,type}]]' <<<"$records"
 }
 
@@ -186,9 +186,9 @@ footprint_prepared_conflicts_batch() { # compare all candidates against prepared
   [[ -n "$rows" && -n "$scopes" ]] || return 1
   ((${#FOOTPRINT_OWNER_IDS[@]})) || return 0
   typed="$(footprint_classify_scope_list "$scopes")" || return 1
-  rows="$(jqf -cn --argjson rows "$rows" --argjson scopes "$typed" '
-    [range(0;($rows|length)) as $i
-      | $rows[$i] + {scope_types:$scopes[2*$i],original_types:$scopes[2*$i+1]}]')" || return 1
+  rows="$(jqf -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile scopes <(printf '%s' "$typed") '
+    [range(0;($rows[0]|length)) as $i
+      | $rows[0][$i] + {scope_types:$scopes[0][2*$i],original_types:$scopes[0][2*$i+1]}]')" || return 1
   matches="$(jqf -nr --slurpfile rows <(printf '%s' "$rows") \
     --slurpfile owners <(printf '%s' "$FOOTPRINT_OWNERS_DOC") \
     --slurpfile active <(printf '%s' "$active") --argjson live "$FOOTPRINT_OWNER_LIVE_DOC" \
@@ -315,9 +315,9 @@ for i in range(0,len(parts),2):
   done
   if ((${#miss[@]})); then
     hotspot_log >/dev/null
-    miss_rows="$(jqf -cn --argjson rows "$rows" --arg ids "$miss_ids" '
+    miss_rows="$(jqf -cn --slurpfile rows <(printf '%s' "$rows") --rawfile ids <(printf '%s' "$miss_ids") '
       ($ids|split("\n")|map(select(length>0))) as $ids
-      | [$rows[] | select((.id | if type == "string" then . else tojson end) as $id | $ids | index($id)) | {id,scope,head}]')" || return 1
+      | [$rows[0][] | select((.id | if type == "string" then . else tojson end) as $id | $ids | index($id)) | {id,scope,head}]')" || return 1
     expanded="$(hotspot_expand_batch "$miss_rows")" || return 1
     [[ "${HOTSPOT_LOG_OK:-false}" == true ]] || HOTSPOT_LOG_LOADED=false
     filtered="$(footprint_filter_rows_main "$expanded")" || return 1
