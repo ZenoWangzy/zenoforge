@@ -274,7 +274,7 @@ adopted_report_name=impl-71001-orig-done-adopted-impl-71001-fix-round1.md
 write_unit "$orig_report_name"
 jqf '.units[0].pr=71001 | .units[0].stage="repair"' "$UNITS" | write_state "$UNITS"
 write_worker repair "$adopted_fix_name" impl-71001-fix-round1.worker.log
-printf 'tokens used\n1,020\nFixed the sections in the fix note.\n' > "$sup/impl-71001-fix-adopted.worker.log"
+printf 'tokens used\n1,020\nFixed the sections in the fix note.\n' > "$sup/impl-71001-fix-round1.worker.log"
 before_resumes=$RESUME_DISPATCHES
 harvest_workers || :
 [[ "$RESUME_DISPATCHES" == "$before_resumes" && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$adopted_report_name" ]] \
@@ -291,27 +291,7 @@ grep -q '^Done: unique-6597-done-line' "$sup/$orig_report_name" || fail 'the uni
 
 # A second repair can adopt a previously adopted report; it must keep only the original unit section and one adopted-name segment.
 adopted_round2_fix_name=impl-71001-fix-round2.md
-cat > "$sup/$adopted_round2_fix_name" <<'REPORT'
-## decision-log
-Tried the second repair and verified the report gate again.
-
-## how
-The scheduler adopts the passing second repair note.
-
-## why
-Commit 97ed8be added this report gate for issue #880.
-
-## root-cause
-The persisted state was selected incorrectly.
-
-## recurrence-guard
-kind: test
-
-## prior-art
-Source: https://example.invalid/incident-reference
-
-VERDICT: READY
-REPORT
+cp "$sup/$adopted_fix_name" "$sup/$adopted_round2_fix_name"
 adopted_round2_report_name=impl-71001-orig-done-adopted-impl-71001-fix-round2.md
 awk '
   !removed && /^## prior-art[[:space:]]*$/ { skipping=1; removed=1; next }
@@ -348,34 +328,14 @@ harvest_workers || :
 # The report checked for adoption must be the exact path copied into the merged report.
 checked_note_name=impl-71001-external-fix.md
 checked_note_path="$fixture/$checked_note_name"
-cat > "$checked_note_path" <<'REPORT'
-## decision-log
-Checked note from its resolved path.
-
-## how
-The exact checked note is copied into the adopted report.
-
-## why
-Commit 97ed8be added this report gate for issue #880.
-
-## root-cause
-The persisted state was selected incorrectly.
-
-## recurrence-guard
-kind: test
-
-## prior-art
-Source: https://example.invalid/incident-reference
-
-VERDICT: READY
-REPORT
+cp "$sup/$adopted_fix_name" "$checked_note_path"
 printf 'wrong supervisor copy\n' > "$sup/$checked_note_name"
 write_unit "$orig_report_name"
 checked_unit_json="$(jqf -c '.units[0]' "$UNITS")"
 checked_merged_name="$(incident_report_harvest_target issue-71001 repair "$checked_unit_json" "$checked_note_name" "$checked_note_path")"
 [[ "$checked_merged_name" == impl-71001-orig-done-adopted-impl-71001-external-fix.md ]] \
   || fail "the checked repair note was not adopted from its resolved path (report=$checked_merged_name)"
-grep -q '^Checked note from its resolved path\.' "$sup/$checked_merged_name" \
+grep -q '^Tried the repair in the fix note and verified the recurrence guard' "$sup/$checked_merged_name" \
   && ! grep -q '^wrong supervisor copy$' "$sup/$checked_merged_name" \
   || fail 'the adopted report did not copy the exact fix-note path that passed the gate'
 
