@@ -107,6 +107,52 @@ how_why_gate_reason() { # unit-json [implementation report] → missing/empty ho
   grep -Eq '(^|[^[:xdigit:]])[[:xdigit:]]{7,}([^[:xdigit:]]|$)|#[0-9]+' <<<"$why_section" \
     || printf '## why lacks a commit SHA (7+ hex characters) or #N issue reference'
 }
+incident_report_reason() { # unit-json report-path → the first report gate reason, empty when the report passes
+  local r
+  r="$(decision_log_gate_reason "$1" "$2")"
+  [[ -n "$r" ]] || r="$(how_why_gate_reason "$1" "$2")"
+  [[ -n "$r" ]] || r="$(incident_report_gate_reason "$1" "$2")"
+  printf '%s' "$r"
+}
+incident_report_merge_adopted() { # unit-report fix-note fix-note-path → atomically writes the fix note and original unit report section beside the unit report; prints its name
+  local orig="$1" fix="$2" fix_path="$3" orig_base="${1%.md}" original_name="$1" orig_path="$SUP/$1" merged tmp marker
+  if [[ "$orig_base" == *-adopted-* ]]; then
+    orig_base="${orig_base%%-adopted-*}"
+    original_name="$orig_base.md"
+  fi
+  if [[ "$orig" == *-adopted-* ]] || grep -q '^<!-- unit implementation report:' "$orig_path" 2>/dev/null; then
+    marker="$(sed -n 's/^<!-- unit implementation report: \(.*\) -->$/\1/p' "$orig_path" 2>/dev/null | head -n 1)"
+    [[ -z "$marker" ]] || original_name="$marker"
+  fi
+  merged="${orig_base}-adopted-${fix%.md}.md"
+  tmp="$SUP/$merged.new"
+  if grep -q '^<!-- unit implementation report:' "$orig_path" 2>/dev/null; then
+    { cat -- "$fix_path" && printf '\n<!-- unit implementation report: %s -->\n\n' "$original_name" \
+      && awk 'copy { print } /^<!-- unit implementation report:/ { copy=1 }' "$orig_path"; } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  else
+    { cat -- "$fix_path" && printf '\n<!-- unit implementation report: %s -->\n\n' "$original_name" && cat -- "$orig_path"; } \
+      > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  fi
+  if ! mv -f -- "$tmp" "$SUP/$merged"; then rm -f -- "$tmp"; return 1; fi
+  printf '%s' "$merged"
+}
+incident_report_harvest_target() { # unit-id worker-type unit-json worker-report worker-report-path → report used by the pre-review gate
+  local unit="$1" wtype="$2" unit_json="$3" worker_report="$4" worker_report_path="$5" report="$4" merged
+  [[ "$wtype" == repair ]] || { printf '%s' "$report"; return 0; }
+  report="$(jqf -r --arg n "$worker_report" '.implementation_report // $n' <<<"$unit_json")"
+  if [[ "$worker_report" != "$report" ]] \
+    && [[ -n "$(incident_report_reason "$unit_json" "$SUP/$report")" ]] \
+    && [[ -z "$(incident_report_reason "$unit_json" "$worker_report_path")" ]]; then
+    merged="$(incident_report_merge_adopted "$report" "$worker_report" "$worker_report_path")" || merged=""
+    if [[ -n "$merged" ]] && [[ -z "$(incident_report_reason "$unit_json" "$SUP/$merged")" ]] \
+      && set_unit "$unit" ".implementation_report=$(js "$merged")"; then
+      say "report adopted unit=$unit from=$worker_report"
+      printf '%s' "$merged"
+      return 0
+    fi
+  fi
+  printf '%s' "$report"
+}
 incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
   [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }
@@ -254,12 +300,8 @@ lane_rule() { # lane sha
 subject_of() { # pr issue → 评审/修复对象的称呼（无 PR 的直落单元用 issue 或单元 id）
   if [[ -n "$1" ]]; then printf 'PR #%s' "$1"; elif [[ -n "$2" ]]; then printf 'issue #%s 的本地实现（无 PR）' "$2"; else printf '本地实现（无 PR）'; fi
 }
-review_fix_prompt_rule() { # lane → bounded edit/commit/push instructions
-  if [[ "$1" == pr ]]; then
-    printf '%s' '发现一个小且局部的缺陷时，可在本分支就地修复并补一个回归测试：仅改一个源文件，源文件改动最多 20 行，不做设计变更；测试文件可作为第二个改动文件。先运行该测试，再以调度器已配置的 reviewer identity 提交一个直接基于当前 head 的 commit，运行 `bash tools/test-receipt.sh <测试命令>`，然后只 push 当前分支。报告中的该 finding 使用 status `fixed-in-review`，包含 commit_sha 与 test 对象（path、name），结论仍可为 READY。更大的修复不要做，保持 finding open 并返回 NOT_READY。'
-  else
-    printf '%s' '此 lane 只读，不在评审中改代码；直落 main 的测试由落地后流水线运行。'
-  fi
+review_fix_prompt_rule() { # lane → read-only review instructions
+  printf '%s' '所有 lane 的评审均为只读：评审中不得编辑代码、创建提交、推送分支或运行测试；发现保持 status `open`，交给 repair 阶段处理。'
 }
 review_prompt() { # pr-or-subject title sha report [lane] [checkout]
   local subject="$1"

@@ -46,8 +46,8 @@ existing_walk_tick_pass() {
     for n in "${!INTAKE_EXISTING_WALKED[@]}"; do [[ "${INTAKE_EXISTING_WALKED[$n]}" == ok ]] && ok_rows+=("$n"); done
     tmp="$A/.existing-walked.$$"
     { date +%s; printf '%s\n%s\n' "${HANDOFF_WAIT_PRS:-[]}" "${HANDOFF_WAIT_BRANCHES:-[]}"; printf '%s\n' ${ok_rows[@]+"${ok_rows[@]}"}; } > "$tmp" && mv -f -- "$tmp" "$A/.existing-walked" || rm -f -- "$tmp"
-    gh_calls="$(tick_gh_calls_count)"
-    say "existing-walk done secs=$SECONDS rows=$INTAKE_WALK_ROWS lock_wait=$(ew_secs "$LOCK_WAIT_US") lock_hold=$(ew_secs "$LOCK_HOLD_US") lap_done=$INTAKE_WALK_LAP walked=${#ok_rows[@]} gh_calls=$gh_calls rc=$rc limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
+    gh_calls="$(tick_gh_calls_summary)"
+    say "existing-walk done secs=$SECONDS rows=$INTAKE_WALK_ROWS lock_wait=$(ew_secs "$LOCK_WAIT_US") lock_hold=$(ew_secs "$LOCK_HOLD_US") lap_done=$INTAKE_WALK_LAP walked=${#ok_rows[@]} $gh_calls rc=$rc limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$EXISTING_WALK_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$EXISTING_WALK_LOCK"

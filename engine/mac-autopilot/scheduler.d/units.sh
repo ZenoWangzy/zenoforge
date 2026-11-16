@@ -114,10 +114,11 @@ retire_terminal_units() {
 
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）; rc 3 when no row has the id (logged ledger-write-missed, nothing written)
   [[ "${SET_UNIT_QUEUE:-0}" != 1 ]] || { dep_q_enqueue "$@"; return 0; } # release_dependency_blocks batches its writes, see dep_q_flush
-  local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage="" lock_secs write_secs write_started holder_phase=unknown
+  local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage="" lock_secs write_secs write_started holder_phase=unknown; local -x UNIT_TRANSITION_STAGE_WRITE=false UNIT_TRANSITION_UNIT_ID="$1" UNIT_TRANSITION_FROM="" UNIT_TRANSITION_CALLER="${FUNCNAME[1]:-top}"
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || ! declare -F ledger_lock_holder_phase >/dev/null || holder_phase="$(ledger_lock_holder_phase)"; if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi; lock_secs=$((SECONDS - started)); write_started=$SECONDS
   if declare -F harvest_unit_cas_check >/dev/null; then harvest_unit_cas_check "$1" || { if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi; return 1; }; fi
-  [[ "$2" == *".stage"* ]] && old_stage="$(unit_field "$1" '.stage')"
+  old_stage="$(unit_field "$1" '.stage')" || old_stage=""
+  UNIT_TRANSITION_STAGE_WRITE=true UNIT_TRANSITION_FROM="$old_stage"
   # No row with this id: the update would match nothing, and write_state takes the unchanged bytes as success.
   if [[ "$(jqf --arg id "$1" '[.units[] | select(.id==$id)] | length' "$UNITS")" == 0 ]]; then
     say "ledger-write-missed unit=$1 caller=${FUNCNAME[1]:-top}"; rc=3
@@ -128,15 +129,17 @@ set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）; rc
   if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi
   write_secs=$((SECONDS - write_started)); elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]] && (( lock_secs >= 2 || write_secs >= 2 )) && say "dispatch detail ledger_write unit=$1 secs=${elapsed}s lock_wait=${lock_secs}s write=${write_secs}s holder_phase=$holder_phase"
-  if (( rc == 0 )) && [[ -n "$old_stage" ]] && declare -F footprint_owner_transition >/dev/null; then
+  if (( rc == 0 )) && [[ -n "$old_stage" ]]; then
     new_stage="$(unit_field "$1" '.stage')" || new_stage=""
-    footprint_owner_transition "$1" "$old_stage" "$new_stage" \
-      || say "footprint wait cleanup failed owner=$1 stage=$new_stage"
+    if [[ "$old_stage" != "$new_stage" ]] && declare -F footprint_owner_transition >/dev/null; then
+      footprint_owner_transition "$1" "$old_stage" "$new_stage" \
+        || say "footprint wait cleanup failed owner=$1 stage=$new_stage"
+    fi
   fi
   return "$rc"
 }
 units_update() { # jq args; transactionally update the unit ledger under the shared scheduler lock
-  local own_lock=false rc=0 new
+  local own_lock=false rc=0 new; local -x UNIT_TRANSITION_STAGE_WRITE=true UNIT_TRANSITION_UNIT_ID="" UNIT_TRANSITION_FROM="" UNIT_TRANSITION_CALLER="${FUNCNAME[1]:-top}"
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
     acquire_scheduler_lock_wait || return 1
     own_lock=true
@@ -675,12 +678,12 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
 }
 
 # Row 131: three parks had no exit a machine could meet (cap default, repair breaker, budget park; 21 units, the oldest 229 h on 11-09).
-# Each takes the existing budget-recut route once per 24h, read from its own dead-park-exit event; a unit that parks again in a class gets another recut, never a requeue.
+# Dead parks use the budget-recut route once per 24h; an arbitration-budget PR park gets one repair requeue and never requeues again.
 # Left alone: session-owned issues/PRs, supervisor_owned units, non-stop-loss holds, non-stale tracker parents,
-# and other park reasons (recut-refused, token hard park, arbiter-owned cap triage).
+# and other park reasons (recut-refused, token hard park and arbiter-owned cap triage).
 DEAD_PARK_EXIT_PER_TICK="${DEAD_PARK_EXIT_PER_TICK:-3}"
 dead_park_exit() {
-  local prs id class n=0 issue issue_state issue_json pr issue_repo="${REPO:-${ZF_REPO:-}}"
+  local prs id class n=0 issue issue_state issue_json pr issue_repo="${REPO:-${ZF_REPO:-}}" u return_stage
   prs="$(tick_prs)" || return 0 # without the census a PR's session-owned label cannot be read
   while IFS=$'\t' read -r id class; do
     (( n < DEAD_PARK_EXIT_PER_TICK )) || break
@@ -702,6 +705,13 @@ dead_park_exit() {
       if jqf -e --arg owned "$SESSION_OWNED_LABEL" 'any(.labels[]?; .name == $owned)' <<<"$issue_json" >/dev/null 2>&1; then continue; fi
     fi
     n=$((n + 1))
+    if [[ "$class" == budget-park-repair ]]; then
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+      return_stage="$(supervisor_return_stage "$u" repair-pending)"
+      set_unit "$id" "$(hist supervisor-requeue 'budget park repair pass: arbitration budget exhausted') | .stage=$(js "$return_stage") | .note=null | del(.parked_reason,.unpark_condition)" || continue
+      say "supervisor budget-park repair pass unit=$id stage=$return_stage"
+      continue
+    fi
     set_unit "$id" "$(hist dead-park-exit "$class park has no automatic exit; sent to recut")" || continue
     say "dead park exit unit=$id class=$class"
     supervisor_budget_recut "$id" "dead park exit ($class)" null "dead park exit could not complete the recut route" "dead park exit recut" \
@@ -709,6 +719,7 @@ dead_park_exit() {
   done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg owned "$SESSION_OWNED_LABEL" --arg re "$SUPERVISOR_CAP_PARK_RESULT_RE" \
     --argjson since "$(($(date +%s) - 86400))" '
     [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
+    | [$census[0][] | .number] as $open_prs
     | .units[]
     | (.history // []) as $h
     | ($h | map(select(.stage != "supervisor-cap-default")) | last // {}) as $l
@@ -718,6 +729,9 @@ dead_park_exit() {
     | (if .parked_reason == "repair-breaker" and $l.stage == "repair-breaker" then "repair-breaker"
        elif (.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park", "supervisor-requeue-failed")) then
          (if any($h[]; .stage == "supervisor-cap-default") then "cap-default"
+          elif $l.stage == "supervisor-budget-park" and (($l.result // "") | test($re)) and
+              (.pr as $p | $open_prs | index($p) != null) and
+              (any($h[]; .stage == "supervisor-requeue" and ((.result // "") | startswith("budget park repair pass:"))) | not) then "budget-park-repair"
           elif ($l.stage | IN("supervisor-budget-park", "supervisor-requeue-failed")) and (($l.result // "") | test($re) | not) then "budget-park"
           else empty end)
        else empty end) as $class

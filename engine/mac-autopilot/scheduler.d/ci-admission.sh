@@ -425,8 +425,8 @@ ci_station_tick() {
       ci_admission
       merge_tree_sweep # after admission, own time bound: a conflict found when main moves starts its repair now, not at review or merge
     fi
-    gh_calls="$(tick_gh_calls_count)"
-    say "ci station done secs=$SECONDS gh_calls=$gh_calls limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
+    gh_calls="$(tick_gh_calls_summary)"
+    say "ci station done secs=$SECONDS $gh_calls limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$CI_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$CI_STATION_LOCK"

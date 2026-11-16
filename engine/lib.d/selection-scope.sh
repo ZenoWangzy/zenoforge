@@ -475,3 +475,11 @@ path_in_expected_packages() {
   echo "$expected_json" | jq -e --arg p "$path" \
     '[.[] | . as $item | ($p == $item or ($p | startswith($item + "/")))] | any' > /dev/null
 }
+
+
+path_is_accompanying_doc() {
+  case "$1" in
+    GLOSSARY.md|docs/adr/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}

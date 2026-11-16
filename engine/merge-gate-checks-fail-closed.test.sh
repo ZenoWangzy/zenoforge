@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 test_root="${test_env_root:?}"
-trap 'rm -rf -- "$test_root"' EXIT
+trap 'rm -rf -- "$test_env_root"' EXIT
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
@@ -49,6 +49,8 @@ FIX_FORWARD_REVIEW_VERDICT=READY
 FIX_FORWARD_REVIEW_HEAD="$FIX_FORWARD_HEAD_SHA"
 FIX_FORWARD_RUN_JSON='{"id":990401,"status":"completed","conclusion":"failure"}'
 FIX_FORWARD_JOBS_JSON='{"total_count":1,"jobs":[{"name":"Postsubmit validate","conclusion":"failure"}]}'
+EXPECTED_PACKAGES_JSON='["fixture"]'
+PR_FILES_JSON='[]'
 
 main_merge_clear() {
   if [[ "$FIX_FORWARD_SCENARIO" == off ]]; then return 0; fi
@@ -64,8 +66,9 @@ pr_mergeability_is_safe() { return 0; }
 issue_on_hold_live() { return 1; }
 risk_class_hits_for_paths() { printf '[]\n'; }
 state_read() {
-  jq -cn --arg head "$FIX_FORWARD_REVIEW_HEAD" --arg verdict "$FIX_FORWARD_REVIEW_VERDICT" \
-    '{expected_packages:["fixture"],run:{evidence:{review_verdict:$verdict,reviewed_head_sha:$head}}}'
+  jq -cn --argjson expected_packages "$EXPECTED_PACKAGES_JSON" \
+    --arg head "$FIX_FORWARD_REVIEW_HEAD" --arg verdict "$FIX_FORWARD_REVIEW_VERDICT" \
+    '{expected_packages:$expected_packages,run:{evidence:{review_verdict:$verdict,reviewed_head_sha:$head}}}'
 }
 guarded_write() {
   if [[ "${1:-}" == gh && "${2:-}" == pr && "${3:-}" == ready ]]; then
@@ -117,9 +120,9 @@ gh() {
   if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
     case "$*" in
       *"--json title -q .title"*) printf 'Fixture title\n' ;;
-      *) jq -cn --arg head "$FIX_FORWARD_CURRENT_HEAD_SHA" \
+      *) jq -cn --arg head "$FIX_FORWARD_CURRENT_HEAD_SHA" --argjson files "$PR_FILES_JSON" \
         --arg base "${FIX_FORWARD_BASE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
-        '{mergeable:true,mergeStateStatus:"CLEAN",updatedAt:"2026-10-10T00:00:00Z",files:[],isDraft:false,headRefOid:$head,baseRefOid:$base}' ;;
+        '{mergeable:true,mergeStateStatus:"CLEAN",updatedAt:"2026-10-10T00:00:00Z",files:$files,isDraft:false,headRefOid:$head,baseRefOid:$base}' ;;
     esac
     return 0
   fi
@@ -184,6 +187,37 @@ fi
 assert_eq "passing check rows admit the merge path" 0 "$status"
 assert_eq "passing checks call the guarded merge exactly once" 1 "$MERGE_CALLS"
 assert_eq "passing checks mark the PR ready exactly once" 1 "$READY_CALLS"
+
+CHECKS_SCENARIO=pass
+EXPECTED_PACKAGES_JSON='["packages/a"]'
+PR_FILES_JSON='[{"path":"packages/a/x.ts"},{"path":"GLOSSARY.md"},{"path":"docs/adr/0007-x.md"}]'
+MERGE_CALLS=0
+READY_CALLS=0
+if merge_agent_pr 760001 760002 "$FIX_FORWARD_HEAD_SHA" 1 0 "$test_root/accompanying-docs.log"; then
+  status=0
+else
+  status=$?
+fi
+assert_eq "package changes with the root glossary and an ADR pass gate 4" 0 "$status"
+assert_eq "accompanying docs admit the guarded merge exactly once" 1 "$MERGE_CALLS"
+assert_eq "accompanying docs mark the PR ready exactly once" 1 "$READY_CALLS"
+
+for outside_path in packages/b/GLOSSARY.md docs/other.md; do
+  PR_FILES_JSON="$(jq -cn --arg path "$outside_path" '[{path:$path}]')"
+  MERGE_CALLS=0
+  READY_CALLS=0
+  if merge_agent_pr 760001 760002 "$FIX_FORWARD_HEAD_SHA" 1 0 "$test_root/outside.log"; then
+    status=0
+  else
+    status=$?
+  fi
+  assert_eq "$outside_path remains refused by gate 4" 1 "$status"
+  assert_eq "$outside_path is classified as blast-radius" blast-radius "$MERGE_GATE_FAILURE_KIND"
+  assert_eq "$outside_path never reaches the guarded merge" 0 "$MERGE_CALLS"
+  assert_eq "$outside_path never marks the PR ready" 0 "$READY_CALLS"
+done
+EXPECTED_PACKAGES_JSON='["fixture"]'
+PR_FILES_JSON='[]'
 
 risk_class_hits_for_paths() { return 1; }
 supervisor_inbox_append_once() { printf '%s\n' "$1" >> "$test_root/inbox-keys"; }

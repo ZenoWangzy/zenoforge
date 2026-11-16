@@ -36,6 +36,11 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
     jq -e -s 'length==1 and (.[0]|type=="object")' "$_t" >/dev/null 2>&1 && valid=true
   fi
   if [[ -s "$_t" && "$valid" == true ]]; then
+    if [[ "$dst" == "$UNITS" && "${UNIT_TRANSITION_STAGE_WRITE:-false}" == true ]] \
+      && declare -F unit_transition_observe_ledger >/dev/null; then
+      unit_transition_observe_ledger "$dst" "$_t" "${UNIT_TRANSITION_CALLER:-${FUNCNAME[1]:-top}}" \
+        "${UNIT_TRANSITION_UNIT_ID:-}" "${UNIT_TRANSITION_FROM:-}" || :
+    fi
     cp "$dst" "$dst.bak" 2>/dev/null || true
     mv "$_t" "$dst"
     if [[ "$dst" == "$WORKERS" ]]; then LIVE_WORKER_CACHE_UNTIL=0; fi

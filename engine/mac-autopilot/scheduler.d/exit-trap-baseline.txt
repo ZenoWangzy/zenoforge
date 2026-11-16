@@ -19,7 +19,6 @@ engine/hotfix/hf-stale.test.sh
 engine/hotfix/hf-start.test.sh
 engine/hotfix/hf-supersede.test.sh
 engine/hotfix/hf-worker-stuck.test.sh
-engine/hotfix/prepush-gates.test.sh
 engine/hotfix/validate-acceptance.test.sh
 engine/join-plan-package-trailer.test.sh
 engine/jq-arg-safety.test.sh
@@ -43,7 +42,6 @@ engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
 engine/mac-autopilot/station-standards.test.sh
 engine/main-ci-red-scope.test.sh
 engine/main-release-ready-cache.test.sh
-engine/merge-gate-checks-fail-closed.test.sh
 engine/night/authorization-readonly.test.sh
 engine/night/demo-ledger-daily.test.sh
 engine/night/efficiency-metrics-events.test.sh

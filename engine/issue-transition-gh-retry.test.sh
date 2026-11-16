@@ -17,6 +17,34 @@ cat > "$test_env_bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_CALL_LOG"
+if [[ "$GH_MODE" == gql-quota ]]; then
+  if [[ "$1 ${2:-}" == 'api graphql' && "$*" == *rateLimit* ]]; then
+    printf '%s\n' "$GH_RATE_LIMIT_RESET_AT"
+    exit 0
+  fi
+  if [[ "$1 ${2:-}" == 'issue view' ]]; then
+    echo 'GraphQL: API rate limit already exceeded for user ID 1.' >&2
+    exit 1
+  fi
+  echo tester
+  exit 0
+fi
+if [[ "$GH_MODE" == rest-quota ]]; then
+  if [[ "$1 ${2:-}" == 'api rate_limit' ]]; then
+    printf '%s\n' "$GH_RATE_LIMIT_RESET_EPOCH"
+    exit 0
+  fi
+  if [[ "$1" == api ]]; then
+    echo 'HTTP 403: API rate limit exceeded for user ID 1.' >&2
+    exit 1
+  fi
+  echo tester
+  exit 0
+fi
+if [[ "$GH_MODE" == unrestricted ]]; then
+  echo tester
+  exit 0
+fi
 if [[ "$1" == api && "${2:-}" == repos/fixture/repo/issues/8124 ]]; then
   printf '%s\n' '{"number":8124,"state":"closed","labels":[]}'
   exit 0
@@ -270,3 +298,95 @@ fi
 [[ "$(state_read 5314 | jq -r '.state')" == needs-triage ]]
 grep -Fq 'label write failed for #5314' "$AGENT_HOME/edit404.err"
 echo 'ok - non-GraphQL write failure never touches the REST fallback'
+
+# Primary GraphQL exhaustion writes one host-visible reset marker. Calls from
+# both wrappers stop before reaching gh, and the marker expiry reopens them.
+export GH_MODE=gql-quota
+export GH_RATE_LIMIT_RESET_AT="$(date -u -d '+45 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
+export GH_RATE_LIMIT_RESET_EPOCH="$(date -u -d '+45 minutes' +%s)"
+gql_marker="$AGENT_HOME/gh-rate-limit-until.graphql"
+rest_marker="$AGENT_HOME/gh-rate-limit-until.rest"
+rm -f -- "$gql_marker" "$rest_marker"
+: > "$GH_CALL_LOG"
+if gh issue view 8124 --repo "$REPO" > /dev/null 2> "$AGENT_HOME/gql-quota.err"; then
+  echo 'not ok - GraphQL quota exhaustion unexpectedly succeeded' >&2
+  exit 1
+else
+  quota_rc=$?
+fi
+[[ "$quota_rc" == 75 ]] || { echo "not ok - GraphQL exhaustion returned rc=$quota_rc, expected 75" >&2; exit 1; }
+expected_reset="$(date -u -d "$GH_RATE_LIMIT_RESET_AT" +%s)"
+actual_reset="$(cat "$gql_marker")"
+[[ "$actual_reset" == "$expected_reset" ]] || {
+  echo "not ok - GraphQL marker reset=$actual_reset expected=$expected_reset" >&2
+  exit 1
+}
+calls_after_quota="$(wc -l < "$GH_CALL_LOG" | tr -d ' ')"
+[[ "$calls_after_quota" == 2 ]] || { echo "not ok - GraphQL failure made $calls_after_quota CLI calls, expected one failure and one reset read" >&2; exit 1; }
+if bash -c 'source "$1/lib.sh"; gh issue view 8124 --repo "$REPO"' _ "$SCRIPT_DIR" > /dev/null 2> "$AGENT_HOME/gql-backoff.err"; then
+  echo 'not ok - another shell bypassed the host GraphQL backoff' >&2
+  exit 1
+else
+  quota_rc=$?
+fi
+[[ "$quota_rc" == 75 ]]
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == "$calls_after_quota" ]]
+(
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.d/core.sh"
+  A="$AGENT_HOME/tick-backoff"
+  GH_ETAG_DIR="$A/.gh-etag"
+  mkdir -p "$A" "$GH_ETAG_DIR"
+  if gh pr list --repo "$REPO" > /dev/null 2> "$AGENT_HOME/scheduler-backoff.err"; then exit 1; else [[ "$?" == 75 ]]; fi
+)
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == "$calls_after_quota" ]]
+printf '%s\n' "$(( $(date +%s) - 1 ))" > "$gql_marker"
+export GH_MODE=unrestricted
+gh issue view 8124 --repo "$REPO" > /dev/null
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == "$((calls_after_quota + 1))" ]]
+echo 'ok - GraphQL quota marker is shared by both wrappers and expires'
+
+# REST primary exhaustion has its own marker; it blocks REST while leaving
+# GraphQL available.
+export GH_MODE=rest-quota
+rm -f -- "$gql_marker" "$rest_marker"
+: > "$GH_CALL_LOG"
+if gh api repos/fixture/repo/issues/8124 > /dev/null 2> "$AGENT_HOME/rest-quota.err"; then
+  echo 'not ok - REST quota exhaustion unexpectedly succeeded' >&2
+  exit 1
+else
+  quota_rc=$?
+fi
+[[ "$quota_rc" == 75 ]] || { echo "not ok - REST exhaustion returned rc=$quota_rc, expected 75" >&2; exit 1; }
+[[ "$(cat "$rest_marker")" == "$GH_RATE_LIMIT_RESET_EPOCH" ]]
+calls_after_quota="$(wc -l < "$GH_CALL_LOG" | tr -d ' ')"
+[[ "$calls_after_quota" == 2 ]] || { echo "not ok - REST failure made $calls_after_quota CLI calls, expected one failure and one reset read" >&2; exit 1; }
+if gh run list --repo "$REPO" > /dev/null 2> "$AGENT_HOME/rest-backoff.err"; then
+  echo 'not ok - REST call escaped the shared REST backoff' >&2
+  exit 1
+else
+  quota_rc=$?
+fi
+[[ "$quota_rc" == 75 ]]
+gh issue list --repo "$REPO" > /dev/null
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == "$((calls_after_quota + 1))" ]]
+printf '%s\n' "$(( $(date +%s) - 1 ))" > "$rest_marker"
+GH_MODE=unrestricted gh run list --repo "$REPO" > /dev/null
+export GH_MODE=unrestricted
+echo 'ok - REST quota marker blocks REST without blocking GraphQL and expires'
+
+# The scheduler tick file keeps totals while splitting the API classes.
+(
+  A="$AGENT_HOME/tick-meter"
+  GH_ETAG_DIR="$A/.gh-etag"
+  mkdir -p "$A" "$GH_ETAG_DIR"
+  source "$SCRIPT_DIR/mac-autopilot/scheduler.d/core.sh"
+  tick_gh_calls_begin
+  gh pr list --repo "$REPO" > /dev/null
+  gh issue view 8124 --repo "$REPO" > /dev/null
+  gh api graphql -f 'query=query { viewer { login } }' > /dev/null
+  gh search issues fixture --repo "$REPO" > /dev/null
+  gh api repos/fixture/repo/issues/8124 > /dev/null
+  gh run list --repo "$REPO" > /dev/null
+  [[ "$(tick_gh_calls_summary)" == 'gh_calls=6 gql=4 rest=2' ]]
+)
+echo 'ok - scheduler tick metrics split GraphQL and REST calls'
