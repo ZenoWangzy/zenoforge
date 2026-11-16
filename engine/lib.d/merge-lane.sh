@@ -569,6 +569,7 @@ merge_agent_pr() {
     expected_packages_json="$(state_read "$n" | jq -c '.expected_packages // []')"
     while IFS= read -r changed_path; do
       [ -z "$changed_path" ] && continue
+      if path_is_accompanying_doc "$changed_path"; then continue; fi
       if ! path_in_expected_packages "$expected_packages_json" "$changed_path"; then
         MERGE_GATE_FAILURE_KIND="blast-radius"
         MERGE_GATE_FAILURE_REASON="diff touches $changed_path, outside expected_packages $expected_packages_json"
