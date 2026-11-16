@@ -4,6 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/reports.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/review-fixes.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/clones.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/review-rules.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/worker-command.sh"
 
 fail() { echo "reviewer-fixes.test.sh: $*" >&2; exit 1; }
@@ -75,6 +76,14 @@ build_codex_command review claude-sonnet-5-5 high readonly-review 'review prompt
   || fail 'Claude review prompt did not prohibit edits and keep findings open'
 SUP="$test_env_root/supervisor"
 mkdir -p "$SUP"
+review_contract_rule() { printf 'review contract'; }
+pr_review_prompt="$(review_prompt 7 title 1111111111111111111111111111111111111111 review-7.md pr)"
+[[ "$pr_review_prompt" == *'所有 lane 的评审均为只读'* \
+  && "$pr_review_prompt" == *'不得编辑代码、创建提交、推送分支或运行测试'* \
+  && "$pr_review_prompt" == *'保持 status `open`'* \
+  && "$pr_review_prompt" != *'就地修复'* \
+  && "$pr_review_prompt" != *'提交一个直接基于当前 head 的 commit'* ]] \
+  || fail 'PR-lane review prompt invited edits, commits, pushes, or test runs'
 
 checkout_remote="$test_env_root/checkout-remote.git"
 checkout_seed="$test_env_root/checkout-seed"

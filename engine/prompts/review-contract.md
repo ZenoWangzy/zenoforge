@@ -1,8 +1,8 @@
 # Review stage
 
-You did not write the change. In PR lane, follow the prompt's bounded
-`fixed-in-review` fix rule; direct-main reviews are read-only. Produce one
-report and one verdict.
+Review is read-only in every lane. Do not edit code, commit, push, or run tests
+during review; leave findings open for the repair stage. Produce one report and
+one verdict.
 
 This file is the machine-readable contract the scheduler parses: the verdict
 line and the `review-findings` block below. The review method is Matt
@@ -73,9 +73,8 @@ Write exactly one standalone line: `VERDICT: READY`, `VERDICT: NOT_READY`, or
 no bold or code formatting, no heading, no label prefix such as `结论：`, no
 trailing remark or second verdict value on the same line — the parser reads the
 value anchored right after `VERDICT:` and treats a second value on that line as
-a contradiction. `READY` means no candidate P0/P1 finding remains open; a
-scheduler-validated `fixed-in-review` finding may be approved. Advisory,
-pre-existing, and unknown findings do not block. `NOT_READY`
+a contradiction. `READY` means no candidate P0/P1 finding remains open.
+Advisory, pre-existing, and unknown findings do not block. `NOT_READY`
 requires at least one such blocker; `INPUT_INCOMPLETE` means an essential scope
 input or a named prerequisite is unavailable. Older reports may still use
 `APPROVE`, `REQUEST-CHANGES`, or `BLOCK`; do not write those.
@@ -98,15 +97,10 @@ there is nothing to list. Each finding has exactly these fields and no others:
 - `file`: repository-relative path
 - `line`: positive integer
 - `rule`: the rule or category, for example `Defect`, `Spec`, `Standards`, `Maintainability`
-- `status`: `open`, `resolved`, `inherited`, or `fixed-in-review`
+- `status`: `open`, `resolved`, or `inherited`
 - `summary`: one sentence
 - `introduced_by`: `candidate`, `pre_existing`, or `unknown`
 - `base_evidence`: non-empty text explaining the comparison with the fixed base
-
-For `fixed-in-review`, add `commit_sha` (40 lowercase hex) and `test` (`path`,
-`name`). Accept only a direct reviewer commit on the reviewed head with one
-source-file change of at most 20 lines, the named test, and a passing receipt.
-PR lane only.
 
 Example finding: `{"id":"F1","severity":"P1","file":"src/a.ts","line":1,"rule":"Defect","status":"open","summary":"Broken query.","introduced_by":"candidate","base_evidence":"The base lacks this query."}`.
 
