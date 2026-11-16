@@ -474,6 +474,15 @@ ci_rollup() {
 ci_rollup_with_times() {
   ci_rollup | jq -c 'map(. + {startedAt:"2026-11-10T09:55:10Z",completedAt:"2026-11-10T10:14:00Z"})'
 }
+ci_rest_green() {
+  local base='https://github.com/example-maintainer/example-repo/actions/runs/469'
+  PR_REST_RUNS="$(jq -cn --arg base "$base" '{check_runs: ([
+    {name:"cla",check_suite:{id:90},html_url:($base + "/job/90"),status:"completed",conclusion:"success",started_at:"2026-11-16T20:40:00Z"},
+    {name:"cli",check_suite:{id:99},html_url:($base + "/job/99"),status:"completed",conclusion:"success",started_at:"2026-11-16T20:40:00Z"}
+  ] + [range(0;8) as $shard | {name:("suites (" + ($shard|tostring) + ")"),check_suite:{id:(100+$shard)},html_url:($base + "/job/" + ((470+$shard)|tostring)),status:"completed",conclusion:"success",started_at:"2026-11-16T20:40:00Z"}])}')"
+  PR_REST_ACTIONS="$(jq -cn --arg url "$base" '{workflow_runs: ([range(0;8) as $shard | {check_suite_id:(100+$shard),name:"engine-tests",html_url:$url}] + [{check_suite_id:99,name:"cli-tests",html_url:$url}])}')"
+  PR_REST_STATUS='{"statuses":[]}'
+}
 ci_set() {
   PR_CI_ROLLUP="$(jq -c --arg name "$1" --arg status "$2" --arg conclusion "$3" '
     map(if .name == $name then .status=$status
@@ -605,8 +614,15 @@ expect_receipt_merge 'empty local receipt uses green CI'
 [[ "$(cat "$fixture/check-output")" == *"receipt: ci-green 10 checks at ${rsha:0:12}"* ]] || fail "empty local receipt did not use the green CI receipt: $(cat "$fixture/check-output")"
 rm -f "$receipt_dir/$rsha"
 mkdir -p "$receipt_dir"
-printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/merge-pr-helper.test.sh\n' >"$receipt_dir/$rsha"
-expect_receipt_refusal 'failed last run' 'bash engine/merge-pr-helper.test.sh (exit 1)'
+printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/mac-autopilot/scheduler-part-5.test.sh\n' >"$receipt_dir/$rsha"
+ci_rest_green
+expect_receipt_merge 'failed last run superseded by green CI'
+[[ "$(cat "$fixture/check-output")" == *"merge-pr: receipt: local receipt superseded by CI https://github.com/example-maintainer/example-repo/actions/runs/469/job/470 (10 checks green at ${rsha:0:12}; local red: bash engine/mac-autopilot/scheduler-part-5.test.sh (exit 1))"* ]] \
+  || fail "green CI did not supersede the local receipt: $(cat "$fixture/check-output")"
+PR_REST_RUNS="$(jq -c '.check_runs |= map(if .name == "suites (3)" then .conclusion="failure" else . end)' <<<"$PR_REST_RUNS")"
+expect_receipt_refusal 'failed last run with red CI' 'test receipt for deadbeefdeadbeefdeadbeefdeadbeefdeadbeef has a failed last run: bash engine/mac-autopilot/scheduler-part-5.test.sh (exit 1)'
+PR_REST_RUNS="$(jq -c '.check_runs |= map(if .name == "suites (3)" then .status="in_progress" | del(.conclusion) else . end)' <<<"$PR_REST_RUNS")"
+expect_receipt_refusal 'failed last run with pending CI' 'test receipt for deadbeefdeadbeefdeadbeefdeadbeefdeadbeef has a failed last run: bash engine/mac-autopilot/scheduler-part-5.test.sh (exit 1)'
 printf '0\tbash engine/quick-land.test.sh\n1\tbash engine/merge-pr-helper.test.sh\n0\tbash engine/merge-pr-helper.test.sh\n' >"$receipt_dir/$rsha"
 expect_receipt_merge 'later pass of the same command'
 [[ "$(cat "$fixture/check-output")" == *'receipt: local'* ]] || fail "local receipt path was not logged: $(cat "$fixture/check-output")"
