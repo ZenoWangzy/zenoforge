@@ -121,6 +121,13 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
   exec "${launcher[@]}" "${worker_command[@]}"
 }
 
+worker_scope_close_tick_step_lock() { # close the inherited step lock in the worker launch child
+  local fd="${TICK_STEP_LOCK_FD:-}"
+  [[ "$fd" =~ ^[1-9][0-9]+$ ]] || { unset TICK_STEP_LOCK_FD; return 0; }
+  exec {fd}>&- || return 1
+  unset TICK_STEP_LOCK_FD
+}
+
 worker_scope_launch() { # pid-file workdir output-file launcher... -- command...; sets WORKER_SCOPE_PID, WORKER_SCOPE_PID_START (scope only) and WORKER_SCOPE_LAUNCHER_PID; returns 3 on a scope start timeout (WORKER_SCOPE_TIMEOUT_SCOPE, WORKER_SCOPE_WAITED), never an unscoped retry
   local pid_file="$1" workdir="$2" output_file="$3" scope_client status state scope_started bound scope_name
   shift 3
@@ -135,7 +142,7 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
 
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
     rm -f -- "$pid_file"
-    (cd "$workdir" && worker_scope_exec "$pid_file" "$output_file" "${launcher[@]}" -- "${worker_command[@]}") \
+    (worker_scope_close_tick_step_lock && cd "$workdir" && worker_scope_exec "$pid_file" "$output_file" "${launcher[@]}" -- "${worker_command[@]}") \
       >"$output_file" 2>&1 < /dev/null &
     scope_client=$!
     WORKER_SCOPE_LAUNCHER_PID="$scope_client"
@@ -179,7 +186,7 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
     fi
   fi
 
-  (cd "$workdir" && { [[ -z "${WORKER_PIDFILE:-}" ]] || printf '%s\n' "$BASHPID" > "$WORKER_PIDFILE"; } \
+  (worker_scope_close_tick_step_lock && cd "$workdir" && { [[ -z "${WORKER_PIDFILE:-}" ]] || printf '%s\n' "$BASHPID" > "$WORKER_PIDFILE"; } \
     && exec "${launcher[@]}" "${worker_command[@]}") >"$output_file" 2>&1 < /dev/null &
   WORKER_SCOPE_PID=$!
   WORKER_SCOPE_LAUNCHER_PID="$WORKER_SCOPE_PID"
