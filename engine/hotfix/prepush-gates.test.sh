@@ -11,7 +11,7 @@ cleanup_test() {
   rm -rf "$t"
   test_env_chain_exit "$test_env_root" "$test_env_prior_exit"
 }
-trap 'cleanup_test' EXIT
+trap 'cleanup_test "$test_env_root"' EXIT
 mkdir -p "$t/bin" "$t/root"
 cat > "$t/bin/git" <<'STUB'
 #!/usr/bin/env bash

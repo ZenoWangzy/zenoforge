@@ -19,7 +19,6 @@ engine/hotfix/hf-stale.test.sh
 engine/hotfix/hf-start.test.sh
 engine/hotfix/hf-supersede.test.sh
 engine/hotfix/hf-worker-stuck.test.sh
-engine/hotfix/prepush-gates.test.sh
 engine/hotfix/validate-acceptance.test.sh
 engine/join-plan-package-trailer.test.sh
 engine/jq-arg-safety.test.sh
