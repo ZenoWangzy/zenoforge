@@ -25,9 +25,19 @@ if [[ "${ZF_AGENT_TEST_MODE:-0}" != 1 ]]; then
     exit 78
   }
 fi
-AGENT_HOME="${AGENT_HOME:-${HOME:?}/.zenoforge}"
+invoked_dir="${BASH_SOURCE[0]%/*}"
+[[ "$invoked_dir" != "${BASH_SOURCE[0]}" ]] || invoked_dir=.
+[[ "$invoked_dir" == /* ]] || invoked_dir="$PWD/$invoked_dir"
+script_engine="$(cd -- "$invoked_dir" && pwd -P)"
+if [[ -z "${AGENT_HOME:-}" ]]; then
+  if [[ "${invoked_dir##*/}" == engine-live ]]; then
+    AGENT_HOME="${invoked_dir%/engine-live}"
+  else
+    AGENT_HOME="${HOME:?}/.zenoforge"
+  fi
+fi
 runtime="$AGENT_HOME/checkout"
-engine="${ZF_ENGINE_LIVE:-$runtime/engine}"
+engine="${ZF_ENGINE_LIVE:-$script_engine}"
 [[ -r "$engine/lib.sh" ]] || { echo 'delivery-request: controller runtime is unavailable' >&2; exit 78; }
 source "$engine/lib.sh"
 agent_pipeline_write_guard delivery-request "$AGENT_HOME/delivery-requests" || exit 1
