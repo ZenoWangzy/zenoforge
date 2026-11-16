@@ -248,15 +248,43 @@ Source: https://example.invalid/incident-reference
 
 VERDICT: READY
 REPORT
-write_unit "$missing_report_name"
+# The unit report fails (no prior-art) and holds text the review needs; the adopted report must keep it.
+orig_report_name=impl-71001-orig-done.md
+cat > "$sup/$orig_report_name" <<'REPORT'
+## decision-log
+Original attempt, kept for review.
+
+## how
+The unit report before the repair.
+
+## why
+Commit 97ed8be added this report gate for issue #880.
+
+## root-cause
+The original root-cause text that review reads.
+
+## recurrence-guard
+kind: test
+
+Done: unique-6597-done-line verified against the fixture.
+
+VERDICT: READY
+REPORT
+adopted_report_name=impl-71001-orig-done-adopted-impl-71001-fix-adopted.md
+write_unit "$orig_report_name"
 jqf '.units[0].pr=71001 | .units[0].stage="repair"' "$UNITS" | write_state "$UNITS"
 write_worker repair "$adopted_fix_name" impl-71001-fix-adopted.worker.log
 printf 'tokens used\n1,020\nFixed the sections in the fix note.\n' > "$sup/impl-71001-fix-adopted.worker.log"
 before_resumes=$RESUME_DISPATCHES
 harvest_workers || :
-[[ "$RESUME_DISPATCHES" == "$before_resumes" && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$adopted_fix_name" ]] \
-  || fail "a repair that fixed the sections in its fix note was gated on the old report (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
+[[ "$RESUME_DISPATCHES" == "$before_resumes" && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$adopted_report_name" ]] \
+  || fail "a repair that fixed the sections in its fix note was not adopted as a merged report (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
 [[ "$(jqf -r '.units[0] | has("report_gate_fail")' "$UNITS")" == false ]] || fail 'an adopted repair report left a gate failure counter'
+grep -q '^Done: unique-6597-done-line' "$sup/$adopted_report_name" && grep -q '^## prior-art' "$sup/$adopted_report_name" \
+  && grep -q '^## root-cause' "$sup/$adopted_report_name" \
+  || fail 'the adopted report lost the unit report text or lacks the fix note sections'
+grep -q '^Done: unique-6597-done-line' "$sup/$orig_report_name" || fail 'the unit report itself was overwritten'
+[[ "$(jqf -r '.units[0].implementation_report' "$UNITS")" != "$orig_report_name" ]] || fail 'the adopted report did not replace the unit report pointer'
 
 # A repair whose fix note has no gated sections still fails the gate on the unit's report, as before.
 nothing_fix_name=impl-71001-fix-nothing.md

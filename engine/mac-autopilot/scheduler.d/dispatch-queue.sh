@@ -393,6 +393,7 @@ dispatch_pending_pass() {
         fi
         dstep handoff_integration resume_handoff_integration "$id" "$wt" || { dispatch_skip handoff-integration; continue; }
         rep="impl-${key}-fix-${TAG}.md"
+        impl_report="$(jqf -r '.implementation_report // empty' <<<"$u")"; impl_report_path="${impl_report:+$SUP/$impl_report}"
         dcapture failure failure_prompt repair_failure_prompt "$u" "$prev_report" || { to_supervisor "$id" "repair-pending: cannot read the failure evidence ($prev_report)"; continue; }
         hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
         # Fail closed (#119): an unreadable review list skips this repair, so no write-start hides the feedback from the next tick.
@@ -417,7 +418,7 @@ ${verify_rule}
 3. ${deliver}
    若本地分支已有上一轮未推送的提交（git log origin/${branch}..HEAD 非空），在其基础上继续，不要重做。
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
-5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；同时就地更新单元实现报告的该节，供复审读取，交付完即结束。
+5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；单元实现报告的绝对路径：${impl_report_path:-（未记录）}。报告门失败（缺 ## decision-log、## recurrence-guard 的 kind 行、## prior-art 的 https 链接等）时，必须就地编辑这个单元实现报告补齐该节并保留原有内容，只写修复说明不算修好报告；复审读取的就是它。交付完即结束。
 $(decision_scope "$u")"
         if [[ "$lane" == direct-main ]]; then prompt+=$'\nDo not run *.test.* files; the lander runs the tests.'; fi
         prompt="$(direct_main_worker_prompt "$prompt" "$u")"

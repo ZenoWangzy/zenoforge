@@ -114,6 +114,11 @@ incident_report_reason() { # unit-json report-path → the first report gate rea
   [[ -n "$r" ]] || r="$(incident_report_gate_reason "$1" "$2")"
   printf '%s' "$r"
 }
+incident_report_merge_adopted() { # unit-report fix-note → writes a new report beside the unit report: the fix note first (its gated sections win), then the unit report in full; prints its name
+  local orig="$1" fix="$2" merged="${1%.md}-adopted-${2%.md}.md"
+  { cat -- "$SUP/$fix"; printf '\n<!-- unit implementation report: %s -->\n\n' "$orig"; cat -- "$SUP/$orig"; } > "$SUP/$merged" || return 1
+  printf '%s' "$merged"
+}
 incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
   [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }

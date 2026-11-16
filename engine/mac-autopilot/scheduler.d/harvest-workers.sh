@@ -39,7 +39,7 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
 }
 
 incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed; rc 1 = one is now running
-  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason n worker_report
+  local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason n worker_report merged
   wtype="$(jqf -r '.type // empty' <<<"$w")"
   [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
@@ -48,11 +48,14 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
   worker_report="$report_name"
   [[ "$wtype" != repair ]] || report_name="$(jqf -r --arg n "$report_name" '.implementation_report // $n' <<<"$incident_unit_json")" # a repair edits the unit's own report in place; its worker report is only the fix note
   reason="$(incident_report_reason "$incident_unit_json" "$SUP/$report_name")"
-  # A repair that wrote the missing sections into its own fix note (6597) gets that note adopted when the unit report still fails and the note passes.
+  # Fallback (6597): a repair whose fix note carries the gated sections gets a merged report adopted (fix note first, unit report kept in full) when the unit report still fails.
   if [[ -n "$reason" && "$wtype" == repair && "$worker_report" != "$report_name" && -z "$(incident_report_reason "$incident_unit_json" "$report_path")" ]]; then
-    set_unit "$unit" ".implementation_report=$(js "$worker_report")"
-    say "report adopted unit=$unit from=$worker_report"
-    report_name="$worker_report"; reason=""
+    merged="$(incident_report_merge_adopted "$report_name" "$worker_report")" || merged=""
+    if [[ -n "$merged" && -z "$(incident_report_reason "$incident_unit_json" "$SUP/$merged")" ]]; then
+      set_unit "$unit" ".implementation_report=$(js "$merged")"
+      say "report adopted unit=$unit from=$worker_report"
+      report_name="$merged"; reason=""
+    fi
   fi
   [[ -n "$reason" ]] || { [[ "$(jqf -r 'has("report_gate_fail")' <<<"$incident_unit_json")" == false ]] || set_unit "$unit" 'del(.report_gate_fail)'; return 0; }
   # The same gate reason twice in a row means another repair writes the same kind of report: stop instead of looping (4741).

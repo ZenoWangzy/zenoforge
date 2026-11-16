@@ -901,6 +901,13 @@ DISPATCHED=(); dispatch_pending || :
 units "{\"units\":[{\"id\":\"issue-710\",\"issue\":710,\"pr\":55,\"branch\":\"agent/issue-710\",\"lane\":\"pr\",\"title\":\"ruled fix\",\"stage\":\"repair-pending\",\"review_report\":\"r.md\",\"history\":[$(sl_rounds)$(sl_rounds)$(sl_rounds){\"stage\":\"supervisor-approve\"},{\"stage\":\"ci-test-red\"}]}]}"
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:issue-710:* ]] || fail "a supervisor ruling did not refill the stop-loss budget ($(field issue-710 .stage))"
+# 修复 prompt 点名单元实现报告的绝对路径，报告门失败时就地编辑它（row 453）。
+units "{\"units\":[{\"id\":\"issue-731\",\"issue\":731,\"pr\":55,\"branch\":\"agent/issue-731\",\"lane\":\"pr\",\"title\":\"report fix\",\"stage\":\"repair-pending\",\"review_report\":\"r.md\",\"implementation_report\":\"impl-issue-731-orig.md\",\"history\":[{\"stage\":\"review-request-changes\"}]}]}"
+DISPATCHED=(); DISPATCH_PROMPT=''
+dispatch() { DISPATCHED+=("$1:$4:$8"); DISPATCH_PR_HEAD="${10:-}"; DISPATCH_PROMPT="$7"; } # later cases read DISPATCH_PR_HEAD, so record it too
+dispatch_pending || :
+[[ "${DISPATCHED[0]:-}" == repair:issue-731:* && "$DISPATCH_PROMPT" == *"单元实现报告的绝对路径：$SUP/impl-issue-731-orig.md"* ]] \
+  || fail "repair prompt does not name the unit implementation report by absolute path (dispatch=${DISPATCHED[*]:-none})"
 # 工单 token 是仪表盘指标，不是停单开关（#4486）：生命周期 raw token 再高（大头是缓存读取）、
 # 只要轮数和墙钟在止损预算内就照常派发，不 park、不写预算 note。#4053 的硬停按 raw token 按
 # 生命周期累计（实测 ~96% 是缓存读取），解除 PAUSE 后 36 次误停正常与已批准单元（10-29 05:10Z）。
