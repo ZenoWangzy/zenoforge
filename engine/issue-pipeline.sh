@@ -2358,8 +2358,8 @@ READY_MEASURE_JSON='[]'
 # slice and the 120s kill landed before any batch). The snapshot below reads
 # only labels already on the issues; unlabeled-issue admission and founder-test
 # labelling run after dispatch, so their results are picked up next tick.
-if ! NEEDS_TRIAGE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label needs-triage --state open \
-    --json number,createdAt,labels,author,title,body)"; then
+# REST list: the GraphQL one failed under the secondary rate limit (#1038); a failed read skips triage dispatch below.
+if ! NEEDS_TRIAGE_JSON="$(issue_rest_list needs-triage open "$REPO")"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
   echo "issue-pipeline: needs-triage candidate snapshot failed; skipping triage dispatch this tick" >&2
 # `focus` leads legacy queues only; roadmap mode follows tree order with the standing overrides.

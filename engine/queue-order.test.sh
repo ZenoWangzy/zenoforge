@@ -133,7 +133,9 @@ assert_eq "no selection site sorts on createdAt alone" "" "$bad"
 
 triage_query="$(sed -n '/NEEDS_TRIAGE_JSON=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 triage_selection="$(sed -n '/^elif ! NEEDS_TRIAGE_IDS=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-assert_contains "triage intake fetches author and issue-origin fields" "$triage_query" '--json number,createdAt,labels,author,title,body'
+assert_contains "triage intake reads the queue over REST" "$triage_query" 'issue_rest_list needs-triage open'
+rest_list_fields="$(sed -n '/^issue_rest_list() {/,/^}/p' "$SCRIPT_DIR/lib.d/issue-rest.sh" | tr -s ' \n' ' ')"
+assert_contains "the REST list carries author and issue-origin fields" "$rest_list_fields" '{number, title, body: (.body // ""), state: (.state | ascii_upcase), createdAt: .created_at, author: {login: .user.login}, labels:'
 assert_contains "triage intake puts founder-test ahead of feature priority" "$triage_selection" 'founder-test'
 assert_contains "triage intake keeps production incidents ahead" "$triage_selection" 'bug'
 assert_contains "triage intake bands the batch critical path (#4363)" "$triage_selection" 'critical-path'

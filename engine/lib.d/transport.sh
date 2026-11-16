@@ -556,3 +556,6 @@ gh_failure_log() {
 main_gh() {
   if declare -F gh_q >/dev/null 2>&1; then gh_q "$@"; else gh "$@"; fi
 }
+
+# REST issue reads for hold/requeue/ruling paths; scheduler.sh sources the same file for its own process.
+source "$(dirname -- "${BASH_SOURCE[0]}")/issue-rest.sh"

@@ -331,7 +331,7 @@ supervisor_requeue_followup_cites_pr() { # unit-json → 0 when its open split c
   json="$(base64 -d <<<"$encoded" 2>/dev/null)" || json=""
   jqf -e --argjson issue "$followup" 'type=="object" and .number==$issue and ((.state // "")|type)=="string" and (.body|type)=="string"' <<<"$json" >/dev/null 2>&1 || {
     [[ -n "$repo" ]] || return 2
-    json="$(gh issue view "$followup" --repo "$repo" --json number,state,body 2>/dev/null)" || return 2
+    json="$(issue_rest_view "$followup" "$repo")" || return 2
     jqf -e --argjson issue "$followup" 'type=="object" and .number==$issue and ((.state // "")|type)=="string" and (.body|type)=="string"' <<<"$json" >/dev/null 2>&1 || return 2
   }
   jqf -e --arg issue "$issue" --arg pr "$pr" '
@@ -403,7 +403,7 @@ Supervisor ruling: dependency #$dropped is resolved for this unit (dropped_deps)
     else
       [[ -n "$issue_repo" ]] || { supervisor_requeue_retry "$id" "repository is unavailable for issue #$issue requeue"; return $?; }
       if [[ "$issue_stage" == on-hold ]]; then [[ "$(jqf -r '.hold.holder // empty' <<<"$issue_state")" == scheduler-stop-loss ]] || { supervisor_requeue_park_failure "$id" "issue #$issue has a non-stop-loss hold" "$decision"; return $?; }; issue_reason=hold-requeue; else issue_reason=supervisor-requeue; fi
-      issue_json="$(gh issue view "$issue" --repo "$issue_repo" --json number,title,body,state,labels 2>/dev/null)" || { supervisor_requeue_retry "$id" "issue #$issue could not be refreshed for requeue"; return $?; }
+      issue_json="$(issue_rest_view "$issue" "$issue_repo")" || { supervisor_requeue_retry "$id" "issue #$issue could not be refreshed for requeue"; return $?; }
       if ! transition_error="$(scheduler_issue_transition "$issue" ready-for-agent "$issue_reason" . 0 "$issue_json" 2>&1)"; then
         transition_error="${transition_error//$'\n'/ }"; if [[ "$transition_error" == *"issue_transition: refused "* ]]; then failure="issue #$issue could not be requeued to ready-for-agent"; [[ -z "$transition_error" ]] || failure="$failure: ${transition_error:0:400}"; supervisor_requeue_park_failure "$id" "$failure" "$decision"; return $?; fi
         supervisor_requeue_retry "$id" "issue #$issue requeue transition did not complete"; return $?
@@ -504,7 +504,7 @@ supervisor_release_stop_loss_hold() { # id issue → a RULE puts the unit back t
   state="$(scheduler_issue_state "$issue")" || { say "supervisor cap triage unit=$id: issue #$issue state is unreadable; leaving the unit at supervisor-review"; return 1; }
   [[ "$(jqf -r '.state // empty' <<<"$state")" == on-hold ]] || return 0
   [[ "$(jqf -r '.hold.holder // empty' <<<"$state")" == scheduler-stop-loss ]] || { say "supervisor cap triage unit=$id: issue #$issue is held by another holder; leaving the unit at supervisor-review"; return 2; }
-  [[ -n "$repo" ]] && issue_json="$(gh issue view "$issue" --repo "$repo" --json number,title,body,state,labels 2>/dev/null)" \
+  [[ -n "$repo" ]] && issue_json="$(issue_rest_view "$issue" "$repo")" \
     && scheduler_issue_transition "$issue" ready-for-agent hold-requeue . 0 "$issue_json" "" 0 "$(jqf -c '.hold' <<<"$state")" \
     || { say "supervisor cap triage unit=$id: stop-loss hold on issue #$issue not released; leaving the unit at supervisor-review"; return 1; }
 }

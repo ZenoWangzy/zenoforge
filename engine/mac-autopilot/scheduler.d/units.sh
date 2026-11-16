@@ -21,7 +21,7 @@ UNIT_RETIRE_STAGES='["merged","landed","closed","done","wontfix","duplicate"]'
 closed_unit_issue_route() { # id [pr-closed] → keep tracker marker or restore the current lane after an external PR close
   local issue state snapshot repo
   issue="$(unit_field "$1" '.issue // empty')"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 0; [[ "${2:-}" != pr-closed || "$(unit_field "$1" '.lane // empty')" == pr ]] || return 0; state="$(scheduler_issue_state "$issue")" || return 1; state="$(jqf -r '.state // "untracked"' <<<"$state")" || return 1
-  if [[ "${2:-}" == pr-closed ]]; then repo="${REPO:-${ZF_REPO:-}}"; [[ -n "$repo" ]] || return 1; snapshot="$(gh issue view "$issue" --repo "$repo" --json number,state,title,body,labels)" || return 1; [[ "$(jqf -r '.state | ascii_downcase' <<<"$snapshot")" == open ]] || return 0; fi
+  if [[ "${2:-}" == pr-closed ]]; then repo="${REPO:-${ZF_REPO:-}}"; [[ -n "$repo" ]] || return 1; snapshot="$(issue_rest_view "$issue" "$repo")" || return 1; [[ "$(jqf -r '.state | ascii_downcase' <<<"$snapshot")" == open ]] || return 0; fi
   if [[ "$state" == tracker ]]; then scheduler_issue_transition "$issue" tracker recut-parent-retired; return $?; fi
   [[ "${2:-}" == pr-closed ]] || return 0; case "$state" in untracked) scheduler_issue_transition "$issue" needs-triage pr-closed-requeue . 0 "$snapshot" ;; on-hold) return 0 ;; *) scheduler_issue_transition "$issue" "$state" pr-closed-label-reconcile . 0 "$snapshot" ;; esac
 }

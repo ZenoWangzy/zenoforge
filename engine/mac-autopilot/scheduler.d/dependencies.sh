@@ -754,7 +754,7 @@ reconcile_stacked_units() {
       MERGED)
         dep_info="$(dep_cache_info "$dep")"
         issue_state="$(jqf -r '.issue_state // empty' <<<"$dep_info")"
-        [[ -n "$issue_state" ]] || issue_state="$(gh issue view "$dep" --json state --jq .state 2>/dev/null)"
+        [[ -n "$issue_state" ]] || issue_state="$(issue_rest_state "$dep" '{owner}/{repo}')"
         [[ "$issue_state" == CLOSED && "$MAIN_HEAD" =~ $SHA_RE ]] || {
           [[ "$child_stage" == blocked-external ]] || set_unit "$id" "$(hist stack-waiting predecessor-PR-$parent_pr-merged-waiting-for-release) | .stage=\"blocked-external\""
           continue

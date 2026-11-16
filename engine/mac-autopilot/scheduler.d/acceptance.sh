@@ -67,7 +67,7 @@ landed_live_event_wait() { # unit issue land-sha → 0=无 live-event 项，照�
   stored="$(unit_field "$1" '.acceptance // empty')"
   if [[ -z "$stored" ]]; then
     # M5 之前派发的在途单没有存档：落地时读当前验收块作为基线；读不到按无验收块关票
-    stored="$(gh issue view "$2" --json number,title,body,state,labels 2>/dev/null | jqf -r '.body // ""' | acceptance_block_from_body || true)"
+    stored="$(issue_rest_view "$2" '{owner}/{repo}' 2>/dev/null | jqf -r '.body // ""' | acceptance_block_from_body || true)"
   fi
   [[ -n "$stored" ]] || return 0
   acceptance_has_live_event "$stored" || return 0
@@ -103,7 +103,7 @@ live_event_watch() { # 每拍：等待生产事件的直落单——事件出现
     bound="$(jqf -r '.silence_hours // 24' <<<"$mech")"
     [[ "$bound" =~ ^[0-9]+$ ]] || bound=24
     if evidence="$(mechanism_event_after "$mech" "$landed_epoch")"; then
-      issue_json_now="$(gh issue view "$issue" --json number,title,body,state,labels,comments 2>/dev/null)"
+      issue_json_now="$(issue_rest_view "$issue" '{owner}/{repo}' comments 2>/dev/null)"
       if [[ -z "$issue_json_now" ]]; then
         say "live-event wait unit=$id issue=$issue: event observed but issue read failed; retry next tick"
         continue

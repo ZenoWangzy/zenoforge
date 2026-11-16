@@ -31,7 +31,7 @@ hold_rule() {
       tracker|needs-advisor|needs-triage) ;;
       *) echo "hold_rule: #$n is $(jq -r '.state // "untracked"' <<< "$state"); --ready needs tracker, needs-advisor or needs-triage" >&2; return 1 ;;
     esac
-    issue_state="$(gh issue view "$n" --repo "$REPO" --json state -q .state)" || return 1
+    issue_state="$(issue_rest_state "$n" "$REPO")" || { echo "hold_rule: #$n state is unreadable; --ready refused" >&2; return 1; }
     [[ "$issue_state" == OPEN ]] || { echo "hold_rule: #$n is closed; --ready needs an open issue" >&2; return 1; }
   fi
   sched="$(dirname -- "$_AGENT_LIB_DIR/lib.sh")/mac-autopilot/scheduler.sh"
