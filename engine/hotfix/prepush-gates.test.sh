@@ -103,6 +103,8 @@ rc=0; TARGET_GATE_ONLY=1 ZF_CONFIG_ROOT="$t/missing" ZF_PACK_DIR='' "$p/prepush-
 
 # Two slots admit two gate processes; a third advertises its wait and starts after one frees.
 mkdir -p "$t/pack/hotfix/prepush-gates.d" "$t/slots2-started"
+export ZF_CONFIG_ROOT="$t/missing"
+rm -f "$t/pack/hotfix.json"
 cat > "$t/pack/hotfix/prepush-gates.d/99-blocker.sh" <<'STUB'
 mkdir -p "$GATE_STARTED"
 touch "$GATE_STARTED/$BASHPID"
@@ -133,7 +135,12 @@ PREPUSH_TMP="$t/slots2-tmp" PREPUSH_GATE_SLOTS=2 GATE_STARTED="$t/slots2-started
 slots2_a=$!; gate_children+=("$slots2_a")
 PREPUSH_TMP="$t/slots2-tmp" PREPUSH_GATE_SLOTS=2 GATE_STARTED="$t/slots2-started" "$p/prepush-gates.sh" > "$t/slots2-b.out" 2>&1 &
 slots2_b=$!; gate_children+=("$slots2_b")
-wait_for_started "$t/slots2-started" 2 || { echo 'slots=2 did not start two gates concurrently' >&2; exit 1; }
+wait_for_started "$t/slots2-started" 2 || {
+  echo 'slots=2 did not start two gates concurrently' >&2
+  cat "$t/slots2-a.out" "$t/slots2-b.out" 2>/dev/null || :
+  ls -1 "$t/slots2-tmp" "$t/slots2-tmp/waiting" 2>/dev/null || :
+  exit 1
+}
 [[ ! -e "$t/slots2-tmp/waiting/$slots2_a" && ! -e "$t/slots2-tmp/waiting/$slots2_b" ]]
 PREPUSH_TMP="$t/slots2-tmp" PREPUSH_GATE_SLOTS=2 GATE_STARTED="$t/slots2-started" "$p/prepush-gates.sh" > "$t/slots2-c.out" 2>&1 &
 slots2_c=$!; gate_children+=("$slots2_c")
@@ -143,7 +150,7 @@ grep -Eq '^[0-9]+ candidate hotfix/test$' "$t/slots2-tmp/waiting/$slots2_c"
 touch "$gate_release"
 wait "$slots2_a"; wait "$slots2_b"; wait "$slots2_c"
 [[ ! -e "$t/slots2-tmp/waiting/$slots2_c" ]]
-grep -Eq 'slot acquired after [0-9]+s' "$t/slots2-c.out"
+grep -Eq 'slot [0-9]+ acquired after [0-9]+s' "$t/slots2-c.out"
 
 # One slot preserves serial execution and removes the queued process's marker on admission.
 rm -f "$gate_release"
