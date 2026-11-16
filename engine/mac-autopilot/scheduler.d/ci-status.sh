@@ -503,7 +503,7 @@ tick_prs() {
   printf '%s' "$TICK_PRS"
 }
 tick_prs_prime() { [[ -n "$TICK_PRS" ]] || tick_prs >/dev/null 2>&1 || true; }
-tick_prs_changed() { TICK_PRS=""; TICK_PR_CHECK_CENSUS=""; TICK_PR_STATE=(); }
+tick_prs_changed() { TICK_PRS=""; TICK_PR_CHECK_CENSUS=""; TICK_PR_STATE=(); TICK_PRS_GEN=$(( ${TICK_PRS_GEN:-0} + 1 )); }
 tick_prs_set_draft() { # PR ready/draft writes do not change its census identity or checks
   [[ -n "$TICK_PRS" ]] || return 0
   local updated

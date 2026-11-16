@@ -15,6 +15,12 @@ dcapture() { local var=$1 step=$2 rc=0 out; shift 2; out="$("$@")" || rc=$?; pri
 # capacity, priority and implement-cap check re-ran the refresh (one jq and three jq per worker plus ps: 2244 of about 8000 processes in a
 # five-unit fixture pass). Refreshing here, in dispatch_pending's own shell, lets those subshells inherit it; the 10 s TTL is unchanged.
 dispatch_live_prime() { (( SECONDS < ${LIVE_WORKER_CACHE_UNTIL:-0} )) || refresh_live_worker_cache; dmark live_workers; }
+# A refill reads the open-PR census once per tick_prs_changed (TICK_PRS_GEN), not once per pass: a row after an in-pass change must not find it
+# empty and skip its CONFLICTING check. A failed read is not retried until the next change.
+dispatch_census_prime() {
+  [[ "$local_refill" == true && "${census_gen:-}" != "${TICK_PRS_GEN:-0}" ]] || return 0
+  tick_prs_prime; census_gen="${TICK_PRS_GEN:-0}"
+}
 dispatch_steps_say() {
   (( ${#dispatch_step_secs[@]} )) || return 0
   local step_name step_time step_line="dispatch detail steps refill=$local_refill"
@@ -94,7 +100,7 @@ dispatch_pending() {
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" census_gen="" marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
@@ -323,7 +329,7 @@ dispatch_pending() {
           say "repair-pending unit=$id: no red check and no open finding -> review-pending"; continue
         fi
         # refill 首个通过 room_for 的 PR 车道候选才取一次 census；满载时上面的 room_for 已跳过，一次都不取。
-        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
+        dispatch_census_prime; dmark census_prime
         # repair_cap_admission may have just moved this unit onto the hard tier.
         u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"; dmark unit_reload
         dstep pick pick implement "$u" || { dispatch_skip pick; continue; }
@@ -410,7 +416,7 @@ $(decision_scope "$u")"
         [[ -n "$pr_num" || "$prless" == 1 ]] || { to_supervisor "$id" "rereview-pending without a PR"; continue; }
         if [[ "$(jqf -r '.reopen_pr // false' <<<"$u")" == true ]]; then reopen_reverted_pr "$id" "$pr_num"; continue; fi
         dstep room_for room_for "$id" rereview "$u" || continue
-        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
+        dispatch_census_prime; dmark census_prime
         dcapture target review_target unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")" || { dispatch_skip review-target; continue; }
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || { dispatch_skip review-target; continue; }
@@ -490,7 +496,7 @@ $(decision_scope "$u")"
       review-pending)
         [[ -n "$pr_num" || "$prless" == 1 ]] || { dispatch_skip no-pr; continue; }
         dstep room_for room_for "$id" review "$u" || continue
-        [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
+        dispatch_census_prime; dmark census_prime
         dcapture target review_target unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")" || { dispatch_skip review-target; continue; }
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || { dispatch_skip review-target; continue; }

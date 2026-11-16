@@ -402,4 +402,22 @@ unset -f fresh_events fresh_rate
 unset -f red_history stop_loss_case case_stage case_events
 
 unset -f red_history stop_loss_case case_stage case_events red_check_history ci_update_branch
+
+# A census change inside the pass (room_for below invalidates it on every row) must not blind the next row's CONFLICTING check:
+# the refill re-reads the census once per change, so two conflicting rows still reach conflict repair with two census reads.
+(
+  room_for() { tick_prs_changed; return 0; }
+  dispatch_calls=0
+  jq -n --arg sha "$sha" '[range(503; 505) | {number:.,headRefOid:$sha,headRefName:"agent/issue-49\(. - 500)",baseRefName:"main",
+    isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"CONFLICTING",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
+  jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issue-4903",lane:"pr",title:"fixture review",history:[]},
+    {id:"issue-4904",stage:"review-pending",pr:504,branch:"agent/issue-4904",lane:"pr",title:"fixture review",history:[]}]}' > "$UNITS"
+  write_workers 7
+  : > "$GH_CALLS"; : > "$LOG"
+  TICK_PRS=''
+  dispatch_pending true
+  [[ "$dispatch_calls" == 0 ]] || fail "a CONFLICTING PR was dispatched after an in-pass census change (calls=$dispatch_calls)"
+  [[ "$(sort "$GH_CALLS" | uniq -c | tr -s ' ' | tr '\n' ';')" == ' 2 pr list; 2 pr view;' ]] || fail "unexpected gh calls after in-pass census change: $(tr '\n' ';' < "$GH_CALLS")"
+)
+
 echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named)'
