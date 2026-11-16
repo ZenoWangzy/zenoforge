@@ -4,6 +4,7 @@
 set -euo pipefail
 unset GH_TOKEN
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+if [[ -z ${ZF_BATCH_SLOT:-} ]]; then exec zf-batch "$BASH_SOURCE" "$@"; fi
 root=$(git rev-parse --show-toplevel)
 sha=$(git rev-parse "${1:-HEAD}^{commit}")
 git fetch -q origin main
@@ -12,16 +13,66 @@ base=$(git merge-base origin/main "$sha")
 [[ $(git rev-list --count "$base..$sha") -gt 0 ]] || { echo "prepush-gates: $sha has no commits over origin/main; commit first" >&2; exit 2; }
 # Not /tmp: WSL /tmp is a 3.9 GB tmpfs and a dependency install plus build filled it (ENOSPC, 10-23).
 mkdir -p "${PREPUSH_TMP:=$HOME/.cache/zf-prepush}"
-# 10-30 02:35Z two concurrent gate runs (example + shared builds) pushed WSL load5 to 31, PSI 56%: one run at a time, niced.
-exec 8>"$PREPUSH_TMP/.gates.lock"
-flock -n 8 || { echo "prepush-gates: another gate run is active; waiting" >&2; flock 8; }
+gate_slots=${PREPUSH_GATE_SLOTS:-2}
+[[ $gate_slots =~ ^[1-9][0-9]*$ ]] || { echo 'prepush-gates: PREPUSH_GATE_SLOTS must be a positive integer' >&2; exit 2; }
+mkdir -p "$PREPUSH_TMP/waiting"
+wait_file="$PREPUSH_TMP/waiting/$$"
+branch=$(git -C "$root" branch --show-current)
+branch=${branch:-detached}
+tmp=
+gate_slot_fd=
+cleanup() {
+  rm -f -- "$wait_file"
+  if [[ -n ${tmp:-} ]]; then
+    git -C "$root" worktree remove --force "$tmp/tree" >/dev/null 2>&1 || true
+    rm -rf -- "$tmp"
+  fi
+  if [[ -n ${gate_slot_fd:-} ]]; then exec {gate_slot_fd}>&-; fi
+}
+trap cleanup EXIT
+wait_started=$(date +%s)
+gate_slot_index=
+try_gate_slot() {
+  local mode="$1" i status
+  for ((i=0; i<gate_slots; i++)); do
+    exec {gate_slot_fd}>"$PREPUSH_TMP/.gates.slot-$i.lock"
+    if [[ $mode == blocking ]]; then
+      if flock -w 1 "$gate_slot_fd"; then status=0; else status=$?; fi
+    else
+      if flock -n "$gate_slot_fd"; then status=0; else status=$?; fi
+    fi
+    if (( status == 0 )); then
+      gate_slot_index=$i
+      rm -f -- "$wait_file"
+      printf 'prepush-gates: slot %s acquired after %ss\n' "$i" "$(( $(date +%s) - wait_started ))" >&2
+      return 0
+    fi
+    exec {gate_slot_fd}>&-
+    gate_slot_fd=
+    (( status == 1 )) || return "$status"
+  done
+  return 1
+}
+waiting=0
+while :; do
+  if try_gate_slot nonblocking; then break; else status=$?; fi
+  (( status == 1 )) || exit "$status"
+  if (( waiting == 0 )); then
+    wait_started=$(date +%s)
+    printf '%s %s %s\n' "$wait_started" "$sha" "$branch" > "$wait_file"
+    waiting=1
+  fi
+  # flock has no wait-any operation; cycle timed blocking attempts so any freed slot is noticed.
+  if try_gate_slot blocking; then break; else status=$?; fi
+  (( status == 1 )) || exit "$status"
+done
 renice -n 5 $$ >/dev/null 2>&1 || true
 tmp=$(mktemp -d -p "$PREPUSH_TMP")
-cleanup() { git -C "$root" worktree remove --force "$tmp/tree" >/dev/null 2>&1 || true; rm -rf "$tmp"; }
-trap cleanup EXIT
 git worktree add --quiet --detach "$tmp/tree" "$sha"
 cd "$tmp/tree"
-export PREPUSH_BASE="$base" PREPUSH_HEAD="$sha"
+# Target gates can map these newline-separated package paths to workspace package names.
+PREPUSH_CHANGED_PACKAGES=$(git diff --name-only "$base" "$sha" | awk -F/ '$1 == "packages" && NF > 1 { print "packages/" $2 }' | LC_ALL=C sort -u)
+export PREPUSH_BASE="$base" PREPUSH_HEAD="$sha" PREPUSH_CHANGED_PACKAGES
 rc=0
 run() { printf '=='; printf ' %q' "$@"; printf '\n'; if "$@"; then :; else rc=1; fi; }
 # Resolve configuration against the original target, not the candidate worktree.
