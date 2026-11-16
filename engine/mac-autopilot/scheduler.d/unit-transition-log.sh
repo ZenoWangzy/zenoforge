@@ -7,13 +7,15 @@ unit_transition_load() {
   if [[ -z "$policy" ]]; then
     policy="$(sched_config_file state/scheduling-policy.json 2>/dev/null)" || policy="$HERE/../state/scheduling-policy.json"
   fi
-  [[ -s "$policy" ]] || return 0
+  [[ -f "$policy" && -r "$policy" ]] || { say "unit transition log off: unreadable policy $policy" || :; return 0; }
+  [[ -s "$policy" ]] || { say "unit transition log off: empty policy $policy" || :; return 0; }
   rows="$(jq -r '
     .state_machine as $m
     | (($m.transitions // {} | to_entries[] as $entry | $entry.value[] | ["edge", $entry.key, .] | @tsv),
        ($m.escalation_targets[]? | ["escalation", ., ""] | @tsv),
        ($m.states // {} | to_entries[] | select(.value.legacy == true) | ["legacy", .key, ""] | @tsv),
-       ($m.initial_states[]? | ["initial", ., ""] | @tsv))' "$policy" 2>/dev/null)" || return 0
+       ($m.initial_states[]? | ["initial", ., ""] | @tsv))' "$policy" 2>/dev/null)" \
+    || { say "unit transition log off: invalid policy $policy" || :; return 0; }
   UNIT_TRANSITION_EDGES=$'\n'
   UNIT_TRANSITION_ESCALATIONS=$'\n'
   UNIT_TRANSITION_LEGACY=$'\n'
@@ -56,6 +58,7 @@ unit_transition_observe_ledger() { # old-ledger candidate-ledger caller [unit-id
   local old_file="$1" candidate="$2" caller="$3" id="${4:-}" from="${5:-}" to
   if [[ -n "$id" ]]; then
     to="$(jq -r --arg id "$id" '[.units[] | select(.id == $id) | .stage][0] // empty' "$candidate" 2>/dev/null)" || return 0
+    [[ "$from" != "$to" ]] || return 0
     unit_transition_log_pair "$id" "$from" "$to" "$caller"
     return 0
   fi
@@ -63,8 +66,10 @@ unit_transition_observe_ledger() { # old-ledger candidate-ledger caller [unit-id
     [[ -n "$id" ]] || continue
     unit_transition_log_pair "$id" "$from" "$to" "$caller"
   done < <(jq -r --slurpfile next "$candidate" '
-    .units[] as $old
-    | ($next[0].units[]? | select(.id == $old.id)) as $new
+    ($next[0].units | INDEX(.id)) as $idx
+    | .units[] as $old
+    | $idx[$old.id] as $new
+    | select($new != null)
     | select(($old.stage // "") != ($new.stage // ""))
     | [$old.id, ($old.stage // ""), ($new.stage // "")] | @tsv' "$old_file" 2>/dev/null)
 }
