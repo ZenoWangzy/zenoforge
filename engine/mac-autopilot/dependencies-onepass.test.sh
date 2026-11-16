@@ -410,12 +410,10 @@ jq -n '{units:[
   {id:"stored",stage:"implement-pending",body_blocked_by:[3001,3002],dropped_deps:[3002]},
   {id:"legacy",stage:"repair-pending",hold_handoff_episode:"fixture",dropped_deps:[],task:"--- issue 正文（任务数据）---\n## Blocked by\n- #3003\n# another section\n- #3004\n--- 正文结束 ---"}
 ]}' > "$UNITS"
-unit_blocker_calls="$body_prime/unit-blocker-calls"; primed_dependencies="$body_prime/primed"
- : > "$unit_blocker_calls"
-unit_body_blockers() {
-  printf 'called\n' >> "$unit_blocker_calls"
-  case "$(jqf -r '.id' <<<"$1")" in stored) printf '3001\n' ;; legacy) printf '3003\n' ;; esac
-}
+body_prime_jqf_calls="$body_prime/jqf-calls"; primed_dependencies="$body_prime/primed"
+: > "$body_prime_jqf_calls"
+real_jqf="$(declare -f jqf)"; eval "orig_$real_jqf"
+jqf() { printf 'called\n' >> "$body_prime_jqf_calls"; orig_jqf "$@"; }
 dep_states() {
   printf '%s\n' "$*" >> "$primed_dependencies"
   local dep
@@ -423,7 +421,8 @@ dep_states() {
 }
 : > "$primed_dependencies"
 dispatch_body_dependencies_prime
-[[ ! -s "$unit_blocker_calls" ]] || dependency_review_failures+=("body prime forked per-unit blocker extraction $(wc -l < "$unit_blocker_calls") times")
+eval "$real_jqf"
+[[ "$(wc -l < "$body_prime_jqf_calls" | tr -d ' ')" == 1 ]] || dependency_review_failures+=("body prime used jq $(wc -l < "$body_prime_jqf_calls") times to extract blockers")
 [[ "$(tr ' ' '\n' < "$primed_dependencies" | sort -n | paste -sd, -)" == '3001,3003' ]] || dependency_review_failures+=("body prime returned the wrong blocker batch: $(cat "$primed_dependencies")")
 [[ "$DISPATCH_BODY_DEP_UNITS" == 2 ]] || dependency_review_failures+=("body prime counted dropped or missing dependencies: $DISPATCH_BODY_DEP_UNITS")
 

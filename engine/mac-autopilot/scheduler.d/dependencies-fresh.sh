@@ -23,7 +23,7 @@ dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states 
     | select($u.stage=="implement-pending" or ($u.stage=="repair-pending" and $u.hold_handoff_episode != null))
     | [((($u.body_blocked_by | type)=="array")|tostring),
        (if ($u.body_blocked_by | type)=="array" then [$u.body_blocked_by[] | select(type=="number") | tostring] | join(",") else "" end),
-       (($u.task // "")|@base64),
+       (if ($u.task // "")=="" then "-" else ($u.task|@base64) end),
        ([($u.dropped_deps // [])[] | tostring]|join(","))] | @tsv' "$UNITS")
   DISPATCH_BODY_DEP_UNITS=${#seen[@]}
   for dep in "${!seen[@]}"; do
