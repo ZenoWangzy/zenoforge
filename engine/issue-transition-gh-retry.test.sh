@@ -374,6 +374,34 @@ GH_MODE=unrestricted gh run list --repo "$REPO" > /dev/null
 export GH_MODE=unrestricted
 echo 'ok - REST quota marker blocks REST without blocking GraphQL and expires'
 
+# Quota lookups must reach gh while both API classes are backed off, but
+# ordinary REST and GraphQL calls remain blocked.
+printf '%s\n' "$GH_RATE_LIMIT_RESET_EPOCH" > "$gql_marker"
+printf '%s\n' "$GH_RATE_LIMIT_RESET_EPOCH" > "$rest_marker"
+: > "$GH_CALL_LOG"
+gh api rate_limit > /dev/null
+gh api graphql -f 'query={rateLimit{remaining}}' > /dev/null
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == 2 ]]
+grep -Fqx 'api rate_limit' "$GH_CALL_LOG"
+grep -Fqx 'api graphql -f query={rateLimit{remaining}}' "$GH_CALL_LOG"
+if gh api repos/x/y > /dev/null 2> "$AGENT_HOME/rest-backoff-lookup.err"; then
+  echo 'not ok - ordinary REST call escaped the active backoff' >&2
+  exit 1
+else
+  quota_rc=$?
+fi
+[[ "$quota_rc" == 75 ]]
+if gh pr view 1 > /dev/null 2> "$AGENT_HOME/graphql-backoff-lookup.err"; then
+  echo 'not ok - ordinary GraphQL call escaped the active backoff' >&2
+  exit 1
+else
+  quota_rc=$?
+fi
+[[ "$quota_rc" == 75 ]]
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == 2 ]]
+rm -f -- "$gql_marker" "$rest_marker"
+echo 'ok - quota lookups reach gh during backoff while ordinary calls stay blocked'
+
 # The scheduler tick file keeps totals while splitting the API classes.
 (
   A="$AGENT_HOME/tick-meter"

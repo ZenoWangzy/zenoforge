@@ -178,6 +178,8 @@ rate_report="$(cat "$test_root/rate-limit.json")"
 
 unset INTAKE_BACKLOG_RATE_LIMIT_NUMBER
 export INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT=102
+# The prior synthetic 403 leaves a shared marker; let this case reach its own route 403.
+rm -f -- "$AGENT_HOME/gh-rate-limit-until.rest"
 : > "$INTAKE_BACKLOG_JUDGE_LOG"
 : > "$INTAKE_BACKLOG_EVENTS"
 bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/rate-limit-route.json" --limit 3 --concurrency 1 --apply
