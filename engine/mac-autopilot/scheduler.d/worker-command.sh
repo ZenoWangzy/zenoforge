@@ -47,15 +47,13 @@ claude_implement_tools() { # workdir unit → --allowedTools 值
   printf '%s' "$tools"
 }
 
-claude_review_tools() { # workdir unit → bounded review-edit, test, and branch-push tools
-  local workdir="$1" unit="$2" branch tools
-  tools="Grep,Glob,Read(/$workdir/**),Bash(pwd),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(cat:*),Bash(ls:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(sort:*),Bash(uniq:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(python3 *.test.py),Bash(bash *.test.sh),Bash(bash tools/test-receipt.sh:*)"
-  branch="$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
-  if [[ "$(unit_field "$unit" '.lane // empty')" == pr && "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != main ]] \
-    && git -C "$workdir" check-ref-format --branch "$branch" >/dev/null 2>&1; then
-    tools+=",Edit(/$workdir/**),Write(/$workdir/**),Bash(git add:*),Bash(git commit:*),Bash(git push origin $branch)"
-  fi
-  printf '%s' "$tools"
+claude_review_tools() { # workdir unit → read-only inspection tools
+  local workdir="$1"
+  printf 'Grep,Glob,Read(/%s/**),Bash(pwd),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(cat:*),Bash(ls:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(sort:*),Bash(uniq:*)' "$workdir"
+}
+
+claude_review_disallowed_tools() { # explicit deny list protects the review contract if an allowlist changes
+  printf '%s' 'Edit,Write,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(python3 *.test.py),Bash(bash *.test.sh),Bash(bash tools/test-receipt.sh:*)'
 }
 
 # 实现/修复：claude -p stream-json；repair 在同一提供方与模型、会话文件仍在时 --resume（session id 来自上一次 result 流）。
@@ -95,7 +93,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
 
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg review_allowed_tools claude_cli_tools
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg review_allowed_tools claude_cli_tools zcode_mode=yolo
   local -a tier_args=() codex_config_args=() zcode_cmd=()
   local output_tokens
   CODEX_MODE=fresh
@@ -106,6 +104,11 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   if [[ "$report_only" == true ]]; then
     [[ "$type" == repair && "$provider" == codex && -n "$expected_session_id" ]] || return 1
     sandbox_mode=read-only
+  fi
+  if [[ "$type" == review || "$type" == rereview ]]; then
+    sandbox_mode=read-only
+    zcode_mode=plan
+    prompt+=$'\n\n本次评审工作目录只读。不要修改、提交或推送，也不要运行测试命令（测试可能在工作目录留下文件）。缺陷保持 open，在报告中给出修复建议，交由 repair 阶段处理。'
   fi
   prompt+="$(worker_rules "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")" "$type" "$(provider_of "$model")")"
   prompt_arg="$prompt"
@@ -119,7 +122,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     # never a bare `zcode` on PATH: the host may only carry the worker bundle.
     mapfile -t zcode_cmd < <(zf_zcode_bin_argv 2>/dev/null)
     (( ${#zcode_cmd[@]} > 0 )) || return 1
-    CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 "BASH_MAX_OUTPUT_LENGTH=$(worker_output_cap_chars)" "${zcode_cmd[@]}" -p "$prompt_arg" --cwd "$workdir" --mode yolo)
+    CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 "BASH_MAX_OUTPUT_LENGTH=$(worker_output_cap_chars)" "${zcode_cmd[@]}" -p "$prompt_arg" --cwd "$workdir" --mode "$zcode_mode")
     return 0
   fi
   if [[ "$provider" == claude && ( "$type" == implement || "$type" == repair ) ]]; then
@@ -128,22 +131,19 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   fi
   if [[ "$provider" == claude ]]; then
     [[ "$type" == review || "$type" == rereview ]] || return 1
-    # Review report stays on stdout; bounded source edits and branch pushes use the scoped allowlist below.
+    # Review report stays on stdout; plan mode and explicit denies keep the review clone read-only.
     # --strict-mcp-config：不加载用户级 MCP 服务器（4 个评审曾拉起 426 个进程、2.5 GB 内存，且 chrome-devtools 会碰用户浏览器）。
     WORKER_STDOUT_REPORT=1
     CODEX_USAGE_START=null  # Claude is not measured by Codex cumulative counters.
-    # 用户级 PreToolUse hook（rtk）把 git log/diff 改写成 rtk git …，白名单不匹配，dontAsk 全拒：评审 worker 不加载 hook。
+    # 用户级 PreToolUse hook（rtk）把 git log/diff 改写成 rtk git …，白名单不匹配，评审 worker 不加载 hook。
     review_allowed_tools="$(claude_review_tools "$workdir" "$unit")"
     claude_cli_tools="Read,Grep,Glob,Bash"
-    if [[ "$review_allowed_tools" == *"Edit(/$workdir/**)"* && "$review_allowed_tools" == *"Write(/$workdir/**)"* ]]; then
-      claude_cli_tools="Read,Edit,Write,Grep,Glob,Bash"
-    fi
     CODEX_COMMAND=(claude -p "$prompt_arg
-（把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。仅在 PR lane 的小型 fixed-in-review 修复中编辑当前工作目录，提交并 push 当前分支；工具白名单限制到当前 clone、当前分支和测试命令。
-当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」。可用命令：git diff/log/show/rev-parse/merge-base/ls-files/status/add/commit、git push origin 当前分支、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort、pnpm <script>、npx vitest <file>、node --test <file>、python3 <file>.test.py、bash <file>.test.sh、bash tools/test-receipt.sh <测试命令>。优先用 Read/Grep 工具读代码，并先运行聚焦测试；一条命令被拒就拆开重试。）" \
+（把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。本次评审只读：不要编辑、提交、推送或运行测试；发现问题时保持 finding 为 open 并写明修复建议，由 repair 阶段处理。
+当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」。可用命令：git diff/log/show/rev-parse/merge-base/ls-files/status、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort/uniq。优先用 Read/Grep 工具读代码。）" \
       --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
-      --model "$model" --effort "$effort" --permission-mode dontAsk --strict-mcp-config \
-      --tools "$claude_cli_tools" --allowedTools "$review_allowed_tools")
+      --model "$model" --effort "$effort" --permission-mode plan --strict-mcp-config \
+      --tools "$claude_cli_tools" --allowedTools "$review_allowed_tools" --disallowedTools "$(claude_review_disallowed_tools)")
     return 0
   fi
   tier="$(jqf -r --arg m "$model" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
@@ -205,7 +205,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$snapshot"
         prompt_arg="继续沿用本会话已有上下文，仅处理本次增量任务，不重读未变化背景：$prompt"
-        CODEX_COMMAND=(codex exec -s danger-full-access resume "$session_id" -m "$model" \
+        CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
           -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
           ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$prompt_arg")
         return 0

@@ -118,8 +118,8 @@ merge_pr_prior_art_ok() {
 # has no test run to prove, and a green full-suite result for the same SHA
 # (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
-  local pr="$1" head_sha="$2" success_only="${3:-false}" view count files path
-  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null)" || view="$(merge_pr_rollup_rest "$pr" 2>/dev/null)" || return 1
+  local pr="$1" head_sha="$2" success_only="${3:-false}" with_url="${4:-false}" view count files path
+  view="$(if [[ "$with_url" == true ]]; then merge_pr_rollup_rest "$pr"; else gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null || merge_pr_rollup_rest "$pr" 2>/dev/null; fi)" || return 1
   files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)" || return 1
   [[ -n "$files" ]] || return 1
   while IFS= read -r path; do
@@ -129,7 +129,7 @@ merge_pr_ci_green_check_count() {
     esac
   done <<<"$files"
   # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
-  count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+  count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --arg details "$with_url" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
     def check_run_time: .startedAt // .completedAt;
     def completed_success:
       if .__typename == "CheckRun" then
@@ -155,7 +155,7 @@ merge_pr_ci_green_check_count() {
     | select(all($current_checks[]; completed_success))
     | (["cli"] + [range(0;$shards) | "suites (\(.))"]) as $required
     | select(all($required[]; . as $need | any($current_checks[]; required_check($need))))
-    | $checks | length
+    | if $details == "true" then [$checks | length, ([$current_checks[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks | length end
   ' <<<"$view" 2>/dev/null)" || return 1
   printf '%s\n' "$count"
 }
@@ -232,7 +232,7 @@ merge_pr_test_receipt_ok() {
     return 1
   fi
   if ! bad="$(LAND_RECEIPT_STRICT=1 land_receipt_green "$receipt" 2>&1)"; then
-    merge_pr_refuse "$pr" "test receipt for $head_sha has a failed last run: $bad" 'fix the failing command, then rerun it at this HEAD through tools/test-receipt.sh <command...>'
+    merge_pr_red_receipt_ci_superseded "$pr" "$head_sha" "$bad" && return 0 || merge_pr_refuse "$pr" "test receipt for $head_sha has a failed last run: $bad" 'fix the failing command, then rerun it at this HEAD through tools/test-receipt.sh <command...>'
     return 1
   fi
   printf 'merge-pr: receipt: local\n' >&2
@@ -533,8 +533,8 @@ merge_pr_rollup_rest() {
   checks="$(gh api --paginate "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || return 1
   statuses="$(gh api "repos/{owner}/{repo}/commits/$sha/status" 2>/dev/null)" || return 1
   printf '%s\n%s\n%s\n' "$runs" "$checks" "$statuses" | jq -se --arg sha "$sha" '
-    ([.[] | .workflow_runs[]? | {key: (.check_suite_id | tostring), value: .name}] | from_entries) as $wf
-    | ([.[] | .check_runs[]? | {__typename: "CheckRun", name, workflowName: ($wf[(.check_suite.id | tostring)] // ""),
+    ([.[] | .workflow_runs[]? | {key: (.check_suite_id | tostring), value: {name, url: .html_url}}] | from_entries) as $wf
+    | ([.[] | .check_runs[]? | {__typename: "CheckRun", name, workflowName: ($wf[(.check_suite.id | tostring)].name // ""), workflowUrl: ($wf[(.check_suite.id | tostring)].url // ""), htmlUrl: .html_url,
           status: (.status | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase), startedAt: .started_at}]
       | group_by([.workflowName, .name]) | map(max_by(.startedAt // "")))
     + ([.[] | .statuses[]? | {__typename: "StatusContext", context, state: (.state | ascii_upcase)}])

@@ -51,7 +51,7 @@ jq -e '.units | map(.id) == ["issue-7"]' "$UNITS" >/dev/null || fail 'the pass w
 [[ ! -e "$SCHED_LOCK" && ! -e "$RELEASE_DEPS_STATION_LOCK" ]] || fail 'a finished pass left a lock'
 [[ -e "$A/.release-deps-epoch" ]] || fail 'a pass left no heartbeat'
 line="$(cat "$LOG")"
-[[ "$line" =~ release-deps\ done\ secs=[0-9]+\ gh_calls=[0-9]+\ rc=0\ ended=[0-9:]+Z$ ]] || fail "the pass line lacks its fields: $line"
+[[ "$line" =~ release-deps\ done\ secs=[0-9]+\ gh_calls=[0-9]+\ gql=[0-9]+\ rest=[0-9]+\ rc=0\ ended=[0-9:]+Z$ ]] || fail "the pass line lacks its fields: $line"
 [[ "$(wc -l < "$LOG")" == 1 ]] || fail "a pass must log one line: $(cat "$LOG")"
 
 # --- case 2: the full tick launches dependency release as the same detached step used by the loop station. ---

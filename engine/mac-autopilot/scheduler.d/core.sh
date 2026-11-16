@@ -171,11 +171,15 @@ ready_since_epoch() { # → jq 表达式：.ready_since 归一为 epoch 秒（IS
 }
 format_duration_us() { local us="${1:-0}"; printf '%d.%03d' $((us / 1000000)) $((us % 1000000 / 1000)); }
 gh() {
-  [[ -n "${GH_TICK_CALLS_FILE:-}" ]] && printf 'x\n' >>"$GH_TICK_CALLS_FILE" 2>/dev/null || :
   [[ -n "${TICK_DISPATCH_STEP_GH_FILE:-}" ]] && printf x >>"$TICK_DISPATCH_STEP_GH_FILE" 2>/dev/null || :
-  local started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}" gh_started_us=${EPOCHREALTIME/[.,]/} gh_elapsed_us
+  local api_class started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}" gh_started_us=${EPOCHREALTIME/[.,]/} gh_elapsed_us
   local timeout_op="${1:-unknown}" timeout_unit="${id:-unknown}"
   local timeout_seconds="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"
+  if [[ -n "${GH_TICK_CALLS_FILE:-}" ]]; then
+    api_class="$(gh_rate_limit_api_class "$@")"
+    [[ "$api_class" == graphql ]] || api_class=rest
+    printf '%s\n' "$api_class" >>"$GH_TICK_CALLS_FILE" 2>/dev/null || :
+  fi
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || timeout_seconds=120
   [[ -z "${2:-}" ]] || timeout_op+=" $2"
   gh_timeout -k 1 "${timeout_seconds}s" "$@" || rc=$?
@@ -238,6 +242,7 @@ tick_roadmap_cache_end() {
   unset ZF_ROADMAP_TREE_CACHE_FILE TICK_ROADMAP_CACHE_OWNED
 }
 tick_gh_calls_count() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf '0\n'; return 0; }; awk 'END {print NR}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf '0\n'; }
+tick_gh_calls_summary() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf 'gh_calls=0 gql=0 rest=0\n'; return 0; }; awk '$0 == "graphql" {gql++} $0 == "rest" {rest++} END {printf "gh_calls=%d gql=%d rest=%d\n", NR, gql, rest}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf 'gh_calls=0 gql=0 rest=0\n'; }
 gh_par_throttle() { # pid 数组名：在途数达到 GH_PARALLEL 时等最早的一个结束
   local -n _gh_pids="$1"
   while (( ${#_gh_pids[@]} >= GH_PARALLEL )); do wait "${_gh_pids[0]}" || :; _gh_pids=("${_gh_pids[@]:1}"); done

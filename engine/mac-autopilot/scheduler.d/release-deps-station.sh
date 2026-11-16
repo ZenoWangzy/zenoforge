@@ -22,8 +22,8 @@ release_deps_station_tick_pass() {
     tick_gh_calls_begin
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" # the stacked-release restack reads it; the tick's fetch refreshes it
     release_dependency_blocks || rc=$?
-    gh_calls="$(tick_gh_calls_count)"
-    say "release-deps done secs=$SECONDS gh_calls=$gh_calls rc=$rc ended=$(date -u +%H:%M:%SZ)"
+    gh_calls="$(tick_gh_calls_summary)"
+    say "release-deps done secs=$SECONDS $gh_calls rc=$rc ended=$(date -u +%H:%M:%SZ)"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$RELEASE_DEPS_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$RELEASE_DEPS_STATION_LOCK"

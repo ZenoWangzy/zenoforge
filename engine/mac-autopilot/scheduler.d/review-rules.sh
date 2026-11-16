@@ -300,12 +300,8 @@ lane_rule() { # lane sha
 subject_of() { # pr issue → 评审/修复对象的称呼（无 PR 的直落单元用 issue 或单元 id）
   if [[ -n "$1" ]]; then printf 'PR #%s' "$1"; elif [[ -n "$2" ]]; then printf 'issue #%s 的本地实现（无 PR）' "$2"; else printf '本地实现（无 PR）'; fi
 }
-review_fix_prompt_rule() { # lane → bounded edit/commit/push instructions
-  if [[ "$1" == pr ]]; then
-    printf '%s' '发现一个小且局部的缺陷时，可在本分支就地修复并补一个回归测试：仅改一个源文件，源文件改动最多 20 行，不做设计变更；测试文件可作为第二个改动文件。先运行该测试，再以调度器已配置的 reviewer identity 提交一个直接基于当前 head 的 commit，运行 `bash tools/test-receipt.sh <测试命令>`，然后只 push 当前分支。报告中的该 finding 使用 status `fixed-in-review`，包含 commit_sha 与 test 对象（path、name），结论仍可为 READY。更大的修复不要做，保持 finding open 并返回 NOT_READY。'
-  else
-    printf '%s' '此 lane 只读，不在评审中改代码；直落 main 的测试由落地后流水线运行。'
-  fi
+review_fix_prompt_rule() { # lane → read-only review instructions
+  printf '%s' '所有 lane 的评审均为只读：评审中不得编辑代码、创建提交、推送分支或运行测试；发现保持 status `open`，交给 repair 阶段处理。'
 }
 review_prompt() { # pr-or-subject title sha report [lane] [checkout]
   local subject="$1"

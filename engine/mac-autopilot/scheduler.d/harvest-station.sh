@@ -180,12 +180,12 @@ harvest_station_tick() {
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
     harvest_station_pass || :
     hs_unlock
-    gh_calls="$(tick_gh_calls_count)"
+    gh_calls="$(tick_gh_calls_summary)"
     for name in harvest_workers coord_reap coord_systemd coord_scheduler self_check_harvest precheck_harvest recover_orphans; do
       [[ -n "${HS_SECS[$name]:-}" ]] && phases+="${phases:+,}${name}:${HS_SECS[$name]}s/${HS_GH[$name]}gh"
     done
     # A PAUSE does not stop it: the paused tick harvests too, and a harvest dispatches nothing.
-    say "harvest-station done secs=$SECONDS gh_calls=$gh_calls lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none}"
+    say "harvest-station done secs=$SECONDS $gh_calls lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none}"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$HARVEST_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$HARVEST_STATION_LOCK"

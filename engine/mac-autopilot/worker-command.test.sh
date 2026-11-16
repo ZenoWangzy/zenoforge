@@ -87,14 +87,8 @@ for ((i = 0; i < ${#CODEX_COMMAND[@]}; i++)); do
   fi
 done
 [[ -n "$allowed_tools" ]] || fail 'Sonnet fallback command omitted --allowedTools'
-[[ "$allowed_tools" == *'Bash(node --test:*)'* ]] || fail "Sonnet fallback cannot rerun node tests: $allowed_tools"
-for runner in 'Bash(pnpm:*)' 'Bash(npx vitest:*)' 'Bash(bash *.test.sh)'; do
-  [[ "$allowed_tools" == *"$runner"* ]] || fail "Sonnet fallback omitted test runner $runner: $allowed_tools"
-done
-[[ "$allowed_tools" == *'Edit(/'*'/**)'* && "$allowed_tools" == *'Write(/'*'/**)'* ]] || fail "reviewer cannot edit its clone: $allowed_tools"
-[[ "$allowed_tools" == *'Bash(git push origin agent/review-1)'* ]] || fail "PR reviewer cannot push its own branch: $allowed_tools"
-for push_grant in 'Bash(git push:*)' 'Bash(git push origin *)' 'Bash(git push -f' 'Bash(git push --force'; do
-  [[ "$allowed_tools" != *"$push_grant"* ]] || fail "reviewer has an unscoped push grant: $allowed_tools"
+for write_grant in 'Edit(' 'Write(' 'Bash(git add:' 'Bash(git commit:' 'Bash(git push' 'Bash(pnpm:' 'Bash(npx vitest:' 'Bash(node --test:' 'Bash(bash *.test.sh)'; do
+  [[ "$allowed_tools" != *"$write_grant"* ]] || fail "reviewer has a write or test grant: $allowed_tools"
 done
 gh_permissions=()
 IFS=',' read -r -a permission_entries <<<"$allowed_tools"
@@ -111,12 +105,15 @@ actual_gh_permissions="$(IFS=,; printf '%s' "${gh_permissions[*]}")"
 [[ "$actual_gh_permissions" == "$expected_gh_permissions" ]] \
   || fail "Sonnet fallback GitHub read permissions changed: $actual_gh_permissions"
 review_prompt="${CODEX_COMMAND[2]}"
-for runner in 'pnpm <script>' 'npx vitest <file>' 'node --test <file>' 'bash <file>.test.sh'; do
-  [[ "$review_prompt" == *"$runner"* ]] || fail "Sonnet fallback prompt omitted test runner $runner"
-done
+[[ "$review_prompt" == *'评审只读'* && "$review_prompt" == *'保持 finding 为 open'* ]] \
+  || fail 'Sonnet fallback prompt does not keep findings open in read-only review'
 review_command=" ${CODEX_COMMAND[*]} "
-[[ "$review_command" == *' --tools Read,Edit,Write,Grep,Glob,Bash '* ]] || fail 'Sonnet fallback tool surface changed'
-[[ "$review_command" == *' --permission-mode dontAsk '* ]] || fail 'Sonnet fallback permission mode changed'
+[[ "$review_command" == *' --tools Read,Grep,Glob,Bash '* ]] || fail 'Sonnet fallback tool surface is not read-only'
+[[ "$review_command" == *' --permission-mode plan '* ]] || fail 'Sonnet fallback permission mode is not plan'
+[[ "$review_command" == *' --disallowedTools '* ]] || fail 'Sonnet fallback command omitted explicit write/test denials'
+for denied in 'Edit' 'Write' 'Bash(git push:*)' 'Bash(pnpm:*)' 'Bash(bash *.test.sh)'; do
+  [[ "$review_command" == *"$denied"* ]] || fail "Sonnet fallback did not deny $denied"
+done
 git -C "$review_repo" checkout -q -b main
 TEST_LANE=direct-main build_codex_command review claude-sonnet-4-5 high review-1 'direct-main review prompt' '' "$review_repo" claude
 direct_main_tools=""
@@ -124,7 +121,7 @@ for ((i = 0; i < ${#CODEX_COMMAND[@]}; i++)); do
   if [[ "${CODEX_COMMAND[i]}" == --allowedTools ]]; then direct_main_tools="${CODEX_COMMAND[i + 1]:-}"; break; fi
 done
 [[ "$direct_main_tools" != *'Bash(git push'* ]] || fail "direct-main review may push: $direct_main_tools"
-for write_grant in 'Edit(/' 'Write(/' 'Bash(git add:' 'Bash(git commit:'; do
+for write_grant in 'Edit(' 'Write(' 'Bash(git add:' 'Bash(git commit:'; do
   [[ "$direct_main_tools" != *"$write_grant"* ]] || fail "direct-main review has a write grant: $direct_main_tools"
 done
 
