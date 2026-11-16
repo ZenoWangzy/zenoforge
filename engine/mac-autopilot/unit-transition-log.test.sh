@@ -38,7 +38,7 @@ grep -F 'unit transition undeclared unit=batch from=review-pending to=implement-
 [[ "$(grep -c 'unit transition undeclared' "$LOG")" == 2 ]] || fail 'expected one log line for each undeclared transition'
 
 undeclared_before="$(grep -c 'unit transition undeclared' "$LOG")"
-set_unit u '.note="metadata only"' || fail 'metadata-only set_unit failed'
+set_unit u '.note=(.history[-1].stage // "metadata only")' || fail 'metadata-only set_unit failed'
 [[ "$(unit_field u '.stage')" == implement-pending ]] || fail 'metadata-only write changed the stage'
 [[ "$(grep -c 'unit transition undeclared' "$LOG")" == "$undeclared_before" ]] \
   || fail 'metadata-only write logged a stage transition'
