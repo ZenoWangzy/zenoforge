@@ -225,6 +225,80 @@ harvest_workers
   || fail "the breaker parked the unit instead of letting the continuation finish the round (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES)"
 [[ "$(jqf -r '[.units[0].history[] | select(.stage=="repair-breaker")] | length' "$UNITS")" == 0 ]] || fail 'the breaker fired while a continuation was running'
 
+# A repair that wrote the missing sections into its own fix note (the 6597 shape) is adopted as the implementation report: the merged report keeps the fix note first and the unit report in full, with no continuation or escalation.
+adopted_fix_name=impl-71001-fix-adopted.md
+cat > "$sup/$adopted_fix_name" <<'REPORT'
+## decision-log
+Tried the repair in the fix note and verified the recurrence guard and prior-art sections.
+
+## how
+The scheduler adopts a repair report that passes the gate.
+
+## why
+Commit 97ed8be added this report gate for issue #880.
+
+## root-cause
+The persisted state was selected incorrectly.
+
+## recurrence-guard
+kind: test
+
+## prior-art
+Source: https://example.invalid/incident-reference
+
+VERDICT: READY
+REPORT
+# The unit report fails (no prior-art) and holds text the review needs; the adopted report must keep it.
+orig_report_name=impl-71001-orig-done.md
+cat > "$sup/$orig_report_name" <<'REPORT'
+## decision-log
+Original attempt, kept for review.
+
+## how
+The unit report before the repair.
+
+## why
+Commit 97ed8be added this report gate for issue #880.
+
+## root-cause
+The original root-cause text that review reads.
+
+## recurrence-guard
+kind: test
+
+Done: unique-6597-done-line verified against the fixture.
+
+VERDICT: READY
+REPORT
+adopted_report_name=impl-71001-orig-done-adopted-impl-71001-fix-adopted.md
+write_unit "$orig_report_name"
+jqf '.units[0].pr=71001 | .units[0].stage="repair"' "$UNITS" | write_state "$UNITS"
+write_worker repair "$adopted_fix_name" impl-71001-fix-adopted.worker.log
+printf 'tokens used\n1,020\nFixed the sections in the fix note.\n' > "$sup/impl-71001-fix-adopted.worker.log"
+before_resumes=$RESUME_DISPATCHES
+harvest_workers || :
+[[ "$RESUME_DISPATCHES" == "$before_resumes" && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$adopted_report_name" ]] \
+  || fail "a repair that fixed the sections in its fix note was not adopted as a merged report (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
+[[ "$(jqf -r '.units[0] | has("report_gate_fail")' "$UNITS")" == false ]] || fail 'an adopted repair report left a gate failure counter'
+[[ "$(jqf -r '[.units[0].history[] | select(.stage=="supervisor-escalated")] | length' "$UNITS")" == 0 ]] || fail 'a repair whose fix note passed the report gate was escalated'
+grep -q '^Done: unique-6597-done-line' "$sup/$adopted_report_name" && grep -q '^## prior-art' "$sup/$adopted_report_name" \
+  && grep -q '^## root-cause' "$sup/$adopted_report_name" \
+  || fail 'the adopted report lost the unit report text or lacks the fix note sections'
+grep -q '^Done: unique-6597-done-line' "$sup/$orig_report_name" || fail 'the unit report itself was overwritten'
+[[ "$(jqf -r '.units[0].implementation_report' "$UNITS")" != "$orig_report_name" ]] || fail 'the adopted report did not replace the unit report pointer'
+
+# A repair whose fix note has no gated sections still fails the gate on the unit's report, as before.
+nothing_fix_name=impl-71001-fix-nothing.md
+printf 'Fixed nothing; see the summary.\n' > "$sup/$nothing_fix_name"
+write_unit "$missing_report_name"
+jqf '.units[0].pr=71001 | .units[0].stage="repair"' "$UNITS" | write_state "$UNITS"
+write_worker repair "$nothing_fix_name" impl-71001-fix-nothing.worker.log
+printf 'tokens used\n1,020\nNo change.\n' > "$sup/impl-71001-fix-nothing.worker.log"
+before_resumes=$RESUME_DISPATCHES
+harvest_workers || :
+[[ "$RESUME_DISPATCHES" == $((before_resumes + 1)) && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$missing_report_name" ]] \
+  || fail "a repair that fixed nothing was not still gated on the unit report (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
+
 how_why_report_name=impl-71001-how-why.md
 cat > "$sup/$how_why_report_name" <<'REPORT'
 ## decision-log
