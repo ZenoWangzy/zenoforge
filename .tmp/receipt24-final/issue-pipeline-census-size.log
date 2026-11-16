@@ -1,0 +1,9 @@
+ok - both census paths merge/deduplicate 0-byte issue bodies and retain roadmap order
+ok - both census paths merge/deduplicate 200000-byte issue bodies and retain roadmap order
+issue-pipeline: cannot scan needs-triage for roadmap-ordered fastlane tickets
+issue-pipeline: cannot scan needs-triage for roadmap-ordered fastlane tickets
+jq: error (at <stdin>:3): invalid issue snapshots
+issue-pipeline: cannot scan ready-for-agent for roadmap-ordered fastlane tickets
+issue-pipeline: cannot scan ready-for-agent for roadmap-ordered fastlane tickets
+jq: error (at <stdin>:3): invalid issue snapshots
+ok - empty snapshots remain empty; unreadable snapshots cannot dispatch

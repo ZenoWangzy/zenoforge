@@ -1,0 +1,336 @@
+ok - fastlane admits a ticket whose only sub-issues are closed
+ok - fastlane blocks a ticket with an open sub-issue
+ok - disabled roadmap ordering skips dispatch placement
+ok - non-stage operation skips dispatch placement
+ok - dispatch placement passes issue, stage, and cached issue data
+ok - dispatch placement failure blocks dispatch
+ok - dispatch placement failure names queued issue and stage
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$n" "$queue_label"
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$n" needs-advisor
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$n" needs-triage "$issue_json"
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$next_poll" needs-advisor
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$next_verdict" needs-advisor
+ok - pipeline dispatch route has roadmap gate: ensure_issue_roadmap_parent_for_dispatch "$n" awaiting-release
+ok - the refresh unit forwards stage diagnostics to its journal
+ok - sandbox-only receipt is auto-requeued once sandbox is removed
+ok - sandbox recovery preserves blocked receipt fields
+ok - sandbox recovery records the auto-requeued head
+ok - ticket parked over six hours is requeued
+ok - age retry records the same-head guard
+ok - same head is not auto-requeued twice
+ok - checks-blocked owner sweep is routed through post-dispatch maintenance
+ok - held checks-blocked ticket stays parked
+ok - held checks-blocked ticket keeps its retry eligible
+ok - held checks-blocked ticket receives no state-label write
+ok - pipeline-system membership labels come from rulings state
+ok - configured pipeline-system label matches issue snapshot
+ok - ordinary issue does not match pipeline-system label set
+ok - already-prepared lane issue writes nothing
+ok - lane issue with a stale stage label is still cleaned
+ok - pipeline-system needs-triage issue gets lightweight ready state
+ok - pipeline-system routing retires orphan advisor state
+ok - pipeline-system reconciliation resets stale advisor policy step
+ok - pipeline-system reconciliation removes needs-triage
+ok - pipeline-system reconciliation removes needs-advisor
+ok - pipeline-system reconciliation removes unsupported routing labels
+ok - pipeline-system reconciliation removes needs-recut
+ok - pipeline-system reconciliation removes ready-for-human
+ok - pipeline-system reconciliation returns issue to implementation
+ok - product-path classification removes non-product membership
+ok - product-path classification preserves evidence and clears lane marker
+ok - product-path classification disables non-product routing
+ok - on-hold pipeline issue is not dispatched
+ok - malformed issue labels fail closed without dispatch
+ok - mixed product path stays in product triage
+ok - parent tracker with factory-path mention stays out of fastlane
+ok - product scope also returns to scheduler
+ok - product scope does not receive pipeline-system label
+ok - retired queue explicit row no longer blocks scheduling
+ok - retired queue brief no longer blocks scheduling
+ok - fixture main moved without changing the verified report SHA
+ok - DONE no-diff report closes through pipeline conclusion with verified main SHA
+ok - DONE no-diff report is not redispatched after conclusion
+ok - unlinked report SHA uses issue-linked main close evidence
+ok - issue-linked close evidence does not redispatch hand
+ok - DONE no-diff report without SHA writes one inbox line and skips dispatch
+ok - missing-SHA report does not enter fastlane dispatch loop
+ok - green factory-only infra PR merges with exact hand head and closes on merge SHA
+ok - factory PR merge pins observed head commit
+ok - pending external PR checks defer without merging
+ok - pending external PR is not merged
+ok - red external PR checks return to hand repair
+ok - image-content PR returns to product lane without fastlane merge
+ok - image-content PR releases hold for product implementation
+ok - image-content pushed before merge is reclassified to product
+ok - image-content pushed during merge is reclassified after merge
+ok - raced image-content PR is not closed as factory work
+ok - already-merged factory PR closes without another merge
+ok - only open green factory PR is merged by caretaker
+ok - stale report SHA is a strict ancestor of the issue-linked fix
+ok - a later issue-linked commit cannot replace the SHA reported as already landed
+ok - reported main SHA predates the issue-linked commit and is handed off
+ok - later issue-linked commit remains outside report closure proof
+ok - an issue-linked main commit cannot replace an unverifiable report SHA
+ok - race fixture refreshes stale origin/main to latest linked commit
+ok - stale and unverifiable report SHAs both route to the supervisor
+ok - unverifiable report SHA handoff is executable
+ok - legacy DONE SHA report formats remain compatible
+ok - off-main SHA is routed to supervisor instead of closing
+ok - another issue SHA without this ticket commit is handed off
+ok - verified DONE reports do not dispatch replacement hands
+ok - roadmap fastlane merges stage queues before applying depth-first tree order
+ok - non-product fastlane leaves Spec parents for triage
+ok - non-product fastlane leaves task-list parents for triage
+ok - non-product fastlane leaves native parents with completed children queued
+ok - non-product fastlane recognizes the #4472 title-form spec marker
+ok - non-product fastlane recognizes the #4279 title-form ADR pilot marker
+ok - non-product fastlane recognizes a Spec heading
+ok - a leaf mentioning spec-compliance remains eligible for fastlane
+ok - non-product fastlane dispatches none of the additional spec/ADR parents
+ok - non-product fastlane does not hand-dispatch parent trackers
+ok - pipeline-system writer rejects stale membership after fresh product labels
+ok - stale pipeline-system snapshot cannot write product ticket state or labels
+ok - pipeline-system re-preparation resets stale advisor state and bumps its episode once
+ok - empty triage batch writes one triage batch empty line to scheduler.log
+engine/issue-pipeline.test.sh: line 1098: triage_skip: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - stale-index deferral lets next needs-triage issue use the slot
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - needs-triage retry resumes at its deadline
+engine/issue-pipeline.test.sh: line 1095: triage_skip: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - scoped model failure skips only failed triage issue and leaves slot for next issue
+engine/issue-pipeline.test.sh: line 1101: triage_skip: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - stale-index deferral also lets next precut measurement use the slot
+engine/issue-pipeline.test.sh: line 1098: triage_skip: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - scoped model failure skips only failed precut measurement and leaves slot for next issue
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - AGENT_TRIAGE_CAP=3 dispatches three needs-triage issues in one tick
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - AGENT_TRIAGE_CAP=3 dispatches three precut measurements in one tick
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+engine/issue-pipeline.test.sh: line 1105: pipeline_triage_skip_inflight: command not found
+ok - a failed record retries alone after backoff
+ok - active batch member blocks implement and duplicate triage
+ok - batch marker does not block unrelated issue
+ok - activating batch owns scheduler slot
+ok - absent batch leaves scheduler slot open
+ok - triage batch cap defaults to eight
+ok - AGENT_TRIAGE_CAP overrides triage cap
+ok - fastlane stage no longer routes pipeline-system tickets to a hand
+ok - path-only ticket routing reuses shared delivery classifier
+ok - configured non-product tickets are excluded from recut and release dispatch snapshots
+ok - pipeline-system triage uses lightweight classification before model prompt
+ok - technical advisor routes return pipeline-system tickets to implementation
+ok - roadmap needs-triage selector skips session-owned tickets
+ok - legacy needs-triage selector skips session-owned tickets
+ok - needs-advisor pool skips session-owned tickets
+ok - advisor entry points skip and reconcile pipeline-system tickets
+ok - recut wrapper classifies pipeline-system tickets before model call
+ok - release-train delegation runs the release slice under triage mode before any mode dispatch
+ok - release delegate waits on its own release lock instead of a silent -n exit
+ok - a release stage holding its lock does not stop a tick stage from getting the tick lock
+ok - a second release run is refused with exit 75 while the first holds the release lock
+ok - the release lock is free again once the first run ends
+ok - a skipped tick logs the skip and names the lock file
+ok - two consecutive skips raise no alert
+ok - the third consecutive skip alerts
+ok - later skips of the same episode stay quiet
+ok - a refill event keeps exit 75 and does not count as a skipped tick
+ok - a tick that gets the lock resets the skip counter and records recovery once
+ok - after a reset the next episode counts from one
+ok - the slice runner logs a busy tick lock and counts the skip
+ok - release tick no longer infers awaiting-release from PR bodies
+ok - transient delivery-label read leaves tickets open without failing tick
+ok - transient delivery-label read is non-fatal to pipeline tick
+ok - maintainer outcome recovery precedes digest send in post-dispatch maintenance
+ok - memory floor refuses below 2048MiB
+ok - low-memory refusal is nonzero
+ok - memory floor admits exact 2048MiB boundary
+ok - implement gate refuses below 3072MiB
+ok - low implement memory refusal is nonzero
+ok - implement gate admits exact 3072MiB
+ok - implement gate ignores CPU load when memory is above the floor
+ok - implement gate does not depend on load readings
+ok - unit result hook persists systemd oom-kill before collect
+ok - unit result hook succeeds
+ok - triage batch result hook succeeds
+ok - triage batch result is saved for every member
+ok - triage batch result records its shared unit name
+ok - OOM capacity event is consumed
+ok - OOM event refunds implement attempt
+ok - OOM retry counter survives result consumption
+ok - attempt record names systemd result and per-unit cap
+ok - repeated MemoryMax kills cannot exhaust the implement attempt cap
+ok - every capacity kill remains recorded
+ok - triage OOM is recorded without changing ticket attempts
+ok - triage OOM selects its own retry counter
+ok - MemoryMax retries use shared env-fault taxonomy without extra attempt refunds
+ok - attempt-cap conclusion uses recorded systemd result
+ok - attempt-cap conclusion uses the latest attempt failure reason
+ok - attempt-cap conclusion does not invent a kill when unit completed
+ok - repeat and cap notes read the failure recorded on model-policy history
+ok - triage retry uses larger cap and records its result
+ok - triage stop hook records stage and issue
+ok - recut first attempt stays capped at 4G
+issue-pipeline: canary marker missing after triage start
+ok - first triage batch keeps default 4G MemoryMax
+ok - triage batch stop hook receives every issue id
+issue-pipeline: canary marker missing after triage start
+ok - OOM triage batch retries at configured larger cap
+ok - tick keeps no implement cap; scheduler's implement_cap and footprint mutex own lane concurrency
+ok - recovery implement gate precedes attempt bump
+ok - advisor batch and release dispatches have memory gates
+ok - advisor polls gate before dispatch and slot decrement
+ok - advisor stored-verdict resumes gate before dispatch and slot decrement
+ok - a one-ticket queue is eligible for the batch dialogue
+ok - fresh needs-advisor tickets have no single-ticket dispatch path
+ok - selector keeps batch, sent-job polling, and the one stored-verdict resume pool
+ok - exactly one dispatch pool iterates stored-verdict candidates
+ok - active batch probe uses fail-closed stage_unit_active helper
+ok - stored-verdict recovery cannot open a new single-ticket dialogue
+ok - an unreadable needs-advisor snapshot is recorded as unknown
+ok - failed advisor reads skip advisor dispatch without blocking other scheduler legs
+ok - blocked advisor scope is recorded from the parent-shell dispatch check
+ok - advisor caller explicitly propagates real launch failure
+ok - advisor failed caller has no completed batch claim
+ok - one fresh question resumes stored verdicts first, then starts a batch dialogue
+ok - stale job marker is audited and does not suppress batch dispatch
+ok - stale bypass decision records its gate
+ok - stale bypass decision names blocking issue
+ok - already-sent single job is polled before the batch starts
+ok - live pending decision records batch-pending gate
+ok - live pending decision names blocking issue
+ok - stored-verdict recovery runs when no fresh batch queue exists
+ok - unknown queue snapshot skips all advisor dispatch for this tick
+ok - active batch unit owns its scheduler tick
+ok - only complete manual PAUSE metadata stops scheduler; invalid markers are ignored and never auto-expire
+issue-pipeline: main-red discovery during PAUSE failed; it will retry next tick
+ok - valid PAUSE gate for stage:delegate=triage:0
+issue-pipeline: main-red discovery during PAUSE failed; it will retry next tick
+ok - valid PAUSE gate for stage:delegate=triage:1
+issue-pipeline: main-red discovery during PAUSE failed; it will retry next tick
+ok - valid PAUSE gate for stage:delegate=release:0
+issue-pipeline: main-red discovery during PAUSE failed; it will retry next tick
+issue-pipeline: AGENT_PIPELINE=release
+ok - valid PAUSE gate for stage:delegate=release:1
+issue-pipeline: #910555 dispatching implement with model policy step=work role=work
+issue-pipeline: recut route held: work/codex:gpt-6-luna:max reason=model-configuration-fault
+issue-pipeline: triage batch held by work-role model configuration fault
+ok - unrelated provider hold still dispatches Codex implement
+ok - failed work role blocks recut dispatch
+ok - failed work role blocks triage batch dispatch
+ok - recut admission leaves queued work without a fault or active claim
+ok - implement admission refunds the attempt and leaves queued work without a fault
+ok - ordinary per-issue launch failure still records its fault
+ok - recut scheduler leaves a deferred candidate queued without a policy fault
+ok - refresh admission deferral records no fault
+ok - refresh launch failure still records its fault
+ok - triage admission 75 leaves no fabricated active marker, unit or fault
+ok - triage real launch error remains fatal and cleans the dispatch marker
+ok - triage success creates one unit with the active dispatch marker
+ok - advisor admission 75 writes one scheduler line with its reason and issue id
+ok - triage admission 75 with a runtime dir logs one reason and issue line and keeps the journal copy
+ok - triage admission 75 without a runtime dir keeps status and writes no scheduler.log
+ok - triage caller leaves admission-refused candidates pending without a dispatched claim
+ok - triage caller explicitly propagates real failure
+ok - triage failed caller makes no dispatch claim
+ok - failed fail-closed pause checks are summarized at tick exit
+ok - the on-hold EXIT summary preserves a failing scheduler status
+ok - the on-hold EXIT summary names failed reads and skipped issue ids
+ok - advisor mode decisions retain explicit journal and stale-id snapshot
+ok - release dispatch leaves the anchor pending when the Deployment record is unreadable
+ok - release dispatch launches one unit when the Deployment record is older than the batch
+ok - release dispatch still launches when the Deployment record already covers the batch
+ok - release dispatch launches when no Deployment record exists yet
+ok - awaiting-release state dispatches its recorded PR without a body reference
+ok - release timing debt reads the deployed SHA from GitHub Deployments
+ok - release batch deferral logs pending candidates without dispatched or batched claims
+ok - release selector preserves a genuine launch failure
+ok - failed release selection makes no dispatched claim
+ok - configured non-product issue is excluded from the release selector
+ok - pipeline-system state keeps its direct close path even without its label snapshot
+ok - a body mention without awaiting-release state is not a release candidate
+ok - non-merged run outcome logs its release skip
+ok - invalid deploy state logs its release skip
+ok - on-hold does not block release dispatch for merged code
+ok - an unreadable ready-for-human label remains fail-closed
+ok - ready-for-human label presence logs its release skip
+ok - released state remains a release-selection skip
+ok - deploy_is_blocked remains a release-selection skip
+ok - infrastructure block recheck runs before release candidate selection
+ok - fleet-roll-pending ticket remains eligible for its persisted rollout retry
+ok - two pending fleet rolls anchor the newest image
+ok - the newest pending roll records the persisted rollout retry
+ok - pending release makes no advisor, blocked-notification, or state-write attempt
+ok - pending marker remains persisted for the next retry
+ok - awaiting-release without recorded PR evidence is skipped
+ok - a recorded PR merged into a feature branch is skipped
+ok - a merge commit absent from main is skipped
+ok - one release capacity slot batches all eligible tickets at one SHA
+ok - duplicate candidate IDs produce one decision per ticket per tick
+ok - three awaiting tickets dispatch exactly one batch and get individual verdicts
+ok - ticket merged after captured batch SHA waits for next batch
+ok - stage gate logs each eligible ticket it blocks
+ok - an open build-capacity episode prevents another release/build dispatch and resumes after the capacity probe passes
+ok - memory gate logs each eligible ticket it blocks
+ok - active release unit is logged as a per-ticket skip
+ok - zero release capacity logs each unique pending ticket
+ok - zero release capacity does not turn a stale awaiting-release label into pending work
+ok - tickets merged inside one window trigger no second release
+ok - an elapsed window dispatches the whole batch once
+ok - a persisted fleet roll resumes without waiting for a window
+ok - each unique release candidate skip records one reason before continuing
+ok - triage-only ticks emit their timing and label-read profile
+ok - implement-only ticks emit their timing and label-read profile
+ok - the implement stage runs maintenance after its intake dispatch
+ok - release and maintenance own separate bounded slices
+ok - issue-pipeline.sh no longer calls codex_implement_model_for_level() directly
+issue-pipeline: implement-decision tick=budget-test issue=#991301 outcome=skipped gate=spend-budget object=2026-11-14T16:15:23Z reason=24-hour spend window is active; issue held until 2026-11-14T16:15:23Z
+issue-pipeline: implement-decision tick=budget-test issue=#991301 outcome=skipped gate=spend-budget object=2026-11-14T16:15:23Z reason=24-hour spend window is active; issue held until 2026-11-14T16:15:23Z
+issue-pipeline: #991302 dispatching implement with model policy step=work role=work
+issue-pipeline: #991301 dispatching recut with model policy step=work role=work
+issue-pipeline: implement-decision tick=budget-test issue=#991303 outcome=skipped gate=spend-budget object=2026-11-14T15:15:23Z reason=24-hour spend window is active; issue held until 2026-11-14T15:15:23Z
+ok - over-budget ticket does not dispatch and routes once; normal ticket and the over-budget recut still dispatch
+ok - prior in-window budget route archives durable hold metadata without repeating budget comment
+ok - budget skip records spend-budget gate and its window end
+ok - two identical failures at one step prevent the third dispatch
+ok - the prevented ticket is routed to recut, not parked silently
+ok - the routing posts the issue comment naming both failures
+ok - the three inline issue-pipeline systemd-run sites carry NO_PROXY and the Node env-proxy opt-in
+ok - the advisor batch site takes the shared unit environment
+ok - the shared unit environment carries the proxies and the provider job directory
+ok - the single-ticket advisor dispatch passes the provider job directory
+ok - issue-pipeline defaults the Node env-proxy opt-in before any dispatch
+ok - a stale GitNexus index gets one refresh unit
+ok - the refresh unit goes through the shared locked helper
+ok - a fresh GitNexus index launches no refresh unit
+ok - merged reopened issue stays release-gated on tick one with one comment and no implement dispatch
+ok - merged issue has no state-label transition after tick one
+ok - reconciliation recognizes the existing legacy comment and does not add another
+ok - a different merged PR gets its own waiting-release comment
+ok - a future codex-unavailable-until holds the advisor leg
+ok - a held tick logs exactly one line
+ok - the held line names the hold expiry
+ok - an expired hold lets the advisor leg dispatch as before
+ok - an expired hold logs nothing
+ok - the held gate precedes every advisor dispatch call in the leg
+ok - a job whose unit stopped during a ten-minute hold is restarted, not timed out
+ok - without a recorded hold the same job is timed out (control)
+ok - a stored verdict older than 12 h by hold time alone is resumed, not discarded
+ok - the same stored verdict with no hold recorded is discarded (control)
+ok - a tick that finds the hold charges the ten minutes since the last tick
+ok - the charged hold is about ten minutes
+ok - the first tick after the hold ends still charges its last interval
+ALL PASSED

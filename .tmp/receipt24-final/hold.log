@@ -1,0 +1,102 @@
+PASS nested state lock reuses inherited fd
+PASS nested state lock reuses inherited fd in child process
+PASS state lock wait is bounded
+PASS inherited state lock wait is bounded
+PASS direct hold-label guard
+
+supervisor_hold_sweep: #4168 kind=guarded-recut-repeat requeue failed
+issue_transition: label write failed for #4168; state rollback status=1
+supervisor_hold_sweep: #4168 kind=guarded-recut-repeat requeue failed
+PASS scheduler handoff retries comment and label failures
+issue_transition: hold for #4185 changed before release; retry from the current hold
+supervisor_hold_sweep: #4185 kind=guarded-recut-repeat requeue failed
+PASS stale handoff preserves a replacement hold
+PASS expired retired-hand hold returns to scheduler
+PASS expired and ownerless ops acceptance stays held for supervisor
+PASS closed handoff stays closed
+PASS reverted landing reopens before publishing handoff
+PASS maintenance tick requeues ownerless external hold
+  assertion failed: existing issue tick invokes hold sweep (expected '0', got '1')
+  assertion failed: same issue tick invokes supervisor hold sweep (expected '0', got '1')
+FAIL existing ticket tick sweeps holds
+PASS guarded recut hold sweep queues once
+PASS orphaned hand-dispatch hold requeues its named owner once
+PASS supervisor hold sweep uses one current issue snapshot
+PASS supervisor issue snapshot failure preserves holds
+supervisor_hold_sweep: #4157 kind=guarded-recut-repeat owner state unreadable; left unchanged detail=no queued, running, or live worktree owner
+supervisor_hold_sweep: #4157 kind=guarded-recut-repeat owner state unreadable; left unchanged detail=no queued, running, or live worktree owner
+supervisor_hold_sweep: #4157 kind=guarded-recut-repeat owner state unreadable; left unchanged detail=no queued, running, or live worktree owner
+PASS supervisor hold alert repeats only after hold changes
+PASS blocked-on-resolution hold assigns verification owner
+PASS blocked-on-resolution supersedes stale BLOCKED-ON owner
+PASS blocked-on-resolution pending PR waits
+PASS pending guarded PR waits for its existing checks
+PASS failed guarded PR queues a repair hand
+PASS blocked hand owns its held ticket
+supervisor_hold_sweep: #4125 kind=guarded-recut-repeat requeue failed
+PASS guarded hand retries stale worktree collisions safely
+PASS paused implement dispatches no guarded hand
+supervisor_hold_sweep: concluded #4121 from merged PR #44121
+PASS merged hand hold concludes
+supervisor_hold_sweep: concluded #4124 from merged PR #44125
+PASS guarded no-diff hold concludes newest merged PR
+supervisor_hold_sweep: merged #4123 from green PR #44123
+supervisor_hold_sweep: merged #4123 from green PR #44123
+PASS green held PR uses shared merge gate
+supervisor_hold_sweep: merged #4154 from approved carried hotpatch PR #44154 with a shared main failure
+PASS carried hotpatch with shared check failure uses shared merge gate
+PASS time-waiting supervisor hold stays untouched
+PASS explicit decision holds stay waiting
+PASS durable waits stay distinct from missing and expired owners
+PASS fastlane holds immediately requeue an out-of-band hand
+PASS named queued hand owns fastlane issue
+PASS queued sweep owns fastlane issues from row and brief
+PASS expired hold resumes original stage
+PASS expired stop-loss handoff names its kind
+PASS unknown backfill remains ownerless and unreleased
+hold_sweep: ambiguous live stage labels for released #4193; leaving state untouched
+hold_sweep: reconciled manually released hold for #4191 at stage=ready-for-agent
+hold_sweep: reconciled manually released hold for #4192 at stage=ready-for-agent
+PASS manual hold release reconciles persisted state
+PASS durable hold release resolves conflicting labels
+PASS closed holds reconcile once by GitHub reason
+hold_sweep: could not inspect state-only held #4197; leaving state untouched
+PASS closed-hold GitHub read failure preserves evidence
+PASS unexpired hold stays untouched
+PASS missing hold record remains ownerless
+PASS marked hold without metadata remains ownerless
+PASS expired hotfix hold renews only while marked
+PASS expired loop hold renews while hand agent owns ticket
+PASS expired repeat-cap hold renews while hand agent owns ticket
+PASS expired loop hold with open hand PR returns to triage
+PASS expired implement loop hold hands open PR to scheduler
+scheduler_requeue_issue: hold for #4117 changed before handoff; retry from the current hold
+scheduler_requeue_issue: hold for #4117 changed before handoff; retry from the current hold
+hold_sweep: could not renew hold for #4117
+PASS sweep leaves a concurrently replaced hold untouched
+PASS supervisor snapshot leaves a replacement hold untouched
+conclude_merged_run: hold for #4119 changed before the merge was recorded
+supervisor_hold_sweep: #4119 kind=guarded-recut-repeat merged PR #44119 conclusion failed detail=no queued, running, or live worktree owner
+PASS merged reconciliation leaves a replacement hold untouched
+issue_transition: hold for #4122 changed before release; retry from the current hold
+PASS merged release transition rejects a replacement hold
+conclude_run: pipeline-system close under hold failed for #4120
+PASS pipeline close leaves a replacement ops hold open
+PASS pipeline close completes with the unchanged hold
+PASS expired loop hold releases without hand owner or PR
+PASS spend-budget hold expires and records repeat
+PASS spend-budget window leaves existing hold unchanged
+PASS ownerless refusal is remembered until the issue changes
+PASS CLI refuses incomplete hold
+PASS hold expiry accepts day and hour durations and absolute timestamps
+PASS CLI rejects unknown holder
+PASS CLI creates owned expiring hold
+PASS out-of-tick CLI hold fetches and cleans roadmap cache
+PASS CLI rebuilds ownerless hold with verified stage
+PASS deleted local hold state restores exact durable record
+PASS durable hold restore clears stale prior-stage label
+PASS complete old holds need no fabricated creation time
+PASS settled holds skip per-issue GitHub reads
+PASS supervisor-holds shares one live worktree scan across held issues
+PASS routed ops dispatch waits for blockers and skips owned hand
+FAILURES: 2

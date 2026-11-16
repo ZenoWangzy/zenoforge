@@ -1,0 +1,11 @@
+ok - dispatch runs before admit and founder-test labelling
+ok - founder-test ranking works from labels already on the issue
+ok - dispatch line is logged despite failing admit and label steps
+ok - no dispatch when the deadline leaves no time
+ok - slice-deadline failure logs its own line
+ok - no admit or labelling once the slice deadline is gone
+ok - only the selected candidate is placed on the roadmap
+ok - empty batch dispatches nothing
+ok - empty batch line counts each skip reason
+ok - empty batch line names a quarantine stop
+ALL PASSED

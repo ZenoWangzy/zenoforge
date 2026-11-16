@@ -1,0 +1,224 @@
+ok - WebSocket closure followed by 401 is provider-side outage
+ok - standalone configuration 401 remains real failure
+ok - stream disconnect is provider-side outage
+ok - provider 503 is provider-side outage
+ok - exhausted reconnects with no final output are provider-side outage
+ok - exhausted reconnects after model output remain real failure
+model_policy: #509901 work_retry recorded infrastructure retry at implement: local timeout; refunded attempt and kept the rung
+ok - exit 124 preserves the current escalation step
+ok - exit 124 refunds the charged attempt
+ok - exit 124 records retry context
+ok - exit 124 does not append an escalation failure
+ok - exit 124 clears the active unit
+model_policy: #509912 work_retry recorded infrastructure retry at implement: CI runner capacity gate failed; refunded attempt and kept the rung
+ok - explicit CI infrastructure retry records successfully
+ok - explicit CI infrastructure retry keeps current policy rung
+ok - explicit CI infrastructure retry refunds the charged attempt
+ok - explicit CI infrastructure retry records its concrete reason
+ok - explicit CI infrastructure retry persists refund evidence
+ok - explicit CI infrastructure retry avoids code-failure ladder
+pause_for_backoff: Codex provider outage (websocket-401); issue #509906 kept on current rung for retry
+model_policy: #509906 work_retry hit Codex provider outage at implement; kept the rung and recorded retry note
+ok - provider outage preserves current model rung
+ok - provider outage refunds charged attempt
+ok - provider outage records actual exit status for retry
+ok - provider outage does not append escalation failure
+pause_for_backoff: Codex provider outage (websocket-401); issue #509907 kept on current rung for retry
+model_policy: #509907 work_retry hit Codex provider outage at implement; kept the rung and recorded retry note
+pause_for_backoff: Codex provider outage (websocket-401); issue #509907 kept on current rung for retry
+model_policy: #509907 work_retry hit Codex provider outage at implement; kept the rung and recorded retry note
+ok - repeat failures from one issue do not trip circuit
+note_codex_provider_outage: circuit opened after 3 distinct issues; Codex held for 90s before bare probe
+pause_for_backoff: Codex provider outage (websocket-401); issue #509908 kept on current rung for retry
+model_policy: #509908 work_retry hit Codex provider outage at implement; kept the rung and recorded retry note
+ok - three distinct issues trip provider circuit
+ok - provider circuit uses quota dispatch marker
+ok - provider circuit emits one supervisor notice
+codex_provider_recovery_probe_if_due: bare Codex probe passed; provider hold cleared
+ok - due recovery passes the outer quota gate before dispatch
+issue-pipeline: #509909 dispatching implement with model policy step=work_retry role=work
+ok - bare Codex probe completes before work dispatch resumes
+ok - probe uses fixed empty-context prompt
+ok - recovery probe uses low reasoning effort
+ok - successful probe clears circuit latch
+ok - work dispatch charges attempt only after probe
+ok - provider circuit expires failures outside its 15-minute window
+issue-pipeline: work model capacity hold; implement dispatch deferred before attempt accounting
+ok - capacity-held policy rung returns model-specific defer
+ok - capacity-held policy rung does not dispatch
+ok - capacity-held policy rung leaves attempt count unchanged
+model_call_exit_status=1 termination_class=application_exit issue=unknown stage=unknown caller=unknown provider=codex model=codex:gpt-6-luna:max timestamp=2026-11-13T15:15:41Z termination_source=process_exit termination_evidence=codex exec returned exit 1 log_path=/home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-5NejCn/agent/codex-implement-failed.log transcript_empty=false
+ok - fake implement fails with reconnect signature
+ok - failed implement transcript records no final model output
+ok - reconnect exhaustion reaches provider classifier from implement log
+ok - successful implement transcript records final model output
+codex_provider_recovery_probe_if_due: bare probe failed kind=authentication/configuration status=1; dispatch held for 90s
+ok - bad-config 401 probe keeps work held
+ok - bad-config 401 probe does not dispatch or charge work
+ok - bad-config 401 probe is visible without printing key
+ok - bad-config 401 probe transcript stays redacted
+ok - failed probe schedules recovery in 90 seconds
+ok - recovery attempts stay bounded until next due time
+ok - probe exit 124 clears recovery latch without failing provider gate
+ok - probe timeout comes from configured Codex call budget
+ok - probe exit 124 does not re-arm provider-wide marker
+ok - probe exit 124 clears provider-wide recovery latch
+ok - probe exit 124 does not block another model reservation
+ok - real quota hold blocks recovery probe
+ok - real quota hold makes no model call
+ok - shared egress blip never counts as distinct provider issue failures
+ok - shared egress blip never opens provider hold
+ok - egress issue retry is bounded by recovery interval
+note_codex_provider_outage: circuit opened after 3 distinct issues; Codex held for 90s before bare probe
+ok - simulated blip remains held before half-open deadline
+ok - no premature recovery model calls
+codex_provider_recovery_probe_if_due: bare Codex probe passed; provider hold cleared
+ok - scheduler entry probes before candidate backoff filtering
+ok - successful recovery clears legacy issue outage backoff
+ok - successful recovery preserves newer issue failure
+ok - successful recovery preserves unrelated failure
+issue-pipeline: #509933 dispatching implement with model policy step=work_retry role=work
+ok - simulated blip resumes dispatch at 90 seconds versus legacy 1800
+ok - recovered dispatch is charged once
+ok - hand budget admission probes due provider recovery
+ok - budget recovery performs one bare probe
+issue-pipeline: #509902 dispatching implement with model policy step=production role=production
+ok - configured production rung dispatches its configured role
+ok - configured production rung remains current while running
+model_policy: #509905 work_retry recorded infrastructure retry at implement: Previous implement unit has no persisted systemd Result or terminal model-policy outcome; retrying the same policy step; refunded attempt and kept the rung
+ok - stalled implement unit is deferred for later retry
+ok - stalled implement unit does not advance the policy step
+ok - stalled implement unit refunds dispatch attempt
+ok - stalled implement unit records retry note
+ok - stalled implement unit is not redispatched in the same pass
+model_policy: #509913 work_retry recorded infrastructure retry at implement: Previous implement unit has no persisted systemd Result or terminal model-policy outcome; retrying the same policy step; refunded attempt and kept the rung
+ok - stale unit recovery runs before current resource admission
+ok - stale unit recovery refunds attempt despite current resource pressure
+issue-pipeline: #509914 implement had a saved failure record after dispatch; preserved charged attempt and cleared stale active marker
+ok - stale marker with a post-dispatch code failure is cleared without refund
+ok - recorded code failure keeps its charged attempt
+ok - recorded code failure is not rewritten as transient infrastructure
+model_policy: #509915 work_retry recorded transient retry at implement: Previous implement unit ended with systemd Result=exit-code, exit_status=1 before clearing its active marker; retrying the same policy step; kept the rung
+ok - wrapper exit after the model ran is deferred for retry
+ok - wrapper exit after the model ran keeps its charged attempt
+ok - legacy unconfigured production step exits through conclude handoff
+ok - unconfigured legacy production skip records its reason
+ok - unconfigured legacy production step reaches terminal policy step
+model_policy: #509904 work recorded transient retry at triage: triage timeout; kept the rung
+ok - timeout without a charged attempt stays at zero
+ok - successful retry archives and clears transient note
+ok - quarantined advisor skip is recorded
+node:internal/modules/esm/resolve:275
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs' imported from /home/gerald/.zenoforge/clones/refactor-24/[eval1]
+    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:985:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+    at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+    at onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:36)
+    at TracingChannel.tracePromise (node:diagnostics_channel:350:14)
+    at ModuleLoader.import (node:internal/modules/esm/loader:679:21)
+    at defaultImportModuleDynamicallyForModule (node:internal/modules/esm/utils:222:31) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs'
+}
+
+Node.js v22.23.2
+node:internal/modules/esm/resolve:275
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs' imported from /home/gerald/.zenoforge/clones/refactor-24/[eval1]
+    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:985:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+    at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+    at onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:36)
+    at TracingChannel.tracePromise (node:diagnostics_channel:350:14)
+    at ModuleLoader.import (node:internal/modules/esm/loader:679:21)
+    at defaultImportModuleDynamicallyForModule (node:internal/modules/esm/utils:222:31) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs'
+}
+
+Node.js v22.23.2
+node:internal/modules/esm/resolve:275
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs' imported from /home/gerald/.zenoforge/clones/refactor-24/[eval1]
+    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:985:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+    at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+    at onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:36)
+    at TracingChannel.tracePromise (node:diagnostics_channel:350:14)
+    at ModuleLoader.import (node:internal/modules/esm/loader:679:21)
+    at defaultImportModuleDynamicallyForModule (node:internal/modules/esm/utils:222:31) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs'
+}
+
+Node.js v22.23.2
+node:internal/modules/esm/resolve:275
+    throw new ERR_MODULE_NOT_FOUND(
+          ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs' imported from /home/gerald/.zenoforge/clones/refactor-24/[eval1]
+    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
+    at moduleResolve (node:internal/modules/esm/resolve:861:10)
+    at defaultResolve (node:internal/modules/esm/resolve:985:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+    at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+    at onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:36)
+    at TracingChannel.tracePromise (node:diagnostics_channel:350:14)
+    at ModuleLoader.import (node:internal/modules/esm/loader:679:21)
+    at defaultImportModuleDynamicallyForModule (node:internal/modules/esm/utils:222:31) {
+  code: 'ERR_MODULE_NOT_FOUND',
+  url: 'file:///home/gerald/.zenoforge/clones/refactor-24/scripts/branch-delivery-policy.mjs'
+}
+
+Node.js v22.23.2
+ok - product issue is not routed to pipeline verification
+ok - a commit body citing a pipeline issue is not its delivery
+ok - a body-cited pipeline issue is not routed to verification
+ok - no linked main work returns implement-failure classification
+ok - Codex model-capacity log is a provider outage
+ok - Codex overload log is a provider outage
+ok - Codex model-capacity failure is transient
+ok - Codex provider capacity is not a quota refusal
+ok - structured capacity 429 stays transient
+ok - structured capacity 429 skips quota fallback
+note_codex_provider_outage: model capacity hold opened for codex:gpt-6-luna:low
+pause_for_backoff: Codex provider outage (provider-capacity); issue #509920 kept on current rung for retry
+model_policy: #509920 work_retry hit Codex provider outage at implement; kept the rung and recorded retry note
+ok - implement capacity outage keeps model rung
+ok - implement capacity outage refunds attempt
+ok - implement capacity outage records refund
+ok - implement capacity outage avoids failure ladder
+ok - implement capacity outage uses bounded backoff
+note_codex_provider_outage: model capacity hold opened for codex:gpt-6-luna:low
+pause_for_backoff: Codex provider outage (provider-capacity); issue #509921 kept on current rung for retry
+model_policy: #509921 work_retry hit Codex provider outage at repair; kept the rung and recorded retry note
+ok - repair capacity outage keeps model rung
+ok - repair capacity outage refunds attempt
+ok - repair capacity outage records refund
+ok - repair capacity outage avoids failure ladder
+ok - repair capacity outage uses bounded backoff
+note_codex_provider_outage: model capacity hold opened for codex:gpt-6-luna:low
+pause_for_backoff: Codex provider outage (provider-capacity); issue #509922 kept on current rung for retry
+model_policy: #509922 work_retry hit Codex provider outage at triage; kept the rung and recorded retry note
+ok - triage capacity outage keeps model rung
+ok - triage capacity outage refunds attempt
+ok - triage capacity outage records refund
+ok - triage capacity outage avoids failure ladder
+ok - triage capacity outage uses bounded backoff

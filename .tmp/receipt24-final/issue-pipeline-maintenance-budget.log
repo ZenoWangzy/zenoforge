@@ -1,0 +1,55 @@
+issue-pipeline: maintenance deferred tick=20261103T000001Z from=hold-sweep elapsed_sec=50 stop_at=50
+ok - required tail steps run after an earlier section consumes the slice budget
+ok - the 37-second email subslot preserves 18 seconds for reopen recovery
+ok - the reserved 55-second slot fits the measured p90 pair before the 105-second cutoff
+ok - the original wider GH deadline is restored after bounded recovery
+ok - optional work leaves a resume cursor at the next deferred section
+ok - optional GitHub and Gmail work share the earlier cutoff
+issue-pipeline: needs-info email poll yielded at its reserved cutoff elapsed_sec=87 stop_at=87
+ok - email polling yields at its subslot cutoff before another network call
+engine/issue-pipeline-maintenance-budget.test.sh: line 138: /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-sUve0Q/needs-info-state/gh-calls: No such file or directory
+ok - needs-info poll skips the issue listing when no state holds a thread id
+ok - needs-info poll lists issues once a state holds a thread id
+ok - Gmail token mint retains its access token
+ok - Gmail token mint timeout is capped by its absolute deadline
+ok - Gmail read curl timeout is capped by its absolute deadline
+ok - Gmail deadline handling preserves a shorter request timeout
+issue-pipeline: maintenance deferred streak section=needs-info-recovery consecutive=3 tick=20261103T000004Z; bell incident signature queued
+ok - same-section deferral streak reaches three consecutive ticks
+ok - threshold writes the #166 scheduler incident signature
+ok - duplicate section deferral in one tick does not repeat the warning
+issue-pipeline: maintenance deferred tick=20261107T000001Z from=needs-info-blocker-roots elapsed_sec=118 stop_at=135
+ok - roots with under 40s left take the cursor instead of the deadline
+ok - the short step before roots still ran
+ok - the next tick gives roots its turn first and skips the prefix
+ok - a read roots finishes clears the cursor
+ok - a read ok line feeds the node health row
+issue-pipeline: blocker-root recovery failed; current roots unavailable
+issue-pipeline: blocker-root recovery failed; current roots unavailable
+issue-pipeline: blocker-root recovery failed; current roots unavailable
+issue-pipeline: maintenance deferred streak section=needs-info-blocker-roots consecutive=3 tick=20261107000005Z; bell incident signature queued
+ok - an unread graph holds no cursor, so a lasting failure cannot stop the prefix
+ok - the prefix still ran after a failed read
+ok - three unread graphs in a row ring the bell
+ok - an unread graph writes no read ok line
+ok - a good read clears the streak
+issue-pipeline: main-red bisect step failed; the red session retries next tick
+issue-pipeline: main-red bisect step failed; the red session retries next tick
+issue-pipeline: main-red bisect step failed; the red session retries next tick
+issue-pipeline: maintenance deferred streak section=main-red-bisect consecutive=3 tick=20261107000103Z; bell incident signature queued
+ok - three failed main red reads ring the bell
+ok - roots still run after a failed main red read
+ok - a read main red list feeds its node health row
+ok - a held sweep that read nothing writes no read ok line
+issue-pipeline: blocker-root recovery failed; current roots unavailable
+ok - one failed root does not stop the prefix on the next tick
+issue-pipeline: maintenance deferred tick=20261107T000007Z from=needs-info-loop elapsed_sec=121 stop_at=135
+ok - a short step with under 15s left takes the cursor
+ok - a killed maintenance step names itself in the slice overrun line
+ok - the killed step remains as the maintenance resume cursor
+ok - the killed step remains visible to the next maintenance tick
+ok - the next tick logs its one-time skip for the killed step
+ok - the next tick continues with the following prefix step
+ok - the next tick does not repeat the killed step
+ok - the next tick reaches the suffix after skipping the killed step
+issue-pipeline-maintenance-budget.test.sh: PASS

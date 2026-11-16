@@ -1,0 +1,19 @@
+PASS answered bot decision releases with fresh roadmap and reaches next prompt
+hold_answer: comment 99 is not a fresh owner answer on #2867
+PASS reject stale without changing hold
+hold_answer: comment 99 is not a fresh owner answer on #2867
+PASS reject wrong-issue without changing hold
+hold_answer: comment 99 is not a fresh owner answer on #2867
+PASS reject wrong-author without changing hold
+hold_answer: comment 99 is not a fresh owner answer on #2867
+PASS reject empty without changing hold
+hold_answer: #2867 has no pending implement supervisor decision
+PASS reject wrong-hold without changing hold
+PASS TREE failure fails open: answer accepted, hold released, dispatch re-checks
+issue_transition: label write failed for #2867; state rollback status=1
+PASS EDIT failure keeps unanswered hold and attempt budget
+jq: error (at <stdin>:22): supervisor decision episode changed
+state_merge: jq failed for issue #2867 -- state file /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-H0eEJQ/agent/state/2867.json NOT written (filter kept in a file, out of argv, precisely so this diagnostic -- not an exec error -- is what shows up)
+issue_transition: state write failed for #2867
+PASS concurrent new request cannot consume old answer
+PASS new answer replaces old workflow decision block

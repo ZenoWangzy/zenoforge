@@ -1,0 +1,73 @@
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-detached at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-clean at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch topic/clean at 6bb802740488a333d979bd4412a1fbc0480c90d4
+To /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/origin.git
+ * [new branch]      c6addd96ec2236ad1c539a0ee032320600c65c74 -> rescued/topic-unpushed
+worktree-lifecycle: rescued topic/unpushed at c6addd96ec2236ad1c539a0ee032320600c65c74 to origin/rescued/topic-unpushed
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-unpushed at c6addd96ec2236ad1c539a0ee032320600c65c74
+worktree-lifecycle: removed local branch topic/unpushed at c6addd96ec2236ad1c539a0ee032320600c65c74 (remote ref verified)
+To /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/origin.git
+ * [new branch]      83805a5bd3a129434851935b92ac8799dac7bdc5 -> rescued/agent-issue-2011-83805a5bd3a129434851935b92ac8799dac7bdc5
+worktree-lifecycle: rescued agent/issue-2011 at 83805a5bd3a129434851935b92ac8799dac7bdc5 to origin/rescued/agent-issue-2011-83805a5bd3a129434851935b92ac8799dac7bdc5
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-issue-rescue at 83805a5bd3a129434851935b92ac8799dac7bdc5
+worktree-lifecycle: removed local branch agent/issue-2011 at 83805a5bd3a129434851935b92ac8799dac7bdc5 (remote ref verified)
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/issue-990 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch agent/issue-990 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/issue-991 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch agent/issue-991 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-dirty at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch topic/dirty at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-live at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch agent/issue-777 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-live-unit at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch triage-888 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-live-process at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch fix/hand-889 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-live-cwd at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed local branch fix/cwd-890 at 6bb802740488a333d979bd4412a1fbc0480c90d4
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/tmp.F6OL1ma2ZO/wt-live-rescue at aae7eb6ec6bf02e3f1f6f96a3284e08d68441834
+worktree-lifecycle: removed local branch topic/live-rescue at aae7eb6ec6bf02e3f1f6f96a3284e08d68441834 (remote ref verified)
+ok - run-end cleanup removes pushed trees offline, keeps unique commits with a reason, and runs on failure and stop
+ok - finish-offline
+ok - advisor-run-owner
+ok - release-cleanup
+ok - backlog-sweep
+ok - transient failures and timeouts retry once; persistent failures and forced kills remain fail-closed
+ok - patch index resumes across main advances and keeps binary squash-rescue semantics
+ok - timed-out rescue archive is bounded, retained, cleaned, and retryable
+ok - 777-ref rescue sweep checks identical parent/tree pairs once
+ok - 871 diverse rescue refs use 15 patch batches and finish in 20828ms
+ok - 96 off-main rescue histories use 3 patch batches and stay retained
+ok - single-commit patch-equivalent rescue remains archivable and removable
+ok - multi-commit equivalent rescue archives before removal; non-equivalent and timed-out refs stay
+ok - timed-out rescue patch scan is bounded and keeps ref
+ok - large rescue sweep reuses live-state and worktree snapshots
+ok - remote branch sweep reuses hand-owner snapshot and preserves open/live branches
+ok - all unreadable PR items fail closed; unreadable issue states stay per-item
+ok - issue fallback preserves reserve and defers low-budget reads
+ok - unreadable PR branch stays while readable branches are reaped
+ok - unreadable issue stays while readable rescue items are reaped
+ok - rescue issue states batch and refresh incrementally
+ok - locks
+worktree-lifecycle: released dead or expired worktree lock /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/home/.cache/zenoforge-agent-test/zenoforge-agent-test-LOJ6wC/tmp.Bekt7IMiNL/wt-active-chain
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/home/.cache/zenoforge-agent-test/zenoforge-agent-test-LOJ6wC/tmp.Bekt7IMiNL/wt-active-chain at bf4e3939298f0906be9e4f261d3c33c33606e5fa
+worktree-lifecycle: removed local branch topic/active-chain at bf4e3939298f0906be9e4f261d3c33c33606e5fa
+worktree-lifecycle: removed worktree /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-2qHDR2/home/.cache/zenoforge-agent-test/zenoforge-agent-test-LOJ6wC/tmp.Bekt7IMiNL/wt-dispatching at bf4e3939298f0906be9e4f261d3c33c33606e5fa
+worktree-lifecycle: removed local branch topic/dispatching at bf4e3939298f0906be9e4f261d3c33c33606e5fa
+ok - lock-unit
+ok - owner-live-hand-lock
+ok - owner-live-broad-scan
+ok - owner liveness batches /proc cwd lookup and still protects live cwd owners
+ok - stale-registration
+ok - primary-session-worktrees
+ok - rescue-retention
+ok - resume-checkpoint
+ok - hand-resume-blocked
+ok - hand-resume-blocked-then-followup
+ok - hand-resume-no-report
+ok - hand-resume-done
+ok - hand-resume-expired
+ok - dispatch-refused-load
+ok - PR rows refresh incrementally from the reap cache
+ok - pr-rows-cache
+ok - both repos reaped; live and open-issue rescues kept; squash/closed rescues archived

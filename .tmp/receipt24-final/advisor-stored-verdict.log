@@ -1,0 +1,36 @@
+ok - stored-verdict helpers extracted from issue-pipeline.sh
+ok - the needs-advisor filter body extracted from issue-pipeline.sh
+ok - advisor_record_apply_failure extracted from advisor-core.sh
+ok - selection stops at the limit, in queue order
+ok - the stop is logged
+ok - recurrence guard: the fresh stored verdict LEAVES the batch queue (the pool owns it)
+ok - recurrence guard: the past-bound verdict STAYS queued for the batch re-ask
+ok - recurrence guard: the failed-apply verdict STAYS queued for the batch re-ask
+ok - recurrence guard: the batch queue is exactly the two re-ask tickets
+ok - recurrence guard: the queued fresh verdict is dispatched for resume within the same tick
+ok - recurrence guard: a label-moved fresh verdict resumes through the same one owner
+ok - recurrence guard: exactly the two fresh verdicts were dispatched (no re-ask dispatch)
+ok - recurrence guard: resume-only dispatch never opens a fresh model dialogue
+ok - the resumed verdict itself stays stored until Apply completes
+ok - discard by age: exactly one line names issue, age, and reason
+ok - discard by age: the line states the reason
+ok - discard by age: the line appears exactly once for #6002
+ok - discard by age: the stale verdict is gone from state
+ok - discard after failed apply: one line names issue and reason
+ok - discard after failed apply: the line states the reason
+ok - discard after failed apply: the failed verdict is gone from state
+ok - a second tick does not re-discard an already-discarded verdict
+ok - stuck signal: one line names the issue and its age past the 6h threshold
+ok - stuck signal: three sweeps still emit exactly ONE line for #6004
+ok - stuck signal: a fresh (30m) verdict is not signalled
+ok - stuck signal: the dedup marker is persisted on the verdict
+ok - advisor_record_apply_failure stamps apply_failed_at on a pending verdict
+ok - advisor_record_apply_failure keeps the FIRST failure timestamp (idempotent)
+ok - a stamped verdict is no longer resumable
+ok - a ticket without a stored verdict is left unchanged
+ok - a fresh never-failed verdict is the only resumable disposition
+ok - triage_skip is not called above its nested definition
+ok - advisor_dispatch_pending_job_pool is not called above its nested definition
+ok - advisor_stored_verdict_stuck_sweep is not called above its nested definition
+ok - advisor_dispatch_stored_verdict_pool is not called above its nested definition
+advisor-stored-verdict: all cases passed

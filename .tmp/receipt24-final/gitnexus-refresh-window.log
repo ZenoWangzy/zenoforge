@@ -1,0 +1,11 @@
+ok - WSL refresh floor stays at 3 GiB while analysis runs remotely
+ok - isolated worktree scan reads hand-agent count
+ok - isolated worktree scan counts zcode hand agents
+ok - codex hand agents count once per worktree whatever the launcher
+ok - product lag counts missed product commits
+ok - product lag counts every missed product commit
+ok - refresh age uses first missed product commit
+ok - issue-pipeline.sh has no GitNexus refresh drain
+ok - night/dispatch.sh has no GitNexus refresh drain
+ok - lib.sh has no GitNexus refresh drain
+gitnexus-refresh-window.test.sh: PASS

@@ -1,0 +1,364 @@
+TAP version 13
+# Subtest: maps the traffic installer to its executable owner contract
+ok 1 - maps the traffic installer to its executable owner contract
+  ---
+  duration_ms: 87.9463
+  type: 'test'
+  ...
+# Subtest: maps both shared-pool provisioners to their owner suites
+ok 2 - maps both shared-pool provisioners to their owner suites
+  ---
+  duration_ms: 51.2127
+  type: 'test'
+  ...
+# Subtest: Python and CommonJS pipeline sources require owner coverage
+ok 3 - Python and CommonJS pipeline sources require owner coverage
+  ---
+  duration_ms: 168.4677
+  type: 'test'
+  ...
+# Subtest: a deleted pipeline script needs no focused test, a changed one still does
+ok 4 - a deleted pipeline script needs no focused test, a changed one still does
+  ---
+  duration_ms: 264.681701
+  type: 'test'
+  ...
+# Subtest: retired work-plan runner paths do not select its deleted test
+ok 5 - retired work-plan runner paths do not select its deleted test
+  ---
+  duration_ms: 1.1605
+  type: 'test'
+  ...
+# Subtest: maps lifecycle source to cleanup and shared phase admission coverage
+ok 6 - maps lifecycle source to cleanup and shared phase admission coverage
+  ---
+  duration_ms: 24.2022
+  type: 'test'
+  ...
+# Subtest: maps the PR required-check aggregate and shared merge policy to their focused tests
+ok 7 - maps the PR required-check aggregate and shared merge policy to their focused tests
+  ---
+  duration_ms: 20.4196
+  type: 'test'
+  ...
+# Subtest: maps shared merge-policy changes to aggregate-check consumer suites
+ok 8 - maps shared merge-policy changes to aggregate-check consumer suites
+  ---
+  duration_ms: 86.7629
+  type: 'test'
+  ...
+# Subtest: maps target config data to its reader suites
+ok 9 - maps target config data to its reader suites
+  ---
+  duration_ms: 1366.404902
+  type: 'test'
+  ...
+# Subtest: the config root focused-test map wins over a retained pack copy
+ok 10 - the config root focused-test map wins over a retained pack copy
+  ---
+  duration_ms: 259.051101
+  type: 'test'
+  ...
+# Subtest: maps Nexus retention code and unit tests to the tracked owner-classification suite
+ok 11 - maps Nexus retention code and unit tests to the tracked owner-classification suite
+  ---
+  duration_ms: 40.9898
+  type: 'test'
+  ...
+# Subtest: maps tick source to existing fetch and timer repair coverage
+ok 12 - maps tick source to existing fetch and timer repair coverage
+  ---
+  duration_ms: 39.73
+  type: 'test'
+  ...
+# Subtest: helper caller coverage without a same-name suite is selectable
+ok 13 - helper caller coverage without a same-name suite is selectable
+  ---
+  duration_ms: 392.170101
+  type: 'test'
+  ...
+# Subtest: routes CI infrastructure changes through focused contracts
+ok 14 - routes CI infrastructure changes through focused contracts
+  ---
+  duration_ms: 175.8291
+  type: 'test'
+  ...
+# Subtest: workflow proxy removals select their regression contract
+ok 15 - workflow proxy removals select their regression contract
+  ---
+  duration_ms: 67.421301
+  type: 'test'
+  ...
+# Subtest: maps shared test write guard to its refusal regression
+ok 16 - maps shared test write guard to its refusal regression
+  ---
+  duration_ms: 58.5357
+  type: 'test'
+  ...
+# Subtest: maps direct-main files to tracked local tests
+ok 17 - maps direct-main files to tracked local tests
+  ---
+  duration_ms: 266.2426
+  type: 'test'
+  ...
+# Subtest: maps the maintainer rulings registry to its metadata contract test
+ok 18 - maps the maintainer rulings registry to its metadata contract test
+  ---
+  duration_ms: 22.7942
+  type: 'test'
+  ...
+# Subtest: routes the remote GitNexus index publisher to its fake-host test
+ok 19 - routes the remote GitNexus index publisher to its fake-host test
+  ---
+  duration_ms: 27.546301
+  type: 'test'
+  ...
+# Subtest: maps feature verification sources to their planner coverage
+ok 20 - maps feature verification sources to their planner coverage
+  ---
+  duration_ms: 101.3455
+  type: 'test'
+  ...
+# Subtest: maps manual lesson folding to its remaining fixtures
+ok 21 - maps manual lesson folding to its remaining fixtures
+  ---
+  duration_ms: 70.2044
+  type: 'test'
+  ...
+# Subtest: maps verification maintenance sources to map-audit coverage
+ok 22 - maps verification maintenance sources to map-audit coverage
+  ---
+  duration_ms: 47.4663
+  type: 'test'
+  ...
+# Subtest: maps throughput metrics to their focused coverage
+ok 23 - maps throughput metrics to their focused coverage
+  ---
+  duration_ms: 29.3537
+  type: 'test'
+  ...
+# Subtest: adds cross-script scanners for any pipeline shell or module change
+ok 24 - adds cross-script scanners for any pipeline shell or module change
+  ---
+  duration_ms: 50.7301
+  type: 'test'
+  ...
+# Subtest: adds cross-script scanners when a pipeline test file itself changes
+ok 25 - adds cross-script scanners when a pipeline test file itself changes
+  ---
+  duration_ms: 30.3022
+  type: 'test'
+  ...
+# Subtest: maps supervisor hold helper to its live hold regressions
+ok 26 - maps supervisor hold helper to its live hold regressions
+  ---
+  duration_ms: 28.7701
+  type: 'test'
+  ...
+# Subtest: maps land queue to enqueue and worker coverage
+ok 27 - maps land queue to enqueue and worker coverage
+  ---
+  duration_ms: 15.9855
+  type: 'test'
+  ...
+# Subtest: maps incident guard changes to ruling and lesson allocation coverage
+ok 28 - maps incident guard changes to ruling and lesson allocation coverage
+  ---
+  duration_ms: 19.401201
+  type: 'test'
+  ...
+# Subtest: maps the hand watchdog and production anomaly monitor to live regressions
+ok 29 - maps the hand watchdog and production anomaly monitor to live regressions
+  ---
+  duration_ms: 35.1374
+  type: 'test'
+  ...
+# Subtest: maps lesson document changes to lesson ID allocation coverage
+ok 30 - maps lesson document changes to lesson ID allocation coverage
+  ---
+  duration_ms: 20.9759
+  type: 'test'
+  ...
+# Subtest: maps lesson changes to a same-named suite under configured pipeline roots
+ok 31 - maps lesson changes to a same-named suite under configured pipeline roots
+  ---
+  duration_ms: 18.3189
+  type: 'test'
+  ...
+# Subtest: intersects selected suites when main changes a shared landing helper
+ok 32 - intersects selected suites when main changes a shared landing helper
+  ---
+  duration_ms: 62.3087
+  type: 'test'
+  ...
+# Subtest: returns no focused suites for a disjoint main advance
+ok 33 - returns no focused suites for a disjoint main advance
+  ---
+  duration_ms: 116.2019
+  type: 'test'
+  ...
+# Subtest: maps deploy culprit helper to release regression
+ok 34 - maps deploy culprit helper to release regression
+  ---
+  duration_ms: 32.8768
+  type: 'test'
+  ...
+# Subtest: maps the Engine release dispatcher to its dispatch contract
+ok 35 - maps the Engine release dispatcher to its dispatch contract
+  ---
+  duration_ms: 39.2461
+  type: 'test'
+  ...
+# Subtest: keeps release concurrency default regression selected when runner changes
+ok 36 - keeps release concurrency default regression selected when runner changes
+  ---
+  duration_ms: 27.7167
+  type: 'test'
+  ...
+# Subtest: maps maintainer health mail runner to notify contract coverage
+ok 37 - maps maintainer health mail runner to notify contract coverage
+  ---
+  duration_ms: 65.024501
+  type: 'test'
+  ...
+# Subtest: historical ranges use current focused-test mappings
+ok 38 - historical ranges use current focused-test mappings
+  ---
+  duration_ms: 770.442102
+  type: 'test'
+  ...
+# Subtest: mail lifecycle changes always select the release integration regression
+ok 39 - mail lifecycle changes always select the release integration regression
+  ---
+  duration_ms: 244.1545
+  type: 'test'
+  ...
+# Subtest: maps the Product release runner to release and incident follow-up coverage
+ok 40 - maps the Product release runner to release and incident follow-up coverage
+  ---
+  duration_ms: 59.8678
+  type: 'test'
+  ...
+# Subtest: maps daily performance timer files and timer registry to their checks
+ok 41 - maps daily performance timer files and timer registry to their checks
+  ---
+  duration_ms: 31.827101
+  type: 'test'
+  ...
+# Subtest: maps daily performance script to its fake-ledger suite
+ok 42 - maps daily performance script to its fake-ledger suite
+  ---
+  duration_ms: 29.7584
+  type: 'test'
+  ...
+# Subtest: fails closed when a changed pipeline script lacks focused test
+ok 43 - fails closed when a changed pipeline script lacks focused test
+  ---
+  duration_ms: 56.7783
+  type: 'test'
+  ...
+# Subtest: adds each sourced helper caller suite for functions changed in its diff
+ok 44 - adds each sourced helper caller suite for functions changed in its diff
+  ---
+  duration_ms: 1369.263303
+  type: 'test'
+  ...
+# Subtest: function selection keeps caller suite that fails when changed helper function is broken
+ok 45 - function selection keeps caller suite that fails when changed helper function is broken
+  ---
+  duration_ms: 884.993403
+  type: 'test'
+  ...
+# Subtest: maps filename-referencing suite for indirect supervise-pipeline fixture
+ok 46 - maps filename-referencing suite for indirect supervise-pipeline fixture
+  ---
+  duration_ms: 384.744701
+  type: 'test'
+  ...
+# Subtest: shared JSON default mutations select referencing shell and Node fixtures
+ok 47 - shared JSON default mutations select referencing shell and Node fixtures
+  ---
+  duration_ms: 542.810601
+  type: 'test'
+  ...
+# Subtest: function caller selection retains the indirect release mail regression
+ok 48 - function caller selection retains the indirect release mail regression
+  ---
+  duration_ms: 407.991401
+  type: 'test'
+  ...
+# Subtest: maps filename-referencing suite for lib.sh seed repo fixture
+ok 49 - maps filename-referencing suite for lib.sh seed repo fixture
+  ---
+  duration_ms: 382.106801
+  type: 'test'
+  ...
+# Subtest: uses filename-referencing suites when script has no mapped or same-named test
+ok 50 - uses filename-referencing suites when script has no mapped or same-named test
+  ---
+  duration_ms: 301.962501
+  type: 'test'
+  ...
+# Subtest: falls back to filename selection outside a function and after shell parse failure
+ok 51 - falls back to filename selection outside a function and after shell parse failure
+  ---
+  duration_ms: 742.599004
+  type: 'test'
+  ...
+# Subtest: a changed file referenced by path selects the referencing suite
+ok 52 - a changed file referenced by path selects the referencing suite
+  ---
+  duration_ms: 559.522803
+  type: 'test'
+  ...
+# Subtest: a deleted file referenced by filename keeps the referencing suite selected
+ok 53 - a deleted file referenced by filename keeps the referencing suite selected
+  ---
+  duration_ms: 463.303903
+  type: 'test'
+  ...
+# Subtest: a script anchoring a changed file carries its own suite, not every naming test
+ok 54 - a script anchoring a changed file carries its own suite, not every naming test
+  ---
+  duration_ms: 401.435302
+  type: 'test'
+  ...
+# Subtest: focused suites run last-failed first, then fastest first, with unknown suites at the median
+ok 55 - focused suites run last-failed first, then fastest first, with unknown suites at the median
+  ---
+  duration_ms: 7.8592
+  type: 'test'
+  ...
+# Subtest: leaves changed package vitest files to their package gate
+ok 56 - leaves changed package vitest files to their package gate
+  ---
+  duration_ms: 30.845201
+  type: 'test'
+  ...
+# Subtest: a grown engine or tools source file selects the size ratchet; tests and vendored code do not
+ok 57 - a grown engine or tools source file selects the size ratchet; tests and vendored code do not
+  ---
+  duration_ms: 376.707902
+  type: 'test'
+  ...
+# Subtest: a changed sourced fixture maps to the tests that source it, never to itself
+ok 58 - a changed sourced fixture maps to the tests that source it, never to itself
+  ---
+  duration_ms: 405.078202
+  type: 'test'
+  ...
+# Subtest: a test-*.sh suite under a configured pipeline root is still selected
+ok 59 - a test-*.sh suite under a configured pipeline root is still selected
+  ---
+  duration_ms: 36.6252
+  type: 'test'
+  ...
+1..59
+# tests 59
+# suites 0
+# pass 59
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 13689.382744

@@ -1,0 +1,9 @@
+ok - pagination, unchanged ticks, identity/body invalidation, removal, corruption and failures
+ok - 101 files paginate completely; checks refresh unchanged PRs; mergeability only at gate
+ok - non-object GraphQL responses fail with diagnostics; valid objects pass and GraphQL errors fail closed
+ok - ownership probes only matching owners, retains PID/start verification
+ok - maintainer prefilter command count stays constant for 200 issues
+ok - measurement prefilter batches state reads; measured/malformed/missing gates remain distinct
+ok - real stage overrun still gives triage, advisor, recut and maintenance a slice (implement and release belong to the autopilot)
+ok - held fastlane cohort makes zero point reads; completed reports remain consumable
+ok - rich comments reach routing immediately after the leaf read

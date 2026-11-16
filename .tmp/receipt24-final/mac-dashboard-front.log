@@ -1,0 +1,6 @@
+dashboard fill_titles skips issue-less cards: PASS
+node_health: revert markers unread, git log rc=128 in /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-9FaEuP/front/repo: fatal: ambiguous argument 'refs/remotes/origin/main': unknown revision or path not in the working tree.
+Use '--' to separate paths from revisions, like this:
+'git <command> [<revision>...] -- [<file>.
+dashboard first_pass equals node_health on one fixture: PASS
+dashboard-front.test.sh: PASS

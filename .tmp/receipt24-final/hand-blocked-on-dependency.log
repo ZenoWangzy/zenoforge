@@ -1,0 +1,8 @@
+ok - open blocker leaves native dependency, one comment, ready-for-agent requeue
+ok - closed blocker stays on hold with one supervisor inbox line
+ok - unreadable blocker routes to supervisor without requeue
+ok - BLOCKED-ON #<M> form resolves the same dependency
+ok - repeat exit for the same blocker writes nothing
+ok - FOLLOWUP issue blocker records native edge and blocked owner without fastlane page
+ok - FOLLOWUP own-only remains ownerless with no dependency
+ok - FOLLOWUP PR links its open closing issue

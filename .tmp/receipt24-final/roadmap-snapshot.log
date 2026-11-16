@@ -1,0 +1,10 @@
+ok - successful read persists validated tree across ticks
+roadmap: snapshot=stale age_seconds=60 ttl_seconds=7200
+roadmap: appended fallback candidates 2
+roadmap: snapshot=stale age_seconds=4 ttl_seconds=7200
+ok - recent snapshot admits leaf across ticks/processes; hold/blocker/parent gates preserved; stale decision and one bell
+ok - expired snapshot closes admission and rings once
+issue-pipeline: roadmap tree read failed; roadmap candidates held this tick
+ok - missing snapshot keeps scheduler admission closed and rings
+ok - recovery resets stale flag; configurable TTL, repository mismatch and future timestamps fail closed
+ok - truncated/corrupt snapshots fail closed; next successful read replaces invalid state

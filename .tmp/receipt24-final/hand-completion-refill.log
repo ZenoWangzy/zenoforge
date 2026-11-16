@@ -1,0 +1,12 @@
+PASS terminal watcher publishes durable event and completes cleanup
+PASS live identity is not terminal and a reused pid is terminal
+PASS duplicate completed event never resets phase or creates another intake
+PASS deferred cleanup remains pending and retries
+PASS concurrent event writer preserves pending cleanup identity
+PASS malformed/unreadable continuation is pending and arbitrary command payload is rejected
+issue-pipeline: refill skipped, lock busy file=/home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-CX4cZv/tmp.1s9QW6PYFO/intake.lock
+PASS existing intake singleton contention defers75 rather than consuming an event
+PASS maintenance retries the deferred completion event without a hand queue
+PASS an invalid older event does not starve the next completion
+PASS maintenance retries an exit handoff after its callback fails
+PASS full shared budget refuses independent intake before execution

@@ -1,0 +1,47 @@
+ok - missing Codex pauses shared dispatch preflight
+ok - preflight records binary environment fault
+ok - preflight leaves ticket stage untouched
+ok - preflight consumes no attempt
+ok - issue-pipeline exits cleanly while Codex is unavailable
+ok - issue-pipeline says no tickets consumed
+ok - paused pipeline still leaves ticket stage untouched
+ok - paused pipeline still consumes no attempt
+ok - missing agent binary returns exit 127 from model call
+ok - exit 127 is a transient environment failure
+pause_for_backoff: codex-binary-missing at run-implement:implement; kept stage and refunded through model-policy retry
+model_policy: #9901801 work hit codex-binary-missing at implement; kept the rung and refunded attempt
+ok - implement model fault refunds attempt
+ok - implement model fault keeps ticket stage
+ok - implement model fault keeps policy rung
+ok - implement model fault creates no advisor transition
+ok - Codex fault enters existing environment ledger
+Fatal Python error: init_import_site: Failed to import the site module
+Python runtime state: initialized
+Traceback (most recent call last):
+  File "<frozen importlib._bootstrap_external>", line 1516, in _path_importer_cache
+KeyError: '/usr/lib/python3/dist-packages'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176, in exec_module
+  File "<frozen site>", line 735, in <module>
+  File "<frozen site>", line 728, in main
+  File "<frozen site>", line 667, in execsitecustomize
+  File "/usr/lib/python3.13/sitecustomize.py", line 3, in <module>
+    import apport_python_hook
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1322, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1262, in _find_spec
+  File "<frozen importlib._bootstrap_external>", line 1559, in find_spec
+  File "<frozen importlib._bootstrap_external>", line 1531, in _get_spec
+  File "<frozen importlib._bootstrap_external>", line 1518, in _path_importer_cache
+  File "<frozen importlib._bootstrap_external>", line 1494, in _path_hooks
+  File "<frozen importlib._bootstrap_external>", line 1720, in path_hook_for_FileFinder
+  File "<frozen importlib._bootstrap_external>", line 1604, in __init__
+  File "<frozen importlib._bootstrap_external>", line 1604, in <genexpr>
+KeyboardInterrupt
+state_merge: atomic replace failed for issue #9901810 -- state file /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-7U0I3f/agent/state/9901810.json NOT written

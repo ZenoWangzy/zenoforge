@@ -1,0 +1,15 @@
+ok - production incidents first, founder-test before priority:top features, critical path before features, legacy last
+ok - unlabelled and unrelated-label issues stay oldest-first
+ok - no selection site sorts on createdAt alone
+ok - triage intake fetches author and issue-origin fields
+ok - triage intake puts founder-test ahead of feature priority
+ok - triage intake keeps production incidents ahead
+ok - triage intake bands the batch critical path (#4363)
+ok - triage intake sorts legacy tickets behind features (#4363)
+ok - unmeasured triage queue ranks founder-test first
+ok - unmeasured triage queue keeps production incidents first
+ok - unmeasured triage queue bands the batch critical path (#4363)
+ok - unmeasured triage queue sorts legacy tickets behind features (#4363)
+ok - maintainer classifier checks pipeline bot comments
+ok - meta-test: a bare sort_by(.createdAt) selection site is caught
+ALL PASSED

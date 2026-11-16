@@ -1,0 +1,123 @@
+ok - build issue attribution uses the newest successful Deployment baseline
+ok - empty PR updatedAt takes now fallback, not midnight-age finding
+ok - exact-SHA green survives stale workflow list []
+ok - exact-SHA green survives stale workflow list [{"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","headBranch":"main","status":"completed","conclusion":"failure"}]
+ok - Postsubmit lookups pin exact full source SHA and skip stale list
+ok - main tip lookup bypasses a cached older commit
+ok - main tip lookup sends freshness headers
+ok - main tip lookup sends both freshness headers
+ok - fresh exact-SHA run and job reads escape stale cached snapshots
+ok - exact-SHA run request carries freshness headers and moving first-page key
+ok - exact-SHA run request also sends both freshness headers
+ok - exact-SHA job request carries freshness headers and explicit first page
+ok - pending exact-SHA Postsubmit blocks build admission
+ok - failed exact-SHA Postsubmit blocks build admission
+ok - successful workflow with skipped Postsubmit job blocks build admission
+ok - newer failed exact-SHA run supersedes an older green run
+ok - newer active exact-SHA run supersedes an older green run
+ok - newer skipped exact-SHA job supersedes an older green run
+ok - unreadable Postsubmit job API blocks build admission
+ok - Actions API error blocks build admission
+ok - [skip ci] source SHA cannot borrow green ancestor evidence
+ok - [skip ci] lookup still queries exact current source SHA
+ok - pending exact-SHA Postsubmit blocks build dispatch
+ok - failure exact-SHA Postsubmit blocks build dispatch
+ok - Actions API error blocks build dispatch
+ok - missing current [skip ci] tip dispatches one exact-SHA Postsubmit
+ok - Postsubmit dispatch does not dispatch an image build
+ok - automatic Postsubmit request persists its source SHA and state
+ok - restart and delayed run-list visibility do not duplicate Postsubmit dispatch
+ok - repeated missing evidence remains blocked from image build
+ok - a skipped stale dispatch does not stand in for its successor tip
+ok - successor dispatch persists its own source SHA
+ok - a stale skipped dispatch cannot release the image build
+ok - stale skipped dispatch recovery remains persistently deduplicated
+ok - successor build waits for its own successful Postsubmit run
+ok - successor build record binds its own validation run
+ok - failed Postsubmit dispatch is recorded
+ok - failed Postsubmit dispatch consumes one bounded attempt
+ok - fresh failed request is not dispatched again before its retry delay
+ok - unreadable exact-SHA API does not retry a failed dispatch
+ok - confirmed missing run permits a failed-request retry
+ok - retry increments the durable attempt count
+ok - request can recover only up to the configured attempt cap
+ok - attempt cap is persisted
+ok - exhausted Postsubmit request never dispatches a fourth time
+ok - retry guard rechecks exact-SHA runs before redispatch
+ok - a newly visible exact-SHA run blocks a duplicate retry
+ok - a newly visible exact-SHA run is reported
+ok - stale interrupted claim recovers after exact-SHA absence is confirmed
+ok - recovered interrupted claim records its next attempt
+ok - recovered request remains deduplicated after restart
+ok - tip change between lookup and dispatch prevents stale Postsubmit request
+ok - tip change prevents stale image build
+ok - automatic recovery does not dispatch for a non-skip main commit
+ok - successful exact-tip validation precedes image build dispatch
+ok - build record binds source SHA to its exact validation run
+ok - a later failed exact-SHA retry blocks image build dispatch
+ok - failed latest run does not write validation evidence
+ok - failed latest run remains blocked pending its own successful evidence
+ok - a newer active exact-SHA retry blocks image build dispatch
+ok - active latest run does not write validation evidence
+ok - a newer skipped exact-SHA job blocks image build dispatch
+ok - a newer skipped exact-SHA job requests a fresh validation
+ok - skipped latest run does not write validation evidence
+ok - tip change after green validation blocks stale image build
+ok - tip change after green validation is reported
+ok - changed-tip record keeps the verified source and run evidence
+land-direct-main: Postsubmit request for dddddddddddddddddddddddddddddddddddddddd is already claimed or waiting for its retry window
+ok - supervisor then direct-main share one claim while Actions run visibility is delayed
+ok - supervisor-owned shared claim remains requested
+land-direct-main: dispatched Postsubmit revalidation ref=main head=dddddddddddddddddddddddddddddddddddddddd target=dddddddddddddddddddddddddddddddddddddddd
+ok - direct-main then supervisor share one claim while Actions run visibility is delayed
+ok - direct-main-owned shared claim remains requested
+ok - two concurrent Postsubmit claimants produce one winner
+ok - the losing Postsubmit claimant observes the existing claim
+ok - concurrent Postsubmit claim records one attempt
+ok - off mode logs its own value
+ok - off mode never reaches the findings summary
+ok - observe: stale advisor_ruled_at on needs-advisor issue is flagged
+ok - observe mode never posts the heal comment
+ok - act: heals by posting a comment with the heal marker
+ok - act: state_merge actually cleared advisor_ruled_at on disk
+ok - act: THE FIX -- also clears a leftover pending_advisor_verdict (route_to_advisor()'s own filter does; this healer must match it byte for byte)
+ok - act: THE FIX -- also bumps advisor_episode_seq (3 -> 4), so a stale in-flight reasoning pass from the healed-away episode can never be mistaken for belonging to the fresh one
+ok - act: never heals an issue with a live zf-*-N unit right now
+ok - act: state is untouched while a live unit owns the ticket
+ok - inv1b: backlog with zero dispatch activity in the window is flagged
+ok - inv1b: backlog with recent dispatch activity is NOT flagged
+ok - inv10: same issue and gate repeating produces exactly one finding
+ok - inv10: an existing stall finding suppresses every later tick
+ok - inv10 ignores normal wait gate open-blocker
+ok - inv10 ignores normal wait gate capacity
+ok - inv10 ignores normal wait gate package-scope-cap
+ok - inv10 ignores normal wait gate active-implement
+ok - inv10 ignores normal wait gate dispatch-resources
+ok - inv10 ignores normal wait gate model-policy-transition
+ok - inv10b: consecutive lease bails produce exactly one finding
+ok - inv10b: an existing lease-bail finding suppresses repeats in one episode
+ok - inv10b: a clear decision starts one new stall episode
+ok - inv7: six calls across two tickets stay below the measured floor
+ok - inv7: six-call concentration sends no maintainer email
+ok - inv7: ten concentrated calls remain visible as a finding
+ok - inv7: report-only concentration never sends maintainer mail
+ok - heal_advisor_ruled_at_regression: state_merge's clear is checked before posting the healed-it comment
+ok - act: never heals an on-hold issue, even with a genuine regression
+ok - act: state is untouched while the issue is on-hold
+ok - act: never heals an issue when systemctl itself could not be queried
+ok - act: state is untouched when the live-unit query itself failed
+ok - stalled hand dispatch stop ends leader descendants
+ok - same-name session survives hand-dispatch stop
+ok - peer keeps matching ZF_AGENT_NAME
+ok - non-leader fixture shares leader session
+ok - non-leader runner alone gets stopped
+ok - non-leader session leader survives
+ok - non-leader session sibling survives
+ok - non-leader stop helper succeeds
+supervise-pipeline: AGENT_SUPERVISOR=act
+ok - spend ledger reader returns legacy and new rows intact
+
+ok - a 100KB+ haystack still answers 'found' (no SIGPIPE through a here-string)
+ok - no original supervisor fixture script pipes a captured variable into grep -q
+ok - cooldown_ready answers under set -u instead of aborting on its own local
+ALL PASSED

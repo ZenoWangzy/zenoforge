@@ -1,0 +1,94 @@
+ok - fake gh honors open state filter
+ok - fake gh includes closed issues for all state
+ok - fake gh honors closed state filter
+ok - fake gh applies candidate label exclusions
+ok - hotfix predicate: [热修] repair
+ok - hotfix predicate: 【热修】repair
+ok - hotfix predicate: [hotfix] repair
+ok - hotfix predicate: [HOT-FIX] repair
+ok - hotfix predicate: （紧急热修） repair
+ok - hotfix predicate: ordinary title
+ok - hotfix predicate: First release after the 9/30 hot-fix chain: retire the stage
+ok - hotfix predicate: 对齐生产热修插件与主干回归契约
+ok - hotfix predicate: 员工安全重载期间自动重建容器并覆盖热修…
+ok - hotfix predicate: This title mentions hotfix without a tag
+ok - empty tick emits no notice
+ok - marked needs-triage issue keeps its pipeline stage
+ok - marked intake issue is not held
+ok - marked intake writes no hotfix inbox line
+ok - marked issue keeps existing holder
+ok - marked issue already held by someone else gets no rewrite
+ok - ordinary open issue gets only needs-triage state
+ok - second ordinary issue gets only needs-triage after stale-label race
+ok - founder-filed issue gets founder-test during rescue
+ok - maintainer rescue fetches issue number for the shared label helper
+ok - pipeline bot marker excludes generated issue from founder-test
+ok - prerequisite title marker excludes generated issue from founder-test
+ok - recut body marker excludes generated issue before bot comment
+ok - supervisor brief title excludes generated issue from founder-test
+ok - pipeline-system issue keeps its lane without founder-test
+ok - rescued issue has exactly one active state label
+ok - normalization removes terminal state added during write
+ok - normalization removes dynamic shared state labels
+ok - needs-triage is not paired with stale terminal label
+ok - on-hold issue labels unchanged
+ok - recut umbrella labels unchanged
+ok - closed issue labels unchanged
+ok - dynamic state issue labels unchanged
+ok - unreadable local state labels unchanged
+ok - on-hold issue received no edit
+ok - recut umbrella received no edit
+ok - closed issue received no edit
+ok - dynamic state issue received no edit
+ok - unreadable local state received no edit
+ok - open pull request is not treated as an issue
+ok - seven rescues yield one appearance notice
+ok - persistent wave does not repeat appearance notice
+ok - unreadable candidate does not clear alert episode
+ok - resolved wave yields one clear notice
+ok - quiet ticks do not repeat clear notice
+ok - sweep uses complete API pagination
+ok - sweep reaches unlabeled issue after 1000 results
+ok - a tracker costs no GitHub read
+ok - a lane issue is still read
+ok - a spent deadline prints one line
+ok - a spent deadline names where it stopped
+ok - state merge failure still returns failure
+ok - successful label write remains applied
+ok - successful label write emits appearance notice before failure
+ok - later issue edit failure returns failure
+ok - earlier successful rescue remains applied
+ok - failed issue edit leaves later issue unchanged
+ok - earlier rescue reported before later issue edit failure
+ok - post-dispatch maintenance recovers reopened issues before unlabeled sweep
+issue-pipeline: cannot re-read #7201 to classify founder-test origin; skipping it this tick
+ok - founder-test re-read failure does not fail the candidate list
+ok - unreadable maintainer candidate is kept unlabelled for the next tick
+ok - old founder-authored issue outside the intake window is not re-read
+ok - new founder-authored issue inside the window is judged once
+ok - an already judged founder-authored issue is not re-read
+ok - maintainer-account issue with pipeline comments is re-read once, not every tick
+ok - old unlabeled issue is admitted to needs-triage
+ok - fresh unlabeled issue is skipped by the grace bound
+ok - labelled issue is unchanged
+ok - old on-hold issue is skipped
+ok - tracker issue is left alone
+ok - non-product lane issue is left for its own lane
+ok - only the old unlabeled issue is edited
+ok - age bound is configurable and the fresh issue is then admitted
+ok - tracker parents cost no GitHub read
+ok - admissible issue behind trackers is still admitted
+ok - confirmed roadmap container is remembered as tracker
+ok - confirmed roadmap container gets the tracker label
+ok - container is not given the needs-triage label
+ok - remembered container is not re-read next tick
+ok - needs-triage snapshot still fits after the admit loop
+ok - admit loop left later candidates for the next tick
+ok - admit loop stopped before the last candidate
+ok - failed founder-test label write does not fail the candidate list
+ok - failed label write keeps every candidate
+ok - failed label write still ranks the issue as founder-test
+ok - failed label write is retried next tick (not marked checked)
+ok - labelling stops inside the dispatch reserve and still succeeds
+ok - labelling inside the dispatch reserve makes no gh call
+ALL PASSED

@@ -1,0 +1,2 @@
+source-extract ratchet ok: 192 lines in 51 files
+source-extract-ratchet.test.sh: all assertions passed

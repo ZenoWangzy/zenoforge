@@ -1,0 +1,232 @@
+ok - run-tick has no founder-mail path
+ok - retired zf-work-plan-acceptance.timer does not trigger a repair
+ok - retired zf-work-plan-acceptance.timer does not raise an outage
+ok - retired zf-mac-ci-runners.timer does not trigger a repair
+ok - retired zf-mac-ci-runners.timer does not raise an outage
+ok - the unit-adjacent timer list keeps zenoforge-agent.timer
+ok - the unit-adjacent timer list keeps zenoforge-supervisor.timer
+ok - the supervisor keeps #1531's existing outage marker
+ok - stopped timers still let the fixture reach the handoff
+ok - a stopped zenoforge-agent.timer is started by the tick
+ok - zenoforge-agent.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-supervisor.timer is started by the tick
+ok - zenoforge-supervisor.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-local-rescue.timer is started by the tick
+ok - zenoforge-local-rescue.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-label-churn.timer is started by the tick
+ok - zenoforge-label-churn.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-disk-reclaim.timer is started by the tick
+ok - zenoforge-disk-reclaim.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-daily-perf-report.timer is started by the tick
+ok - zenoforge-daily-perf-report.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-health-maintenance.timer is started by the tick
+ok - zenoforge-health-maintenance.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-health-mail.timer is started by the tick
+ok - zenoforge-health-mail.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-prod-anomaly.timer is started by the tick
+ok - zenoforge-prod-anomaly.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-roi-collector.timer is started by the tick
+ok - zenoforge-roi-collector.timer gets one start command on its first outage tick
+ok - a stopped zenoforge-retro.timer is started by the tick
+ok - zenoforge-retro.timer gets one start command on its first outage tick
+ok - successful timer repairs do not send email
+ok - verified recovery stays silent on later ticks
+ok - zenoforge-agent.timer is not restarted after verified recovery
+ok - zenoforge-supervisor.timer is not restarted after verified recovery
+ok - zenoforge-local-rescue.timer is not restarted after verified recovery
+ok - zenoforge-label-churn.timer is not restarted after verified recovery
+ok - zenoforge-disk-reclaim.timer is not restarted after verified recovery
+ok - zenoforge-daily-perf-report.timer is not restarted after verified recovery
+ok - zenoforge-health-maintenance.timer is not restarted after verified recovery
+ok - zenoforge-health-mail.timer is not restarted after verified recovery
+ok - zenoforge-prod-anomaly.timer is not restarted after verified recovery
+ok - zenoforge-roi-collector.timer is not restarted after verified recovery
+ok - zenoforge-retro.timer is not restarted after verified recovery
+ok - an active zenoforge-agent.timer clears its outage marker
+ok - an active zenoforge-supervisor.timer clears its outage marker
+ok - an active zenoforge-local-rescue.timer clears its outage marker
+ok - an active zenoforge-label-churn.timer clears its outage marker
+ok - an active zenoforge-disk-reclaim.timer clears its outage marker
+ok - an active zenoforge-daily-perf-report.timer clears its outage marker
+ok - an active zenoforge-health-maintenance.timer clears its outage marker
+ok - an active zenoforge-health-mail.timer clears its outage marker
+ok - an active zenoforge-prod-anomaly.timer clears its outage marker
+ok - an active zenoforge-roi-collector.timer clears its outage marker
+ok - an active zenoforge-retro.timer clears its outage marker
+ok - a later label-churn outage is silent after successful repair
+ok - the later label-churn outage is repaired again
+ok - a marked legacy supervisor outage is still retried
+ok - a marked legacy supervisor outage does not add an inbox event
+ok - a unit prefix setting renames the timer the list names
+ok - no list timer keeps its own prefix under another setting
+ok - a disabled zenoforge-agent.timer is enabled and started by the tick
+ok - zenoforge-agent.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-agent.timer gets no plain start while disabled
+ok - a disabled zenoforge-supervisor.timer is enabled and started by the tick
+ok - zenoforge-supervisor.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-supervisor.timer gets no plain start while disabled
+ok - a disabled zenoforge-local-rescue.timer is enabled and started by the tick
+ok - zenoforge-local-rescue.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-local-rescue.timer gets no plain start while disabled
+ok - a disabled zenoforge-label-churn.timer is enabled and started by the tick
+ok - zenoforge-label-churn.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-label-churn.timer gets no plain start while disabled
+ok - a disabled zenoforge-disk-reclaim.timer is enabled and started by the tick
+ok - zenoforge-disk-reclaim.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-disk-reclaim.timer gets no plain start while disabled
+ok - a disabled zenoforge-daily-perf-report.timer is enabled and started by the tick
+ok - zenoforge-daily-perf-report.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-daily-perf-report.timer gets no plain start while disabled
+ok - a disabled zenoforge-health-maintenance.timer is enabled and started by the tick
+ok - zenoforge-health-maintenance.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-health-maintenance.timer gets no plain start while disabled
+ok - a disabled zenoforge-health-mail.timer is enabled and started by the tick
+ok - zenoforge-health-mail.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-health-mail.timer gets no plain start while disabled
+ok - a disabled zenoforge-prod-anomaly.timer is enabled and started by the tick
+ok - zenoforge-prod-anomaly.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-prod-anomaly.timer gets no plain start while disabled
+ok - a disabled zenoforge-roi-collector.timer is enabled and started by the tick
+ok - zenoforge-roi-collector.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-roi-collector.timer gets no plain start while disabled
+ok - a disabled zenoforge-retro.timer is enabled and started by the tick
+ok - zenoforge-retro.timer gets enable --now, not a plain start, when disabled
+ok - zenoforge-retro.timer gets no plain start while disabled
+ok - successfully enabling timers does not send email
+ok - disabled retries do not repeat their notifications
+ok - zenoforge-agent.timer is not re-enabled after verified recovery
+ok - zenoforge-supervisor.timer is not re-enabled after verified recovery
+ok - zenoforge-local-rescue.timer is not re-enabled after verified recovery
+ok - zenoforge-label-churn.timer is not re-enabled after verified recovery
+ok - zenoforge-disk-reclaim.timer is not re-enabled after verified recovery
+ok - zenoforge-daily-perf-report.timer is not re-enabled after verified recovery
+ok - zenoforge-health-maintenance.timer is not re-enabled after verified recovery
+ok - zenoforge-health-mail.timer is not re-enabled after verified recovery
+ok - zenoforge-prod-anomaly.timer is not re-enabled after verified recovery
+ok - zenoforge-roi-collector.timer is not re-enabled after verified recovery
+ok - zenoforge-retro.timer is not re-enabled after verified recovery
+ok - a failed disabled repair says it could not enable and start
+ok - a failed disabled repair writes a supervisor event
+ok - a failed disabled repair records its enable command
+ok - an unrecovered disabled timer event includes its status command
+ok - only an unrecovered disabled timer writes one event
+ok - a failed disabled repair does not send maintainer mail
+ok - a failed repair still writes one outage event
+ok - a failed disabled repair keeps retrying enable --now
+ok - a failed start reports the timer still inactive
+ok - a failed start writes one supervisor event
+ok - a failed start event includes its unit status command
+ok - a failed start does not repeat its event while retrying
+ok - a failed start remains retried
+ok - a successful start command with inactive readback writes an event
+ok - an inactive readback event includes its unit status command
+ok - unrecovered timer state is recorded before alert
+ok - AGENT_SUPERVISOR=off leaves its stopped timer alone
+ok - AGENT_SUPERVISOR=off clears its stale outage marker
+ok - zenoforge-agent.timer still heals while the supervisor is intentionally off
+ok - zenoforge-label-churn.timer still heals while the supervisor is intentionally off
+ok - zenoforge-disk-reclaim.timer still heals while the supervisor is intentionally off
+ok - successfully healed timers stay silent while supervisor is off
+ok - the strict product validator rejects a schema-less persisted policy
+ok - source-check can validate a legacy policy without migrating it
+ok - source-check leaves its legacy policy view bytes untouched
+ok - source-check leaves the Zenoforge-owned policy bytes untouched
+ok - source-check does not create a migration backup
+ok - source-check rejects a missing persisted policy
+ok - source-check does not seed a missing persisted policy
+ok - new code resolves the old live policy before post-fast-forward sync
+ok - new code loads successfully against the old live policy
+ok - migrated policy passes source-check in the same view
+ok - startup migration keeps one recoverable copy of the schema-less policy
+ok - the migration backup retains the original policy bytes
+ok - the legacy source policy remains clean after active-view migration
+ok - ordinary migration leaves the Zenoforge-owned policy bytes unchanged
+ok - whole-default migration resolves a role from the deployed default
+ok - default forbidden-model protection rejects merged live policy
+ok - a default-changing fast-forward reaches fixture handoff
+ok - a default-changing fast-forward logs live policy sync
+ok - a changed default writes one sync record
+ok - a default-changing fast-forward installs the complete deployed default
+ok - a default-changing fast-forward applies the new work service tier
+ok - the synced live policy is private
+ok - the synced policy passes model_policy_validate_file
+ok - an unrelated fast-forward reaches fixture handoff
+ok - an unrelated fast-forward still completes merge
+ok - an unchanged default leaves the live policy untouched
+ok - an unchanged default writes no sync record
+ok - a failed policy apply refuses tick
+ok - a failed policy apply preserves the failure reason in its alert
+ok - a failed policy apply alert includes the underlying reason
+ok - a failed policy apply leaves old live bytes untouched
+ok - a clean, up-to-date checkout reaches the handoff, only failing on the fixture's missing scheduler
+ok - ...and its last log line names the handoff
+ok - a stalled fetch retries once, then fixture fails only at missing scheduler
+ok - the bounded retry performs exactly two fetches
+ok - the transient timeout is visible
+ok - the successful retry reaches scheduler handoff
+ok - the repeated timeout crosses the existing alert threshold
+ok - high local load writes its exact cause to supervisor inbox
+ok - high-load event preserves the observed sync timeout and load
+ok - a high-load local timeout does not send maintainer mail
+ok - a quarantined dirty checkout reaches the fixture handoff
+ok - the recovery event is one log line
+ok - the recovered checkout reaches scheduler handoff
+ok - tracked and untracked changes are removed from the checkout
+ok - tracked diff is saved in quarantine
+ok - tracked diff includes unstaged content
+ok - untracked path list is saved
+ok - untracked file contents are recoverable from the archive
+ok - recovered dirty checkout does not alert as a network failure
+ok - the ignored refused path is moved and logged
+ok - the ignored refused path is gone from the checkout
+ok - the moved file is kept in quarantine
+ok - a path with a tracked file is left untouched
+ok - the tick still reaches the scheduler handoff
+ok - run-tick --help is refused with 64
+ok - run-tick --help starts no tick
+ok - run-tick --help writes nothing under AGENT_HOME
+ok - a failed restore exits non-zero
+ok - the refusal names restore failure
+ok - a failed restore never reaches scheduler handoff
+ok - restore failure is not mislabeled as network trouble
+ok - a checkout not on main exits non-zero
+ok - ...naming the branch as the reason
+ok - a diverged checkout exits non-zero
+ok - ...naming the divergence as the reason
+ok - an unreachable origin exits non-zero
+ok - ...naming the fetch as the reason
+ok - a repeated fetch timeout still refuses this tick
+ok - the supervisor event names fetch timeout
+ok - the fetch-timeout event preserves the observed cause
+ok - a failed scheduler exits non-zero
+ok - the supervisor event names scheduler failure
+ok - the scheduler event records its observed exit status
+ok - 1st consecutive failure: counter is 1
+ok - ...and does not record yet (below threshold)
+ok - 2nd consecutive failure: counter is 2
+ok - ...still no event (below threshold)
+ok - 3rd consecutive failure: counter is 3
+ok - ...supervisor event fires exactly at the threshold
+ok - one tick wake is logged at the alert threshold
+ok - alerted marker written at the threshold
+ok - 4th consecutive failure: counter keeps climbing
+ok - ...but does NOT record again -- once per outage
+ok - ...and does NOT log another wake
+ok - a clean tick after the outage reaches the handoff again
+ok - ...and records recovery, since we were in alerted state
+ok - recovery is recorded once in the supervisor inbox
+ok - tick recovery is logged as one wake
+ok - recovery does not send maintainer mail
+ok - failure counter cleared on success
+ok - alerted marker cleared on recovery
+ok - an internal failure (AGENT_HOME itself unwritable) still exits non-zero
+ok - ...and still explains itself, never silently
+ok - ...naming it as an internal/unexpected failure, not a known refusal
+ok - a unit missing from the dest dir gets installed
+ok - ...and the launcher logs which unit it installed
+ok - ...then reloads systemd exactly because something changed
+ok - an already-current unit is not reinstalled on the next tick
+ok - daemon-reload is not called again when nothing changed
+ok - tick syncs running daemons after checkout advances
+ok - daemon sync failures refuse dispatch
+ALL PASS

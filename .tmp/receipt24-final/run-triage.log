@@ -1,0 +1,232 @@
+ok - unknown impact cannot count as L2 evidence
+ok - unknown impact cannot admit or reject L2
+ok - unresolved L2 takes the default with the impact marked unconfirmed
+ok - only the three advisor_reason values route to the advisor
+ok - the prompt names the advisor_reason gate for ready-for-human
+ok - triage schema requires every key for Codex structured output
+ok - disabled intake priority does not invoke the TypeSafe judge
+ok - disabled intake priority logs its skip once
+ok - adopted intake priority calls both judge sets through the stub
+ok - adopted intake priority exposes its roadmap containers to the judge
+ok - adopted intake priority applies its configured priority label
+ok - adopted intake priority applies its selected roadmap route
+ok - adopted intake priority places the issue under its selected roadmap epic
+ok - low-confidence intake adds the unsure marker
+ok - low-confidence intake never adds the needs-triage state label
+ok - low-confidence intake leaves the triage state unchanged
+ok - already-labeled issue makes no intake judge call
+ok - already-labeled issue logs its skip
+ok - a pipeline state label as the intake marker is rejected
+ok - precut + model ready-for-human: exits 0
+ok - ...records the triage model call
+ok - ...records returned token usage in spend log
+ok - ...label is the advisor rung
+ok - ...never ready-for-human
+ok - ...the comment says it was not re-triaged
+ok - ...and records the ignored model verdict
+ok - ...state.state is the ladder's
+ok - ...state.model_state keeps the model's own verdict for the audit trail
+ok - ...state.precut is recorded
+ok - ...the measurements are kept
+ok - ...the model was told the provenance
+ok - triage prompt uses the target config override
+ok - triage schema uses the target config override
+ok - ...and told the maintainer's brief is not an injection
+ok - triage prompt bases external routing on the requested deliverable
+ok - triage prompt keeps deployed screenshots in acceptance
+ok - triage prompt assigns evidence to release acceptance
+ok - triage prompt treats read and evidence paths as context
+ok - ...labels were healed before the edit
+ok - precut parent supplement triage completes
+ok - precut triage prompt includes parent supplement heading
+ok - precut triage prompt includes parent supplement
+ok - precut triage prompt stops before parent appendix
+ok - precut + admissible measurement: exits 0
+ok - ...label is ready-for-agent
+ok - failed related-issue POST does not abort triage
+ok - failed related-issue POST logs the skipped edge on stderr
+ok - failed related-issue POST keeps the group in state
+ok - failed related-issue POST still advances the stage
+ok - failed related-issue POST still writes the stage label
+ok - missing related issue does not abort triage
+ok - missing related issue logs the skipped edge on stderr
+ok - missing related issue still keeps the group in state
+ok - missing related issue still advances the stage
+ok - missing related issue still writes the stage label
+ok - pipeline-system lightweight classification: exits 0
+ok - pipeline-system lightweight classification enters implement
+ok - pipeline-system lightweight classification avoids advisor
+ok - pipeline-system triage does not call a model
+ok - pipeline-system lane is persisted
+ok - pipeline-system maintainer issue also bypasses the advisor queue
+ok - pipeline-system maintainer issue goes directly to implementation
+ok - pipeline-system maintainer issue creates no product ruling
+ok - pipeline-system maintainer issue never reaches advisor
+ok - precut + model needs-info: exits 0
+ok - ...label is ready-for-agent (the ladder, not the model)
+ok - ...never needs-info
+ok - ...no reporter email
+ok - ...state.state is ready-for-agent
+ok - precut + model wontfix: exits 0
+ok - ...never closes the issue
+ok - ...never applies wontfix
+ok - ...admits it instead
+ok - raw + wontfix with an advisor job: exits 0
+ok - raw + wontfix with an advisor job: closes the issue
+ok - genuinely declined issue remains wontfix
+ok - raw + wontfix with an advisor job: clears job id
+ok - already-delivered triage with merged linked PR exits cleanly
+ok - already-delivered triage enters awaiting-release
+ok - already-delivered triage records the delivering PR
+ok - already-delivered triage records merged outcome
+ok - already-delivered triage does not close the issue
+ok - already-delivered triage verifies the linked PR through REST
+ok - already-delivered prompt reports the linked merged PR
+ok - already-delivered triage resolves PR from persisted run evidence
+ok - persisted run evidence retains the delivering PR
+ok - persisted run evidence verifies the PR through REST
+ok - raw + duplicate with an advisor job: exits 0
+ok - raw + duplicate with an advisor job: closes the issue
+ok - raw + duplicate with an advisor job: clears job id
+ok - raw + model ready-for-human without advisor_reason: exits 0
+ok - ...missing advisor_reason field (an old prompt override) still logs one decision line
+ok - ...exactly one advisor-route line
+ok - ...label is ready-for-agent (triage took the default)
+ok - ...no advisor stop without an advisor-only reason
+ok - ...never ready-for-human
+ok - ...the comment says triage took the default
+ok - ...the implementer decides the open point
+ok - ...state.precut is false for a raw report
+ok - ...the model was NOT told it is precut
+ok - raw + model ready-for-human, advisor_reason=irreversible: exits 0
+ok - ...scheduler.log records one advisor-route line with a fixed reason code
+ok - ...exactly one advisor-route line
+ok - ...label is needs-advisor
+ok - ...never ready-for-human
+ok - ...the comment names the advisor-only reason
+ok - ...the comment says why the advisor decides
+ok - default with an out-of-set measurement: exits 0
+ok - ...the autonomy gate still refuses the default
+ok - ...the comment explains the autonomy-set refusal
+ok - ...the refusal is never a human terminal
+ok - raw + needs-owner default: exits 0
+ok - ...needs-owner default enters implementation
+ok - ...needs-owner comment says triage took the default
+ok - raw + needs-owner, advisor_reason=security: exits 0
+ok - ...needs-owner with advisor_reason=security routes to advisor
+ok - raw + over-admitted P2/L3: exits 0
+ok - ...label is needs-advisor
+ok - ...never ready-for-agent
+ok - raw + admissible: exits 0
+ok - ...label is ready-for-agent
+ok - user bug report triage exits 0
+ok - user bug report dispatches Benny with its triage and issue fixtures
+ok - user bug report passes the configured repository to Benny
+ok - changed labels discard a single-ticket verdict
+ok - single-ticket stale guard explains label change
+ok - single-ticket stale verdict applies no label
+ok - single-ticket stale verdict posts no comment
+ok - single-ticket stale verdict stores no classification
+ok - successful Codex triage clears its prior outage marker
+ok - successful Codex triage clears the one-outage alert latch
+ok - founder-authored + needs-info: exits 0
+ok - ...label is needs-advisor
+ok - ...never ready-for-human
+ok - ...never needs-info
+ok - ...the pending points and defaults are posted for the advisor
+ok - ...no email to anyone
+ok - non-founder needs-info with unavailable mail: exits 0
+ok - ...failed reporter delivery enters advisor queue
+ok - ...failed reporter delivery removes needs-info
+ok - ...failed reporter delivery persists advisor ownership
+ok - unconfirmed L2 freshness deferral: exits 0
+ok - unconfirmed L2 freshness deferral is recorded
+ok - unconfirmed L2 freshness schedules a later retry
+ok - freshness retry records issue version
+ok - freshness retry records bounded deferral start
+ok - unconfirmed L2 freshness leaves GitHub labels untouched
+ok - three failed analyzes skip freshness deferral and triage immediately
+ok - three failed analyzes keep the model's state under the default
+ok - three failed analyzes do not schedule another deferral
+ok - decision comment explains the skipped deferral
+ok - decision comment records the unconfirmed impact
+ok - a recent successful analyze keeps the existing freshness deferral
+ok - a recent success still schedules the bounded retry
+ok - expired single-ticket freshness deferral exits 0
+ok - ...default keeps the model's ready-for-agent state
+ok - ...freshness alone no longer routes to the advisor
+ok - ...expired L2 freshness never uses human terminal
+ok - ...state stays ready-for-agent
+ok - ...comment records the unconfirmed impact
+ok - ...comment tells the implementer to verify the impact
+ok - expired L2 needs-owner freshness exits 0
+ok - expired L2 needs-owner default enters implementation
+ok - expired L2 needs-owner applies the implement label
+ok - expired L2 needs-owner does not route to advisor by default
+ok - expired L2 needs-owner never becomes a human terminal
+ok - expired L2 needs-owner still marks impact unconfirmed
+ok - expired L2 needs-owner logs the freshness default
+ok - expired L2 freshness with advisor_reason=production-data exits 0
+ok - ...an advisor-only reason still routes unconfirmed L2 to the advisor
+ok - ...state is needs-advisor
+ok - ...advisor comment explains freshness gate
+ok - ...one l2_freshness routed line is logged
+ok - 2040 advisor admission + blocked L2 measurement exits 0
+ok - 2040 keeps the admitted ready-for-agent label
+ok - 2040 never sends the admitted ticket back to advisor
+ok - 2040 keeps ready-for-agent state despite model and freshness
+ok - 2040 retains guarded admission
+ok - 2040 keeps measured risk and level
+ok - 2040 preserves raw model verdict for audit
+ok - 2040 consumes the measure-only marker after measurement
+ok - founder-test + unconfirmed L2 freshness: exits 0
+ok - founder-test label is persisted during direct triage
+ok - unconfirmed L2 verdict keeps the model's state by default
+ok - unconfirmed L2 verdict is not routed to the advisor by default
+ok - founder-test freshness bypass leaves existing retry deadline unchanged
+ok - external ~/.zenoforge acceptance exits cleanly
+ok - external ~/.zenoforge acceptance is on hold
+ok - external ~/.zenoforge acceptance retains its supervisor hold
+ok - external ~/.zenoforge acceptance gets on-hold label
+ok - external ~/.zenoforge acceptance skips implement label
+ok - external ~/.zenoforge acceptance reaches supervisor inbox
+ok - fresh external acceptance is not handed to scheduler before hold expiry
+ok - external hold posts issue comment
+ok - external hold comment explains the model's reason
+ok - in-repo code with production screenshot acceptance exits cleanly
+ok - production screenshot acceptance stays implementable
+ok - in-repo screenshot issue gets implement label
+ok - in-repo screenshot issue skips external on-hold
+ok - in-repo screenshot issue skips supervisor inbox
+ok - product issue persists post-release ops acceptance
+ok - product issue assigns step to release acceptance
+ok - product brief carries ops acceptance step
+ok - wrapper records narrower product routing
+ok - other-repo and cihost acceptance exits cleanly
+ok - other-repo and cihost acceptance is on hold
+ok - other-repo acceptance remains a supervisor hold
+ok - other-repo and cihost acceptance reaches supervisor inbox
+ok - other-repo hold comment includes model reason
+ok - cihost environment line exits cleanly
+ok - cihost environment line stays implementable
+ok - cihost environment line skips the supervisor inbox
+ok - second cihost observation stays implementable
+ok - second cihost observation skips supervisor inbox
+ok - reviewed external hold exits cleanly
+ok - reviewed external hold is not re-applied
+ok - hand evidence path exits cleanly
+ok - hand evidence path stays implementable
+ok - hand evidence path skips the supervisor inbox
+ok - second hand evidence path stays implementable
+ok - second hand evidence path skips supervisor inbox
+ok - separate reporting prose exits cleanly
+ok - separate reporting prose stays implementable
+ok - separate reporting prose skips the supervisor inbox
+ok - 2637 missing external judgment defaults to implement
+ok - 2637 missing external judgment skips supervisor inbox
+ok - malformed external judgment defaults to implement
+ok - malformed external judgment skips supervisor inbox
+ok - failed triage stage edit exits nonzero
+ok - failed triage stage edit restores the prior state
+ok - failed triage stage edit logs rollback
+ALL PASS

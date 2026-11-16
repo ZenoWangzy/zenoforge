@@ -1,0 +1,23 @@
+ok - empty commit timestamp takes parser fallback
+ok - explicit issue list merges with hand-N name and deduplicates
+ok - named multi-issue hand reads its owned issue list from the brief
+ok - explicit queue ownership unions with brief header and deduplicates
+ok - explicit owned nodes validate and deduplicate
+ok - invalid owned issue number refused
+ok - invalid owned node refused
+ok - recorded PID and start identity accepted as live
+ok - mismatched start identity refused
+ok - live hand agent owns first recorded issue
+ok - live hand agent owns second recorded issue
+ok - unlisted issue remains unowned
+ok - live hand agent owns first recorded node
+ok - live hand agent owns second recorded node
+ok - unlisted node remains unowned
+ok - reused PID with mismatched start identity does not own issue
+ok - live hand agent owns its issue before exit
+ok - exited hand agent releases its issue immediately
+issue-pipeline: implement-decision tick=test issue=#1820 outcome=skipped gate=hand-owned object=hand-agent reason=live hand agent owns issue
+issue-pipeline: advisor-decision tick=test issue=#1820 outcome=skipped gate=hand-owned object=hand-agent reason=live hand agent owns issue
+issue-pipeline: triage-decision tick=test issue=#1820 outcome=skipped gate=hand-owned object=hand-agent reason=live hand agent owns issue
+ok - all three stage decisions persist without changing attempts or state
+ok - triage and advisor selectors retain hand-owned gates

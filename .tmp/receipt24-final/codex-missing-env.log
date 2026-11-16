@@ -1,0 +1,55 @@
+ok - missing Codex pauses shared dispatch preflight
+ok - preflight records binary environment fault
+ok - preflight leaves ticket stage untouched
+ok - preflight consumes no attempt
+ok - issue-pipeline exits cleanly while Codex is unavailable
+ok - issue-pipeline says no tickets consumed
+ok - paused pipeline still leaves ticket stage untouched
+ok - paused pipeline still consumes no attempt
+ok - missing agent binary returns exit 127 from model call
+ok - exit 127 is a transient environment failure
+pause_for_backoff: codex-binary-missing at run-implement:implement; kept stage and refunded through model-policy retry
+model_policy: #9901801 work hit codex-binary-missing at implement; kept the rung and refunded attempt
+ok - implement model fault refunds attempt
+ok - implement model fault keeps ticket stage
+ok - implement model fault keeps policy rung
+ok - implement model fault creates no advisor transition
+ok - Codex fault enters existing environment ledger
+pause_for_backoff: codex-binary-missing at run-repair:repair; kept stage and refunded through model-policy retry
+model_policy: #9901810 work hit codex-binary-missing at repair; kept the rung and refunded attempt
+ok - repair missing binary refunds attempt
+ok - repair missing binary preserves stage
+ok - repair missing binary preserves model rung
+ok - repair missing binary creates no policy transition
+pause_for_backoff: codex-binary-missing at run-review:review; kept stage and refunded through model-policy retry
+model_policy: #9901811 work hit codex-binary-missing at review; kept the rung and refunded attempt
+ok - review missing binary refunds attempt
+ok - review missing binary preserves stage
+ok - review missing binary preserves model rung
+ok - review missing binary creates no policy transition
+pause_for_backoff: codex-binary-missing at run-recut:recut; kept stage and refunded through model-policy retry
+model_policy: #9901812 work hit codex-binary-missing at recut; kept the rung and refunded attempt
+ok - recut missing binary refunds attempt
+ok - recut missing binary preserves stage
+ok - recut missing binary preserves model rung
+ok - recut missing binary creates no policy transition
+pause_for_backoff: codex-binary-missing at run-triage:triage; kept stage and refunded through model-policy retry
+model_policy: #9901813 work hit codex-binary-missing at triage; kept the rung and refunded attempt
+ok - triage missing binary refunds attempt
+ok - triage missing binary preserves stage
+ok - triage missing binary preserves model rung
+ok - triage missing binary creates no policy transition
+pause_for_backoff: codex-binary-missing at run-advisor:advisor; kept stage and refunded through model-policy retry
+advisor_record_failed_attempt: #9901802 agent binary/tool unavailable; kept advisor stage and refunded attempt
+ok - advisor missing binary refunds attempt
+ok - advisor missing binary stays at advisor stage
+ok - advisor missing binary records no semantic failure
+ok - dangling Codex link points to tested bundled binary
+ok - dangling rg link points to tested bundled binary
+ok - repaired Codex clears the shared runtime probe
+ok - supervisor inbox records each repaired binary
+ok - hand dispatcher uses shared Codex preflight
+ok - Codex dispatcher uses shared Codex preflight
+ok - missing sandbox marker keeps the codex-sandbox quarantine closed
+ok - a written sandbox marker lets the quarantine lift
+codex-missing-env.test.sh: PASS

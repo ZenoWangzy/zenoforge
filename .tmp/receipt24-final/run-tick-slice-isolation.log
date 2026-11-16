@@ -1,0 +1,2 @@
+ok - one failed slice is isolated and run-tick post-steps complete
+ok - wrong-branch checkout still refuses before the scheduler handoff

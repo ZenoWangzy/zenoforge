@@ -1,0 +1,72 @@
+ok - rereview unit is in flight
+ok - ready-to-merge unit is in flight
+ok - rereview-pending unit is in flight before a worker starts
+ok - implement-pending unit is in flight before a worker starts
+ok - merged unit is not in flight
+ok - issue without a unit is not in flight
+ok - missing ledger inside a live runtime is unknown (fail-closed)
+ok - malformed ledger is unknown (fail-closed)
+ok - host without the scheduler runtime proceeds
+ok - triage selection skips a rereview unit
+ok - triage selection skips a ready-to-merge unit
+ok - advisor selection skips a rereview-pending unit
+ok - advisor selection proceeds for an issue without a scheduler unit
+ok - triage selection proceeds past a merged unit
+ok - engine-only host (no scheduler runtime) still triages
+ok - run-triage on a rereview unit exits 0 without consuming it
+ok - run-triage names the in-flight unit
+ok - run-triage made no label edit on an in-flight issue
+ok - run-triage on a ready-to-merge unit exits 0 without consuming it
+ok - run-triage made no label edit on a ready-to-merge issue
+ok - run-triage.sh --help exits 64 with usage
+ok - run-triage.sh notanumber exits 64 with usage
+ok - run-advisor.sh --help exits 64 with usage
+ok - run-advisor.sh notanumber exits 64 with usage
+ok - run-recut.sh --help exits 64 with usage
+ok - run-recut.sh notanumber exits 64 with usage
+ok - run-release.sh --help exits 64 with usage
+ok - run-release.sh --bogus exits 64 with usage
+ok - refused stray arguments made no gh call
+ok - refused stray arguments wrote nothing under AGENT_HOME
+ok - batch claim succeeds with one busy member
+ok - batch claim keeps the free members
+ok - batch claim logs the dropped busy member
+ok - free member 201 is claimed
+ok - free member 202 is claimed
+ok - busy member 200 is NOT claimed
+ok - in-flight rereview member 204 is NOT claimed
+ok - in-flight implement member 205 is NOT claimed
+ok - batch claim logs the dropped in-flight member
+ok - all-busy batch is a no-op success, not an error
+ok - all-busy batch leaves an empty member list
+ok - batch claim survives one member held by another owner
+ok - held member leaves the batch and the rest stay
+ok - member after the held one is claimed
+ok - held member keeps its own owner
+ok - one batch-member renewal failure remains non-fatal
+ok - renewal continues through every remaining batch member
+ok - renewal failure drops only the failed member claim
+ok - one member renewal failure does not stop the batch unit
+ok - run-tick keeps checkout-integrity refusal checkout-restore-failed
+ok - run-tick keeps checkout-integrity refusal wrong-branch
+ok - run-tick keeps checkout-integrity refusal fetch-starved
+ok - run-tick keeps checkout-integrity refusal fetch-timeout
+ok - run-tick keeps checkout-integrity refusal fetch-failed
+ok - run-tick keeps checkout-integrity refusal diverged
+ok - a scheduler slice failure is outside the checkout-integrity refusal set
+ok - a slice exiting 75 does not fail the tick
+ok - defer is logged like an overrun
+ok - slice summary stays status=0 after a defer
+ok - a slice exiting 1 does not refuse the tick
+ok - later/other slice fastlane still runs
+ok - later/other slice triage still runs
+ok - later/other slice advisor still runs
+ok - later/other slice maintenance still runs
+ok - slice summary stays status=0 after an isolated failure
+ok - failing slice leaves a durable bell-visible note
+ok - tick refusal line gets an incident class
+ok - slice-failure line gets an incident class
+ok - slice incident identity includes the failed stage and status
+ok - different statuses on the same stage have different incident identities
+ok - a deferring slice line raises no incident
+all tick-refuse guards passed

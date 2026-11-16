@@ -1,0 +1,114 @@
+ok - a run list over the argv limit still reads
+ok - an old red opens no session
+ok - an old red requests no rerun
+ok - a fresh run is current
+ok - a run with no date is not current
+ok - tick 1 requests the one same-SHA rerun
+ok - tick 1 opens a rerun-requested session
+ok - tick 2 moves to bisecting after the rerun stayed red
+ok - tick 3 dispatches a midpoint Postsubmit probe
+ok - the train ref for the probe was pushed
+ok - merging is stopped while the bisect has no culprit
+ok - pending midpoint keeps the same probe in flight
+ok - pending midpoint is not dispatched again
+ok - tick 6 dispatches the next midpoint
+ok - tick 8 has selected the culprit
+To /home/gerald/.cache/zenoforge-agent-test/zenoforge-agent-test-Xis985/origin.git
+ * [new branch]      HEAD -> agent/revert-main-4102-2158b2868876
+
+main-red-bisect: revert PR for 2158b2868876 could not be opened (attempt 1/3)
+ok - failed PR creation leaves the original revert branch available
+Everything up-to-date
+ok - retry reuses the pushed revert SHA
+ok - tick 10 records an open revert PR
+ok - the revert branch was pushed
+ok - the culprit's ticket gets the bisect evidence
+ok - the evidence names the culprit commit
+ok - the evidence links the revert PR
+ok - the closed ticket is reopened
+ok - the issue ledger returns to implementation
+ok - the issue ledger resets the implement attempt budget
+ok - ordinary merges stay held while the revert PR is open
+ok - tick 10 records the merged revert
+ok - ordinary merges stay held until the revert Postsubmit is green
+ok - later green Postsubmit releases ordinary merges
+ok - no supervisor event fired on the happy path
+ok - a red after the revert is recorded unattributed
+ok - a red after the revert sends one escalation event
+ok - a red after the revert requests no rerun
+ok - a red after the revert dispatches no probe
+ok - a red after the revert opens no revert PR
+ok - a red after the revert keeps the merge lane held
+ok - a revert with no suite run sends one revert-unverified event
+ok - the revert-unverified event is never repeated
+ok - an unverified revert keeps the merge lane held
+ok - an unverified revert opens no second revert PR
+ok - an unverified revert dispatches no probe or second revert
+ok - a revert older than the read's oldest run sends no revert-unverified event
+ok - a freshly landed revert is not flagged unverified by an old session file
+ok - flaky tick 1 requests the same-SHA rerun
+ok - a red that reruns green is recorded flaky
+ok - the flaky path never creates a revert PR
+ok - the flaky path never dispatches a probe
+ok - the flaky path never comments on a ticket
+ok - an open session is closed recovered once main is green on a descendant
+ok - the recovered session names the green SHA
+ok - the recovered session records when it closed
+ok - the recovered path never dispatches a probe
+ok - a green run on an ancestor does not close the session
+ok - unanchored red requests the same-SHA rerun
+ok - unanchored red emits one supervisor event
+ok - unattributed red keeps ordinary merges held
+ok - unattributed red does not repeat its event
+main-red-bisect: midpoint dispatch failed for 1e37b820d140386ba544522fffe9cb80387d1434 (attempt 1/2)
+ok - failed midpoint dispatch is durably counted
+main-red-bisect: midpoint dispatch failed for 1e37b820d140386ba544522fffe9cb80387d1434 (attempt 2/2)
+ok - second failed midpoint dispatch consumes the bounded retry
+ok - exhausted midpoint dispatch becomes unattributed
+ok - exhausted dispatch emits one event
+ok - exhausted dispatch does not repeat its event
+ok - ownerless culprit becomes unattributed
+ok - ownerless culprit notifies the supervisor
+ok - ownerless culprit never creates a revert PR
+ok - a suites-only red opens the existing rerun session
+ok - the session records Pipeline suites as its red source
+ok - a suites-only red reruns its main run
+ok - the same-SHA suites rerun failure advances to bisecting
+ok - a suites-only red dispatches a Pipeline suites midpoint
+ok - a suites red whose same-SHA rerun passes becomes flaky
+ok - the suites flaky path does not dispatch a midpoint
+ok - a newer same-workflow green does not reopen an old red
+ok - a superseded suite red does not request another rerun
+ok - the valid PAUSE gate exits after reporting the red
+ok - the paused suites red queues a supervisor inbox event
+ok - the paused suites red is written to the supervisor inbox
+ok - repeated valid PAUSE discovery is deduplicated
+ok - paused discovery does not open a bisect session
+ok - the delegated release slice may continue under PAUSE
+ok - PAUSE prevents the release exception from starting bisect actions
+ok - PAUSE keeps the bisect session unopened in maintenance
+ok - a session with recent writes raises nothing
+ok - an idle session reaches the supervisor once a day
+ok - an idle session stays open for its probe or revert PR
+ok - a cancelled rerun is not re-requested before the retry delay
+ok - a cancelled rerun is re-requested once
+ok - the re-request is counted against the cap
+ok - a rerun cancelled again closes the session unattributed
+ok - the exhausted cap does not re-request again
+ok - the closed session reaches the supervisor
+ok - a green post-land run alone does not close a pipeline-suites session
+ok - the session's own range is re-run on the descendant
+ok - the recovery probe names the descendant
+ok - the probe is not dispatched twice inside the retry delay
+ok - a red probe keeps the session open
+ok - a green probe of the session's range closes it recovered
+ok - the recovered session names the probed descendant
+ok - a session with no recorded range stays open on a post-land green
+ok - no probe is dispatched without a recorded range
+ok - a different descendant post-land landing does not close the red session
+main-red-bisect: recovery probe dispatch failed for 29e6986769b6 (attempt 1/2)
+ok - failed probe dispatch spends only its current attempt
+ok - failed probe dispatch logs gh's first error line
+ok - failed probe dispatch reaches the supervisor inbox
+ok - failed probe dispatch writes one inbox line
+ALL PASS

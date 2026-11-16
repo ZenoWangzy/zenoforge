@@ -1,0 +1,1058 @@
+TAP version 13
+# Subtest: CLI sandbox fixture directories are removed after a fixture-backed command
+not ok 1 - CLI sandbox fixture directories are removed after a fixture-backed command
+  ---
+  duration_ms: 3129.851586
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:97:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:99:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: init refuses to proceed without --yes when there is no terminal, and writes nothing
+ok 2 - init refuses to proceed without --yes when there is no terminal, and writes nothing
+  ---
+  duration_ms: 310.659199
+  type: 'test'
+  ...
+# Subtest: init: files, modes, checkout, engine link, labels, variables and units
+not ok 3 - init: files, modes, checkout, engine link, labels, variables and units
+  ---
+  duration_ms: 1071.411902
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:111:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:113:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: the real engine scripts work through the checkout link (write guard, runtime sync, config)
+not ok 4 - the real engine scripts work through the checkout link (write guard, runtime sync, config)
+  ---
+  duration_ms: 947.219306
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:157:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:161:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: init twice is idempotent and keeps user-owned files; another repo is refused
+not ok 5 - init twice is idempotent and keeps user-owned files; another repo is refused
+  ---
+  duration_ms: 903.219705
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:174:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:176:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: checkout guards: foreign directory and a repository that tracks its own engine/
+ok 6 - checkout guards: foreign directory and a repository that tracks its own engine/
+  ---
+  duration_ms: 631.647004
+  type: 'test'
+  ...
+# Subtest: a failed clone or a read-only gh login stops init before anything is written, and init can be re-run
+not ok 7 - a failed clone or a read-only gh login stops init before anything is written, and init can be re-run
+  ---
+  duration_ms: 1030.904607
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:199:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:210:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: start/stop/status/upgrade/rollback/uninstall drive systemctl and keep state
+not ok 8 - start/stop/status/upgrade/rollback/uninstall drive systemctl and keep state
+  ---
+  duration_ms: 948.709706
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:214:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:216:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: uninstall --purge cleans ~/.zenoforge when init never wrote cli.json; plain uninstall points at --purge
+ok 9 - uninstall --purge cleans ~/.zenoforge when init never wrote cli.json; plain uninstall points at --purge
+  ---
+  duration_ms: 210.121101
+  type: 'test'
+  ...
+# Subtest: status warns when origin/main starts tracking its own engine/
+not ok 10 - status warns when origin/main starts tracking its own engine/
+  ---
+  duration_ms: 1100.883607
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:254:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:257:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: foreground backend only signals a process that is really our loop script
+ok 11 - foreground backend only signals a process that is really our loop script
+  ---
+  duration_ms: 463.370302
+  type: 'test'
+  ...
+# Subtest: purge needs --yes and only deletes a checkout zenoforge created
+not ok 12 - purge needs --yes and only deletes a checkout zenoforge created
+  ---
+  duration_ms: 1092.461007
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:300:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:302:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: dry run prints the plan, never prints the token, and changes nothing
+ok 13 - dry run prints the plan, never prints the token, and changes nothing
+  ---
+  duration_ms: 329.940202
+  type: 'test'
+  ...
+# Subtest: a host without a usable gh fails the real run cleanly and still produces a dry-run plan
+ok 14 - a host without a usable gh fails the real run cleanly and still produces a dry-run plan
+  ---
+  duration_ms: 337.059901
+  type: 'test'
+  ...
+# Subtest: re-running init with a changed setting installs a new engine version and restarts the loops
+not ok 15 - re-running init with a changed setting installs a new engine version and restarts the loops
+  ---
+  duration_ms: 1483.172908
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:334:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:336:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: dry run shows the scheduler plan for systemd, launchd and foreground before any engine dir exists
+ok 16 - dry run shows the scheduler plan for systemd, launchd and foreground before any engine dir exists
+  ---
+  duration_ms: 1310.340006
+  type: 'test'
+  ...
+# Subtest: start after init --no-scheduler is the first enable: it needs the confirmation and flips the pipeline on
+not ok 17 - start after init --no-scheduler is the first enable: it needs the confirmation and flips the pipeline on
+  ---
+  duration_ms: 1062.157305
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:370:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:372:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: a real run-tick completes through the linked engine (write guard, timer check, kill switch)
+not ok 18 - a real run-tick completes through the linked engine (write guard, timer check, kill switch)
+  ---
+  duration_ms: 1002.000405
+  type: 'test'
+  location: '/home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:384:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, lstat '/home/gerald/.zenoforge/clones/refactor-24/node_modules/@typesafe-ai/sdk'"
+  code: 'ENOENT'
+  stack: |-
+    cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+    Object.cpSync (node:fs:3132:3)
+    Actions.copyTree (file:///home/gerald/.zenoforge/clones/refactor-24/cli/util.mjs:70:26)
+    installEngine (file:///home/gerald/.zenoforge/clones/refactor-24/cli/engine.mjs:48:11)
+    Module.init (file:///home/gerald/.zenoforge/clones/refactor-24/cli/commands.mjs:282:16)
+    async TestContext.<anonymous> (file:///home/gerald/.zenoforge/clones/refactor-24/cli/cli.test.mjs:388:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: version parsing
+ok 19 - version parsing
+  ---
+  duration_ms: 9.8118
+  type: 'test'
+  ...
+# Subtest: gh scopes and GNU date detection
+ok 20 - gh scopes and GNU date detection
+  ---
+  duration_ms: 1.1108
+  type: 'test'
+  ...
+# Subtest: healthy Linux host passes with no hard failure
+ok 21 - healthy Linux host passes with no hard failure
+  ---
+  duration_ms: 4.6381
+  type: 'test'
+  ...
+# Subtest: each missing tool is a hard failure with its own fix command
+ok 22 - each missing tool is a hard failure with its own fix command
+  ---
+  duration_ms: 1.958
+  type: 'test'
+  ...
+# Subtest: old bash, non-GNU date, unauthenticated gh and missing repo scope
+ok 23 - old bash, non-GNU date, unauthenticated gh and missing repo scope
+  ---
+  duration_ms: 1.8194
+  type: 'test'
+  ...
+# Subtest: fine-grained tokens without a scopes line are a warning, not a failure
+ok 24 - fine-grained tokens without a scopes line are a warning, not a failure
+  ---
+  duration_ms: 0.6456
+  type: 'test'
+  ...
+# Subtest: macOS: brew commands for date and bash, launchd instead of systemd
+ok 25 - macOS: brew commands for date and bash, launchd instead of systemd
+  ---
+  duration_ms: 1.4487
+  type: 'test'
+  ...
+# Subtest: no systemd user bus is a warning with a fallback, and formatting shows PASS/FAIL/WARN
+ok 26 - no systemd user bus is a warning with a fallback, and formatting shows PASS/FAIL/WARN
+  ---
+  duration_ms: 1.0897
+  type: 'test'
+  ...
+# Subtest: native Windows is a single hard failure that points at WSL2
+ok 27 - native Windows is a single hard failure that points at WSL2
+  ---
+  duration_ms: 0.8675
+  type: 'test'
+  ...
+# Subtest: install copies, applies the overlay, restores shim links and flips current
+ok 28 - install copies, applies the overlay, restores shim links and flips current
+  ---
+  duration_ms: 27.1745
+  type: 'test'
+  ...
+# Subtest: install stages declared runtime dependencies beside the copied engine
+ok 29 - install stages declared runtime dependencies beside the copied engine
+  ---
+  duration_ms: 64.9436
+  type: 'test'
+  ...
+# Subtest: same settings reuse the version dir; changed settings get a +N dir
+ok 30 - same settings reuse the version dir; changed settings get a +N dir
+  ---
+  duration_ms: 31.1215
+  type: 'test'
+  ...
+# Subtest: flip, rollback and prune keep exactly current and previous
+ok 31 - flip, rollback and prune keep exactly current and previous
+  ---
+  duration_ms: 42.262401
+  type: 'test'
+  ...
+# Subtest: rollback with no previous version reports it
+ok 32 - rollback with no previous version reports it
+  ---
+  duration_ms: 13.3484
+  type: 'test'
+  ...
+# Subtest: dry run touches nothing
+ok 33 - dry run touches nothing
+  ---
+  duration_ms: 5.0243
+  type: 'test'
+  ...
+# Subtest: every symlink in the packaged engine is one the installer restores (npm pack drops symlinks)
+ok 34 - every symlink in the packaged engine is one the installer restores (npm pack drops symlinks)
+  ---
+  duration_ms: 37.2919
+  type: 'test'
+  ...
+# Subtest: env file: repo, worktree root, token only when given
+ok 35 - env file: repo, worktree root, token only when given
+  ---
+  duration_ms: 3.3172
+  type: 'test'
+  ...
+# Subtest: capacity env and recipients stay safe by default
+ok 36 - capacity env and recipients stay safe by default
+  ---
+  duration_ms: 2.0276
+  type: 'test'
+  ...
+# Subtest: config template: caps, kill switches, and family-independent review candidates
+ok 37 - config template: caps, kill switches, and family-independent review candidates
+  ---
+  duration_ms: 1.926
+  type: 'test'
+  ...
+# Subtest: required checks replace the originating project names
+ok 38 - required checks replace the originating project names
+  ---
+  duration_ms: 1.0128
+  type: 'test'
+  ...
+# Subtest: label set is read from the engine and covers the extra labels
+ok 39 - label set is read from the engine and covers the extra labels
+  ---
+  duration_ms: 2.696
+  type: 'test'
+  ...
+# Subtest: tilde maps the home prefix to %h only on a path boundary
+ok 40 - tilde maps the home prefix to %h only on a path boundary
+  ---
+  duration_ms: 0.5174
+  type: 'test'
+  ...
+# Subtest: service unit: paths, PATH, env file, no inherited proxy
+ok 41 - service unit: paths, PATH, env file, no inherited proxy
+  ---
+  duration_ms: 2.6816
+  type: 'test'
+  ...
+# Subtest: agent unit keeps its single EnvironmentFile after the commented example is dropped
+ok 42 - agent unit keeps its single EnvironmentFile after the commented example is dropped
+  ---
+  duration_ms: 3.5251
+  type: 'test'
+  ...
+# Subtest: timer list drops entries the engine does not ship, so run-tick never alerts on them
+ok 43 - timer list drops entries the engine does not ship, so run-tick never alerts on them
+  ---
+  duration_ms: 1.8249
+  type: 'test'
+  ...
+# Subtest: loop services: sync before the scheduler, bell after it, both restart
+ok 44 - loop services: sync before the scheduler, bell after it, both restart
+  ---
+  duration_ms: 1.9416
+  type: 'test'
+  ...
+# Subtest: buildPath dedups, keeps tool dirs first, abbreviates home
+ok 45 - buildPath dedups, keeps tool dirs first, abbreviates home
+  ---
+  duration_ms: 0.5761
+  type: 'test'
+  ...
+# Subtest: launchd plist from the shipped agent service and timer
+ok 46 - launchd plist from the shipped agent service and timer
+  ---
+  duration_ms: 2.7341
+  type: 'test'
+  ...
+# Subtest: launchd plist for a resident loop: KeepAlive, pre-step, no interval
+ok 47 - launchd plist for a resident loop: KeepAlive, pre-step, no interval
+  ---
+  duration_ms: 1.0456
+  type: 'test'
+  ...
+# Subtest: launchd daily calendar converts UTC with the host offset; durations parse
+ok 48 - launchd daily calendar converts UTC with the host offset; durations parse
+  ---
+  duration_ms: 1.4991
+  type: 'test'
+  ...
+# Subtest: fixture keeps jq usable after HOME isolation
+ok 49 - fixture keeps jq usable after HOME isolation
+  ---
+  duration_ms: 12087.719867
+  type: 'test'
+  ...
+# Subtest: valid zero usage is data
+ok 50 - valid zero usage is data
+  ---
+  duration_ms: 10925.798334
+  type: 'test'
+  ...
+# Subtest: a successful semantic quota mention is not an outage
+ok 51 - a successful semantic quota mention is not an outage
+  ---
+  duration_ms: 10943.872292
+  type: 'test'
+  ...
+# Subtest: structured rate limit
+ok 52 - structured rate limit
+  ---
+  duration_ms: 13764.901071
+  type: 'test'
+  ...
+# Subtest: CLI usage refusal
+ok 53 - CLI usage refusal
+  ---
+  duration_ms: 11667.024637
+  type: 'test'
+  ...
+# Subtest: provider 503
+ok 54 - provider 503
+  ---
+  duration_ms: 12141.356604
+  type: 'test'
+  ...
+# Subtest: timeout status
+ok 55 - timeout status
+  ---
+  duration_ms: 10764.371297
+  type: 'test'
+  ...
+# Subtest: configuration error is not capacity
+ok 56 - configuration error is not capacity
+  ---
+  duration_ms: 8782.996656
+  type: 'test'
+  ...
+# Subtest: structured configuration error outranks incidental quota text
+ok 57 - structured configuration error outranks incidental quota text
+  ---
+  duration_ms: 5733.247938
+  type: 'test'
+  ...
+# Subtest: unauthorized is not capacity
+ok 58 - unauthorized is not capacity
+  ---
+  duration_ms: 8291.928553
+  type: 'test'
+  ...
+# Subtest: string error flag cannot become a success
+ok 59 - string error flag cannot become a success
+  ---
+  duration_ms: 9600.169869
+  type: 'test'
+  ...
+# Subtest: zero as entire response is invalid
+ok 60 - zero as entire response is invalid
+  ---
+  duration_ms: 12031.814334
+  type: 'test'
+  ...
+# Subtest: null as entire response is invalid
+ok 61 - null as entire response is invalid
+  ---
+  duration_ms: 10070.348686
+  type: 'test'
+  ...
+# Subtest: empty response is not success
+ok 62 - empty response is not success
+  ---
+  duration_ms: 10000.39671
+  type: 'test'
+  ...
+# Subtest: shared admission enforces cap at 0 attempts without caller guards
+ok 63 - shared admission enforces cap at 0 attempts without caller guards
+  ---
+  duration_ms: 10706.271323
+  type: 'test'
+  ...
+# Subtest: shared admission enforces cap at 3 attempts without caller guards
+ok 64 - shared admission enforces cap at 3 attempts without caller guards
+  ---
+  duration_ms: 9433.235621
+  type: 'test'
+  ...
+# Subtest: shared admission enforces cap at 4 attempts without caller guards
+ok 65 - shared admission enforces cap at 4 attempts without caller guards
+  ---
+  duration_ms: 10575.117998
+  type: 'test'
+  ...
+# Subtest: shared admission enforces cap at 9 attempts without caller guards
+ok 66 - shared admission enforces cap at 9 attempts without caller guards
+  ---
+  duration_ms: 9145.63146
+  type: 'test'
+  ...
+# Subtest: failed conclusion cannot move the issue or clear the previous ruling
+ok 67 - failed conclusion cannot move the issue or clear the previous ruling
+  ---
+  duration_ms: 7752.954295
+  type: 'test'
+  ...
+# Subtest: real conclusion stops at state failure even inside a shell conditional
+ok 68 - real conclusion stops at state failure even inside a shell conditional
+  ---
+  duration_ms: 9934.819896
+  type: 'test'
+  ...
+# Subtest: real conclusion stops at edit failure even inside a shell conditional
+ok 69 - real conclusion stops at edit failure even inside a shell conditional
+  ---
+  duration_ms: 10509.479247
+  type: 'test'
+  ...
+# Subtest: real conclusion stops at comment failure even inside a shell conditional
+ok 70 - real conclusion stops at comment failure even inside a shell conditional
+  ---
+  duration_ms: 10960.389391
+  type: 'test'
+  ...
+# Subtest: invalid attempt state stands aside: admission neither concludes nor refuses, the caller guard owns the failure
+ok 71 - invalid attempt state stands aside: admission neither concludes nor refuses, the caller guard owns the failure
+  ---
+  duration_ms: 9635.700505
+  type: 'test'
+  ...
+# Subtest: CDP unreachable records an environment fault and charges no attempt
+ok 72 - CDP unreachable records an environment fault and charges no attempt
+  ---
+  duration_ms: 9720.591949
+  type: 'test'
+  ...
+# Subtest: an in-flight job still polling exits cleanly without charging an attempt
+ok 73 - an in-flight job still polling exits cleanly without charging an attempt
+  ---
+  duration_ms: 11779.63144
+  type: 'test'
+  ...
+# Subtest: a job past its own timeout ceiling is treated as a dead session, not a running one
+ok 74 - a job past its own timeout ceiling is treated as a dead session, not a running one
+  ---
+  duration_ms: 10321.619099
+  type: 'test'
+  ...
+# Subtest: a finished job whose call itself failed is an environment fault, not a charged attempt
+ok 75 - a finished job whose call itself failed is an environment fault, not a charged attempt
+  ---
+  duration_ms: 9895.2673
+  type: 'test'
+  ...
+# Subtest: a finished job with a malformed answer charges an attempt via the shared admission path
+ok 76 - a finished job with a malformed answer charges an attempt via the shared admission path
+  ---
+  duration_ms: 10979.949785
+  type: 'test'
+  ...
+# Subtest: a finished job with a valid answer produces RESULT without charging an attempt
+ok 77 - a finished job with a valid answer produces RESULT without charging an attempt
+  ---
+  duration_ms: 15255.949516
+  type: 'test'
+  ...
+# Subtest: resuming an existing pending verdict skips dispatch entirely and reuses the cached result
+ok 78 - resuming an existing pending verdict skips dispatch entirely and reuses the cached result
+  ---
+  duration_ms: 13381.49172
+  type: 'test'
+  ...
+# Subtest: no existing job dispatches a fresh one and exits, leaving the ticket to poll next tick
+ok 79 - no existing job dispatches a fresh one and exits, leaving the ticket to poll next tick
+  ---
+  duration_ms: 11517.123716
+  type: 'test'
+  ...
+# Subtest: the legacy triage/recut failure outlet cannot bypass shared admission
+ok 80 - the legacy triage/recut failure outlet cannot bypass shared admission
+  ---
+  duration_ms: 10894.44991
+  type: 'test'
+  ...
+# Subtest: advisor schema defines the plan contract and exempts terminal close verdicts
+ok 81 - advisor schema defines the plan contract and exempts terminal close verdicts
+  ---
+  duration_ms: 10.5542
+  type: 'test'
+  ...
+# Subtest: a missing or malformed non-close plan gets one re-ask, then becomes an advisor failure
+ok 82 - a missing or malformed non-close plan gets one re-ask, then becomes an advisor failure
+  ---
+  duration_ms: 0.6368
+  type: 'test'
+  ...
+# Subtest: the dispatched worker brief carries the plan object verbatim and replaces an older plan
+ok 83 - the dispatched worker brief carries the plan object verbatim and replaces an older plan
+  ---
+  duration_ms: 3.9436
+  type: 'test'
+  ...
+# Subtest: a 30-day pacing window at 100% does not hold Codex
+    # Subtest: does not write a hold marker
+    ok 1 - does not write a hold marker
+      ---
+      duration_ms: 1.4112
+      type: 'test'
+      ...
+    # Subtest: logs once that credits continue
+    ok 2 - logs once that credits continue
+      ---
+      duration_ms: 0.8877
+      type: 'test'
+      ...
+    1..2
+ok 84 - a 30-day pacing window at 100% does not hold Codex
+  ---
+  duration_ms: 1343.025492
+  type: 'test'
+  ...
+# Subtest: a marker from the old pacing-window rule is released on the next run
+    # Subtest: removes the owned marker
+    ok 1 - removes the owned marker
+      ---
+      duration_ms: 0.8585
+      type: 'test'
+      ...
+    # Subtest: logs the release once
+    ok 2 - logs the release once
+      ---
+      duration_ms: 0.508
+      type: 'test'
+      ...
+    1..2
+ok 85 - a marker from the old pacing-window rule is released on the next run
+  ---
+  duration_ms: 1389.141985
+  type: 'test'
+  ...
+# Subtest: a reported 5-hour window at its cap still holds Codex
+    # Subtest: writes the 5-hour reset marker
+    ok 1 - writes the 5-hour reset marker
+      ---
+      duration_ms: 0.7477
+      type: 'test'
+      ...
+    # Subtest: logs the hold
+    ok 2 - logs the hold
+      ---
+      duration_ms: 0.8791
+      type: 'test'
+      ...
+    1..2
+ok 86 - a reported 5-hour window at its cap still holds Codex
+  ---
+  duration_ms: 1271.955086
+  type: 'test'
+  ...
+# ok - quota scripts end on a hung tab, close it, and open a missing one
+# cdp-page-registry.test.mjs: PASS
+# Subtest: engine/cdp-page-registry.test.mjs
+ok 9 - engine/cdp-page-registry.test.mjs
+  ---
+  duration_ms: 89.706399
+  type: 'test'
+  ...
+# Subtest: a new journal entry must carry a when later than everything on main
+ok 88 - a new journal entry must carry a when later than everything on main
+  ---
+  duration_ms: 4.9608
+  type: 'test'
+  ...
+# Subtest: an open non-draft PR with a lower-numbered migration blocks the merge
+ok 89 - an open non-draft PR with a lower-numbered migration blocks the merge
+  ---
+  duration_ms: 17.212499
+  type: 'test'
+  ...
+# Subtest: merge gate reports both the stale when and the blocking PRs
+ok 90 - merge gate reports both the stale when and the blocking PRs
+  ---
+  duration_ms: 4.351
+  type: 'test'
+  ...
+# Subtest: merge gate passes an in-order PR and skips PRs without migrations
+ok 91 - merge gate passes an in-order PR and skips PRs without migrations
+  ---
+  duration_ms: 2.7847
+  type: 'test'
+  ...
+# Subtest: merge gate recovers truncated files and detects a later-page lower migration
+ok 92 - merge gate recovers truncated files and detects a later-page lower migration
+  ---
+  duration_ms: 77.834999
+  type: 'test'
+  ...
+# Subtest: merge gate refuses incomplete pagination for its own PR
+ok 93 - merge gate refuses incomplete pagination for its own PR
+  ---
+  duration_ms: 1.5372
+  type: 'test'
+  ...
+# Subtest: merge gate refuses to guess from an incomplete open-PR file list
+ok 94 - merge gate refuses to guess from an incomplete open-PR file list
+  ---
+  duration_ms: 1.2361
+  type: 'test'
+  ...
+# Subtest: CI check compares the working-tree journal with the base ref
+ok 95 - CI check compares the working-tree journal with the base ref
+  ---
+  duration_ms: 1.4462
+  type: 'test'
+  ...
+# Subtest: config override wins over pack and missing config fails closed or delegates
+ok 96 - config override wins over pack and missing config fails closed or delegates
+  ---
+  duration_ms: 539.153194
+  type: 'test'
+  ...
+# Subtest: shared receipt contract binds branch, failed check identity and tested HEAD
+ok 97 - shared receipt contract binds branch, failed check identity and tested HEAD
+  ---
+  duration_ms: 9.2859
+  type: 'test'
+  ...
+# Subtest: hotfix receipt requires positive original PR number
+ok 98 - hotfix receipt requires positive original PR number
+  ---
+  duration_ms: 1.1106
+  type: 'test'
+  ...
+# Subtest: frozen \#3536 shard evidence cannot turn one passing unit into a shard pass
+ok 99 - frozen \#3536 shard evidence cannot turn one passing unit into a shard pass
+  ---
+  duration_ms: 0.9228
+  type: 'test'
+  ...
+# Subtest: locked receipt append preserves concurrent owners; malformed JSON stays refused
+ok 100 - locked receipt append preserves concurrent owners; malformed JSON stays refused
+  ---
+  duration_ms: 873.77699
+  type: 'test'
+  ...
+# Subtest: the mirrored runner creates a writable Git index before tests that inspect tracked modes
+ok 101 - the mirrored runner creates a writable Git index before tests that inspect tracked modes
+  ---
+  duration_ms: 3.2228
+  type: 'test'
+  ...
+# Subtest: selects changed pipeline script tests, including non-sibling test owners
+ok 102 - selects changed pipeline script tests, including non-sibling test owners
+  ---
+  duration_ms: 26.7796
+  type: 'test'
+  ...
+# Subtest: selects the GitNexus wrapper test for its installer
+ok 103 - selects the GitNexus wrapper test for its installer
+  ---
+  duration_ms: 117.167199
+  type: 'test'
+  ...
+# Subtest: selects policy tests for delivery preflight changes
+ok 104 - selects policy tests for delivery preflight changes
+  ---
+  duration_ms: 10.1154
+  type: 'test'
+  ...
+# Subtest: runs available incident tests when mapped suite did not exist at target revision
+ok 105 - runs available incident tests when mapped suite did not exist at target revision
+  ---
+  duration_ms: 11.2164
+  type: 'test'
+  ...
+# Subtest: fails closed when changed pipeline script has no focused test
+ok 106 - fails closed when changed pipeline script has no focused test
+  ---
+  duration_ms: 12.246
+  type: 'test'
+  ...
+# required gates not green:
+#   false-green-guards: failure
+# required gates not green:
+#   example-pr-gate: skipped although the run condition says it should have run
+#   pr-touched-packages: skipped although the run condition says it should have run
+#   pr-repo-path-regression: skipped although the run condition says it should have run
+# required gates not green:
+#   pr-touched-packages: cancelled
+# required gates not green:
+#   pr-touched-packages: no result reported (fail closed)
+# required gates not green:
+#   contract: skipped although the run condition says it should have run
+# --expected <true|false> is required: was the heavy-gate run condition true for this event?
+# --expected <true|false> is required: was the heavy-gate run condition true for this event?
+# unrecognized argument: novalue
+# Subtest: all gates green passes regardless of the expected flag
+ok 107 - all gates green passes regardless of the expected flag
+  ---
+  duration_ms: 161.457599
+  type: 'test'
+  ...
+# Subtest: a failed always-required gate fails the aggregate
+ok 108 - a failed always-required gate fails the aggregate
+  ---
+  duration_ms: 72.476099
+  type: 'test'
+  ...
+# Subtest: the \#4484 class: a conditional gate skipped while the run condition held fails loudly
+ok 109 - the \#4484 class: a conditional gate skipped while the run condition held fails loudly
+  ---
+  duration_ms: 93.5379
+  type: 'test'
+  ...
+# Subtest: conditional gates may legitimately skip when the run condition was false
+ok 110 - conditional gates may legitimately skip when the run condition was false
+  ---
+  duration_ms: 92.969399
+  type: 'test'
+  ...
+# Subtest: a failed conditional gate never passes, even when others succeeded
+ok 111 - a failed conditional gate never passes, even when others succeeded
+  ---
+  duration_ms: 51.332
+  type: 'test'
+  ...
+# Subtest: a gate with no reported result fails closed
+ok 112 - a gate with no reported result fails closed
+  ---
+  duration_ms: 83.729399
+  type: 'test'
+  ...
+# Subtest: the contract aggregate shape: one conditional gate, no always list
+ok 113 - the contract aggregate shape: one conditional gate, no always list
+  ---
+  duration_ms: 218.451199
+  type: 'test'
+  ...
+# Subtest: bad argv exits 2 without reading as a verdict
+ok 114 - bad argv exits 2 without reading as a verdict
+  ---
+  duration_ms: 222.874598
+  type: 'test'
+  ...
+# Subtest: closed and merged PRs cancel running and queued CI only; main evidence and open PRs survive
+ok 115 - closed and merged PRs cancel running and queued CI only; main evidence and open PRs survive
+  ---
+  duration_ms: 2632.385583
+  type: 'test'
+  ...
+# Subtest: missing run associations use PRs with matching repository and branch
+ok 116 - missing run associations use PRs with matching repository and branch
+  ---
+  duration_ms: 2206.692585
+  type: 'test'
+  ...
+# Subtest: unmerged closed PR with missing run associations still releases its runner
+ok 117 - unmerged closed PR with missing run associations still releases its runner
+  ---
+  duration_ms: 2419.624685
+  type: 'test'
+  ...
+# Subtest: dry-run skips writes; invalid snapshots, API reads, and cancellation errors fail
+ok 118 - dry-run skips writes; invalid snapshots, API reads, and cancellation errors fail
+  ---
+  duration_ms: 16665.901506
+  type: 'test'
+  ...
+# Subtest: run cancellation fails closed when audit append fails
+ok 119 - run cancellation fails closed when audit append fails
+  ---
+  duration_ms: 2483.806446
+  type: 'test'
+  ...
+# Subtest: every repository run cancellation uses the audited helper
+ok 120 - every repository run cancellation uses the audited helper
+  ---
+  duration_ms: 334.890003
+  type: 'test'
+  ...
+# Subtest: cancellation source scan ignores comment-only examples
+ok 121 - cancellation source scan ignores comment-only examples
+  ---
+  duration_ms: 3.0111
+  type: 'test'
+  ...
+# Subtest: counts paired flips even with unchanged totals; regressions print first
+ok 122 - counts paired flips even with unchanged totals; regressions print first
+  ---
+  duration_ms: 4.6543
+  type: 'test'
+  ...
+# Subtest: missing cases and repeats are unpaired, never an improvement
+ok 123 - missing cases and repeats are unpaired, never an improvement
+  ---
+  duration_ms: 2.9513
+  type: 'test'
+  ...
+# Subtest: partial labels compare only the shared cases and say which ones were compared
+ok 124 - partial labels compare only the shared cases and say which ones were compared
+  ---
+  duration_ms: 1.8808
+  type: 'test'
+  ...
+# Subtest: supervisor comparison reports accuracy by action and the constant-requeue reference
+ok 125 - supervisor comparison reports accuracy by action and the constant-requeue reference
+  ---
+  duration_ms: 1.8342
+  type: 'test'
+  ...
+# Subtest: repair comparison counts discordance, excludes skips and preserves unknown usage
+ok 126 - repair comparison counts discordance, excludes skips and preserves unknown usage
+  ---
+  duration_ms: 2.7187
+  type: 'test'
+  ...
+# Subtest: case schema accepts a complete frozen case and rejects memory or bad SHA
+ok 127 - case schema accepts a complete frozen case and rejects memory or bad SHA
+  ---
+  duration_ms: 3.6766
+  type: 'test'
+  ...
+# Subtest: classifies missing-doc when the first failing step had no doc at base
+ok 128 - classifies missing-doc when the first failing step had no doc at base
+  ---
+  duration_ms: 0.6481
+  type: 'test'
+  ...
+# Subtest: classifies missing-guard when a doc existed but no guard would have caught the step
+ok 129 - classifies missing-guard when a doc existed but no guard would have caught the step
+  ---
+  duration_ms: 0.4004
+  type: 'test'
+  ...
+# Subtest: classifies agent-error when doc and guard were both available
+ok 130 - classifies agent-error when doc and guard were both available
+  ---
+  duration_ms: 1.6341
+  type: 'test'
+  ...
+# Subtest: first divergence is the earliest failing step, not a later gap
+ok 131 - first divergence is the earliest failing step, not a later gap
+  ---
+  duration_ms: 0.4974
+  type: 'test'
+  ...
+# Subtest: passing run has no class, and a failed run with no failing step is agent-error with no divergence
+ok 132 - passing run has no class, and a failed run with no failing step is agent-error with no divergence
+  ---
+  duration_ms: 1.1915
+  type: 'test'
+  ...
+# Subtest: non-boolean step facts are rejected instead of guessed
+ok 133 - non-boolean step facts are rejected instead of guessed
+  ---
+  duration_ms: 1.1046
+  type: 'test'
+  ...
+# Subtest: triage compares routing fields and treats package order as a set
+ok 134 - triage compares routing fields and treats package order as a set
+  ---
+  duration_ms: 4.9199
+  type: 'test'
+  ...
+# Subtest: triage accepts equivalent wording for the same required external target
+ok 135 - triage accepts equivalent wording for the same required external target
+  ---
+  duration_ms: 1.1275
+  type: 'test'
+  ...
+# Subtest: advisor requires every decision fact, allows synonyms, rejects negated claims
+ok 136 - advisor requires every decision fact, allows synonyms, rejects negated claims
+  ---
+  duration_ms: 19.4814
+  type: 'test'
+  ...
+# Subtest: review needs an explicit verdict and the known defect file for rejection
+ok 137 - review needs an explicit verdict and the known defect file for rejection
+  ---
+  duration_ms: 3.6093
+  type: 'test'
+  ...
+# Subtest: supervisor arbitration maps the six actions and rejects unsafe approval
+ok 138 - supervisor arbitration maps the six actions and rejects unsafe approval
+  ---
+  duration_ms: 3.0224
+  type: 'test'
+  ...
+# Subtest: hidden test success cannot pass on zero checks or infrastructure failure
+ok 139 - hidden test success cannot pass on zero checks or infrastructure failure
+  ---
+  duration_ms: 0.8145
+  type: 'test'
+  ...
+# Subtest: an unreproducible optimization premise closes the ticket without implementing it
+ok 140 - an unreproducible optimization premise closes the ticket without implementing it
+  ---
+  duration_ms: 1.0975
+  type: 'test'
+  ...
+# Subtest: a reproducible optimization premise must be implemented, not refused
+ok 141 - a reproducible optimization premise must be implemented, not refused
+  ---
+  duration_ms: 0.7036
+  type: 'test'
+  ...
+# Subtest: the current pipeline schema rejects malformed routing output
+ok 142 - the current pipeline schema rejects malformed routing output
+  ---
+  duration_ms: 15.0947
+  type: 'test'
+  ...
+# Subtest: stage output validation reads a target config schema override
+ok 143 - stage output validation reads a target config schema override
+  ---
+  duration_ms: 121.801901
+  type: 'test'
+  ...
