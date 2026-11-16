@@ -36,7 +36,7 @@ cleanup() {
   [[ "$LOCK_TEST_LAUNCHER_PID" =~ ^[1-9][0-9]*$ ]] && kill "$LOCK_TEST_LAUNCHER_PID" 2>/dev/null || :
   [[ "$LOCK_TEST_LAUNCHER_PID" =~ ^[1-9][0-9]*$ ]] && wait "$LOCK_TEST_LAUNCHER_PID" 2>/dev/null || :
 }
-trap cleanup EXIT
+trap 'cleanup; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
 
 assert_no_lock_fd() {
   local pid="$1" link target
