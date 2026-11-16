@@ -16,8 +16,16 @@ STUB
 commit() { echo "$1" > "$tmp/work/f"; g -C "$tmp/work" add -A; g -C "$tmp/work" commit -qm "$1"; g -C "$tmp/work" push -q origin main; g -C "$tmp/work" rev-parse HEAD; }
 c1=$(commit one)
 g clone -q "$tmp/origin.git" "$tmp/clone"
+git init -q --bare "$tmp/product-origin.git"
+g -C "$tmp/product-origin.git" symbolic-ref HEAD refs/heads/main
+git init -q "$tmp/agent/checkout"; g -C "$tmp/agent/checkout" checkout -q -b main
+g -C "$tmp/agent/checkout" remote add origin "$tmp/product-origin.git"
 mkdir -p "$tmp/agent/checkout/.zenoforge/build"
 printf '#!/usr/bin/env bash\necho converge >> "$PIN_CALLS"\n' > "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"; chmod +x "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"
+g -C "$tmp/agent/checkout" add -A; g -C "$tmp/agent/checkout" commit -qm baseline
+g -C "$tmp/agent/checkout" push -q -u origin main; g -C "$tmp/agent/checkout" fetch -q origin main
+g clone -q "$tmp/product-origin.git" "$tmp/product-writer"
+product_commit() { echo "$1" > "$tmp/product-writer/product-state"; g -C "$tmp/product-writer" add -A; g -C "$tmp/product-writer" commit -qm "$1"; g -C "$tmp/product-writer" push -q origin main; g -C "$tmp/product-writer" rev-parse HEAD; }
 
 export ZF_AUTO_PIN_HOME=$tmp/home AGENT_HOME=$tmp/agent ZF_AUTO_PIN_CLONE=$tmp/clone ZF_AUTO_PIN_IDLE_SECS=0 ZF_AUTO_PIN_RETRY_SECS=0.2 ZF_AUTO_PIN_RATE_SECS=0.1
 export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc
@@ -113,6 +121,30 @@ auto_pin_pass > /dev/null
 [[ $(last) == "$c7" ]] || fail 'VectA move retry did not pin the same commit'
 [[ $(grep -Fc "$c7" "$PIN_CALLS") == 2 ]] || fail "VectA move calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 
+# A product origin/main move retries this main commit once, even when the checked-out product HEAD stays put.
+: > "$PIN_CALLS"; c_product=$(commit product-main-wakeup); echo 1 > "$PIN_RC"
+product_head_before=$(g -C "$tmp/agent/checkout" rev-parse origin/main)
+vecta_head_before=$(g -C "$tmp/agent/checkout" rev-parse HEAD)
+auto_pin_pass > "$tmp/out" & pass=$!
+wait_for_pin_calls "$c_product" 1 || fail 'product-main case did not start its failed pin'
+product_head_after=$(product_commit product-only-fix)
+[[ $(g -C "$tmp/agent/checkout" rev-parse HEAD) == "$vecta_head_before" ]] || fail 'product publisher moved the checked-out VectA HEAD'
+wait_for_pass_exit "$pass" || fail 'product origin/main move did not return to retry the same commit'
+wait "$pass" || fail 'product-main retry signal returned non-zero'
+grep -Fq "RETRY-PRODUCT-MAIN from=$product_head_before to=$product_head_after commit=$c_product" "$tmp/out" || fail 'product retry log did not name both heads'
+[[ $(last) == "$c7" ]] || fail 'state moved before the product-main retry pinned'
+# The same product head does not wake another retry; engine main still releases the wait as before.
+auto_pin_pass > "$tmp/out" & pass=$!
+wait_for_pin_calls "$c_product" 2 || fail 'product-main retry did not run exactly once'
+sleep 0.5
+kill -0 "$pass" 2>/dev/null || fail 'a refusal at the same product head retried again'
+[[ $(grep -Fc "$c_product" "$PIN_CALLS") == 2 ]] || fail 'unchanged product head caused another retry'
+c_product_next=$(commit after-product-wakeup)
+wait "$pass" || fail 'same-product-head wait did not end after engine main advanced'
+[[ $(last) == "$c_product" ]] || fail 'product-wakeup failure was not skipped when engine main advanced'
+echo 0 > "$PIN_RC"; auto_pin_pass > /dev/null
+[[ $(last) == "$c_product_next" ]] || fail 'engine main advance after product refusal did not pin'
+
 # A rate-limited pin retries the same commit after a backoff, at most 3 times, then waits; a non-rate-limit failure waits at once.
 : > "$PIN_CALLS"; c12=$(commit rate-limited); echo 1 > "$PIN_RC"; : > "$PIN_RC.rate"; before=$(last)
 for _ in 1 2 3; do auto_pin_pass > "$tmp/out"; grep -q RATE-LIMIT-RETRY "$tmp/out" || fail 'rate-limited pin did not log a retry'; done
@@ -137,13 +169,15 @@ wait "$pass" || fail 'plain-failure wait did not end after main advanced'
 echo 0 > "$PIN_RC"; auto_pin_pass > /dev/null
 [[ $(last) == "$c15" ]] || fail "main advance after plain failure did not pin: $(last)"
 
-# With no VectA head movement, a refusal waits and is not retried.
+# With no VectA checkout or product origin/main movement, a refusal waits and is not retried.
 : > "$PIN_CALLS"; c8=$(commit vecta-stays-put); echo 1 > "$PIN_RC"
+product_unchanged=$(g -C "$tmp/agent/checkout" rev-parse origin/main)
 auto_pin_pass > "$tmp/out" & pass=$!
 wait_for_pin_calls "$c8" 1 || fail 'unchanged-head case did not start its failed pin'
 sleep 0.5
 kill -0 "$pass" 2>/dev/null || fail 'a refusal with no VectA head move ended the wait'
 [[ $(grep -Fc "$c8" "$PIN_CALLS") == 1 ]] || fail 'a refusal with no VectA head move retried'
+[[ $(g -C "$tmp/agent/checkout" rev-parse origin/main) == "$product_unchanged" ]] || fail 'product origin/main moved in the unchanged-head case'
 c9=$(commit advance-main-after-vecta-wait)
 wait "$pass" || fail 'unchanged-head wait did not end after main advanced'
 [[ $(last) == "$c8" ]] || fail 'unchanged-head failure was not skipped when main advanced'

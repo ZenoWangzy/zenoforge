@@ -42,7 +42,7 @@ merge_override_pin() { # log -> 0 merged, 1 leave for head
 
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
-  local last next merged log rc vecta_failed_head vecta_head
+  local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head
   git -C "$C" fetch -q origin main || { sleep "$idle"; return 0; }
   last=$(cat "$state")
   next=$(git -C "$C" rev-list -1 --first-parent "$last..origin/main")
@@ -60,6 +60,7 @@ auto_pin_pass() {
     echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
   else
     vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
+    product_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)
     echo "$(date -u +%H:%M:%S) PIN-FAILED ${next:0:12} log=$log"; grep -E 'pin-vecta:|refus|add this row' "$log" | tail -4 | cut -c1-200
     # A rate limit (GraphQL or REST, primary or secondary) clears with time, not with a new main commit: pin this commit again after a backoff, at most 3 times.
     if grep -qi 'rate limit' "$log"; then
@@ -80,6 +81,15 @@ auto_pin_pass() {
       if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
         && grep -Eq "$next|sha256:" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" 2>/dev/null; then
         : > "$log.row-retried"; return 0
+      fi
+      # A product origin/main move may fix a fork refusal; retry once per changed product head.
+      git -C "$AGENT_HOME/checkout" fetch -q origin main 2>/dev/null || :
+      product_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)
+      if [[ -n $product_failed_head && -n $product_head && $product_head != "$product_failed_head" \
+        && ! -e $log.product-main-$product_head-retried ]]; then
+        : > "$log.product-main-$product_head-retried"
+        echo "$(date -u +%H:%M:%S) RETRY-PRODUCT-MAIN from=$product_failed_head to=$product_head commit=$next"
+        return 0
       fi
       # A moved VectA checkout may fix a refusal; retry this commit once for each new checkout head.
       vecta_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
