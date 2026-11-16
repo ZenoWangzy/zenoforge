@@ -70,15 +70,15 @@ dispatch_step_busy_summary() { # log byte offset/length → latest observed disp
 }
 
 tick_step_lock_run() { # step command...; the caller's dynamic lock marker prevents nested flock opens
-  local step="$1" lock_fd rc=0 started age TICK_STEP_LOCK_FD=""; shift
+  local step="$1" lock_fd rc=0 step_lock_started step_lock_age TICK_STEP_LOCK_FD=""; shift
   case "$step" in dispatch_pending | register_new_issues | release_dependency_blocks | existing_walk) ;; *) return 64 ;; esac
   [[ "${TICK_STEP_LOCK_HELD:-}" != "$step" ]] || { "$@"; return $?; }
   if ! exec {lock_fd}>>"$A/.tick-step-$step.lock"; then say "tick-step lock unavailable step=$step"; return 1; fi
   if ! flock -n "$lock_fd"; then
     TICK_STEP_LOCK_RESULT=skipped
-    started="$(cat "$A/.tick-step-$step.started" 2>/dev/null || true)"; age=unknown
-    if [[ "$started" =~ ^[0-9]+$ ]]; then age=$(($(date +%s) - started)); (( age >= 0 )) || age=0; fi
-    say "tick-step skipped step=$step reason=lock-held age=${age}s"
+    step_lock_started="$(cat "$A/.tick-step-$step.started" 2>/dev/null || true)"; step_lock_age=unknown
+    if [[ "$step_lock_started" =~ ^[0-9]+$ ]]; then step_lock_age=$(($(date +%s) - step_lock_started)); (( step_lock_age >= 0 )) || step_lock_age=0; fi
+    say "tick-step skipped step=$step reason=lock-held age=${step_lock_age}s"
     if [[ "$step" == dispatch_pending ]] && ! tick_step_dispatch_pending_skips_update increment; then
       say 'tick-step skip counter update failed step=dispatch_pending'
     fi
