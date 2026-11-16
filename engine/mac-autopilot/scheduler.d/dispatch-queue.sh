@@ -12,7 +12,7 @@ dmark() {
 dstep() {
   local step=$1 rc=0 started_us ended_us step_file gh_us_file gh_calls gh_us other_us elapsed gh_secs other_secs
   shift
-  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true && "$step" =~ ^(body_block|dispatch|handoff_integration|room_for)$ ]]; then
+  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true && -n "${A:-}" && "$step" =~ ^(body_block|dispatch|handoff_integration|room_for)$ ]]; then
     step_file="$A/.dispatch-step-gh.$BASHPID.$step"; gh_us_file="$step_file.us"; : > "$step_file"; : > "$gh_us_file"
     local TICK_DISPATCH_STEP_GH_FILE="$step_file" TICK_DISPATCH_STEP_GH_US_FILE="$gh_us_file"
     started_us=${EPOCHREALTIME/[.,]/}
@@ -171,7 +171,7 @@ dispatch_pending_pass() {
   fi
   ordered="$(dispatch_order)" || true
   dmark order
-  if [[ "$local_refill" != true ]] || ! dispatch_walk_full; then
+  if [[ "$local_refill" != true ]] && declare -F dispatch_body_dependencies_prime >/dev/null; then
     dispatch_body_dependencies_prime
   fi
   loop_started=$SECONDS

@@ -17,6 +17,7 @@ dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states 
     fi
     while IFS= read -r dep; do
       [[ "$dep" =~ ^[0-9]+$ ]] || continue
+      if declare -F dep_delivered_in_ledger >/dev/null && dep_delivered_in_ledger "$dep"; then continue; fi
       [[ ",$dropped," == *",$dep,"* ]] && continue
       seen[$dep]=1
     done <<<"$blockers"
@@ -42,6 +43,7 @@ dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states 
     DISPATCH_BODY_DEP_QUERY_COUNT=1
     results="$(dep_states "${missing[@]}" 2>/dev/null || true)"
     while IFS=$'\t' read -r dep state _; do
+      [[ "$dep" =~ ^[0-9]+$ ]] || continue
       [[ "${seen[$dep]:-}" == 1 ]] || continue
       DISPATCH_BODY_DEP_FRESH[$dep]="$state"
       if [[ -n "$state" && "$state" != CLOSED && "$state" != MERGED ]]; then printf '%s %s\n' "$NOW_EPOCH" "$state" > "$A/dep-fresh-$dep"; fi
