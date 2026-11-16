@@ -43,6 +43,7 @@ set_unit u '.note="metadata only"' || fail 'metadata-only set_unit failed'
 [[ "$(grep -c 'unit transition undeclared' "$LOG")" == "$undeclared_before" ]] \
   || fail 'metadata-only write logged a stage transition'
 
+batch_stage batch review-pending || fail 'could not prepare the indirect transition'
 batch_stage_indirect batch implement-pending || fail 'indirect units_update transition was refused'
 grep -F 'unit transition undeclared unit=batch from=review-pending to=implement-pending by=batch_stage_indirect' "$LOG" >/dev/null \
   || record_failure 'units_update missed a stage change written through setpath'
@@ -72,6 +73,7 @@ policy_log="$fixture/unreadable-policy.log"
 (
   LOG="$policy_log"
   UNIT_TRANSITION_POLICY_FILE="$unreadable_policy"
+  UNIT_TRANSITION_POLICY_LOADED=false
   say() { echo "$*" >> "$LOG"; }
   source "$script_dir/scheduler.d/unit-transition-log.sh"
   unit_transition_load
