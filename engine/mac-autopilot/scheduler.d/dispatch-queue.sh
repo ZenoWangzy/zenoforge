@@ -516,6 +516,27 @@ $(decision_scope "$u")"
         [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
         wt=""
         park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
+        # GitHub native blocked-by: an open blocker the ledger has not delivered parks the unit; the implementer prompt lists all of them (VectA #6223, ported).
+        native_issue="$(jqf -r '.issue // empty' <<<"$u")"; native_blockers="[]"
+        if [[ "$native_issue" =~ ^[1-9][0-9]*$ ]]; then
+          native_blockers="$(cd "$ROOT" && gh api "repos/{owner}/{repo}/issues/$native_issue/dependencies/blocked_by?per_page=100" 2>/dev/null \
+            | jqf -ce 'if type == "array" then map({number,title,state}) else error("blocked_by response is not an array") end')" || {
+            say "unit $id held: native blocked-by lookup failed"; dispatch_skip native-blocker-lookup; continue; }
+        fi
+        if jqf -e 'any(.[]; .state == "open")' <<<"$native_blockers" >/dev/null; then
+          dep_delivered_snapshot
+          native_open="" native_first=""
+          while IFS= read -r native_dep; do
+            dep_delivered_in_ledger "$native_dep" && continue
+            native_open+="${native_open:+, }#$native_dep"; native_first="${native_first:-$native_dep}"
+          done < <(jqf -r '.[] | select(.state == "open") | .number' <<<"$native_blockers")
+          if [[ -n "$native_first" ]]; then
+            say "unit $id held for open native blocker(s): $native_open"
+            park_blocked "$id" "$native_first" native-gate
+            dispatch_skip native-blocked; continue
+          fi
+        fi
+        native_prompt="$(jqf -r 'if length == 0 then "- None" else map("- #\(.number) — \(.title) (\(.state))") | join("\n") end' <<<"$native_blockers")"
         if [[ "$local_refill" == true ]]; then
           if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]] \
             || [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
@@ -604,6 +625,9 @@ $(implement_report_sections)
         feature_brief="$(verification_plan_brief "$feature_plan")"
         prompt="GOAL：
 $task
+
+GitHub native blocked-by issues at dispatch time:
+$native_prompt
 
 SCOPE：
 issue 写明的前置 issue 尚未交付（仍 open、没有已合并的修复）时不要改代码，报告第一行写 BLOCKED-ON: #<前置 issue 号>，流水线会在前置交付后重派。路线图 epic/主题（roadmap-epic、roadmap-theme、roadmap 标签的伞形 issue）不是前置：不要对它写 BLOCKED-ON，直接实现本 issue 自己的切片。

@@ -7,7 +7,7 @@ blocked_on_of() {
   { head -12 "$1" | grep -oiE 'BLOCKED[- ]?(ON|BY)[^0-9#]{0,12}#?[0-9]+'; grep -oE 'BLOCKED-ON:[[:space:]]*#[0-9]+' "$1"; } 2>/dev/null \
     | grep -oE '[0-9]+$' | head -1
 }
-park_blocked() { # unit dep
+park_blocked() { # unit dep [native-gate]: the native gate skips the real-wait marker and its inbox line
   # supervisor 已在 reroute 中放弃的前置（dropped_deps）：worker 报告的 BLOCKED-ON 不停住单元，单元留在原环节再跑一次。
   # 调用方若刚把单元标成 blocked-external（评审路径），这里还原成可继续的环节。
   if [[ "$2" =~ ^[0-9]+$ ]] && jqf -e --arg id "$1" --argjson d "$2" 'any(.units[]; .id == $id and ((.dropped_deps // []) | index($d) != null))' "$UNITS" >/dev/null; then
@@ -27,7 +27,7 @@ park_blocked() { # unit dep
   fi
   # Blocked again on the same predecessor: the worker disagrees with the release (issue-1168 cost 375k tokens in 90 minutes). Only a delivery ends this wait.
   local real_wait=""
-  if jqf -e --arg id "$1" --arg r "#$2" 'any(.units[]; .id == $id and any(.history[]?; .stage == "blocked-on" and .result == $r))' "$UNITS" >/dev/null; then
+  if [[ "${3:-}" != native-gate ]] && jqf -e --arg id "$1" --arg r "#$2" 'any(.units[]; .id == $id and any(.history[]?; .stage == "blocked-on" and .result == $r))' "$UNITS" >/dev/null; then
     real_wait=" | .dep_wait_delivery=$2 | .unpark_condition=$(js "#$2 delivered in the ledger or closed on GitHub")"
     (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "dep-disagreement:$1:$2" \
       "dep-disagreement unit=$1: a worker blocked twice on #$2 after a release; it now waits for #$2 to be delivered") \
