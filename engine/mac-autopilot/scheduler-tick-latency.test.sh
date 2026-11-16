@@ -263,7 +263,7 @@ fi
   SCHED_LOCK_HELD=false; WORKER_SCOPE_PREPARED=true; WORKER_SCOPE_MODE=disabled; WORKER_PIDFILE=''
   TICK_DISPATCH_STOP_LOSS_QUEUE=(); : > "$LOG"
   worker_pid=''; stop_loss_pid=''; fallback_pid=''; fallback_stop_loss_pid=''; lock_failures=()
-  trap 'for pid in "$worker_pid" "$stop_loss_pid" "$fallback_pid" "$fallback_stop_loss_pid"; do [[ -z "$pid" ]] || kill "$pid" 2>/dev/null || :; done' EXIT
+  trap 'for pid in "$worker_pid" "$stop_loss_pid" "$fallback_pid" "$fallback_stop_loss_pid"; do [[ -z "$pid" ]] || kill "$pid" 2>/dev/null || :; done' EXIT # subshell trap
   stop_loss_dir="$fd_fixture/stop-loss-worker"; mkdir -p "$stop_loss_dir"
   cat > "$stop_loss_dir/scheduler.sh" <<'SH'
 #!/usr/bin/env bash
