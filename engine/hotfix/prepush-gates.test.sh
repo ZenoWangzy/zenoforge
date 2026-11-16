@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-test_clone_mine=${ZF_CLONE_MINE:-}
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
-if [[ -n $test_clone_mine ]]; then export ZF_CLONE_MINE="$test_clone_mine"; fi
 p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d)
 REAL_GIT=$(type -P git)
 export REAL_GIT
