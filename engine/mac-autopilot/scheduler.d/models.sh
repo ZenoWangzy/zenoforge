@@ -192,6 +192,12 @@ codex_pacing_log_hold_once() {
   CODEX_PACING_HOLD_LOGGED=true
 }
 
+# Library and test callers source this file without engine/config.sh; Zcode routing still
+# needs the resolver, so load it from the engine root the same way lib.d/model-policy.sh does.
+declare -F zf_zcode_bin_argv >/dev/null 2>&1 || zf_zcode_bin_argv() {
+  ( source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/config.sh" && zf_zcode_bin_argv "$@" )
+}
+
 pick_zcode_implementer() { # configured hand-zcode identity -> PICK_* only with a fresh, available quota
   local fields provider model effort tier status
   fields="$(model_policy_role_fields hand-zcode 2>/dev/null || true)"

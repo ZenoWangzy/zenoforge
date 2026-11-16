@@ -50,7 +50,11 @@ ci_candidate_required_green() { # id PR expected-head → 0 only when every requ
   [[ "$head" == "$3" ]] || { CI_CANDIDATE_REASON="PR head moved to $head"; return 2; }
   gated="$(unit_field "$1" '.gated // false')"
   branch="$(unit_field "$1" '.branch // empty')"
-  if [[ "$gated" == true || "$branch" =~ $GATED_BRANCH_RE ]]; then
+  # Only units that actually went through gated admission (.gated, set at intake for
+  # agent-lane PRs) need its ready event; the branch pattern alone also matched
+  # approved release/handoff PRs that no admission pass ever services, parking them
+  # in ci-pending with no path back ("ready event missing" with green checks).
+  if [[ "$gated" == true ]]; then
     [[ "$(unit_field "$1" '.ci_ready_sha // empty')" == "$head" ]] \
       && since="$(unit_field "$1" '.ci_ready_at // empty')" \
       && [[ -n "$since" ]] || { CI_CANDIDATE_REASON="ready event missing for $head"; return 1; }
@@ -82,8 +86,11 @@ ci_candidate_required_green() { # id PR expected-head → 0 only when every requ
   checks="$(repair_check_rows "$2")" || return 1
   jqf -e 'type=="array"' <<<"$checks" >/dev/null 2>&1 || return 1
   CI_CANDIDATE_CHECKS="$checks"
-  required_count="$(jqf -r '(.required // []) | length' "$REQUIRED_PR_CHECKS_FILE" 2>/dev/null || echo 0)"
-  [[ "$required_count" =~ ^[1-9][0-9]*$ ]] || { CI_CANDIDATE_REASON="required gate policy unavailable"; return 1; }
+  # A missing or unreadable policy fails closed; a valid policy with an intentionally
+  # empty required list means no PR gates are required, and the green decision falls
+  # through to the check rows themselves.
+  required_count="$(jq -ce '(.required // []) | length' "$REQUIRED_PR_CHECKS_FILE" 2>/dev/null)" \
+    || { CI_CANDIDATE_REASON="required gate policy unavailable"; return 1; }
   missing="$(required_checks_without_pass "$checks" "$since")"
   [[ -z "$missing" ]] || { CI_CANDIDATE_REASON="required gates pending or red: $missing"; return 1; }
   CI_CANDIDATE_REASON="required gates green on $head"

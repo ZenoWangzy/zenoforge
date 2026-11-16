@@ -1003,7 +1003,11 @@ set -euo pipefail
 tick_gh "$@"
 SH
   for tool in systemctl systemd-run; do
-    printf '#!/usr/bin/env bash\nprintf "%%s %%s\\n" "%s" "$*" > "$TF/unexpected-host"\nexit 97\n' "$tool" > "$TF/bin/$tool"
+    # systemd-run additionally allows the #214 worker-scope availability probe
+    # (it execs only /usr/bin/true and writes nothing); any other invocation is
+    # still an unexpected host touch. The probe exits 1, so ticks keep the plain
+    # pre-scope worker launches in fixtures.
+    printf '#!/usr/bin/env bash\ncase "%s" in systemd-run) [[ "$*" == *" -- /usr/bin/true" || "$*" == *" -- /bin/true" ]] && exit 1 ;; esac\nprintf "%%s %%s\\n" "%s" "$*" > "$TF/unexpected-host"\nexit 97\n' "$tool" "$tool" > "$TF/bin/$tool"
   done
   cat > "$TF/bin/systemctl" <<'SH'
 #!/usr/bin/env bash

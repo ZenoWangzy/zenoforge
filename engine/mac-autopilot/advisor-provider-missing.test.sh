@@ -107,6 +107,10 @@ printf '[%s] issue-pipeline: maintenance deferred streak section=needs-info-reco
   "$STAMP" >> "$autopi/scheduler.log"
 bash "$script_dir/bell.sh" > "$test_env_root/bell-maintenance-repeat.out" 2>&1 \
   || fail 'bell failed on a repeated maintenance signature'
-check 'repeated maintenance signature stays deduplicated' "$(wc -l < "$upsert_calls" | tr -d ' ')" 2
+# #207's 24h signature window makes a repeat bump the SAME class's occurrence count
+# through the class-keyed upsert (a comment on the open issue), never a new class:
+# deduplication is one incident identity per class, not one upsert call forever.
+check 'repeated maintenance signature stays on one incident class' \
+  "$(cat "$upsert_calls")"   "$(printf '%s\n' sched-advisor-provider-missing sched-maintenance-deferral-needs-info-recovery sched-maintenance-deferral-needs-info-recovery)"
 
 echo 'advisor-provider-missing.test.sh: PASS'
