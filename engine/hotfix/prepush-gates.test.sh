@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+test_clone_mine=${ZF_CLONE_MINE:-}
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
+if [[ -n $test_clone_mine ]]; then export ZF_CLONE_MINE="$test_clone_mine"; fi
 p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d)
+REAL_GIT=$(type -P git)
+export REAL_GIT
 gate_release="$t/gate-release"
 gate_children=()
 cleanup_test() {
@@ -15,6 +19,21 @@ trap 'cleanup_test "$test_env_root"' EXIT
 mkdir -p "$t/bin" "$t/root"
 cat > "$t/bin/git" <<'STUB'
 #!/usr/bin/env bash
+if [[ ${REAL_WORKTREE_TEST:-0} == 1 ]]; then
+  case "$*" in
+    *' worktree add --quiet --detach '*)
+      tree="${@: -2:1}"
+      owner_file="${tree%/tree}/owner.pid"
+      owner_pid=
+      IFS= read -r owner_pid < "$owner_file" 2>/dev/null || :
+      if [[ ! $owner_pid =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$owner_pid" 2>/dev/null; then
+        echo 'gate owner pid missing before worktree add' >&2
+        exit 97
+      fi
+      ;;
+  esac
+  exec "$REAL_GIT" "$@"
+fi
 case "$*" in
  'rev-parse --show-toplevel') echo "$ROOT" ;;
  'rev-parse '*) echo candidate ;;
@@ -22,7 +41,7 @@ case "$*" in
  'rev-list --count '*) echo "${COUNT:-1}" ;;
  'diff --name-only '*) echo packages/changed/src/file.ts ;;
  '-C '*branch' --show-current') echo hotfix/test ;;
- 'worktree add '*) d="${@: -2:1}"; mkdir -p "$d/.zenoforge"
+ 'worktree add '*|'-C '*worktree\ add\ *) d="${@: -2:1}"; mkdir -p "$d/.zenoforge"
     if [[ "${TARGET_GATE_ONLY:-0}" == 1 ]]; then
       printf '%s\n' 'echo target-gate-ran' > "$d/.zenoforge/prepush-gates"
     else
@@ -167,3 +186,44 @@ scope_log="$t/scope.log"
 printf '%s\n' 'printf "%s" "$PREPUSH_CHANGED_PACKAGES" > "$SCOPE_LOG"' > "$t/pack/hotfix/prepush-gates.d/99-blocker.sh"
 PREPUSH_TMP="$t/scope-tmp" SCOPE_LOG="$scope_log" "$p/prepush-gates.sh" > "$t/out" 2>&1
 [[ $(cat "$scope_log") == 'packages/changed' ]]
+
+# Startup reclaims only dead runs, and unregisters a stale worktree before pruning.
+real_origin="$t/real-origin.git"
+real_root="$t/real-repo"
+sweep_tmp="$t/sweep-tmp"
+mkdir -p "$real_root"
+"$REAL_GIT" init --bare --initial-branch=main "$real_origin" >/dev/null
+"$REAL_GIT" -C "$real_root" init -b main >/dev/null
+"$REAL_GIT" -C "$real_root" config user.name 'Prepush Gate Test'
+"$REAL_GIT" -C "$real_root" config user.email 'prepush-gate-test@example.invalid'
+printf 'base\n' > "$real_root/file"
+"$REAL_GIT" -C "$real_root" add file
+"$REAL_GIT" -C "$real_root" commit -m base >/dev/null
+"$REAL_GIT" -C "$real_root" remote add origin "$real_origin"
+"$REAL_GIT" -C "$real_root" push -u origin main >/dev/null
+"$REAL_GIT" -C "$real_root" fetch -q origin main:refs/remotes/origin/main
+printf 'candidate\n' >> "$real_root/file"
+"$REAL_GIT" -C "$real_root" commit -am candidate >/dev/null
+real_head=$("$REAL_GIT" -C "$real_root" rev-parse HEAD)
+stale_dir="$sweep_tmp/tmp.stale"
+live_dir="$sweep_tmp/tmp.live"
+fresh_dir="$sweep_tmp/tmp.fresh"
+mkdir -p "$stale_dir" "$live_dir" "$fresh_dir"
+"$REAL_GIT" -C "$real_root" worktree add --quiet --detach "$stale_dir/tree" "$real_head"
+printf '99999999\n' > "$stale_dir/owner.pid"
+printf '%s\n' "$$" > "$live_dir/owner.pid"
+printf 'fresh\n' > "$fresh_dir/payload"
+(
+  cd "$real_root"
+  REAL_WORKTREE_TEST=1 PREPUSH_TMP="$sweep_tmp" PREPUSH_GATE_SLOTS=1 \
+    ZF_CONFIG_ROOT="$t/no-config" ZF_REPO_DIR="$real_root" ZF_PACK_DIR='' \
+    "$p/prepush-gates.sh" "$real_head"
+) > "$t/sweep.out" 2>&1
+[[ ! -e "$stale_dir" ]] || { echo 'stale prepush tmp directory was retained' >&2; exit 1; }
+[[ -d "$live_dir" ]] || { echo 'live prepush tmp directory was removed' >&2; exit 1; }
+[[ -d "$fresh_dir" ]] || { echo 'fresh prepush tmp directory was removed' >&2; exit 1; }
+if "$REAL_GIT" -C "$real_root" worktree list --porcelain | grep -Fxq "worktree $stale_dir/tree"; then
+  echo 'stale prepush worktree registration remained' >&2
+  exit 1
+fi
+grep -Eq '^prepush-gates: stale tmp dirs removed=1 bytes=[1-9][0-9]*$' "$t/sweep.out"
