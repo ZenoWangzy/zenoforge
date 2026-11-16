@@ -24,7 +24,7 @@ review_fix_refusal_report() { # parsed findings reason unit head → report base
           | .rerun_output=$reason
           | del(.commit_sha,.test)
         else . end)
-      else .findings + [{id:"RF1",severity:"P1",file:"review-fix",line:1,rule:"Review fix gate",status:"open",
+      else . + [{id:"RF1",severity:"P1",file:"review-fix",line:1,rule:"Review fix gate",status:"open",
         summary:("Reviewer changed the PR head outside the in-review fix contract: " + $reason),
         introduced_by:"candidate",base_evidence:"The reviewed head did not contain this commit.",
         rerun_command:"review fix scope and receipt gate",rerun_output:$reason}]

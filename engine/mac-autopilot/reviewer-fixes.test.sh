@@ -187,6 +187,9 @@ v=; wsha=; wprhead=; report=review-small-no-fixed-finding.md; rep="$small_no_fix
 review_harvest_gate "$w" "$small_no_fix_report" unit-small review || fail 'unauthorized reviewer edit refusal failed'
 [[ "$v" == NOT_READY && "$report" == review-fix-refused-unit-small-*.md ]] \
   || fail 'a reviewer commit without fixed-in-review was approved'
+denied_findings="$(findings_block_of "$rep")" || fail 'reviewer edit refusal report lost its findings block'
+[[ "$(jqf -r 'any(.findings[]; .id=="RF1" and .status=="open")' <<<"$denied_findings")" == true ]] \
+  || fail 'reviewer edit refusal report omitted its open gate finding'
 [[ "$(git -C "$small_repo" rev-parse HEAD)" == "$small_head" ]] \
   || fail 'the unauthorized reviewer commit fixture no longer reproduces the moved head'
 
