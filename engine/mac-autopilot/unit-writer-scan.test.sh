@@ -34,7 +34,7 @@ unit_writer_sites() {
           printf "%s:%s\n", file, (current == "" ? "<top-level>" : current)
         }
       }' "$root/$file"
-  done < <(cd "$root" && rg --files -g '*.sh' -g '!*.test.*' engine/mac-autopilot | sort)
+  done < <(cd "$root" && find engine/mac-autopilot -type f -name '*.sh' ! -name '*.test.*' | LC_ALL=C sort)
 }
 assert_writer_allowlist() {
   local root="$1" actual expected
