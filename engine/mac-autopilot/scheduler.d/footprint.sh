@@ -736,7 +736,7 @@ footprint_convoy_alert() {
   done <<<"$owners"
 }
 refill_dispatch_metrics() { # log byte offset live count -> one-line refill state and skip totals
-  local log_offset="$1" live="$2" free pending footprint handoff memory log_end log_bytes
+  local log_offset="$1" live="$2" free pending footprint handoff memory log_end log_bytes=0
   footprint_waiters_revalidate || return 1
   [[ "$live" =~ ^[0-9]+$ ]] || live=0
   free=$(( MAX - live )); (( free >= 0 )) || free=0
@@ -755,7 +755,7 @@ refill_dispatch_metrics() { # log byte offset live count -> one-line refill stat
     printf '%s\n' "$log_end" > "$A/.refill-dispatch-log-offset.tmp" \
       && mv -f -- "$A/.refill-dispatch-log-offset.tmp" "$A/.refill-dispatch-log-offset" || return 1
   fi
-  local extra; extra="$(dispatch_skip_summary)"
+  local extra busy=""; declare -F dispatch_step_busy_summary >/dev/null && busy="$(dispatch_step_busy_summary "$log_offset" "$log_bytes")"; extra="$(dispatch_skip_summary)$busy"
   printf 'free_slots=%s pending=%s skips=footprint:%s,handoff:%s,memory:%s%s\n' \
     "$free" "$pending" "$footprint" "$handoff" "$memory" "${extra:+,$extra}"
 }

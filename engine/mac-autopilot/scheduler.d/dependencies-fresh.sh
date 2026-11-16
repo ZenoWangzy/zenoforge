@@ -1,6 +1,42 @@
 # Fresh GitHub read of a predecessor (#536): the dependency cache refreshes only every DEP_CHECK_SECONDS, so a stale CLOSED frees nothing until one fresh read says so.
+declare -gA DISPATCH_BODY_DEP_FRESH=()
+DISPATCH_BODY_DEP_PRIMED=false DISPATCH_BODY_DEP_QUERY_COUNT=0 DISPATCH_BODY_DEP_UNITS=0
+dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states for body blockers
+  local u dep state memo stamp results
+  local -a missing=()
+  local -A seen=()
+  DISPATCH_BODY_DEP_FRESH=(); DISPATCH_BODY_DEP_PRIMED=true; DISPATCH_BODY_DEP_QUERY_COUNT=0; DISPATCH_BODY_DEP_UNITS=0
+  while IFS= read -r u; do
+    while IFS= read -r dep; do [[ "$dep" =~ ^[0-9]+$ ]] && seen[$dep]=1; done < <(unit_body_blockers "$u")
+  done < <(jqf -c '.units[] | select(.stage=="implement-pending" or (.stage=="repair-pending" and .hold_handoff_episode != null))' "$UNITS")
+  DISPATCH_BODY_DEP_UNITS=${#seen[@]}
+  for dep in "${!seen[@]}"; do
+    state="$(jqf_optional_file "$A/dep-check.cache.json" -r --arg d "$dep" '.states[$d].state // empty' 2>/dev/null || true)"
+    [[ -n "$state" ]] && continue
+    memo="$A/dep-fresh-$dep"; stamp=""
+    if [[ -f "$memo" ]]; then read -r stamp state < "$memo" || stamp=""; else state=""; fi
+    if [[ "$stamp" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - stamp < ${DEP_CHECK_SECONDS:-600} )); then
+      DISPATCH_BODY_DEP_FRESH[$dep]="$state"
+    else
+      missing+=("$dep")
+    fi
+  done
+  if ((${#missing[@]})); then
+    DISPATCH_BODY_DEP_QUERY_COUNT=1
+    results="$(dep_states "${missing[@]}" 2>/dev/null || true)"
+    while IFS=$'\t' read -r dep state _; do
+      [[ "${seen[$dep]:-}" == 1 ]] || continue
+      DISPATCH_BODY_DEP_FRESH[$dep]="$state"
+      if [[ "$state" != CLOSED && "$state" != MERGED ]]; then printf '%s %s\n' "$NOW_EPOCH" "$state" > "$A/dep-fresh-$dep"; fi
+    done <<< "$results"
+    for dep in "${missing[@]}"; do
+      [[ -n "${DISPATCH_BODY_DEP_FRESH[$dep]+set}" ]] || DISPATCH_BODY_DEP_FRESH[$dep]=""
+    done
+  fi
+}
 dep_fresh_state() { # predecessor → the fresh GitHub state, empty when unreadable; an OPEN or empty read is memoized for DEP_CHECK_SECONDS so a hold costs one read per window
   local f="$A/dep-fresh-$1" stamp memo fresh
+  if [[ "${DISPATCH_BODY_DEP_PRIMED:-false}" == true && -n "${DISPATCH_BODY_DEP_FRESH[$1]+set}" ]]; then printf '%s' "${DISPATCH_BODY_DEP_FRESH[$1]}"; return 0; fi
   if [[ -f "$f" ]] && read -r stamp memo < "$f" && [[ "$stamp" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - stamp < ${DEP_CHECK_SECONDS:-600} )); then printf '%s' "$memo"; return 0; fi
   fresh="$(dep_states "$1" 2>/dev/null | awk -F'\t' -v d="$1" '$1 == d { print $2; exit }' || true)"
   if [[ "$fresh" != CLOSED && "$fresh" != MERGED ]]; then printf '%s %s\n' "$NOW_EPOCH" "$fresh" > "$f"; fi

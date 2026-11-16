@@ -372,4 +372,24 @@ assert_blocker_cache_write_failure_refetches 9000106 ids-json
 assert_blocker_cache_write_failure_refetches 9000107 entry-json
 assert_blocker_cache_write_failure_refetches 9000108 update-json
 
+# dispatch_pending primes missing body-dependency states once for all pending rows, then every row reads that pass cache.
+dispatch_cache="$fixture/dispatch-body-cache"; mkdir -p "$dispatch_cache"
+A="$dispatch_cache"; UNITS="$A/units.json"; NOW_EPOCH=1794221232; DEP_CHECK_SECONDS=600
+jq -n '{units:[range(0;21) | {id:("issue-" + (2000 + . | tostring)),stage:"implement-pending",body_blocked_by:[3000 + .],dropped_deps:[]} ]}' > "$UNITS"
+prime_calls="$fixture/dispatch-prime-calls"; : > "$prime_calls"
+dep_states() {
+  printf '%s %s\n' "$#" "$*" >> "$prime_calls"
+  local dep
+  for dep in "$@"; do printf '%s\tOPEN\t\n' "$dep"; done
+}
+dispatch_body_dependencies_prime
+[[ "$(wc -l < "$prime_calls")" == 1 ]] || fail "body dependency priming made $(wc -l < "$prime_calls") calls, want one"
+[[ "$(head -1 "$prime_calls" | cut -d' ' -f1)" == 21 ]] || fail "the batched lookup omitted body dependencies: $(cat "$prime_calls")"
+while IFS= read -r unit; do
+  dep="$(jqf -r '.body_blocked_by[0]' <<<"$unit")"
+  [[ "$(blocking_body_dependency "$unit")" == "$dep" ]] || fail "the pass cache lost open blocker #$dep"
+done < <(jqf -c '.units[]' "$UNITS")
+[[ "$(wc -l < "$prime_calls")" == 1 ]] || fail 'a row bypassed the pass cache and queried its dependency again'
+unset DEP_CHECK_SECONDS
+
 echo 'dependencies-onepass.test.sh: ok'

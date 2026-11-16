@@ -9,7 +9,27 @@ dmark() {
   dispatch_step_secs[$1]=$(( ${dispatch_step_secs[$1]:-0} + now - dispatch_step_at )); dispatch_step_counts[$1]=$(( ${dispatch_step_counts[$1]:-0} + 1 ))
   dispatch_step_at=$now; dispatch_step_last=$1
 }
-dstep() { local step=$1 rc=0; shift; "$@" || rc=$?; dmark "$step"; return $rc; }
+dstep() {
+  local step=$1 rc=0 started_us ended_us step_file gh_calls elapsed
+  shift
+  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true && "$step" =~ ^(body_block|dispatch|handoff_integration)$ ]]; then
+    step_file="$A/.dispatch-step-gh.$BASHPID.$step"; : > "$step_file"
+    local TICK_DISPATCH_STEP_GH_FILE="$step_file"
+    started_us=${EPOCHREALTIME/[.,]/}
+    "$@" || rc=$?
+    ended_us=${EPOCHREALTIME/[.,]/}
+    gh_calls="$(<"$step_file")"; gh_calls=${#gh_calls}; rm -f -- "$step_file"
+    elapsed=$((ended_us - started_us))
+    if (( elapsed >= 2000000 )); then
+      printf -v elapsed '%d.%03d' $((elapsed / 1000000)) $((elapsed % 1000000 / 1000))
+      say "dispatch detail step_split step=$step secs=${elapsed}s gh_calls=$gh_calls"
+    fi
+  else
+    "$@" || rc=$?
+  fi
+  dmark "$step"
+  return $rc
+}
 dcapture() { local var=$1 step=$2 rc=0 out; shift 2; out="$("$@")" || rc=$?; printf -v "$var" %s "$out"; dmark "$step"; return $rc; }
 # Every caller reads the live-worker count as $(live_workers), and a cache refresh inside that subshell is lost: the cache stayed cold, so each
 # capacity, priority and implement-cap check re-ran the refresh (one jq and three jq per worker plus ps: 2244 of about 8000 processes in a
@@ -105,6 +125,8 @@ dispatch_why_save() { # merges this pass's changes into the file as it is now; p
 
 dispatch_pending_pass() {
   TICK_DISPATCH_SKIPS=()
+  TICK_DISPATCH_STOP_LOSS_QUEUE=(); TICK_DISPATCH_STOP_LOSS_QUEUED_AT=()
+  DISPATCH_BODY_DEP_PRIMED=false
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
@@ -147,6 +169,15 @@ dispatch_pending_pass() {
   fi
   ordered="$(dispatch_order)" || true
   dmark order
+  if [[ "$local_refill" != true ]] || ! dispatch_walk_full; then
+    local dep_prime_started=${EPOCHREALTIME/[.,]/} dep_prime_elapsed
+    dispatch_body_dependencies_prime
+    dep_prime_elapsed=$((${EPOCHREALTIME/[.,]/} - dep_prime_started))
+    if (( dep_prime_elapsed >= 2000000 )); then
+      printf -v dep_prime_elapsed '%d.%03d' $((dep_prime_elapsed / 1000000)) $((dep_prime_elapsed % 1000000 / 1000))
+      say "dispatch detail body_dependency_prime units=$DISPATCH_BODY_DEP_UNITS secs=${dep_prime_elapsed}s gh_calls=$DISPATCH_BODY_DEP_QUERY_COUNT"
+    fi
+  fi
   loop_started=$SECONDS
   # Footprint only orders: pass 1 starts what no live owner overlaps and defers the rest; pass 2 starts the deferred while a slot is free.
   local dispatch_pass TICK_FOOTPRINT_DEFER=true defer_ids
@@ -216,6 +247,9 @@ dispatch_pending_pass() {
       dispatch_capacity_free && tick_prs_prime
     fi
     dmark row_census
+    if [[ -n "$(jqf -r '.stop_loss_worker_since // empty' <<<"$u")" ]] && dispatch_stop_loss_worker_active "$id" "$u"; then
+      dispatch_skip stop-loss-running; continue
+    fi
     # 止损预算（#4363）：第 4 轮（implement 加 repair）或超 4h 墙钟不再派发——
     # 原票经 hold.sh（on-hold 的唯一写入口，带 24h 过期的 durable hold 记录）自动搁置并评论附原因，
     # 单元转 supervisor（#4369 terra 裁决）；裁决后重新给满额度。
@@ -233,44 +267,11 @@ dispatch_pending_pass() {
       (( budget_elapsed < 2 )) || say "dispatch detail stop_loss_check unit=$id secs=${budget_elapsed}s"
       dmark stop_loss_check
       if [[ -n "$budget" ]]; then
-        escalate_started=$SECONDS
         [[ "$local_refill" != true ]] || { dispatch_skip stop-loss-refill; continue; }
-        issue="$(jqf -r '.issue // empty' <<<"$u")"
-        pr="$(jqf -r '.pr // empty' <<<"$u")"
-        # Same failure as an earlier round: the arbiter's requeue delivered 0 of 4 (row 90), so decide here. A check that is red on main belongs to main:
-        # wait for main green. Otherwise the cap-default route (recut once, else park "stop-loss same failure: <check>"), both with a requeue exit.
-        # No decision made (already given, issue on hold, state unreadable) falls through to the supervisor as before.
-        if same_check="$(stop_loss_same_failure "$u")"; then
-          if main_red_sha="$(stop_loss_main_red_sha "$same_check")"; then
-            stop_loss_same_failure_hold "$id" "$stage" "$same_check" "$main_red_sha" && { dmark stop_loss_escalate; continue; }
-          elif supervisor_cap_default "$id" "$u" stop-loss "$budget" && [[ "$(unit_field "$id" '.stage // empty')" != "$stage" ]]; then
-            stop_loss_same_failure_hold "$id" "$stage" "$same_check" || :
-            dmark stop_loss_escalate
-            continue
-          fi
+        if [[ "${SCHED_STATION:-false}" == true ]] && dispatch_stop_loss_worker_enqueue "$id"; then
+          dmark stop_loss_escalate; continue
         fi
-        # A fresh signal (not a repeat) is requeued here, at most twice per ruling and while those requeues deliver; otherwise on to the arbiter as before.
-        if stop_loss_fresh_requeue "$id" "$u" "$budget"; then dmark stop_loss_escalate; continue; fi
-        if [[ "$issue" =~ ^[0-9]+$ && -z "$pr" ]]; then
-          supervisor_budget_recut "$id" "ticket stop-loss budget: $budget"
-          (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"
-          dmark stop_loss_escalate
-          continue
-        fi
-        if [[ -n "$issue" ]]; then
-          hold_cli="${ZF_ENGINE_DIR:-$ROOT/engine}/hold.sh"
-          [[ -r "$hold_cli" ]] || hold_cli="$HERE/../hold.sh"
-          bash "$hold_cli" --hold "$issue" --holder scheduler-stop-loss \
-            --release 'supervisor rules on the stop-loss escalation; requeue or approve refills the budget' \
-            --expires 24h --kind stop-loss >/dev/null 2>&1 || true
-          gh issue comment "$issue" --body "止损预算（#4363）：这张票自最近一次裁决起已用 ${budget}，自动搁置（on-hold，24h 后未裁决自动恢复），停止下一轮自动派发。单元 $id 已转 supervisor 裁决；supervisor requeue/approve 后预算重新给满。" >/dev/null 2>&1 || true
-        fi
-        to_supervisor "$id" "stop-loss: $budget since the last supervisor ruling; the issue is held on-hold" \
-          'Held at the per-ticket stop-loss budget; supervisor decides rescope, split, or requeue' \
-          'the per-ticket round and wall-clock budget was reached' \
-          "budget of $TICKET_ROUND_BUDGET rounds (implement+repair) or $((TICKET_WALL_BUDGET_SECONDS / 60)) minutes exceeded: $budget" \
-          '["Dispatch another implement/repair round at the same scope"]'
-        (( SECONDS - escalate_started < 2 )) || say "dispatch detail stop_loss_escalate unit=$id secs=$((SECONDS - escalate_started))s"
+        dispatch_stop_loss_escalation_run "$id" "$stage" "$budget" "$u" || :
         dmark stop_loss_escalate
         continue
       fi
@@ -538,14 +539,13 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
         [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; continue; }
         [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
         wt=""
-        park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
+        dstep body_block park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
         if [[ "$local_refill" == true ]]; then
           if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]] \
             || [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
             dispatch_skip handoff-pending; continue
           fi
         fi
-        dmark body_block
         dstep room_for room_for "$id" implement "$u" false || continue
         dstep pick pick implement "$u" || { dispatch_skip pick; continue; }
         dstep footprint_room footprint_room "$id" "$u" true || continue
@@ -660,6 +660,7 @@ $deliver"
   dmark convoy_alert
   dispatch_why_save
   dispatch_steps_say
+  DISPATCH_BODY_DEP_PRIMED=false; DISPATCH_BODY_DEP_FRESH=()
 }
 
 dispatch_pending() {

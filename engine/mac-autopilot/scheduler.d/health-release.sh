@@ -44,6 +44,10 @@ log_reliability_breach() {
 phase_mark() {
   local f=.tick-phase
   [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || f=.refill-phase
+  SCHED_LOCK_PHASE="$1"
+  if [[ "${SCHED_LOCK_HELD:-false}" == true && -n "${SCHED_LOCK:-}" && "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then
+    printf '%s\n' "$1" > "$SCHED_LOCK/phase" 2>/dev/null || :
+  fi
   # A station runs beside the tick and shares the file: its phases named the tick's phase in the kill line.
   [[ "${SCHED_STATION:-false}" != true ]] || return 0
   printf '%s\n' "$1" > "$A/$f" || :

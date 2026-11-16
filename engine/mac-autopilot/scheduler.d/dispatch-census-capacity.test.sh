@@ -160,6 +160,39 @@ ticket_budget_reason() { :; }
 : > "$LOG"; stop_loss_calls=0; dispatch_pending false
 [[ "$self_fix_calls" == 1 && "$stop_loss_calls" == 0 ]] || fail "a self-fix under budget did not start (fix=$self_fix_calls supervisor=$stop_loss_calls)"
 
+# A queued stop-loss owns a durable launch marker until its worker clears it, so another pass does not run the same escalation.
+dispatch_stop_loss_worker_enqueue issue-4903 || fail 'the stop-loss worker could not claim its unit'
+stop_loss_unit="$(jqf -c --arg id issue-4903 '.units[] | select(.id==$id)' "$UNITS")"
+dispatch_stop_loss_worker_active issue-4903 "$stop_loss_unit" || fail 'a newly queued stop-loss worker was not treated as active'
+[[ "$(jqf -r '.stop_loss_worker_since | type' <<<"$stop_loss_unit")" == number ]] || fail 'the stop-loss queue did not persist its launch marker'
+dispatch_stop_loss_worker_run issue-4903 || fail 'the stop-loss worker did not finish its no-longer-needed route'
+stop_loss_unit="$(jqf -c --arg id issue-4903 '.units[] | select(.id==$id)' "$UNITS")"
+[[ -z "$(jqf -r '.stop_loss_worker_since // empty' <<<"$stop_loss_unit")" ]] || fail 'the stop-loss worker left its active marker behind'
+
+# The detached stop-loss worker starts after dispatch_pending releases both scheduler locks.
+dispatch_pass_real="$(declare -f dispatch_pending_pass)"
+stop_loss_start_real="$(declare -f dispatch_stop_loss_workers_start)"
+dispatch_pending_pass() { TICK_DISPATCH_STOP_LOSS_QUEUE=(issue-4903); }
+stop_loss_probe="$fixture/stop-loss-lock-probe"
+dispatch_stop_loss_workers_start() {
+  local fd
+  exec {fd}>>"$A/.tick-step-dispatch_pending.lock"
+  if flock -n "$fd"; then printf 'step-lock-free\n' > "$stop_loss_probe"; flock -u "$fd"; else printf 'step-lock-held\n' > "$stop_loss_probe"; fi
+  [[ ! -d "$SCHED_LOCK" ]] || printf 'scheduler-lock-held\n' >> "$stop_loss_probe"
+  : > "$stop_loss_probe.running"
+  sleep 0.2
+  : > "$stop_loss_probe.done"
+}
+SCHED_STATION=true; SCHED_LOCK_HELD=false; TICK_DISPATCH_STOP_LOSS_QUEUE=()
+rm -f -- "$stop_loss_probe" "$stop_loss_probe.running" "$stop_loss_probe.done"
+tick_step_lock_run dispatch_pending dispatch_pending_pass
+[[ -f "$stop_loss_probe.done" ]] || fail 'the slow stop-loss worker was not started after the dispatch lock was released'
+grep -Fxq 'step-lock-free' "$stop_loss_probe" || fail "the step lock stayed held across stop-loss work: $(cat "$stop_loss_probe")"
+! grep -Fxq 'scheduler-lock-held' "$stop_loss_probe" || fail 'the scheduler lock stayed held across stop-loss work'
+eval "$dispatch_pass_real"
+eval "$stop_loss_start_real"
+SCHED_STATION=false
+
 # A review-pending unit without a PR is dropped by the walk with no log line: the pass names it, and the refill summary carries it.
 jq -n '{units:[{id:"issue-4905",stage:"review-pending",lane:"pr",title:"fixture no-pr review",history:[]}]}' > "$UNITS"
 write_workers 7

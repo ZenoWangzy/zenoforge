@@ -121,16 +121,23 @@ pass_refill
 grep -q 'dispatch why unit=issue-1133 gate=self-fix-refill$' "$SAY_LOG" \
   || fail 'a refill below the skip threshold did not log self-fix-refill'
 
-# A dispatch_pending lock-held skip increments the persisted counter atomically.
+# A dispatch_pending lock-held skip increments the persisted counter and its refill summary names the holder age.
 printf '0\n' > "$SKIP_COUNTER"
 exec {held_lock_fd}>>"$A/.tick-step-dispatch_pending.lock"
 flock -x "$held_lock_fd" || fail 'could not hold the dispatch_pending lock for the skip-count check'
-TICK_STEP_LOCK_RESULT=""
-tick_step_lock_run dispatch_pending :
-[[ "$TICK_STEP_LOCK_RESULT" == skipped ]] || fail "a held dispatch_pending lock was not reported as skipped ($TICK_STEP_LOCK_RESULT)"
+printf '%s\n' "$(( $(date +%s) - 30 ))" > "$A/.tick-step-dispatch_pending.started"
+TICK_DISPATCH_SKIPS=(); LOG="$SAY_LOG"; : > "$LOG"
+busy_log_offset="$(wc -c < "$LOG")"
+dispatch_pending true
 [[ "$(cat "$SKIP_COUNTER")" == 1 ]] || fail "a lock-held dispatch_pending skip did not increment the counter: $(cat "$SKIP_COUNTER")"
+busy_metrics="$(refill_dispatch_metrics "$busy_log_offset" 0)"
+[[ "$busy_metrics" == *'dispatch-lock:1,dispatch-step-busy:'* ]] || fail "the refill summary omitted the busy dispatch step: $busy_metrics"
+[[ "$busy_metrics" =~ dispatch-step-busy:([0-9]+)s ]] || fail "the refill summary omitted the holder age: $busy_metrics"
+(( BASH_REMATCH[1] >= 30 && BASH_REMATCH[1] <= 31 )) || fail "the holder age was wrong: $busy_metrics"
 flock -u "$held_lock_fd" || fail 'could not release the dispatch_pending test lock'
 exec {held_lock_fd}>&-
+rm -f -- "$A/.tick-step-dispatch_pending.started"
+LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
 
 # (d) The refill's tick-phases line names the steps that phase() does not wrap.
 dispatch_pending() { :; }

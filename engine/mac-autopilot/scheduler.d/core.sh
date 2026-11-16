@@ -171,6 +171,7 @@ ready_since_epoch() { # → jq 表达式：.ready_since 归一为 epoch 秒（IS
 }
 gh() {
   [[ -n "${GH_TICK_CALLS_FILE:-}" ]] && printf 'x\n' >>"$GH_TICK_CALLS_FILE" 2>/dev/null || :
+  [[ -n "${TICK_DISPATCH_STEP_GH_FILE:-}" ]] && printf x >>"$TICK_DISPATCH_STEP_GH_FILE" 2>/dev/null || :
   local started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}"
   local timeout_op="${1:-unknown}" timeout_unit="${id:-unknown}"
   local timeout_seconds="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"

@@ -15,7 +15,7 @@ set -euo pipefail
 source "$SCHED_DIR/core.sh"
 source "$SCHED_DIR/../../coord.sh"
 source "$SCHED_DIR/locks-views.sh"
-if acquire_scheduler_lock; then echo acquired; else echo refused; fi
+if acquire_scheduler_lock; then echo "acquired:$(cat "$SCHED_LOCK/phase")"; else echo refused; fi
 PROBE
 run_probe() { # $1: lock dir
   env AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$1" LOG="$1.log" STAMP=test bash "$probe"
@@ -31,7 +31,7 @@ mkdir "$fresh"
 old="$fixture/old.lock"
 mkdir "$old"
 touch -d '60 seconds ago' "$old"
-[[ "$(run_probe "$old")" == acquired ]] || fail 'an abandoned pid-less lock was not reclaimed'
+[[ "$(run_probe "$old")" == acquired:opening ]] || fail 'an abandoned pid-less lock was not reclaimed with its opening phase recorded'
 grep -q 'scheduler lock: reclaimed an abandoned lock with no pid (age [0-9]*s)' "$old.log" || fail 'reclaim of an abandoned pid-less lock was not logged'
 
 # A live holder whose start ticks match is still busy.

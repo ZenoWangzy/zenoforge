@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# set_unit's dispatch detail ledger_write line names the lock wait, the write and the lock holder's phase, so a slow pass shows whom to fix.
+# set_unit's dispatch detail unit_write line splits lock wait from write and names the lock holder's phase.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
@@ -25,17 +25,27 @@ A="$MAC_AUTOPILOT_RUNTIME_DIR"
 : > "$LOG"
 STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# A contended lock: the wait takes at least 2 s on the SECONDS clock, then the lock is ours.
-printf '%s\n' dispatch_pending > "$A/.tick-phase"
-acquire_scheduler_lock_wait() { local t=$SECONDS; while (( SECONDS - t < 2 )); do sleep 0.1; done; SCHED_LOCK_HELD=true; }
-release_scheduler_lock() { SCHED_LOCK_HELD=false; }
+# A real holder writes its phase into the lock when it acquires it. set_unit must report that phase after the wait.
+rm -rf -- "$SCHED_LOCK" "$A/held"
+(
+  SCHED_LOCK_PHASE=dispatch_pending
+  acquire_scheduler_lock || exit 1
+  : > "$A/held"
+  sleep 2.2
+  release_scheduler_lock
+) &
+holder=$!
+for _ in {1..100}; do [[ -f "$A/held" ]] && break; sleep 0.02; done
+[[ -f "$A/held" ]] || fail 'the scheduler-lock holder did not start'
 SCHED_LOCK_HELD=false TICK_DISPATCH_PENDING_ACTIVE=true
 set_unit issue-1 '.note="waited for the lock"' || fail "set_unit returned rc $?"
+wait "$holder" || fail 'the scheduler-lock holder failed'
 
-line="$(grep -F 'dispatch detail ledger_write unit=issue-1' "$LOG" || true)"
-[[ -n "$line" ]] || fail "no ledger_write line after a 2 s lock wait: $(cat "$LOG")"
-[[ "$line" == *'lock_wait='* ]] || fail "ledger_write line has no lock_wait=: $line"
-[[ "$line" == *'holder_phase=dispatch_pending'* ]] || fail "ledger_write line has no holder_phase= of the lock holder: $line"
+line="$(grep -F 'dispatch detail unit_write unit=issue-1' "$LOG" || true)"
+[[ -n "$line" ]] || fail "no unit_write line after a 2 s lock wait: $(cat "$LOG")"
+[[ "$line" =~ lock_wait=[0-9]+\.[0-9]{3}s ]] || fail "unit_write line has no measured lock_wait: $line"
+[[ "$line" =~ write=[0-9]+\.[0-9]{3}s ]] || fail "unit_write line has no measured write: $line"
+[[ "$line" == *'holder_phase=dispatch_pending'* ]] || fail "unit_write line has no holder_phase= of the lock holder: $line"
 [[ "$(jq -r '.units[0].note' "$UNITS")" == 'waited for the lock' ]] || fail "the write itself did not land"
 
 # A write to an id with no row fails with rc 3, is logged, and leaves units.json byte-identical.

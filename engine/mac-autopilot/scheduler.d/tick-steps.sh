@@ -55,14 +55,30 @@ tick_step_dispatch_pending_skip_count_at_least() { # threshold; compare decimal 
   [[ "$count" == "$threshold" || "$count" > "$threshold" ]]
 }
 
+dispatch_step_busy_summary() { # log byte offset/length → latest observed dispatch step-lock age suffix
+  local offset="$1" bytes="$2"
+  [[ "$offset" =~ ^[0-9]+$ && "$bytes" =~ ^[1-9][0-9]*$ && -f "$LOG" ]] || return 0
+  tail -c +$((offset + 1)) "$LOG" 2>/dev/null | head -c "$bytes" | awk '
+    /tick-step skipped step=dispatch_pending reason=lock-held age=/ {
+      seen=1
+      for (i=1; i<=NF; i++) if ($i ~ /^age=[0-9]+s$/) {
+        split($i, part, "="); sub(/s$/, "", part[2]); age_seen=1; if (part[2]+0 > age) age=part[2]+0
+      }
+    }
+    END { if (seen) { if (age_seen) printf ",dispatch-step-busy:%ds", age; else printf ",dispatch-step-busy:unknown" } }
+  '
+}
+
 tick_step_lock_run() { # step command...; the caller's dynamic lock marker prevents nested flock opens
-  local step="$1" lock_fd rc=0; shift
+  local step="$1" lock_fd rc=0 started age; shift
   case "$step" in dispatch_pending | register_new_issues | release_dependency_blocks | existing_walk) ;; *) return 64 ;; esac
   [[ "${TICK_STEP_LOCK_HELD:-}" != "$step" ]] || { "$@"; return $?; }
   if ! exec {lock_fd}>>"$A/.tick-step-$step.lock"; then say "tick-step lock unavailable step=$step"; return 1; fi
   if ! flock -n "$lock_fd"; then
     TICK_STEP_LOCK_RESULT=skipped
-    say "tick-step skipped step=$step reason=lock-held"
+    started="$(cat "$A/.tick-step-$step.started" 2>/dev/null || true)"; age=unknown
+    if [[ "$started" =~ ^[0-9]+$ ]]; then age=$(($(date +%s) - started)); (( age >= 0 )) || age=0; fi
+    say "tick-step skipped step=$step reason=lock-held age=${age}s"
     if [[ "$step" == dispatch_pending ]] && ! tick_step_dispatch_pending_skips_update increment; then
       say 'tick-step skip counter update failed step=dispatch_pending'
     fi
@@ -71,9 +87,14 @@ tick_step_lock_run() { # step command...; the caller's dynamic lock marker preve
   fi
   TICK_STEP_LOCK_RESULT=acquired
   local TICK_STEP_LOCK_HELD="$step"
+  printf '%s\n' "$(date +%s)" > "$A/.tick-step-$step.started" 2>/dev/null || :
   "$@" || rc=$?
+  rm -f -- "$A/.tick-step-$step.started"
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
+  if [[ "$step" == dispatch_pending ]] && declare -F dispatch_stop_loss_workers_start >/dev/null 2>&1; then
+    dispatch_stop_loss_workers_start || say 'dispatch stop-loss workers: launch failed'
+  fi
   return "$rc"
 }
 

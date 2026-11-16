@@ -34,7 +34,7 @@ scheduler_clear_canary_after_failed_start() (
 )
 
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
-  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word worker_exit_file
+  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word worker_exit_file scope_started_us scope_elapsed_us scope_secs
   local -a launcher=() worker_env=() launch_command=()
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
@@ -119,8 +119,14 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || { [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
   rm -f -- "$worker_pid_file"
   local scope_rc=0
+  scope_started_us=${EPOCHREALTIME/[.,]/}
   worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
     "${worker_env[@]}" "${launch_command[@]}" || scope_rc=$?
+  scope_elapsed_us=$((${EPOCHREALTIME/[.,]/} - scope_started_us))
+  if (( scope_elapsed_us >= 2000000 )); then
+    printf -v scope_secs '%d.%03d' $((scope_elapsed_us / 1000000)) $((scope_elapsed_us % 1000000 / 1000))
+    say "dispatch detail worker_scope_launch unit=$unit secs=${scope_secs}s mode=${WORKER_SCOPE_MODE:-unknown} rc=$scope_rc"
+  fi
   if (( scope_rc != 0 )); then
     rm -f -- "$worker_pid_file"
     if (( scope_rc == 3 )); then say "worker scope start timeout unit=$unit scope=${WORKER_SCOPE_TIMEOUT_SCOPE:-none} waited=${WORKER_SCOPE_WAITED:-0}s"; fi
