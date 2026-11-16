@@ -82,6 +82,7 @@ if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
     ZF_ENGINE_DIR="${ZF_ENGINE_DIR:-$ENGINE_ROOT}" sched_config_file mac-autopilot/required-pr-checks.json)" \
     || REQUIRED_PR_CHECKS_FILE="$HERE/required-pr-checks.json"
 fi
+source "$HERE/scheduler.d/unit-transition-log.sh"
 source "$HERE/scheduler.d/reports.sh"
 source "$HERE/review-contract.sh"
 source "$HERE/scheduler.d/review-fixes.sh"
