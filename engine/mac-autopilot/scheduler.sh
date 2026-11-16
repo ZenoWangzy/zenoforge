@@ -600,7 +600,7 @@ run_refill_intake_dispatch_phases() {
   (( INTAKE_ADDED == 0 || SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )) || phase dispatch_pending true
 }
 refill_tick() {
-  local TICK_LOCAL_REFILL=true refill_log_offset=0 live metrics
+  local TICK_LOCAL_REFILL=true TICK_REFILL_STARTED=$SECONDS refill_log_offset=0 live metrics
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   refill_log_offset="$(cat "$A/.refill-dispatch-log-offset" 2>/dev/null || true)"
   if [[ ! "$refill_log_offset" =~ ^[0-9]+$ ]]; then

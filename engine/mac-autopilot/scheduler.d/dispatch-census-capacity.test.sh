@@ -131,19 +131,29 @@ jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issu
 dispatch_calls=0
 : > "$GH_CALLS"; : > "$LOG"
 TICK_PRS=''
+dispatch_with_refill_start() {
+  local TICK_REFILL_STARTED="$1"; shift
+  dispatch_pending "$@"
+}
 SECONDS=250
-TICK_LOCAL_REFILL=true dispatch_pending true
+TICK_LOCAL_REFILL=true dispatch_with_refill_start 0 true
 [[ "$dispatch_calls" == 0 ]] || fail "a late refill still dispatched (calls=$dispatch_calls)"
 grep -Eq 'dispatch deadline after [0-9]+s: units from issue-4903 wait for the next refill' "$LOG" || fail "no deadline line: $(cat "$LOG")"
 : > "$LOG"
 SECONDS=100
-TICK_LOCAL_REFILL=true dispatch_pending true
+TICK_LOCAL_REFILL=true dispatch_with_refill_start 0 true
 [[ "$dispatch_calls" == 1 ]] || fail "a refill before the deadline did not dispatch (calls=$dispatch_calls)"
 ! grep -Fq 'dispatch deadline' "$LOG" || fail "an early refill stopped: $(cat "$LOG")"
 : > "$LOG"
 SECONDS=250
 dispatch_pending false
 [[ "$dispatch_calls" == 2 ]] || fail "a full tick stopped at the refill deadline (calls=$dispatch_calls)"
+
+# The refill clock starts at the call, even when the shared test shell has been running for a long time.
+: > "$LOG"; dispatch_calls=0; SECONDS=100000
+TICK_LOCAL_REFILL=true dispatch_pending true
+[[ "$dispatch_calls" == 1 ]] || fail "a refill in a long-running shell did not dispatch (calls=$dispatch_calls)"
+! grep -Fq 'dispatch deadline' "$LOG" || fail "a new refill inherited the shell's age: $(cat "$LOG")"
 
 # A self-fix is a repair round too: at the ticket stop-loss it goes to the supervisor, and below it the fix starts.
 jq -n '{units:[{id:"issue-4903",issue:4903,pr:503,stage:"review-pending",self_fix_pending:true,branch:"agent/issue-4903",lane:"pr",title:"fixture self-fix",history:[]}]}' > "$UNITS"
