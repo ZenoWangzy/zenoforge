@@ -58,7 +58,7 @@ reconcile_blocking_issue_root() {
     [ "$recut_status" -ne 2 ] || { blocker_root_fail "recut evidence read failed (status $recut_status) for #$n"; return 1; }
     if [ "$recut_status" -eq 1 ] && jq -e '.state == "tracker" or .tracker_parent == true' <<< "$state" >/dev/null 2>&1 \
       && ! jq -e 'any(.labels[]?; .name == "concluded" or .name == "on-hold")' <<< "$issue_json" >/dev/null; then
-      tracker_childless_to_triage "$n" "$state" || { blocker_root_fail "childless tracker triage failed for #$n"; return 1; }
+      tracker_childless_to_triage "$n" "$state" || { [ "$?" -eq 3 ] && return 0; blocker_root_fail "childless tracker triage failed for #$n"; return 1; }
       echo "issue-pipeline: childless-tracker issue=#$n action=needs-triage" >&2
       return 0
     fi

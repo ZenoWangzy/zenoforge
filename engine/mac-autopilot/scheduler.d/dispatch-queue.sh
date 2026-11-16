@@ -110,6 +110,8 @@ dispatch_pending_pass() {
   TICK_CONTAINER_RUNTIME=""
   local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
+  # A refill tick carries its start; a standalone dispatch pass starts on entry.
+  local dispatch_refill_started="${TICK_REFILL_STARTED:-$SECONDS}" refill_elapsed
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
   local TICK_DISPATCH_PAST_DEADLINE=false
@@ -161,9 +163,12 @@ dispatch_pending_pass() {
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"; why_unit="$id"
     branch="$(jqf -r '.branch // empty' <<<"$u")"
     # The kill counts from the refill's start, and one start can take a minute under load. 90 matches the merge pass stop.
-    if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
-      say "dispatch deadline after ${SECONDS}s: units from $id wait for the next refill"
-      break
+    if [[ "${TICK_LOCAL_REFILL:-false}" == true ]]; then
+      refill_elapsed=$((SECONDS - dispatch_refill_started))
+      if (( refill_elapsed >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 90 )); then
+        say "dispatch deadline after ${refill_elapsed}s: units from $id wait for the next refill"
+        break
+      fi
     fi
     # 812s for 9 units in one pass under load, and the 1800s kill took the tail of the tick with it (2026-11-07).
     if [[ "$local_refill" != true && "$TICK_DISPATCH_PAST_DEADLINE" != true ]] \
