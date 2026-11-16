@@ -214,11 +214,23 @@ for (const text of ["近 24 小时用量", "pr-4365", "#4365", "评测用量", "
   if (!ledgerOut.cost.includes(text)) throw new Error(`cost module lacks "${text}"`);
 if (ledgerOut.cost.includes("NaN")) throw new Error("cost module shows NaN");
 // 总览顶部：现在在干活的员工 = 一张卡一个员工（任务名 + 归属色 + 心跳 + 步骤 + 用时条），没有"N 个"句子；清单不可用时给空态
-const lw = renderAll("live-workers", {live_workers: {load5: 3.2, mem_avail_mb: 4096, items: [
+const lw = renderAll("live-workers", {live_workers: {load5: 27.2, cpu_psi_avg60: 27, mem_avail_mb: 4096, items: [
   {owner: "pipeline", task: "fixture title", issue: 4402, pr: 7, backend: "cx", steps: ["a","b"], step: 1, kind: "repair", started_epoch: Math.floor(Date.now()/1000) - 120, typical_s: 1500, health: "ok", tip: "u1"},
   {owner: "hotfix", task: "ADR-109 cleanup", backend: "zc", steps: ["run","land"], step: 0, started_epoch: null, typical_s: 1800, health: "bad", tip: "k"}]}}).out.overview;
 if ((lw.match(/class="lwc /g)||[]).length !== 2 || !lw.includes("fixture title") || !lw.includes("ADR-109 cleanup") || !lw.includes("lwc s-bad") || !lw.includes("PR 7") || /现在在干活/.test(lw))
   throw new Error("overview lacks one worker card per live worker");
+if (!lw.includes('class="lwg s-ok" title="CPU"') || !lw.includes("load 27.2 · PSI 27.0"))
+  throw new Error("CPU gauge must show load beside healthy PSI, without colouring high load red");
+const cpuOverview = psi => {
+  const live_workers = {load5: 27.2, mem_avail_mb: 9000, items: []};
+  if (psi !== undefined) live_workers.cpu_psi_avg60 = psi;
+  return renderAll("cpu-psi-" + (psi === undefined ? "missing" : psi), {live_workers}).out.overview;
+};
+const cpuStatus = html => (html.match(/class="lwg s-(none|ok|bad)" title="CPU"/) || [])[1];
+const psi75 = cpuOverview(75), psi27 = cpuOverview(27), psiMissing = cpuOverview(undefined);
+if (cpuStatus(psi75) !== "bad" || !psi75.includes("load 27.2 · PSI 75.0")) throw new Error("PSI 75 must colour CPU red and remain next to load");
+if (cpuStatus(psi27) !== "ok" || !psi27.includes("load 27.2 · PSI 27.0")) throw new Error("PSI 27 must leave CPU healthy at high load");
+if (cpuStatus(psiMissing) !== "none" || !psiMissing.includes("load 27.2 · PSI none")) throw new Error("missing PSI must display none without colouring CPU red");
 if (!renderAll("live-workers-bad", {live_workers: {error: "x"}}).out.overview.includes("员工清单不可用")) throw new Error("live workers error state missing");
 // 每张自进化员工卡显示 live_workers 生产者给出的本行 task；相同 tip 不能覆盖不同任务，也不能补空 task
 const optTasks = renderAll("live-workers-opt-tasks", {live_workers: {items: [

@@ -204,4 +204,6 @@ def collect(pipeline_workers, units, prefix, luna_dir, jobs_dir, sup="", traffic
     except Exception: mem = None
     try: load = float(open("/proc/loadavg").read().split()[1])
     except Exception: load = None
-    return {"items": items, "load5": load, "mem_avail_mb": mem, "generated_epoch": int(now)}
+    try: psi = float(re.search(r"^some\s+.*\bavg60=([0-9.]+)(?:\s|$)", open("/proc/pressure/cpu").read(), re.M).group(1))
+    except Exception: psi = None
+    return {"items": items, "load5": load, "cpu_psi_avg60": psi, "mem_avail_mb": mem, "generated_epoch": int(now)}

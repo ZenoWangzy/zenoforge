@@ -35,8 +35,8 @@ LANDING_WINDOW_SECONDS = 3 * 60 * 60  # A three-hour window dampens brief pauses
 LANDING_MIN_RATE_PER_HOUR = 6.0  # Requested floor; reference days landed 53 and 75 PRs/day.
 RELEASE_LAG_SECONDS = 60 * 60  # A product change older than one hour should be in release.
 WORKER_QUEUE_WAIT_SECONDS = 10 * 60  # Admission waits longer than ten minutes need capacity review.
-LOAD_5M_BOUND = 16.0  # Load above sixteen is the requested WSL saturation threshold.
-LOAD_SUSTAIN_SECONDS = 10 * 60  # Saturation must persist for ten minutes before alerting.
+CPU_PSI_BOUND = 60.0  # CPU pressure above sixty is the requested WSL saturation threshold.
+CPU_PSI_SUSTAIN_SECONDS = 10 * 60  # Saturation must persist for ten minutes before alerting.
 LOAD_5M_LOW = 6.0  # Maintainer 10-30: under half of 12 cores while work waits wastes the box.
 LOAD_LOW_SUSTAIN_SECONDS = 15 * 60
 TRAIN_RED_LIMIT = 2  # Two red outcomes in the recent train window indicate instability.
@@ -563,6 +563,21 @@ def load_alert(state: dict[str, Any], now_mono: float, has_work: bool = False) -
         load5 = float(Path("/proc/loadavg").read_text().split()[1])
     except (OSError, ValueError, IndexError):
         return None
+    try:
+        psi_avg60 = float(re.search(r"^some avg10=[0-9.]+ avg60=([0-9.]+)", Path("/proc/pressure/cpu").read_text(), re.M).group(1))
+    except (OSError, AttributeError, ValueError):
+        psi_avg60 = 0
+    if psi_avg60 > CPU_PSI_BOUND:
+        try:
+            high_since = float(state.get("cpu_psi_high_since", now_mono))
+        except (TypeError, ValueError):
+            high_since = now_mono
+        state["cpu_psi_high_since"] = high_since = min(high_since, now_mono)
+        if now_mono - high_since > CPU_PSI_SUSTAIN_SECONDS:
+            return ("wsl_saturated:cpu-psi",
+                    alert_line("wsl_saturated", f"cpu_psi_avg60={psi_avg60:.2f}:for={int((now_mono-high_since)//60)}m", ">60_for_10m", "reduce_worker_concurrency_until_cpu_pressure_recovers"))
+    else:
+        state.pop("cpu_psi_high_since", None)
     if load5 < LOAD_5M_LOW and has_work:
         low_since = float(state.setdefault("load_low_since", now_mono))
         if now_mono - low_since > LOAD_LOW_SUSTAIN_SECONDS:
@@ -572,22 +587,7 @@ def load_alert(state: dict[str, Any], now_mono: float, has_work: bool = False) -
             )
     else:
         state.pop("load_low_since", None)
-    if load5 <= LOAD_5M_BOUND:
-        state.pop("load_high_since", None)
-        return None
-    try:
-        high_since = float(state.get("load_high_since", now_mono))
-    except (TypeError, ValueError):
-        high_since = now_mono
-    if high_since > now_mono:
-        high_since = now_mono
-    state["load_high_since"] = high_since
-    if now_mono - high_since <= LOAD_SUSTAIN_SECONDS:
-        return None
-    return (
-        "wsl_saturated:wsl-load",
-        alert_line("wsl_saturated", f"load5={load5:.2f}:for={int((now_mono-high_since)//60)}m", ">16_for_10m", "reduce_worker_concurrency_until_load_recovers"),
-    )
+    return None
 
 
 def maintainer_mail_stale_alert(now_wall: float) -> tuple[str, str] | None:

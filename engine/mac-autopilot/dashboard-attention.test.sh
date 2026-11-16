@@ -27,7 +27,7 @@ const st = (count, idle, name) => ({label: "needs-triage", name, count, idle_hou
 
 // 样本：5 小时无输出的流水线员工、40 分钟无输出的热修员工、正常的评审员工、无日志的顾问
 const D = {generated: iso, summary: {max_workers: 8, billable_daily_tokens: 33250000}, config: {daily_token_budget: 30000000},
-  live_workers: {load5: 62.1, mem_avail_mb: 7653, items: [
+  live_workers: {load5: 62.1, cpu_psi_avg60: 75, mem_avail_mb: 7653, items: [
     w("pipeline", "implement", 18000, 2700, "bad"), w("pipeline", "review", 600, 900, "ok"), w("hotfix", "hotfix", 2400, 1800, "warn"), w("advisor", "advisor", null, 600, "none")]},
   units: [unit("a", "implement-pending", 30), unit("b", "implement-pending", 30), unit("c", "implement-pending", 30), unit("d", "repair-pending", 120), unit("e", "needs-human", 5)],
   totals: {ci: "failure", suites: "success（新一轮进行中）", merged_today: [1, 2, 3]},
@@ -37,9 +37,10 @@ const D = {generated: iso, summary: {max_workers: 8, billable_daily_tokens: 3325
 const dash = load(D), rows = dash.problems(D, now);
 // 手算：等待 = 2 位（流水线 + 热修），最久 5 时；用时超标 = 流水线 5 时（> 2 × 45 分）与热修 40 分（> 30 分）；可启动 = 3；卡住 = repair-pending 2 时（> 0.83 时）+ 需人决策 = 2；
 // 产线 2 位 / 上限 8 → 空位 6；预算 33.25M / 30M = 111%；机制沉默 1 个；排队 62 个
-eq("kinds", rows.map(r => r.kind), ["wait", "long", "ci", "load", "mech", "budget", "queue", "slot"]);
+eq("kinds", rows.map(r => r.kind), ["wait", "long", "ci", "cpu-pressure", "mech", "budget", "queue", "slot"]);
 eq("severity", rows.map(r => r.s), ["bad", "bad", "bad", "bad", "bad", "bad", "bad", "warn"]);
-eq("values", rows.map(r => r.val), [2, "5 时 0 分", "失败", "62.1", 1, "111%", 62, 3]);
+eq("values", rows.map(r => r.val), [2, "5 时 0 分", "失败", "75.0", 1, "111%", 62, 3]);
+eq("CPU pressure rule", rows[3].rule, "PSI some avg60 > 60");
 eq("who", [rows[0].who, rows[4].who], ["流水线、热修", "head-supervisor"]);
 if (!rows[0].rule.includes("≥ 30 分") || !rows[0].rule.includes("5 时 0 分")) throw new Error("wait rule: " + rows[0].rule);
 if (!rows[1].rule.includes("（估）")) throw new Error("typical time is an estimate and must say so: " + rows[1].rule);
@@ -60,6 +61,12 @@ const calm = {generated: iso, summary: {max_workers: 8, billable_daily_tokens: 1
   live_workers: {load5: 3, mem_avail_mb: 9000, items: [w("pipeline", "implement", 300, 2700, "ok")]}, units: [], totals: {ci: "success", suites: "success", merged_today: []},
   standards: {metrics: [], mechanisms: []}};
 eq("calm rows", dash.problems(calm, now), []);
+const cpuRows = data => dash.problems(data, now).filter(r => r.kind === "cpu-pressure" || r.kind === "load");
+const psiHost = psi => ({...calm, live_workers: {load5: 27.5, ...(psi === undefined ? {} : {cpu_psi_avg60: psi}), mem_avail_mb: 9000, items: []}});
+eq("PSI 75 is bad above load5 16", cpuRows(psiHost(75)).map(({kind, s, val, rule}) => [kind, s, val, rule]),
+  [["cpu-pressure", "bad", "75.0", "PSI some avg60 > 60"]]);
+eq("PSI 27 is ok above load5 16", cpuRows(psiHost(27)), []);
+eq("missing PSI is none above load5 16", cpuRows(psiHost(undefined)), []);
 const calmHtml = dash.MODULES[0].render(calm);
 if (!calmHtml.includes("没有要处理的") || /class="hk s-(warn|bad)/.test(calmHtml) || /class="lwc [^"]*w-(warn|bad)/.test(calmHtml)) throw new Error("calm overview must carry no warm colour");
 

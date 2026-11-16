@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
+unset LUNA_PRIORITY
 # tools/auto-pin.sh: a pass pins main's newest commit (a batch is pinned once); a failed pin neither exits nor loops on the same commit.
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/auto-pin-test.XXXXXX"); trap 'kill $(jobs -p) 2>/dev/null || :; rm -rf -- "$tmp" "$test_env_root"' EXIT
@@ -28,6 +29,8 @@ g clone -q "$tmp/product-origin.git" "$tmp/product-writer"
 product_commit() { echo "$1" > "$tmp/product-writer/product-state"; g -C "$tmp/product-writer" add -A; g -C "$tmp/product-writer" commit -qm "$1"; g -C "$tmp/product-writer" push -q origin main; g -C "$tmp/product-writer" rev-parse HEAD; }
 
 export ZF_AUTO_PIN_HOME=$tmp/home AGENT_HOME=$tmp/agent ZF_AUTO_PIN_CLONE=$tmp/clone ZF_AUTO_PIN_IDLE_SECS=0 ZF_AUTO_PIN_RETRY_SECS=0.2 ZF_AUTO_PIN_RATE_SECS=0.1
+export ZF_AUTO_PIN_PSI_FILE=$tmp/cpu-pressure ZF_AUTO_PIN_LOAD_WAIT_SECS=900
+printf 'some avg10=0 avg60=0 avg300=0 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
 export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc
 unset ZF_AUTO_PIN_PRODUCT_FETCH_SECS
 REAL_GIT=$(command -v git); export REAL_GIT PRODUCT_FETCH_CALLS=$tmp/product-fetches AUTO_PIN_MAIN_FETCH_CALLS=$tmp/main-fetches
@@ -358,4 +361,35 @@ grep -q 'failed check' "$tmp/ov.out" || fail 'failed check was not named'
 GH_CHECKS='[{"check_runs":[{"status":"in_progress","conclusion":null}]}]'
 merge_override_pin "$ovlog" > "$tmp/ov.out" || fail "override PR with a pending check was refused: $(cat "$tmp/ov.out")"
 unset GH_CHECKS
+
+# High CPU pressure holds the pin until PSI avg60 falls below the bound.
+export ZF_AUTO_PIN_PSI_FILE=$tmp/cpu-pressure ZF_AUTO_PIN_LOAD_WAIT_SECS=900
+printf 'some avg10=58.21 avg60=75 avg300=55.02 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
+sleep() {
+  if [[ ${1-} == 30 ]]; then command sleep 1; else command sleep "$@"; fi
+}
+: > "$PIN_CALLS"; c_psi_wait=$(commit psi-wait); auto_pin_pass > "$tmp/psi-wait.out" & pass=$!
+for _ in {1..100}; do grep -q '^auto-pin: waiting, cpu psi avg60 75 > 60$' "$tmp/psi-wait.out" && break; sleep 0.05; done
+grep -q '^auto-pin: waiting, cpu psi avg60 75 > 60$' "$tmp/psi-wait.out" || fail 'high CPU PSI did not log its wait'
+[[ ! -s $PIN_CALLS ]] || fail 'pin ran before CPU PSI fell below the bound'
+printf 'some avg10=38 avg60=38 avg300=38 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
+wait "$pass" || fail 'CPU PSI wait pass returned non-zero'
+[[ $(grep -Fc "$c_psi_wait" "$PIN_CALLS") == 1 ]] || fail 'pin did not run once CPU PSI fell below the bound'
+[[ $(grep -Fc 'auto-pin: waiting,' "$tmp/psi-wait.out") == 1 ]] || fail 'CPU PSI wait was logged more than once'
+! grep -q 'auto-pin: load wait expired' "$tmp/psi-wait.out" || fail 'CPU PSI wait expired after pressure fell below the bound'
+
+# Hotfix pins bypass the CPU PSI wait.
+printf 'some avg10=75 avg60=75 avg300=75 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
+: > "$PIN_CALLS"; c_psi_hotfix=$(commit psi-hotfix); LUNA_PRIORITY=hotfix auto_pin_pass > "$tmp/psi-hotfix.out"
+[[ $(grep -Fc "$c_psi_hotfix" "$PIN_CALLS") == 1 ]] || fail 'hotfix did not run at high CPU PSI'
+! grep -q '^auto-pin: waiting,' "$tmp/psi-hotfix.out" || fail 'hotfix waited on CPU PSI'
+unset -f sleep
+
+# A zero wait bound logs expiry and still runs the pin at high CPU PSI.
+export ZF_AUTO_PIN_LOAD_WAIT_SECS=0
+printf 'some avg10=75 avg60=75 avg300=75 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
+: > "$PIN_CALLS"; c_psi_expired=$(commit psi-wait-expired); auto_pin_pass > "$tmp/psi-expired.out"
+[[ $(grep -Fc "$c_psi_expired" "$PIN_CALLS") == 1 ]] || fail 'expired CPU PSI wait did not run the pin'
+grep -q '^auto-pin: waiting, cpu psi avg60 75 > 60$' "$tmp/psi-expired.out" || fail 'expired CPU PSI wait did not log its wait'
+grep -q '^auto-pin: load wait expired$' "$tmp/psi-expired.out" || fail 'expired CPU PSI wait did not log expiry'
 echo "auto-pin.test.sh: ok"
