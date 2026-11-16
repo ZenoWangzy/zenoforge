@@ -675,12 +675,12 @@ supervisor_budget_recut() { # id evidence decision park-reason recut-reason park
 }
 
 # Row 131: three parks had no exit a machine could meet (cap default, repair breaker, budget park; 21 units, the oldest 229 h on 11-09).
-# Each takes the existing budget-recut route once per 24h, read from its own dead-park-exit event; a unit that parks again in a class gets another recut, never a requeue.
+# Dead parks use the budget-recut route once per 24h; an arbitration-budget PR park gets one repair requeue and never requeues again.
 # Left alone: session-owned issues/PRs, supervisor_owned units, non-stop-loss holds, non-stale tracker parents,
-# and other park reasons (recut-refused, token hard park, arbiter-owned cap triage).
+# and other park reasons (recut-refused, token hard park and arbiter-owned cap triage).
 DEAD_PARK_EXIT_PER_TICK="${DEAD_PARK_EXIT_PER_TICK:-3}"
 dead_park_exit() {
-  local prs id class n=0 issue issue_state issue_json pr issue_repo="${REPO:-${ZF_REPO:-}}"
+  local prs id class n=0 issue issue_state issue_json pr issue_repo="${REPO:-${ZF_REPO:-}}" u return_stage
   prs="$(tick_prs)" || return 0 # without the census a PR's session-owned label cannot be read
   while IFS=$'\t' read -r id class; do
     (( n < DEAD_PARK_EXIT_PER_TICK )) || break
@@ -702,6 +702,13 @@ dead_park_exit() {
       if jqf -e --arg owned "$SESSION_OWNED_LABEL" 'any(.labels[]?; .name == $owned)' <<<"$issue_json" >/dev/null 2>&1; then continue; fi
     fi
     n=$((n + 1))
+    if [[ "$class" == budget-park-repair ]]; then
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+      return_stage="$(supervisor_return_stage "$u" repair-pending)"
+      set_unit "$id" "$(hist supervisor-requeue 'budget park repair pass: arbitration budget exhausted') | .stage=$(js "$return_stage") | .note=null | del(.parked_reason,.unpark_condition)" || continue
+      say "supervisor budget-park repair pass unit=$id stage=$return_stage"
+      continue
+    fi
     set_unit "$id" "$(hist dead-park-exit "$class park has no automatic exit; sent to recut")" || continue
     say "dead park exit unit=$id class=$class"
     supervisor_budget_recut "$id" "dead park exit ($class)" null "dead park exit could not complete the recut route" "dead park exit recut" \
@@ -709,6 +716,7 @@ dead_park_exit() {
   done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg owned "$SESSION_OWNED_LABEL" --arg re "$SUPERVISOR_CAP_PARK_RESULT_RE" \
     --argjson since "$(($(date +%s) - 86400))" '
     [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
+    | [$census[0][] | .number] as $open_prs
     | .units[]
     | (.history // []) as $h
     | ($h | map(select(.stage != "supervisor-cap-default")) | last // {}) as $l
@@ -718,6 +726,9 @@ dead_park_exit() {
     | (if .parked_reason == "repair-breaker" and $l.stage == "repair-breaker" then "repair-breaker"
        elif (.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park", "supervisor-requeue-failed")) then
          (if any($h[]; .stage == "supervisor-cap-default") then "cap-default"
+          elif $l.stage == "supervisor-budget-park" and (($l.result // "") | test($re)) and
+              (.pr as $p | $open_prs | index($p) != null) and
+              (any($h[]; .stage == "supervisor-requeue" and ((.result // "") | startswith("budget park repair pass:"))) | not) then "budget-park-repair"
           elif ($l.stage | IN("supervisor-budget-park", "supervisor-requeue-failed")) and (($l.result // "") | test($re) | not) then "budget-park"
           else empty end)
        else empty end) as $class

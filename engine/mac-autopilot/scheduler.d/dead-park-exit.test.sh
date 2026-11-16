@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Row 131: cap-default, repair-breaker and budget parks leave through the budget-recut route once per 24h; other parks and owned units stay.
+# Row 131: dead parks recut once per 24h; compatibility budget parks with open PRs get one repair pass; other parks stay.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
@@ -62,7 +62,7 @@ gh() {
   fi
   return 97
 }
-PRS='[{"number":9102,"labels":[{"name":"session-owned"}]}]'
+PRS='[{"number":9102,"labels":[{"name":"session-owned"}]},{"number":9109,"labels":[]}]'
 tick_prs() { printf '%s' "$PRS"; }
 
 # id issue pr reason park-stage park-result [extra jq fields]: a parked unit whose last history event is the park
@@ -82,7 +82,7 @@ cap_default() { jq -c '.history += [{stage:"supervisor-cap-default",result:"bran
   parked issue-9106 9106 null on-hold size-recut-held 'issue #9106 recut is on hold'
   parked issue-9107 9107 9107 token-hard-park token-park 'hard: 9 tokens'
   parked issue-9108 9108 9108 recut-refused-unpushed supervisor-recut-refused 'unpushed' | cap_default
-  parked issue-9109 9109 9109 supervisor-budget supervisor-budget-park 'arbitration budget exhausted for issue-9109 (runs=2 entries=3)'
+  parked issue-9109 null 9109 supervisor-budget supervisor-budget-park 'arbitration budget exhausted for issue-9109 (runs=2 entries=3)' '{"repair_hint":"R1 engine/sample.sh:12 — fix the reviewed finding"}'
   parked issue-9110 9110 9110 supervisor-arbitration-cap supervisor-cap-triage-park 'cap triage pending' | cap_default
   parked issue-9111 9111 9111 'stop-loss same failure: x' supervisor-budget-park 'stop-loss budget' | cap_default
   parked issue-9112 9112 9112 supervisor-budget supervisor-budget-park 'stop-loss budget' '{"hold_handoff_waiting":true}'
@@ -92,7 +92,7 @@ cap_default() { jq -c '.history += [{stage:"supervisor-cap-default",result:"bran
 ISSUE_LABELS='{"9114":[{"name":"session-owned"}]}'
 ISSUE_STATES='{"9115":{"state":"on-hold","hold":{"holder":"head"}}}'
 
-# Each class routes to recut once, closes its PR, and records the exit before the recut event.
+# Dead park classes recut once; an arbitration-budget PR park gets one repair pass.
 dead_park_exit
 for id in issue-9101 issue-9103 issue-9104; do
   [[ "$(stage "$id")" == closed && "$(events "$id")" == *dead-park-exit,supervisor-budget-recut ]] || fail "$id did not exit through recut: $(unit_json "$id")"
@@ -100,9 +100,22 @@ done
 [[ "$(sort "$ROUTES" | tr '\n' ' ')" == '9101 9103 9104 ' ]] || fail "routes were: $(cat "$ROUTES")"
 [[ "$(sort "$CLOSES" | tr '\n' ' ')" == '9101 9103 9104 ' ]] || fail "PR closes were: $(cat "$CLOSES")"
 [[ "$(jq -r '.units[] | select(.id == "issue-9101") | .history[-2].result' "$UNITS")" == 'cap-default park has no automatic exit; sent to recut' ]] || fail "exit event does not name the class"
+[[ "$(stage issue-9109)" == repair-pending && "$(events issue-9109)" == *supervisor-budget-park,supervisor-requeue \
+    && "$(jq -r '.units[] | select(.id == "issue-9109") | .repair_hint' "$UNITS")" == 'R1 engine/sample.sh:12 — fix the reviewed finding' \
+    && "$(jq -r '[.units[] | select(.id == "issue-9109") | .history[] | select(.stage == "supervisor-requeue" and ((.result // "") | startswith("budget park repair pass:")))] | length' "$UNITS")" == 1 ]] \
+  || fail "an arbitration-budget park with an open PR did not get one repair pass: $(unit_json issue-9109)"
+routes_before="$(wc -l < "$ROUTES")"; closes_before="$(wc -l < "$CLOSES")"
+dead_park_exit
+[[ "$(stage issue-9109)" == repair-pending && "$(events issue-9109 | tr ',' '\n' | grep -c '^supervisor-requeue$')" == 1 \
+    && "$(wc -l < "$ROUTES")" == "$routes_before" && "$(wc -l < "$CLOSES")" == "$closes_before" ]] \
+  || fail "the one-shot repair exit looped on a second pass: $(unit_json issue-9109)"
+set_unit issue-9109 '.stage = "parked" | .parked_reason = "supervisor-budget" | .history += [{stage:"supervisor-budget-park",result:"arbitration budget exhausted again",at:"2026-11-09T02:00:00Z"}]'
+dead_park_exit
+[[ "$(stage issue-9109)" == parked && "$(jq -r '[.units[] | select(.id == "issue-9109") | .history[] | select(.stage == "supervisor-requeue" and ((.result // "") | startswith("budget park repair pass:")))] | length' "$UNITS")" == 1 ]] \
+  || fail "a later arbitration-budget park repeated the one-shot repair: $(unit_json issue-9109)"
 
 # Owned, other-class and in-flight handoff units are untouched; the three above prove the pass ran.
-for id in issue-9102 issue-9105 issue-9106 issue-9107 issue-9108 issue-9109 issue-9110 issue-9111 issue-9112 issue-9113 issue-9114 issue-9115; do
+for id in issue-9102 issue-9105 issue-9106 issue-9107 issue-9108 issue-9110 issue-9111 issue-9112 issue-9113 issue-9114 issue-9115; do
   [[ "$(stage "$id")" == parked && "$(events "$id")" != *dead-park-exit* ]] || fail "$id must stay parked and untouched: $(unit_json "$id")"
 done
 
