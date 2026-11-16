@@ -57,7 +57,7 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
-  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" worker_snapshot="${3:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled
+  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" worker_snapshot="${3:-}" w pid unit wtype report rep blocked_pr_dependency lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled
   while read -r w; do
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
@@ -127,7 +127,12 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       (( NOW_EPOCH >= s )) || continue
     fi
 
-    if [[ "$local_only" != true || "$wtype" != implement || "$(unit_field "$unit" '.lane // empty')" != direct-main ]]; then
+    # A BLOCKED-ON report on the PR lane means the worker pushed nothing, so its PR census would change nothing.
+    blocked_pr_dependency=""
+    if [[ "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr && -s "$rep" ]]; then
+      blocked_pr_dependency="$(blocked_on_of "$rep" || :)"
+    fi
+    if [[ -z "$blocked_pr_dependency" && ( "$local_only" != true || "$wtype" != implement || "$(unit_field "$unit" '.lane // empty')" != direct-main ) ]]; then
       case "$wtype" in implement|repair|land) tick_prs_changed ;; esac # Finished workers may have pushed.
       tick_prs_prime
     fi
@@ -826,7 +831,8 @@ stuck_worker_disposition() {
   for id in $(jqf -r '.units[] | select(.stuck_probe != null) | .id' "$UNITS"); do
     case " $offenders " in *" $id "*) ;; *) set_unit "$id" 'del(.stuck_probe)' ;; esac
   done
-  if (( signal_active )) || [[ -n "$widened" ]]; then
+  # Only a named unit with a live worker is a decision; a name with no live worker is noise (#255).
+  if { (( signal_active )) || [[ -n "$widened" ]]; } && (( live_count > 0 || killed_count > 0 )); then
     action=no-kill
     (( killed_count == 0 )) || action=kill
     say "STUCK-DECISION named=$named_count live=$live_count fingerprint=first-seen:$first_seen,progress:$progress,unchanged-window:$unchanged_window,unchanged-confirmed:$unchanged_confirmed,no-live-worker:$no_live_worker action=$action killed=$killed_count"

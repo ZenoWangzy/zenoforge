@@ -353,3 +353,34 @@ guard_review_rule="$(lane_rule direct-main test-head)"
 [[ "$guard_review_rule" == *'评审阶段不得运行测试命令'* && "$guard_review_rule" == *'测试文件可只读检查'* && "$guard_review_rule" == *'Focused 检查在 land 后的 Pipeline 运行'* && "$guard_review_rule" == *'test evidence: not run, post-land'* ]] \
   || { echo 'direct-main review does not tell reviewers to inspect tests without running them' >&2; exit 1; }
 echo 'ok - test-guard outcomes, repeated refusals, and direct-main review evidence'
+
+# A BLOCKED-ON report on the PR lane skips the PR census; a report without it still refreshes the census.
+census_log="$sup/census.log"
+tick_prs_changed() { echo changed >> "$census_log"; }
+tick_prs_prime() { echo primed >> "$census_log"; }
+blocked_on_of() { sed -n 's/^BLOCKED-ON: #\([0-9]*\)$/\1/p' "$1" | head -1; }
+printf '{"units":[{"id":"issue-5","stage":"implement","lane":"pr","history":[]}]}' > "$UNITS"
+printf 'BLOCKED-ON: #77\nVERDICT: INPUT_INCOMPLETE\n' > "$sup/blocked.md"
+jq -n '{workers:[{pid:999999999,unit:"issue-5",type:"implement",provider:"codex",log:"worker.log",report:"blocked.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+rm -f "$census_log"
+harvest_workers || :
+[[ ! -s "$census_log" ]] || { echo 'BLOCKED-ON PR-lane report refreshed the PR census' >&2; exit 1; }
+printf 'DONE\nVERDICT: READY\n' > "$sup/done.md"
+jq -n '{workers:[{pid:999999999,unit:"issue-5",type:"implement",provider:"codex",log:"worker.log",report:"done.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+rm -f "$census_log"
+harvest_workers || :
+[[ -s "$census_log" ]] || { echo 'report without BLOCKED-ON skipped the PR census' >&2; exit 1; }
+echo 'ok - BLOCKED-ON PR-lane report skips the PR census'
+
+# STUCK-DECISION needs a live worker: a named unit with no live worker logs no decision line.
+printf '{"units":[{"id":"issue-9","stage":"implement","history":[]}]}' > "$UNITS"
+jq -n '{metrics:[{id:"flow.wip_age_stage_p90_hours",status:"UNHEALTHY",unhealthy:12}],flow:{wip_age:[{stage:"implement",p90_hours:13,oldest:[{id:"issue-9",age_hours:14}]}]}}' > "$A/node-health.json"
+jq -n '{workers:[{pid:999999999,unit:"issue-8",type:"implement",log:"worker.log",report:"x.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+rm -f "$LOG"
+stuck_worker_disposition
+! grep -Fq 'STUCK-DECISION' "$LOG" 2>/dev/null || { echo 'named unit with no live worker logged STUCK-DECISION' >&2; exit 1; }
+harvest_worker_alive() { return 0; }
+jq -n '{workers:[{pid:999999999,unit:"issue-9",type:"implement",log:"worker.log",report:"x.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+stuck_worker_disposition
+grep -Fq 'STUCK-DECISION named=1 live=1' "$LOG" || { echo 'named live worker logged no STUCK-DECISION' >&2; exit 1; }
+echo 'ok - STUCK-DECISION is logged only with a live worker'
