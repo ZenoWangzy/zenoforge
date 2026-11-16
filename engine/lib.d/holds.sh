@@ -125,6 +125,10 @@ hold_comment_has_marker() {
 }
 
 
+hold_sweep_comments() {
+  jq -e '(.comments | type) == "array"' <<< "$2" >/dev/null 2>&1 && { printf '%s\n' "$2"; return; } || issue_rest_view "$1" "$REPO" comments
+}
+
 hold_durable_record_payload() {
   jq -ce '{holder,release_condition,expires_at,stage_before,kind} + (if has("created_at") then {created_at} else {} end) + (if has("hand_owner") then {hand_owner} else {} end)' <<< "$1"
 }
@@ -404,49 +408,49 @@ hold_sweep_age_notice() {
 }
 
 
-# A refused hold (ownerless, or a release that failed) repeats the same refusal
-# every tick. Remember it keyed on the issue's updatedAt and retry only when the
-# issue changes, or after ZF_HOLD_REFUSAL_RETRY_SECONDS for causes GitHub does
-# not timestamp (hand owner liveness, expiry). No updatedAt, no memory.
-hold_sweep_refusal_active() {
+hold_sweep_refusal_active() { # A deferred expiry comment retries before stale refusal suppression.
   local state_json="$1" issue_json="$2" now_epoch="$3" updated ttl="${ZF_HOLD_REFUSAL_RETRY_SECONDS:-21600}"
   [[ "$ttl" =~ ^[1-9][0-9]*$ ]] || ttl=21600
   updated="$(jq -r '.updatedAt // empty' <<< "$issue_json" 2>/dev/null)" || return 1
   [ -n "$updated" ] || return 1
   jq -e --arg updated "$updated" --argjson now "$now_epoch" --argjson ttl "$ttl" \
-    '.hold_sweep_refusal.updated_at == $updated and ($now - (.hold_sweep_refusal.at // 0)) < $ttl' \
+    '.hold_sweep_refusal.reason != "expiry-comment-pending" and .hold_sweep_refusal.updated_at == $updated and ($now - (.hold_sweep_refusal.at // 0)) < $ttl' \
     <<< "$state_json" >/dev/null 2>&1
 }
 
 
 hold_sweep_refusal_remember() {
-  local n="$1" issue_json="$2" now_epoch="$3" reason="$4" updated reason_file
-  updated="$(jq -r '.updatedAt // empty' <<< "$issue_json" 2>/dev/null)" || return 0
-  [ -n "$updated" ] || return 0
+  local n="$1" issue_json="$2" now_epoch="$3" reason="$4" pending_comment="${5:-}" updated reason_file
+  updated="$(jq -r '.updatedAt // empty' <<< "$issue_json" 2>/dev/null)" || return 0; [ -n "$updated" ] || return 0
   reason_file="$(jq_arg_file "$reason")" || return 0
-  state_merge "$n" "$(jq -nr --arg updated "$updated" --rawfile reason "$reason_file" --argjson at "$now_epoch" \
-    '".hold_sweep_refusal = " + ({updated_at:$updated, reason:$reason, at:$at} | tojson)')" >/dev/null 2>&1 || true
-  rm -f "$reason_file"
+  state_merge "$n" "$(jq -nr --arg updated "$updated" --rawfile reason "$reason_file" --arg pending "$pending_comment" --argjson at "$now_epoch" \
+    '".hold_sweep_refusal = " + ({updated_at:$updated, reason:$reason, at:$at} + (if $pending == "" then {} else {pending_comment:$pending} end) | tojson)')" >/dev/null 2>&1 || true; rm -f "$reason_file"
 }
 
+
+hold_sweep_expiry_marker() {
+  local n="$1" issue_json="$2" state_json="$3" now_epoch="$4" marker="$5" body="$6" pending comments
+  pending="$(jq -r '.hold_sweep_refusal.pending_comment // empty' <<< "$state_json")"
+  if [ "$pending" = "$body" ] && [ "$(jq -r '.hold_sweep_refusal.updated_at // empty' <<< "$state_json")" = "$(jq -r '.updatedAt // empty' <<< "$issue_json")" ]; then :; else
+    comments="$(hold_sweep_comments "$n" "$issue_json")" || { echo "hold_sweep: could not inspect #$n; leaving hold untouched" >&2; return 3; }
+    hold_comment_has_marker "$comments" "$marker" && return 0 || :
+  fi
+  gh_tick_attempt_timeout_sec >/dev/null || { hold_sweep_refusal_remember "$n" "$issue_json" "$now_epoch" expiry-comment-pending "$body"; return 2; }
+  [ -z "$pending" ] || state_merge "$n" 'del(.hold_sweep_refusal)' || return 1
+  guarded_issue_comment "$n" "$body" || { echo "hold_sweep: could not record expiry for #$n; leaving hold untouched" >&2; return 1; }
+}
 
 hold_sweep() {
   local NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
   local held_numbers live_hold_numbers numbers n issue_json state_json hold_json holder release_condition expires_at kind hand_owner owner_status dead_owner
-  local held_issue_snapshot expired_numbers
-  local stage now_epoch expiry_epoch marker body record_json expiry_at renewal_expiry hold_created_at state_path state_label_json live_stage_labels durable_record
-  local routing_stage inbox_key github_state handoff_patch
-  local failure=0
-  # Keep the live issue details from this batch query. The old number-only
-  # snapshot caused one `gh issue view` per ownerless on-hold issue every tick.
+  local held_issue_snapshot expired_numbers pending_numbers comments_json comment_status
+  local stage now_epoch expiry_epoch marker body record_json expiry_at renewal_expiry hold_created_at state_path state_label_json live_stage_labels durable_record routing_stage inbox_key github_state handoff_patch failure=0
   if ! held_issue_snapshot="$(gh issue list --repo "$REPO" --state all --label on-hold --limit 1000 \
-    --json number,state,stateReason,closedAt,labels,comments,title,updatedAt)"; then
+    --json number,state,stateReason,closedAt,labels,title,updatedAt)"; then
     echo "hold_sweep: could not list open on-hold issues" >&2
     return 1
   fi
-  if ! jq -e 'type == "array" and all(.[]; (.number | type) == "number" and (.state | type) == "string"
-      and (.labels | type) == "array" and (.comments | type) == "array")' \
-      <<< "$held_issue_snapshot" >/dev/null 2>&1; then
+  if ! jq -e 'type == "array" and all(.[]; (.number | type) == "number" and (.state | type) == "string" and (.labels | type) == "array")' <<< "$held_issue_snapshot" >/dev/null 2>&1; then
     echo "hold_sweep: invalid issue list response" >&2
     return 1
   fi
@@ -460,17 +464,17 @@ hold_sweep() {
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
     grep -Fxq "$n" <<< "$numbers" || numbers="${numbers}${numbers:+$'\n'}$n"
   done
-  # Shuffled: the slice deadline can end the loop, and a fixed order starves the same tail every tick.
   numbers="$(printf '%s\n' "$numbers" | LC_ALL=C sort -u | shuf)" || return 1
   now_epoch="$(date -u +%s)" || return 1
-  # Expired holds first: a gh deadline can cut the walk at a late random position and the suffix cursor then skips it (#4879, #4776).
-  # One jq over the state files, no gh call; a corrupt file only shortens this list, the shuffled rest still covers every hold.
+  pending_numbers="$(jq -r 'select(.state == "on-hold" and .hold_sweep_refusal.reason == "expiry-comment-pending") | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))' "$STATE_DIR"/*.json 2>/dev/null)" || true
   expired_numbers="$(jq -r --argjson now "$now_epoch" 'select(.state == "on-hold") | ((.hold.expires_at // "") | try fromdateiso8601 catch null) as $e
     | select($e != null and $e <= $now) | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))' "$STATE_DIR"/*.json 2>/dev/null)" || true
+  numbers="$(printf '%s\n' "$pending_numbers" "$numbers" | awk 'NF && !seen[$0]++')" || return 1
   numbers="$(awk 'NR == FNR { first[$0]; next } $0 in first { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }' <(printf '%s\n' "$expired_numbers") - <<< "$numbers")" || return 1
   state_label_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
   while IFS= read -r n; do
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ -z "${ZF_GH_CALL_DEADLINE_EPOCH_MS:-}" ]] || gh_tick_attempt_timeout_sec >/dev/null || break
     state_json="$(state_read "$n")" || { failure=1; continue; }
     hold_json="$(jq -c '.hold // {}' <<< "$state_json" 2>/dev/null)"
     kind="$(jq -r '.kind // empty' <<< "$hold_json")"
@@ -565,8 +569,7 @@ hold_sweep() {
         continue
       fi
     fi
-    if ! jq -e '(.state // "" | ascii_downcase) == "open" and (.labels | type == "array") and (.comments | type == "array") and any(.labels[]?; .name == "on-hold")' \
-        <<< "$issue_json" >/dev/null 2>&1; then
+    if ! jq -e '(.state // "" | ascii_downcase) == "open" and (.labels | type == "array") and any(.labels[]?; .name == "on-hold")' <<< "$issue_json" >/dev/null 2>&1; then
       continue
     fi
     if ! jq -e '.durable_record == true' <<< "$hold_json" >/dev/null 2>&1 \
@@ -619,7 +622,8 @@ hold_sweep() {
       fi
       hold_created_at="$(jq -r '.created_at // .expires_at' <<< "$hold_json")"
       marker="<!-- vecta-hold-dead-owner issue=$n owner=$dead_owner hold=$hold_created_at -->"
-      if ! hold_comment_has_marker "$issue_json" "$marker"; then
+      comments_json="$(hold_sweep_comments "$n" "$issue_json")" || { failure=1; continue; }
+      if ! hold_comment_has_marker "$comments_json" "$marker"; then
         body="$BOT_DISCLAIMER
 Hold released because hand agent $dead_owner is inactive: no active systemd unit or report newer than 3 hours. Resuming at stage $stage.
 $marker"
@@ -677,8 +681,7 @@ $marker"
           continue
         fi
       fi
-    # The hot-fix mechanism closed on 2026-10-04. Holds it left behind keep renewing until the supervisor hands
-    # each issue back to the pipeline (hand-hotfix-sort); delete this branch and is_hotfix_lane_issue then.
+    # Closed 2026-10-04; remove this renewal with is_hotfix_lane_issue after the last legacy hold is gone.
     elif [ "$kind" = hotfix-lane ] && is_hotfix_lane_issue "$issue_json"; then
       renewal_reason="while the issue remains marked for the hot-fix lane"
     fi
@@ -690,7 +693,8 @@ $marker"
         current="$(state_read "$n")" || exit 1
         jq -e --argjson expected "$hold_json" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$current" >/dev/null || exit 1
         marker="<!-- vecta-hold-renewed issue=$n expires=$expires_at -->"
-        if ! hold_comment_has_marker "$issue_json" "$marker"; then
+        comments_json="$(hold_sweep_comments "$n" "$issue_json")" || exit 1
+        if ! hold_comment_has_marker "$comments_json" "$marker"; then
           body="$BOT_DISCLAIMER
 Hold renewed for 168 hours $renewal_reason. Holder: $holder; next expiry: $renewal_expiry.
 $marker"
@@ -716,16 +720,12 @@ $marker"
       stage="$(hold_stage_before "$state_json" "$issue_json")" || { failure=1; continue; }
     fi
     marker="<!-- vecta-hold-expired issue=$n expires=$expires_at -->"
-    if ! hold_comment_has_marker "$issue_json" "$marker"; then
-      body="$BOT_DISCLAIMER
+    body="$BOT_DISCLAIMER
 Hold expired. Holder: $holder. Release condition was not met: $release_condition. Resuming at stage $stage.
 $marker"
-      if ! guarded_issue_comment "$n" "$body"; then
-        echo "hold_sweep: could not record expiry for #$n; leaving hold untouched" >&2
-        failure=1
-        continue
-      fi
-    fi
+    comment_status=0
+    hold_sweep_expiry_marker "$n" "$issue_json" "$state_json" "$now_epoch" "$marker" "$body" || comment_status=$?
+    case "$comment_status" in 0) ;; 2) failure=1; break ;; 3) failure=1; continue ;; *) failure=1; continue ;; esac
     # Reset the attempt budget in the same locked transition as the release.
     handoff_patch='.attempts = 0 | if .pipeline_system.enabled == true then if ((.pipeline_system.resume_artifact_sha // "") | test("^[0-9a-f]{40,64}$")) then .pipeline_system.resume_artifact_attempt = .attempts else del(.pipeline_system.resume_artifact_sha, .pipeline_system.resume_artifact_attempt) end else . end'
     if [ "$stage" = ready-for-agent ]; then
