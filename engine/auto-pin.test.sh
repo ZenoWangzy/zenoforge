@@ -30,12 +30,15 @@ product_commit() { echo "$1" > "$tmp/product-writer/product-state"; g -C "$tmp/p
 export ZF_AUTO_PIN_HOME=$tmp/home AGENT_HOME=$tmp/agent ZF_AUTO_PIN_CLONE=$tmp/clone ZF_AUTO_PIN_IDLE_SECS=0 ZF_AUTO_PIN_RETRY_SECS=0.2 ZF_AUTO_PIN_RATE_SECS=0.1
 export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc
 unset ZF_AUTO_PIN_PRODUCT_FETCH_SECS
-REAL_GIT=$(command -v git); export REAL_GIT PRODUCT_FETCH_CALLS=$tmp/product-fetches
-mkdir -p "$tmp/bin"; : > "$PRODUCT_FETCH_CALLS"
+REAL_GIT=$(command -v git); export REAL_GIT PRODUCT_FETCH_CALLS=$tmp/product-fetches AUTO_PIN_MAIN_FETCH_CALLS=$tmp/main-fetches
+mkdir -p "$tmp/bin"; : > "$PRODUCT_FETCH_CALLS" "$AUTO_PIN_MAIN_FETCH_CALLS"
 cat > "$tmp/bin/git" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1-}" == -C && "${2-}" == "$AGENT_HOME/checkout" && "${3-}" == fetch ]]; then
   echo fetch >> "$PRODUCT_FETCH_CALLS"
+fi
+if [[ "${1-}" == -C && "${2-}" == "$ZF_AUTO_PIN_CLONE" && "${3-}" == fetch ]]; then
+  echo fetch >> "$AUTO_PIN_MAIN_FETCH_CALLS"
 fi
 exec "$REAL_GIT" "$@"
 STUB
@@ -60,10 +63,19 @@ wait_for_pass_exit() {
   return 1
 }
 product_fetch_count() { wc -l < "$PRODUCT_FETCH_CALLS"; }
+auto_pin_main_fetch_count() { wc -l < "$AUTO_PIN_MAIN_FETCH_CALLS"; }
 wait_for_product_fetches() {
   local expected=$1
   for _ in {1..200}; do
     [[ $(product_fetch_count) -ge $expected ]] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+wait_for_main_fetches() {
+  local expected=$1
+  for _ in {1..200}; do
+    [[ $(auto_pin_main_fetch_count) -ge $expected ]] && return 0
     sleep 0.05
   done
   return 1
@@ -205,10 +217,11 @@ retry=0.2; export ZF_AUTO_PIN_PRODUCT_FETCH_SECS=600
 unset ZF_AUTO_PIN_PRODUCT_FETCH_SECS; retry=0.2; rm -f "$product_fetch_time"
 : > "$PIN_CALLS"; c_product_throttle=$(commit product-fetch-throttle); echo 1 > "$PIN_RC"
 fetches_before=$(product_fetch_count)
+main_fetches_before=$(auto_pin_main_fetch_count)
 auto_pin_pass > "$tmp/product-throttle.out" & pass=$!
 wait_for_pin_calls "$c_product_throttle" 1 || fail 'product throttle case did not start its failed pin'
 wait_for_product_fetches "$((fetches_before + 1))" || fail 'product throttle case did not perform its first fetch'
-sleep 0.6
+wait_for_main_fetches "$((main_fetches_before + 3))" || fail 'product throttle case did not run two wait-loop passes'
 [[ $(product_fetch_count) == $((fetches_before + 1)) ]] || fail 'product fetch ran more than once inside the throttle interval'
 kill -0 "$pass" 2>/dev/null || fail 'product throttle case ended before engine main advanced'
 ! grep -q RETRY-PRODUCT-MAIN "$tmp/product-throttle.out" || fail 'unchanged product head woke the throttle case'
@@ -221,7 +234,10 @@ echo 0 > "$PIN_RC"; auto_pin_pass > /dev/null
 # A failed bounded fetch is logged once and cannot use a changed stale tracking ref to wake a retry.
 export ZF_AUTO_PIN_PRODUCT_FETCH_SECS=600; retry=1; rm -f "$product_fetch_time"
 product_origin_url=$(g -C "$tmp/agent/checkout" remote get-url origin)
+product_bad_old=$(g -C "$tmp/agent/checkout" rev-parse origin/main)
 product_bad_head=$(product_commit product-head-after-fetch-failure)
+g -C "$tmp/agent/checkout" fetch -q origin main
+g -C "$tmp/agent/checkout" update-ref refs/remotes/origin/main "$product_bad_old" || fail 'could not restore the old product tracking ref'
 g -C "$tmp/agent/checkout" remote set-url origin "$tmp/missing-product-origin.git"
 : > "$PIN_CALLS"; c_product_fetch_failed=$(commit product-fetch-failed); echo 1 > "$PIN_RC"
 fetches_before=$(product_fetch_count)
@@ -229,7 +245,7 @@ auto_pin_pass > "$tmp/product-fetch-failed.out" & pass=$!
 wait_for_pin_calls "$c_product_fetch_failed" 1 || fail 'bad-origin case did not start its failed pin'
 for _ in {1..200}; do grep -q PIN-FAILED "$tmp/product-fetch-failed.out" && break; sleep 0.05; done
 grep -q PIN-FAILED "$tmp/product-fetch-failed.out" || fail 'bad-origin pin failure was not recorded'
-g -C "$tmp/agent/checkout" update-ref refs/remotes/origin/main "$product_bad_head"
+g -C "$tmp/agent/checkout" update-ref refs/remotes/origin/main "$product_bad_head" || fail 'could not stage a changed stale tracking ref'
 wait_for_product_fetches "$((fetches_before + 1))" || fail 'bad-origin case did not attempt the product fetch'
 sleep 0.2
 [[ $(grep -c PRODUCT-FETCH-FAILED "$tmp/product-fetch-failed.out") == 1 ]] || fail 'failed product fetch did not log exactly one failure line'
