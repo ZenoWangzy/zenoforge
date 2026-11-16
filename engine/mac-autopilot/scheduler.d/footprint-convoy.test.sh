@@ -133,13 +133,15 @@ grep -Fq 'footprint wait unit=candidate owner=owner candidate_path=src/hot owner
 unset ZF_FOOTPRINT_HOTSPOT_MIN
 TICK_FOOTPRINT_DEFER=false
 
-# Fourteen distinct scopes measure both cache paths; PATH wrappers count jq/git launches, not elapsed time.
+# Fourteen distinct scopes with one live owner measure both cache paths; wrappers count jq/git launches, not elapsed time.
 for ((i=0;i<14;i++)); do printf 'batch %s\n' "$i" > "$ROOT/src/batch-$i"; done
+printf 'active writer\n' > "$ROOT/src/active-owner"
 git -C "$ROOT" add .
 git -C "$ROOT" commit -qm 'fourteen preflight scopes'
 git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
-write_units '{units:[range(0;14) as $i | {id:("batch-" + ($i|tostring)),stage:"implement-pending",footprint:[("src/batch-" + ($i|tostring))]}]}'
-printf '%s\n' '{"workers":[]}' > "$WORKERS"
+write_units '{units:([{id:"batch-owner",stage:"implement",footprint:["src/active-owner"]}]
+  + [range(0;14) as $i | {id:("batch-" + ($i|tostring)),stage:"implement-pending",footprint:[("src/batch-" + ($i|tostring))]}])}'
+printf '%s\n' '{"workers":[{"pid":100,"unit":"batch-owner","type":"implement"}]}' > "$WORKERS"
 TICK_FOOTPRINT_MAIN="$(git -C "$ROOT" rev-parse refs/remotes/origin/main)"
 TICK_FOOTPRINT_SCOPE_MEMO=(); TICK_FOOTPRINT_CACHE=(); TICK_CHECK_SCOPE_SOURCE=(); TICK_CHECK_SCOPE=(); TICK_OLD_SCOPE=(); TICK_HOTSPOT_COUNTS=()
 TICK_FOOTPRINT_PREFLIGHT_CONFLICT=(); TICK_FOOTPRINT_PREFLIGHT_IDS=(); TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started
@@ -178,7 +180,6 @@ measure_preflight() {
   fi
 }
 measure_preflight miss
-preflight_miss_jq_git_calls=$MEASURED_JQ_GIT_CALLS
 [[ "$FOOTPRINT_CACHE_PREFLIGHT" == miss && "${#TICK_FOOTPRINT_PREFLIGHT_IDS[@]}" == 14 ]] || fail '14-candidate preflight did not compute a miss'
 for ((i=0;i<14;i++)); do
   [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[batch-$i]:-}" && "${TICK_CHECK_SCOPE[batch-$i]:-}" == "[\"src/batch-$i\"]" ]] \
@@ -193,8 +194,8 @@ for ((i=0;i<14;i++)); do
   [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[batch-$i]:-}" && "${TICK_CHECK_SCOPE[batch-$i]:-}" == "[\"src/batch-$i\"]" ]] \
     || fail "hit preflight changed batch-$i scope or conflict"
 done
-(( preflight_jq_git_calls <= 24 )) \
-  || fail "cache-hit preflight used $preflight_jq_git_calls jq/git process calls for 14 candidates (limit 24)"
+(( preflight_jq_git_calls <= 48 )) \
+  || fail "cache-hit preflight used $preflight_jq_git_calls jq/git process calls for 14 candidates and one live owner (limit 48)"
 
 # Three recent conflicts make the path hot. A live writer whose file is inside the candidate's
 # predicted directory scope makes it wait; a two-event overlap on another file keeps today's behavior.

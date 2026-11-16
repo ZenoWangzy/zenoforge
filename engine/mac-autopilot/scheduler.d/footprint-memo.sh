@@ -148,6 +148,84 @@ footprint_filter_rows_main() { # filter scope and optional old_scope for every r
            end)]' <<<"$records"
 }
 
+footprint_classify_scope_list() { # classify all candidate and original scopes with one main-tree Git read
+  local scopes="$1" specs='' records='' index path object type
+  local -a scope_indexes=() paths=() objects=()
+  while IFS= read -r -d '' index && IFS= read -r -d '' path; do
+    scope_indexes+=("$index"); paths+=("$path"); specs+="refs/remotes/origin/main:$path"$'\n'
+  done < <(jqf -j 'to_entries[] as $scope | $scope.value[] as $path | ($scope.key|tostring),"\u0000",$path,"\u0000"' <<<"$scopes")
+  ((${#paths[@]})) || { jqf -cn --argjson scopes "$scopes" '[range(0;($scopes|length)) | []]'; return; }
+  records="$(printf '%s' "$specs" | git -C "$ROOT" cat-file --batch-check='%(objecttype)' 2>/dev/null)" || records=''
+  mapfile -t objects <<<"$records"
+  records=''
+  for ((index=0; index<${#paths[@]}; index++)); do
+    type=file
+    [[ -d "$ROOT/${paths[$index]}" || "${objects[$index]:-}" == tree ]] && type=directory
+    records+="${scope_indexes[$index]}"$'\t'"$type"$'\t'"${paths[$index]}"$'\n'
+  done
+  jqf -Rn --argjson scopes "$scopes" '[inputs | split("\t") | select(length >= 3)
+    | {scope:(.[0]|tonumber),type:.[1],path:(.[2:]|join("\t"))}] as $paths
+    | [range(0;($scopes|length)) as $scope
+       | [$paths[] | select(.scope == $scope) | {path,type}]]' <<<"$records"
+}
+
+footprint_prepared_conflicts_batch() { # compare all candidates against prepared owners in one jq
+  local active="$1" candidates="$2" rows='' scopes='' typed matches status id owner
+  local -a batch_rows=()
+  mapfile -t batch_rows < <(jqf -c -Rn \
+    --argjson shared "${SHARED_APPEND:-[]}" --arg shared_raw "${SHARED_APPEND:-[]}" \
+    --argjson hot "${TICK_FOOTPRINT_HOT_CONFLICT_PATHS:-[]}" '
+      def strip($scope): if $shared_raw == "[]" then $scope else
+        $scope | map(. as $path | select(test("(^|/)migrations/meta/_journal\\.json$")
+          or (($shared | index($path)) == null) or (($hot | index($path)) != null))) end;
+      ([inputs | split("\t") | select(length == 3) as $row
+        | {id:$row[0],scope:strip($row[1]|fromjson),original:strip($row[2]|fromjson)}]) as $rows
+      | [$rows[] | .scope,.original] as $scopes
+      | $rows,$scopes' <<<"$candidates")
+  rows="${batch_rows[0]:-}"; scopes="${batch_rows[1]:-}"
+  [[ -n "$rows" && -n "$scopes" ]] || return 1
+  ((${#FOOTPRINT_OWNER_IDS[@]})) || return 0
+  typed="$(footprint_classify_scope_list "$scopes")" || return 1
+  rows="$(jqf -cn --argjson rows "$rows" --argjson scopes "$typed" '
+    [range(0;($rows|length)) as $i
+      | $rows[$i] + {scope_types:$scopes[2*$i],original_types:$scopes[2*$i+1]}]')" || return 1
+  matches="$(jqf -nr --slurpfile rows <(printf '%s' "$rows") \
+    --slurpfile owners <(printf '%s' "$FOOTPRINT_OWNERS_DOC") \
+    --slurpfile active <(printf '%s' "$active") --argjson live "$FOOTPRINT_OWNER_LIVE_DOC" \
+    --argjson hot "$TICK_FOOTPRINT_HOT_CONFLICT_PATHS" '
+      def overlaps($a; $b): $a == $b or ($a | startswith($b + "/")) or ($b | startswith($a + "/"));
+      def includes_hot($scope; $path): any($scope[]; . as $entry
+        | $entry.path == $path or ($entry.type == "directory" and ($path | startswith($entry.path + "/"))));
+      ($active[0] | map(.id | if type == "string" then . else tojson end)) as $ids
+      | $rows[0][] as $candidate
+      | (first(range($owners[0]|length) as $i | select($ids[$i] != $candidate.id)
+          | $owners[0][$i] as $owner
+          | if $owner == null then "F\($i)" else
+              (any($candidate.original_types[]; .type == "file")) as $candidate_has_files
+              | (any($owner[]; .type == "file")) as $owner_has_files
+              | (any($candidate.scope_types[] as $a | $owner[] as $b
+                    | select(overlaps($a.path; $b.path))
+                    | select(($a.type == "file" and $b.type == "file") or ($candidate_has_files|not)
+                      or ($owner_has_files|not) or ($a.path | test("(^|/)migrations/meta/_journal\\.json$"))
+                      or ($b.path | test("(^|/)migrations/meta/_journal\\.json$"))); true)) as $collides
+              | select($collides or ($live[$i] and any($hot[] as $path
+                    | select((includes_hot($candidate.scope_types; $path) or includes_hot($candidate.original_types; $path))
+                      and includes_hot($owner; $path)); true)))
+              | "C\($i)"
+            end) // "") as $hit
+      | if $hit == "" then empty
+        elif ($hit|startswith("F")) then "ERROR\t\($candidate.id)\t\($ids[($hit[1:]|tonumber)])"
+        else "MATCH\t\($candidate.id)\t\($ids[($hit[1:]|tonumber)])" end')" || return 1
+  while IFS=$'\t' read -r status id owner; do
+    [[ -n "$status" ]] || continue
+    if [[ "$status" == ERROR ]]; then
+      say "footprint comparison failed candidate=$id owner=$owner step=classify rc=2"
+      return 1
+    fi
+    printf '%s\t%s\n' "$id" "$owner"
+  done <<<"$matches"
+}
+
 footprint_preflight_scope_rows() { # resolve direct ledger scopes in batches and memo the final scopes for unit checks
   local refill="$1" records='' rows filtered id unit head raw_scope preserve scope
   local -n rows_out="$2" heads_out="$3"

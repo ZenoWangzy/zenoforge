@@ -236,13 +236,13 @@ footprint_owners_prepare() { # owners-json: ids, stages, stripped scopes and cla
 footprint_owner_conflict() { # candidate scope, self id, original scope -> FOOTPRINT_CONFLICT_OWNER; rc 0 or 2 as the legacy pair loop
   local candidate original i first=-1 flags='' sep='' c k hit rc
   FOOTPRINT_CONFLICT_OWNER=''
-  original="$(footprint_strip_shared_append "${3:-$1}")"
-  candidate="$(footprint_strip_shared_append "$1")"
   for i in "${!FOOTPRINT_OWNER_IDS[@]}"; do
     if [[ "${FOOTPRINT_OWNER_IDS[$i]}" == "$2" ]]; then flags+="${sep}true"; else flags+="${sep}false"; (( first >= 0 )) || first=$i; fi
     sep=,
   done
   (( first >= 0 )) || return 0
+  original="$(footprint_strip_shared_append "${3:-$1}")"
+  candidate="$(footprint_strip_shared_append "$1")"
   if [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" == 1 ]]; then # the old rule keeps its per-pair helper
     for i in "${!FOOTPRINT_OWNER_IDS[@]}"; do
       [[ "${FOOTPRINT_OWNER_IDS[$i]}" != "$2" ]] || continue
@@ -286,15 +286,18 @@ active_footprint_conflict() (
   footprint_owner_conflict "$1" "$3" "${4:-$1}" || exit $?
   [[ -z "$FOOTPRINT_CONFLICT_OWNER" ]] || printf '%s\n' "$FOOTPRINT_CONFLICT_OWNER"
 )
-active_footprint_conflicts_batch() ( # one memo and one owner pass for every candidate row
-  local active="$1" candidates="$2" id scope original prepared=false
+active_footprint_conflicts_batch() ( # prepare owners once and compare all candidate rows in one jq
+  local active="$1" candidates="$2" id scope original
+  [[ -n "$candidates" && "$active" != '[]' ]] || return 0
+  footprint_hot_conflict_paths_load || return 1
+  scheduler_scope_lib open-pr-collision || { say "footprint comparison failed step=load-lib rc=2"; return 1; }
+  footprint_owners_prepare "$active"
+  if [[ "${ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING:-0}" != 1 ]]; then
+    footprint_prepared_conflicts_batch "$active" "$candidates"
+    return $?
+  fi
   while IFS=$'\t' read -r id scope original; do
     [[ -n "$id" ]] || continue
-    if [[ "$prepared" != true ]]; then
-      footprint_hot_conflict_paths_load || return 1
-      scheduler_scope_lib open-pr-collision || { say "footprint comparison failed candidate=$id step=load-lib rc=2"; return 1; }
-      footprint_owners_prepare "$active"; prepared=true
-    fi
     footprint_owner_conflict "$scope" "$id" "${original:-$scope}" || return 1
     [[ -z "$FOOTPRINT_CONFLICT_OWNER" ]] || printf '%s\t%s\n' "$id" "$FOOTPRINT_CONFLICT_OWNER"
   done <<<"$candidates"
