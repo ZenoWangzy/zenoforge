@@ -33,24 +33,23 @@ field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 command_arg() { local flag="$1" i; for ((i=0; i<${#CODEX_COMMAND[@]}; i++)); do [[ "${CODEX_COMMAND[i]}" == "$flag" ]] && { printf '%s' "${CODEX_COMMAND[i + 1]:-}"; return 0; }; done; return 1; }
 
 claude_reviewer_case() {
-  local review_repo="$fixture/claude-review-repo" cli_tools allowed_tools
+  local review_repo="$fixture/claude-review-repo" cli_tools allowed_tools denied_tools
   git init -q -b main "$review_repo"
 
   # Dispatch units carry their lane alongside the review stage and PR/branch identity.
   printf '%s\n' '{"units":[{"id":"issue-50","issue":50,"stage":"review-pending","branch":"main","lane":"direct-main","title":"fixture review","history":[]}]}' > "$UNITS"
   build_codex_command review claude-haiku-5-5 xhigh issue-50 'review prompt' '' "$review_repo" claude
-  cli_tools="$(command_arg --tools)"; allowed_tools="$(command_arg --allowedTools)"
-  [[ "$cli_tools" == 'Read,Grep,Glob,Bash' ]] || fail "non-PR Claude reviewer has unexpected --tools: $cli_tools"
-  [[ "$cli_tools,$allowed_tools" != *"Write"* && "$cli_tools,$allowed_tools" != *"Edit("* && "$cli_tools,$allowed_tools" != *"git push"* ]] \
-    || fail "non-PR Claude reviewer has write or push grants: $cli_tools / $allowed_tools"
+  cli_tools="$(command_arg --tools)"; allowed_tools="$(command_arg --allowedTools)"; denied_tools="$(command_arg --disallowedTools)"
+  [[ "$cli_tools" == 'Read,Grep,Glob,Bash' && "$allowed_tools" != *"Write"* && "$allowed_tools" != *"Edit("* && "$allowed_tools" != *"git push"* \
+    && "$(command_arg --permission-mode)" == plan && "$denied_tools" == *'Edit,Write,'* ]] || fail "non-PR Claude reviewer is not read-only: $cli_tools / $allowed_tools / $denied_tools"
 
   git -C "$review_repo" switch -c feat-x >/dev/null
   printf '%s\n' '{"units":[{"id":"issue-51","issue":51,"pr":51,"stage":"review-pending","branch":"feat-x","lane":"pr","title":"fixture review","history":[]}]}' > "$UNITS"
   build_codex_command review claude-haiku-5-5 xhigh issue-51 'review prompt' '' "$review_repo" claude
-  cli_tools="$(command_arg --tools)"; allowed_tools="$(command_arg --allowedTools)"
-  [[ "$cli_tools" == 'Read,Edit,Write,Grep,Glob,Bash' ]] || fail "PR-lane Claude reviewer lacks edit tools: $cli_tools"
-  [[ "$allowed_tools" == *'Bash(git push origin feat-x)'* ]] || fail "PR-lane Claude reviewer cannot push its own branch: $allowed_tools"
-  [[ "$allowed_tools" != *'Bash(git push:*)'* ]] || fail "PR-lane Claude reviewer has an unscoped push grant: $allowed_tools"
+  cli_tools="$(command_arg --tools)"; allowed_tools="$(command_arg --allowedTools)"; denied_tools="$(command_arg --disallowedTools)"
+  [[ "$cli_tools" == 'Read,Grep,Glob,Bash' && "$allowed_tools" != *'Edit('* && "$allowed_tools" != *'Write('* && "$allowed_tools" != *'Bash(git push'* \
+    && "$(command_arg --permission-mode)" == plan && "$denied_tools" == *'Edit,Write,'* && "$denied_tools" == *'Bash(git push:*)'* \
+    && "$denied_tools" == *'Bash(bash *.test.sh)'* ]] || fail "PR-lane Claude reviewer is not read-only: $cli_tools / $allowed_tools / $denied_tools"
 }
 
 priority_admission_case() {
@@ -3042,7 +3041,7 @@ MAIN_HEAD=""
 # ---------- 模型提供方：claude-* 走 claude 评审；codex 带 service_tier ----------
 claude_reviewer_case
 [[ "${CODEX_COMMAND[0]}" == claude && "$WORKER_STDOUT_REPORT" == 1 ]] || fail 'claude model not routed to claude CLI'
-[[ " ${CODEX_COMMAND[*]} " == *" --model claude-haiku-5-5 --effort xhigh --permission-mode dontAsk --strict-mcp-config "* ]] || fail "claude flags wrong (MCP servers must not load): ${CODEX_COMMAND[*]}"
+[[ " ${CODEX_COMMAND[*]} " == *" --model claude-haiku-5-5 --effort xhigh --permission-mode plan --strict-mcp-config "* ]] || fail "claude flags wrong (MCP servers must not load): ${CODEX_COMMAND[*]}"
 [[ " ${CODEX_COMMAND[*]} " != *"Bash(gh api"* && " ${CODEX_COMMAND[*]} " != *"Bash(sed"* ]] || fail 'claude reviewer allowlist grants an unapproved command'
 build_codex_command implement gpt-6-luna max fix-1 'implement prompt'
 [[ "${CODEX_COMMAND[0]}" == codex && "$WORKER_STDOUT_REPORT" == 0 && " ${CODEX_COMMAND[*]} " == *' --config service_tier="fast" '* ]] || fail "codex service tier missing: ${CODEX_COMMAND[*]}"

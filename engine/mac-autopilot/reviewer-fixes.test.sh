@@ -4,6 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/reports.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/review-fixes.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/clones.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/worker-command.sh"
 
 fail() { echo "reviewer-fixes.test.sh: $*" >&2; exit 1; }
 
@@ -31,11 +32,47 @@ unit_field() {
     .pr) printf '7\n' ;;
     '.branch // empty') printf '%s\n' "$TEST_BRANCH" ;;
     '.lane // empty') printf 'pr\n' ;;
-    *) return 1 ;;
+    *) printf 'false\n' ;;
   esac
 }
 tick_pr_head() { printf '%s\n' "$TEST_REMOTE_HEAD"; }
 ENGINE_ROOT="$(git rev-parse --show-toplevel)"
+CODEX_ENV_ARGS=()
+CODEX_PLUGINS_OFF_ARGS=()
+CFG='{"models":[["gpt-6-luna","max"]]}'
+SESSION_RE='^[0-9a-f-]{36}$'
+provider_of() { case "$1" in claude-*) printf 'claude\n' ;; glm-*|GLM-*) printf 'zcode\n' ;; *) printf 'codex\n' ;; esac; }
+worker_rules() { :; }
+codex_mcp_disable_args() { :; }
+session_role() { printf 'review\n'; }
+session_usage_for_id() { printf '{"raw":1}\n'; }
+session_file_for_id() { printf '/dev/null\n'; }
+zf_zcode_bin_argv() { printf '%s\n' "$test_env_bin/zcode"; }
+readonly_units="$test_env_root/readonly-units.json"
+UNITS="$readonly_units"
+printf '%s\n' '{"units":[{"id":"readonly-review","lane":"pr","branch":"agent/reviewer","session_ids":{"review":"123e4567-e89b-12d3-a456-426614174000"}}]}' > "$readonly_units"
+readonly_repo="$test_env_root/readonly-repo"
+git init -q -b agent/reviewer "$readonly_repo"
+review_command=""
+build_codex_command review gpt-6-luna max readonly-review 'review prompt' '' "$readonly_repo" codex
+review_command=" ${CODEX_COMMAND[*]} "
+[[ "$review_command" == *' -s read-only '* ]] || fail 'Codex review did not use a read-only sandbox'
+[[ "$review_command" == *'本次评审工作目录只读'* ]] || fail 'Codex review prompt did not forbid edits and pushes'
+build_codex_command rereview gpt-6-luna max readonly-review 'rereview prompt' '' "$readonly_repo" codex
+[[ " ${CODEX_COMMAND[*]} " == *' -s read-only resume '* ]] || fail 'Codex rereview resume left the read-only sandbox'
+build_codex_command review GLM-5.3 max readonly-review 'review prompt' '' "$readonly_repo" zcode
+[[ " ${CODEX_COMMAND[*]} " == *'--mode plan '* ]] || fail 'ZCode review did not use plan mode'
+TEST_BRANCH=agent/reviewer
+build_codex_command review claude-sonnet-5-5 high readonly-review 'review prompt' '' "$readonly_repo" claude
+[[ " ${CODEX_COMMAND[*]} " == *'--permission-mode plan'* ]] || fail 'Claude review did not use plan mode'
+[[ " ${CODEX_COMMAND[*]} " == *'--disallowedTools'* ]] || fail 'Claude review did not deny write and test commands'
+[[ " ${CODEX_COMMAND[*]} " == *'Edit,Write,'* \
+  && " ${CODEX_COMMAND[*]} " == *'Bash(git push:*)'* \
+  && " ${CODEX_COMMAND[*]} " == *'Bash(bash *.test.sh)'* ]] \
+  || fail 'Claude review did not explicitly deny edits, pushes, and test runs'
+[[ " ${CODEX_COMMAND[*]} " == *'本次评审只读'* \
+  && " ${CODEX_COMMAND[*]} " == *'保持 finding 为 open'* ]] \
+  || fail 'Claude review prompt did not prohibit edits and keep findings open'
 SUP="$test_env_root/supervisor"
 mkdir -p "$SUP"
 
@@ -133,6 +170,25 @@ review_harvest_gate "$w" "$small_report" unit-small review || fail 'small review
   || fail "small fixed-in-review finding did not reach the normal approve path on its commit (verdict=$v sha=$wsha head=$wprhead report=$report detail=$(sed -n '1,8p' "$rep" | tr '\n' ' '))"
 [[ "$(jqf -r '.sha' <<<"$w")" == "$small_head" && "$(jqf -r '.pr_head' <<<"$w")" == "$small_head" ]] \
   || fail 'approved fix SHA was not carried into harvest state'
+
+# A real reviewer commit without a fixed-in-review finding must still be refused.
+small_no_fix_report="$SUP/review-small-no-fixed-finding.md"
+cat > "$small_no_fix_report" <<'REPORT'
+VERDICT: READY
+
+```review-findings
+{"findings":[{"id":"F1","severity":"P1","file":"src/example.sh","line":1,"rule":"Defect","status":"open","summary":"The empty value is not handled.","introduced_by":"candidate","base_evidence":"The base prints an empty value without the required behavior."}],"dispositions":[]}
+```
+REPORT
+TEST_BRANCH=agent/small; TEST_REMOTE_HEAD="$small_head"
+w="$(jq -cn --arg dir "$small_repo" --arg sha "$small_base" --arg head "$small_base" \
+  '{workdir:$dir,sha:$sha,pr_head:$head,provider:"claude",model:"reviewer-test-model"}')"
+v=; wsha=; wprhead=; report=review-small-no-fixed-finding.md; rep="$small_no_fix_report"
+review_harvest_gate "$w" "$small_no_fix_report" unit-small review || fail 'unauthorized reviewer edit refusal failed'
+[[ "$v" == NOT_READY && "$report" == review-fix-refused-unit-small-*.md ]] \
+  || fail 'a reviewer commit without fixed-in-review was approved'
+[[ "$(git -C "$small_repo" rev-parse HEAD)" == "$small_head" ]] \
+  || fail 'the unauthorized reviewer commit fixture no longer reproduces the moved head'
 
 large_repo="$test_env_root/large"
 readarray -t large_heads < <(make_review_repo "$large_repo" agent/large src/example.sh engine/example.test.sh true)
