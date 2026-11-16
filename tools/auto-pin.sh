@@ -44,12 +44,44 @@ merge_override_pin() { # log -> 0 merged, 1 leave for head
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
   local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head product_fetch_secs product_fetch_now product_fetch_last product_fetch_rc product_tries
+  local loadavg_file load5 load_max load_wait_secs load_waited load_wait_for
   git -C "$C" fetch -q origin main || { sleep "$idle"; return 0; }
   last=$(cat "$state")
   next=$(git -C "$C" rev-list -1 --first-parent "$last..origin/main")
   if [[ -z $next ]]; then sleep "$idle"; return 0; fi
   git -C "$C" checkout -q --detach "$next" || return 1
   merged=$(git -C "$C" log -1 --format=%cI "$next"); log="$logdir/${next:0:12}.log"
+  loadavg_file=${ZF_AUTO_PIN_LOADAVG_FILE:-/proc/loadavg}
+  load_max=${ZF_AUTO_PIN_MAX_LOAD:-16}
+  [[ $load_max =~ ^[0-9]+([.][0-9]+)?$ ]] || load_max=16
+  load_wait_secs=${ZF_AUTO_PIN_LOAD_WAIT_SECS:-900}
+  [[ $load_wait_secs =~ ^[0-9]+$ ]] || load_wait_secs=900
+  load_wait_secs=$((10#$load_wait_secs))
+  load5=$(awk 'NR == 1 { print $2; exit }' "$loadavg_file" 2>/dev/null || :)
+  if [[ $load5 =~ ^[0-9]+([.][0-9]+)?$ ]] \
+    && awk -v load="$load5" -v max="$load_max" 'BEGIN { exit !(load > max) }'; then
+    echo "auto-pin: waiting, load5 $load5 > $load_max"
+    load_waited=0
+    while ((load_waited < load_wait_secs)) && [[ ! -e $stop ]]; do
+      load_wait_for=30
+      if ((load_wait_secs - load_waited < load_wait_for)); then
+        load_wait_for=$((load_wait_secs - load_waited))
+      fi
+      sleep "$load_wait_for"
+      load_waited=$((load_waited + load_wait_for))
+      load5=$(awk 'NR == 1 { print $2; exit }' "$loadavg_file" 2>/dev/null || :)
+      if ! [[ $load5 =~ ^[0-9]+([.][0-9]+)?$ ]] \
+        || ! awk -v load="$load5" -v max="$load_max" 'BEGIN { exit !(load > max) }'; then
+        break
+      fi
+    done
+    [[ ! -e $stop ]] || return 0
+    if [[ $load5 =~ ^[0-9]+([.][0-9]+)?$ ]] \
+      && awk -v load="$load5" -v max="$load_max" 'BEGIN { exit !(load > max) }'; then
+      echo 'auto-pin: load wait expired'
+    fi
+  fi
+  [[ ! -e $stop ]] || return 0
   # shortcut: timeout bounds one pin at 500s, same as the manual flow; a slower land needs a manual rerun.
   rc=0; (cd "$C" && timeout 500 bash tools/pin-vecta.sh "$next" "$AGENT_HOME/checkout" --land) >"$log" 2>&1 || rc=$?
   if ((rc == 75)) && merge_override_pin "$log"; then
