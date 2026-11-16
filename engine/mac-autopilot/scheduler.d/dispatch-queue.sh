@@ -171,7 +171,7 @@ dispatch_pending_pass() {
   fi
   ordered="$(dispatch_order)" || true
   dmark order
-  if [[ "$local_refill" != true ]] && declare -F dispatch_body_dependencies_prime >/dev/null; then
+  if declare -F dispatch_body_dependencies_prime >/dev/null; then
     dispatch_body_dependencies_prime
   fi
   loop_started=$SECONDS
@@ -264,7 +264,7 @@ dispatch_pending_pass() {
       dmark stop_loss_check
       if [[ -n "$budget" ]]; then
         [[ "$local_refill" != true ]] || { dispatch_skip stop-loss-refill; continue; }
-        if [[ "${SCHED_STATION:-false}" == true ]] && dispatch_stop_loss_worker_enqueue "$id"; then
+        if [[ "${SCHED_STATION:-false}" == true && "${SCHED_LOCK_HELD:-false}" != true ]] && dispatch_stop_loss_worker_enqueue "$id"; then
           dmark stop_loss_escalate; continue
         fi
         dispatch_stop_loss_escalation_run "$id" "$stage" "$budget" "$u" || :
