@@ -8,8 +8,9 @@ dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states 
   DISPATCH_BODY_DEP_FRESH=(); DISPATCH_BODY_DEP_PRIMED=true; DISPATCH_BODY_DEP_QUERY_COUNT=0; DISPATCH_BODY_DEP_UNITS=0
   started_us=${EPOCHREALTIME/[.,]/}
   while IFS=$'\t' read -r has_body body_ids task_b64 dropped; do
+    blockers=""
     if [[ "$has_body" == true ]]; then
-      blockers="$(tr ',' '\n' <<<"$body_ids")"
+      [[ "$body_ids" == "-" ]] || blockers="$(tr ',' '\n' <<<"$body_ids")"
     else
       task="$(printf '%s' "$task_b64" | base64 -d 2>/dev/null || true)"
       blockers="$(issue_body_blocked_by <<<"$task")"
@@ -22,7 +23,7 @@ dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states 
   done < <(jqf -r '.units[] as $u
     | select($u.stage=="implement-pending" or ($u.stage=="repair-pending" and $u.hold_handoff_episode != null))
     | [((($u.body_blocked_by | type)=="array")|tostring),
-       (if ($u.body_blocked_by | type)=="array" then [$u.body_blocked_by[] | select(type=="number") | tostring] | join(",") else "" end),
+       ((if ($u.body_blocked_by | type)=="array" then [$u.body_blocked_by[] | select(type=="number") | tostring] | join(",") else "" end) | if .=="" then "-" else . end),
        (if ($u.task // "")=="" then "-" else ($u.task|@base64) end),
        ([($u.dropped_deps // [])[] | tostring]|join(","))] | @tsv' "$UNITS")
   DISPATCH_BODY_DEP_UNITS=${#seen[@]}
