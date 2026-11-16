@@ -256,6 +256,88 @@ if [[ -z "$rel_line" || -z "$hog_line" ]] || (( hog_line <= rel_line )); then
   failures+=("footprint_hog_alert runs under the scheduler lock (release at line '${rel_line:-none}', hog alert at '${hog_line:-none}')")
 fi
 
+# A long-lived worker launched inside a detached step must not inherit that step's flock fd.
+(
+  fd_fixture="$fixture/step-lock-fd"; mkdir -p "$fd_fixture"
+  A="$fd_fixture"; ROOT="$fixture/repo"; LOG="$A/scheduler.log"; SCHED_LOCK="$A/.scheduler.lock"
+  SCHED_LOCK_HELD=false; WORKER_SCOPE_PREPARED=true; WORKER_SCOPE_MODE=disabled; WORKER_PIDFILE=''
+  TICK_DISPATCH_STOP_LOSS_QUEUE=(); : > "$LOG"
+  worker_pid=''; stop_loss_pid=''; fallback_pid=''; fallback_stop_loss_pid=''; lock_failures=()
+  trap 'for pid in "$worker_pid" "$stop_loss_pid" "$fallback_pid" "$fallback_stop_loss_pid"; do [[ -z "$pid" ]] || kill "$pid" 2>/dev/null || :; done' EXIT
+  stop_loss_dir="$fd_fixture/stop-loss-worker"; mkdir -p "$stop_loss_dir"
+  cat > "$stop_loss_dir/scheduler.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" > "$PROBE"
+exec sleep 30
+SH
+  chmod +x "$stop_loss_dir/scheduler.sh"
+  export PROBE="$A/stop-loss-worker.pid"
+  fd_lock_launch() {
+    worker_scope_launch "$A/worker.pid" "$fd_fixture" "$A/worker.log" setsid -- \
+      bash -c 'printf "%s\n" "$$" > "$1"; exec sleep 30' _ "$A/worker.ready"
+    printf '%s\n' "$WORKER_SCOPE_PID" > "$A/launched.pid"
+  }
+  tick_step_lock_run dispatch_pending fd_lock_launch || fail 'tick-step lock probe did not run'
+  for _ in {1..100}; do [[ -s "$A/worker.ready" ]] && break; sleep 0.02; done
+  [[ -s "$A/worker.ready" ]] || fail 'the fake long-lived worker did not start'
+  worker_pid="$(cat "$A/launched.pid")"
+  if [[ -d /proc/self/fd ]]; then
+    [[ -d "/proc/$worker_pid/fd" ]] || lock_failures+=('the fake worker exited before its fd check')
+    for fd in /proc/"$worker_pid"/fd/*; do
+      fd_target="$(readlink "$fd" 2>/dev/null || true)"
+      [[ "$fd_target" != *'.tick-step-'*'.lock' ]] || lock_failures+=("worker $worker_pid inherited $fd_target")
+    done
+  fi
+
+  # Probe the separate stop-loss launcher too while a step fd is open.
+  saved_here="$HERE"; HERE="$stop_loss_dir"
+  launch_stop_loss_inside_step() {
+    TICK_DISPATCH_STOP_LOSS_QUEUE=("issue-438:$(date +%s)")
+    dispatch_stop_loss_workers_start
+  }
+  tick_step_lock_run dispatch_pending launch_stop_loss_inside_step || fail 'stop-loss step-lock probe did not run'
+  for _ in {1..100}; do [[ -s "$PROBE" ]] && break; sleep 0.02; done
+  [[ -s "$PROBE" ]] || fail 'the fake stop-loss worker did not start'
+  stop_loss_pid="$(cat "$PROBE")"
+  if [[ -d /proc/self/fd ]]; then
+    [[ -d "/proc/$stop_loss_pid/fd" ]] || lock_failures+=('the fake stop-loss worker exited before its fd check')
+    for fd in /proc/"$stop_loss_pid"/fd/*; do
+      fd_target="$(readlink "$fd" 2>/dev/null || true)"
+      [[ "$fd_target" != *'.tick-step-'*'.lock' ]] || lock_failures+=("stop-loss worker $stop_loss_pid inherited $fd_target")
+    done
+  fi
+
+  if [[ ! -d /proc/self/fd ]]; then
+    # Without procfs, kill a pass before its explicit unlock and prove neither child retained the flock.
+    rm -f "$PROBE" "$A/fallback.ready" "$A/fallback-launched.pid"
+    HERE="$stop_loss_dir"
+    (
+      fd_lock_launch_and_die() {
+        worker_scope_launch "$A/fallback.pid" "$fd_fixture" "$A/fallback.log" setsid -- \
+          bash -c 'printf "%s\n" "$$" > "$1"; exec sleep 30' _ "$A/fallback.ready"
+        printf '%s\n' "$WORKER_SCOPE_PID" > "$A/fallback-launched.pid"
+        TICK_DISPATCH_STOP_LOSS_QUEUE=("issue-438:$(date +%s)")
+        dispatch_stop_loss_workers_start
+        sleep 0.1
+        kill -KILL "$BASHPID"
+      }
+      tick_step_lock_run dispatch_pending fd_lock_launch_and_die
+    ) >/dev/null 2>&1 &
+    holder_pid=$!
+    wait "$holder_pid" 2>/dev/null || :
+    for _ in {1..100}; do [[ -s "$PROBE" ]] && [[ -s "$A/fallback.ready" ]] && break; sleep 0.02; done
+    fallback_pid="$(cat "$A/fallback-launched.pid")"
+    fallback_stop_loss_pid="$(cat "$PROBE")"
+    flock -n "$A/.tick-step-dispatch_pending.lock" true \
+      || lock_failures+=('a child retained the step flock after its pass died before unlock')
+  fi
+  HERE="$saved_here"
+  if ((${#lock_failures[@]})); then
+    printf 'tick-step child lock regressions: %s\n' "${lock_failures[*]}" >&2
+    exit 1
+  fi
+)
+
 if ((${#failures[@]})); then
   printf 'not ok - %s\n' "${failures[@]}" >&2
   exit 1

@@ -401,6 +401,46 @@ dispatch_pending true || fail 'dispatch_pending returned nonzero in the body dep
 [[ "$(wc -l < "$prime_calls")" == 1 ]] || fail "dispatch_pending made $(wc -l < "$prime_calls") body dependency lookups, want one"
 [[ "$(head -1 "$prime_calls" | cut -d' ' -f1)" == 21 ]] || fail "the dispatch pass omitted body dependencies: $(cat "$prime_calls")"
 [[ "$blocked_rows" == 21 ]] || fail "dispatch_pending did not apply all 21 open body blockers (got $blocked_rows)"
+
+# Fresh-state priming extracts stored and legacy body blockers in one jq batch, skipping dropped dependencies.
+body_prime="$fixture/body-prime-review"; mkdir -p "$body_prime"
+A="$body_prime"; UNITS="$A/units.json"; NOW_EPOCH=1794221232; DEP_CHECK_SECONDS=600
+dependency_review_failures=()
+jq -n '{units:[
+  {id:"stored",stage:"implement-pending",body_blocked_by:[3001,3002],dropped_deps:[3002]},
+  {id:"legacy",stage:"repair-pending",hold_handoff_episode:"fixture",dropped_deps:[],task:"--- issue 正文（任务数据）---\n## Blocked by\n- #3003\n# another section\n- #3004\n--- 正文结束 ---"}
+]}' > "$UNITS"
+unit_blocker_calls="$body_prime/unit-blocker-calls"; primed_dependencies="$body_prime/primed"
+ : > "$unit_blocker_calls"
+unit_body_blockers() {
+  printf 'called\n' >> "$unit_blocker_calls"
+  case "$(jqf -r '.id' <<<"$1")" in stored) printf '3001\n' ;; legacy) printf '3003\n' ;; esac
+}
+dep_states() {
+  printf '%s\n' "$*" >> "$primed_dependencies"
+  local dep
+  for dep in "$@"; do printf '%s\tOPEN\n' "$dep"; done
+}
+: > "$primed_dependencies"
+dispatch_body_dependencies_prime
+[[ ! -s "$unit_blocker_calls" ]] || dependency_review_failures+=("body prime forked per-unit blocker extraction $(wc -l < "$unit_blocker_calls") times")
+[[ "$(tr ' ' '\n' < "$primed_dependencies" | sort -n | paste -sd, -)" == '3001,3003' ]] || dependency_review_failures+=("body prime returned the wrong blocker batch: $(cat "$primed_dependencies")")
+[[ "$DISPATCH_BODY_DEP_UNITS" == 2 ]] || dependency_review_failures+=("body prime counted dropped or missing dependencies: $DISPATCH_BODY_DEP_UNITS")
+
+# An empty GitHub state remains uncached so a transient unreadable result cannot suppress retries for ten minutes.
+A="$fixture/empty-body-dependency"; mkdir -p "$A"; UNITS="$A/units.json"
+jq -n '{units:[{id:"issue-empty",stage:"implement-pending",body_blocked_by:[3999],dropped_deps:[]}]}' > "$UNITS"
+dep_states() { printf '3999\t\n'; }
+dispatch_body_dependencies_prime
+[[ ! -e "$A/dep-fresh-3999" ]] || dependency_review_failures+=('empty batch state was memoised')
+DISPATCH_BODY_DEP_PRIMED=false; empty_reads="$A/empty-reads"; : > "$empty_reads"
+dep_states() { printf 'read\n' >> "$empty_reads"; }
+dep_fresh_state 3999 >/dev/null; dep_fresh_state 3999 >/dev/null
+[[ "$(wc -l < "$empty_reads" | tr -d ' ')" == 2 && ! -e "$A/dep-fresh-3999" ]] || dependency_review_failures+=('an empty fresh read was memoised instead of retrying')
+if ((${#dependency_review_failures[@]})); then
+  printf 'dependency freshness regressions: %s\n' "${dependency_review_failures[*]}" >&2
+  exit 1
+fi
 unset DEP_CHECK_SECONDS
 
 echo 'dependencies-onepass.test.sh: ok'

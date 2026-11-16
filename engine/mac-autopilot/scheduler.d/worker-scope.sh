@@ -121,8 +121,15 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
   exec "${launcher[@]}" "${worker_command[@]}"
 }
 
+worker_scope_close_tick_step_lock() { # descriptor inherited from tick_step_lock_run → close it before a child outlives the pass
+  local fd="${1:-}"
+  [[ "$fd" =~ ^[0-9]+$ ]] || return 0
+  exec {fd}>&- 2>/dev/null || :
+}
+
 worker_scope_launch() { # pid-file workdir output-file launcher... -- command...; sets WORKER_SCOPE_PID, WORKER_SCOPE_PID_START (scope only) and WORKER_SCOPE_LAUNCHER_PID; returns 3 on a scope start timeout (WORKER_SCOPE_TIMEOUT_SCOPE, WORKER_SCOPE_WAITED), never an unscoped retry
   local pid_file="$1" workdir="$2" output_file="$3" scope_client status state scope_started bound scope_name
+  local step_lock_fd="${WORKER_SCOPE_STEP_LOCK_FD:-${TICK_STEP_LOCK_FD:-}}"
   shift 3
   local -a launcher=() worker_command=()
   while (($#)) && [[ "$1" != -- ]]; do launcher+=("$1"); shift; done
@@ -130,12 +137,14 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
   shift
   worker_command=("$@")
   ((${#worker_command[@]})) || return 2
+  unset WORKER_SCOPE_STEP_LOCK_FD
   worker_scope_prepare
   WORKER_SCOPE_PID_START=
 
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
     rm -f -- "$pid_file"
-    (cd "$workdir" && worker_scope_exec "$pid_file" "$output_file" "${launcher[@]}" -- "${worker_command[@]}") \
+    (cd "$workdir" && worker_scope_close_tick_step_lock "$step_lock_fd" \
+      && worker_scope_exec "$pid_file" "$output_file" "${launcher[@]}" -- "${worker_command[@]}") \
       >"$output_file" 2>&1 < /dev/null &
     scope_client=$!
     WORKER_SCOPE_LAUNCHER_PID="$scope_client"
@@ -179,7 +188,8 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
     fi
   fi
 
-  (cd "$workdir" && { [[ -z "${WORKER_PIDFILE:-}" ]] || printf '%s\n' "$BASHPID" > "$WORKER_PIDFILE"; } \
+  (cd "$workdir" && worker_scope_close_tick_step_lock "$step_lock_fd" \
+    && { [[ -z "${WORKER_PIDFILE:-}" ]] || printf '%s\n' "$BASHPID" > "$WORKER_PIDFILE"; } \
     && exec "${launcher[@]}" "${worker_command[@]}") >"$output_file" 2>&1 < /dev/null &
   WORKER_SCOPE_PID=$!
   WORKER_SCOPE_LAUNCHER_PID="$WORKER_SCOPE_PID"

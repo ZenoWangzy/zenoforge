@@ -15,9 +15,9 @@ dispatch_stop_loss_worker_active() { # unit-json → 0 while its recorded worker
     return 0
   fi
   if [[ "$pid" =~ ^[1-9][0-9]*$ && "$start" =~ ^[0-9]+$ ]]; then
-    update="if .stop_loss_worker_since == $since and .stop_loss_worker_pid == $pid and .stop_loss_worker_start == $start then del(.stop_loss_worker_since, .stop_loss_worker_pid, .stop_loss_worker_start) else . end"
+    update="if .stop_loss_worker_since == $since and .stop_loss_worker_pid == $pid and .stop_loss_worker_start == $start then del(.stop_loss_worker_pid, .stop_loss_worker_start) else . end"
   else
-    update="if .stop_loss_worker_since == $since and (.stop_loss_worker_pid // null) == null then del(.stop_loss_worker_since, .stop_loss_worker_pid, .stop_loss_worker_start) else . end"
+    update="if .stop_loss_worker_since == $since and (.stop_loss_worker_pid // null) == null then del(.stop_loss_worker_pid, .stop_loss_worker_start) else . end"
   fi
   set_unit "$id" "$update" || return 0
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
@@ -34,21 +34,26 @@ dispatch_stop_loss_worker_active() { # unit-json → 0 while its recorded worker
 }
 
 dispatch_stop_loss_worker_enqueue() { # unit → persist a launch marker and queue it for the post-unlock launcher
-  local id="$1" since="$(date +%s)"
-  set_unit "$id" ".stop_loss_worker_since=$since | .stop_loss_worker_pid=null | .stop_loss_worker_start=null" || return 1
+  local id="$1" since
+  since="$(jqf -r --arg id "$id" '[.units[] | select(.id==$id)][0].stop_loss_worker_since // empty' "$UNITS")"
+  [[ "$since" =~ ^[0-9]+$ ]] || since="$(date +%s)"
+  set_unit "$id" "(if (.stop_loss_worker_since | type)==\"number\" then . else (.stop_loss_worker_since=$since | del(.stop_loss_escalated_since)) end) | .stop_loss_worker_pid=null | .stop_loss_worker_start=null" || return 1
   TICK_DISPATCH_STOP_LOSS_QUEUE+=("$id:$since")
   say "dispatch detail stop_loss_escalate_queued unit=$id"
 }
 
 dispatch_stop_loss_workers_start() { # called by tick_step_lock_run after both step and scheduler locks are free
-  local id since queued limit
+  local id since queued limit step_lock_fd="${TICK_STEP_LOCK_FD:-}"
   ((${#TICK_DISPATCH_STOP_LOSS_QUEUE[@]})) || return 0
   [[ "${SCHED_LOCK_HELD:-false}" != true ]] || { say 'dispatch stop-loss workers: scheduler lock still held'; return 1; }
   limit="${AUTOPI_TICK_STEP_KILL_SECONDS:-900}"; [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=900
   for queued in "${TICK_DISPATCH_STOP_LOSS_QUEUE[@]}"; do
     id="${queued%%:*}"; since="${queued#*:}"
     [[ "$id" =~ ^[A-Za-z0-9._-]+$ && "$since" =~ ^[0-9]+$ ]] || continue
-    A="$A" LOG="$LOG" setsid timeout -k 30 "$limit" bash "$HERE/scheduler.sh" --stop-loss-worker "$id" >> "$A/loop.out" 2>&1 < /dev/null &
+    ( worker_scope_close_tick_step_lock "$step_lock_fd"
+      export A LOG
+      exec setsid timeout -k 30 "$limit" bash "$HERE/scheduler.sh" --stop-loss-worker "$id"
+    ) >> "$A/loop.out" 2>&1 < /dev/null &
   done
   TICK_DISPATCH_STOP_LOSS_QUEUE=()
 }
@@ -103,6 +108,23 @@ dispatch_stop_loss_escalation_run() { # unit stage budget unit-json → perform 
   return "$rc"
 }
 
+dispatch_stop_loss_worker_escalation_claim() { # id since claimed-stage claimed-budget pid-start → atomically admit one worker's side effects
+  local id="$1" since="$2" stage="$3" budget="$4" pid_start="$5" u fresh_stage fresh_budget rc=1
+  acquire_scheduler_lock_wait || return 1
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
+  fresh_stage="$(jqf -r '.stage // empty' <<<"$u")"
+  fresh_budget="$(ticket_budget_reason "$u")"
+  if [[ "$(jqf -r '.stop_loss_worker_since // empty' <<<"$u")" == "$since" \
+    && "$(jqf -r '.stop_loss_worker_pid // empty' <<<"$u")" == "$BASHPID" \
+    && "$(jqf -r '.stop_loss_worker_start // empty' <<<"$u")" == "$pid_start" \
+    && "$fresh_stage" == "$stage" && "$fresh_budget" == "$budget" \
+    && "$(jqf -r '.stop_loss_escalated_since // empty' <<<"$u")" != "$since" ]]; then
+    set_unit "$id" ".stop_loss_escalated_since=$since" && rc=0
+  fi
+  release_scheduler_lock
+  return "$rc"
+}
+
 dispatch_stop_loss_worker_run() { # scheduler child: claim the marker before escalation, then clear only this worker's marker
   local id="$1" u stage budget since pid_start rc=0
   [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || return 64
@@ -119,7 +141,9 @@ dispatch_stop_loss_worker_run() { # scheduler child: claim the marker before esc
         && "$(jqf -r '.stop_loss_worker_start // empty' <<<"$u")" == "$pid_start" ]]; then
         stage="$(jqf -r '.stage // empty' <<<"$u")"; budget="$(ticket_budget_reason "$u")"
         if [[ -n "$budget" && ( "$stage" == implement-pending || "$stage" == repair-pending || "$(jqf -r '.self_fix_pending // false' <<<"$u")" == true ) ]]; then
-          dispatch_stop_loss_escalation_run "$id" "$stage" "$budget" "$u" || rc=$?
+          if dispatch_stop_loss_worker_escalation_claim "$id" "$since" "$stage" "$budget" "$pid_start"; then
+            dispatch_stop_loss_escalation_run "$id" "$stage" "$budget" "$u" || rc=$?
+          fi
         fi
         set_unit "$id" "if .stop_loss_worker_since == $since and .stop_loss_worker_pid == $BASHPID and .stop_loss_worker_start == $pid_start then del(.stop_loss_worker_since, .stop_loss_worker_pid, .stop_loss_worker_start) else . end" || rc=$?
       fi

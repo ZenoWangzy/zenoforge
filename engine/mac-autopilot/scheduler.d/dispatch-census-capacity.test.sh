@@ -515,4 +515,62 @@ unset -f fresh_events fresh_rate
 unset -f red_history stop_loss_case case_stage case_events
 
 unset -f red_history stop_loss_case case_stage case_events red_check_history ci_update_branch
+
+# Same-since workers have one escalation winner. Dead-pid recovery reuses that since, so a crash after the
+# issue comment cannot repeat the route; a supervisor requeue between claim and write invalidates its snapshot.
+stop_loss_review="$fixture/stop-loss-review"; mkdir -p "$stop_loss_review"
+A="$stop_loss_review"; UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
+SCHED_LOCK="$A/.scheduler.lock"; SCHED_LOCK_HELD=false; SCHED_STATION=true; SCHED_LOCK_PHASE=dispatch_pending
+printf '%s\n' '{"workers":[]}' > "$WORKERS"; : > "$LOG"
+stop_loss_review_failures=()
+stop_loss_since="$(date +%s)"; escalation_calls="$A/escalations"
+ticket_budget_reason() { printf '9 rounds\n'; }
+stop_loss_same_failure() { return 1; }
+dispatch_stop_loss_escalation_run() { printf '%s\n' "$BASHPID" >> "$escalation_calls"; sleep 0.05; }
+jq -n --argjson since "$stop_loss_since" '{units:[{id:"issue-438",issue:438,stage:"implement-pending",task:"fixture",branch:"agent/issue-438",history:[],stop_loss_worker_since:$since,stop_loss_worker_pid:null,stop_loss_worker_start:null}]}' > "$UNITS"
+: > "$escalation_calls"
+dispatch_stop_loss_worker_run issue-438 & stop_loss_worker_a=$!
+dispatch_stop_loss_worker_run issue-438 & stop_loss_worker_b=$!
+wait "$stop_loss_worker_a" || fail 'first concurrent stop-loss worker failed'
+wait "$stop_loss_worker_b" || fail 'second concurrent stop-loss worker failed'
+[[ "$(wc -l < "$escalation_calls" | tr -d ' ')" == 1 ]] || stop_loss_review_failures+=('same-since workers ran the stop-loss route more than once')
+[[ "$(jqf -r '.units[0].stop_loss_escalated_since // empty' "$UNITS")" == "$stop_loss_since" ]] || stop_loss_review_failures+=('the winning stop-loss worker did not persist its escalation since')
+
+# Simulate a worker killed just after its issue comment, then sweep the dead pid and retry the same marker.
+stop_loss_since=$(($(date +%s) - 60)); comment_calls="$A/comments"
+jq -n --argjson since "$stop_loss_since" '{units:[{id:"issue-438",issue:438,stage:"implement-pending",task:"fixture",branch:"agent/issue-438",history:[],stop_loss_worker_since:$since,stop_loss_worker_pid:null,stop_loss_worker_start:null}]}' > "$UNITS"
+: > "$comment_calls"
+dispatch_stop_loss_escalation_run() { printf 'comment\n' >> "$comment_calls"; kill -KILL "$BASHPID"; }
+crash_rc=0
+dispatch_stop_loss_worker_run issue-438 >/dev/null 2>&1 & crashed_worker=$!
+wait "$crashed_worker" 2>/dev/null || crash_rc=$?
+[[ "$crash_rc" == 137 ]] || fail "the fake post-comment crash returned $crash_rc, expected 137"
+dead_worker_unit="$(jqf -c '.units[0]' "$UNITS")"
+if dispatch_stop_loss_worker_active issue-438 "$dead_worker_unit"; then stop_loss_review_failures+=('a dead stop-loss worker stayed active after its recovery window'); fi
+dispatch_stop_loss_worker_enqueue issue-438 || stop_loss_review_failures+=('dead-pid recovery did not enqueue a replacement worker')
+[[ "${TICK_DISPATCH_STOP_LOSS_QUEUE[-1]}" == "issue-438:$stop_loss_since" ]] || stop_loss_review_failures+=('dead-pid recovery changed the escalation since')
+dispatch_stop_loss_escalation_run() { printf 'duplicate\n' >> "$comment_calls"; }
+dispatch_stop_loss_worker_run issue-438 || stop_loss_review_failures+=('recovered stop-loss worker failed')
+[[ "$(wc -l < "$comment_calls" | tr -d ' ')" == 1 ]] || stop_loss_review_failures+=('a recovered worker repeated the issue comment after its crash')
+
+# A supervisor requeue between launch claim and escalation write must keep the requeued stage.
+stop_loss_since="$(date +%s)"; requeue_during_budget=true; stop_loss_side_effects=0
+jq -n --argjson since "$stop_loss_since" '{units:[{id:"issue-438",issue:438,stage:"implement-pending",task:"fixture",branch:"agent/issue-438",history:[],stop_loss_worker_since:$since,stop_loss_worker_pid:null,stop_loss_worker_start:null}]}' > "$UNITS"
+ticket_budget_reason() {
+  if [[ "$requeue_during_budget" == true ]]; then
+    requeue_during_budget=false
+    set_unit issue-438 '.stage="supervisor-review"' || return 1
+  fi
+  printf '9 rounds\n'
+}
+dispatch_stop_loss_escalation_run() { stop_loss_side_effects=$((stop_loss_side_effects + 1)); }
+dispatch_stop_loss_worker_run issue-438 || stop_loss_review_failures+=('stop-loss worker failed on the stage-requeue fixture')
+[[ "$stop_loss_side_effects" == 0 ]] || stop_loss_review_failures+=('stop-loss side effects ran after the unit was requeued')
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == supervisor-review ]] || stop_loss_review_failures+=('the requeued stage was overwritten by the stop-loss worker')
+[[ -z "$(jqf -r '.units[0].stop_loss_escalated_since // empty' "$UNITS")" ]] || stop_loss_review_failures+=('the requeued unit received a stale escalation marker')
+if ((${#stop_loss_review_failures[@]})); then
+  printf 'stop-loss review regressions: %s\n' "${stop_loss_review_failures[*]}" >&2
+  exit 1
+fi
+
 echo 'dispatch-census-capacity.test.sh: pass (0 gh calls at 8/8 for refill and full tick; one census at 7/8; CONFLICTING census row repaired not reviewed; refill deadline; silent skip named; human changes-requested moves ready to repair; repair hint carries human feedback only)'

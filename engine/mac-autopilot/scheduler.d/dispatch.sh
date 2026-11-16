@@ -120,7 +120,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   rm -f -- "$worker_pid_file"
   local scope_rc=0
   scope_started_us=${EPOCHREALTIME/[.,]/}
-  worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
+  WORKER_SCOPE_STEP_LOCK_FD="${TICK_STEP_LOCK_FD:-}" worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
     "${worker_env[@]}" "${launch_command[@]}" || scope_rc=$?
   scope_elapsed_us=$((${EPOCHREALTIME/[.,]/} - scope_started_us))
   if (( scope_elapsed_us >= 2000000 )); then

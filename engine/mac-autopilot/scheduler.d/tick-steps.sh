@@ -70,7 +70,7 @@ dispatch_step_busy_summary() { # log byte offset/length → latest observed disp
 }
 
 tick_step_lock_run() { # step command...; the caller's dynamic lock marker prevents nested flock opens
-  local step="$1" lock_fd rc=0 started age; shift
+  local step="$1" lock_fd rc=0 started age TICK_STEP_LOCK_FD=""; shift
   case "$step" in dispatch_pending | register_new_issues | release_dependency_blocks | existing_walk) ;; *) return 64 ;; esac
   [[ "${TICK_STEP_LOCK_HELD:-}" != "$step" ]] || { "$@"; return $?; }
   if ! exec {lock_fd}>>"$A/.tick-step-$step.lock"; then say "tick-step lock unavailable step=$step"; return 1; fi
@@ -86,12 +86,14 @@ tick_step_lock_run() { # step command...; the caller's dynamic lock marker preve
     return 0
   fi
   TICK_STEP_LOCK_RESULT=acquired
+  TICK_STEP_LOCK_FD="$lock_fd"
   local TICK_STEP_LOCK_HELD="$step"
   printf '%s\n' "$(date +%s)" > "$A/.tick-step-$step.started" 2>/dev/null || :
   "$@" || rc=$?
   rm -f -- "$A/.tick-step-$step.started"
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
+  TICK_STEP_LOCK_FD=""
   if [[ "$step" == dispatch_pending ]] && declare -F dispatch_stop_loss_workers_start >/dev/null 2>&1; then
     dispatch_stop_loss_workers_start || say 'dispatch stop-loss workers: launch failed'
   fi
