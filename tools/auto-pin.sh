@@ -11,6 +11,7 @@ C=${ZF_AUTO_PIN_CLONE:-$ZF_AUTO_PIN_HOME/clones/pz-zf-review-verdict-clobber}
 idle=${ZF_AUTO_PIN_IDLE_SECS:-30} retry=${ZF_AUTO_PIN_RETRY_SECS:-60}
 state=$ZF_AUTO_PIN_HOME/auto-pin.last; stop=$ZF_AUTO_PIN_HOME/auto-pin.stop
 logdir=$ZF_AUTO_PIN_HOME/auto-pin-logs
+product_fetch_time=$ZF_AUTO_PIN_HOME/auto-pin-product-fetch.last
 # Head 2026-11-05: an override pin must take the PR lane; merge that PR here so it does not wait for head.
 # Only a PR holding build.json, overrides.tsv and, optionally, the pack copies merged by this pin, with no failed check.
 # A clean three-way merge that leaves a pack copy byte-identical adds no pack file, so the PR is base-only.
@@ -42,7 +43,7 @@ merge_override_pin() { # log -> 0 merged, 1 leave for head
 
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
-  local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head
+  local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head product_fetch_secs product_fetch_now product_fetch_last product_fetch_rc product_tries
   git -C "$C" fetch -q origin main || { sleep "$idle"; return 0; }
   last=$(cat "$state")
   next=$(git -C "$C" rev-list -1 --first-parent "$last..origin/main")
@@ -82,11 +83,29 @@ auto_pin_pass() {
         && grep -Eq "$next|sha256:" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" 2>/dev/null; then
         : > "$log.row-retried"; return 0
       fi
-      # A product origin/main move may fix a fork refusal; retry once per changed product head.
-      git -C "$AGENT_HOME/checkout" fetch -q origin main 2>/dev/null || :
-      product_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)
-      if [[ -n $product_failed_head && -n $product_head && $product_head != "$product_failed_head" \
-        && ! -e $log.product-main-$product_head-retried ]]; then
+      # A product origin/main move may fix a fork refusal; refresh at most once per interval.
+      product_fetch_secs=${ZF_AUTO_PIN_PRODUCT_FETCH_SECS:-600}
+      [[ $product_fetch_secs =~ ^[0-9]+$ ]] || product_fetch_secs=600
+      product_fetch_now=$(date +%s 2>/dev/null || :)
+      product_fetch_last=$(cat "$product_fetch_time" 2>/dev/null || :)
+      product_head=''
+      if [[ $product_fetch_now =~ ^[0-9]+$ ]] \
+        && { [[ ! $product_fetch_last =~ ^[0-9]+$ ]] || ((product_fetch_now - product_fetch_last >= product_fetch_secs)); }; then
+        if printf '%s\n' "$product_fetch_now" > "$product_fetch_time"; then
+          product_fetch_rc=0
+          timeout 60 git -C "$AGENT_HOME/checkout" fetch -q origin main >/dev/null 2>&1 || product_fetch_rc=$?
+        else
+          product_fetch_rc=1
+        fi
+        if ((product_fetch_rc == 0)); then
+          product_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)
+        else
+          echo "$(date -u +%H:%M:%S) PRODUCT-FETCH-FAILED commit=${next:0:12} rc=$product_fetch_rc"
+        fi
+      fi
+      product_tries=$(ls "$log".product-main-*-retried 2>/dev/null | wc -l)
+      if [[ -n $product_failed_head && -n $product_head && $product_head != "$product_failed_head" ]] \
+        && ((product_tries < 3)) && [[ ! -e $log.product-main-$product_head-retried ]]; then
         : > "$log.product-main-$product_head-retried"
         echo "$(date -u +%H:%M:%S) RETRY-PRODUCT-MAIN from=$product_failed_head to=$product_head commit=$next"
         return 0
