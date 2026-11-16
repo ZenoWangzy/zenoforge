@@ -56,7 +56,7 @@ grep -Fxq 'walk arg=1 budget=240 held=false' "$calls" || fail "the pass did not 
 jq -e '.units | map(.id) == ["issue-7"]' "$UNITS" >/dev/null || fail 'the walk write did not land'
 [[ ! -e "$SCHED_LOCK" && ! -e "$EXISTING_WALK_LOCK" ]] || fail 'a finished pass left a lock'
 line="$(grep 'existing-walk done' "$LOG")"
-[[ "$line" =~ existing-walk\ done\ secs=[0-9]+\ rows=3\ lock_wait=[0-9]+\.[0-9]\ lock_hold=[0-9]+\.[0-9]\ lap_done=true\ walked=2\ gh_calls=[0-9]+\ rc=0\ limit=240s\ ended=[0-9:]+Z$ ]] \
+[[ "$line" =~ existing-walk\ done\ secs=[0-9]+\ rows=3\ lock_wait=[0-9]+\.[0-9]\ lock_hold=[0-9]+\.[0-9]\ lap_done=true\ walked=2\ gh_calls=[0-9]+\ gql=[0-9]+\ rest=[0-9]+\ rc=0\ limit=240s\ ended=[0-9:]+Z$ ]] \
   || fail "the pass line lacks its measured fields: $line"
 [[ "$(wc -l < "$LOG")" == 1 ]] || fail "a pass must log one line: $(cat "$LOG")"
 existing_walk_fresh || fail 'a pass left no heartbeat'
