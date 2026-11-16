@@ -47,6 +47,8 @@ echo 'PASS bin/luna passes plugin-off args and an empty per-run context-mode sen
 
 context_mode_module="$test_host_home/.npm-global/lib/node_modules/context-mode/hooks/core/mcp-ready.mjs"
 if command -v node >/dev/null 2>&1 && [[ -r "$context_mode_module" ]]; then
+  # Keep the fixture fresh even when the launcher test waits in the batch queue.
+  touch "$root/host-sentinels/context-mode-mcp-ready-host"
   CONTEXT_MODE_MODULE="$context_mode_module" CONTEXT_MODE_MCP_SENTINEL_DIR="$root/host-sentinels" node --input-type=module - <<'NODE'
 import { pathToFileURL } from "node:url";
 const { isMCPReady } = await import(pathToFileURL(process.env.CONTEXT_MODE_MODULE));
