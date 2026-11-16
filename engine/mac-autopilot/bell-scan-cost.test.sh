@@ -196,3 +196,37 @@ fi
   echo 'bell-scan-cost.test.sh: gh was called during an unknown-protection scan' >&2; exit 1
 }
 echo 'ok - empty ci_protection output reports protection-unknown without an argjson error'
+
+# --- Scenario C: advisor result files older than the 24h window are never parsed ---
+# (live: 877 result files, 45 inside the window; parsing all of them cost ~2 jq forks per file per beat)
+rm -f "$bin/python3"
+real_jq="$(PATH="${PATH#"$bin":}" command -v jq)"
+cat > "$bin/jq" <<SH
+#!/usr/bin/env bash
+case "\$*" in *advisor-batch-*) printf '%s\n' "\$*" >> "\$BELL_SCAN_COST_JQ_RESULTS" ;; esac
+exec "$real_jq" "\$@"
+SH
+chmod +x "$bin/jq"
+export BELL_SCAN_COST_JQ_RESULTS="$tmp/jq-results.log"
+: > "$BELL_SCAN_COST_JQ_RESULTS"
+autopi_c="$tmp/autopi-c"
+mkdir -p "$autopi_c/alerts" "$AGENT_HOME/logs"
+cp "$autopi/config.json" "$autopi_c/config.json"
+printf 'window.DASH={};\n' > "$autopi_c/dashboard.data.js"
+printf '[%s] tick done units=0 live=0 secs=1\n' "$fresh_tick" > "$autopi_c/scheduler.log"
+touch "$autopi_c/scheduler.log"
+printf '%s\n' '{"units":[]}' > "$autopi_c/units.json"
+printf '%s\n' '{"workers":[]}' > "$autopi_c/workers.json"
+jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' > "$autopi_c/bell-state.json"
+recent="$(date -u -d '-1 hour' '+%Y%m%dT%H%M%SZ')"; recent_iso="$(date -u -d '-1 hour' '+%Y-%m-%dT%H:%M:%SZ')"
+jq -cn --arg r "$recent_iso" '{recorded_at:$r,exit_code:0,outcome:"completed",job_id:"fresh"}' > "$AGENT_HOME/logs/advisor-batch-${recent}-fresh.result.json"
+jq -cn '{recorded_at:"2026-10-01T00:00:00Z",exit_code:1,outcome:"job-failed",job_id:"stale"}' > "$AGENT_HOME/logs/advisor-batch-20261001T000000Z-stale.result.json"
+touch -d '3 days ago' "$AGENT_HOME/logs/advisor-batch-20261001T000000Z-stale.result.json"
+BELL_AUTOPI_DIR="$autopi_c" bash "$bell" 2> "$tmp/c.stderr"
+grep -Fq 'advisor-batch-20261001T000000Z-stale' "$BELL_SCAN_COST_JQ_RESULTS" && {
+  echo 'bell-scan-cost.test.sh: a result file older than 24h was parsed' >&2; exit 1
+}
+grep -Fq "advisor-batch-${recent}-fresh" "$BELL_SCAN_COST_JQ_RESULTS" || {
+  echo 'bell-scan-cost.test.sh: a result file inside the 24h window was not parsed' >&2; exit 1
+}
+echo 'ok - advisor results outside the 24h window are skipped without a jq fork'

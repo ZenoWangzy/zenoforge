@@ -320,7 +320,14 @@ import sys
 print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 PY
 )"
-  for result_file in "$AGENT_HOME"/logs/advisor-batch-*.result.json; do
+  # Only results written in the last 24h can pass the recorded_at window below; a result file is
+  # never modified before its recorded_at, so its mtime is a safe pre-filter. Without it every
+  # beat parsed every result ever written (877 files, 2+ jq forks each) just to discard them.
+  # shortcut: mtime stands in for recorded_at, so a result restored with an old mtime is skipped; upgrade if results are ever back-filled.
+  local -a result_files=()
+  mapfile -t result_files < <(find "$AGENT_HOME/logs" -maxdepth 1 -name 'advisor-batch-*.result.json' \
+    -newermt "@$((now - 86400))" 2>/dev/null | LC_ALL=C sort)
+  for result_file in "${result_files[@]}"; do
     [[ -r "$result_file" ]] || continue
     result="$(jq -ce 'select(type == "object")' "$result_file" 2>/dev/null || true)"
     [[ -n "$result" ]] || continue
