@@ -70,7 +70,8 @@ tick_step_lock_run() { # step command...; the caller's dynamic lock marker preve
     return 0
   fi
   TICK_STEP_LOCK_RESULT=acquired
-  local TICK_STEP_LOCK_HELD="$step"
+  local TICK_STEP_LOCK_HELD="$step" TICK_STEP_LOCK_FD="$lock_fd"
+  export TICK_STEP_LOCK_FD
   "$@" || rc=$?
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
