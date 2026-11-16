@@ -156,8 +156,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   [[ "$type" != implement ]] || (( output_tokens <= 8000 )) || output_tokens=8000
   codex_config_args+=(-c "tool_output_token_limit=$output_tokens")
   # Persistent implementer sessions: never add --ephemeral here.
-  CODEX_FRESH_COMMAND=(codex exec -m "$model" -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
-    ${codex_config_args[@]+"${codex_config_args[@]}"} -s "$sandbox_mode" --json "$prompt_arg")
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_FRESH_COMMAND=(codex exec -m "$model" -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
+    ${codex_config_args[@]+"${codex_config_args[@]}"} -s "$sandbox_mode" --json "$prompt_arg") || return 1
   if [[ "$type" == repair ]]; then
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
     session_id="$(jqf -r '.id // empty' <<<"$prior")"
@@ -182,9 +182,9 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$(session_usage_for_id "$session_id")"
         if [[ "$report_only" == true && "$session_id" != "$expected_session_id" ]]; then return 1; fi
-        CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
+        codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
           -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
-          ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$failure")
+          ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$failure") || return 1
         return 0
       fi
     fi
@@ -205,9 +205,9 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$snapshot"
         prompt_arg="继续沿用本会话已有上下文，仅处理本次增量任务，不重读未变化背景：$prompt"
-        CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
+        codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
           -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
-          ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$prompt_arg")
+          ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$prompt_arg") || return 1
         return 0
       fi
     fi

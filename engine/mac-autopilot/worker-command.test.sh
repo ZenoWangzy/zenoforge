@@ -21,6 +21,9 @@ UNITS="$test_env_root/units.json"
 printf '%s\n' '{"units":[{"id":"implement-1"},{"id":"review-1"}]}' > "$UNITS"
 CODEX_HOME="$test_env_root/codex-home"
 export CODEX_HOME
+mkdir -p "$test_env_root/host-sentinels"
+printf '999999999\n' > "$test_env_root/host-sentinels/context-mode-mcp-ready-host"
+export CONTEXT_MODE_MCP_SENTINEL_DIR="$test_env_root/host-sentinels"
 mkdir -p "$CODEX_HOME"
 cat > "$CODEX_HOME/config.toml" <<'TOML'
 [mcp_servers.chrome-devtools-shared]
@@ -31,6 +34,19 @@ command = "fake-gbrain"
 TOML
 
 build_codex_command implement gpt-6-luna max implement-1 'implement prompt'
+cat > "$test_env_bin/codex" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${CONTEXT_MODE_MCP_SENTINEL_DIR:-}" > "$CODEX_CONTEXT_MODE_DIR_FILE"
+[[ -n "${CONTEXT_MODE_MCP_SENTINEL_DIR:-}" && -d "$CONTEXT_MODE_MCP_SENTINEL_DIR" ]] || exit 81
+[[ -z "$(ls -A "$CONTEXT_MODE_MCP_SENTINEL_DIR")" ]] || exit 82
+SH
+chmod +x "$test_env_bin/codex"
+export CODEX_CONTEXT_MODE_DIR_FILE="$test_env_root/worker-command.context-mode-dir"
+"${CODEX_COMMAND[@]}" >/dev/null 2>&1 || fail "Codex worker command did not pass its context-mode sentinel directory"
+worker_sentinel_dir="$(<"$CODEX_CONTEXT_MODE_DIR_FILE")"
+[[ "$worker_sentinel_dir" == "$test_env_root/context-mode-mcp-ready."* \
+  && -d "$worker_sentinel_dir" && -z "$(ls -A "$worker_sentinel_dir")" ]] \
+  || fail "Codex worker command sentinel directory is missing, non-empty, or outside its unit: $worker_sentinel_dir"
 implement_args=" ${CODEX_COMMAND[*]} "
 contains_arg "$implement_args" '-c mcp_servers.chrome-devtools-shared.enabled=false' \
   || fail "implement command omitted chrome MCP override: ${CODEX_COMMAND[*]}"

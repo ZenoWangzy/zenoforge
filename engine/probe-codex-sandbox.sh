@@ -61,7 +61,7 @@ CODEX_ARGS=(exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox read-only --cd "$PROBE
   -m "$MODEL" -c "model_reasoning_effort=$EFFORT" "${SERVICE_TIER_ARGS[@]}"
   --output-last-message "$OUT_FILE"
   -c mcp_servers.gitnexus.enabled=false)
-timeout 10m codex "${CODEX_ARGS[@]}" - <<< "$PROMPT" > "$PROBE_DIR/transcript.txt" 2>&1
+codex_mcp_context_mode_sentinel_dir "$PROBE_DIR" && timeout 10m codex "${CODEX_ARGS[@]}" - <<< "$PROMPT" > "$PROBE_DIR/transcript.txt" 2>&1
 STATUS=$?
 set -e
 [ "$STATUS" -eq 0 ] || echo "probe-codex-sandbox: codex exited $STATUS (continuing -- the world, not the exit code, decides)" >&2
