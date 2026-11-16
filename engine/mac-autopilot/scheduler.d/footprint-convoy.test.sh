@@ -110,7 +110,6 @@ TICK_DISPATCH_LOCAL_REFILL=false
 TICK_FOOTPRINT_DEFER=true
 footprint_preflight_snapshot || fail 'batch preflight failed'
 [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[candidate]:-}" && "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[direct]:-}" == owner ]] || fail 'batch preflight applied wrong threshold'
-# A second preflight over the same heads and main reads the cache and reaches the same verdicts.
 TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started TICK_FOOTPRINT_CONFLICT_VALID=false TICK_ACTIVE_FOOTPRINTS_VALID=false
 footprint_preflight_snapshot || fail 'second preflight failed'
 [[ "$FOOTPRINT_CACHE_PREFLIGHT" == hit && -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[candidate]:-}" && "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[direct]:-}" == owner ]] \
@@ -133,6 +132,69 @@ if footprint_room candidate "$(jq -c '.units[] | select(.id=="candidate")' "$UNI
 grep -Fq 'footprint wait unit=candidate owner=owner candidate_path=src/hot owner_path=src/hot source=expansion cochange_count=2' "$LOG" || fail 'expansion attribution missing'
 unset ZF_FOOTPRINT_HOTSPOT_MIN
 TICK_FOOTPRINT_DEFER=false
+
+# Fourteen distinct scopes measure both cache paths; PATH wrappers count jq/git launches, not elapsed time.
+for ((i=0;i<14;i++)); do printf 'batch %s\n' "$i" > "$ROOT/src/batch-$i"; done
+git -C "$ROOT" add .
+git -C "$ROOT" commit -qm 'fourteen preflight scopes'
+git -C "$ROOT" update-ref refs/remotes/origin/main HEAD
+write_units '{units:[range(0;14) as $i | {id:("batch-" + ($i|tostring)),stage:"implement-pending",footprint:[("src/batch-" + ($i|tostring))]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+TICK_FOOTPRINT_MAIN="$(git -C "$ROOT" rev-parse refs/remotes/origin/main)"
+TICK_FOOTPRINT_SCOPE_MEMO=(); TICK_FOOTPRINT_CACHE=(); TICK_CHECK_SCOPE_SOURCE=(); TICK_CHECK_SCOPE=(); TICK_OLD_SCOPE=(); TICK_HOTSPOT_COUNTS=()
+TICK_FOOTPRINT_PREFLIGHT_CONFLICT=(); TICK_FOOTPRINT_PREFLIGHT_IDS=(); TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started
+TICK_FOOTPRINT_CONFLICT_VALID=false; TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_FOOTPRINT_HOT_CONFLICT_PATHS='[]'
+process_count_bin="$fixture/process-count-bin"; mkdir -p "$process_count_bin"
+real_jq="$(command -v jq)"; real_git="$(command -v git)"
+jq_git_count_file="$fixture/preflight-jq-git-count"; fork_count_file="$fixture/preflight-fork-count"
+cat > "$process_count_bin/jq" <<'SH'
+#!/usr/bin/env bash
+[[ -z "${ZF_FOOTPRINT_PROCESS_COUNT_FILE:-}" ]] || printf 'jq\n' >> "$ZF_FOOTPRINT_PROCESS_COUNT_FILE"
+exec "$ZF_FOOTPRINT_REAL_JQ" "$@"
+SH
+cat > "$process_count_bin/git" <<'SH'
+#!/usr/bin/env bash
+[[ -z "${ZF_FOOTPRINT_PROCESS_COUNT_FILE:-}" ]] || printf 'git\n' >> "$ZF_FOOTPRINT_PROCESS_COUNT_FILE"
+exec "$ZF_FOOTPRINT_REAL_GIT" "$@"
+SH
+chmod +x "$process_count_bin/jq" "$process_count_bin/git"
+saved_path="$PATH"; PATH="$process_count_bin:$PATH"
+export PATH ZF_FOOTPRINT_REAL_JQ="$real_jq" ZF_FOOTPRINT_REAL_GIT="$real_git"
+measure_preflight() {
+  local label="$1" started_us finished_us
+  : > "$jq_git_count_file"; : > "$fork_count_file"
+  export ZF_FOOTPRINT_PROCESS_COUNT_FILE="$jq_git_count_file" ZF_FOOTPRINT_FORK_COUNTER_FILE="$fork_count_file"
+  started_us="${EPOCHREALTIME/./}"
+  footprint_preflight_snapshot || fail "$label preflight failed"
+  finished_us="${EPOCHREALTIME/./}"
+  unset ZF_FOOTPRINT_PROCESS_COUNT_FILE ZF_FOOTPRINT_FORK_COUNTER_FILE
+  mapfile -t measured_process_calls < "$jq_git_count_file"
+  mapfile -t measured_forks < "$fork_count_file"
+  MEASURED_JQ_GIT_CALLS=${#measured_process_calls[@]}; MEASURED_FORKS=${#measured_forks[@]}
+  MEASURED_ELAPSED_US=$((10#$finished_us - 10#$started_us))
+  if [[ "${FOOTPRINT_MEASURE:-false}" == true ]]; then
+    printf 'footprint-preflight cache=%s candidates=14 jq_git_calls=%s forks=%s elapsed_us=%s us_per_candidate=%s\n' \
+      "$label" "$MEASURED_JQ_GIT_CALLS" "$MEASURED_FORKS" "$MEASURED_ELAPSED_US" "$((MEASURED_ELAPSED_US / 14))"
+  fi
+}
+measure_preflight miss
+preflight_miss_jq_git_calls=$MEASURED_JQ_GIT_CALLS
+[[ "$FOOTPRINT_CACHE_PREFLIGHT" == miss && "${#TICK_FOOTPRINT_PREFLIGHT_IDS[@]}" == 14 ]] || fail '14-candidate preflight did not compute a miss'
+for ((i=0;i<14;i++)); do
+  [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[batch-$i]:-}" && "${TICK_CHECK_SCOPE[batch-$i]:-}" == "[\"src/batch-$i\"]" ]] \
+    || fail "miss preflight changed batch-$i scope or conflict"
+done
+TICK_FOOTPRINT_PREFLIGHT_STATUS=not-started; TICK_FOOTPRINT_CONFLICT_VALID=false; TICK_ACTIVE_FOOTPRINTS_VALID=false
+measure_preflight hit
+preflight_jq_git_calls=$MEASURED_JQ_GIT_CALLS; preflight_fork_count=$MEASURED_FORKS; preflight_elapsed_us=$MEASURED_ELAPSED_US
+PATH="$saved_path"; export PATH
+[[ "$FOOTPRINT_CACHE_PREFLIGHT" == hit && "${#TICK_FOOTPRINT_PREFLIGHT_IDS[@]}" == 14 ]] || fail '14-candidate preflight did not hit the cache'
+for ((i=0;i<14;i++)); do
+  [[ -z "${TICK_FOOTPRINT_PREFLIGHT_CONFLICT[batch-$i]:-}" && "${TICK_CHECK_SCOPE[batch-$i]:-}" == "[\"src/batch-$i\"]" ]] \
+    || fail "hit preflight changed batch-$i scope or conflict"
+done
+(( preflight_jq_git_calls <= 24 )) \
+  || fail "cache-hit preflight used $preflight_jq_git_calls jq/git process calls for 14 candidates (limit 24)"
 
 # Three recent conflicts make the path hot. A live writer whose file is inside the candidate's
 # predicted directory scope makes it wait; a two-event overlap on another file keeps today's behavior.
