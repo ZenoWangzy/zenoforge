@@ -124,7 +124,7 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     "${worker_env[@]}" "${launch_command[@]}" || scope_rc=$?
   scope_elapsed_us=$((${EPOCHREALTIME/[.,]/} - scope_started_us))
   if (( scope_elapsed_us >= 2000000 )); then
-    printf -v scope_secs '%d.%03d' $((scope_elapsed_us / 1000000)) $((scope_elapsed_us % 1000000 / 1000))
+    scope_secs="$(format_duration_us "$scope_elapsed_us")"
     say "dispatch detail worker_scope_launch unit=$unit secs=${scope_secs}s mode=${WORKER_SCOPE_MODE:-unknown} rc=$scope_rc"
   fi
   if (( scope_rc != 0 )); then

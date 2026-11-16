@@ -169,15 +169,21 @@ ready_since_epoch() { # → jq 表达式：.ready_since 归一为 epoch 秒（IS
   # %s 实参不做反斜杠转义：jq 源里的 "\\." 必须原样到达 jq（printf 格式串会吞掉一层）
   printf '%s' '(.ready_since // 0 | if type=="string" then (try (sub("\\.[0-9]+"; "") | fromdateiso8601) catch 0) else . end)'
 }
+format_duration_us() { local us="${1:-0}"; printf '%d.%03d' $((us / 1000000)) $((us % 1000000 / 1000)); }
 gh() {
   [[ -n "${GH_TICK_CALLS_FILE:-}" ]] && printf 'x\n' >>"$GH_TICK_CALLS_FILE" 2>/dev/null || :
   [[ -n "${TICK_DISPATCH_STEP_GH_FILE:-}" ]] && printf x >>"$TICK_DISPATCH_STEP_GH_FILE" 2>/dev/null || :
-  local started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}"
+  local started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}" gh_started_us=${EPOCHREALTIME/[.,]/} gh_elapsed_us
   local timeout_op="${1:-unknown}" timeout_unit="${id:-unknown}"
   local timeout_seconds="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || timeout_seconds=120
   [[ -z "${2:-}" ]] || timeout_op+=" $2"
   gh_timeout -k 1 "${timeout_seconds}s" "$@" || rc=$?
+  if [[ -n "${TICK_STOP_LOSS_GH_FILE:-}${TICK_DISPATCH_STEP_GH_US_FILE:-}" ]]; then
+    gh_elapsed_us=$((${EPOCHREALTIME/[.,]/} - gh_started_us))
+    [[ -z "${TICK_STOP_LOSS_GH_FILE:-}" ]] || printf '%s\n' "$gh_elapsed_us" >> "$TICK_STOP_LOSS_GH_FILE" 2>/dev/null || :
+    [[ -z "${TICK_DISPATCH_STEP_GH_US_FILE:-}" ]] || printf '%s\n' "$gh_elapsed_us" >> "$TICK_DISPATCH_STEP_GH_US_FILE" 2>/dev/null || :
+  fi
   (( rc != 124 )) || say "gh timeout op=$timeout_op unit=$timeout_unit after=${timeout_seconds}s"
   if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]]; then
     elapsed=$((SECONDS - started))

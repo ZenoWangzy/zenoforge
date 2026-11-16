@@ -2,10 +2,11 @@
 declare -gA DISPATCH_BODY_DEP_FRESH=()
 DISPATCH_BODY_DEP_PRIMED=false DISPATCH_BODY_DEP_QUERY_COUNT=0 DISPATCH_BODY_DEP_UNITS=0
 dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states for body blockers
-  local u dep state memo stamp results
+  local u dep state memo stamp results started_us elapsed
   local -a missing=()
   local -A seen=()
   DISPATCH_BODY_DEP_FRESH=(); DISPATCH_BODY_DEP_PRIMED=true; DISPATCH_BODY_DEP_QUERY_COUNT=0; DISPATCH_BODY_DEP_UNITS=0
+  started_us=${EPOCHREALTIME/[.,]/}
   while IFS= read -r u; do
     while IFS= read -r dep; do [[ "$dep" =~ ^[0-9]+$ ]] && seen[$dep]=1; done < <(unit_body_blockers "$u")
   done < <(jqf -c '.units[] | select(.stage=="implement-pending" or (.stage=="repair-pending" and .hold_handoff_episode != null))' "$UNITS")
@@ -32,6 +33,10 @@ dispatch_body_dependencies_prime() { # one pass: batch the missing fresh states 
     for dep in "${missing[@]}"; do
       [[ -n "${DISPATCH_BODY_DEP_FRESH[$dep]+set}" ]] || DISPATCH_BODY_DEP_FRESH[$dep]=""
     done
+  fi
+  elapsed=$((${EPOCHREALTIME/[.,]/} - started_us))
+  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]] && (( elapsed >= 2000000 )); then
+    say "dispatch detail body_dependency_prime units=$DISPATCH_BODY_DEP_UNITS secs=$(format_duration_us "$elapsed")s gh_calls=$DISPATCH_BODY_DEP_QUERY_COUNT"
   fi
 }
 dep_fresh_state() { # predecessor → the fresh GitHub state, empty when unreadable; an OPEN or empty read is memoized for DEP_CHECK_SECONDS so a hold costs one read per window

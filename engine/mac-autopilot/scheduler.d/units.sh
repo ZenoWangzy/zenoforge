@@ -130,9 +130,8 @@ set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）; rc
   if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi
   lock_us_now; write_us=$((LOCK_US - write_started_us))
   [[ "${TICK_STOP_LOSS_WORKER:-false}" != true ]] || DISPATCH_STOP_LOSS_LOCK_WAIT_US=$((${DISPATCH_STOP_LOSS_LOCK_WAIT_US:-0} + lock_wait_us))
-  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]] && (( lock_wait_us >= 2000000 || write_us >= 2000000 )); then
-    printf -v lock_wait_secs '%d.%03d' $((lock_wait_us / 1000000)) $((lock_wait_us % 1000000 / 1000))
-    printf -v write_secs '%d.%03d' $((write_us / 1000000)) $((write_us % 1000000 / 1000))
+  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]]; then
+    lock_wait_secs="$(format_duration_us "$lock_wait_us")"; write_secs="$(format_duration_us "$write_us")"
     say "dispatch detail unit_write unit=$1 lock_wait=${lock_wait_secs}s write=${write_secs}s holder_phase=$holder_phase"
   fi
   if (( rc == 0 )) && [[ -n "$old_stage" ]] && declare -F footprint_owner_transition >/dev/null; then

@@ -10,19 +10,21 @@ dmark() {
   dispatch_step_at=$now; dispatch_step_last=$1
 }
 dstep() {
-  local step=$1 rc=0 started_us ended_us step_file gh_calls elapsed
+  local step=$1 rc=0 started_us ended_us step_file gh_us_file gh_calls gh_us other_us elapsed gh_secs other_secs
   shift
-  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true && "$step" =~ ^(body_block|dispatch|handoff_integration)$ ]]; then
-    step_file="$A/.dispatch-step-gh.$BASHPID.$step"; : > "$step_file"
-    local TICK_DISPATCH_STEP_GH_FILE="$step_file"
+  if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true && "$step" =~ ^(body_block|dispatch|handoff_integration|room_for)$ ]]; then
+    step_file="$A/.dispatch-step-gh.$BASHPID.$step"; gh_us_file="$step_file.us"; : > "$step_file"; : > "$gh_us_file"
+    local TICK_DISPATCH_STEP_GH_FILE="$step_file" TICK_DISPATCH_STEP_GH_US_FILE="$gh_us_file"
     started_us=${EPOCHREALTIME/[.,]/}
     "$@" || rc=$?
     ended_us=${EPOCHREALTIME/[.,]/}
-    gh_calls="$(<"$step_file")"; gh_calls=${#gh_calls}; rm -f -- "$step_file"
+    gh_calls="$(<"$step_file")"; gh_calls=${#gh_calls}
+    gh_us="$(awk '{ total += $1 } END { printf "%.0f", total }' "$gh_us_file" 2>/dev/null || echo 0)"; rm -f -- "$step_file" "$gh_us_file"
     elapsed=$((ended_us - started_us))
     if (( elapsed >= 2000000 )); then
-      printf -v elapsed '%d.%03d' $((elapsed / 1000000)) $((elapsed % 1000000 / 1000))
-      say "dispatch detail step_split step=$step secs=${elapsed}s gh_calls=$gh_calls"
+      other_us=$((elapsed - gh_us)); (( other_us >= 0 )) || other_us=0
+      gh_secs="$(format_duration_us "$gh_us")"; other_secs="$(format_duration_us "$other_us")"
+      say "dispatch detail step_split step=$step secs=$(format_duration_us "$elapsed")s gh_calls=$gh_calls gh_secs=${gh_secs}s other_secs=${other_secs}s"
     fi
   else
     "$@" || rc=$?
@@ -39,7 +41,7 @@ dispatch_steps_say() {
   (( ${#dispatch_step_secs[@]} )) || return 0
   local step_name step_time step_line="dispatch detail steps refill=$local_refill"
   while IFS= read -r step_name; do
-    printf -v step_time '%d.%03d' $(( dispatch_step_secs[$step_name] / 1000000 )) $(( dispatch_step_secs[$step_name] % 1000000 / 1000 ))
+    step_time="$(format_duration_us "${dispatch_step_secs[$step_name]}")"
     step_line+=" $step_name=${step_time}s/${dispatch_step_counts[$step_name]}"
   done < <(for step_name in "${!dispatch_step_secs[@]}"; do printf '%s %s\n' "${dispatch_step_secs[$step_name]}" "$step_name"; done | sort -k1,1nr -k2,2 | cut -d' ' -f2)
   say "$step_line"
@@ -125,7 +127,7 @@ dispatch_why_save() { # merges this pass's changes into the file as it is now; p
 
 dispatch_pending_pass() {
   TICK_DISPATCH_SKIPS=()
-  TICK_DISPATCH_STOP_LOSS_QUEUE=(); TICK_DISPATCH_STOP_LOSS_QUEUED_AT=()
+  TICK_DISPATCH_STOP_LOSS_QUEUE=()
   DISPATCH_BODY_DEP_PRIMED=false
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
@@ -170,13 +172,7 @@ dispatch_pending_pass() {
   ordered="$(dispatch_order)" || true
   dmark order
   if [[ "$local_refill" != true ]] || ! dispatch_walk_full; then
-    local dep_prime_started=${EPOCHREALTIME/[.,]/} dep_prime_elapsed
     dispatch_body_dependencies_prime
-    dep_prime_elapsed=$((${EPOCHREALTIME/[.,]/} - dep_prime_started))
-    if (( dep_prime_elapsed >= 2000000 )); then
-      printf -v dep_prime_elapsed '%d.%03d' $((dep_prime_elapsed / 1000000)) $((dep_prime_elapsed % 1000000 / 1000))
-      say "dispatch detail body_dependency_prime units=$DISPATCH_BODY_DEP_UNITS secs=${dep_prime_elapsed}s gh_calls=$DISPATCH_BODY_DEP_QUERY_COUNT"
-    fi
   fi
   loop_started=$SECONDS
   # Footprint only orders: pass 1 starts what no live owner overlaps and defers the rest; pass 2 starts the deferred while a slot is free.

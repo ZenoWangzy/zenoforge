@@ -171,26 +171,28 @@ stop_loss_unit="$(jqf -c --arg id issue-4903 '.units[] | select(.id==$id)' "$UNI
 
 # The detached stop-loss worker starts after dispatch_pending releases both scheduler locks.
 dispatch_pass_real="$(declare -f dispatch_pending_pass)"
-stop_loss_start_real="$(declare -f dispatch_stop_loss_workers_start)"
-dispatch_pending_pass() { TICK_DISPATCH_STOP_LOSS_QUEUE=(issue-4903); }
+dispatch_pending_pass() { TICK_DISPATCH_STOP_LOSS_QUEUE=("issue-4903:$(date +%s)"); }
 stop_loss_probe="$fixture/stop-loss-lock-probe"
-dispatch_stop_loss_workers_start() {
-  local fd
-  exec {fd}>>"$A/.tick-step-dispatch_pending.lock"
-  if flock -n "$fd"; then printf 'step-lock-free\n' > "$stop_loss_probe"; flock -u "$fd"; else printf 'step-lock-held\n' > "$stop_loss_probe"; fi
-  [[ ! -d "$SCHED_LOCK" ]] || printf 'scheduler-lock-held\n' >> "$stop_loss_probe"
-  : > "$stop_loss_probe.running"
-  sleep 0.2
-  : > "$stop_loss_probe.done"
-}
+worker_here="$fixture/stop-loss-worker"; mkdir -p "$worker_here"
+cat > "$worker_here/scheduler.sh" <<'WORKER'
+set -euo pipefail
+exec {fd}>>"$A/.tick-step-dispatch_pending.lock"
+if flock -n "$fd"; then printf 'step-lock-free\n' > "$PROBE"; flock -u "$fd"; else printf 'step-lock-held\n' > "$PROBE"; fi
+[[ ! -d "$SCHED_LOCK" ]] || printf 'scheduler-lock-held\n' >> "$PROBE"
+sleep 0.2
+: > "$PROBE.done"
+WORKER
+export PROBE="$stop_loss_probe" SCHED_LOCK="$A/.scheduler.lock"
+saved_here="$HERE"; HERE="$worker_here"
 SCHED_STATION=true; SCHED_LOCK_HELD=false; TICK_DISPATCH_STOP_LOSS_QUEUE=()
 rm -f -- "$stop_loss_probe" "$stop_loss_probe.running" "$stop_loss_probe.done"
 tick_step_lock_run dispatch_pending dispatch_pending_pass
-[[ -f "$stop_loss_probe.done" ]] || fail 'the slow stop-loss worker was not started after the dispatch lock was released'
+for _ in {1..100}; do [[ -f "$stop_loss_probe.done" ]] && break; sleep 0.02; done
+[[ -f "$stop_loss_probe.done" ]] || fail 'the real stop-loss launcher did not start its slow worker after the dispatch lock was released'
 grep -Fxq 'step-lock-free' "$stop_loss_probe" || fail "the step lock stayed held across stop-loss work: $(cat "$stop_loss_probe")"
 ! grep -Fxq 'scheduler-lock-held' "$stop_loss_probe" || fail 'the scheduler lock stayed held across stop-loss work'
 eval "$dispatch_pass_real"
-eval "$stop_loss_start_real"
+HERE="$saved_here"
 SCHED_STATION=false
 
 # A review-pending unit without a PR is dropped by the walk with no log line: the pass names it, and the refill summary carries it.
