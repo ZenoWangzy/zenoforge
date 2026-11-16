@@ -49,6 +49,11 @@ guarded_write() {
     fi
     previous="$arg"
   done
+  if [ -n "${GUARDED_WRITE_FAIL_ISSUE:-}" ] && [ "${1:-}" = gh ] && [ "${2:-}" = issue ] \
+    && [ "${3:-}" = edit ] && [ "${4:-}" = "$GUARDED_WRITE_FAIL_ISSUE" ]; then
+    echo 'gh: refusing call because the owner-admission deadline cannot fit one bounded attempt' >&2
+    return 124
+  fi
   if [ "${1:-}" = gh ] && [ "${2:-}" = issue ] && [ "${3:-}" = create ]; then
     printf '%s\n' "https://github.com/test/repo/issues/500030"
   fi
@@ -62,6 +67,14 @@ gh() {
     if [ -n "${SUBISSUES_API_FAIL:-}" ]; then
       echo 'gh: HTTP 403: secondary rate limit exceeded (fake)' >&2
       return 1
+    fi
+    if [ -n "${NATIVE_RACE_PARENT:-}" ] && [[ "$2" == */issues/$NATIVE_RACE_PARENT/sub_issues\?per_page=100 ]]; then
+      local read_count=0
+      [ ! -r "$NATIVE_RACE_COUNT_FILE" ] || read -r read_count < "$NATIVE_RACE_COUNT_FILE"
+      read_count=$((read_count + 1))
+      printf '%s\n' "$read_count" > "$NATIVE_RACE_COUNT_FILE"
+      if [ "$read_count" -eq 1 ]; then printf '[]\n'; else printf '[{"number":500124,"state":"open","closed_at":null,"labels":[]}]\n'; fi
+      return 0
     fi
     if [ -n "${NATIVE_OPEN_PARENT:-}" ] && [[ "$2" == */issues/$NATIVE_OPEN_PARENT/* ]]; then
       printf '[{"number":500122,"state":"open","closed_at":null,"labels":[]}]\n'
@@ -740,6 +753,48 @@ NATIVE_OPEN_PARENT=500121
 sweep_blocking_issue_roots 2>/dev/null || true
 assert_not_contains "tracker with an open native sub-issue is not sent to triage" "$(cat "$ROOT_WRITE_LOG")" "needs-triage"
 unset NATIVE_OPEN_PARENT BLOCKER_GRAPH_JSON
+
+# A child appearing between the first read and childless confirmation is a no-op, not a triage failure.
+cat > "$STATE_DIR/500122.json" <<'JSON'
+{"state":"tracker","tracker_parent":true,"recut_children":[],"recut_comment_scanned":true}
+JSON
+recut_children_rc=0
+tracker_childless_to_triage 500122 '{"state":"tracker","recut_children":[500124]}' || recut_children_rc=$?
+assert_eq "recorded recut children return the not-childless status" 3 "$recut_children_rc"
+BLOCKER_GRAPH_JSON='[{"number":500122,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+NATIVE_RACE_PARENT=500122
+NATIVE_RACE_COUNT_FILE="$TEST_HOME/native-race-count"
+rm -f "$NATIVE_RACE_COUNT_FILE" "$AGENT_HOME/blocker-root-sweep.cursor"
+: > "$AGENT_HOME/supervisor-inbox"
+: > "$ROOT_WRITE_LOG"
+race_rc=0
+sweep_blocking_issue_roots 2>>"$ROOT_WRITE_LOG" || race_rc=$?
+unset NATIVE_RACE_PARENT NATIVE_RACE_COUNT_FILE BLOCKER_GRAPH_JSON
+assert_eq "a newly observed native child is handled without a failed sweep" 0 "$race_rc"
+assert_eq "the childless confirmation used the second native read" 2 "$(cat "$TEST_HOME/native-race-count")"
+assert_not_contains "a tracker with a newly observed child is not reported as a triage failure" \
+  "$(cat "$AGENT_HOME/supervisor-inbox")" "blocker-root-failed issue=#500122"
+assert_not_contains "a tracker with a newly observed child is not sent to triage" \
+  "$(cat "$ROOT_WRITE_LOG")" "--add-label needs-triage"
+
+# A real transition failure (the live owner-admission timeout shape) still reaches the inbox.
+cat > "$STATE_DIR/500123.json" <<'JSON'
+{"state":"tracker","tracker_parent":true,"recut_comment_scanned":true}
+JSON
+BLOCKER_GRAPH_JSON='[{"number":500123,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+GUARDED_WRITE_FAIL_ISSUE=500123
+rm -f "$AGENT_HOME/blocker-root-sweep.cursor"
+: > "$AGENT_HOME/supervisor-inbox"
+: > "$ROOT_WRITE_LOG"
+transition_rc=0
+sweep_blocking_issue_roots 2>>"$ROOT_WRITE_LOG" || transition_rc=$?
+unset GUARDED_WRITE_FAIL_ISSUE BLOCKER_GRAPH_JSON
+assert_eq "a failed needs-triage transition remains a sweep failure" 1 "$transition_rc"
+assert_contains "the real label-write refusal is preserved" "$(cat "$ROOT_WRITE_LOG")" \
+  "issue_transition: label write failed for #500123; state rollback status=124"
+assert_contains "a failed childless tracker transition still rings the supervisor" \
+  "$(cat "$AGENT_HOME/supervisor-inbox")" \
+  "blocker-root-failed issue=#500123 reason=childless tracker triage failed for #500123"
 
 # A parent requeued after its children closed has its own remaining work
 # (issue 1397 was reclosed five minutes after a supervisor requeue).
