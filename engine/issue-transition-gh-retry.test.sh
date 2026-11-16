@@ -399,6 +399,7 @@ else
 fi
 [[ "$quota_rc" == 75 ]]
 [[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == 2 ]]
+rm -f -- "$gql_marker" "$rest_marker"
 echo 'ok - quota lookups reach gh during backoff while ordinary calls stay blocked'
 
 # The scheduler tick file keeps totals while splitting the API classes.
