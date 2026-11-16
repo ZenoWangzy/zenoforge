@@ -42,7 +42,6 @@ printf '%s\n' "${CONTEXT_MODE_MCP_SENTINEL_DIR:-}" > "$CODEX_CONTEXT_MODE_DIR_FI
 SH
 chmod +x "$test_env_bin/codex"
 export CODEX_CONTEXT_MODE_DIR_FILE="$test_env_root/worker-command.context-mode-dir"
-unset CONTEXT_MODE_MCP_SENTINEL_DIR
 "${CODEX_COMMAND[@]}" >/dev/null 2>&1 || fail "Codex worker command did not pass its context-mode sentinel directory"
 worker_sentinel_dir="$(<"$CODEX_CONTEXT_MODE_DIR_FILE")"
 [[ "$worker_sentinel_dir" == "$test_env_root/context-mode-mcp-ready."* \
