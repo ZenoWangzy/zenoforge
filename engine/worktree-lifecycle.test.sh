@@ -331,10 +331,82 @@ write_hand_roster() {
     "$attempt" "$started_at_ns" work 1 '' '' > "$NIGHT/agents.txt"
 }
 
+test_corrupt_worktree_heal() {
+  local repo="$ROOT/corrupt-repo" remote="$ROOT/corrupt-origin.git"
+  local mixed="$ROOT/wt-corrupt-mixed" clean="$ROOT/wt-corrupt-clean"
+  local gitdir mixed_head clean_head backup status
+  git init -q --bare "$remote"
+  git --git-dir="$remote" symbolic-ref HEAD refs/heads/main
+  git init -q -b main "$repo"
+  git -C "$repo" config user.name fixture
+  git -C "$repo" config user.email fixture@example.invalid
+  printf 'head one\n' > "$repo/nul-one.txt"
+  printf 'head two\n' > "$repo/nul-two.txt"
+  printf 'head edit\n' > "$repo/real-edit.txt"
+  git -C "$repo" add -- nul-one.txt nul-two.txt real-edit.txt
+  git -C "$repo" commit -qm base
+  git -C "$repo" remote add origin "$remote"
+  git -C "$repo" push -qu origin main
+  git -C "$repo" fetch -q origin
+
+  git -C "$repo" worktree add -q --detach "$mixed" origin/main
+  gitdir="$(git -C "$mixed" rev-parse --absolute-git-dir)"
+  printf '\0\0\0\0' > "$ROOT/broken-index"
+  printf '\0\0\0\0' > "$ROOT/broken-orig-head"
+  cp "$ROOT/broken-index" "$gitdir/index"
+  cp "$ROOT/broken-orig-head" "$gitdir/ORIG_HEAD"
+  printf '\0\0\0\0' > "$mixed/nul-one.txt"
+  printf '\0\0\0\0' > "$mixed/nul-two.txt"
+  printf 'real edit\n' > "$mixed/real-edit.txt"
+  mixed_head="$(git -C "$mixed" rev-parse HEAD)"
+  if ZF_PRIMARY_REPO_DIR="$repo" run_lifecycle finish "$repo" "$mixed" > "$ROOT/corrupt-mixed.log" 2>&1; then
+    fail "corrupt worktree with a real edit was removed instead of kept"
+  else
+    status=$?
+  fi
+  [ "$status" -eq 2 ] || fail "corrupt worktree with a real edit returned $status instead of 2"
+  [ -d "$mixed" ] || fail "corrupt worktree with a real edit was removed"
+  cmp -s <(printf 'head one\n') "$mixed/nul-one.txt" || fail "first all-NUL tracked file was not restored"
+  [ "$(cat "$mixed/nul-two.txt")" = 'head two' ] || fail "second all-NUL tracked file was not restored"
+  [ "$(cat "$mixed/real-edit.txt")" = 'real edit' ] || fail "real edit was discarded"
+  grep -Fq "worktree-lifecycle: healed corrupt worktree $mixed: index=rebuilt nul_files=2" "$ROOT/corrupt-mixed.log" \
+    || fail "mixed corruption heal was not logged with its NUL file count"
+  grep -Fq $'kept-worktree\twt-corrupt-mixed\t'"$mixed_head"$'\tpath='"$mixed"';reason=healed-corrupt' \
+    "$NIGHT/worktree-cleanup-manifest.txt" || fail "healed corruption was not recorded in the manifest"
+  shopt -s nullglob
+  local backups=("$mixed".corrupt-*)
+  shopt -u nullglob
+  [ "${#backups[@]}" -eq 1 ] || fail "corrupt metadata backup was not kept beside the worktree"
+  cmp -s "$ROOT/broken-index" "${backups[0]}/index" || fail "corrupt index was not preserved in its backup"
+  cmp -s "$ROOT/broken-orig-head" "${backups[0]}/ORIG_HEAD" || fail "corrupt ORIG_HEAD was not preserved in its backup"
+
+  git -C "$repo" worktree add -q --detach "$clean" origin/main
+  gitdir="$(git -C "$clean" rev-parse --absolute-git-dir)"
+  cp "$ROOT/broken-index" "$gitdir/index"
+  cp "$ROOT/broken-orig-head" "$gitdir/ORIG_HEAD"
+  printf '\0\0\0\0' > "$clean/nul-one.txt"
+  printf '\0\0\0\0' > "$clean/nul-two.txt"
+  clean_head="$(git -C "$clean" rev-parse HEAD)"
+  if ! ZF_PRIMARY_REPO_DIR="$repo" run_lifecycle finish "$repo" "$clean" > "$ROOT/corrupt-clean.log" 2>&1; then
+    cat "$ROOT/corrupt-clean.log" >&2
+    fail "NUL-only corrupt worktree was not removed after healing"
+  fi
+  [ ! -e "$clean" ] || fail "clean-after-heal worktree still exists"
+  grep -Fq "worktree-lifecycle: healed corrupt worktree $clean: index=rebuilt nul_files=2" "$ROOT/corrupt-clean.log" \
+    || fail "clean corruption heal was not logged with its NUL file count"
+  grep -Fq $'removed-worktree\twt-corrupt-clean\t'"$clean_head" "$NIGHT/worktree-cleanup-manifest.txt" \
+    || fail "clean-after-heal worktree removal was not recorded"
+}
+
 # Run issue fixtures before the slower legacy suite so each regression can be
 # checked alone. The default path below still runs the complete suite.
 if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
   case "$WORKTREE_LIFECYCLE_CASE" in
+    corrupt-worktree-heal)
+      test_corrupt_worktree_heal
+      echo 'ok - corrupt worktrees heal NUL damage and preserve real edits'
+      exit 0
+      ;;
     origin-fetch-bad-local-ref)
       bad_oid=9999999999999999999999999999999999999999
       bad_ref="$REPO/.git/refs/heads/hand/3603"
@@ -1990,6 +2062,8 @@ git -C "$REPO" show-ref --verify --quiet refs/heads/topic/dirty || fail "dirty b
 dirty_head="$(git -C "$DIRTY" rev-parse HEAD)"
 grep -Fq $'kept-worktree\twt-dirty\t'"$dirty_head"$'\t' "$NIGHT/worktree-cleanup-manifest.txt" \
   || fail "manifest omitted dirty worktree head and keep reason"
+
+test_corrupt_worktree_heal
 
 # Reaper skips roster, active-unit, command-line and CWD evidence.
 LIVE="$ROOT/wt-live"

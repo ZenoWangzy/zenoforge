@@ -517,6 +517,36 @@ record_pipeline_resume_checkpoint() {
   say "recorded issue #$issue resume checkpoint at $head"
 }
 
+corrupt_file_is_all_nul() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(wc -c < "$1")" -gt 0 ] && [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c)" -eq 0 ]; }
+
+heal_corrupt_worktree() {
+  local target="$1" head="$2" gitdir index path rel backup index_bad=0 index_state=ok nul_files=0 head_non_nul; local -a broken=()
+  gitdir="$(git -C "$target" rev-parse --absolute-git-dir 2>/dev/null)" || return 1; index="$gitdir/index"
+  if [ ! -e "$index" ] || [ ! -f "$index" ] || [ -L "$index" ] \
+    || ! head -c 4 "$index" | cmp -s - <(printf DIRC) || ! git -C "$target" ls-files --stage >/dev/null 2>&1; then index_bad=1; broken+=("$index"); fi
+  corrupt_file_is_all_nul "$gitdir/ORIG_HEAD" && broken+=("$gitdir/ORIG_HEAD")
+  while IFS= read -r -d '' path; do corrupt_file_is_all_nul "$path" && broken+=("$path"); done \
+    < <(shopt -s globstar nullglob; for path in "$gitdir"/refs/**; do [ -f "$path" ] && [ ! -L "$path" ] && printf '%s\0' "$path"; done)
+  (( index_bad || ${#broken[@]} )) || return 1
+  [ "$(git -C "$target" rev-parse --verify HEAD 2>/dev/null)" = "$head" ] || return 1
+  if ((${#broken[@]})); then
+    backup="$target.corrupt-$(date -u +%Y%m%dT%H%M%SZ)-$$"; mkdir -- "$backup" || return 1
+    for path in "${broken[@]}"; do
+      [ -e "$path" ] || continue; rel="${path#"$gitdir"/}"
+      [[ "$rel" != */* ]] || mkdir -p -- "$backup/${rel%/*}" || return 1
+      mv -- "$path" "$backup/$rel" || return 1
+    done
+  fi
+  if [ "$index_bad" = 1 ]; then git -C "$target" read-tree "$head" || return 1; index_state=rebuilt; fi
+  while IFS= read -r -d '' path; do
+    corrupt_file_is_all_nul "$target/$path" || continue
+    head_non_nul="$(git -C "$target" cat-file blob "$head:$path" 2>/dev/null | LC_ALL=C tr -d '\000' | wc -c)" || continue; [ "$head_non_nul" -gt 0 ] || continue
+    git -C "$target" checkout "$head" -- ":(literal)$path" || return 1; nul_files=$((nul_files + 1))
+  done < <(git -C "$target" diff --name-only --diff-filter=MT -z "$head")
+  say "healed corrupt worktree $target: index=$index_state nul_files=$nul_files"; record_kept_worktree "$target" "$head" healed-corrupt || true
+}
+finish_keep() { record_kept_worktree "$1" "$2" "$3" || true; say "$4"; }
+
 finish_worktree() {
   local target="$1" record_resume="${2:-0}" record head branch locked lock_reason lock_status worktree_root status rescue_name primary
   [ -n "$target" ] || return 0
@@ -530,91 +560,65 @@ finish_worktree() {
   if [ -z "$record" ]; then
     [ -e "$target" ] || return 0
     head="$(git -C "$target" rev-parse --verify HEAD 2>/dev/null || true)"
-    record_kept_worktree "$target" "$head" unregistered-path || true
-    say "kept unregistered path $target"
-    return 2
+    finish_keep "$target" "$head" unregistered-path "kept unregistered path $target"; return 2
   fi
   IFS=$'\t' read -r head branch locked lock_reason _ <<< "$record"
   if [ "$locked" = 1 ]; then
     if ! load_live_state; then
-      record_kept_worktree "$target" "$head" lock-owner-inventory-unreadable || true
-      say "kept $target; lock owner inventory unreadable"
-      return 2
+      finish_keep "$target" "$head" lock-owner-inventory-unreadable "kept $target; lock owner inventory unreadable"; return 2
     fi
     worktree_lock_state "$target" "$lock_reason" || lock_status=$?
     case "${lock_status:-0}" in
       0)
-        record_kept_worktree "$target" "$head" live-lock-owner || true
-        say "kept locked worktree $target; owner is live"
-        return 2
+        finish_keep "$target" "$head" live-lock-owner "kept locked worktree $target; owner is live"; return 2
         ;;
       1)
         if ! git -C "$REPO" worktree unlock "$target"; then
-          record_kept_worktree "$target" "$head" unlock-refused || true
-          say "kept locked worktree $target; unlock refused"
-          return 2
+          finish_keep "$target" "$head" unlock-refused "kept locked worktree $target; unlock refused"; return 2
         fi
         say "released dead or expired worktree lock $target"
         ;;
       *)
-        record_kept_worktree "$target" "$head" lock-owner-unknown || true
-        say "kept locked worktree $target; owner state unknown or lock younger than 24h"
-        return 2
+        finish_keep "$target" "$head" lock-owner-unknown "kept locked worktree $target; owner state unknown or lock younger than 24h"; return 2
         ;;
     esac
     lock_status=""
   fi
   if [ -d "$target" ]; then
     if ! worktree_root="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" || [ "$(realpath -m -- "$worktree_root")" != "$target" ]; then
-      record_kept_worktree "$target" "$head" unreadable-worktree || true
-      say "kept unreadable worktree $target"
-      return 2
+      finish_keep "$target" "$head" unreadable-worktree "kept unreadable worktree $target"; return 2
     fi
     head="$(git -C "$target" rev-parse --verify HEAD 2>/dev/null)" || {
-      record_kept_worktree "$target" "$head" unreadable-head || true
-      say "kept $target; HEAD unreadable"
-      return 2
+      finish_keep "$target" "$head" unreadable-head "kept $target; HEAD unreadable"; return 2
     }
     if ! load_live_state; then
-      record_kept_worktree "$target" "$head" owner-inventory-unreadable || true
-      say "kept $target; owner inventory unreadable"
-      return 2
+      finish_keep "$target" "$head" owner-inventory-unreadable "kept $target; owner inventory unreadable"; return 2
     fi
     if worktree_owner_live "$target"; then
-      record_kept_worktree "$target" "$head" live-process || true
-      say "kept $target; live process still uses it"
-      return 2
+      finish_keep "$target" "$head" live-process "kept $target; live process still uses it"; return 2
     fi
     if hand_worktree_resume_decision "$target" "$head"; then
-      say "kept hand worktree $target; resume pending"
-      return 2
+      say "kept hand worktree $target; resume pending"; return 2
     fi
-    status="$(git -C "$target" status --porcelain=v1 --untracked-files=all 2>/dev/null)" || {
-      record_kept_worktree "$target" "$head" git-status-failed || true
-      say "kept $target; git status failed"
-      return 2
-    }
+    if ! status="$(git -C "$target" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
+      if ! heal_corrupt_worktree "$target" "$head" \
+        || ! status="$(git -C "$target" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
+        finish_keep "$target" "$head" git-status-failed "kept $target; git status failed"; return 2
+      fi
+    fi
     if [ -n "$status" ]; then
-      record_kept_worktree "$target" "$head" uncommitted-or-untracked || true
-      say "kept $target; uncommitted or untracked files remain"
-      return 2
+      finish_keep "$target" "$head" uncommitted-or-untracked "kept $target; uncommitted or untracked files remain"; return 2
     fi
     branch="$(git -C "$target" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
     rescue_name="${branch:-$(basename -- "$target")}"
   else
-    record_kept_worktree "$target" "$head" missing-path || true
-    say "kept stale worktree entry $target; missing entries need explicit inventory"
-    return 2
+    finish_keep "$target" "$head" missing-path "kept stale worktree entry $target; missing entries need explicit inventory"; return 2
   fi
-  # Removal never waits on the network. Local origin refs already prove a pushed or landed head; only
-  # commits no local origin ref holds need a fetch and a rescue push, and without origin they stay.
-  # 2026-10-21/22: a fetch-first gate kept every finished triage, advisor and hand worktree whenever
-  # the proxy stalled (419 kept, 0 removed by run-end cleanup in 26 h; 287 left under ~/wt).
+  # Removal is offline: local origin refs prove preservation; only unique commits need refresh and rescue.
+  # A fetch-first gate stalled behind the proxy, keeping 419 worktrees and leaving 287 behind (2026-10-21/22).
   if ! head_content_is_preserved "$branch" "$head"; then
     refresh_origin || {
-      record_kept_worktree "$target" "$head" unique-commits-origin-unreachable || true
-      say "kept $target; $head has commits no local origin ref holds and origin fetch failed"
-      return 2
+      finish_keep "$target" "$head" unique-commits-origin-unreachable "kept $target; $head has commits no local origin ref holds and origin fetch failed"; return 2
     }
     if ! head_content_is_preserved "$branch" "$head"; then
       push_rescue "$rescue_name" "$head" || {
@@ -624,15 +628,11 @@ finish_worktree() {
     fi
   fi
   if [ "$record_resume" = 1 ] && ! record_pipeline_resume_checkpoint "$branch" "$head"; then
-    record_kept_worktree "$target" "$head" resume-checkpoint-write-failed || true
-    say "kept $target; resume checkpoint write failed"
-    return 2
+    finish_keep "$target" "$head" resume-checkpoint-write-failed "kept $target; resume checkpoint write failed"; return 2
   fi
   manifest_record removing-worktree "$(basename -- "$target")" "$head" "path=$target" || return 1
   if ! git -C "$REPO" worktree remove "$target"; then
-    record_kept_worktree "$target" "$head" remove-refused || true
-    say "kept $target; ordinary git worktree remove refused"
-    return 2
+    finish_keep "$target" "$head" remove-refused "kept $target; ordinary git worktree remove refused"; return 2
   fi
   manifest_record removed-worktree "$(basename -- "$target")" "$head" "path=$target" || return 1
   say "removed worktree $target at $head"
