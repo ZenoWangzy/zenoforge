@@ -30,10 +30,6 @@ case "$*" in
     fi ;;
 esac
 STUB
-cat > "$t/bin/zf-batch" <<'STUB'
-#!/usr/bin/env bash
-ZF_BATCH_SLOT=test exec "$@"
-STUB
 chmod +x "$t/bin/"*; export PATH="$t/bin:$PATH" ROOT="$t/root" GH_TOKEN=secret
 mkdir -p "$t/pack/hotfix/prepush-gates.d" "$t/config"
 printf '%s\n' 'echo legacy-pack' > "$t/pack/hotfix/prepush-gates.d/10-example.sh"
@@ -110,7 +106,7 @@ mkdir -p "$GATE_STARTED"
 touch "$GATE_STARTED/$BASHPID"
 while [[ ! -e "$GATE_RELEASE" ]]; do sleep 0.025; done
 STUB
-export GATE_RELEASE="$gate_release" ZF_BATCH_SLOT=test
+export GATE_RELEASE="$gate_release"
 wait_for_started() {
   local dir="$1" wanted="$2" count
   for _ in {1..200}; do

@@ -4,7 +4,6 @@
 set -euo pipefail
 unset GH_TOKEN
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
-if [[ -z ${ZF_BATCH_SLOT:-} ]]; then exec zf-batch "$BASH_SOURCE" "$@"; fi
 root=$(git rev-parse --show-toplevel)
 sha=$(git rev-parse "${1:-HEAD}^{commit}")
 git fetch -q origin main
