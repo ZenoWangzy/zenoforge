@@ -107,6 +107,52 @@ how_why_gate_reason() { # unit-json [implementation report] → missing/empty ho
   grep -Eq '(^|[^[:xdigit:]])[[:xdigit:]]{7,}([^[:xdigit:]]|$)|#[0-9]+' <<<"$why_section" \
     || printf '## why lacks a commit SHA (7+ hex characters) or #N issue reference'
 }
+incident_report_reason() { # unit-json report-path → the first report gate reason, empty when the report passes
+  local r
+  r="$(decision_log_gate_reason "$1" "$2")"
+  [[ -n "$r" ]] || r="$(how_why_gate_reason "$1" "$2")"
+  [[ -n "$r" ]] || r="$(incident_report_gate_reason "$1" "$2")"
+  printf '%s' "$r"
+}
+incident_report_merge_adopted() { # unit-report fix-note fix-note-path → atomically writes the fix note and original unit report section beside the unit report; prints its name
+  local orig="$1" fix="$2" fix_path="$3" orig_base="${1%.md}" original_name="$1" orig_path="$SUP/$1" merged tmp marker
+  if [[ "$orig_base" == *-adopted-* ]]; then
+    orig_base="${orig_base%%-adopted-*}"
+    original_name="$orig_base.md"
+  fi
+  if [[ "$orig" == *-adopted-* ]] || grep -q '^<!-- unit implementation report:' "$orig_path" 2>/dev/null; then
+    marker="$(sed -n 's/^<!-- unit implementation report: \(.*\) -->$/\1/p' "$orig_path" 2>/dev/null | head -n 1)"
+    [[ -z "$marker" ]] || original_name="$marker"
+  fi
+  merged="${orig_base}-adopted-${fix%.md}.md"
+  tmp="$SUP/$merged.new"
+  if grep -q '^<!-- unit implementation report:' "$orig_path" 2>/dev/null; then
+    { cat -- "$fix_path" && printf '\n<!-- unit implementation report: %s -->\n\n' "$original_name" \
+      && awk 'copy { print } /^<!-- unit implementation report:/ { copy=1 }' "$orig_path"; } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  else
+    { cat -- "$fix_path" && printf '\n<!-- unit implementation report: %s -->\n\n' "$original_name" && cat -- "$orig_path"; } \
+      > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  fi
+  if ! mv -f -- "$tmp" "$SUP/$merged"; then rm -f -- "$tmp"; return 1; fi
+  printf '%s' "$merged"
+}
+incident_report_harvest_target() { # unit-id worker-type unit-json worker-report worker-report-path → report used by the pre-review gate
+  local unit="$1" wtype="$2" unit_json="$3" worker_report="$4" worker_report_path="$5" report="$4" merged
+  [[ "$wtype" == repair ]] || { printf '%s' "$report"; return 0; }
+  report="$(jqf -r --arg n "$worker_report" '.implementation_report // $n' <<<"$unit_json")"
+  if [[ "$worker_report" != "$report" ]] \
+    && [[ -n "$(incident_report_reason "$unit_json" "$SUP/$report")" ]] \
+    && [[ -z "$(incident_report_reason "$unit_json" "$worker_report_path")" ]]; then
+    merged="$(incident_report_merge_adopted "$report" "$worker_report" "$worker_report_path")" || merged=""
+    if [[ -n "$merged" ]] && [[ -z "$(incident_report_reason "$unit_json" "$SUP/$merged")" ]] \
+      && set_unit "$unit" ".implementation_report=$(js "$merged")"; then
+      say "report adopted unit=$unit from=$worker_report"
+      printf '%s' "$merged"
+      return 0
+    fi
+  fi
+  printf '%s' "$report"
+}
 incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
   [[ "$verdict" == READY ]] || { printf '%s' "$verdict"; return 0; }
