@@ -368,7 +368,7 @@ if [ "$PROVIDER" = codex ]; then
       [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
       started="$(date +%s)"
       status=0
-      codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --cd "$worktree" -m "$model" \
+      codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && env "CONTEXT_MODE_MCP_SENTINEL_DIR=$CONTEXT_MODE_MCP_SENTINEL_DIR" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --cd "$worktree" -m "$model" \
         -c "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
         -s danger-full-access \
         -c sandbox_workspace_write.network_access=true \

@@ -333,7 +333,7 @@ dispatch_owner_session() {
   agent_thread_budget
   OWNER_SESSION_BUDGET_STARTED_AT="$(date +%s)"
   set +e
-  pipeline_execution_run codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --model "$model" --config "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run env "CONTEXT_MODE_MCP_SENTINEL_DIR=$CONTEXT_MODE_MCP_SENTINEL_DIR" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --model "$model" --config "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
     --config mcp_servers.gitnexus.enabled=false \
     --cd "$worktree" "${sandbox_args[@]}" - <&3 2>&1 | dispatch_log_output "$final_log"
   exit_code="${PIPESTATUS[0]}"
