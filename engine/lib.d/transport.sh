@@ -102,16 +102,22 @@ gh_tick_retry_fits() {
 
 
 gh_rate_limit_api_class() {
-  local arg
+  local arg api_graphql=0 rate_limit_lookup=0
   case "${1:-}" in
     pr|issue|search) printf 'graphql\n' ;;
     api)
       shift
       for arg in "$@"; do
         case "$arg" in
-          graphql|*/graphql|https://*/graphql) printf 'graphql\n'; return 0 ;;
+          rate_limit|*/rate_limit|https://*/rate_limit) printf 'none\n'; return 0 ;;
+          graphql|*/graphql|https://*/graphql) api_graphql=1 ;;
         esac
+        [[ "$arg" == *rateLimit* ]] && rate_limit_lookup=1
       done
+      if (( api_graphql )); then
+        if (( rate_limit_lookup )); then printf 'none\n'; else printf 'graphql\n'; fi
+        return 0
+      fi
       printf 'rest\n'
       ;;
     --version|version|help|-h|--help) printf 'none\n' ;;
