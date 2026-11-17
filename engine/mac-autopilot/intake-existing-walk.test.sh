@@ -90,6 +90,7 @@ jq -S '.units |= map(del(.history, .task, .review_findings))' "$UNITS" > "$fixtu
 jq -S . "$UNITS.view" > "$fixture/actual-view.json"
 cmp -s "$fixture/current-view.json" "$fixture/actual-view.json" \
   || { echo 'not ok - units view does not reflect current units.json after the walk' >&2; exit 1; }
+rm -f -- "$cursor"
 echo 'ok - forced existing-walk rebuild keeps the view readable and refreshes its contents'
 
 : > "$visits"
