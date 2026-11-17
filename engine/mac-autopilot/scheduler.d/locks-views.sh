@@ -78,14 +78,15 @@ refill_lock_wait_spent() {
 refill_stopped() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
 }
-ledger_lock_holder_phase() { # the holder's phase is recorded beside its pid when it takes the scheduler lock
+ledger_lock_holder_phase() { # the current holder phase is recorded beside its pid
   local holder recorded_pid phase
   holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
-  if [[ "$holder" =~ ^[0-9]+$ ]] && IFS=$'\t' read -r recorded_pid phase 2>/dev/null < "$SCHED_LOCK/holder-phase" \
-    && [[ "$recorded_pid" == "$holder" && -n "$phase" ]]; then
-    printf '%s (pid %s)' "$phase" "$holder"
+  [[ "$holder" =~ ^[0-9]+$ ]] || holder=none
+  if [[ "$holder" != none ]] && IFS=$'\t' read -r recorded_pid phase 2>/dev/null < "$SCHED_LOCK/holder-phase" \
+    && [[ "$recorded_pid" == "$holder" && -n "$phase" && "$phase" != *[[:space:]]* ]]; then
+    printf '%s/%s' "$phase" "$holder"
   else
-    printf 'unknown (pid %s, not the tick)' "${holder:-none}"
+    printf 'unknown/%s' "$holder"
   fi
 }
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides

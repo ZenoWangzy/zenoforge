@@ -161,8 +161,10 @@ echo cleanup_tick > "$A/.tick-phase"
 trap 'kill "$holder" 2>/dev/null || :; wait "$holder" 2>/dev/null || :; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
 (
   SCHED_STATION=true SCHED_TICK_STEP_ACTIVE=true
-  phase_mark dispatch_pending
+  phase_mark A
   acquire_scheduler_lock || exit 1
+  [[ "$(ledger_lock_holder_phase)" == "A/$BASHPID" ]] || exit 1
+  phase_mark B
   printf '%s\n' "$BASHPID" > "$holder_ready"
   sleep 300 >/dev/null 2>&1 & sleep_pid=$!
   wait "$sleep_pid"
@@ -178,11 +180,14 @@ TICK_LOCAL_REFILL=true; SECONDS=$((limit - 5))
 await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; wait "$waiter" 2>/dev/null || :; fail 'a refill past its deadline kept waiting for the ledger lock'; }
 [[ "$(cat "$lock_rc")" == 1 ]] || fail "a refill past its deadline must fail the lock wait (rc=$(cat "$lock_rc"))"
 grep -q 'ledger lock wait stopped' "$LOG" || fail 'the refused wait must say so in the log'
-grep -Fq "holder=$holder_pid holder_phase=dispatch_pending (pid $holder_pid)" "$LOG" || fail 'the stop must name the detached step phase, not the tick cleanup phase'
+grep -Fq "holder=$holder_pid holder_phase=B/$holder_pid" "$LOG" || fail 'the waiter must read the current holder phase from the lock record'
+[[ "$(ledger_lock_holder_phase)" == "B/$holder_pid" ]] || fail 'the holder record must advance from phase A to phase B'
+[[ "$(ledger_lock_holder_phase)" != *' '* ]] || fail 'the holder phase value must not contain spaces'
 printf '4242\tstale_phase\n' > "$SCHED_LOCK/holder-phase"
-[[ "$(ledger_lock_holder_phase)" == "unknown (pid $holder_pid, not the tick)" ]] || fail 'a phase record for another pid must be reported as unknown'
+[[ "$(ledger_lock_holder_phase)" == "unknown/$holder_pid" ]] || fail 'a phase record for another pid must be reported as unknown'
+[[ "$(ledger_lock_holder_phase)" != *' '* ]] || fail 'an unknown holder phase value must not contain spaces'
 rm -f "$SCHED_LOCK/holder-phase"
-[[ "$(ledger_lock_holder_phase)" == "unknown (pid $holder_pid, not the tick)" ]] || fail 'a missing phase record must be reported as unknown'
+[[ "$(ledger_lock_holder_phase)" == "unknown/$holder_pid" ]] || fail 'a missing phase record must be reported as unknown'
 # The stop is counted once per refill, with the token bell.sh and engine-canary.sh match, and tells itself from a kill by "stop".
 for _ in 1 2; do rm -f "$lock_rc"; ( rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
   await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; fail 'a wait after the stop must fail at once'; }; wait "$waiter"; done
