@@ -121,8 +121,14 @@ intake_judge_station_worker() { # issue file, result dir, repo, stale seconds
     deferred=1
   else
     judged=1
-    intake_priority_judge_issue "$issue" "$number" "$repo" true || rc=$?
+    intake_priority_judge_issue "$issue" "$number" "$repo" || rc=$?
     [[ "$INTAKE_PRIORITY_JUDGE_APPLIED" != true ]] || applied=1
+    if [[ "$INTAKE_PRIORITY_JUDGE_APPLIED" == true ]]; then
+      local labels
+      labels="$(gh issue view "$number" --repo "$repo" --json labels 2>/dev/null)" || labels=""
+      jqf -e 'any(.labels[]?; if type == "string" then . == "judge:fallback" else .name == "judge:fallback" end)' <<<"$labels" >/dev/null 2>&1 \
+        && INTAKE_PRIORITY_JUDGE_FALLBACK=true
+    fi
     [[ "$INTAKE_PRIORITY_JUDGE_FALLBACK" != true ]] || fallback=1
     intake_judge_claim_end
   fi

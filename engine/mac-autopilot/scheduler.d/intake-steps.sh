@@ -51,8 +51,8 @@ intake_priority_open_unlabelled_cooldown() { # issue number -> 0 while the exist
   awk -F'\t' -v k="$1 intake priority label not applied" -v now="$(date +%s)" '$1==k && now-$2<21600{f=1} END{exit !f}' \
     "$A/intake-skip-noted.tsv" 2>/dev/null
 }
-intake_priority_judge_issue() { # issue-json number repo [check-fallback-marker]; preserve the tick's call and #1206 stamp rules
-  local issue="$1" number="$2" repo="$3" output priority_script="${ZF_INTAKE_PRIORITY_SCRIPT:-$HERE/../intake-priority.sh}" labels
+intake_priority_judge_issue() { # issue-json number repo; preserve the tick's call and #1206 stamp rules
+  local issue="$1" number="$2" repo="$3" output priority_script="${ZF_INTAKE_PRIORITY_SCRIPT:-$HERE/../intake-priority.sh}"
   INTAKE_PRIORITY_JUDGE_OUTPUT="" INTAKE_PRIORITY_JUDGE_APPLIED=false INTAKE_PRIORITY_JUDGE_FALLBACK=false
   output="$(printf '%s\n' "$issue" | bash "$priority_script" triage "$number" ready-for-agent "$repo" 2>&1)" || true
   INTAKE_PRIORITY_JUDGE_OUTPUT="$output"
@@ -62,11 +62,6 @@ intake_priority_judge_issue() { # issue-json number repo [check-fallback-marker]
   esac
   if grep -Fq "intake-priority: applied issue=#$number " <<<"$output"; then
     INTAKE_PRIORITY_JUDGE_APPLIED=true
-    if [[ "${4:-false}" == true ]]; then
-      labels="$(gh issue view "$number" --repo "$repo" --json labels 2>/dev/null)" || labels=""
-      jqf -e 'any(.labels[]?; if type == "string" then . == "judge:fallback" else .name == "judge:fallback" end)' <<<"$labels" >/dev/null 2>&1 \
-        && INTAKE_PRIORITY_JUDGE_FALLBACK=true
-    fi
   else
     intake_skip_stamp "$number" 'intake priority label not applied'
   fi
