@@ -1358,7 +1358,7 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-text = sys.stdin.read()
+text = re.sub(r"(?m)^- 守护项「[A-Za-z0-9._-]+」：", "", sys.stdin.read())
 try:
     now = int(sys.argv[1])
 except (IndexError, ValueError):

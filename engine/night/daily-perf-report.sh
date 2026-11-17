@@ -193,6 +193,29 @@ daily_perf_report_conclusion() {
   '
 }
 
+daily_perf_report_guard_section() {
+  jq -r '
+    def state_label:
+      if .state == "log-missing" then "日志缺失"
+      elif .state == "not-started" then "尚未开始"
+      elif .state == "failed" then "检查失败"
+      elif .state == "passed" then "成功已记录"
+      else "状态未知" end;
+    def short_reason:
+      if .state == "log-missing" then "未找到运行日志"
+      elif .state == "not-started" then "日志中尚无该项结果"
+      elif .state == "passed" then "日志已记录成功结果"
+      elif ((.raw_status // "") | test("TIMEOUT|TIMED_OUT|DEADLINE"; "i")) then "检查超时"
+      elif ((.raw_status // "") | test("NETWORK|CONNECTION"; "i")) then "网络连接中断"
+      elif .raw_status == "DRIFT" then "检查发现偏差"
+      elif .raw_status == "ERROR" then "检查运行错误"
+      else "未记录成功结果" end;
+    "**事故防护检查**\n" +
+    (if ((.guardObservations // []) | length) == 0 then "当前没有登记的防护项。"
+     else [.guardObservations[] | "- 守护项「\(.id)」：\(. | state_label)；\(. | short_reason)。"] | join("\n") end)
+  ' <<< "$1"
+}
+
 daily_perf_report_verification_line() {
   local agent_home="$1" repo_root="$2" report planned available unavailable unmapped feature_count
   if ! report="$(node "$SCRIPT_DIR/../verification-map-audit.mjs" --root "$repo_root" --state-dir "$agent_home/state" 2>/dev/null)"; then
@@ -253,7 +276,7 @@ daily_perf_report_check_contract() {
 }
 
 daily_perf_report_build() {
-  local agent_home="$1" repo_root="$2" day="$3" guard_audit="$4" dry_run="${5:-0}" start_epoch end_epoch now label releases efficiency timing anomalies reason work_data active queued work_reason pipeline_efficiency report contract_errors
+  local agent_home="$1" repo_root="$2" day="$3" guard_audit="$4" dry_run="${5:-0}" start_epoch end_epoch now label releases efficiency timing anomalies reason work_data active queued work_reason pipeline_efficiency guard_section report contract_errors
   start_epoch="$(date -u -d "$day 00:00:00" +%s)" || return 1
   end_epoch="$(date -u -d "$day +1 day 00:00:00" +%s)" || return 1
   now="$(date +%s)" || return 1
@@ -271,11 +294,12 @@ daily_perf_report_build() {
   reason="$(maintainer_health_mail_no_launch_reason)"
   work_reason="$(maintainer_health_mail_no_work_reason "$active" "$queued")"
   pipeline_efficiency="$(maintainer_health_mail_pipeline_efficiency_block "$agent_home" daily "$day")" || return 1
+  guard_section="$(daily_perf_report_guard_section "$guard_audit")" || return 1
   report="$( {
     printf '**今日汇总（%s）**\n\n**上线情况**\n' "$label"
     if [ -n "$releases" ]; then printf '%s' "$releases"
     else printf '%s没有上线：%s。\n' "$label" "$reason"; fi
-    printf '\n%s\n\n%s\n\n%s\n' "$efficiency" "$pipeline_efficiency" "$timing"
+    printf '\n%s\n\n%s\n\n%s\n\n%s\n' "$efficiency" "$pipeline_efficiency" "$timing" "$guard_section"
     [ -z "$work_reason" ] || printf '\n%s\n' "$work_reason"
     printf '\n**异常**\n%s\n' "$anomalies"
   } )" || return 1
