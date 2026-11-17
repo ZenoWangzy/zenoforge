@@ -207,6 +207,38 @@ test('helper caller coverage without a same-name suite is selectable', () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('selects tests for changed quoted shell log keys and skips broad keys', () => {
+  const root = mkdtempSync(join(tmpdir(), 'focused-log-keys-'));
+  const shell = 'scripts/emit.sh';
+  const fooTest = 'engine/foo-key.test.sh';
+  const plainTest = 'engine/plain-key.test.sh';
+  const broadTests = Array.from({ length: 16 }, (_, index) => `engine/broad-${index}.test.mjs`);
+  const tracked = new Set([shell, fooTest, plainTest, ...broadTests]);
+  const skipped = [];
+  const originalError = console.error;
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  try {
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    mkdirSync(join(root, 'engine'), { recursive: true });
+    writeFileSync(join(root, shell), "printf '%s\\n' old\n");
+    writeFileSync(join(root, fooTest), "grep -F 'foo_key=' output\n");
+    writeFileSync(join(root, plainTest), "grep -F 'plain_key=' output\n");
+    for (const path of broadTests) writeFileSync(join(root, path), 'assert.match(log, /broad_key=/);\n');
+    git('init', '-q'); git('config', 'user.name', 'fixture'); git('config', 'user.email', 'fixture@example.invalid');
+    git('add', '.'); git('commit', '-qm', 'base');
+    const baseRef = git('rev-parse', 'HEAD');
+    writeFileSync(join(root, shell), "printf '%s\\n' \"foo_key=$foo broad_key=$broad\"\nplain_key=$plain\n");
+    git('add', shell); git('commit', '-qm', 'change log keys');
+
+    console.error = (message) => skipped.push(message);
+    assert.deepEqual(focusedTestPaths([shell], tracked, { baseRef, headRef: 'HEAD', cwd: root }), [fooTest]);
+    assert.match(skipped.join('\n'), /broad_key/);
+  } finally {
+    console.error = originalError;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('routes CI infrastructure changes through focused contracts', () => {
   const suite = 'engine/ci-infrastructure-focused.test.sh';
   const tracked = new Set([suite]);
