@@ -438,13 +438,15 @@ priority_admission_has_room() { # priority age; dispatch_pending caches one reso
   # An admit at a stricter CPU target this pass implies an admit at a looser one: one host sample per start (#1129).
   local k
   for k in "${!TICK_PRIORITY_ADMISSION_CACHE[@]}"; do
-    [[ -z "$result" && "$k" == "$priority:$age:"* && "${TICK_PRIORITY_ADMISSION_CACHE[$k]}" == admit && "${k##*:}" -le "${LUNA_CPU_TARGET:-85}" ]] && result=admit
+    [[ -z "$result" && "$k" == "$priority:$age:"* && "${TICK_PRIORITY_ADMISSION_CACHE[$k]%%|*}" == admit && "${k##*:}" -le "${LUNA_CPU_TARGET:-85}" ]] && result=admit
   done
   if [[ -z "$result" ]]; then
-    if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result=hold; fi
+    if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result="hold|$BOX_ROOM_WHY"; fi
     TICK_PRIORITY_ADMISSION_CACHE[$cache_key]="$result"
   fi
-  [[ "$result" == admit ]]
+  if [[ "$result" == admit ]]; then BOX_ROOM_WHY=""; return 0; fi
+  BOX_ROOM_WHY="${result#hold|}"
+  return 1
 }
 
 priority_wait_should_hold() { # normal dispatch yields only while the selected waiter is also blocked
@@ -527,7 +529,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   # Review and report-only resumes are exempt: a refused report resume would fall through to review with the stale report.
   # shortcut: no /proc/meminfo means no gate (box_has_room would refuse every start, issue #9), upgrade when the portable readers land
   if [[ "$2" != review && "$2" != rereview && "${6:-false}" != true && -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] && ! LUNA_CPU_TARGET="${AUTOPI_DISPATCH_CPU_TARGET:-101}" priority_admission_has_room "$priority" "${PRIORITY_WAITING_AGE_SECONDS:-0}"; then
-    say "skip dispatch unit=$1 priority=$priority (host capacity: CPU, memory or run cap)"; dispatch_why "$1" host-capacity; return 1
+    say "skip dispatch unit=$1 priority=$priority (host capacity: ${BOX_ROOM_WHY:-unknown})"; dispatch_why "$1" host-capacity; return 1
   fi
   impl_cap="$IMPLEMENT_CAP"
   if [[ ( "$2" == "implement" || "$2" == "repair" ) && "$check_footprint" == true ]]; then

@@ -5,8 +5,10 @@ luna_run_cap() { local cap="${LUNA_MAX:-$LUNA_RUNS_HARD_CAP}"; (( cap < LUNA_RUN
 cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
   local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
   echo $(( 100 * busy / (busy + idle + 1) )); }
+BOX_ROOM_WHY=""
 box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, and the priority hold
   local age="${1:-$SECONDS}" runs avail cpu full cap
+  BOX_ROOM_WHY=""
   [[ "$age" =~ ^[0-9]+$ ]] || age=0
   runs=$(codex_runs)
   cap=$(luna_run_cap)
@@ -17,7 +19,12 @@ box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, a
   [[ "${LUNA_PRIORITY:-}" == hotfix ]] && (( avail >= 3072 && full < 10 )) && return 0
   # Aging skips only the CPU target; memory pressure, availability, and the run cap still apply.
   (( age >= ${LUNA_AGE_ADMIT_SECONDS:-1200} && runs < cap && full < 10 && avail >= ${LUNA_ADMIT_AVAIL_MB:-3328} )) && return 0
-  (( runs < cap && full < 10 && avail >= ${LUNA_ADMIT_AVAIL_MB:-3328} )) || return 1
+  if ! (( runs < cap && full < 10 && avail >= ${LUNA_ADMIT_AVAIL_MB:-3328} )); then
+    BOX_ROOM_WHY="runs $runs/$cap avail ${avail}MB full $full"
+    return 1
+  fi
   cpu=$(cpu_busy)
-  (( cpu < ${LUNA_CPU_TARGET:-85} ))
+  if (( cpu < ${LUNA_CPU_TARGET:-85} )); then return 0; fi
+  BOX_ROOM_WHY="runs $runs/$cap avail ${avail}MB full $full cpu ${cpu}/${LUNA_CPU_TARGET:-85}%"
+  return 1
 }
