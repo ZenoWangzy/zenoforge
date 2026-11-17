@@ -58,13 +58,16 @@ intake_priority_judge_issue() { # issue-json number repo; preserve the tick's ca
   INTAKE_PRIORITY_JUDGE_OUTPUT="$output"
   [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
   case "$output" in
-    *'intake-priority: skipped (disabled)'*|*'intake-priority: skipped (missing-typesafe-key)'*|*'intake-priority: skipped (invalid-config)'*) return 0 ;;
+    *'intake-priority: skipped (disabled)'*|*'intake-priority: skipped (missing-typesafe-key)'*|*'intake-priority: skipped (invalid-config)'*)
+      if declare -F intake_judge_station_consume_candidate >/dev/null; then intake_judge_station_consume_candidate "$number" || return $?; fi
+      return 0 ;;
   esac
   if grep -Fq "intake-priority: applied issue=#$number " <<<"$output"; then
     INTAKE_PRIORITY_JUDGE_APPLIED=true
   else
     intake_skip_stamp "$number" 'intake priority label not applied' || return $?
   fi
+  if declare -F intake_judge_station_consume_candidate >/dev/null; then intake_judge_station_consume_candidate "$number" || return $?; fi
   return 0
 }
 # Open candidates outside needs-triage can bypass run-triage; judge them before intake drops tracker labels.

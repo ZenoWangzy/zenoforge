@@ -141,7 +141,6 @@ intake_judge_station_worker() { # issue file, result dir, repo, stale seconds
         && INTAKE_PRIORITY_JUDGE_FALLBACK=true
     fi
     [[ "$INTAKE_PRIORITY_JUDGE_FALLBACK" != true ]] || fallback=1
-    intake_judge_station_consume_candidate "$number" || rc=1
     intake_judge_claim_end
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$judged" "$applied" "$fallback" "$deferred" "$rc" >"$result_dir/$number.result"

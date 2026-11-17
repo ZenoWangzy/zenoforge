@@ -136,6 +136,15 @@ date +%s > "$A/.intake-judge-epoch"
 intake_priority_open_unlabelled_candidates '' '' <<<"$(jq -cn '{number:77,title:"tick candidate",body:"",state:"OPEN",labels:[]}')" >/dev/null
 [[ ! -s "$JUDGE_CALLS" ]] || fail 'a fresh epoch did not suppress the tick judge'
 
+# If the tick already owns a candidate from the station snapshot, its shared judge call consumes the row.
+reset
+intake_judge_station_raw_candidates >/dev/null || fail 'the overlap fixture could not create a station snapshot'
+intake_priority_open_unlabelled_candidates '' '' <<<"$(jq -cn '{number:1,title:"tick candidate",body:"",state:"OPEN",labels:[]}')" >/dev/null
+[[ "$(cat "$JUDGE_CALLS")" == 1 ]] || fail 'the stale-station tick did not judge its candidate'
+jq -e '[.rows[].number] | index(1) == null' "$A/.intake-judge-candidates.json" >/dev/null || fail 'the tick left its judged issue in the station snapshot'
+ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the post-tick station pass failed'
+[[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2' ]] || fail 'the station repeated the tick judge from its stale snapshot'
+
 # Disabled-key skips keep #1206's no-stamp behavior.
 reset; JUDGE_MODE=skip
 ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the skipped pass failed'
@@ -163,4 +172,4 @@ grep -Fq -- '--intake-judge) SCHED_STATION=true; intake_judge_station_tick ;;' "
 grep -Fq '"${1:-}" != --intake-judge' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'the station would reconcile runtime config'
 grep -Fq '"${AUTOPI_INTAKE_JUDGE_KILL_SECONDS:-1200}" bash "$LIVE/scheduler.sh" --intake-judge' "$engine_dir/mac-autopilot/loop.sh" || fail 'loop.sh does not apply the station kill timeout'
 
-echo 'intake-judge-station.test.sh: pass (oldest-first cap, cached snapshot, parallel bound, claims, freshness fallback, no-stamp skip and concurrent cooldown writes)'
+echo 'intake-judge-station.test.sh: pass (oldest-first cap, cached snapshot, tick overlap, parallel bound, claims, freshness fallback, no-stamp skip and concurrent cooldown writes)'
