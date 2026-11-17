@@ -215,8 +215,6 @@ tick_gh_calls_begin() {
   # Match the in-memory snapshots to the fresh per-tick directory below.
   TICK_UNFINISHED="" TICK_UNFINISHED_LOADED=false TICK_UNFINISHED_IN_PROGRESS_OK=false TICK_UNFINISHED_ALL_OK=false
   if declare -p CI_RUN_JOBS_CACHE >/dev/null 2>&1; then CI_RUN_JOBS_CACHE=(); fi
-  # Runner availability changes between ticks and sets CI admission capacity.
-  if [[ -n "${GH_ETAG_DIR:-}" ]]; then rm -f -- "$GH_ETAG_DIR/runners.body" "$GH_ETAG_DIR/runners.etag" 2>/dev/null || :; fi
   tick_rest_usage_begin
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
   : >"$GH_TICK_CALLS_FILE" 2>/dev/null || GH_TICK_CALLS_FILE=""
@@ -353,7 +351,9 @@ gh_run_list_fetch() {
 }
 gh_run_list_cached() { # list filters → one shared snapshot per query in this tick
   local key
-  key="$(printf '%s\0' "${GH_REPO:-}" "${ROOT:-$PWD}" "$@" | base64 | tr '/+' '_-' | tr -d '=\n')"
+  key="$(printf '%s\0' "${GH_REPO:-}" "${ROOT:-$PWD}" "$@" | shasum -a 256)" || return 1
+  key="${key%% *}"
+  [[ "$key" =~ ^[[:xdigit:]]{64}$ ]] || return 1
   gh_tick_cache_get "runs-$key.json" gh_run_list_fetch "$@"
 }
 gh_run_jobs_cache_key() { # attempt 1 keeps the original id key; reruns get distinct snapshots
