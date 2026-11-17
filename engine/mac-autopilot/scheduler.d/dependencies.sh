@@ -249,11 +249,9 @@ dep_release_delivered() { # unit-id blocker [true|false, when the caller already
   else jqf -e --arg id "$1" --arg n "$note" 'any(.units[]; .id == $id and ((.task // "") | contains($n)))' "$UNITS" >/dev/null || dep_task_note "$1" "$note"; fi
   unblock_unit "$1" "#$2 delivered" "$2" delivered "#$2 delivered: ${DEP_DELIVERED_PR[$2]:-PR merged to main}"
 }
-# One pass over the blocked units (2026-11-08: 349 s on a ledger of 59 blocked units, the 10:47Z tick then died in dispatch_pending).
-# A row used to cost ~14 jq calls plus one parse of the merged hot+archive ledger (13 MB, ~0.4 s) for the dead-blocker and
-# has-unit checks; every freed row was one locked ledger write of its own. Now: one jq per loop lists each row with every field
-# the decisions read, one history pass indexes the rows per issue (DEP_ROWS), and set_unit calls queue (SET_UNIT_QUEUE) into one
-# units_update per loop. Decisions, log lines and gh calls are unchanged; dependencies-onepass.test.sh pins both.
+# One pass indexes predecessor rows and batches unit writes to keep work bounded as blocked units grow.
+# Each loop row carries its decision fields once; set_unit calls queue into one units_update per pass.
+# dependencies-onepass.test.sh pins these bounds and transition outcomes.
 declare -A DEP_ROWS=() DEP_ROWS_IDS=() DEP_ROWS_TOUCHED=()
 declare -a DEP_Q_IDS=() DEP_Q_EXPRS=()
 declare -A DEP_ROWSJSON=()
@@ -504,10 +502,10 @@ release_dependency_blocks_pass() {
   dep_hold_parked; intake_mark hold_parked
   if (( gh_due )); then
     reconcile_stacked_units; intake_mark reconcile_stacked
-    DEP_SWEEP=1; dep_rows_prime
+    DEP_SWEEP=1 DEP_ROWS_PASS=1 DEP_ROWS_BUILT=0; dep_rows_build; dep_rows_prime
     dep_dead_sweep || :; intake_mark dep_dead_sweep
     dep_dead_unpark || :; intake_mark dep_dead_unpark
-    DEP_SWEEP=0 DEP_ROWSJSON_BUILT=0
+    DEP_SWEEP=0 DEP_ROWSJSON_BUILT=0 DEP_ROWS_PASS=0 DEP_ROWS_BUILT=0
     obsolete_close_retry || :; intake_mark obsolete_close_retry
     park_label_sweep || :; intake_mark park_label_sweep
   fi
@@ -520,7 +518,7 @@ release_dependency_blocks() {
 dep_rows_prime() { # one history pass for every waiter's predecessor; the sweeps call it in the main shell, dep_rows_json reads it from a subshell
   local n rows need
   DEP_ROWSJSON=(); DEP_ROWSJSON_BUILT=0
-  need="$(jqf -c '[.units[] | .dep_wait_delivery | numbers] | unique' "$UNITS")" || return 0
+  need="$(jqf -c '[.units[] | (.dep_wait_delivery | numbers), (if .stage=="blocked-external" and .dep_wait_delivery == null then .blocked_on else empty end), (if .stage=="parked" and .parked_reason=="waiting-predecessor" then .blocked_on else empty end)] | map(select(type=="number")) | unique' "$UNITS")" || return 0
   while IFS=$'\x1f' read -r n rows; do DEP_ROWSJSON["$n"]="$rows"; done < <(jqf -r --argjson need "$need" \
     '. as $doc | $need[] | . as $d | "\($d)\u001f\([$doc.units[] | select(.issue == $d)] | tojson)"' <(units_history_doc))
   DEP_ROWSJSON_BUILT=1
@@ -532,7 +530,9 @@ dep_rows_json() { # issue → its ledger rows as a json array
 dep_predecessor_dead() { # waiter-unit-json predecessor; fail closed and print arbiter evidence
   local dep="$2" waiter rows st prs subs c b sha branches="" labels
   dep_delivered_in_ledger "$dep" && return 1
-  rows="$(dep_rows_json "$dep")" || return 1
+  if (( DEP_ROWS_PASS && DEP_ROWS_BUILT )); then
+    if [[ -z "${DEP_ROWS_IDS[$dep]:-}" ]]; then rows='[]'; else dep_rows_flag "$dep" 1 || return 1; rows="$(dep_rows_json "$dep")" || return 1; fi
+  else rows="$(dep_rows_json "$dep")" || return 1; fi
   st="$(scheduler_issue_state "$dep")" && [[ -n "$st" ]] || return 1
   labels="$(jqf -r '.labels // ""' <<<"$(dep_cache_info "$dep")")"
   jqf -e --slurpfile st <(printf '%s' "$st") --arg labels "$labels" '
