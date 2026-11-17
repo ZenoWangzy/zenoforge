@@ -765,6 +765,26 @@ function helperCallerTests(changedPaths, tracked, { baseRef, headRef, mappingRef
   return { tests, mappedPaths };
 }
 
+function changedShellLogKeyTests(changedPaths, tracked, { baseRef, headRef, cwd = process.cwd() }) {
+  const shellPaths = changedPaths.filter((path) => path.endsWith('.sh'));
+  if (!baseRef || !headRef || shellPaths.length === 0) return [];
+  const diff = gitText(['diff', '--unified=0', `${baseRef}..${headRef}`, '--', ...shellPaths], cwd);
+  const keys = new Set();
+  for (const line of diff.matchAll(/^[+-](?![+-]).*/gm))
+    for (const quoted of line[0].matchAll(/"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'/g))
+      for (const [, key] of (quoted[1] ?? quoted[2]).matchAll(/(?:^|[^A-Za-z0-9_{$])([a-z][a-z0-9_]{3,})=/g)) keys.add(key);
+  if (keys.size === 0) return [];
+  const sources = [...tracked].filter((path) => /\.test\.(?:sh|mjs)$/.test(path))
+    .map((path) => [path, readTracked(path, cwd)]).filter(([, source]) => source !== undefined);
+  const tests = new Set();
+  for (const key of keys) {
+    const matches = sources.filter(([, source]) => source.includes(`${key}=`)).map(([path]) => path);
+    if (matches.length > 15) { console.error(`focused-test-paths: skipped log key ${key} (${matches.length} test files)`); continue; }
+    matches.forEach((path) => tests.add(path));
+  }
+  return tests;
+}
+
 // node --test cannot run vitest files; their package's own gate (Touched packages PR gate) runs them.
 function isPackageVitestFile(path, cwd) {
   if (!path.startsWith('packages/')) return false;
@@ -778,6 +798,7 @@ function isPackageVitestFile(path, cwd) {
 export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
   const tracked = trackedPaths instanceof Set ? trackedPaths : new Set(trackedPaths);
   const tests = new Set();
+  for (const testPath of changedShellLogKeyTests(changedPaths, tracked, refs)) tests.add(testPath);
   const helperTests = helperCallerTests(changedPaths, tracked, {
     cwd: process.cwd(),
     ...refs,
@@ -792,11 +813,8 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
   let deletedPaths = new Set();
   try {
     const range = refs.baseRef && refs.headRef ? `${refs.baseRef}..${refs.headRef}` : refs.baseRef ?? 'HEAD';
-    deletedPaths = new Set(gitText(['diff', '--name-only', '--diff-filter=D', '--no-renames', range], refs.cwd ?? process.cwd())
-      .split(/\r?\n/).filter(Boolean));
-  } catch {
-    // Unresolvable refs: nothing is known to be deleted, so every changed script still needs coverage.
-  }
+    deletedPaths = new Set(gitText(['diff', '--name-only', '--diff-filter=D', '--no-renames', range], refs.cwd ?? process.cwd()).split(/\r?\n/).filter(Boolean));
+  } catch { /* Unresolvable refs: every changed script still needs coverage. */ }
 
   for (const path of changedPaths) {
     if (path.startsWith(`${PACK_PREFIX}vendor/`)) continue; // vendored upstream text has no pipeline test of ours
@@ -804,9 +822,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     if (path === 'tools/size-baseline.txt' || (/^(?:engine|tools)\/.*\.(?:sh|mjs|py|js|ts|cjs)$/.test(path) && !/\.test\.|(?:^|\/)test-[^/]*\.sh$|\/vendor\/|\/fixtures?\//.test(path))) {
       for (const candidate of resolveTrackedSuitePaths([packPath('engine/size-ratchet.test.sh')], tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
     }
-    if (path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
-      for (const candidate of resolveTrackedSuitePaths(CROSS_SCRIPT_TESTS, tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
-    }
+    if (path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) for (const candidate of resolveTrackedSuitePaths(CROSS_SCRIPT_TESTS, tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
 
     if (/\.test\.(?:sh|mjs)$/.test(path)) {
       if (tracked.has(path) && !isPackageVitestFile(path, refs.cwd ?? process.cwd())) tests.add(path);
@@ -819,9 +835,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
       && !['engine/night/maintainer-health-mail.sh', 'engine/notify.sh'].map(packPath).includes(path);
     // A guard fragment is the registry's data: it maps to the same tests as the registry file.
     let candidates = functionMapped ? undefined : RELATED_TESTS.get(path.replace(/\/incident-guards\.d\/[^/]+\.json$/, '/incident-guards.json'));
-    if (!candidates && path.startsWith('lessons/')) {
-      candidates = [packPath('engine/land-direct-main.test.sh')];
-    }
+    if (!candidates && path.startsWith('lessons/')) candidates = [packPath('engine/land-direct-main.test.sh')];
     if (!candidates && path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) {
       candidates = [path.replace(/\.(?:sh|[cm]?js|ts|py)$/, path.endsWith('.sh') || path.endsWith('.py') ? '.test.sh' : '.test.mjs')];
     } else if (!candidates && path.startsWith(`${PACK_PREFIX}prompts/`)) {
@@ -839,23 +853,14 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
           .map((owner) => `${PACK_PREFIX}${owner}.test.sh`);
       }
     }
-    if (!candidates && path === 'scripts/code-intelligence-preflight.mjs') {
-      candidates = ['scripts/code-intelligence-preflight.test.mjs'];
-    }
+    if (!candidates && path === 'scripts/code-intelligence-preflight.mjs') candidates = ['scripts/code-intelligence-preflight.test.mjs'];
 
     if (!candidates) continue;
     const matched = resolveTrackedSuitePaths(candidates, tracked, refs.cwd ?? process.cwd());
-    if (
-      path.startsWith(PACK_PREFIX)
-      && /\.(?:sh|[cm]?js|ts|py)$/.test(path)
-      && !deletedPaths.has(path)
-      && matched.length === 0
-      && (filenameTests.get(path)?.length ?? 0) === 0
-      && !helperTests.mappedPaths.has(path)
-      && !RELATED_TESTS.get(path)?.some((candidate) => tracked.has(candidate))
-    ) {
-      throw new Error(`No focused test exists for changed pipeline script ${path}.`);
-    }
+    if (path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)
+      && !deletedPaths.has(path) && matched.length === 0
+      && (filenameTests.get(path)?.length ?? 0) === 0 && !helperTests.mappedPaths.has(path)
+      && !RELATED_TESTS.get(path)?.some((candidate) => tracked.has(candidate))) throw new Error(`No focused test exists for changed pipeline script ${path}.`);
     for (const candidate of matched) tests.add(candidate);
   }
 
@@ -869,14 +874,9 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
   }
 
   if (tracked.has(packPath('engine/ci-infrastructure-focused.test.sh')) && changedPaths.some((path) => (
-    path.startsWith('.dagger/')
-    || path.startsWith('scripts/ci/')
-    || path.startsWith('.github/workflows/')
-    || path === 'scripts/check-production-image-contract.mjs'
-    || path === 'scripts/production-image-contract.json'
-  ))) {
-    tests.add(packPath('engine/ci-infrastructure-focused.test.sh'));
-  }
+    path.startsWith('.dagger/') || path.startsWith('scripts/ci/') || path.startsWith('.github/workflows/')
+    || path === 'scripts/check-production-image-contract.mjs' || path === 'scripts/production-image-contract.json'
+  ))) tests.add(packPath('engine/ci-infrastructure-focused.test.sh'));
 
   return [...tests].sort();
 }
