@@ -136,6 +136,50 @@
       "task": "t"
     },
     {
+      "blocked_on": 6780,
+      "body_blocked_by": [
+        6780
+      ],
+      "branch": "agent/issue-6781",
+      "dep_wait_delivery": 6780,
+      "held_dependents": 1,
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two"
+          },
+          "result": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-6781",
+      "issue": 6781,
+      "note": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 6781,
+      "body_blocked_by": [
+        6781
+      ],
+      "branch": "agent/issue-6780",
+      "dep_wait_delivery": 6781,
+      "history": [],
+      "id": "issue-6780",
+      "issue": 6780,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
       "branch": "agent/issue-107",
       "held_dependents": 2,
       "history": [],
@@ -634,6 +678,7 @@
 [2026-11-08T10:47:12Z] unit issue-2 unblocked: #101 delivered
 [2026-11-08T10:47:12Z] unit issue-3 unblocked: #102 delivered
 [2026-11-08T10:47:12Z] unit issue-105 unblocked: #106 waits on #105: dependency cycle broken here
+[2026-11-08T10:47:12Z] supervisor-review unit=issue-6781: dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two
 [2026-11-08T10:47:12Z] unit issue-9 blocker #108 dead (recut): repointed to child #109
 [2026-11-08T10:47:12Z] unit issue-10 unblocked: #110 closed on purpose (tracker/spec parent)
 [2026-11-08T10:47:12Z] supervisor-review unit=issue-11: blocker #111 is closed in the ledger but its issue is open with no recut children: decide
@@ -791,6 +836,18 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "labels": "",
       "state": "CLOSED",
       "state_reason": ""
+    },
+    "6780": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "6781": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
     }
   }
 }
@@ -929,6 +986,50 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "history": [],
       "id": "issue-106",
       "issue": 106,
+      "stage": "blocked-external",
+      "task": "t"
+    },
+    {
+      "blocked_on": 6780,
+      "body_blocked_by": [
+        6780
+      ],
+      "branch": "agent/issue-6781",
+      "dep_wait_delivery": 6780,
+      "held_dependents": 1,
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two"
+          },
+          "result": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two",
+          "stage": "supervisor-escalated"
+        }
+      ],
+      "id": "issue-6781",
+      "issue": 6781,
+      "note": "dependency cycle between #6781 and #6780: arbiter, rule which goes first or merge the two",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
+      "task": "t"
+    },
+    {
+      "blocked_on": 6781,
+      "body_blocked_by": [
+        6781
+      ],
+      "branch": "agent/issue-6780",
+      "dep_wait_delivery": 6781,
+      "history": [],
+      "id": "issue-6780",
+      "issue": 6780,
       "stage": "blocked-external",
       "task": "t"
     },
@@ -1566,6 +1667,18 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "issue_state": "",
       "labels": "",
       "state": "CLOSED",
+      "state_reason": ""
+    },
+    "6780": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
+      "state_reason": ""
+    },
+    "6781": {
+      "issue_state": "",
+      "labels": "",
+      "state": "OPEN",
       "state_reason": ""
     }
   }

@@ -140,6 +140,7 @@ mixed_fixture() {
   add "$(W 3 102)"                                                                       # blocker CLOSED on GitHub, no unit
   add "$(unit issue-103 103 implement-pending)"; add "$(W 4 103)"                        # still blocked
   add "$(W 105 106)"; add "$(W 106 105)"                                                 # mutual wait
+  add "$(W 6781 6780 '.dep_wait_delivery=6780')"; add "$(W 6780 6781 '.dep_wait_delivery=6781')" # latched mutual wait
   add "$(unit issue-107 107 parked)"; add "$(W 7 107)"                                   # parked blocker: stop waiting
   add "$(W 8 107 '.history=[{stage:"unblocked",result:"stopped waiting on #107: x"}]')" # ... a second block goes to the supervisor
   add "$(unit issue-108 108 closed)"; add "$(W 9 108 '.issue=9')"                        # dead blocker with a recut child
@@ -167,7 +168,8 @@ mixed_fixture() {
   DEP_DELIVERED_CACHE=()
   CACHE_ROWS=([102]=$'CLOSED\t' [101]=$'MERGED\t' [103]=$'OPEN\t' [106]=$'OPEN\t' [105]=$'OPEN\t' [107]=$'OPEN\t' [108]=$'OPEN\t' [110]=$'OPEN\t'
     [111]=$'OPEN\t' [112]=$'OPEN\troadmap-epic' [113]=$'OPEN\t' [115]=$'CLOSED\t' [116]=$'CLOSED\t' [117]=$'OPEN\t' [118]=$'OPEN\t' [119]=$'MERGED\t' [109]=$'OPEN\t'
-    [120]=$'OPEN\t' [121]=$'CLOSED\t' [131]=$'OPEN\t' [140]=$'OPEN\t' [130]=$'CLOSED\t' [133]=$'CLOSED\t' [132]=$'CLOSED\t\tCLOSED\tNOT_PLANNED' [150]=$'CLOSED\t')
+    [120]=$'OPEN\t' [121]=$'CLOSED\t' [131]=$'OPEN\t' [140]=$'OPEN\t' [130]=$'CLOSED\t' [133]=$'CLOSED\t' [132]=$'CLOSED\t\tCLOSED\tNOT_PLANNED' [150]=$'CLOSED\t'
+    [6780]=$'OPEN\t' [6781]=$'OPEN\t')
 }
 snapshot() { # normalised ledger, log without the timing line, and gh calls
   printf '== ledger\n'; jq -S . "$UNITS"
@@ -177,9 +179,17 @@ snapshot() { # normalised ledger, log without the timing line, and gh calls
 }
 mixed_fixture; reset_run; PRS='[{"number":900}]'
 run_counted
+jq -e '.units[] | select(.id == "issue-6781") | .stage == "supervisor-review" and (.note | contains("#6780") and contains("#6781") and contains("rule which goes first") and contains("merge the two"))' "$UNITS" >/dev/null \
+  || fail 'latched dependency cycle must send the larger issue to the supervisor with both issues and the ruling request'
+jq -e '.units[] | select(.id == "issue-6780") | .stage == "blocked-external" and .blocked_on == 6781' "$UNITS" >/dev/null \
+  || fail 'latched dependency cycle must leave the smaller issue blocked'
+cycle_escalations_before="$(jq '[.units[] | select(.issue == 6780 or .issue == 6781) | .history[] | select(.stage == "supervisor-escalated")] | length' "$UNITS")"
 out="$(snapshot)"
 reset_log() { : > "$LOG"; : > "$ghlog"; }; reset_log
 run_counted
+[[ "$(jq '[.units[] | select(.issue == 6780 or .issue == 6781) | .history[] | select(.stage == "supervisor-escalated")] | length' "$UNITS")" == "$cycle_escalations_before" ]] \
+  || fail 'second pass sent a latched cycle unit to the supervisor again'
+! grep -q 'supervisor-review unit=issue-6781:' "$LOG" || fail 'second pass logged another latched-cycle escalation'
 out+=$'\n== cache hit\n'"$(snapshot)"
 expected="$script_dir/dependencies-onepass.expected"
 if [[ "${DEP_ONEPASS_WRITE_EXPECTED:-}" == 1 ]]; then printf '%s\n' "$out" > "$expected"; echo "wrote $expected"; exit 0; fi
