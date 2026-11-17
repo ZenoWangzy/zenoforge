@@ -585,7 +585,7 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
         task="$(jqf -r '.task // empty' <<<"$u")"; branch="$(jqf -r '.branch // ""' <<<"$u")"
         dmark task_read
         [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; dispatch_why_reason "$id" no-task; continue; }
-        [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; dispatch_why_reason "$id" no-branch; continue; }
+        [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
         wt=""
         park_if_body_blocked "$u" && { dispatch_skip body-blocked; dispatch_why_reason "$id" body-blocked; continue; }
         if [[ "$local_refill" == true ]]; then
