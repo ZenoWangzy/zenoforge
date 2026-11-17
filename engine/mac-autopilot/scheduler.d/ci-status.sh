@@ -1,8 +1,8 @@
-ci_failed_steps() { # head -> failed step names of the head's failed runs
-  local r runs runs_json jobs
-  runs_json="$(gh_run_list_cached --commit "$1")" && runs="$(jqf -r '.[] | select(.conclusion=="failure") | .databaseId' <<<"$runs_json")" || return 1
-  for r in $runs; do
-    jobs="$(ci_jobs_data "$r" true)" || return 1; jqf -r '.[] | select(.conclusion=="failure") | .steps[]? | select(.conclusion=="failure") | .name' <<<"$jobs" || return 1
+ci_failed_steps() { # head -> failed step names of each failed run's listed attempt
+  local run r attempt runs runs_json jobs
+  runs_json="$(gh_run_list_cached --commit "$1")" && runs="$(jqf -r '.[] | select(.conclusion=="failure") | [(.databaseId|tostring),((.attempt // 1)|tostring)] | join(":")' <<<"$runs_json")" || return 1
+  for run in $runs; do r="${run%:*}"; attempt="${run##*:}"
+    jobs="$(ci_jobs_data "$r" true "$attempt")" || return 1; jqf -r '.[] | select(.conclusion=="failure") | .steps[]? | select(.conclusion=="failure") | .name' <<<"$jobs" || return 1
   done
 }
 ci_infra_red() { # head -> 0 when every failed step is a runner-environment step
@@ -765,13 +765,14 @@ ci_jobs_prefetch() { # share full per-run job snapshots within this tick (bounde
   done
   rm -rf -- "$job_dir"
 }
-ci_jobs_data() { # run id [completed] → shared tick snapshot, or durable completed snapshot
-  local jobs
-  if [[ -n "${CI_RUN_JOBS_CACHE[$1]+cached}" ]]; then
-    jobs="${CI_RUN_JOBS_CACHE[$1]}"
-    [[ "${2:-false}" != true ]] || gh_run_jobs_store_completed "$1" "$jobs" || :
+ci_jobs_data() { # run id [completed] [attempt] → shared tick snapshot, or durable completed snapshot
+  local id="$1" completed="${2:-false}" attempt="${3:-1}" key jobs
+  key="$(gh_run_jobs_cache_key "$id" "$attempt")" || return 1
+  if [[ -n "${CI_RUN_JOBS_CACHE[$key]+cached}" ]]; then
+    jobs="${CI_RUN_JOBS_CACHE[$key]}"
+    [[ "$completed" != true ]] || gh_run_jobs_store_completed "$id" "$attempt" "$jobs" || :
   else
-    jobs="$(gh_run_jobs_cached "$1" "${2:-false}")" || return 1; CI_RUN_JOBS_CACHE["$1"]="$jobs"
+    jobs="$(gh_run_jobs_cached "$id" "$completed" "$attempt")" || return 1; CI_RUN_JOBS_CACHE["$key"]="$jobs"
   fi
   printf '%s' "$jobs"
 }

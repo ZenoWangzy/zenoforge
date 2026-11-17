@@ -1613,6 +1613,15 @@ gh() { if [[ "$1 $2" == "run list" && "$3" == --commit && "$4" == "$H1" ]]; then
   if [[ "$GH_CHECKS" == *'"bucket":"cancel"'* ]]; then printf '%s\n' '[{"databaseId":99,"conclusion":"cancelled"}]'; else printf '%s\n' '[{"databaseId":99,"conclusion":"failure"}]'; fi
 else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
 GH_CHECKS='[{"name":"suites","bucket":"fail"},{"name":"lint","bucket":"pass"}]'
+(
+  CI_RUN_JOBS_CACHE[901]=stale
+  TICK_UNFINISHED='[{"databaseId":901}]'; TICK_UNFINISHED_LOADED=true
+  TICK_UNFINISHED_IN_PROGRESS_OK=true TICK_UNFINISHED_ALL_OK=true
+  tick_rest_usage_begin() { :; }
+  tick_gh_calls_begin
+  [[ ${#CI_RUN_JOBS_CACHE[@]} == 0 && "$TICK_UNFINISHED_LOADED" == false \
+    && "$TICK_UNFINISHED_IN_PROGRESS_OK" == false && "$TICK_UNFINISHED_ALL_OK" == false && -z "$TICK_UNFINISHED" ]]
+) || fail 'a new tick kept prior run/job snapshots'
 GH_MERGES=(); GH_RERUNS=()
 units "{\"units\":[{\"id\":\"pr-12\",\"pr\":12,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"review_report\":\"r.md\",\"history\":[]}]}"
 run_merge_lane || :
@@ -1644,7 +1653,7 @@ GH_CHECKS='[{"name":"suites","bucket":"fail"},{"name":"lint","bucket":"pass"}]'
 # runner 环境步骤红（磁盘门）不是代码结论：保留批准再重跑，连红 3 次交 supervisor，不派 repair
 gh() {
   if [[ "$1 $2" == "run list" && "$3" == --commit ]]; then
-    printf '%s\n' '[{"databaseId":99,"conclusion":"failure"}]'
+    printf '[{"databaseId":99,"attempt":%s,"conclusion":"failure"}]\n' "${GH_RUN_ATTEMPT:-1}"
   elif [[ "$1 $2" == "api -i" && "$*" == *"actions/runs/99/jobs?per_page=100"* ]]; then
     local jq_expr="" previous="" arg step_json raw body
     for arg in "$@"; do [[ "$previous" == --jq ]] && jq_expr="$arg"; previous="$arg"; done
@@ -1654,17 +1663,21 @@ gh() {
     printf 'HTTP/2.0 200 OK\n\n%s\n' "$body"
   else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi
 }
-GH_FAILED_STEPS=("Ensure CI runner has capacity before dependency install"); GH_RERUNS=()
+# GitHub keeps run ID 99 across reruns and increments attempt; the fixture does the same.
+GH_RUN_ATTEMPT=1; GH_FAILED_STEPS=("Ensure CI runner has capacity before dependency install"); GH_RERUNS=()
 units "{\"units\":[{\"id\":\"pr-14\",\"pr\":14,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ci_rerun_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :
 [[ "$(field pr-14 .stage)" == ready-to-merge && "$(field pr-14 .approved_sha)" == "$H1" && "$(field pr-14 .ci_infra_reruns)" == 1 ]] || fail 'runner disk failure dropped the approval or went to repair'
 [[ "${GH_RERUNS[*]:-}" == *"rerun 99 --failed"* ]] || fail 'runner disk failure not rerun'
 grep -q "RUNNER-INFRA-RED PR#14 head=$H1 steps: Ensure CI runner has capacity" "$A/alerts/gate.md" || fail 'runner disk failure not reported'
+GH_RUN_ATTEMPT=2
 units "{\"units\":[{\"id\":\"pr-14\",\"pr\":14,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ci_rerun_sha\":\"$H1\",\"ci_infra_reruns\":3,\"history\":[]}]}"
 run_merge_lane || :
 [[ "$(field pr-14 .stage)" == supervisor-review && "$(field pr-14 .approved_sha)" == "$H1" ]] || fail 'persistent runner failure not escalated to the supervisor'
 [[ "$(field pr-14 '.history[-1].decision.decision')" == 'Stop CI retries and escalate runner failure to supervisor' \
   && "$(field pr-14 '.history[-1].decision.evidence')" == "head $H1 after 3 reruns:"* ]] || fail 'persistent runner handoff omitted its decision evidence'
+# A later attempt on the same run now carries a different failed step.
+GH_RUN_ATTEMPT=3
 GH_FAILED_STEPS=("Ensure CI runner has capacity before dependency install" "Run touched package gates in Dagger")
 units "{\"units\":[{\"id\":\"pr-14\",\"pr\":14,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ci_rerun_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :

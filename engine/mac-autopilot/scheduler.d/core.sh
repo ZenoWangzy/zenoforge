@@ -212,6 +212,9 @@ scheduler_auto_filed_issue_create() {
   fi
 }
 tick_gh_calls_begin() {
+  # Match the in-memory snapshots to the fresh per-tick directory below.
+  TICK_UNFINISHED="" TICK_UNFINISHED_LOADED=false TICK_UNFINISHED_IN_PROGRESS_OK=false TICK_UNFINISHED_ALL_OK=false
+  if declare -p CI_RUN_JOBS_CACHE >/dev/null 2>&1; then CI_RUN_JOBS_CACHE=(); fi
   tick_rest_usage_begin
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
   : >"$GH_TICK_CALLS_FILE" 2>/dev/null || GH_TICK_CALLS_FILE=""
@@ -351,18 +354,25 @@ gh_run_list_cached() { # list filters → one shared snapshot per query in this 
   key="$(printf '%s\0' "${GH_REPO:-}" "${ROOT:-$PWD}" "$@" | base64 | tr '/+' '_-' | tr -d '=\n')"
   gh_tick_cache_get "runs-$key.json" gh_run_list_fetch "$@"
 }
+gh_run_jobs_cache_key() { # attempt 1 keeps the original id key; reruns get distinct snapshots
+  local id="$1" attempt="${2:-1}"
+  [[ "$attempt" == 1 ]] || id="$id-$attempt"
+  printf '%s' "$id"
+}
 gh_run_jobs_fetch() {
-  local id="$1" pages
-  pages="$(gh_api_cached -p "runjobs-$id" "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=100" \
+  local id="$1" attempt="${2:-1}" key pages
+  key="$(gh_run_jobs_cache_key "$id" "$attempt")" || return 1
+  pages="$(gh_api_cached -p "runjobs-$key" "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=100" \
     --jq '[.jobs[] | {status, runner_id, conclusion, steps}]')" || return 1
   jqf -s 'add' <<<"$pages"
 }
-gh_run_jobs_store_completed() { # run id jobs-json → immutable completed snapshot
-  local id="$1" jobs="$2" file tmp
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+gh_run_jobs_store_completed() { # run id attempt jobs-json → immutable completed snapshot
+  local id="$1" attempt="$2" jobs="$3" key file tmp
+  [[ "$id" =~ ^[0-9]+$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || return 1
   jqf -e 'type == "array"' <<<"$jobs" >/dev/null 2>&1 || return 1
+  key="$(gh_run_jobs_cache_key "$id" "$attempt")" || return 1
   mkdir -p -- "$A/.gh-run-jobs" 2>/dev/null || return 1
-  file="$A/.gh-run-jobs/$id.json"
+  file="$A/.gh-run-jobs/$key.json"
   [[ -s "$file" ]] && return 0
   tmp="$(mktemp "$file.XXXXXX")" || return 1
   if printf '%s\n' "$jobs" >"$tmp" && mv -f -- "$tmp" "$file"; then return 0; fi
@@ -370,27 +380,35 @@ gh_run_jobs_store_completed() { # run id jobs-json → immutable completed snaps
   return 1
 }
 gh_run_jobs_invalidate() { # run id → forget snapshots after a successful rerun
-  local id="$1" dir
+  local id="$1" dir cache_key
   [[ "$id" =~ ^[0-9]+$ ]] || return 1
   for dir in "${GH_ETAG_DIR:-}" "$A"/.gh-etag "$A"/.gh-etag-*; do
     [[ -d "$dir" ]] || continue
-    rm -f -- "$dir/runjobs-$id.body" "$dir/runjobs-$id.etag"
+    rm -f -- "$dir/runjobs-$id.body" "$dir/runjobs-$id.etag" \
+      "$dir"/runjobs-"$id"-*.body "$dir"/runjobs-"$id"-*.etag
   done
-  rm -f -- "$A/.gh-run-jobs/$id.json"
+  rm -f -- "$A/.gh-run-jobs/$id.json" "$A"/.gh-run-jobs/"$id"-*.json
   if [[ -n "${GH_TICK_CACHE_DIR:-}" ]]; then
-    rm -f -- "$GH_TICK_CACHE_DIR/runjobs-$id.json" "$GH_TICK_CACHE_DIR"/runs-*.json \
+    rm -f -- "$GH_TICK_CACHE_DIR/runjobs-$id.json" "$GH_TICK_CACHE_DIR"/runjobs-"$id"-*.json \
+      "$GH_TICK_CACHE_DIR"/runs-*.json \
       "$GH_TICK_CACHE_DIR"/actions-runs-*.json "$GH_TICK_CACHE_DIR/actions-runs-all.ok"
   fi
-  if declare -p CI_RUN_JOBS_CACHE >/dev/null 2>&1; then unset "CI_RUN_JOBS_CACHE[$id]"; fi
+  if declare -p CI_RUN_JOBS_CACHE >/dev/null 2>&1; then
+    unset "CI_RUN_JOBS_CACHE[$id]"
+    for cache_key in "${!CI_RUN_JOBS_CACHE[@]}"; do
+      [[ "$cache_key" != "$id-"* ]] || unset "CI_RUN_JOBS_CACHE[$cache_key]"
+    done
+  fi
   TICK_UNFINISHED_LOADED=false TICK_UNFINISHED_ALL_OK=false
 }
-gh_run_jobs_cached() { # run id [completed] → one shared tick snapshot, then durable if complete
-  local id="$1" completed="${2:-false}" file jobs
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
-  file="$A/.gh-run-jobs/$id.json"
+gh_run_jobs_cached() { # run id [completed] [attempt] → one shared tick snapshot, then durable if complete
+  local id="$1" completed="${2:-false}" attempt="${3:-1}" key file jobs
+  [[ "$id" =~ ^[0-9]+$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  key="$(gh_run_jobs_cache_key "$id" "$attempt")" || return 1
+  file="$A/.gh-run-jobs/$key.json"
   [[ ! -s "$file" ]] || { cat "$file"; return 0; }
-  jobs="$(gh_tick_cache_get "runjobs-$id.json" gh_run_jobs_fetch "$id")" || return 1
-  [[ "$completed" != true ]] || gh_run_jobs_store_completed "$id" "$jobs" || :
+  jobs="$(gh_tick_cache_get "runjobs-$key.json" gh_run_jobs_fetch "$id" "$attempt")" || return 1
+  [[ "$completed" != true ]] || gh_run_jobs_store_completed "$id" "$attempt" "$jobs" || :
   printf '%s' "$jobs"
 }
 required_checks_without_pass() {
