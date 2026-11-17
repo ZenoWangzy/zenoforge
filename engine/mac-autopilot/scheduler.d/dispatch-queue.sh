@@ -60,6 +60,7 @@ EOF
 # footprint_room pass the unit as why_unit (dynamic scope). The last gate per unit lives in $A/.dispatch-why (unit TAB gate); a start clears it.
 declare -gA DISPATCH_WHY_LAST=()
 DISPATCH_WHY_DIRTY=false
+declare -gA DISPATCH_CAP_TRIED=() TICK_FOOTPRINT_CAP_TRIED=()
 # Units this pass set or cleared (value gate, or "-" for cleared). Save merges only these into the file: a refill that overlaps a full tick
 # saved its whole stale map over the tick's newer gates (issue-5802 stayed on self-fix-refill in the file after host-capacity was logged),
 # so the next change for that unit was judged "same gate" and never logged.
@@ -68,6 +69,44 @@ dispatch_why() { # unit gate [detail]
   [[ -n "${1:-}" && -n "${2:-}" && "${DISPATCH_WHY_LAST[$1]:-}" != "$2" ]] || return 0
   DISPATCH_WHY_LAST[$1]="$2"; DISPATCH_WHY_TOUCHED[$1]="$2"; DISPATCH_WHY_DIRTY=true
   say "dispatch why unit=$1 gate=$2${3:+ detail=$3}"
+}
+dispatch_why_reason() { [[ -n "${1:-}" && -n "${2:-}" ]] || return 0; say "dispatch why unit=$1 reason=$2"; }
+dispatch_cap_tried_load() {
+  local unit
+  DISPATCH_CAP_TRIED=()
+  [[ -n "${A:-}" && -r "$A/.dispatch-cap-tried" ]] || return 0
+  while IFS= read -r unit; do [[ -n "$unit" ]] && DISPATCH_CAP_TRIED[$unit]=true; done < "$A/.dispatch-cap-tried"
+  return 0
+}
+dispatch_cap_tried_order() { # rows: keep the existing order within both groups, but visit never-tried units first
+  local tried
+  tried="$(printf '%s\n' "${!DISPATCH_CAP_TRIED[@]}" | jqf -Rsc 'split("\n") | map(select(length > 0))')"
+  jqf -sc --argjson tried "$tried" 'to_entries | sort_by([(.value.id as $id | $tried | index($id)) != null, .key]) | .[].value' <<<"$1"
+}
+dispatch_cap_tried_save() { # persist this epoch's cap slots; clear it once every pending dispatch unit has had one
+  local ids unit complete=true tmp
+  local -A pending=() next=()
+  local -a pending_order=()
+  [[ -n "${A:-}" && -n "${UNITS:-}" ]] || return 0
+  ids="$(jqf -r '.units[] | select(.stage | IN("implement-pending","repair-pending","review-pending","rereview-pending")) | .id' "$UNITS" 2>/dev/null)" || return 0
+  while IFS= read -r unit; do
+    [[ -n "$unit" ]] || continue
+    pending[$unit]=true; pending_order+=("$unit")
+  done <<<"$ids"
+  for unit in "${!DISPATCH_CAP_TRIED[@]}"; do [[ -n "${pending[$unit]+x}" ]] && next[$unit]=true; done
+  for unit in "${!TICK_FOOTPRINT_CAP_TRIED[@]}"; do [[ -n "${pending[$unit]+x}" ]] && next[$unit]=true; done
+  for unit in "${pending_order[@]}"; do [[ -n "${next[$unit]+x}" ]] || { complete=false; break; }; done
+  [[ "$complete" != true ]] || next=()
+  tmp="$A/.dispatch-cap-tried.tmp"
+  {
+    for unit in "${pending_order[@]}"; do
+      [[ -n "${next[$unit]+x}" ]] || continue
+      printf '%s\n' "$unit"
+    done
+  } > "$tmp" && mv -f -- "$tmp" "$A/.dispatch-cap-tried" || :
+  DISPATCH_CAP_TRIED=()
+  for unit in "${!next[@]}"; do DISPATCH_CAP_TRIED[$unit]=true; done
+  return 0
 }
 dispatch_why_clear() { # unit: it started, so its next skip is news again
   [[ -n "${1:-}" && -n "${DISPATCH_WHY_LAST[$1]:-}" ]] || return 0
@@ -108,7 +147,7 @@ dispatch_pending_pass() {
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
-  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed dispatch_rc ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
   # A refill tick carries its start; a standalone dispatch pass starts on entry.
   local dispatch_refill_started="${TICK_REFILL_STARTED:-$SECONDS}" refill_elapsed
@@ -148,6 +187,11 @@ dispatch_pending_pass() {
     dmark advisor_harvest
   fi
   ordered="$(dispatch_order)" || true
+  if [[ "$local_refill" == true ]]; then
+    dispatch_cap_tried_load
+    TICK_FOOTPRINT_CAP_TRIED=()
+    ordered="$(dispatch_cap_tried_order "$ordered")"
+  fi
   dmark order
   loop_started=$SECONDS
   # Footprint only orders: pass 1 starts what no live owner overlaps and defers the rest; pass 2 starts the deferred while a slot is free.
@@ -540,22 +584,27 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
       implement-pending)
         task="$(jqf -r '.task // empty' <<<"$u")"; branch="$(jqf -r '.branch // ""' <<<"$u")"
         dmark task_read
-        [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; continue; }
-        [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
+        [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; dispatch_why_reason "$id" no-task; continue; }
+        [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; dispatch_why_reason "$id" no-branch; continue; }
         wt=""
-        park_if_body_blocked "$u" && { dispatch_skip body-blocked; continue; }
+        park_if_body_blocked "$u" && { dispatch_skip body-blocked; dispatch_why_reason "$id" body-blocked; continue; }
         if [[ "$local_refill" == true ]]; then
           if [[ -n "$(jqf -r '.handoff_worktree_sha // empty' <<<"$u")" && "$(jqf -r '.handoff_worktree_applied // false' <<<"$u")" != true ]] \
             || [[ -n "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
-            dispatch_skip handoff-pending; continue
+            dispatch_skip handoff-pending; dispatch_why_reason "$id" handoff-pending; continue
           fi
         fi
         dmark body_block
-        dstep room_for room_for "$id" implement "$u" false || continue
-        dstep pick pick implement "$u" || { dispatch_skip pick; continue; }
-        dstep footprint_room footprint_room "$id" "$u" true || continue
+        dstep room_for room_for "$id" implement "$u" false || { dispatch_why_reason "$id" room-for; continue; }
+        dstep pick pick implement "$u" || { dispatch_skip pick; dispatch_why_reason "$id" picker-unavailable; continue; }
+        dstep footprint_room footprint_room "$id" "$u" true || {
+          local footprint_reason=footprint-check-failed
+          [[ "$TICK_FOOTPRINT_CAP_HIT" != true ]] || footprint_reason=footprint-cap
+          [[ "${DISPATCH_WHY_LAST[$id]:-}" != footprint-wait ]] || footprint_reason=footprint-wait
+          dispatch_why_reason "$id" "$footprint_reason"; continue
+        }
         if [[ "$local_refill" != true && "$pr_num" =~ ^[0-9]+$ && "$lane" != direct-main ]]; then
-          dcapture wt size_admission pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "implement-pending before dispatch" || { dispatch_skip size-admission; continue; }
+          dcapture wt size_admission pre_dispatch_pr_admission "$id" "$branch" "$pr_num" "implement-pending before dispatch" || { dispatch_skip size-admission; dispatch_why_reason "$id" size-admission; continue; }
         fi
         stack_branch="$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_branch // empty end' <<<"$u")"; stack_sha="$(jqf -r 'if .stacked_on_released == true then empty else .stacked_on_sha // empty end' <<<"$u")"
         resume_branch="$(jqf -r '.handoff_start_ref // empty' <<<"$u")"; resume_sha="$(jqf -r '.handoff_start_sha // empty' <<<"$u")"
@@ -564,36 +613,36 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
           handoff_status=0
           wt="$(handoff_worktree_clone "$id" "$branch" "$(jqf -r '.handoff_worktree // empty' <<<"$u")" "$(jqf -r '.handoff_worktree_sha' <<<"$u")" "$(jqf -r '.handoff_worktree_dirty // false' <<<"$u")" 0 "$(jqf -r '.handoff_start_ref // empty' <<<"$u")" "$(jqf -r '.handoff_start_sha // empty' <<<"$u")" "$stack_branch" "$stack_sha" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
-            if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; else say "implement-pending unit=$id: previous worktree unavailable"; fi
+            if (( handoff_status == 73 )); then to_supervisor "$id" "handoff conflicts with the existing branch; inspect the preserved owner worktree and PR"; dispatch_why_reason "$id" handoff-conflict; else say "implement-pending unit=$id: previous worktree unavailable"; dispatch_why_reason "$id" previous-worktree-unavailable; fi
             continue
           fi
-          dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
+          dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; dispatch_why_reason "$id" handoff-integration; continue; }
         elif [[ -n "$resume_branch" && "$resume_sha" =~ $SHA_RE && "$(jqf -r '.handoff_start_applied // false' <<<"$u")" != true ]]; then
           handoff_status=0
           wt="$(handoff_worktree_clone "$id" "$branch" "" "$resume_sha" false 0 "$resume_branch" "$resume_sha" "$stack_branch" "$stack_sha" "$(handoff_ruling_epoch "$u")")" || handoff_status=$?; dmark clone
           if (( handoff_status != 0 )); then
-            if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the stacked branch; inspect both histories"; else say "implement-pending unit=$id: rescued checkout unavailable"; fi
+            if (( handoff_status == 73 )); then to_supervisor "$id" "rescued handoff conflicts with the stacked branch; inspect both histories"; dispatch_why_reason "$id" rescued-handoff-conflict; else say "implement-pending unit=$id: rescued checkout unavailable"; dispatch_why_reason "$id" rescued-checkout-unavailable; fi
             continue
           fi
-          dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; continue; }
+          dstep handoff_integration record_handoff_integration "$id" "$wt" "" || { dispatch_skip handoff-integration; dispatch_why_reason "$id" handoff-integration; continue; }
         elif [[ -n "$stack_branch" && -n "$stack_sha" ]]; then
           if [[ -z "$wt" ]]; then
             if [[ "$local_refill" == true ]]; then
-              wt="$(ensure_clone "$id" "$branch" 0 "" "$stack_branch" "$stack_sha" true)" || { say "implement-pending unit=$id: stacked clone unavailable"; continue; }
+              wt="$(ensure_clone "$id" "$branch" 0 "" "$stack_branch" "$stack_sha" true)" || { say "implement-pending unit=$id: stacked clone unavailable"; dispatch_why_reason "$id" stacked-clone-unavailable; continue; }
             else
-              wt="$(ensure_clone "$id" "$branch" 0 "" "$stack_branch" "$stack_sha")" || { say "implement-pending unit=$id: stacked clone unavailable"; continue; }
+              wt="$(ensure_clone "$id" "$branch" 0 "" "$stack_branch" "$stack_sha")" || { say "implement-pending unit=$id: stacked clone unavailable"; dispatch_why_reason "$id" stacked-clone-unavailable; continue; }
             fi
           fi
         else
           if [[ -z "$wt" ]]; then
             if [[ "$local_refill" == true ]]; then
-              wt="$(ensure_clone "$id" "$branch" 0 "" "" "" true)" || { say "implement-pending unit=$id: clone unavailable"; continue; }
+              wt="$(ensure_clone "$id" "$branch" 0 "" "" "" true)" || { say "implement-pending unit=$id: clone unavailable"; dispatch_why_reason "$id" clone-unavailable; continue; }
             else
-              wt="$(ensure_clone "$id" "$branch")" || { say "implement-pending unit=$id: clone unavailable"; continue; }
+              wt="$(ensure_clone "$id" "$branch")" || { say "implement-pending unit=$id: clone unavailable"; dispatch_why_reason "$id" clone-unavailable; continue; }
             fi
           fi
         fi
-        dstep handoff_integration resume_handoff_integration "$id" "$wt" || { dispatch_skip handoff-integration; continue; }
+        dstep handoff_integration resume_handoff_integration "$id" "$wt" || { dispatch_skip handoff-integration; dispatch_why_reason "$id" handoff-integration; continue; }
         rep="impl-${id}-${TAG}.md"
         set_unit "$id" ".report=$(js "$rep")"; dmark unit_write
         if [[ "$lane" == direct-main ]]; then
@@ -646,11 +695,14 @@ $deliver"
         prompt="$(direct_main_worker_prompt "$prompt" "$u")"
         sha=""
         if [[ "$lane" == direct-main ]]; then
-          sha="$(direct_main_worker_head "$wt")" || { say "implement-pending unit=$id: direct-main worktree head unavailable"; continue; }
+          sha="$(direct_main_worker_head "$wt")" || { say "implement-pending unit=$id: direct-main worktree head unavailable"; dispatch_why_reason "$id" direct-main-head-unavailable; continue; }
         fi
         dmark prompt
+        dispatch_rc=0
         dispatch_if_room "$id" "implement" "implement" "${rep%.md}.worker.log" "$rep" \
-          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || true; dmark dispatch ;;
+          "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "$sha" "$wt" "" "$prompt" "$u" false "$PICK_PROVIDER" "$PICK_HARD" "$PICK_REASON" "$PICK_ROUTE_PROVIDER" || dispatch_rc=$?
+        dmark dispatch
+        if (( dispatch_rc == 0 )); then unset "TICK_FOOTPRINT_CAP_TRIED[$id]" "DISPATCH_CAP_TRIED[$id]"; else dispatch_why_reason "$id" dispatch-claim-not-started; fi ;;
     esac
   done <<<"$ordered"
   (( dispatch_pass == 1 && ${#TICK_FOOTPRINT_DEFERRED[@]} > 0 )) || break
@@ -663,6 +715,7 @@ $deliver"
   { (( SECONDS - pending_started < 10 )) && [[ -z "$TICK_REVIEW_WAITS" ]]; } || say "dispatch detail pending_summary secs=$((SECONDS - pending_started)) revalidate_secs=$revalidate_secs loop_secs=$((SECONDS - loop_started)) units=$(grep -c . <<<"$ordered") footprint_room_ms=$((TICK_FOOTPRINT_ROOM_USEC / 1000)) footprint_room_calls=$TICK_FOOTPRINT_ROOM_CALLS footprint_waits=$TICK_FOOTPRINT_ROOM_WAITS $(review_wait_summary)"
   footprint_convoy_alert || say 'footprint-convoy alert check failed'
   dmark convoy_alert
+  [[ "$local_refill" != true ]] || dispatch_cap_tried_save
   dispatch_why_save
   dispatch_steps_say
 }

@@ -205,9 +205,36 @@ host_gate_saved="$(declare -f priority_admission_has_room)"; priority_admission_
 : > "$LOG"; SECONDS=0
 dispatch_pending true
 [[ "$footprint_calls" == 2 ]] || fail "footprint work ran for $footprint_calls candidates, want the cap of 2"
-[[ "$(grep -c 'dispatch walk stopped at cap 2' "$LOG")" == 1 ]] || fail "no single cap line: $(cat "$LOG")"
+[[ "$(grep -c 'dispatch walk stopped at cap 2 footprint candidates:' "$LOG")" == 1 ]] || fail "no single cap line: $(cat "$LOG")"
 [[ "$(dispatch_skip_summary)" == *footprint-cap:1* ]] || fail "the cap was not counted: $(dispatch_skip_summary)"
 CFG="$saved_cfg"; eval "$host_gate_saved"
+
+# Failed implement starts rotate behind never-tried candidates on the next refill.
+(
+  jq -n '{units:[range(0;6) | {id:("issue-490" + tostring),stage:"implement-pending",task:"fixture task text",branch:("agent/issue-490" + tostring),lane:"pr",title:"fixture implement",history:[]}]}' > "$UNITS"
+  write_workers 3
+  CFG="$(jq -c '.issue_intake.refill_max_footprint_candidates = 4' <<<"$CFG")"
+  : > "$A/.dispatch-cap-tried"
+  priority_admission_has_room() { return 0; }
+  room_for() { return 0; }
+  park_if_body_blocked() { return 1; }
+  pick() { PICK_MODEL=fixture; PICK_EFFORT=high; PICK_PROVIDER=fixture; PICK_HARD=false; PICK_REASON=fixture; PICK_ROUTE_PROVIDER=fixture; return 0; }
+  ensure_clone() { return 1; }
+  footprint_checked=()
+  _footprint_room() { footprint_checked+=("$1"); return 0; }
+  dispatch_calls=0
+  : > "$LOG"; SECONDS=0
+  dispatch_pending true
+  [[ "${footprint_checked[*]}" == 'issue-4900 issue-4901 issue-4902 issue-4903' ]] || fail "the first refill did not spend its four cap slots in priority order: [${footprint_checked[*]}]"
+  [[ "$dispatch_calls" == 0 ]] || fail "a clone-unavailable candidate dispatched in the first refill ($dispatch_calls calls)"
+  [[ "$(grep -c 'dispatch why unit=issue-490[0-3] reason=clone-unavailable' "$LOG")" == 4 ]] || fail "the failed starts did not each log a reason: $(cat "$LOG")"
+  grep -Fq 'dispatch walk stopped at cap 4 footprint candidates: units from issue-4904 wait for the next refill' "$LOG" || fail "the first refill did not stop at the four-candidate cap: $(cat "$LOG")"
+  dispatch_pending true
+  [[ "${footprint_checked[*]}" == 'issue-4900 issue-4901 issue-4902 issue-4903 issue-4904 issue-4905 issue-4900 issue-4901' ]] \
+    || fail "the second refill did not visit units 5 and 6 before retrying 1 and 2: [${footprint_checked[*]}]"
+  grep -Fq 'dispatch walk stopped at cap 4 footprint candidates: units from issue-4902 wait for the next refill' "$LOG" || fail "the rotated refill did not stop after four candidates: $(cat "$LOG")"
+  [[ ! -s "$A/.dispatch-cap-tried" ]] || fail "the tried list did not reset after every pending unit had a turn: $(cat "$A/.dispatch-cap-tried")"
+)
 
 # Active footprint waiters do not spend the refill cap ahead of a free unit.
 (
