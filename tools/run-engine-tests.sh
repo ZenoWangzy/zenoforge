@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run the engine test suites, optionally one shard of them: run-engine-tests.sh [shard] [shards]
+# ZF_SUITES_FILE=<path> uses that newline-delimited suite list instead of discovering every suite.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 shard=${1:-0} shards=${2:-1} timeout_s=${SUITE_TIMEOUT:-600}
@@ -7,7 +8,17 @@ shard=${1:-0} shards=${2:-1} timeout_s=${SUITE_TIMEOUT:-600}
 # they lack that environment and execution-admission-metrics.test.py drops its metric rows. Upstream discovers only .test.sh and .test.mjs.
 # PORTABLE_ONLY=1 keeps only the suites listed in tools/portable-suites.txt (the platform-layer suites that run on every OS leg).
 portable_filter() { if [[ ${PORTABLE_ONLY:-} == 1 ]]; then grep -Fxf <(awk 'NF && $1 !~ /^#/ {print $1}' tools/portable-suites.txt); else cat; fi; }
-mapfile -t suites < <(find engine \( -name '*.test.sh' -o -name '*.test.mjs' \) | sort | portable_filter | awk -v s="$shard" -v n="$shards" 'NR % n == s')
+if [[ -n "${ZF_SUITES_FILE:-}" && ! -f "$ZF_SUITES_FILE" ]]; then
+  echo "ERROR run-engine-tests: ZF_SUITES_FILE does not exist: $ZF_SUITES_FILE" >&2
+  exit 2
+fi
+mapfile -t suites < <(
+  if [[ -n "${ZF_SUITES_FILE:-}" ]]; then
+    cat -- "$ZF_SUITES_FILE"
+  else
+    find engine \( -name '*.test.sh' -o -name '*.test.mjs' \) | sort
+  fi | portable_filter | awk -v s="$shard" -v n="$shards" 'NR % n == s'
+)
 # CI runs this once per run (shard 0): check-rulings.sh static mode enforces the bootstrap but CI never ran it, so 13 suites drifted.
 if [[ $shard == 0 ]]; then
   mapfile -t bootstrap_files < <(find engine -type f -name '*.test.sh')

@@ -3,8 +3,10 @@ on:
   push:
     branches: [main]
   pull_request:
-    # Gate files only. Must equal the gate regex in tools/merge-pr.sh (merge_pr_gate_ci_ok); engine/pr-ci-gate-paths.test.sh checks it.
+    # Gate files plus all engine/** and tools/** changes; engine/pr-ci-gate-paths.test.sh checks the merge-pr gate.
     paths:
+      - engine/**
+      - tools/**
       - tools/merge-pr.sh
       - tools/merge-pr-bootstrap.sh
       - tools/pin-vecta.sh
@@ -48,12 +50,52 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  select:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      suites: ${{ steps.select.outputs.suites }}
+      shard_count: ${{ steps.select.outputs.shard_count }}
+      shards: ${{ steps.select.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: select
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          merge_base="$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")"
+          suite_list="$(node engine/focused-test-paths.mjs --range "$merge_base" "$HEAD_SHA")"
+          selection="$(node -e '
+            let input = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { input += chunk; });
+            process.stdin.on("end", () => {
+              const suites = input.split(/\r?\n/).filter(Boolean);
+              const shardCount = Math.max(1, Math.min(8, Math.ceil(suites.length / 12)));
+              console.log(JSON.stringify(suites));
+              console.log(shardCount);
+              console.log(JSON.stringify(Array.from({ length: shardCount }, (_, index) => index)));
+            });
+          ' <<< "$suite_list")"
+          mapfile -t selection <<< "$selection"
+          printf 'suites=%s\n' "${selection[0]}" >> "$GITHUB_OUTPUT"
+          printf 'shard_count=%s\n' "${selection[1]}" >> "$GITHUB_OUTPUT"
+          printf 'shards=%s\n' "${selection[2]}" >> "$GITHUB_OUTPUT"
   suites:
+    needs: select
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (needs.select.result == 'success' && needs.select.outputs.suites != '[]')) }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && needs.select.outputs.shards || '[0,1,2,3,4,5,6,7]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,7 +104,20 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.com
       # Installs exactly the lockfile, which includes @typesafe-ai/sdk (engine/ts-judge.mjs's only npm runtime dependency).
       - run: npm ci
-      - run: bash tools/run-engine-tests.sh ${{ matrix.shard }} 8
+      - name: Run engine suites
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SHARD: ${{ matrix.shard }}
+          SHARD_COUNT: ${{ needs.select.outputs.shard_count }}
+          SELECTED_SUITES: ${{ needs.select.outputs.suites }}
+        run: |
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            suite_file="$RUNNER_TEMP/engine-suites.txt"
+            node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.parse(process.argv[2]).join("\n") + "\n")' "$suite_file" "$SELECTED_SUITES"
+            ZF_SUITES_FILE="$suite_file" bash tools/run-engine-tests.sh "$SHARD" "$SHARD_COUNT"
+          else
+            bash tools/run-engine-tests.sh "$SHARD" 8
+          fi
       - if: always()
         uses: actions/upload-artifact@v4
         with:
