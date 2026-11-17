@@ -777,7 +777,8 @@ register_new_issues_pass() {
     INTAKE_WALK_ROWS=$walk_rows; INTAKE_WALK_LAP=$([[ -z "$walk_broke" ]] && echo true || echo false) # the station's done line reads these
     say "intake detail existing_walk start=#$walk_start rows=$walk_rows lap_done=$INTAKE_WALK_LAP"
   fi
-  if (( ${#intake_terminal_rows[@]} )); then
+  if (( ${#intake_terminal_rows[@]} )) && [[ "$refill_mode" == true ]]; then say "intake closed units deferred to the register step count=${#intake_terminal_rows[@]} ids=$(IFS=,; printf '%s' "${intake_terminal_rows[*]}")"; fi
+  if (( ${#intake_terminal_rows[@]} )) && [[ "$refill_mode" != true ]]; then
     say "intake closed units under open issues count=${#intake_terminal_rows[@]} ids=$(IFS=,; printf '%s' "${intake_terminal_rows[*]}")"
     intake_reopen_episodes "${intake_terminal_rows[@]}"
     intake_ruling_episodes "${intake_terminal_rows[@]}"
