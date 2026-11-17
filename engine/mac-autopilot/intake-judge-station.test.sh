@@ -74,6 +74,12 @@ state_schema_ok() { [[ "${SCHEMA_OK:-true}" == true ]]; }
 gh() {
   [[ "$1 ${2:-}" == 'issue list' && "$*" == *'--state open'* && "$*" == *'--label ready-for-agent'* ]] || return 97
   printf '%s\n' "$*" >> "$QUERY_CALLS"
+  if [[ "${QUERY_OVERLAP:-false}" == true ]]; then
+    issue="$(jq -c 'first(.[] | select(.number == 1))' "$CANDIDATE_FILE")"
+    intake_judge_claim_begin 1 1200 || return 98
+    intake_priority_judge_issue "$issue" 1 "$REPO" || { intake_judge_claim_end; return 98; }
+    intake_judge_claim_end
+  fi
   cat "$CANDIDATE_FILE"
 }
 git() { :; }
@@ -88,6 +94,7 @@ make_candidates() {
 reset() {
   rm -rf "$INTAKE_JUDGE_LOCK" "$A/.intake-judge-epoch" "$A/.intake-judge-claims" "$A/.intake-judge-candidates.json" \
     "$A/.intake-judge-candidates.json.lock" "$PAUSE_FILE"
+  rm -f "$A/.intake-judge-consumed.tsv"
   rm -f "$A/intake-skip-noted.tsv" "$A/intake-skip-noted.tsv.lock"
   : > "$LOG"; : > "$JUDGE_CALLS"; : > "$QUERY_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
   JUDGE_MODE=apply; SCHEMA_OK=true; make_candidates
@@ -145,6 +152,12 @@ jq -e '[.rows[].number] | index(1) == null' "$A/.intake-judge-candidates.json" >
 ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the post-tick station pass failed'
 [[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2' ]] || fail 'the station repeated the tick judge from its stale snapshot'
 
+# A tick that finishes while the station query is in flight cannot be reintroduced by the fresh snapshot.
+reset; QUERY_OVERLAP=true
+ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the in-flight refresh overlap pass failed'
+[[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2' ]] || fail 'the station refresh reintroduced a tick-judged issue'
+jq -e '[.rows[].number] | index(1) == null' "$A/.intake-judge-candidates.json" >/dev/null || fail 'the refreshed station cache retained the tick-judged issue'
+
 # Disabled-key skips keep #1206's no-stamp behavior.
 reset; JUDGE_MODE=skip
 ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the skipped pass failed'
@@ -172,4 +185,4 @@ grep -Fq -- '--intake-judge) SCHED_STATION=true; intake_judge_station_tick ;;' "
 grep -Fq '"${1:-}" != --intake-judge' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'the station would reconcile runtime config'
 grep -Fq '"${AUTOPI_INTAKE_JUDGE_KILL_SECONDS:-1200}" bash "$LIVE/scheduler.sh" --intake-judge' "$engine_dir/mac-autopilot/loop.sh" || fail 'loop.sh does not apply the station kill timeout'
 
-echo 'intake-judge-station.test.sh: pass (oldest-first cap, cached snapshot, tick overlap, parallel bound, claims, freshness fallback, no-stamp skip and concurrent cooldown writes)'
+echo 'intake-judge-station.test.sh: pass (oldest-first cap, cached snapshot, tick overlap, refresh race, parallel bound, claims, freshness fallback, no-stamp skip and concurrent cooldown writes)'

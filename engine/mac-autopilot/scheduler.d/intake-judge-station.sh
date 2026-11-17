@@ -70,41 +70,73 @@ intake_judge_station_query_candidates() {
 }
 
 intake_judge_station_raw_candidates() { # Share one bounded candidate scan across station passes; successful calls consume rows below.
-  local cache="$A/.intake-judge-candidates.json" now query_file cache_tmp
-  now="$(date +%s)"
+  local cache="$A/.intake-judge-candidates.json" consumed="$A/.intake-judge-consumed.tsv" now query_started query_file cache_tmp consumed_numbers marker_cutoff
   if [[ -s "$cache" ]] \
-    && jqf -e --argjson now "$now" '.schema == 1 and (.created_at | type) == "number" and $now >= .created_at and $now - .created_at <= 600 and (.rows | type) == "array"' "$cache" >/dev/null 2>&1; then
+    && jqf -e --argjson now "$(date +%s)" '.schema == 1 and (.created_at | type) == "number" and $now >= .created_at and $now - .created_at <= 600 and (.rows | type) == "array"' "$cache" >/dev/null 2>&1; then
     jqf -c '.rows' "$cache"
     return
   fi
+  query_started="$(date +%s)"
   query_file="$(mktemp "${TMPDIR:-/tmp}/intake-judge-candidates.XXXXXX")" || return 1
   if ! intake_judge_station_query_candidates >"$query_file" || ! jqf -e 'type == "array"' "$query_file" >/dev/null 2>&1; then
     rm -f -- "$query_file"
     return 1
   fi
+  now="$(date +%s)"
+  marker_cutoff=$(( query_started < now - 600 ? query_started : now - 600 ))
   cache_tmp="$cache.tmp.$BASHPID.$RANDOM"
-  if ! jqf -n --argjson created_at "$now" --slurpfile rows "$query_file" '{schema:1,created_at:$created_at,rows:$rows[0]}' >"$cache_tmp" \
-    || ! mv -f -- "$cache_tmp" "$cache"; then
+  if ! (
+    exec 9>"$cache.lock" || exit 1
+    flock -x 9 || exit 1
+    consumed_numbers='[]'
+    if [[ -s "$consumed" ]]; then
+      consumed_numbers="$(awk -F '\t' -v cutoff="$marker_cutoff" '$1 ~ /^[1-9][0-9]*$/ && $2 ~ /^[0-9]+$/ && $2 >= cutoff {print $1}' "$consumed" 2>/dev/null | sort -nu | jqf -Rsc 'split("\n") | map(tonumber?) | map(select(. != null))')" || exit 1
+    fi
+    jqf -n --argjson created_at "$now" --argjson consumed "$consumed_numbers" --slurpfile rows "$query_file" \
+      '{schema:1,created_at:$created_at,rows:[$rows[0][] | select(.number as $number | ($consumed | index($number)) == null)]}' >"$cache_tmp" \
+      && mv -f -- "$cache_tmp" "$cache" || { rm -f -- "$cache_tmp"; exit 1; }
+  ); then
     rm -f -- "$cache_tmp" "$query_file"
     return 1
   fi
-  cat -- "$query_file"
+  jqf -c '.rows' "$cache"
   rm -f -- "$query_file"
 }
 
-intake_judge_station_consume_candidate() { # Remove a completed judge call from the station's 10-minute snapshot.
-  local number="$1" cache="$A/.intake-judge-candidates.json" tmp="$A/.intake-judge-candidates.json.tmp.$BASHPID.$RANDOM"
+intake_judge_station_consume_candidate() { # Record completion and remove the row, even if a candidate refresh is in flight.
+  local number="$1" cache="$A/.intake-judge-candidates.json" consumed="$A/.intake-judge-consumed.tsv" now tmp="$A/.intake-judge-candidates.json.tmp.$BASHPID.$RANDOM" consumed_tmp="$A/.intake-judge-consumed.tsv.tmp.$BASHPID.$RANDOM"
   [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 1
-  [[ -s "$cache" ]] || return 0
+  now="$(date +%s)"
   (
     exec 9>"$cache.lock" || exit 1
     flock -x 9 || exit 1
-    if ! jqf --argjson number "$number" '.rows |= map(select(.number != $number))' "$cache" >"$tmp"; then
-      rm -f -- "$tmp"
-      exit 1
+    {
+      awk -F '\t' -v cutoff="$((now - 600))" -v skip="$number" '$1 ~ /^[1-9][0-9]*$/ && $2 ~ /^[0-9]+$/ && $2 >= cutoff && $1 != skip {latest[$1]=$2} END {for (n in latest) print n "\t" latest[n]}' "$consumed" 2>/dev/null
+      printf '%s\t%s\n' "$number" "$now"
+    } >"$consumed_tmp" && mv -f -- "$consumed_tmp" "$consumed" || { rm -f -- "$consumed_tmp"; exit 1; }
+    if [[ -s "$cache" ]]; then
+      if ! jqf --argjson number "$number" '.rows |= map(select(.number != $number))' "$cache" >"$tmp"; then
+        rm -f -- "$tmp"
+        exit 1
+      fi
+      mv -f -- "$tmp" "$cache" || { rm -f -- "$tmp"; exit 1; }
     fi
-    mv -f -- "$tmp" "$cache" || { rm -f -- "$tmp"; exit 1; }
   )
+}
+
+intake_judge_station_claim_candidate() { # Serialize snapshot validation with tick consumption before claiming the issue.
+  local number="$1" stale_after="$2" cache="$A/.intake-judge-candidates.json" consumed="$A/.intake-judge-consumed.tsv" rc
+  exec 9>"$cache.lock" || return 1
+  flock -x 9 || { exec 9>&-; return 1; }
+  if awk -F '\t' -v number="$number" -v cutoff="$(( $(date +%s) - 600 ))" '$1==number && $2 ~ /^[0-9]+$/ && $2 >= cutoff {found=1} END {exit !found}' "$consumed" 2>/dev/null \
+    || ! jqf -e --argjson number "$number" 'any(.rows[]?; .number == $number)' "$cache" >/dev/null 2>&1; then
+    flock -u 9
+    exec 9>&-
+    return 1
+  fi
+  intake_judge_claim_begin "$number" "$stale_after" || { rc=$?; flock -u 9; exec 9>&-; return "$rc"; }
+  flock -u 9
+  exec 9>&-
 }
 
 intake_judge_station_candidates() {
@@ -128,7 +160,7 @@ intake_judge_station_worker() { # issue file, result dir, repo, stale seconds
   local issue_file="$1" result_dir="$2" repo="$3" stale_after="$4" issue number judged=0 applied=0 fallback=0 deferred=0 rc=0 labels gh_limit="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"
   issue="$(cat -- "$issue_file")" || return 1
   number="$(jqf -r '.number' <<<"$issue")" || return 1
-  if ! intake_judge_claim_begin "$number" "$stale_after"; then
+  if ! intake_judge_station_claim_candidate "$number" "$stale_after"; then
     deferred=1
   else
     judged=1
