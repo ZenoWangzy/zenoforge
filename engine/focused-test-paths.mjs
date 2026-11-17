@@ -878,6 +878,8 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     || path === 'scripts/check-production-image-contract.mjs' || path === 'scripts/production-image-contract.json'
   ))) tests.add(packPath('engine/ci-infrastructure-focused.test.sh'));
 
+  // 11-17: scheduler.test.sh alone runs partition 0 only (SCHED_TEST_PART), so #1226's PR CI missed a red part-1.
+  if (tests.has(packPath('engine/mac-autopilot/scheduler.test.sh'))) for (let p = 1; p <= 7; p++) { const c = packPath(`engine/mac-autopilot/scheduler-part-${p}.test.sh`); if (tracked.has(c)) tests.add(c); }
   return [...tests].sort();
 }
 

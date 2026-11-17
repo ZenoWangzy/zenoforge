@@ -351,7 +351,10 @@ gh_run_list_fetch() {
 }
 gh_run_list_cached() { # list filters → one shared snapshot per query in this tick
   local key
-  key="$(printf '%s\0' "${GH_REPO:-}" "${ROOT:-$PWD}" "$@" | base64 | tr '/+' '_-' | tr -d '=\n')"
+  # 11-17: a base64 key of the full ROOT passed NAME_MAX for the .lock under a nested root; CI admission lost its run list.
+  key="$(printf '%s\0' "${GH_REPO:-}" "${ROOT:-$PWD}" "$@" | sha256sum)" || return 1
+  key="${key%% *}"
+  [[ "$key" =~ ^[[:xdigit:]]{64}$ ]] || return 1
   gh_tick_cache_get "runs-$key.json" gh_run_list_fetch "$@"
 }
 gh_run_jobs_cache_key() { # attempt 1 keeps the original id key; reruns get distinct snapshots
