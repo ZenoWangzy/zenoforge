@@ -428,7 +428,7 @@ ci_station_tick() {
     fi
     gh_calls="$(tick_gh_calls_summary)"
     rest_used="$(tick_rest_usage_summary)"
-    say "ci station done secs=$SECONDS $gh_calls $rest_used limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
+    say "ci station done secs=$SECONDS $gh_calls limit=${limit}s ended=$(date -u +%H:%M:%SZ) $rest_used"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$CI_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$CI_STATION_LOCK"

@@ -239,7 +239,7 @@ merge_entry() {
   engine_batch_land || : # the Zenoforge engine PRs, behind engine_batch_land.enabled (scheduler.d/engine-batch-land.sh)
   gh_calls="$(tick_gh_calls_summary)"
   rest_used="$(tick_rest_usage_summary)"
-  say "merge entry done secs=$SECONDS $gh_calls $rest_used ended=$(date -u +%H:%M:%SZ)"
+  say "merge entry done secs=$SECONDS $gh_calls ended=$(date -u +%H:%M:%SZ) $rest_used"
   rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
 }
 # A failed open-PR read left every candidate with no check rows, so the whole pass skipped and waited a round (2026-11-04: 10 PRs, 27 minutes).

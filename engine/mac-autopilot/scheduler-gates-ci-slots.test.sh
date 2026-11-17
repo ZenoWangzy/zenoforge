@@ -38,6 +38,9 @@ CFG_SAVED="$CFG"; CFG="$(jq '.precheck=false' <<<"$CFG")"; GH_RERUNS=()
 units "{\"units\":[{\"id\":\"pr-30\",\"pr\":30,\"stage\":\"ready-to-merge\",\"branch\":\"a\",\"approved_sha\":\"$H2\",\"ci_adopt_head\":\"$H2\",\"ci_adopt_at\":\"2026-10-29T00:00:00Z\",\"ci_wip_wait\":\"$H2\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"branch\":\"b\",\"approved_sha\":\"$H1\",\"ci_adopt_head\":\"$H1\",\"ci_adopt_at\":\"2026-10-29T00:00:00Z\",\"ci_wip_wait\":\"$H1\",\"ready_since\":2,\"history\":[]},{\"id\":\"pr-32\",\"pr\":32,\"stage\":\"ready-to-merge\",\"hotpatch\":true,\"branch\":\"hp\",\"approved_sha\":\"$H2\",\"ci_adopt_head\":\"$H2\",\"ci_adopt_at\":\"2026-10-29T00:00:00Z\",\"ready_since\":3,\"history\":[]}]}"
 TICK_UNFINISHED="[{\"databaseId\":81,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"b\"},{\"databaseId\":83,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"hp\"}]"
 GH_RUN_JSON='[{"databaseId":82,"conclusion":"cancelled"}]'
+# A successful rerun invalidates the tick's unfinished-run snapshot. The API refresh must
+# return the queued fixture runs too, or the waiting run disappears from the pass.
+GH_RUNS='[{"databaseId":81,"status":"queued","event":"pull_request","headBranch":"b"},{"databaseId":83,"status":"queued","event":"pull_request","headBranch":"hp"}]'
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 [[ "$(field pr-30 '.history[-1].stage'):$(field pr-30 '.history[-1].result')" == "ci-wip-start:slot 1/1" \
   && "${GH_RERUNS[*]:-}" == "run rerun 82 --failed" && "$(field pr-30 '.ci_wip_wait // "none"')" == none ]] \
@@ -45,6 +48,7 @@ root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 [[ "$(cat "$wr/cancelled" 2>/dev/null)" == 81 && "$(field pr-31 .ci_wip_wait)" == "$H1" && "$(field pr-32 '.ci_wip_wait // "none"')" == none ]] \
   || fail "WIP gate held the wrong runs ($(tr '\n' ' ' < "$wr/cancelled" 2>/dev/null))"
 [[ "$(sort -u "$wr/reasons")" == "ci wip" ]] || fail "WIP gate cancel did not carry its reason ($(tr '\n' ',' < "$wr/reasons"))"
+GH_RUNS="[{\"headSha\":\"$M1\",\"conclusion\":\"success\",\"status\":\"completed\",\"createdAt\":\"2026-10-19T00:00:00Z\",\"databaseId\":7}]"
 grep -q 'ci wip: 1 free PR runner slot(s)' "$LOG" || fail 'slot count was not sized from the online PR runners'
 GH_CHECKS='[{"name":"suites","bucket":"cancel"}]'
 run_merge_lane || :
@@ -110,7 +114,7 @@ wait_precheck_output() {
 units "{\"units\":[{\"id\":\"pr-50\",\"pr\":50,\"stage\":\"ready-to-merge\",\"branch\":\"p50\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-51\",\"pr\":51,\"stage\":\"ready-to-merge\",\"branch\":\"p51\",\"approved_sha\":\"$H2\",\"ci_wip_wait\":\"$H2\",\"ready_since\":2,\"history\":[]}]}"
 here_saved="$HERE"; HERE="$fixture/precheck-code"; mkdir -p "$HERE"
 printf '#!/usr/bin/env bash\ncase "$2" in 50) printf "PRECHECK: FAIL changed tests fail locally in packages/x\\n FAIL  tests/a.test.ts > keeps totals\\n" ;; *) echo "PRECHECK: PASS changed tests pass locally in packages/y" ;; esac\n' > "$HERE/precheck.sh"
-gh() { if [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then echo packages/x/a.ts; elif [[ "$*" == "run list --commit"*"select(.conclusion"* ]]; then echo 99; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
+gh() { if [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then echo packages/x/a.ts; elif [[ "$1 $2" == "run list" && "$3" == --commit ]]; then printf '%s\n' '[{"databaseId":99,"conclusion":"cancelled"}]'; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 p50="$(field pr-50 '.precheck_pid // "none"')"
 [[ "$p50" != none && "$(field pr-51 '.precheck_pid // "none"')" == none && "${GH_RERUNS[*]:-}" != *rerun* ]] || fail "unprechecked unit got a CI slot or prechecks ran in parallel (${GH_RERUNS[*]:-none})"

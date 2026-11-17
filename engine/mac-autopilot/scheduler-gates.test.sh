@@ -1017,7 +1017,7 @@ DISPATCHED=()
 cr="$fixture/cancel-reason-root"; mkdir -p "$cr/engine/night"
 printf '#!/usr/bin/env bash\necho "${ZF_CANCEL_REASON-unset}" >> "%s/reasons"\n' "$cr" > "$cr/engine/night/main-ci-recovery.sh"
 reasons_of() { local r; r="$(cat "$cr/reasons" 2>/dev/null)"; : > "$cr/reasons"; printf '%s' "$r"; }
-: > "$cr/reasons"; root_saved="$ROOT"; ROOT="$cr"; GH_RUNS=501
+: > "$cr/reasons"; root_saved="$ROOT"; ROOT="$cr"; GH_RUNS='[{"databaseId":501,"status":"queued","event":"pull_request","headBranch":"agent/issue-5d"}]'
 units "{\"units\":[{\"id\":\"pr-5d\",\"pr\":5,\"stage\":\"repair-pending\",\"review_report\":\"r.md\",\"history\":[]}]}"
 DISPATCHED=(); dispatch_pending || :
 [[ "${DISPATCHED[0]:-}" == repair:pr-5d:* && "$(reasons_of)" == "repair dispatched" ]] || fail "repair dispatch cancel did not carry its reason (${DISPATCHED[*]:-none})"
@@ -1314,7 +1314,7 @@ dispatch_pending || :
 [[ "$(field pr-5b .stage)" == repair-pending ]] || fail "no-push repairs on another head spent this head's retries ($(field pr-5b .stage))"
 # A CI failure after approval followed by an unchanged repair returns to native CI within the existing unit-row bound.
 gh_head_saved="$GH_HEAD"; gh_runs_saved="$GH_RUNS"; cancel_unit_runs_saved="$(declare -f cancel_unit_runs)"
-GH_HEAD="$H1"; GH_RUNS=777; GH_RERUNS=(); DISPATCHED=(); cancel_unit_runs() { :; }
+GH_HEAD="$H1"; GH_RUNS='[{"databaseId":777,"conclusion":"failure","status":"completed","event":"pull_request"}]'; GH_RERUNS=(); DISPATCHED=(); cancel_unit_runs() { :; }
 ci_repair_history="$(jq -cn --arg sha "$H1" '[{stage:"review-approve",result:$sha},{stage:"ci-red",result:"external CI failure"},{stage:"repair-delivered"}]')"
 units "$(jq -cn --arg sha "$H1" --argjson history "$ci_repair_history" \
   '{units:[{id:"pr-5ci",pr:5,stage:"rereview-pending",reviewed_sha:$sha,reviewed_pr_head:$sha,review_report:"r.md",history:$history}]}')"
@@ -1348,7 +1348,7 @@ dispatch_pending || :
   && ${#GH_RERUNS[@]} == 0 && ${#DISPATCHED[@]} == 0 \
   && "$(field pr-5ci-list-fail '.arbiter // false')" == false ]] \
   || fail "failed-run listing failure spent the bound or dispatched repair (stage=$(field pr-5ci-list-fail .stage), reruns=${GH_RERUNS[*]:-none})"
-GH_RUN_LIST_FAIL=0; GH_RUNS=$'777\n778'; GH_RERUN_FAIL_ID=778; GH_RERUNS=(); DISPATCHED=()
+GH_RUN_LIST_FAIL=0; GH_RUNS='[{"databaseId":777,"conclusion":"failure","status":"completed","event":"pull_request"},{"databaseId":778,"conclusion":"failure","status":"completed","event":"pull_request"}]'; GH_RERUN_FAIL_ID=778; GH_RERUNS=(); DISPATCHED=()
 units "$(jq -cn --arg sha "$H1" --argjson history "$ci_repair_history" \
   '{units:[{id:"pr-5ci-partial-fail",pr:5,stage:"rereview-pending",reviewed_sha:$sha,reviewed_pr_head:$sha,review_report:"r.md",history:$history}]}')"
 dispatch_pending || :
@@ -1373,7 +1373,7 @@ dispatch_pending || :
   && "$(ci_red_tests "" "required check")" == '["required check"]' \
   && "$(ci_red_tests "not-json" "required check")" == '["required check"]' ]] || fail "ci_red_tests did not list the failing suites and tests"
 GH_RUN_JSON=
-GH_RUNS=777; GH_RERUN_FAIL_ID=
+GH_RUNS='[{"databaseId":777,"conclusion":"cancelled","status":"completed","event":"pull_request"}]'; GH_RERUN_FAIL_ID=
 eval "$cancel_unit_runs_saved"; GH_HEAD="$gh_head_saved"; GH_RUNS="$gh_runs_saved"; GH_RERUNS=()
 DISPATCHED=()
 units '{"units":[{"id":"pr-6","pr":6,"stage":"rereview-pending","history":[]}]}'
@@ -1609,7 +1609,9 @@ kill "$bg_worker" 2>/dev/null; wait "$bg_worker" 2>/dev/null || :
 gh_merge_stub="$(declare -f gh)"
 # 只拦 pr-12/13 场景的 approved head（H1）：wip gate 对其它 head 的 run list --commit 查询
 # 要落回基础桩按 GH_RUN_JSON 应答（e5c021f3b 的 82/99 夹具），不能被这里吞成 99。
-gh() { if [[ "$*" == "run list --commit $H1 "*"select(.conclusion"* ]]; then echo 99; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
+gh() { if [[ "$1 $2" == "run list" && "$3" == --commit && "$4" == "$H1" ]]; then
+  if [[ "$GH_CHECKS" == *'"bucket":"cancel"'* ]]; then printf '%s\n' '[{"databaseId":99,"conclusion":"cancelled"}]'; else printf '%s\n' '[{"databaseId":99,"conclusion":"failure"}]'; fi
+else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
 GH_CHECKS='[{"name":"suites","bucket":"fail"},{"name":"lint","bucket":"pass"}]'
 GH_MERGES=(); GH_RERUNS=()
 units "{\"units\":[{\"id\":\"pr-12\",\"pr\":12,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"review_report\":\"r.md\",\"history\":[]}]}"
@@ -1640,7 +1642,18 @@ CFG_SAVED="$CFG"; GH_RUN_JSON=; TICK_UNFINISHED=""; GH_RERUNS=()
 GH_RUNNERS='{"runners":[{"id":1,"status":"online","labels":[{"name":"cihost-ci"}]},{"id":2,"status":"offline","labels":[{"name":"cihost-ci"}]},{"id":3,"status":"online","labels":[{"name":"cihost-ci-main"}]}]}'; GH_RUN_JOBS='{}'
 GH_CHECKS='[{"name":"suites","bucket":"fail"},{"name":"lint","bucket":"pass"}]'
 # runner 环境步骤红（磁盘门）不是代码结论：保留批准再重跑，连红 3 次交 supervisor，不派 repair
-gh() { if [[ "$*" == "run list --commit"*"select(.conclusion"* ]]; then echo 99; elif [[ "$*" == "api repos/{owner}/{repo}/actions/runs/99/jobs"* ]]; then printf '%s\n' "${GH_FAILED_STEPS[@]}"; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
+gh() {
+  if [[ "$1 $2" == "run list" && "$3" == --commit ]]; then
+    printf '%s\n' '[{"databaseId":99,"conclusion":"failure"}]'
+  elif [[ "$1 $2" == "api -i" && "$*" == *"actions/runs/99/jobs?per_page=100"* ]]; then
+    local jq_expr="" previous="" arg step_json raw body
+    for arg in "$@"; do [[ "$previous" == --jq ]] && jq_expr="$arg"; previous="$arg"; done
+    step_json="$(printf '%s\n' "${GH_FAILED_STEPS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    raw="$(jq -cn --argjson steps "$step_json" '{jobs:[{status:"completed",runner_id:null,conclusion:"failure",steps:($steps | map({name:.,conclusion:"failure"}))}]}')"
+    body="$(jq -c "$jq_expr" <<<"$raw")" || return 1
+    printf 'HTTP/2.0 200 OK\n\n%s\n' "$body"
+  else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi
+}
 GH_FAILED_STEPS=("Ensure CI runner has capacity before dependency install"); GH_RERUNS=()
 units "{\"units\":[{\"id\":\"pr-14\",\"pr\":14,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ci_rerun_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :
@@ -1661,7 +1674,7 @@ gh() { case "$*" in
   "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/555/logs") printf ' FAIL  tests/a.test.ts > example > claim\nAssertionError: expected false to be true\n' ;;
   "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/556/logs") printf 'ENOSPC: no space left on device\n' ;;
   "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/557/logs") printf '320 : \xe2\x94\x86 [4m8s] | \x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m tests/a.test.ts\x1b[2m > \x1b[22mexample\nerror: column "wake_token" does not exist\n' ;;
-  "run list --branch"*) echo 801 ;;
+  "run list --branch"*) printf '%s\n' '[{"databaseId":801,"status":"queued","event":"pull_request"}]' ;;
   *) eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@" ;;
 esac; }
 tr_root="$fixture/testred-root"; mkdir -p "$tr_root/engine/night"
@@ -1772,7 +1785,7 @@ gh() { case "$*" in
   "api repos/{owner}/{repo}/actions/runs?status=in_progress&per_page=100"*) printf '{"databaseId":62,"status":"in_progress","event":"pull_request","headBranch":"rv","headSha":"%s"}\n' "$H2" ;;
   "api repos/{owner}/{repo}/actions/runs?status=pending&per_page=100"*|"api repos/{owner}/{repo}/actions/runs?status=waiting&per_page=100"*) : ;;
   "api repos/{owner}/{repo}/actions/runs/62/jobs"*) echo '[{"status":"in_progress"},{"status":"queued"}]' ;;
-  "run list --commit"*) echo 61 ;;
+  "run list --commit"*) printf '%s\n' "[{\"databaseId\":61,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"rv\",\"headSha\":\"$H2\",\"conclusion\":\"cancelled\"}]" ;;
   "run rerun"*) GH_RERUNS+=("$*") ;;
   *) eval "${gh_def_saved/gh ()/gh_d ()}"; gh_d "$@" ;;
 esac; }

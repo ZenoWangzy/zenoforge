@@ -315,7 +315,7 @@ printf '%s\n' \
   '{"when":"T","run_id":"13","reason":"ci deferred"}' '{"when":"T","run_id":"13","reason":"repair dispatched"}' \
   '{"when":"T","run_id":"14"}' > "$td/logs/actions-run-cancellations.jsonl"
 command jq -cn '{units:[{id:"rerun-1", pr:2201, branch:"fix/rerun-1", stage:"ready-to-merge", history:[]}]}' > "$UNITS"
-gh() { case "$*" in "run list --commit"*) printf '11\n12\n13\n14\n' ;; "run rerun"*) ;; *) return 97 ;; esac; }
+gh() { case "$*" in "run list --commit"*) printf '%s\n' '[{"databaseId":11,"conclusion":"cancelled"},{"databaseId":12,"conclusion":"cancelled"},{"databaseId":13,"conclusion":"cancelled"},{"databaseId":14,"conclusion":"cancelled"}]' ;; "run rerun"*) ;; *) return 97 ;; esac; }
 ci_cancelled rerun-1 2201 "$s1" "Pipeline suites"
 [[ "$(grep -c 'ci cancel-rerun unit=' "$LOG")" == 1 ]] && grep -Fq "ci cancel-rerun unit=rerun-1 head=$s1 run=11" "$LOG" \
   || { echo "ci-admission-draft-starve.test.sh: only the admission-cancelled rerun should be counted: $(grep 'cancel-rerun' "$LOG")" >&2; exit 1; }

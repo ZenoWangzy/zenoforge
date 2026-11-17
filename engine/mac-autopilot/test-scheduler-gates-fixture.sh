@@ -7,6 +7,9 @@ ci_tick_reset() {
   TICK_UNFINISHED_LOADED=false
   TICK_UNFINISHED_IN_PROGRESS_OK=false
   TICK_UNFINISHED_ALL_OK=false
+  if [[ -n "${GH_TICK_CACHE_DIR:-}" ]]; then
+    rm -f -- "$GH_TICK_CACHE_DIR"/*.json "$GH_TICK_CACHE_DIR"/*.ok 2>/dev/null || :
+  fi
   if [[ -n "${TICK_UNFINISHED:-}" ]]; then
     TICK_UNFINISHED_LOADED=true; TICK_UNFINISHED_IN_PROGRESS_OK=true; TICK_UNFINISHED_ALL_OK=true
   fi
