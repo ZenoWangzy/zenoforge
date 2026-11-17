@@ -64,9 +64,12 @@ intake_units_view() {
   printf '%s' "$view"
 }
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
-  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status
+  local refill_mode="${1:-false}" intake_judge_started="${2:-}" intake_judge_budget="${3:-}" intake_judge_cap="${ZF_INTAKE_JUDGE_PER_PASS:-3}" intake_judges_used=0 intake_judges_deferred=0
+  local skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status
   local cache_token="$BASHPID.$RANDOM" cache_rows_tmp cache_valid_tmp cache_json_tmp
   local -a query_files=() query_lanes=() query_pids=()
+  [[ "$intake_judge_cap" =~ ^[0-9]+$ ]] || intake_judge_cap=3
+  intake_judge_cap=$((10#$intake_judge_cap))
   cache_rows_tmp="$cache_file.rows.$cache_token.tmp"
   cache_valid_tmp="$cache_file.valid.$cache_token.tmp"
   cache_json_tmp="$cache_file.$cache_token.tmp"
@@ -125,7 +128,13 @@ prefix = founder_reqs.configured_anomaly_prefix()
 for row in rows:
     row["_auto_filed"] = founder_reqs.is_auto_filed_ticket(row, prefix)
 json.dump(rows, sys.stdout, separators=(",", ":"))
-' | tee "$query_dir/rows.json" | jqf -c 'group_by(.number)[] | sort_by(.lane) | .[0]' | while IFS= read -r row; do intake_priority_open_unlabelled_candidate "$row"; printf '%s\n' "$row"; done | jqf -sr --argjson skip "$skip_labels" '
+' | tee "$query_dir/rows.json" | jqf -c 'group_by(.number)[] | sort_by(.lane) | .[0]' | {
+      while IFS= read -r row; do
+        intake_priority_open_unlabelled_candidate "$row"
+        printf '%s\n' "$row"
+      done
+      if (( intake_judges_deferred > 0 )); then say "intake priority judges deferred=$intake_judges_deferred"; fi
+    } | jqf -sr --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
         | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
           elif ($n | index("critical-path")) then 2  # 批次 STATE 的关键路径（#4363）：排在普通功能前、遗留后
@@ -769,7 +778,7 @@ register_new_issues_pass() {
     intake_known_issues["$n"]=1
     added=$((added+1)); INTAKE_ADDED=$((${INTAKE_ADDED:-0}+1)) # refill dispatches again only when intake added work
     say "intake issue #$n -> implement-pending ($lane)"
-  done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
+  done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode" "$intake_started" "$intake_budget"; fi)
   intake_ops_flush
   if (( existing_only )); then
     if [[ -n "$walk_broke" ]]; then printf '%s\n' "$walk_broke" > "$walk_cursor"; else rm -f -- "$walk_cursor"; fi

@@ -160,3 +160,36 @@ jq 'map(if .number == 9301 then .labels += [{name:"priority:normal"},{name:"judg
 intake_candidates false >/dev/null
 [[ "$(wc -l < "$FALLBACK_JUDGE_LOG" | tr -d ' ')" == 2 ]] || fail '(g) a priority-labelled issue was re-judged'
 echo 'ok (g) ready issue and tracker use request-failed fallback once; labelled issues are skipped'
+
+# (h) one candidate pass judges at most three unlabelled issues and leaves the rest for a later pass.
+export ZF_INTAKE_JUDGE_PER_PASS=3
+jq -n '[range(9401;9406) as $n | {number:$n,title:"Unlabelled issue",body:"",state:"OPEN",labels:[{name:"ready-for-agent"}]}]' > "$FALLBACK_ISSUES"
+printf '%s\n' answered > "$FALLBACK_JUDGE_MODE"
+: > "$FALLBACK_JUDGE_LOG"; : > "$FALLBACK_GH_WRITES"
+LOG="$test_root/capped-scheduler.log"
+rows="$(intake_candidates false)"
+[[ "$(cut -f1 <<< "$rows" | sort -n | paste -sd, -)" == '9401,9402,9403,9404,9405' ]] || fail "(h) capped intake candidates missing: $rows"
+[[ "$(sort -n "$FALLBACK_JUDGE_LOG" | paste -sd, -)" == '9401,9402,9403' ]] || fail "(h) one pass judged other than three: $(cat "$FALLBACK_JUDGE_LOG")"
+grep -Fq 'intake priority judges deferred=2' "$LOG" || fail "(h) deferred count missing: $(cat "$LOG")"
+echo 'ok (h) a pass judges three of five unlabelled candidates and logs two deferred'
+
+# (i) the existing intake budget stops judges before the deadline, while counting candidates left.
+: > "$FALLBACK_JUDGE_LOG"
+LOG="$test_root/deadline-scheduler.log"
+rows="$(intake_candidates false 0 0)"
+[[ ! -s "$FALLBACK_JUDGE_LOG" ]] || fail "(i) judges ran after the intake budget: $(cat "$FALLBACK_JUDGE_LOG")"
+grep -Fq 'intake priority judges deferred=5' "$LOG" || fail "(i) deadline did not count deferred candidates: $(cat "$LOG")"
+echo 'ok (i) an expired intake budget defers all candidate judges'
+
+# (j) a failed judge is stamped through intake_skip_note and is not retried within six hours.
+jq -n '[{number:9501,title:"Judge failure",body:"",state:"OPEN",labels:[{name:"ready-for-agent"}]}]' > "$FALLBACK_ISSUES"
+printf '%s\n' fallback > "$FALLBACK_JUDGE_MODE"
+printf '%s\n' 'not json' > "$FALLBACK_CLAUDE_REPLY"
+: > "$FALLBACK_JUDGE_LOG"
+LOG="$test_root/cooldown-scheduler.log"
+intake_candidates false >/dev/null
+[[ "$(wc -l < "$FALLBACK_JUDGE_LOG" | tr -d ' ')" == 1 ]] || fail "(j) first failed judge missing: $(cat "$FALLBACK_JUDGE_LOG")"
+intake_candidates false >/dev/null
+[[ "$(wc -l < "$FALLBACK_JUDGE_LOG" | tr -d ' ')" == 1 ]] || fail "(j) failed judge retried within six hours: $(cat "$FALLBACK_JUDGE_LOG")"
+grep -Fq '9501 intake priority label not applied' "$A/intake-skip-noted.tsv" || fail '(j) failed judge was not stamped'
+echo 'ok (j) an issue without an applied label is not judged again within six hours'
