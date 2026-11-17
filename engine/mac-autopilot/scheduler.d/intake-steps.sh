@@ -63,13 +63,13 @@ intake_priority_judge_issue() { # issue-json number repo; preserve the tick's ca
   if grep -Fq "intake-priority: applied issue=#$number " <<<"$output"; then
     INTAKE_PRIORITY_JUDGE_APPLIED=true
   else
-    intake_skip_stamp "$number" 'intake priority label not applied'
+    intake_skip_stamp "$number" 'intake priority label not applied' || return $?
   fi
   return 0
 }
 # Open candidates outside needs-triage can bypass run-triage; judge them before intake drops tracker labels.
 intake_priority_open_unlabelled_candidate() {
-  local issue="$1" number repo="${REPO:-${ZF_REPO:-}}" claim_timeout="${AUTOPI_INTAKE_JUDGE_KILL_SECONDS:-1200}"
+  local issue="$1" number repo="${REPO:-${ZF_REPO:-}}" claim_timeout="${AUTOPI_INTAKE_JUDGE_KILL_SECONDS:-1200}" judge_rc=0
   if declare -F intake_judge_fresh >/dev/null && intake_judge_fresh; then return 0; fi
   intake_priority_open_unlabelled_issue "$issue" || return 0
   [[ -n "$repo" ]] || return 0
@@ -87,9 +87,9 @@ intake_priority_open_unlabelled_candidate() {
     [[ "$claim_timeout" =~ ^[1-9][0-9]*$ ]] || claim_timeout=1200
     intake_judge_claim_begin "$number" "$claim_timeout" || { intake_judges_deferred=$((intake_judges_deferred + 1)); return 0; }
   fi
-  intake_priority_judge_issue "$issue" "$number" "$repo"
+  intake_priority_judge_issue "$issue" "$number" "$repo" || judge_rc=$?
   if declare -F intake_judge_claim_end >/dev/null; then intake_judge_claim_end; fi
-  return 0
+  return "$judge_rc"
 }
 intake_priority_open_unlabelled_candidates() { # intake start budget; stdin is the deduplicated issue stream
   local intake_judge_started="${1:-}" intake_judge_budget="${2:-}" intake_judge_cap="${ZF_INTAKE_JUDGE_PER_PASS:-3}" intake_judges_used=0 intake_judges_deferred=0 row
