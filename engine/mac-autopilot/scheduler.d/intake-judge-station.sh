@@ -98,13 +98,11 @@ intake_judge_station_candidates() {
   local raw filtered issue number
   raw="$(intake_judge_station_raw_candidates)" || return 1
   jqf -e 'type == "array"' <<<"$raw" >/dev/null || return 1
-  filtered="$(jqf -c 'unique_by(.number)[]
-    | select(.state == "OPEN")
-    | ([.labels[]? | if type == "string" then . else .name // "" end] as $labels
-      | select(($labels | index("needs-triage") == null) and all($labels[]; startswith("priority:") | not)))' <<<"$raw")" || return 1
+  filtered="$(jqf -c 'unique_by(.number)[]' <<<"$raw")" || return 1
   {
     while IFS= read -r issue; do
       [[ -n "$issue" ]] || continue
+      intake_priority_open_unlabelled_issue "$issue" || continue
       number="$(jqf -r '.number' <<<"$issue")"
       [[ "$number" =~ ^[1-9][0-9]*$ ]] || continue
       intake_priority_open_unlabelled_cooldown "$number" && continue
