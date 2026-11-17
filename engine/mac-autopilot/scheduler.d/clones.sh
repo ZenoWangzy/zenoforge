@@ -378,8 +378,11 @@ checkout_pr_head() { # dir pr candidate-sha observed-pr-head [branch]（candidat
       if [[ "${5:-}" =~ ^[A-Za-z0-9._/-]+$ && "${5:-}" != main ]] \
         && git -C "$1" check-ref-format --branch "$5" >/dev/null 2>&1; then
         branch_head="$(git -C "$1" rev-parse -q --verify "refs/heads/$5^{commit}" 2>/dev/null || true)"
+        # 11-17: a branch made from origin/main has no work to lose; refusing it blocked issue-6662's review for 7 h.
         [[ -z "$branch_head" || "$branch_head" == "$3" ]] \
-          || git -C "$1" merge-base --is-ancestor "$branch_head" "$3" 2>/dev/null || return 1
+          || git -C "$1" merge-base --is-ancestor "$branch_head" "$3" 2>/dev/null \
+          || git -C "$1" merge-base --is-ancestor "$branch_head" refs/remotes/origin/main 2>/dev/null \
+          || return 1
         git -C "$1" checkout -q -B "$5" "$3"
       else
         git -C "$1" checkout -q --detach "$3"
