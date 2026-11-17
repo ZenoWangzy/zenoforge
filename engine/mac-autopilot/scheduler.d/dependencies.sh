@@ -227,8 +227,8 @@ dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
     [[ "${TRACKER_KIDS[$key]}" == OPEN ]] && { next="$c"; break; }
   done
   if [[ -n "$next" ]]; then set_unit "$id" "$(hist blocker-repointed "#$dep closed in ledger after recut; now waits on child #$next") | .blocked_on=$next | (if .dep_wait_delivery == $dep then .dep_wait_delivery=$next | .unpark_condition=$(js "#$next delivered in the ledger or closed on GitHub") else . end)"; say "unit $id blocker #$dep dead (recut): repointed to child #$next"; return 0; fi
-  if [[ -n "$children" && "$all_delivered" == true ]]; then unblock_unit "$id" "#$dep recut; children delivered"; return 0; fi
-  if [[ -z "$children" ]]; then if jqf -e '.state | IN("tracker","concluded","released")' <<<"$st" >/dev/null; then unblock_unit "$id" "#$dep closed on purpose (tracker/spec parent)"; else dep_now to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"; fi; return 0; fi
+  if [[ -n "$children" && "$all_delivered" == true ]] && dep_rows_all_closed "$dep"; then unblock_unit "$id" "#$dep recut; children delivered"; return 0; fi
+  if [[ -z "$children" ]] && dep_rows_all_closed "$dep"; then if jqf -e '.state | IN("tracker","concluded","released")' <<<"$st" >/dev/null; then unblock_unit "$id" "#$dep closed on purpose (tracker/spec parent)"; else dep_now to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"; fi; return 0; fi
   return 1
 }
 dep_stopped_waiting_on() { # unit-id blocker [true|false, when the caller already read it] → 0 when the scheduler already released this unit from that blocker once
@@ -249,10 +249,8 @@ dep_release_delivered() { # unit-id blocker [true|false, when the caller already
   else jqf -e --arg id "$1" --arg n "$note" 'any(.units[]; .id == $id and ((.task // "") | contains($n)))' "$UNITS" >/dev/null || dep_task_note "$1" "$note"; fi
   unblock_unit "$1" "#$2 delivered" "$2" delivered "#$2 delivered: ${DEP_DELIVERED_PR[$2]:-PR merged to main}"
 }
-# One pass indexes predecessor rows and batches unit writes to keep work bounded as blocked units grow.
-# Each loop row carries its decision fields once; set_unit calls queue into one units_update per pass.
-# dependencies-onepass.test.sh pins these bounds and transition outcomes.
-declare -A DEP_ROWS=() DEP_ROWS_IDS=() DEP_ROWS_TOUCHED=()
+# One history pass indexes predecessors; set_unit batches keep writes bounded as blocked units grow.
+declare -A DEP_ROWS=() DEP_ROWS_IDS=() DEP_ROWS_TOUCHED=() DEP_ROWS_CLOSED=()
 declare -a DEP_Q_IDS=() DEP_Q_EXPRS=()
 declare -A DEP_ROWSJSON=()
 DEP_ROWS_PASS=0 DEP_ROWS_BUILT=0 SET_UNIT_QUEUE=0 DEP_SWEEP=0 DEP_ROWSJSON_BUILT=0
@@ -262,13 +260,13 @@ dep_delivered_note() { # blocker → the worker note dep_release_delivered appen
 dep_body_declares() { # body-list unit-json predecessor: the stored body list names it; an older unit with no list parses its task text
   if [[ "$1" == '?' ]]; then unit_body_declares_dependency "$2" "$3"; else [[ " $1 " == *" $3 "* ]]; fi
 }
-dep_rows_build() { # one history pass: per issue, whether every row is closed or parked, whether any can move, and unit IDs
-  local n dead live ids
-  DEP_ROWS=(); DEP_ROWS_IDS=(); DEP_ROWS_TOUCHED=()
-  while IFS=$'\t' read -r n dead live ids; do
-    DEP_ROWS["$n"]="$dead $live"; DEP_ROWS_IDS["$n"]="$ids"
+dep_rows_build() { # one history pass: per issue, whether rows are dead, closed, live, and their unit IDs
+  local n dead closed live ids
+  DEP_ROWS=(); DEP_ROWS_IDS=(); DEP_ROWS_TOUCHED=(); DEP_ROWS_CLOSED=()
+  while IFS=$'\t' read -r n dead closed live ids; do
+    DEP_ROWS["$n"]="$dead $live"; DEP_ROWS_CLOSED["$n"]="$closed"; DEP_ROWS_IDS["$n"]="$ids"
   done < <(jqf -r '[.units[] | select((.issue | type) == "number")] | group_by(.issue)[]
-    | [.[0].issue, all(.[]; .stage | IN("closed","parked")), all(.[]; .stage | IN("wontfix", "duplicate", "done", "parked") | not), (map(.id) | join(" "))] | @tsv' <(units_history_doc))
+    | [.[0].issue, all(.[]; .stage | IN("closed","parked")), all(.[]; .stage == "closed"), all(.[]; .stage | IN("wontfix", "duplicate", "done", "parked") | not), (map(.id) | join(" "))] | @tsv' <(units_history_doc))
   DEP_ROWS_BUILT=1
 }
 dep_rows_flag() { # issue 1|2 → 0/1 for closed-or-parked/live; 2 = queued stage write touched a row, so ask the ledger
@@ -285,6 +283,10 @@ dep_rows_closed_or_parked() { # issue → 0 when every ledger row is closed or p
   (( rc == 2 )) || return "$rc"
   dep_q_flush
   jqf -e --argjson d "$1" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage | IN("closed","parked"))' <(units_history_doc) >/dev/null
+}
+dep_rows_all_closed() { # issue → 0 when every ledger row is closed
+  local rc=0; dep_rows_flag "$1" 1 || rc=$?
+  if (( rc == 2 )); then dep_q_flush; jqf -e --argjson d "$1" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage == "closed")' <(units_history_doc) >/dev/null; else [[ "${DEP_ROWS_CLOSED[$1]:-false}" == true ]]; fi
 }
 dep_q_enqueue() { # id jq_update_expression: set_unit while SET_UNIT_QUEUE=1; a second stage write to one unit flushes first, so each flush sees one transition
   if [[ "$2" == *".stage"* ]]; then
@@ -540,7 +542,7 @@ dep_predecessor_dead() { # waiter-unit-json predecessor; fail closed and print a
     | ["on-hold","needs-info","awaiting-release","ready-for-agent","needs-advisor","needs-triage","roadmap","roadmap-epic","roadmap-theme","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane","session-owned","pipeline-system","finish-first","concluded"] as $active
     | if length == 0 then $st[0].state == "tracker" or $st[0].tracker_parent == true or
         ((any($l[]; IN("needs-owner","ready-for-human"))) and all($l[]; . as $label | $active | index($label) == null))
-      else all(.[]; .stage | IN("closed","parked")) and (any(.[]; .stage == "parked") or $st[0].state == "tracker" or $st[0].tracker_parent == true or
+      else all(.[]; .stage | IN("closed","parked")) and (any(.[]; .stage == "parked") or $st[0].state == "tracker" or $st[0].state == "ready-for-agent" or $st[0].tracker_parent == true or
         (($st[0].state | IN("on-hold","needs-recut","needs-triage","ready-for-agent","needs-advisor","checks-blocked","awaiting-pipeline-sync","awaiting-release","finish-first","session-owned") | not)
           and all($l[]; . as $label | $active | index($label) == null)))
       end' <<<"$rows" >/dev/null || return 1
@@ -602,9 +604,7 @@ dep_dead_unpark() { # delivery clears every repeat park; a dead undelivered bloc
     echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=parked-before-release" >> "$A/alerts/events.md"
   done < <(jqf -c '.units[] | select(.stage=="parked" and .parked_reason=="dep-dead-repeat" and (.dep_wait_delivery | type)=="number")' "$UNITS")
 }
-# A parked blocker holds its dependents (2026-11-08: five released ones ran against prerequisites that never shipped, 5 implement + 5 review rounds lost).
-# Two ledger-only passes per tick, both idempotent (the ledger decides, no marker): units the old release rule freed while they have no PR wait on
-# the blocker again, then every parked or supervisor-review unit carries the count of units waiting on it, and a supervisor-park one is escalated once.
+# Two idempotent ledger passes reblock released units on parked roots, then track dependent counts and escalate supervisor-park roots.
 dep_hold_parked() {
   local id n note
   while IFS=$'\t' read -r id n; do
