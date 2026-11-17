@@ -48,6 +48,51 @@ intake_mark() { # n is register_new_issues' row variable (dynamic scope)
 cursor="$A/intake-existing-cursor"
 ISSUE_INTAKE_EXISTING_BUDGET_SECONDS=50
 
+# The existing-only walk forces a rebuild without making its published view disappear to concurrent readers.
+intake_units_view >/dev/null
+jq '.units[0].walk_race_marker = "current"' "$UNITS" > "$UNITS.next"
+mv -f -- "$UNITS.next" "$UNITS"
+touch -d '2035-01-01T00:00:00Z' "$UNITS.view"
+view_build_started="$fixture/view-build-started"
+view_build_release="$fixture/view-build-release"
+rm -f -- "$view_build_started" "$view_build_release"
+units_history_doc() {
+  : > "$view_build_started"
+  for ((i = 0; i < 500; i++)); do
+    [[ -e "$view_build_release" ]] && break
+    sleep 0.01
+  done
+  [[ -e "$view_build_release" ]] || return 1
+  cat "$UNITS"
+}
+register_new_issues 1 &
+walk_pid=$!
+for ((i = 0; i < 500; i++)); do
+  [[ -e "$view_build_started" ]] && break
+  kill -0 "$walk_pid" 2>/dev/null || break
+  sleep 0.01
+done
+if [[ ! -e "$view_build_started" ]]; then
+  : > "$view_build_release"
+  wait "$walk_pid" || true
+  echo 'not ok - forced view rebuild did not reach its builder' >&2
+  exit 1
+fi
+if ! jq -e '.units | type == "array"' "$UNITS.view" >/dev/null 2>&1; then
+  : > "$view_build_release"
+  wait "$walk_pid" || true
+  echo 'not ok - units view was unreadable during forced rebuild' >&2
+  exit 1
+fi
+: > "$view_build_release"
+wait "$walk_pid"
+jq -S '.units |= map(del(.history, .task, .review_findings))' "$UNITS" > "$fixture/current-view.json"
+jq -S . "$UNITS.view" > "$fixture/actual-view.json"
+cmp -s "$fixture/current-view.json" "$fixture/actual-view.json" \
+  || { echo 'not ok - units view does not reflect current units.json after the walk' >&2; exit 1; }
+rm -f -- "$cursor" "$fixture/slow-done"
+echo 'ok - forced existing-walk rebuild keeps the view readable and refreshes its contents'
+
 : > "$visits"
 register_new_issues 1
 walk1="$(awk '!s[$0]++' "$visits" | paste -sd, -)"
