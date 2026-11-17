@@ -256,8 +256,8 @@ dead_root_fixture \
   "$(unit issue-9694 9694 blocked-external '.blocked_on=9693 | .dep_wait_delivery=9693 | .body_blocked_by=[9693]')"
 CACHE_ROWS=([9693]=$'OPEN\ton-hold\tOPEN\t' [9694]=$'OPEN\t')
 run_counted
-jq -e '.units[] | select(.id=="issue-9694") | .stage=="supervisor-review" and .dep_dead_proved==9693 and .blocked_on==null and any(.history[]; .stage=="dep-dead-proved")' "$UNITS" >/dev/null \
-  || fail "a parked root must use dep-dead proof: $(jq -c '.units[] | select(.id=="issue-9694")' "$UNITS")"
+jq -e '.units[] | select(.id=="issue-9694") | .stage=="blocked-external" and .dep_dead_proved==null and .blocked_on==9693' "$UNITS" >/dev/null \
+  || fail "an on-hold parked root must keep its waiter blocked: $(jq -c '.units[] | select(.id=="issue-9694")' "$UNITS")"
 
 dead_root_fixture \
   "$(unit issue-9621 9621 implement-pending)" \
