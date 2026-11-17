@@ -444,6 +444,20 @@ declare -F advisor_launch >/dev/null || advisor_launch() { # unit-json total-rou
 
 CI_INFRA_RERUNS=3
 CI_INFRA_STEP_RE='^(Set up job|Seed cold workspace|Configure git proxy|Run actions/checkout@v4|Ensure CI runner has capacity)'
+# 2026-11-17 17:21:42Z: the shared Dagger engine had a Go panic; in-flight jobs reported this runner EOF.
+CI_DAGGER_ENGINE_LOSS_RE='Post "http://dagger/query": unexpected EOF'
+ci_failed_run_set() { local runs; runs="$(gh_run_list_cached --commit "$1")" || return 1; jqf -r '[.[] | select(.conclusion=="failure") | [(.databaseId|tostring),((.attempt // 1)|tostring)] | join(":")] | sort | join(",")' <<<"$runs"; }
+ci_dagger_engine_loss_red() { # id head failed-names checks → cached true only when every failed job log has the Dagger EOF
+  local runs key meta result failed_jobs; CI_DAGGER_LOG_RED_OUT=""
+  runs="$(ci_failed_run_set "$2")" || return 1; [[ -n "$runs" ]] || return 1; key="$2:$3:$runs"
+  if [[ "$(unit_field "$1" .ci_dagger_log_key)" != "$key" ]]; then
+    failed_jobs="$(jqf -r '[.[] | select(.bucket=="fail")] | length' <<<"$4")"; CI_DAGGER_LOG_RED_OUT="$(printf '\t{\"failed\":%s,\"read\":0,\"matches\":0}\n' "$failed_jobs")"
+    set_unit "$1" ".ci_dagger_log_key=$(js "$key") | .ci_dagger_log_red=false | .ci_dagger_log_out=$(js "$CI_DAGGER_LOG_RED_OUT")"
+    CI_DAGGER_LOG_RED_OUT="$(ci_test_red_checks "$4" true)"; meta="$(head -n1 <<<"$CI_DAGGER_LOG_RED_OUT" | cut -f2-)"; result="$(jqf -r '(.failed // 0)>0 and (.read // -1)==.failed and (.matches // 0)==.failed' <<<"$meta" 2>/dev/null || printf false)"
+    set_unit "$1" ".ci_dagger_log_red=$result | .ci_dagger_log_out=$(js "$CI_DAGGER_LOG_RED_OUT")"
+  else result="$(unit_field "$1" .ci_dagger_log_red)"; CI_DAGGER_LOG_RED_OUT="$(unit_field "$1" .ci_dagger_log_out)"; fi
+  [[ "$result" == true ]]
+}
 
 # 只有"取消"、没有失败的检查不是代码结论：多为流水线自己取消的（评审中推迟 CI、打回时
 # cancel_branch_runs、bell 去重；热修优先挡板退役前也在其中，#4625）。以前它和失败一样消耗唯一的重跑额度，第二次再被取消就作废批准、派 repair

@@ -114,6 +114,85 @@ LOG
     || fail "existing ZENOFORGE-FAIL-FACTS marker did not retain precedence ($facts)"
 }
 
+run_ci_dagger_engine_loss_case() (
+  local head checks mode log_calls
+  DAGGER_MERGE_HEAD="$(printf '%040x' 6101)"
+  head="$DAGGER_MERGE_HEAD"
+  checks='[{"name":"Touched packages PR gate","link":"https://example.invalid/job/123","bucket":"fail"}]'
+  CI_RUN_JOBS_CACHE=()
+  ROOT="$fixture/repo"; MAIN_HEAD="$(printf '%040x' 6100)"; SCHED_LOCK_HELD=true
+  CFG="$(jq -c . "$supervisor/autopi/config.json")"
+  TICK_PR_STATE=(); TICK_PRS=''; TICK_PR_CHECK_CENSUS=''
+  TICK_UNFINISHED='[]'; TICK_UNFINISHED_LOADED=true; TICK_UNFINISHED_ALL_OK=true
+  TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=true
+  STAMP=2026-11-17T17:21:42Z
+  DAGGER_MERGE_READY="$(jq -cn --arg head "$head" --argjson checks "$checks" \
+    '{id:"unit-6101",pr:6101,branch:"agent/issue-6101",lane:"pr",stage:"ready-to-merge",approved_sha:$head,
+      pr_open_head:$head,pr_open_draft:false,pr_open_mergeable:"MERGEABLE",pr_open_checks:$checks}')"
+  merge_candidates() { printf '%s\n' "$DAGGER_MERGE_READY"; }
+  merge_gate_suites_active() { MERGE_GATE_SUITES_NOTE=""; return 1; }
+  merge_refill_budget_spent() { return 1; }
+  merge_census_retry() { :; }
+  merge_census_watch() { :; }
+  tick_prs_prime() { :; }
+  ci_stuck_unqueued_pending() { return 1; }
+  ci_cancelled_upstream() { return 1; }
+  pr_behind_main() { return 0; }
+  tick_pr_mergeable() { printf 'MERGEABLE\n'; }
+  ci_failed_steps() { printf 'Run touched package gates in Dagger\n'; }
+  ci_update_branch() { printf 'update-branch %s %s\n' "$1" "$2" >> "$GH_CALLS"; }
+  git() {
+    case " $* " in
+      *" fetch -q origin main "*|*" fetch -q --no-tags origin "*) return 0 ;;
+      *" rev-parse -q --verify refs/remotes/origin/main "*) printf '%s\n' "$MAIN_HEAD" ;;
+      *" rev-parse --verify refs/autopi/merge-candidates/"*) printf '%s\n' "$DAGGER_MERGE_HEAD" ;;
+      *) command git "$@" ;;
+    esac
+  }
+  gh() {
+    printf '%s\n' "$*" >> "$GH_CALLS"
+    case "$*" in
+      'run list --commit '*) printf '[{"databaseId":9901,"attempt":1,"conclusion":"failure"}]\n' ;;
+      'run rerun 9901 --failed') return 0 ;;
+      'api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/123/logs') cat "$GH_JOB_LOG" ;;
+      *) return 97 ;;
+    esac
+  }
+
+  for mode in dagger ordinary; do
+    prepare_tick
+    GH_TICK_CACHE_DIR="$fixture/dagger-tick-$mode"; GH_ETAG_DIR="$fixture/dagger-etag-$mode"
+    mkdir -p "$GH_TICK_CACHE_DIR" "$GH_ETAG_DIR"
+    command jq -cn --arg head "$head" '{units:[{id:"unit-6101",pr:6101,branch:"agent/issue-6101",lane:"pr",
+      stage:"ready-to-merge",approved_sha:$head,history:[]}]}' > "$UNITS"
+    : > "$A/alerts/gate.md"
+    if [[ "$mode" == dagger ]]; then
+      GH_JOB_LOG="$fixture/dagger-engine-loss.log"
+      printf '%s\n' 'Post "http://dagger/query": unexpected EOF' > "$GH_JOB_LOG"
+    else
+      GH_JOB_LOG="$fixture/ordinary-test-failure.log"
+      printf '%s\n' 'AssertionError: expected false to be true' > "$GH_JOB_LOG"
+    fi
+    run_merge_lane_pass
+    if [[ "$mode" == dagger ]]; then
+      [[ "$(jqf -r '.units[0].approved_sha' "$UNITS")" == "$head" ]] || fail 'Dagger engine loss dropped the approval'
+      [[ "$(jqf -r '.units[0].stage' "$UNITS")" == ready-to-merge ]] || fail 'Dagger engine loss went to repair-pending'
+      ! grep -q '^update-branch ' "$GH_CALLS" || fail 'Dagger engine loss took the stale-base update-branch hop'
+      grep -q "RUNNER-INFRA-RED PR#6101 head=$head steps: Run touched package gates in Dagger" "$A/alerts/gate.md" \
+        || fail 'Dagger engine loss was not reported as RUNNER-INFRA-RED'
+      [[ "$(call_count run rerun)" == 1 ]] || fail 'Dagger engine loss did not rerun the failed run'
+      [[ "$(jqf -r '.units[0].ci_infra_reruns' "$UNITS")" == 1 ]] || fail 'Dagger engine loss did not consume the infra retry budget'
+    else
+      grep -q '^update-branch 6101 ' "$GH_CALLS" || fail 'ordinary test failure no longer took the stale-base update-branch hop'
+      [[ "$(jqf -r '.units[0].stage' "$UNITS")" == ready-to-merge ]] || fail 'ordinary stale-base failure went to repair-pending'
+      ! grep -q 'RUNNER-INFRA-RED' "$A/alerts/gate.md" || fail 'ordinary test failure was classified as runner infrastructure'
+    fi
+    if [[ "$mode" == dagger ]]; then ci_dagger_engine_loss_red unit-6101 "$head" 'Touched packages PR gate' "$checks" || fail 'cached Dagger signature was lost'; else ! ci_dagger_engine_loss_red unit-6101 "$head" 'Touched packages PR gate' "$checks" || fail 'cached ordinary failure was reclassified'; fi
+    log_calls="$(call_count api --allow-escape-sequences)"
+    [[ "$log_calls" == 1 ]] || fail "$mode failure read $log_calls failed job logs"
+  done
+)
+
 run_ci_batch_case() {
   prepare_tick
   SLOTS=2
@@ -307,12 +386,17 @@ case "${1:-all}" in
     run_ci_facts_case
     echo 'ci-merge-admission-batch.test.sh ci-facts: pass (Dagger raw failures become bounded facts; explicit marker remains authoritative)'
     ;;
+  ci-dagger-engine-loss)
+    run_ci_dagger_engine_loss_case
+    echo 'ci-merge-admission-batch.test.sh ci-dagger-engine-loss: pass (Dagger EOF keeps approval and uses the runner-infra route; ordinary failures keep stale-base routing)'
+    ;;
   all)
     run_ci_batch_case
     run_ci_zero_slot_case
     run_merge_empty_case
     run_ci_facts_case
-    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; Dagger failures produce bounded facts)'
+    run_ci_dagger_engine_loss_case
+    echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; Dagger logs and infra routing stay distinct)'
     run_stuck_unqueued_case
     echo 'ci-merge-admission-batch.test.sh: pass (30 PRs use one census; zero-slot admission makes no per-PR reads; empty merge lane makes no GitHub calls; stuck unqueued CI retriggers once per head)'
     ;;
