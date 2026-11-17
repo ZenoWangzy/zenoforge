@@ -87,7 +87,9 @@ intake_closed_unit_rows() { # issue...
          closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and (($us[0].history // []) as $h
            | ([$h | to_entries[] | select(.value.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut", "supervisor-recut")) | .key] | max // -1) as $recut
            | $recut >= 0 and all($h[($recut + 1):][]; .stage | IN("supervisor-requeue", "pr-closed", "supervisor-cap-default")))),
-         spent: any($us[]; .closed_units_restored_at != null),
+         restored: any($us[]; .closed_units_restored_at != null),
+         spent: (($us | length) > 0 and all($us[]; .closed_units_restored_at != null
+           and ((.history // [])[-1].at // "") <= .closed_units_restored_at)),
          merged: any($us[]; .stage == "merged" or any((.history // [])[]; .stage == "merged")),
          skip: (($row.episode != "" and any($us[]; (.hold_handoff_episode // "") != $row.episode))
            or (($row.from | IN("needs-advisor", "needs-triage")) and $row.at > $at))}' <(units_history_doc))" || continue
@@ -95,7 +97,7 @@ intake_closed_unit_rows() { # issue...
     if jqf -e '.closed_by_recut' <<<"$units" >/dev/null; then
       id="$(jqf -r '.ids[0]' <<<"$units")"
       restore_archived_unit "$id" || continue
-      if jqf -e '.spent' <<<"$units" >/dev/null; then
+      if jqf -e '.restored' <<<"$units" >/dev/null; then
         [[ "$(unit_field "$id" '.closed_units_restore_refused // empty')" == true ]] \
           || { set_unit "$id" '.closed_units_restore_refused = true' && say "intake closed-units unit=$id issue=#$n: already restored once; stays closed"; }
         continue

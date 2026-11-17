@@ -116,6 +116,19 @@ cu_recut_requeue_pr_closed() {
 }
 cu_state() { jq -n --argjson extra "${3:-{\}}" --arg from "$2" '{state:"ready-for-agent",state_changed_from:$from,state_changed_at:"2026-01-01T00:00:00Z"} + $extra' > "$AGENT_HOME/state/$1.json"; }
 cu_episode() { jq -r '.scheduler_handoff.episode // "none"' "$AGENT_HOME/state/$1.json"; }
+# A new terminal event after an earlier route is a fresh unit set, not a spent one.
+cu_unit 41 closed pr-closed | jq '.closed_units_restored_at = "2026-01-03T00:00:00Z" | .history += [{stage:"pr-closed",at:"2026-01-04T00:00:00Z"}]' | jq -s '{units:.}' > "$UNITS"
+cu_state 41 needs-hold
+intake_closed_unit_rows 41
+[[ "$CU_ROUTED" == " 41:needs-triage:closed-units-no-path" ]] || fail "a terminal event after the prior route must return to triage, got:$CU_ROUTED"
+[[ "$(unit_json issue-41 | jq -r '.closed_units_restored_at')" == "$STAMP" ]] || fail "a fresh terminal event must record its new route"
+# The same stale marker cannot bypass the hold guard.
+cu_unit 42 closed pr-closed | jq '.closed_units_restored_at = "2026-01-03T00:00:00Z" | .history += [{stage:"pr-closed",at:"2026-01-04T00:00:00Z"}]' | jq -s '{units:.}' > "$UNITS"
+cu_state 42 needs-hold '{"hold":{"holder":"head"}}'
+CU_ROUTED=""
+intake_closed_unit_rows 42
+[[ -z "$CU_ROUTED" ]] || fail "a held issue must not route even when it has a fresh terminal event: $CU_ROUTED"
+[[ "$(unit_json issue-42 | jq -r '.closed_units_restored_at')" == "2026-01-03T00:00:00Z" ]] || fail "a held issue must keep its prior route marker"
 { cu_unit 21 merged merged; cu_unit 22 closed supervisor-cap-triage-recut; cu_unit 23 closed obsolete; cu_unit 24 merged merged
   cu_unit 25 closed supervisor-cap-triage-recut; cu_unit 26 merged merged; cu_unit 27 merged merged; cu_unit 28 merged merged; } | jq -s '{units:.}' > "$UNITS"
 cu_state 21 needs-hold                                   # delivered, nobody decided since: nothing acts (no signal says the PR did the whole work)
