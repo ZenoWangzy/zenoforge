@@ -115,6 +115,7 @@ source "$HERE/scheduler.d/ci-status.sh"
 source "$HERE/scheduler.d/ci-admission.sh"
 source "$HERE/scheduler.d/harvest-station.sh"
 source "$HERE/scheduler.d/existing-walk-station.sh"
+source "$HERE/scheduler.d/intake-judge-station.sh"
 source "$HERE/scheduler.d/release-deps-station.sh"
 source "$HERE/scheduler.d/merge-prep.sh"
 source "$HERE/scheduler.d/merge-lane.sh"
@@ -134,7 +135,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --release-deps && "${1:-}" != --tick-step && "${1:-}" != --rule && "${1:-}" != --size-waiver-check ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --intake-judge && "${1:-}" != --release-deps && "${1:-}" != --tick-step && "${1:-}" != --rule && "${1:-}" != --size-waiver-check ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -564,6 +565,8 @@ CI_STATION_LOCK="$A/.ci-station.lock"
 HARVEST_STATION_LOCK="$A/.harvest-station.lock"
 # The intake existing walk as its own station (existing_walk_tick, scheduler.d/existing-walk-station.sh): its own lock, the ledger lock per write.
 EXISTING_WALK_LOCK="$A/.existing-walk-station.lock"
+# The intake priority judge station (intake_judge_station_tick, scheduler.d/intake-judge-station.sh): its own pass lock and a claim per issue.
+INTAKE_JUDGE_LOCK="$A/.intake-judge-station.lock"
 # The dependency release as its own station (release_deps_station_tick, scheduler.d/release-deps-station.sh): its own lock, the ledger lock per write.
 RELEASE_DEPS_STATION_LOCK="$A/.release-deps-station.lock"
 
@@ -769,6 +772,7 @@ case "${1:-}" in
   --merge) SCHED_STATION=true; merge_entry ;;
   --harvest-station) SCHED_STATION=true; harvest_station_tick ;;
   --existing-walk) SCHED_STATION=true; existing_walk_tick ;;
+  --intake-judge) SCHED_STATION=true; intake_judge_station_tick ;;
   --release-deps) release_deps_station_tick ;;
   --tick-step) SCHED_STATION=true; tick_step_run "${2:-}" ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick

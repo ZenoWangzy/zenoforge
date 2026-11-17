@@ -29,7 +29,12 @@ intake_steps_say() {
 # One `intake skip issue #N: reason` per issue and reason, repeated at most every 6h ($A/intake-skip-noted.tsv: "n reason<TAB>epoch").
 intake_skip_stamp() {
   local f="$A/intake-skip-noted.tsv" now="${3:-$(date +%s)}"
-  { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$$" && mv -f -- "$f.tmp.$$" "$f"
+  (
+    exec 9>"$f.lock" || exit 1
+    flock -x 9 || exit 1
+    { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$BASHPID" \
+      && mv -f -- "$f.tmp.$BASHPID" "$f" || { rm -f -- "$f.tmp.$BASHPID"; exit 1; }
+  )
 }
 intake_skip_note() {
   local f="$A/intake-skip-noted.tsv" now; now="$(date +%s)"
@@ -38,16 +43,43 @@ intake_skip_note() {
   intake_skip_stamp "$1" "$2" "$now"
 }
 intake_skip_refused_recut() { intake_skip_note "$1" "unit=$2 stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; }
+intake_priority_open_unlabelled_issue() {
+  jqf -e '(.state == "OPEN") and ([.labels[]? | if type == "string" then . else .name // "" end] as $labels
+    | ($labels | index("needs-triage") == null) and all($labels[]; startswith("priority:") | not))' <<<"$1" >/dev/null
+}
+intake_priority_open_unlabelled_cooldown() { # issue number -> 0 while the existing 6 h cooldown applies
+  awk -F'\t' -v k="$1 intake priority label not applied" -v now="$(date +%s)" '$1==k && now-$2<21600{f=1} END{exit !f}' \
+    "$A/intake-skip-noted.tsv" 2>/dev/null
+}
+intake_priority_judge_issue() { # issue-json number repo [check-fallback-marker]; preserve the tick's call and #1206 stamp rules
+  local issue="$1" number="$2" repo="$3" output priority_script="${ZF_INTAKE_PRIORITY_SCRIPT:-$HERE/../intake-priority.sh}" labels
+  INTAKE_PRIORITY_JUDGE_OUTPUT="" INTAKE_PRIORITY_JUDGE_APPLIED=false INTAKE_PRIORITY_JUDGE_FALLBACK=false
+  output="$(printf '%s\n' "$issue" | bash "$priority_script" triage "$number" ready-for-agent "$repo" 2>&1)" || true
+  INTAKE_PRIORITY_JUDGE_OUTPUT="$output"
+  [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
+  case "$output" in
+    *'intake-priority: skipped (disabled)'*|*'intake-priority: skipped (missing-typesafe-key)'*|*'intake-priority: skipped (invalid-config)'*) return 0 ;;
+  esac
+  if grep -Fq "intake-priority: applied issue=#$number " <<<"$output"; then
+    INTAKE_PRIORITY_JUDGE_APPLIED=true
+    if [[ "${4:-false}" == true ]]; then
+      labels="$(gh issue view "$number" --repo "$repo" --json labels 2>/dev/null)" || labels=""
+      jqf -e 'any(.labels[]?; if type == "string" then . == "judge:fallback" else .name == "judge:fallback" end)' <<<"$labels" >/dev/null 2>&1 \
+        && INTAKE_PRIORITY_JUDGE_FALLBACK=true
+    fi
+  else
+    intake_skip_stamp "$number" 'intake priority label not applied'
+  fi
+  return 0
+}
 # Open candidates outside needs-triage can bypass run-triage; judge them before intake drops tracker labels.
 intake_priority_open_unlabelled_candidate() {
-  local issue="$1" number repo="${REPO:-${ZF_REPO:-}}" cooldown_reason='intake priority label not applied' now output
-  jqf -e '(.state == "OPEN") and ([.labels[]? | if type == "string" then . else .name // "" end] as $labels
-    | ($labels | index("needs-triage") == null) and all($labels[]; startswith("priority:") | not))' <<<"$issue" >/dev/null || return 0
+  local issue="$1" number repo="${REPO:-${ZF_REPO:-}}" claim_timeout="${AUTOPI_INTAKE_JUDGE_KILL_SECONDS:-1200}"
+  if declare -F intake_judge_fresh >/dev/null && intake_judge_fresh; then return 0; fi
+  intake_priority_open_unlabelled_issue "$issue" || return 0
   [[ -n "$repo" ]] || return 0
   number="$(jqf -r '.number' <<<"$issue")" || return 0
-  now="$(date +%s)"
-  awk -F'\t' -v k="$number $cooldown_reason" -v now="$now" '$1==k && now-$2<21600{f=1} END{exit !f}' \
-    "$A/intake-skip-noted.tsv" 2>/dev/null && return 0
+  intake_priority_open_unlabelled_cooldown "$number" && return 0
   if (( intake_judges_used >= intake_judge_cap )) \
     || { [[ "$intake_judge_started" =~ ^[0-9]+$ && "$intake_judge_budget" =~ ^[0-9]+$ ]] \
       && (( SECONDS - intake_judge_started >= intake_judge_budget )); } \
@@ -56,12 +88,13 @@ intake_priority_open_unlabelled_candidate() {
     return 0
   fi
   intake_judges_used=$((intake_judges_used + 1))
-  output="$(printf '%s\n' "$issue" | bash "$HERE/../intake-priority.sh" triage "$number" ready-for-agent "$repo" 2>&1)" || true
-  [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
-  case "$output" in
-    *'intake-priority: skipped (disabled)'*|*'intake-priority: skipped (missing-typesafe-key)'*|*'intake-priority: skipped (invalid-config)'*) return 0 ;;
-  esac
-  grep -Fq "intake-priority: applied issue=#$number " <<<"$output" || intake_skip_stamp "$number" "$cooldown_reason"
+  if declare -F intake_judge_claim_begin >/dev/null; then
+    [[ "$claim_timeout" =~ ^[1-9][0-9]*$ ]] || claim_timeout=1200
+    intake_judge_claim_begin "$number" "$claim_timeout" || { intake_judges_deferred=$((intake_judges_deferred + 1)); return 0; }
+  fi
+  intake_priority_judge_issue "$issue" "$number" "$repo"
+  if declare -F intake_judge_claim_end >/dev/null; then intake_judge_claim_end; fi
+  return 0
 }
 intake_priority_open_unlabelled_candidates() { # intake start budget; stdin is the deduplicated issue stream
   local intake_judge_started="${1:-}" intake_judge_budget="${2:-}" intake_judge_cap="${ZF_INTAKE_JUDGE_PER_PASS:-3}" intake_judges_used=0 intake_judges_deferred=0 row
