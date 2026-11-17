@@ -85,11 +85,11 @@ ci_update_branch() { # pr head
 
 ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（多为 runner 抖动），重跑后仍红才派 repair
   local r n=0 runs runs_json infra_rc failed_steps
-  if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
+  if ci_stale_base_hop_available "$1" && [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
     # 落后 main 的红多半是旧 base 的红（2026-10-19：main 自身 suites 红，5 个就绪 PR 跟着红）：服务端合入 main 再跑，
     # 不在旧 base 上重跑、不派 LLM 修复；干净合并的新 head 沿用原批准（approval_carries）。
     if ci_update_branch "$2" "$3"; then
-      set_unit "$1" "$(hist ci-red-update-branch "$4") | .ci_rerun_sha=$(js "$3")"
+      set_unit "$1" "$(hist ci-red-update-branch "$4") | .stale_base_hop_used=true | .ci_rerun_sha=$(js "$3")"
       say "merge skipped PR#$2 (checks red on a stale base: $4) -> update-branch"
       return 0
     fi
@@ -250,19 +250,19 @@ ci_triage() { # head facts → verdict
   printf '%s\n' "$result"
 }
 
-# 早期 stale-base 路由：开关开、判定 stale-base、非热修/非关键单元、同一 unit 同一套件还没走过这一跳时，
-# 用一次服务端 update-branch 代替 LLM 修复；批准沿用仍只走 approval_carries。第二次同套件 stale-base 落到修复。
-# hop 记在台账行 .stale_hops（套件路径列表）。返回 0 = 已更新分支，调用方不再派修复。
+# 早期 stale-base 路由：开关开、判定 stale-base、非热修/非关键单元时，用一次服务端 update-branch 代替 LLM 修复；
+# 批准沿用仍只走 approval_carries。第二次 stale-base 失败在同一批准下落到修复。
+# hop 与另外两个 update-on-failure 路径共用台账行 .stale_base_hop_used。返回 0 = 已更新分支，调用方不再派修复。
 ci_stale_base_hop() { # id pr head facts
   [[ "$STALE_BASE_ROUTING" == true ]] || return 1
   [[ "$(unit_field "$1" '.hotpatch // false')" != true && "$(unit_field "$1" '.critical // false')" != true ]] || return 1
   [[ "$(ci_triage "$3" "$4")" == stale-base ]] || return 1
   local suites; suites="$(jq -sc '[.[] | ((.pipelineSuites // [])[])] | unique' <<<"$4" 2>/dev/null)"
   [[ -n "$suites" && "$suites" != "[]" ]] || return 1
-  jq -e --argjson s "$suites" --arg id "$1" '[.units[] | select(.id == $id) | (.stale_hops // [])[]] as $h | all($s[]; . as $x | $h | index($x) | not)' "$UNITS" >/dev/null 2>&1 || return 1
+  ci_stale_base_hop_available "$1" || return 1
   [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]] || return 1
   ci_update_branch "$2" "$3" || return 1
-  set_unit "$1" "$(hist ci-stale-base-update "suites $suites") | .stale_hops = ((.stale_hops // []) + $suites | unique) | .ci_rerun_sha=$(js "$3")"
+  set_unit "$1" "$(hist ci-stale-base-update "suites $suites") | .stale_base_hop_used=true | .ci_rerun_sha=$(js "$3")"
   say "merge skipped PR#$2 (stale-base failure in $suites) -> update-branch at $3, no repair"
 }
 
