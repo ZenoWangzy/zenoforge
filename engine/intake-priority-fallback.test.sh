@@ -147,10 +147,14 @@ export TYPESAFE_API_KEY=fixture-key
 rows="$(intake_candidates false)"
 [[ "$(cut -f1 <<< "$rows" | sort | paste -sd, -)" == '9301,9302,9303' ]] || fail "(g) intake candidates missing: $rows"
 [[ "$(sort -n "$FALLBACK_JUDGE_LOG" | paste -sd, -)" == '9301,9303' ]] || fail "(g) judged unexpected issues: $(cat "$FALLBACK_JUDGE_LOG")"
-grep -Fq 'labels[]=priority:high' "$FALLBACK_GH_WRITES" || fail "(g) request-failed fallback priority missing: $(cat "$FALLBACK_GH_WRITES")"
+grep -Fq 'repos/fixture/repo/issues/9301/labels -f labels[]=priority:normal' "$FALLBACK_GH_WRITES" \
+  || fail "(g) request-failed fallback priority missing: $(cat "$FALLBACK_GH_WRITES")"
+grep -Fq 'repos/fixture/repo/issues/9303/labels -f labels[]=priority:top' "$FALLBACK_GH_WRITES" \
+  || fail "(g) founder tracker floor missing: $(cat "$FALLBACK_GH_WRITES")"
 grep -Fq 'labels[]=judge:fallback' "$FALLBACK_GH_WRITES" || fail "(g) request-failed fallback marker missing: $(cat "$FALLBACK_GH_WRITES")"
 [[ -s "$FALLBACK_CLAUDE_LOG" ]] || fail '(g) request-failed did not reach haiku fallback'
-jq 'map(if .number == 9301 or .number == 9303 then .labels += [{name:"priority:high"},{name:"judge:fallback"}] else . end)' \
+jq 'map(if .number == 9301 then .labels += [{name:"priority:normal"},{name:"judge:fallback"}]
+  elif .number == 9303 then .labels += [{name:"priority:top"},{name:"judge:fallback"}] else . end)' \
   "$FALLBACK_ISSUES" > "$FALLBACK_ISSUES.tmp" && mv "$FALLBACK_ISSUES.tmp" "$FALLBACK_ISSUES"
 intake_candidates false >/dev/null
 [[ "$(wc -l < "$FALLBACK_JUDGE_LOG" | tr -d ' ')" == 2 ]] || fail '(g) a priority-labelled issue was re-judged'
