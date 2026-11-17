@@ -41,22 +41,6 @@ intake_judge_claim_end() {
   INTAKE_JUDGE_CLAIM_PATH="" INTAKE_JUDGE_CLAIM_TOKEN=""
 }
 
-intake_judge_station_cached_candidates() {
-  local file="$A/intake-candidates.json" created now candidates
-  [[ -s "$file" ]] || return 1
-  jqf -e '.schema == 4 and (.rows | type == "string")' "$file" >/dev/null 2>&1 || return 1
-  created="$(jqf -r '.created_at // empty' "$file" 2>/dev/null)"
-  [[ "$created" =~ ^[0-9]+$ ]] || return 1
-  now="$(date +%s)"
-  (( now >= created && now - created <= 600 )) || return 1
-  candidates="$(set -o pipefail
-    jqf -r '.rows | split("\n")[] | select(length > 0) | split("\t")[-1]' "$file" \
-      | while IFS= read -r encoded; do jqf -nr --arg encoded "$encoded" '$encoded | @base64d' || exit 1; done \
-      | jqf -sc '.')" || return 1
-  jqf -e 'type == "array"' <<<"$candidates" >/dev/null || return 1
-  printf '%s\n' "$candidates"
-}
-
 intake_judge_station_query_candidates() {
   local labels label tmp file index=0
   local -a files=()
@@ -85,13 +69,8 @@ intake_judge_station_query_candidates() {
   rm -rf -- "$tmp"
 }
 
-intake_judge_station_raw_candidates() {
-  local cached
-  if cached="$(intake_judge_station_cached_candidates)"; then
-    printf '%s\n' "$cached"
-  else
-    intake_judge_station_query_candidates
-  fi
+intake_judge_station_raw_candidates() { # Live labels avoid rejudging from a tick cache captured before this station's apply.
+  intake_judge_station_query_candidates
 }
 
 intake_judge_station_candidates() {
