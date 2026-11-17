@@ -328,7 +328,7 @@ pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current 
   rm -f -- "$file"
 }
 run_merge_lane_pass() {
-  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry
+  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
@@ -576,11 +576,11 @@ run_merge_lane_pass() {
     [[ "$checks" != null && -n "$checks" ]] || { say "merge skipped PR#$pr (check census unavailable)"; MERGE_CENSUS_MISSED=1; pass_step_end skipped-census "$pr"; continue; }
     fails="$(jqf -r '[.[] | select(.bucket == "fail") | .name] | sort | join(",")' <<<"$checks" 2>/dev/null || true)"
     if [[ -n "$fails" ]] && park_ci_red_for_main_red "$id" "$pr" "$head" "$checks"; then pass_step_end ci-red-main-park "$pr"; continue; fi
+    if [[ -n "$fails" ]] && ci_dagger_engine_loss_red "$id" "$head" "$fails" "$checks"; then ci_red "$id" "$pr" "$head" "$fails" dagger-engine-loss; pass_step_end runner-infra-red "$pr"; continue; fi
     if [[ -n "$fails" ]] && ci_red_behind_main_hop "$id" "$pr" "$head" "$fails"; then pass_step_end ci-red-behind-main-update "$pr"; continue; fi
     if [[ -n "$fails" && "$(jqf -r '.ci_test_checked // empty' <<<"$ready")" != "$head:$fails" ]]; then
       set_unit "$id" ".ci_test_checked=$(js "$head:$fails")"
-      red_out="$(ci_test_red_checks "$checks")"
-      red="$(head -n1 <<<"$red_out")"; red_facts="$(tail -n +2 <<<"$red_out")"
+      red_out="${CI_DAGGER_LOG_RED_OUT:-$(ci_test_red_checks "$checks")}"; red="$(head -n1 <<<"$red_out" | cut -f1)"; red_facts="$(tail -n +2 <<<"$red_out")"
       if [[ -n "$red" ]]; then
         if ci_stale_base_hop "$id" "$pr" "$head" "$red_facts"; then pass_step_end ci-stale-base-hop "$pr"; continue; fi
         set_unit "$id" ".ci_facts_head=$(js "$head") | .ci_facts=$(js "$red_facts")"

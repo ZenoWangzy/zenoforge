@@ -85,7 +85,7 @@ ci_update_branch() { # pr head
 
 ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（多为 runner 抖动），重跑后仍红才派 repair
   local r n=0 runs runs_json infra_rc failed_steps
-  if ci_stale_base_hop_available "$1" && [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
+  if [[ "${5:-}" != dagger-engine-loss ]] && ci_stale_base_hop_available "$1" && [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
     # 落后 main 的红多半是旧 base 的红（2026-10-19：main 自身 suites 红，5 个就绪 PR 跟着红）：服务端合入 main 再跑，
     # 不在旧 base 上重跑、不派 LLM 修复；干净合并的新 head 沿用原批准（approval_carries）。
     if ci_update_branch "$2" "$3"; then
@@ -94,7 +94,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
       return 0
     fi
   fi
-  if [[ "$(unit_field "$1" .ci_deferred_sha)" == "$3" ]]; then
+  if [[ "${5:-}" != dagger-engine-loss && "$(unit_field "$1" .ci_deferred_sha)" == "$3" ]]; then
     runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
     runs="$(jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' <<<"$runs_json")" || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
     for r in $runs; do
@@ -104,7 +104,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     say "merge skipped PR#$2 (approved head; CI deferred during review) -> started $n run(s)"
     return 0
   fi
-  if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]]; then
+  if [[ "${5:-}" != dagger-engine-loss && "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]]; then
     runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
     runs="$(jqf -r '.[] | select(.conclusion=="failure") | .databaseId' <<<"$runs_json")" || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
     for r in $runs; do
@@ -114,7 +114,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     say "merge skipped PR#$2 (checks red: $4) -> reran $n failed run(s) once"
     return 0
   fi
-  if ci_infra_red "$3"; then
+  if [[ "${5:-}" == dagger-engine-loss ]] || ci_infra_red "$3"; then
     # runner 环境步骤红（磁盘/容量门、Set up job、checkout 前准备）不是代码结论：不作废批准、不派 LLM 修复，
     # 再重跑；同一 head 连红 CI_INFRA_RERUNS 次交给 supervisor 修 runner（2026-10-20 cihost /data 90% 满，
     # 磁盘门把 PR CI 全拦红，已批准单元被送去 repair 又丢批准）。
@@ -176,9 +176,9 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
 
 # 停线（Jidoka）：失败 job 的日志里已有测试断言失败（vitest FAIL / AssertionError / TAP not ok），就是确定性的代码结论。
 # 以前要等其余检查全部跑完、再整体重跑一次才派修复：热修 #3860 04:15 测试已红，按旧路径约 2 小时后才会开始修（L62）。
-ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败的检查名（逗号分隔，没有则空）；其后每行是该检查日志里 vitest 标记行的结构化事实
-  local name link job hits="" logfile facts="" marker i pid
-  local -a names=() logfiles=() pids=()
+ci_test_red_checks() { # checks_json [infra-summary] → first line: test-red names [tab + summary]; remaining lines: parsed test facts
+  local name link job hits="" logfile facts="" marker i pid failed_jobs="$(jqf -r '[.[] | select(.bucket=="fail")] | length' <<<"$1" 2>/dev/null || printf 0)" logs_read=0 loss_matches=0
+  local -a names=() logfiles=() pids=() log_status=()
   # 失败 job 日志有界并行抓（GH_PARALLEL）。
   while IFS=$'\t' read -r name link; do
     job="${link##*/job/}"; [[ "$job" =~ ^[0-9]+$ ]] || continue
@@ -186,13 +186,14 @@ ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败
     # 三次被当成"旧 base 的红"走 update-branch，每次多耗一整轮 CI（L75）。
     # 一次日志抓取同时给出红判定和 scripts/ci/vitest-fail-facts.mjs 打印的标记行；没有标记行的检查回退到 ` FAIL  <file> > <test>` 行（至多 12 条）。
     logfile="$(mktemp)" || continue
-    names+=("$name"); logfiles+=("$logfile")
-    { gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$logfile"; } &
+    names+=("$name"); logfiles+=("$logfile"); log_status+=("$logfile.ok")
+    { if gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$logfile"; then : > "$logfile.ok"; fi; } &
     pids+=("$!"); gh_par_throttle pids
   done < <(jqf -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' <<<"$1")
   for pid in "${pids[@]}"; do wait "$pid" || :; done
   for i in "${!names[@]}"; do
     logfile="${logfiles[$i]}"
+    [[ ! -f "${log_status[$i]}" ]] || logs_read=$((logs_read+1)); grep -qaE "$CI_DAGGER_ENGINE_LOSS_RE" "$logfile" && loss_matches=$((loss_matches+1)) || :
     if grep -qaE ' FAIL  .* > |AssertionError|not ok [0-9]+ -' "$logfile"; then
       name="${names[$i]}"
       hits="${hits:+$hits, }$name"
@@ -201,12 +202,10 @@ ci_test_red_checks() { # checks_json → 第一行：失败日志含测试失败
       # run-ci-suites.sh 已为每个失败的 engine 套件打印 "[pipeline suites] FAILED suite=<path>"；同一次抓取里取出，供分诊用
       facts="${facts}$(grep -a -oE '^\[pipeline suites\] FAILED suite=[^ ]+' "$logfile" | sed 's/.*suite=//' | jq -Rsc 'split("\n") | map(select(. != "")) | select(length > 0) | {pipelineSuites: .}' 2>/dev/null)"$'\n'
     fi
-    rm -f "$logfile"
+    rm -f "$logfile" "${log_status[$i]}"
   done
-  printf '%s\n' "$hits"
-  printf '%s' "$facts" | grep -a '^{' || true
+  if [[ "${2:-false}" == true ]]; then printf '%s\t{"failed":%s,"read":%s,"matches":%s}\n' "$hits" "$failed_jobs" "$logs_read" "$loss_matches"; else printf '%s\n' "$hits"; fi; printf '%s' "$facts" | grep -a '^{' || true
 }
-
 ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → failing suites/tests, or the failed check labels when facts are unavailable
   local tests
   tests="$(jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name)), (.pipelineSuites[]?)] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null)" || tests='[]'
