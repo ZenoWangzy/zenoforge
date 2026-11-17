@@ -251,6 +251,20 @@ re-measure on the first 7 live days, and change them only with that measurement 
 first `register_new_issues` phase of the full tick: 43 s median, 104 s p90 over 95 ticks (38 rows, always a full lap), and a row waited
 a tick gap for its next walk (636 s median, 1151 s p90), measured 2026-11-08 07:34Z to 2026-11-09 07:34Z.
 
+The intake priority judge is a station too (`scheduler.sh --intake-judge`, `scheduler.d/intake-judge-station.sh`): `loop.sh` starts
+a detached pass every 60 s (`AUTOPI_INTAKE_JUDGE_SECONDS`, minimum 30; killed after `AUTOPI_INTAKE_JUDGE_KILL_SECONDS`, default
+1200 s). It queries the same configured intake labels as intake and keeps a station-local 10-minute snapshot in
+`.intake-judge-candidates.json`; each issue is removed after its judge call, and a short-lived completion record keeps a concurrent
+refresh or tick judge from reintroducing it. The next pass advances without rescanning GitHub.
+It then filters OPEN issues without
+`needs-triage` or a `priority:*` label and the existing six-hour skip cooldown. It judges oldest issue numbers first, at most
+`ZF_INTAKE_JUDGE_PER_PASS` per pass (default 25) with `ZF_INTAKE_JUDGE_PARALLEL` workers (default 4). Each issue has an atomic claim;
+claims older than the station kill timeout are reclaimed. The tick skips its in-intake judge while `.intake-judge-epoch` is fresh
+(`AUTOPI_INTAKE_JUDGE_FRESH_SECONDS`, default 1800 s) and retains that path when the station is stale. The station observes PAUSE
+and the state schema gate. Parallel skip stamps take `intake-skip-noted.tsv.lock` while rewriting the six-hour cooldown file. Each
+acquired pass logs one `intake-judge done secs= judged= applied= fallback= deferred= rc=` line; the operating standard is a 60 s
+start cadence, a 1800 s freshness window, and the 25-issue/four-worker pass bound.
+
 The dependency release is a station too (`scheduler.d/release-deps-station.sh`, `scheduler.sh --release-deps`): `loop.sh` starts a
 detached pass every 60 s (`AUTOPI_RELEASE_DEPS_SECONDS`, minimum 30, kill at 600 s) that runs `release_dependency_blocks` with no scheduler
 lock held across it. The full tick also starts this step detached; the shared per-step flock skips an overlapping launch. Each pass logs
