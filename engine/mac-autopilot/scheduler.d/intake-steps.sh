@@ -56,6 +56,16 @@ intake_priority_open_unlabelled_candidate() {
   [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
   grep -Fq "intake-priority: applied issue=#$number " <<<"$output" || intake_skip_note "$number" "$cooldown_reason"
 }
+intake_priority_open_unlabelled_candidates() { # intake start budget; stdin is the deduplicated issue stream
+  local intake_judge_started="${1:-}" intake_judge_budget="${2:-}" intake_judge_cap="${ZF_INTAKE_JUDGE_PER_PASS:-3}" intake_judges_used=0 intake_judges_deferred=0 row
+  [[ "$intake_judge_cap" =~ ^[0-9]+$ ]] || intake_judge_cap=3
+  intake_judge_cap=$((10#$intake_judge_cap))
+  while IFS= read -r row; do
+    intake_priority_open_unlabelled_candidate "$row"
+    printf '%s\n' "$row"
+  done
+  if (( intake_judges_deferred > 0 )); then say "intake priority judges deferred=$intake_judges_deferred"; fi
+}
 intake_skip_label_report() { # candidate rows JSON, skip labels JSON
   local n hit
   [[ -s "$1" ]] || return 0
