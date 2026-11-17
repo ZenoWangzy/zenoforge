@@ -617,5 +617,8 @@ printf 'ok - hold --rule explains a post-ruling state read failure inside and ou
   [ "$rc" = 0 ] && [ "$(jq -r '.units[]|select(.id=="issue-30")|.stage+"|"+.history[-1].stage+"|"+(.history[-1].result|tostring)+"|"+(has("parked_reason")|tostring)' "$UNITS")" = "closed|supervisor-close|supervisor ruling u: closing|false" ] && [ ! -s "$close_calls" ] || { echo "FAIL: close did not close the unit with a supervisor-close event, or touched GitHub" >&2; cat "$close_calls" >&2; exit 1; }
   rc=0; rule_entry issue-31 close u "closing" "" > "$test_env_root/close-pr.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -Fq 'open PR #31' "$test_env_root/close-pr.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = supervisor-review ] && [ ! -s "$close_calls" ] || { echo "FAIL: close with an open PR was not refused by number, or changed the unit" >&2; cat "$test_env_root/close-pr.out" >&2; exit 1; }
+  jq '(.units[]|select(.id=="issue-31")|.stage) = "implement"' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+  rc=0; rule_entry issue-31 close u "closing" "" > "$test_env_root/close-implement.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -Fq 'is in implement; close needs' "$test_env_root/close-implement.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = implement ] && [ ! -s "$close_calls" ] || { echo "FAIL: close of an implement unit was not refused by stage, or changed the unit" >&2; cat "$test_env_root/close-implement.out" >&2; exit 1; }
 )
 printf 'ok - rule_entry close sets a unit closed with a supervisor-close event and refuses an open PR by number\n'

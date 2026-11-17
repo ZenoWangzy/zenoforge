@@ -262,6 +262,8 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
       scheduler_route_to_recut "$issue" || return 1
       set_unit "$1" "$(hist supervisor-recut "supervisor ruling: $3") | .stage=\"closed\" | .note=$(js "supervisor ruling sent issue #$issue to recut: $3")" ;;
     close) # 2026-11-17 issue-4354: the ruling closes the unit only; the issue, its labels and an open PR stay as they are
+      stage="$(unit_field "$1" .stage)"
+      case "$stage" in supervisor-review|parked|blocked-external) ;; *) echo "rule: $1 is in $stage; close needs supervisor-review, parked or blocked-external" >&2; return 1 ;; esac # a unit with a worker in flight is never closed from under it
       pr="$(unit_field "$1" '.pr // empty')"
       if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
         pr_state="$(tick_pr_state "$pr")" || { echo "rule: $1 PR #$pr state is unreadable; close refused" >&2; return 1; }
