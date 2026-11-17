@@ -5,27 +5,28 @@ bin=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(mktemp -d); trap 'rm -rf "$root" "$test_env_root"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# gate <file> <avail_mb> <psi_full> <priority> <age_seconds> <cpu_busy>: prints admitted or refused.
+# gate <file> <avail_mb> <psi_full> <priority> <age_seconds> <cpu_busy> [runs]: prints admission and any refusal reason.
 # Loads the real box_has_room from the file. PSI some is fixed at 32 (the live value that used to block hotfix).
 # LUNA_MIN=0 keeps the first tier out, and age and cpu are set so only the tier under test can admit.
 gate() {
-  local file=$1 d; d=$(mktemp -d -p "$root")
+  local file=$1 d runs="${7:-0}"; d=$(mktemp -d -p "$root")
   printf 'MemAvailable: %s kB\n' "$(( $2 * 1024 ))" >"$d/meminfo"
   printf 'some avg10=32 avg60=35 avg300=36 total=1\nfull avg10=%s avg60=4 avg300=4.6 total=1\n' "$3" >"$d/psi"
   grep -Fq 'luna-capacity.sh' "$file" || fail "$(basename "$file") does not source shared capacity admission"
   (
-    export LUNA_PROC_MEMINFO="$d/meminfo" LUNA_PROC_PSI_MEMORY="$d/psi" LUNA_PRIORITY="$4" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328
+    export LUNA_PROC_MEMINFO="$d/meminfo" LUNA_PROC_PSI_MEMORY="$d/psi" LUNA_PRIORITY="$4" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 MOCK_RUNS="$runs"
     export LUNA_AGE_ADMIT_SECONDS="$5" CPU_BUSY="$6"
     source "$bin/luna-capacity.sh"
-    codex_runs() { echo 0; }
+    codex_runs() { echo "$MOCK_RUNS"; }
     cpu_busy() { echo "$CPU_BUSY"; }
-    if box_has_room; then echo admitted; else echo refused; fi
+    if box_has_room; then echo admitted; else printf 'refused|%s\n' "${BOX_ROOM_WHY:-}"; fi
   )
 }
 # expect <file> <avail_mb> <full> <priority> <age> <cpu> <want>
 expect() {
-  local got; got=$(gate "$1" "$2" "$3" "$4" "$5" "$6")
-  [[ $got == "$7" ]] || fail "$(basename "$1") avail=$2 full=$3 prio=$4 age=$5 cpu=$6: got $got, want $7"
+  local got status; got=$(gate "$1" "$2" "$3" "$4" "$5" "$6" "${8:-0}"); status="${got%%|*}"
+  [[ $status == "$7" ]] || fail "$(basename "$1") avail=$2 full=$3 prio=$4 age=$5 cpu=$6: got $got, want $7"
+  [[ -z "${9:-}" || "$got" == "$7|${9}" ]] || fail "$(basename "$1") reason: got $got, want $7|${9}"
 }
 wait_file_case() {
   local f=$1 scratch="$root/$(basename "$1").scratch" slots="$root/$(basename "$1").slots" pid
@@ -49,7 +50,8 @@ for f in "$bin/luna" "$bin/zc"; do
   expect "$f"  4600  12   hotfix   999999 0   refused  # full 12: refused for every tier
   expect "$f"  2500   2   hotfix   999999 0   refused  # hotfix below 3 GB
   expect "$f"  3400   0   normal   999999 0   admitted # normal tier: measured floor, full < 10
-  expect "$f"  3000   0   normal   999999 0   refused  # normal below measured floor
+  expect "$f"  3000   0   normal   999999 0   refused 0 "runs 0/10 avail 3000MB full 0" # normal below measured floor
+  expect "$f"  6000   0   normal        0 0   refused 10 "runs 10/10 avail 6000MB full 0" # normal at run cap
   expect "$f"  3400  12   normal   999999 0   refused  # normal, full 12
   expect "$f"  6000   2   normal   999999 0   admitted # normal tier: cpu under target, full < 10, 5 GB free
   expect "$f"  6000   2   normal   999999 100 refused  # CPU-full with runs below cap
@@ -58,4 +60,22 @@ for f in "$bin/luna" "$bin/zc"; do
   expect "$f"  6000  12   normal        0 100  refused  # aging, full 12
   wait_file_case "$f"
 done
+cache_reason_case() (
+  local mem="$root/cache-meminfo" psi="$root/cache-psi" expected="runs 0/10 avail 3000MB full 0"
+  printf 'MemAvailable: 3072000 kB\n' > "$mem"
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  export LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=101
+  source "$bin/luna-capacity.sh"
+  codex_runs() { echo 0; }
+  cpu_busy() { echo 0; }
+  eval "$(sed -n '/^priority_admission_has_room() {/,/^}/p' "$bin/../mac-autopilot/scheduler.d/self-check.sh")"
+  declare -A TICK_PRIORITY_ADMISSION_CACHE=()
+  TICK_DISPATCH_PENDING_ACTIVE=true
+  if priority_admission_has_room normal 0; then fail 'low-memory admission unexpectedly opened'; fi
+  [[ "${BOX_ROOM_WHY:-}" == "$expected" ]] || fail "initial admission reason: got ${BOX_ROOM_WHY:-}, want $expected"
+  printf 'MemAvailable: 6144000 kB\n' > "$mem"
+  if priority_admission_has_room normal 0; then fail 'cached low-memory admission unexpectedly reopened'; fi
+  [[ "${BOX_ROOM_WHY:-}" == "$expected" ]] || fail "cached admission reason: got ${BOX_ROOM_WHY:-}, want $expected"
+)
+cache_reason_case
 echo "ok - hotfix admits at 3 GB with full < 10; normal and aging admit at the 3328 MB floor with full < 10; full 12 refused; in luna and zc"
