@@ -22,7 +22,7 @@ export A HERE LOG STAMP REPO
 export ZF_INTAKE_PRIORITY_SCRIPT="$fixture/intake-priority.sh"
 export JUDGE_CALLS="$fixture/judge-calls" JUDGE_MODE=apply JUDGE_FALLBACK_NUMBERS=2,4
 export ACTIVE_FILE="$fixture/active" ACTIVE_LOCK="$fixture/active.lock" MAX_ACTIVE_FILE="$fixture/max-active"
-export CANDIDATE_FILE="$fixture/candidates.json"
+export CANDIDATE_FILE="$fixture/candidates.json" QUERY_CALLS="$fixture/query-calls"
 
 fail() { printf 'intake-judge-station.test.sh: %s\n' "$*" >&2; exit 1; }
 
@@ -71,7 +71,11 @@ chmod +x "$ZF_INTAKE_PRIORITY_SCRIPT" "$fixture/bin/gh"
 export PATH="$fixture/bin:$PATH"
 
 state_schema_ok() { [[ "${SCHEMA_OK:-true}" == true ]]; }
-intake_judge_station_raw_candidates() { cat "$CANDIDATE_FILE"; }
+gh() {
+  [[ "$1 ${2:-}" == 'issue list' && "$*" == *'--state open'* && "$*" == *'--label ready-for-agent'* ]] || return 97
+  printf '%s\n' "$*" >> "$QUERY_CALLS"
+  cat "$CANDIDATE_FILE"
+}
 git() { :; }
 
 make_candidates() {
@@ -82,9 +86,10 @@ make_candidates() {
   ]' > "$CANDIDATE_FILE"
 }
 reset() {
-  rm -rf "$INTAKE_JUDGE_LOCK" "$A/.intake-judge-epoch" "$A/.intake-judge-claims" "$PAUSE_FILE"
+  rm -rf "$INTAKE_JUDGE_LOCK" "$A/.intake-judge-epoch" "$A/.intake-judge-claims" "$A/.intake-judge-candidates.json" \
+    "$A/.intake-judge-candidates.json.lock" "$PAUSE_FILE"
   rm -f "$A/intake-skip-noted.tsv" "$A/intake-skip-noted.tsv.lock"
-  : > "$LOG"; : > "$JUDGE_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
+  : > "$LOG"; : > "$JUDGE_CALLS"; : > "$QUERY_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
   JUDGE_MODE=apply; SCHEMA_OK=true; make_candidates
 }
 
@@ -96,18 +101,12 @@ ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass 
 [[ "$(cat "$MAX_ACTIVE_FILE")" == 2 ]] || fail "parallelism was not bounded at two: $(cat "$MAX_ACTIVE_FILE")"
 line="$(grep 'intake-judge done' "$LOG")"
 [[ "$line" =~ intake-judge\ done\ secs=[0-9]+\ judged=4\ applied=4\ fallback=2\ deferred=2\ rc=0 ]] || fail "pass summary was wrong: $line"
-
-# A pass without a tick cache uses the configured intake-label query and current issue labels.
-reset
-intake_judge_station_raw_candidates() { intake_judge_station_query_candidates; }
-gh() {
-  [[ "$1 $2" == 'issue list' && "$*" == *'--label ready-for-agent'* ]] || return 97
-  cat "$CANDIDATE_FILE"
-}
-ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass || fail 'the live-query pass failed'
-[[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2,3,4' ]] || fail 'the live query did not choose the oldest eligible issues'
-intake_judge_station_raw_candidates() { cat "$CANDIDATE_FILE"; }
-unset -f gh
+[[ "$(wc -l < "$QUERY_CALLS" | tr -d ' ')" == 1 ]] || fail 'the station did not populate one candidate snapshot'
+grep -Fq -- '--label ready-for-agent' "$QUERY_CALLS" || fail 'the station did not use the configured intake-label query'
+# The next pass consumes the rest of that snapshot without another full candidate scan or a repeat judge.
+ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass || fail 'the cached follow-up pass failed'
+[[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2,3,4,5,6' ]] || fail "the next pass repeated a judge or skipped candidates: $(cat "$JUDGE_CALLS")"
+[[ "$(wc -l < "$QUERY_CALLS" | tr -d ' ')" == 1 ]] || fail 'the station rescanned candidates before its snapshot expired'
 
 # A live claim excludes that issue; the remaining oldest issues still run.
 reset
@@ -164,4 +163,4 @@ grep -Fq -- '--intake-judge) SCHED_STATION=true; intake_judge_station_tick ;;' "
 grep -Fq '"${1:-}" != --intake-judge' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'the station would reconcile runtime config'
 grep -Fq '"${AUTOPI_INTAKE_JUDGE_KILL_SECONDS:-1200}" bash "$LIVE/scheduler.sh" --intake-judge' "$engine_dir/mac-autopilot/loop.sh" || fail 'loop.sh does not apply the station kill timeout'
 
-echo 'intake-judge-station.test.sh: pass (oldest-first cap, parallel bound, claims, freshness fallback, no-stamp skip and concurrent cooldown writes)'
+echo 'intake-judge-station.test.sh: pass (oldest-first cap, cached snapshot, parallel bound, claims, freshness fallback, no-stamp skip and concurrent cooldown writes)'

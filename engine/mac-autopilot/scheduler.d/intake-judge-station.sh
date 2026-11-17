@@ -69,8 +69,42 @@ intake_judge_station_query_candidates() {
   rm -rf -- "$tmp"
 }
 
-intake_judge_station_raw_candidates() { # Live labels avoid rejudging from a tick cache captured before this station's apply.
-  intake_judge_station_query_candidates
+intake_judge_station_raw_candidates() { # Share one bounded candidate scan across station passes; successful calls consume rows below.
+  local cache="$A/.intake-judge-candidates.json" now query_file cache_tmp
+  now="$(date +%s)"
+  if [[ -s "$cache" ]] \
+    && jqf -e --argjson now "$now" '.schema == 1 and (.created_at | type) == "number" and $now >= .created_at and $now - .created_at <= 600 and (.rows | type) == "array"' "$cache" >/dev/null 2>&1; then
+    jqf -c '.rows' "$cache"
+    return
+  fi
+  query_file="$(mktemp "${TMPDIR:-/tmp}/intake-judge-candidates.XXXXXX")" || return 1
+  if ! intake_judge_station_query_candidates >"$query_file" || ! jqf -e 'type == "array"' "$query_file" >/dev/null 2>&1; then
+    rm -f -- "$query_file"
+    return 1
+  fi
+  cache_tmp="$cache.tmp.$BASHPID.$RANDOM"
+  if ! jqf -n --argjson created_at "$now" --slurpfile rows "$query_file" '{schema:1,created_at:$created_at,rows:$rows[0]}' >"$cache_tmp" \
+    || ! mv -f -- "$cache_tmp" "$cache"; then
+    rm -f -- "$cache_tmp" "$query_file"
+    return 1
+  fi
+  cat -- "$query_file"
+  rm -f -- "$query_file"
+}
+
+intake_judge_station_consume_candidate() { # Remove a completed judge call from the station's 10-minute snapshot.
+  local number="$1" cache="$A/.intake-judge-candidates.json" tmp="$A/.intake-judge-candidates.json.tmp.$BASHPID.$RANDOM"
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -s "$cache" ]] || return 0
+  (
+    exec 9>"$cache.lock" || exit 1
+    flock -x 9 || exit 1
+    if ! jqf --argjson number "$number" '.rows |= map(select(.number != $number))' "$cache" >"$tmp"; then
+      rm -f -- "$tmp"
+      exit 1
+    fi
+    mv -f -- "$tmp" "$cache" || { rm -f -- "$tmp"; exit 1; }
+  )
 }
 
 intake_judge_station_candidates() {
@@ -107,6 +141,7 @@ intake_judge_station_worker() { # issue file, result dir, repo, stale seconds
         && INTAKE_PRIORITY_JUDGE_FALLBACK=true
     fi
     [[ "$INTAKE_PRIORITY_JUDGE_FALLBACK" != true ]] || fallback=1
+    intake_judge_station_consume_candidate "$number" || rc=1
     intake_judge_claim_end
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$judged" "$applied" "$fallback" "$deferred" "$rc" >"$result_dir/$number.result"

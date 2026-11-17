@@ -253,7 +253,9 @@ a tick gap for its next walk (636 s median, 1151 s p90), measured 2026-11-08 07:
 
 The intake priority judge is a station too (`scheduler.sh --intake-judge`, `scheduler.d/intake-judge-station.sh`): `loop.sh` starts
 a detached pass every 60 s (`AUTOPI_INTAKE_JUDGE_SECONDS`, minimum 30; killed after `AUTOPI_INTAKE_JUDGE_KILL_SECONDS`, default
-1200 s). It queries the same configured intake labels as intake, then filters OPEN issues without
+1200 s). It queries the same configured intake labels as intake and keeps a station-local 10-minute snapshot in
+`.intake-judge-candidates.json`; each issue is removed after its judge call so the next pass advances without rescanning GitHub.
+It then filters OPEN issues without
 `needs-triage` or a `priority:*` label and the existing six-hour skip cooldown. It judges oldest issue numbers first, at most
 `ZF_INTAKE_JUDGE_PER_PASS` per pass (default 25) with `ZF_INTAKE_JUDGE_PARALLEL` workers (default 4). Each issue has an atomic claim;
 claims older than the station kill timeout are reclaimed. The tick skips its in-intake judge while `.intake-judge-epoch` is fresh
