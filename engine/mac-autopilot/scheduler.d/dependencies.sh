@@ -438,8 +438,13 @@ release_dependency_blocks_pass() {
       dep_release_delivered "$id" "$dep" "$has_note"; continue
     fi
     # 两个单元互相等对方（2026-10-20 #2743↔#3330）：放开这一个，另一个继续等它交付。
+    # 11-17: both waits latched (#6780↔#6781 sat 4.5 h): neither releases; the larger issue goes to the arbiter once.
     pair_key="$dep:$issue"
-    if [[ "$real_wait" != true && "$issue" =~ ^[0-9]+$ && "${DEP_BLOCKED_PAIR_COUNTS[$pair_key]:-0}" =~ ^[1-9][0-9]*$ ]]; then
+    if [[ "$issue" =~ ^[0-9]+$ && "${DEP_BLOCKED_PAIR_COUNTS[$pair_key]:-0}" =~ ^[1-9][0-9]*$ ]]; then
+      if [[ "$real_wait" == true ]]; then
+        (( issue <= dep )) || dep_now to_supervisor "$id" "dependency cycle between #$issue and #$dep: arbiter, rule which goes first or merge the two"
+        continue
+      fi
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep waits on #$issue: dependency cycle broken here"; continue
     fi
