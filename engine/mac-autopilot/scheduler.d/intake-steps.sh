@@ -34,6 +34,38 @@ intake_skip_note() {
   { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$$" && mv -f -- "$f.tmp.$$" "$f"
 }
 intake_skip_refused_recut() { intake_skip_note "$1" "unit=$2 stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; }
+# Open candidates outside needs-triage can bypass run-triage; judge them before intake drops tracker labels.
+intake_priority_open_unlabelled_candidate() {
+  local issue="$1" number repo="${REPO:-${ZF_REPO:-}}" cooldown_reason='intake priority label not applied' now output
+  jqf -e '(.state == "OPEN") and ([.labels[]? | if type == "string" then . else .name // "" end] as $labels
+    | ($labels | index("needs-triage") == null) and all($labels[]; startswith("priority:") | not))' <<<"$issue" >/dev/null || return 0
+  [[ -n "$repo" ]] || return 0
+  number="$(jqf -r '.number' <<<"$issue")" || return 0
+  now="$(date +%s)"
+  awk -F'\t' -v k="$number $cooldown_reason" -v now="$now" '$1==k && now-$2<21600{f=1} END{exit !f}' \
+    "$A/intake-skip-noted.tsv" 2>/dev/null && return 0
+  if (( intake_judges_used >= intake_judge_cap )) \
+    || { [[ "$intake_judge_started" =~ ^[0-9]+$ && "$intake_judge_budget" =~ ^[0-9]+$ ]] \
+      && (( SECONDS - intake_judge_started >= intake_judge_budget )); } \
+    || { declare -F refill_stopped >/dev/null && refill_stopped; }; then
+    intake_judges_deferred=$((intake_judges_deferred + 1))
+    return 0
+  fi
+  intake_judges_used=$((intake_judges_used + 1))
+  output="$(printf '%s\n' "$issue" | bash "$HERE/../intake-priority.sh" triage "$number" ready-for-agent "$repo" 2>&1)" || true
+  [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
+  grep -Fq "intake-priority: applied issue=#$number " <<<"$output" || intake_skip_note "$number" "$cooldown_reason"
+}
+intake_priority_open_unlabelled_candidates() { # intake start budget; stdin is the deduplicated issue stream
+  local intake_judge_started="${1:-}" intake_judge_budget="${2:-}" intake_judge_cap="${ZF_INTAKE_JUDGE_PER_PASS:-3}" intake_judges_used=0 intake_judges_deferred=0 row
+  [[ "$intake_judge_cap" =~ ^[0-9]+$ ]] || intake_judge_cap=3
+  intake_judge_cap=$((10#$intake_judge_cap))
+  while IFS= read -r row; do
+    intake_priority_open_unlabelled_candidate "$row"
+    printf '%s\n' "$row"
+  done
+  if (( intake_judges_deferred > 0 )); then say "intake priority judges deferred=$intake_judges_deferred"; fi
+}
 intake_skip_label_report() { # candidate rows JSON, skip labels JSON
   local n hit
   [[ -s "$1" ]] || return 0
