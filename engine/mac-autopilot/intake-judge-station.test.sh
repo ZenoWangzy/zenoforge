@@ -21,6 +21,7 @@ mkdir -p "$A"
 export A HERE LOG STAMP REPO
 export ZF_INTAKE_PRIORITY_SCRIPT="$fixture/intake-priority.sh"
 export JUDGE_CALLS="$fixture/judge-calls" JUDGE_MODE=apply JUDGE_FALLBACK_NUMBERS=2,4
+export GH_CALLS="$fixture/gh-calls"
 export ACTIVE_FILE="$fixture/active" ACTIVE_LOCK="$fixture/active.lock" MAX_ACTIVE_FILE="$fixture/max-active"
 export CANDIDATE_FILE="$fixture/candidates.json"
 
@@ -55,6 +56,7 @@ STUB
 cat > "$fixture/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s %s %s fallback=%s\n' "${1:-}" "${2:-}" "${3:-}" "$JUDGE_FALLBACK_NUMBERS" >>"$GH_CALLS"
 case "${1:-} ${2:-}" in
   'issue view')
     number="${3:-}"
@@ -80,7 +82,7 @@ make_candidates() {
 reset() {
   rm -rf "$INTAKE_JUDGE_LOCK" "$A/.intake-judge-epoch" "$A/.intake-judge-claims" "$PAUSE_FILE"
   rm -f "$A/intake-skip-noted.tsv" "$A/intake-skip-noted.tsv.lock"
-  : > "$LOG"; : > "$JUDGE_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
+  : > "$LOG"; : > "$JUDGE_CALLS"; : > "$GH_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
   JUDGE_MODE=apply; SCHEMA_OK=true; make_candidates
 }
 
@@ -91,7 +93,7 @@ ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass 
 [[ "$(wc -l < "$JUDGE_CALLS" | tr -d ' ')" == 4 ]] || fail 'the pass judged more than its cap'
 [[ "$(cat "$MAX_ACTIVE_FILE")" == 2 ]] || fail "parallelism was not bounded at two: $(cat "$MAX_ACTIVE_FILE")"
 line="$(grep 'intake-judge done' "$LOG")"
-[[ "$line" =~ intake-judge\ done\ secs=[0-9]+\ judged=4\ applied=4\ fallback=2\ deferred=2\ rc=0 ]] || fail "pass summary was wrong: $line"
+[[ "$line" =~ intake-judge\ done\ secs=[0-9]+\ judged=4\ applied=4\ fallback=2\ deferred=2\ rc=0 ]] || fail "pass summary was wrong: $line; gh reads: $(cat "$GH_CALLS")"
 
 # A live claim excludes that issue; the remaining oldest issues still run.
 reset
