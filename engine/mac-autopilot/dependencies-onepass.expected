@@ -210,15 +210,21 @@
       "task": "t"
     },
     {
-      "blocked_on": 110,
       "body_blocked_by": [
         110
       ],
       "branch": "agent/issue-10",
-      "history": [],
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#110 closed on purpose (tracker/spec parent)",
+          "stage": "unblocked"
+        }
+      ],
       "id": "issue-10",
       "issue": 10,
-      "stage": "blocked-external",
+      "note": null,
+      "stage": "implement-pending",
       "task": "t"
     },
     {
@@ -235,10 +241,27 @@
         111
       ],
       "branch": "agent/issue-11",
-      "history": [],
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide"
+          },
+          "result": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+          "stage": "supervisor-escalated"
+        }
+      ],
       "id": "issue-11",
       "issue": 11,
-      "stage": "blocked-external",
+      "note": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
       "task": "t"
     },
     {
@@ -612,6 +635,8 @@
 [2026-11-08T10:47:12Z] unit issue-3 unblocked: #102 delivered
 [2026-11-08T10:47:12Z] unit issue-105 unblocked: #106 waits on #105: dependency cycle broken here
 [2026-11-08T10:47:12Z] unit issue-9 blocker #108 dead (recut): repointed to child #109
+[2026-11-08T10:47:12Z] unit issue-10 unblocked: #110 closed on purpose (tracker/spec parent)
+[2026-11-08T10:47:12Z] supervisor-review unit=issue-11: blocker #111 is closed in the ledger but its issue is open with no recut children: decide
 [2026-11-08T10:47:12Z] unit issue-12 released: #112 is a roadmap epic, not a predecessor
 [2026-11-08T10:47:12Z] unit issue-13 escalated: parked twice on roadmap epic #112
 [2026-11-08T10:47:12Z] unit issue-19 unblocked: #116 delivered
@@ -982,15 +1007,21 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "task": "t"
     },
     {
-      "blocked_on": 110,
       "body_blocked_by": [
         110
       ],
       "branch": "agent/issue-10",
-      "history": [],
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "result": "#110 closed on purpose (tracker/spec parent)",
+          "stage": "unblocked"
+        }
+      ],
       "id": "issue-10",
       "issue": 10,
-      "stage": "blocked-external",
+      "note": null,
+      "stage": "implement-pending",
       "task": "t"
     },
     {
@@ -1007,10 +1038,27 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
         111
       ],
       "branch": "agent/issue-11",
-      "history": [],
+      "history": [
+        {
+          "at": "2026-11-08T10:47:12Z",
+          "decision": {
+            "decision": "Hand off to supervisor",
+            "evidence": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+            "owner": "scheduler",
+            "rejected": [
+              "Continue automated handling"
+            ],
+            "why": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide"
+          },
+          "result": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+          "stage": "supervisor-escalated"
+        }
+      ],
       "id": "issue-11",
       "issue": 11,
-      "stage": "blocked-external",
+      "note": "blocker #111 is closed in the ledger but its issue is open with no recut children: decide",
+      "stage": "supervisor-review",
+      "supervisor_cap_return_stage": "implement-pending",
       "task": "t"
     },
     {

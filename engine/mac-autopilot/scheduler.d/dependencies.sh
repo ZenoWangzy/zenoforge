@@ -217,19 +217,19 @@ stack_approved_dependency() { # dependent unit-id issue-number unit-json; 0 when
   return 0
 }
 dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
-  local id="$1" dep="$2" issue="$3" st children c next="" s key
-  dep_rows_closed_or_parked "$dep" || return 1
-  st="$(scheduler_issue_state "$dep")" || return 1
+  local id="$1" dep="$2" issue="$3" st children c next="" s key all_delivered=true
+  dep_rows_closed_or_parked "$dep" || return 1; st="$(scheduler_issue_state "$dep")" || return 1
   children="$(jqf -r --argjson i "${issue:-0}" '(.recut_children // [])[] | select(. != $i)' <<<"$st")"
   for c in $children; do
     dep_delivered_in_ledger "$c" && continue
-    key="$dep:$c"
+    all_delivered=false; key="$dep:$c"
     if [[ -z "${TRACKER_KIDS[$key]+x}" ]]; then s="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$c")")"; [[ -n "$s" ]] || s="$(dep_fresh_state "$c")"; TRACKER_KIDS["$key"]="${s:-unknown}"; fi
     [[ "${TRACKER_KIDS[$key]}" == OPEN ]] && { next="$c"; break; }
   done
-  [[ -n "$next" ]] || return 1
-  set_unit "$id" "$(hist blocker-repointed "#$dep closed in ledger after recut; now waits on child #$next") | .blocked_on=$next | (if .dep_wait_delivery == $dep then .dep_wait_delivery=$next | .unpark_condition=$(js "#$next delivered in the ledger or closed on GitHub") else . end)"
-  say "unit $id blocker #$dep dead (recut): repointed to child #$next"; return 0
+  if [[ -n "$next" ]]; then set_unit "$id" "$(hist blocker-repointed "#$dep closed in ledger after recut; now waits on child #$next") | .blocked_on=$next | (if .dep_wait_delivery == $dep then .dep_wait_delivery=$next | .unpark_condition=$(js "#$next delivered in the ledger or closed on GitHub") else . end)"; say "unit $id blocker #$dep dead (recut): repointed to child #$next"; return 0; fi
+  if [[ -n "$children" && "$all_delivered" == true ]]; then unblock_unit "$id" "#$dep recut; children delivered"; return 0; fi
+  if [[ -z "$children" ]]; then if jqf -e '.state | IN("tracker","concluded","released")' <<<"$st" >/dev/null; then unblock_unit "$id" "#$dep closed on purpose (tracker/spec parent)"; else dep_now to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"; fi; return 0; fi
+  return 1
 }
 dep_stopped_waiting_on() { # unit-id blocker [true|false, when the caller already read it] → 0 when the scheduler already released this unit from that blocker once
   [[ -z "${3:-}" ]] || { [[ "$3" == true ]]; return; }
