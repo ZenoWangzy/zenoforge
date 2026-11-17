@@ -621,6 +621,67 @@ test('historical ranges use current focused-test mappings', () => {
   }
 });
 
+test('replays the #1220 scheduler helper and caller shape without losing owner suites', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'focused-scheduler-history-'));
+  const changes = [
+    ['engine/mac-autopilot/scheduler.d/core.sh', 'tick_rest_usage_summary() { printf old; }\n', 'tick_rest_usage_summary() { printf new; }\n'],
+    ['engine/mac-autopilot/scheduler.d/ci-stuck-unqueued.sh', 'ci_stuck_unqueued_pending() { printf old; }\n', 'ci_stuck_unqueued_pending() { printf new; }\n'],
+    ['engine/mac-autopilot/scheduler.d/merge-lane.sh',
+      'source "$HERE/ci-stuck-unqueued.sh"\nmerge_entry() { printf old; }\nrun_merge_lane_pass() { ci_stuck_unqueued_pending; }\n',
+      'source "$HERE/ci-stuck-unqueued.sh"\nmerge_entry() { tick_rest_usage_summary; }\nrun_merge_lane_pass() { ci_stuck_unqueued_pending; }\n'],
+    ['engine/mac-autopilot/scheduler.sh',
+      'source "$HERE/scheduler.d/core.sh"\nsource "$HERE/scheduler.d/merge-lane.sh"\nmain() { :; }\n',
+      'source "$HERE/scheduler.d/core.sh"\nsource "$HERE/scheduler.d/merge-lane.sh"\nmain() { tick_rest_usage_summary; merge_entry; }\n'],
+    ['engine/mac-autopilot/scheduler.d/existing-walk-station.sh', 'existing_walk_tick_pass() { printf old; }\n', 'existing_walk_tick_pass() { printf new; }\n'],
+    ['engine/mac-autopilot/scheduler.d/harvest-station.sh', 'report_only_pr_requeue_harvest() { printf old; }\n', 'report_only_pr_requeue_harvest() { gh_run_list_cached; }\n'],
+    ['engine/mac-autopilot/scheduler.d/ci-admission.sh', 'ci_assign_wip() { printf old; }\n', 'ci_assign_wip() { gh_run_list_cached; }\n'],
+    ['engine/mac-autopilot/scheduler.d/ci-status.sh', 'ci_cancelled() { printf old; }\n', 'ci_cancelled() { gh_run_list_cached; }\n'],
+  ];
+  const suites = [
+    'engine/mac-autopilot/scheduler.d/existing-walk-station.test.sh',
+    'engine/mac-autopilot/scheduler.d/harvest-station.test.sh',
+    'engine/mac-autopilot/scheduler-gates.test.sh',
+    'engine/mac-autopilot/scheduler-gates-ci-slots.test.sh',
+    'engine/mac-autopilot/token-spend-gate.test.sh',
+    'engine/mac-autopilot/claude-implement-harvest.test.sh',
+    'engine/mac-autopilot/no-finding-repair-route.test.sh',
+    'engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh',
+    'engine/mac-autopilot/scheduler.d/ci-merge-admission-batch.test.sh',
+    'engine/mac-autopilot/scheduler-gates-merge-entry.test.sh',
+    'engine/mac-autopilot/scheduler-gates-merge-station.test.sh',
+  ];
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  try {
+    for (const [path, before] of changes) {
+      mkdirSync(dirname(join(repo, path)), { recursive: true });
+      writeFileSync(join(repo, path), before);
+    }
+    for (const path of suites) {
+      mkdirSync(dirname(join(repo, path)), { recursive: true });
+      writeFileSync(join(repo, path), '#!/usr/bin/env bash\n');
+    }
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.name', 'fixture');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('add', '.');
+    git('commit', '-qm', 'before #1220 scheduler changes');
+    const baseRef = git('rev-parse', 'HEAD');
+    for (const [path, , after] of changes) writeFileSync(join(repo, path), after);
+    git('add', '.');
+    git('commit', '-qm', '#1220 scheduler change shape');
+    const headRef = git('rev-parse', 'HEAD');
+    const changed = git('diff', '--name-only', '--no-renames', `${baseRef}..${headRef}`).split('\n');
+    const tracked = new Set(git('ls-tree', '-r', '--name-only', 'HEAD').split('\n'));
+    let selected;
+    assert.doesNotThrow(() => {
+      selected = focusedTestPaths(changed, tracked, { baseRef, headRef, mappingRef: 'HEAD', cwd: repo });
+    });
+    for (const suite of suites.slice(0, 7)) assert.ok(selected.includes(suite), suite);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('mail lifecycle changes always select the release integration regression', () => {
   const release = 'scripts/release/run-release.test.sh';
   for (const path of [
