@@ -21,6 +21,10 @@ echo '{"workers":[]}' > "$supervisor/autopi/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+gh_timeout() {
+  [[ "${2:-}" == api && "${3:-}" == rate_limit ]] || return 1
+  printf '%s\n' '{"remaining":5000,"reset":1790000000}'
+}
 
 td="$fixture/run"; mkdir -p "$td/alerts"
 A="$td"; LOG="$td/scheduler.log"; UNITS="$td/units.json"; WORKERS="$td/workers.json"
