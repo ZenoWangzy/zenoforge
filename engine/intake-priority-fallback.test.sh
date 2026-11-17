@@ -15,6 +15,7 @@ export FALLBACK_CLAUDE_LOG="$test_root/claude.log"
 export FALLBACK_CLAUDE_ARGS="$test_root/claude-args.log"
 export FALLBACK_ISSUES="$test_root/issues.json"
 export FALLBACK_CLAUDE_REPLY="$test_root/claude-reply.txt"
+export FALLBACK_JUDGE_LOG="$test_root/judge.log"
 export CLAUDE_QUOTA_SNAPSHOT_FILE="$test_root/no-quota.json"
 unset TYPESAFE_API_KEY TYPESAFE_ENV_FILE
 export AGENT_HOME="$test_root/agent"
@@ -50,9 +51,11 @@ STUB
 cat > "$test_root/ts-judge.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-cat > /dev/null
+input="$(cat)"
+printf '%s\n' "$(jq -r '.issue.number // empty' <<< "$input")" >> "$FALLBACK_JUDGE_LOG"
 case "$(cat "$FALLBACK_JUDGE_MODE")" in
   fallback) jq -cn '{status:"fallback",question_set:"intake-priority",reason:"credits-exhausted",candidate:null,confidence:null,decision:{priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false},adopted:false}' ;;
+  request-failed) jq -cn '{status:"fallback",question_set:"intake-priority",reason:"request-failed",candidate:null,confidence:null,decision:{priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false},adopted:false}' ;;
   answered) jq -cn '{status:"answered",question_set:"intake-priority",candidate:"{\"priority\":\"priority:low\",\"route\":\"none-fits\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}",confidence:0.99,decision:"{\"priority\":\"priority:low\",\"route\":\"none-fits\",\"duplicate\":false,\"duplicateCandidates\":[],\"stale\":false}",adopted:true}' ;;
 esac
 STUB
@@ -114,3 +117,41 @@ bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/ba
 jq -e '[.. | objects | select(has("number")) | .number] | index(9202) != null' "$test_root/backlog.json" >/dev/null || fail "(f) marked issue not re-judged"
 jq -e '[.. | objects | select(has("number")) | .number] | index(9201) == null' "$test_root/backlog.json" >/dev/null || fail "(f) plain labelled issue was re-judged"
 echo 'ok (f) --skip-labelled re-judges the marked issue and skips the plain labelled one'
+
+# (g) scheduler intake judges ready issues before tracker/skip-label filtering, and only once they have a priority label.
+source "$SCRIPT_DIR/mac-autopilot/scheduler.d/intake-steps.sh"
+source "$SCRIPT_DIR/mac-autopilot/scheduler.d/intake.sh"
+HERE="$SCRIPT_DIR/mac-autopilot"
+A="$test_root/autopi"
+LOG="$test_root/scheduler.log"
+STAMP=2026-11-16T00:00:00Z
+REPO=fixture/repo
+mkdir -p "$A/alerts"
+CFG='{"issue_intake":{"labels":["founder-test"],"product_labels":["ready-for-agent"]}}'
+jq -n '{intake_priority:{enabled:true},issue_intake:{labels:["founder-test"],product_labels:["ready-for-agent"]}}' > "$ZF_CONFIG_ROOT/night.json"
+jq -n '[
+  {number:9301,title:"Unlabelled ready issue",body:"",state:"OPEN",labels:[{name:"ready-for-agent"}]},
+  {number:9302,title:"Labelled ready issue",body:"",state:"OPEN",labels:[{name:"ready-for-agent"},{name:"priority:low"}]},
+  {number:9303,title:"Supervisor tracker",body:"",state:"OPEN",labels:[{name:"founder-test"},{name:"auto-filed"},{name:"tracker"}]}
+]' > "$FALLBACK_ISSUES"
+jqf() { jq "$@"; }
+say() { printf '%s\n' "$*" >> "$LOG"; }
+hotfix_lane_label() { printf 'hotfix-lane\n'; }
+chain_exit_trap() { trap "$1" EXIT; }
+gh_par_throttle() { :; }
+intake_gh_read() { [[ "$1:$2" == issue:list ]] || return 1; cat "$FALLBACK_ISSUES"; }
+printf '%s\n' request-failed > "$FALLBACK_JUDGE_MODE"
+printf '%s\n' '{"priority":"high","route":null}' > "$FALLBACK_CLAUDE_REPLY"
+: > "$FALLBACK_JUDGE_LOG"; : > "$FALLBACK_GH_WRITES"; : > "$FALLBACK_CLAUDE_LOG"
+export TYPESAFE_API_KEY=fixture-key
+rows="$(intake_candidates false)"
+[[ "$(cut -f1 <<< "$rows" | sort | paste -sd, -)" == '9301,9302,9303' ]] || fail "(g) intake candidates missing: $rows"
+[[ "$(sort -n "$FALLBACK_JUDGE_LOG" | paste -sd, -)" == '9301,9303' ]] || fail "(g) judged unexpected issues: $(cat "$FALLBACK_JUDGE_LOG")"
+grep -Fq 'labels[]=priority:high' "$FALLBACK_GH_WRITES" || fail "(g) request-failed fallback priority missing: $(cat "$FALLBACK_GH_WRITES")"
+grep -Fq 'labels[]=judge:fallback' "$FALLBACK_GH_WRITES" || fail "(g) request-failed fallback marker missing: $(cat "$FALLBACK_GH_WRITES")"
+[[ -s "$FALLBACK_CLAUDE_LOG" ]] || fail '(g) request-failed did not reach haiku fallback'
+jq 'map(if .number == 9301 or .number == 9303 then .labels += [{name:"priority:high"},{name:"judge:fallback"}] else . end)' \
+  "$FALLBACK_ISSUES" > "$FALLBACK_ISSUES.tmp" && mv "$FALLBACK_ISSUES.tmp" "$FALLBACK_ISSUES"
+intake_candidates false >/dev/null
+[[ "$(wc -l < "$FALLBACK_JUDGE_LOG" | tr -d ' ')" == 2 ]] || fail '(g) a priority-labelled issue was re-judged'
+echo 'ok (g) ready issue and tracker use request-failed fallback once; labelled issues are skipped'

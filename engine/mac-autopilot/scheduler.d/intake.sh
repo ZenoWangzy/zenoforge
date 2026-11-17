@@ -125,7 +125,7 @@ prefix = founder_reqs.configured_anomaly_prefix()
 for row in rows:
     row["_auto_filed"] = founder_reqs.is_auto_filed_ticket(row, prefix)
 json.dump(rows, sys.stdout, separators=(",", ":"))
-' | tee "$query_dir/rows.json" | jqf -r --argjson skip "$skip_labels" '
+' | tee "$query_dir/rows.json" | jqf -c '.[]' | while IFS= read -r row; do intake_priority_open_unlabelled_candidate "$row"; printf '%s\n' "$row"; done | jqf -sr --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
         | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
           elif ($n | index("critical-path")) then 2  # 批次 STATE 的关键路径（#4363）：排在普通功能前、遗留后

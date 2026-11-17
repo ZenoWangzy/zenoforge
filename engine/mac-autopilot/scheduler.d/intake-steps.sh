@@ -34,6 +34,15 @@ intake_skip_note() {
   { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$$" && mv -f -- "$f.tmp.$$" "$f"
 }
 intake_skip_refused_recut() { intake_skip_note "$1" "unit=$2 stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; }
+# Open candidates outside needs-triage can bypass run-triage; judge them before intake drops tracker labels.
+intake_priority_open_unlabelled_candidate() {
+  local issue="$1" number repo="${REPO:-${ZF_REPO:-}}"
+  jqf -e '(.state == "OPEN") and ([.labels[]? | if type == "string" then . else .name // "" end] as $labels
+    | ($labels | index("needs-triage") == null) and all($labels[]; startswith("priority:") | not))' <<<"$issue" >/dev/null || return 0
+  [[ -n "$repo" ]] || return 0
+  number="$(jqf -r '.number' <<<"$issue")" || return 0
+  printf '%s\n' "$issue" | bash "$HERE/../intake-priority.sh" triage "$number" ready-for-agent "$repo" 2>>"$LOG" || true
+}
 intake_skip_label_report() { # candidate rows JSON, skip labels JSON
   local n hit
   [[ -s "$1" ]] || return 0
