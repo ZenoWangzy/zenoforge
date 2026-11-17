@@ -221,3 +221,25 @@ for skip_reason in disabled missing-typesafe-key invalid-config; do
   ! grep -Fq 'intake skip issue' "$LOG" || fail "(k) $skip_reason logged an intake skip: $(cat "$LOG")"
 done
 echo 'ok (k) disabled, missing-key, and invalid-config outcomes are not stamped or logged as skipped issues'
+
+# (l) rate-limited label writes are retried next pass, while ordinary label failures retain the cooldown.
+export FALLBACK_PRIORITY_OUTPUT="$test_root/priority-output.txt" FALLBACK_PRIORITY_RC=0
+cat > "$test_root/failed-priority.sh" <<'STUB'
+#!/usr/bin/env bash
+cat "$FALLBACK_PRIORITY_OUTPUT"
+exit "$FALLBACK_PRIORITY_RC"
+STUB
+chmod +x "$test_root/failed-priority.sh"
+export ZF_INTAKE_PRIORITY_SCRIPT="$test_root/failed-priority.sh"
+LOG="$test_root/priority-backoff.log"
+printf 'intake-priority: label update failed for issue #9601\ngh: rest primary rate limit exhausted; shared backoff until epoch=1794902188\n' > "$FALLBACK_PRIORITY_OUTPUT"
+intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(l) rate-limited label failure returned non-zero'
+[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(l) rate-limited label failure was stamped'
+printf 'intake-priority: label update failed for issue #9601\n' > "$FALLBACK_PRIORITY_OUTPUT"
+intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(l) ordinary label failure returned non-zero'
+grep -Fq '9601 intake priority label not applied' "$A/intake-skip-noted.tsv" || fail '(l) ordinary label failure was not stamped'
+rm -f -- "$A/intake-skip-noted.tsv"
+FALLBACK_PRIORITY_RC=75
+intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(l) rc 75 label failure returned non-zero'
+[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(l) rc 75 label failure was stamped'
+echo 'ok (l) rate-limited label failures are unstamped; ordinary label failures retain the cooldown'
