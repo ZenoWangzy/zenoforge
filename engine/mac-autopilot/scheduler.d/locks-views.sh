@@ -33,7 +33,7 @@ scheduler_term_stop() {
   exit 143 # the EXIT trap (release_scheduler_lock) runs after the children are gone
 }
 acquire_scheduler_lock() {
-  local old start age owner="$BASHPID"
+  local old start age owner="$BASHPID" holder_phase="${SCHED_LOCK_HOLDER_PHASE:-unknown}"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
     old="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
     if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then
@@ -52,6 +52,7 @@ acquire_scheduler_lock() {
   # a rival that wrote its own pid after ours won the lock: this holder must not run
   [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$owner" ]] || return 1
   if start="$(coord_process_start_ticks "$owner" 2>/dev/null)"; then printf '%s\n' "$start" > "$SCHED_LOCK/start"; fi
+  printf '%s\t%s\n' "$owner" "$holder_phase" > "$SCHED_LOCK/holder-phase" 2>/dev/null || :
   SCHED_LOCK_HELD=true
   trap scheduler_term_stop TERM # stops this holder's children before the EXIT trap releases the lock
   lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
@@ -77,8 +78,15 @@ refill_lock_wait_spent() {
 refill_stopped() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
 }
-ledger_lock_holder_phase() { # the phase the lock holder is in, read from .tick-phase; set_unit reads it before its wait, REFILL-TIMEOUT after it
-  local p; p="$(cat "$A/.tick-phase" 2>/dev/null || true)"; printf '%s' "${p:-unknown}"
+ledger_lock_holder_phase() { # the holder's phase is recorded beside its pid when it takes the scheduler lock
+  local holder recorded_pid phase
+  holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
+  if [[ "$holder" =~ ^[0-9]+$ ]] && IFS=$'\t' read -r recorded_pid phase 2>/dev/null < "$SCHED_LOCK/holder-phase" \
+    && [[ "$recorded_pid" == "$holder" && -n "$phase" ]]; then
+    printf '%s (pid %s)' "$phase" "$holder"
+  else
+    printf 'unknown (pid %s, not the tick)' "${holder:-none}"
+  fi
 }
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
   local t0=$SECONDS

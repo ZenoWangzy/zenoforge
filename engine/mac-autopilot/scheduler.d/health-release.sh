@@ -43,6 +43,7 @@ log_reliability_breach() {
 # A refill runs beside a full tick, so each keeps its own file.
 phase_mark() {
   local f=.tick-phase
+  SCHED_LOCK_HOLDER_PHASE="$1"
   [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || f=.refill-phase
   # A station runs beside the tick and shares the file: its phases named the tick's phase in the kill line.
   [[ "${SCHED_STATION:-false}" != true ]] || return 0

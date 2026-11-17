@@ -156,17 +156,33 @@ await_rc() { # rc-file: poll for the waiter's exit code
   return 1
 }
 SCHED_LOCK_HELD=false
-mkdir "$SCHED_LOCK"; sleep 300 >/dev/null 2>&1 & holder=$!; echo "$holder" > "$SCHED_LOCK/pid" # a live foreign owner
-trap 'kill "$holder" 2>/dev/null || :; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
+holder_ready="$A/.ledger-lock-holder-ready"; rm -f "$holder_ready" "$SCHED_LOCK"
+echo cleanup_tick > "$A/.tick-phase"
+trap 'kill "$holder" 2>/dev/null || :; wait "$holder" 2>/dev/null || :; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
+(
+  SCHED_STATION=true SCHED_TICK_STEP_ACTIVE=true
+  phase_mark dispatch_pending
+  acquire_scheduler_lock || exit 1
+  printf '%s\n' "$BASHPID" > "$holder_ready"
+  sleep 300 >/dev/null 2>&1 & sleep_pid=$!
+  wait "$sleep_pid"
+) & holder=$!
+for _ in $(seq 100); do [[ -s "$holder_ready" ]] && break; sleep 0.02; done
+[[ -s "$holder_ready" ]] || fail 'the detached step did not acquire the ledger lock'
+holder_pid="$(cat "$SCHED_LOCK/pid")"
+[[ "$holder_pid" == "$(cat "$holder_ready")" ]] || fail 'the ledger lock pid does not name the detached step'
+[[ "$(cat "$A/.tick-phase")" == cleanup_tick ]] || fail 'the detached step changed the full tick phase'
 lock_rc="$A/.lock-wait-rc"; rm -f "$lock_rc"; : > "$LOG"
-echo 4242 > "$SCHED_LOCK/pid"; echo dispatch_supervisor_arbiters > "$A/.tick-phase"
 TICK_LOCAL_REFILL=true; SECONDS=$((limit - 5))
-( kill() { [[ "${1:-}" == -0 && "${2:-}" == 4242 ]] && return 0; builtin kill "$@"; }; rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
+( rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
 await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; wait "$waiter" 2>/dev/null || :; fail 'a refill past its deadline kept waiting for the ledger lock'; }
 [[ "$(cat "$lock_rc")" == 1 ]] || fail "a refill past its deadline must fail the lock wait (rc=$(cat "$lock_rc"))"
 grep -q 'ledger lock wait stopped' "$LOG" || fail 'the refused wait must say so in the log'
-grep -q 'holder=4242 holder_phase=dispatch_supervisor_arbiters' "$LOG" || fail 'the stop must name the ledger holder and full tick phase'
-echo "$holder" > "$SCHED_LOCK/pid"
+grep -Fq "holder=$holder_pid holder_phase=dispatch_pending (pid $holder_pid)" "$LOG" || fail 'the stop must name the detached step phase, not the tick cleanup phase'
+printf '4242\tstale_phase\n' > "$SCHED_LOCK/holder-phase"
+[[ "$(ledger_lock_holder_phase)" == "unknown (pid $holder_pid, not the tick)" ]] || fail 'a phase record for another pid must be reported as unknown'
+rm -f "$SCHED_LOCK/holder-phase"
+[[ "$(ledger_lock_holder_phase)" == "unknown (pid $holder_pid, not the tick)" ]] || fail 'a missing phase record must be reported as unknown'
 # The stop is counted once per refill, with the token bell.sh and engine-canary.sh match, and tells itself from a kill by "stop".
 for _ in 1 2; do rm -f "$lock_rc"; ( rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
   await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; fail 'a wait after the stop must fail at once'; }; wait "$waiter"; done
