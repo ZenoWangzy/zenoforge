@@ -164,12 +164,18 @@ run_case() {
   local initial_backend=${7-zc}
   local initial_model=${8:-gpt-6-luna} history=${10:-}
   local gate_queue_seconds=${12:-}
+  local zc_available=${13:-yes}
   local -a queue_override=()
   [[ -z $gate_queue_seconds ]] || queue_override=(WORKER_GATE_QUEUE_SECONDS="$gate_queue_seconds")
   local root="$test_root/$name/.scratch" wt="$test_root/$name/worktree" prompt="$test_root/$name/brief.md"
   local agent_home="$test_root/$name/agent-home" home="$test_root/$name/home" hold=${11:-}
   local key=${9:-test-$name} d rc schema=''
   mkdir -p "$root/tmp" "$root/luna" "$wt" "$agent_home" "$home"
+  if [[ $zc_available == yes ]]; then
+    mkdir -p "$root/zc-src/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$root/zc-src/bin/zcode"
+    chmod +x "$root/zc-src/bin/zcode"
+  fi
   if [[ $hold == active ]]; then
     printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$agent_home/zcode-exhausted-until"
   fi
@@ -217,6 +223,56 @@ run_prompt_case() {
   [[ $rc == "$expected_rc" ]] || fail "$name returned rc=$rc, expected rc=$expected_rc (details: $test_root/$name.stderr)"
 }
 
+run_auto_pick() {
+  local name=$1 root=$2 wt=$3 prompt=$4 home=$5 agent_home=$6 rc
+  if timeout --signal=TERM --kill-after=1 5 \
+    env -u WORKER_BACKEND -u WORKER_GATE_QUEUE_SECONDS HOME="$home" AGENT_HOME="$agent_home" \
+      WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+      FAKE_ZC_MODE=success FAKE_LUNA_MODE=success \
+      bash "$worker_script" "$name" "$wt" "$prompt" \
+      > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
+    :
+  else
+    rc=$?
+    fail "$name returned rc=$rc, expected rc=0 (details: $test_root/$name.stderr)"
+  fi
+}
+
+auto_root="$test_root/auto-missing-zc/.scratch"
+auto_home="$test_root/auto-missing-zc/home"
+auto_agent_home="$test_root/auto-missing-zc/agent-home"
+auto_worktree="$test_root/auto-missing-zc/worktree"
+auto_prompt="$test_root/auto-missing-zc/brief.md"
+mkdir -p "$auto_root/tmp" "$auto_root/luna" "$auto_home" "$auto_agent_home" "$auto_worktree"
+git -C "$auto_worktree" init -q
+git -C "$auto_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'same brief for both backends\n' > "$auto_prompt"
+[[ ! -e "$auto_root/zc-src" && ! -e "$auto_agent_home/zcode-exhausted-until" &&
+   ! -e "$auto_root/tmp/zc-breaker" && ! -e "$auto_root/tmp/luna-breaker" ]] || fail 'missing zc fixture has a zc install, hold marker, or breaker file'
+missing_zc_picks=''
+for pick in 1 2 3 4; do
+  name="auto-missing-zc-$pick"
+  run_auto_pick "$name" "$auto_root" "$auto_worktree" "$auto_prompt" "$auto_home" "$auto_agent_home"
+  picked=$(cat "$auto_root/luna/$name/backend")
+  missing_zc_picks+="${missing_zc_picks:+,}$picked"
+done
+[[ $missing_zc_picks == luna,luna,luna,luna ]] || fail "automatic picks chose $missing_zc_picks with zcode missing; expected luna every time"
+for pick in 1 2 3 4; do
+  name="auto-missing-zc-$pick"
+  [[ $(wc -l < "$test_root/$name.stderr") == 1 ]] || fail "$name did not print exactly one missing-zcode reroute line"
+  assert_file_contains "$test_root/$name.stderr" "worker: zcode executable missing: $auto_root/zc-src/bin/zcode; using luna instead of zc"
+done
+printf 'PASS automatic picks avoid missing zcode and name the missing executable\n'
+
+stub_root="$test_root/auto-stub-zc/.scratch"
+mkdir -p "$stub_root/zc-src/bin" "$stub_root/tmp" "$stub_root/luna"
+printf '#!/bin/sh\nexit 0\n' > "$stub_root/zc-src/bin/zcode"
+chmod +x "$stub_root/zc-src/bin/zcode"
+run_auto_pick auto-stub-zc "$stub_root" "$auto_worktree" "$auto_prompt" "$auto_home" "$auto_agent_home"
+[[ $(cat "$stub_root/luna/auto-stub-zc/backend") == zc &&
+   $(cat "$stub_root/luna/auto-stub-zc/attempt-backend") == zc ]] || fail 'automatic pick did not choose executable zcode again'
+printf 'PASS automatic pick can choose zc when its executable is present\n'
+
 run_case explicit-zc-hold 0 success success 8 4 zc gpt-6-luna '' '' active
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'explicit zc ignored the active quota hold'
 [[ $(wc -l < "$test_root/explicit-zc-hold.stderr") == 1 ]] || fail 'explicit zc hold did not write exactly one stderr line'
@@ -233,6 +289,19 @@ printf 'PASS luna failure during quota hold exhausts both backends without start
 run_case explicit-zc-no-hold 0 success success 8 4 zc
 [[ $(cat "$CASE_DIR/backend") == zc && $(cat "$CASE_DIR/attempt-backend") == zc ]] || fail 'explicit zc changed backend without a quota hold'
 printf 'PASS explicit zc stays on zc without a quota hold\n'
+
+run_case explicit-zc-missing 0 success success 8 4 zc gpt-6-luna '' '' '' '' no
+[[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'explicit zc started without its executable'
+[[ $(wc -l < "$test_root/explicit-zc-missing.stderr") == 1 ]] || fail 'explicit missing zc did not print exactly one reroute line'
+[[ $(cat "$test_root/explicit-zc-missing.stderr") == "worker: zcode executable missing: $test_root/explicit-zc-missing/.scratch/zc-src/bin/zcode; using luna instead of zc" ]] || fail 'explicit missing zc wrote the wrong reroute line'
+printf 'PASS explicit zc reroutes to luna when its executable is missing\n'
+
+run_case luna-failover-missing-zc 75 success fatal 8 4 luna gpt-6-luna '' '' '' '' no
+[[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'luna failover started missing zc'
+assert_file_contains "$CASE_DIR/failover" "backend=zc skipped; reason=zcode executable missing: $test_root/luna-failover-missing-zc/.scratch/zc-src/bin/zcode"
+[[ $(wc -l < "$test_root/luna-failover-missing-zc.stderr") == 1 ]] || fail 'missing-zc failover did not print exactly one reason line'
+assert_file_contains "$test_root/luna-failover-missing-zc.stderr" "zcode executable missing: $test_root/luna-failover-missing-zc/.scratch/zc-src/bin/zcode"
+printf 'PASS luna failover skips missing zcode\n'
 
 run_case agent-home-marker 0 success success 8 4 '' gpt-6-luna '' '' active
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'worker did not find the quota marker under AGENT_HOME'
