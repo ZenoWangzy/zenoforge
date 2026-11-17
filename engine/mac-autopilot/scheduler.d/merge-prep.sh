@@ -309,14 +309,27 @@ retry_blocked_units() { # BLOCK 只在 head 变了，或 main 已推进且该单
 # 2026-11-08 PR#5707: run-release.test.sh tests were red on main and fixed at 11491f2f88; PRs whose base lacks the fix stayed red
 # and nothing rebased them (head ran update-branch by hand on 4). A ready-to-merge PR with a completed failed check that is behind
 # main and mergeable gets one server-side update-branch before any repair, rerun or wait: a stale base is refreshed before we spend a
-# repair on it. One hop per unit and failed-check set (.behind_main_hops): update-branch itself makes a new head, so a head-SHA key
-# cannot stop a loop. The refreshed head failing the same checks again takes the existing paths unchanged.
+# repair on it. The original .behind_main_hops key tracked failed-check sets because update-branch changes the head, so a head-SHA key
+# could not stop a loop; a red on the new head then took the existing paths.
+# 2026-11-17 PR#6620 took three update-branch hops in 81 minutes; all three update-on-failure paths now share one hop per fresh review approval.
+ci_stale_base_hop_available() { # id
+  jq -e --arg id "$1" '
+    any(.units[]; .id == $id and
+      (if (.stale_base_hop_used | type) == "boolean" then .stale_base_hop_used == false
+       else
+         (.history // []) as $history
+         | ([$history | to_entries[] | select(.value.stage == "review-approve") | .key] | max // -1) as $approval
+         | all($history | to_entries[] | select(.key > $approval);
+             .value.stage | IN("ci-red-update-branch", "ci-red-behind-main-update", "ci-stale-base-update") | not)
+       end))
+  ' "$UNITS" >/dev/null 2>&1
+}
 ci_red_behind_main_hop() { # id pr head fails-csv -> 0 = branch updated
   [[ -n "$4" ]] || return 1
-  jq -e --arg id "$1" --arg k "$4" '[.units[] | select(.id == $id) | (.behind_main_hops // [])[]] | index($k) | not' "$UNITS" >/dev/null 2>&1 || return 1
+  ci_stale_base_hop_available "$1" || return 1
   pr_behind_main "$2" "$3" || return 1
   [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]] || return 1
   ci_update_branch "$2" "$3" || return 1
-  set_unit "$1" "$(hist ci-red-behind-main-update "$4 failed on a head behind main $MAIN_HEAD") | .behind_main_hops = ((.behind_main_hops // []) + [$(js "$4")] | unique) | .ci_rerun_sha=$(js "$3")"
+  set_unit "$1" "$(hist ci-red-behind-main-update "$4 failed on a head behind main $MAIN_HEAD") | .stale_base_hop_used=true | .ci_rerun_sha=$(js "$3")"
   say "merge skipped PR#$2 (check failed: $4; head behind main, stale base) -> update-branch at $3, CI reruns once"
 }

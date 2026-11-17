@@ -322,11 +322,11 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
                     '{status:"pending",sha:$sha,pr_head:$pr_head,tree:$tree,label:$label,workdir:$workdir,report:$report,stages:$stages} + (if $reason=="" then {} else {reason:$reason} end)')"
                   # #4656（裁决 architecture-ships-evals-alongside）：架构面改动照常批准进 ready-to-merge，
                   # eval_gate 只是并行报告任务的派发凭据，不是交付前置。
-                  set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .ready_since=(.ready_since // $NOW_EPOCH) | .eval_gate=$eval_gate | .stage=\"ready-to-merge\""
+                  set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .stale_base_hop_used=false | del(.behind_main_hops,.stale_hops) | .ready_since=(.ready_since // $NOW_EPOCH) | .eval_gate=$eval_gate | .stage=\"ready-to-merge\""
                   post_approved_status "$unit" "$wprhead"
                   say "review approved unit=$unit sha=$wsha; eval reporting stages=$(tr ' ' ',' <<<"${eval_stages% }") runs alongside delivery"
                 else
-                  set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .ready_since=(.ready_since // $NOW_EPOCH) | del(.eval_gate) | .stage=\"ready-to-merge\""
+                  set_unit "$unit" "$(hist review-approve "$wsha") | $reviewed | .approved_sha=$(js "$wsha") | .stale_base_hop_used=false | del(.behind_main_hops,.stale_hops) | .ready_since=(.ready_since // $NOW_EPOCH) | del(.eval_gate) | .stage=\"ready-to-merge\""
                   post_approved_status "$unit" "$wprhead"
                 fi
               else

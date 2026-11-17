@@ -176,27 +176,84 @@ SH
   eval "$pr_view_saved"; eval "$ci_update_branch_saved"; eval "$pr_behind_saved"
   unset GH_MERGEABLE_STATE GH_PR_TABLE
   # 2026-11-08 PR#5707: a PR red on a check, behind main, has a base from before main's fix (the release gate runs on PRs only, so
-  # main has no check of that name). One update-branch per unit and failed-check set, before repair or wait; then the old paths.
+  # main has no check of that name). Its one stale-base hop is shared across check sets and renewed by a fresh review approval.
   UPDATE_BRANCH_CALLS="$fixture/behind-main-update.calls"; : > "$UPDATE_BRANCH_CALLS"
   ci_update_branch() { printf '%s %s\n' "$1" "$2" >> "$UPDATE_BRANCH_CALLS"; return 0; }
   pr_behind_main() { return 0; }
   pr_view() { case "$2" in state) echo OPEN ;; headRefOid) echo "$GH_HEAD" ;; mergeable) echo MERGEABLE ;; mergeCommit) echo "$GH_MERGE_SHA" ;; *) echo "" ;; esac; }
-  gate='Release suites PR gate (release-entry shard)'
+  gate='Release suites PR gate (release-entry shard)'; gate_b='Touched packages PR gate'; gate_c='Required CI gates'
+  STALE_BASE_ROUTING=true
   GH_HEAD="$H1"; GH_MERGES=()
   GH_CHECKS="$(jq -cn --arg n "$gate" '[{name:$n,bucket:"fail"},{name:"contract",bucket:"pass"}]')"
-  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-behind-main",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-behind-main",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,stale_base_hop_used:false,history:[]}]}')"
   : > "$LOG"; run_merge_lane || :
   [[ "$(cat "$UPDATE_BRANCH_CALLS")" == "11 $H1" && ${#GH_MERGES[@]} == 0 && "$(field pr-behind-main .stage)" == ready-to-merge \
       && "$(field pr-behind-main '.history[-1].stage')" == ci-red-behind-main-update ]] || fail 'a red PR behind main did not get one update-branch'
   grep -Fq "check failed: $gate; head behind main" "$LOG" || fail 'the stale-base update lacks the check failed log line'
-  # The refreshed head (new SHA, still behind a moving main) fails the same check: no second update-branch; the failure is named.
+  # A clean update-branch carries approval without renewing the spent budget; a different test-red check takes repair.
+  approval_carries_saved="$(declare -f approval_carries)"
+  approval_carries() { [[ "$1" == 11 && "$2" == "$H1" && "$3" == "$H2" ]]; }
+  ci_test_red_checks_saved="$(declare -f ci_test_red_checks)"; ci_triage_saved="$(declare -f ci_triage)"
+  cancel_branch_runs_saved="$(declare -f cancel_branch_runs)"
+  ci_test_red_checks() { printf '%s\n%s\n' "$gate_b" '{"pipelineSuites":["engine/example.test.sh"]}'; }
+  ci_triage() { printf 'stale-base\n'; }
+  cancel_branch_runs() { :; }
   : > "$UPDATE_BRANCH_CALLS"; GH_HEAD="$H2"
-  GH_CHECKS="$(jq -cn --arg n "$gate" '[{name:$n,bucket:"fail"},{name:"Required CI gates",bucket:"pending"}]')"
-  jq -c --arg sha "$H2" '.units[0].approved_sha=$sha' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+  GH_CHECKS="$(jq -cn --arg n "$gate_b" '[{name:$n,bucket:"fail"}]')"
   : > "$LOG"; run_merge_lane || :
-  [[ ! -s "$UPDATE_BRANCH_CALLS" ]] || fail 'the refreshed head got a second update-branch for the same failed check'
+  [[ ! -s "$UPDATE_BRANCH_CALLS" && "$(field pr-behind-main .stage)" == repair-pending \
+      && "$(field pr-behind-main .stale_base_hop_used)" == true \
+      && "$(field pr-behind-main '.approved_sha // "none"')" == none ]] \
+    || fail "a different test-red check after a clean carry did not take the non-stale repair path (updates=$(cat "$UPDATE_BRANCH_CALLS" 2>/dev/null), stage=$(field pr-behind-main .stage), used=$(field pr-behind-main '.stale_base_hop_used // "none"'), approved=$(field pr-behind-main '.approved_sha // "none"'), history=$(field pr-behind-main '.history | map(.stage) | join(",")'), log=$(tail -n 4 "$LOG" | tr '\n' ';'))"
+  grep -Fq "approval carried PR#11 $H1 -> $H2 (clean update-branch merge)" "$LOG" || fail 'the clean update-branch did not carry approval'
+  grep -Fq 'merge skipped PR#11 (tests failed in:' "$LOG" || fail 'the spent hop did not route test failures to repair'
+
+  # A real fresh review approval renews the budget; clean carries above do not.
+  fresh_units="$(jq -c --arg sha "$H2" '.units[0].stage="rereview" | .units[0].reviewed_sha=$sha | .units[0].reviewed_pr_head=$sha | .units[0].approved_sha=null | {units:[.units[0]]}' "$UNITS")"
+  units "$fresh_units"
+  fresh_report=stale-base-review.md; fresh_log=stale-base-review.worker.log
+  printf 'VERDICT: READY\n' > "$SUP/$fresh_report"; : > "$SUP/$fresh_log"
+  jq -cn --arg report "$fresh_report" --arg log "$fresh_log" --arg sha "$H2" \
+    '{workers:[{pid:42424242,unit:"pr-behind-main",type:"rereview",log:$log,report:$report,sha:$sha,pr_head:$sha,workdir:"/nonexistent",started:"2026-11-17T00:00:00Z"}]}' > "$WORKERS"
+  harvest_worker_alive_saved="$(declare -f harvest_worker_alive)"; harvest_scope_stop_saved="$(declare -f harvest_scope_stop)"
+  tick_prs_prime_saved="$(declare -f tick_prs_prime)"; tick_prs_changed_saved="$(declare -f tick_prs_changed)"
+  post_approved_status_saved="$(declare -f post_approved_status)"
+  decision_log_gate_reason_saved="$(declare -f decision_log_gate_reason)"
+  how_why_gate_reason_saved="$(declare -f how_why_gate_reason)"
+  incident_report_gate_reason_saved="$(declare -f incident_report_gate_reason)"
+  harvest_worker_alive() { return 1; }; harvest_scope_stop() { :; }
+  tick_prs_prime() { :; }; tick_prs_changed() { :; }; post_approved_status() { :; }
+  decision_log_gate_reason() { :; }; how_why_gate_reason() { :; }; incident_report_gate_reason() { :; }
+  harvest_workers || :
+  [[ "$(field pr-behind-main .stage)" == ready-to-merge \
+      && "$(field pr-behind-main '.history[-1].stage')" == review-approve \
+      && "$(field pr-behind-main .stale_base_hop_used)" == false ]] \
+    || fail "fresh review approval did not renew the stale-base hop budget (stage=$(field pr-behind-main .stage), used=$(field pr-behind-main '.stale_base_hop_used // "none"'), history=$(field pr-behind-main '.history | map(.stage) | join(",")'), workers=$(jq -c . "$WORKERS"), log=$(tail -n 5 "$LOG" | tr '\n' ';'))"
+  : > "$UPDATE_BRANCH_CALLS"; GH_HEAD="$H2"
+  GH_CHECKS="$(jq -cn --arg n "$gate_c" '[{name:$n,bucket:"fail"}]')"
+  run_merge_lane || :
+  [[ "$(cat "$UPDATE_BRANCH_CALLS")" == "11 $H2" && "$(field pr-behind-main .stale_base_hop_used)" == true \
+      && "$(field pr-behind-main '.history[-1].stage')" == ci-red-behind-main-update ]] || fail 'a fresh review approval did not get one stale-base hop'
+  eval "$approval_carries_saved"; eval "$ci_test_red_checks_saved"; eval "$ci_triage_saved"; eval "$cancel_branch_runs_saved"
+  eval "$harvest_worker_alive_saved"; eval "$harvest_scope_stop_saved"; eval "$tick_prs_prime_saved"; eval "$tick_prs_changed_saved"; eval "$post_approved_status_saved"
+  eval "$decision_log_gate_reason_saved"; eval "$how_why_gate_reason_saved"; eval "$incident_report_gate_reason_saved"
+
+  # A spent hop with other checks pending still waits on the same ordinary non-stale path.
+  GH_HEAD="$H2"; GH_CHECKS="$(jq -cn --arg n "$gate" '[{name:$n,bucket:"fail"},{name:"Required CI gates",bucket:"pending"}]')"
+  units "$(jq -cn --arg sha "$H2" '{units:[{id:"pr-behind-wait",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,stale_base_hop_used:true,history:[]}]}')"
+  : > "$UPDATE_BRANCH_CALLS"; : > "$LOG"; run_merge_lane || :
+  [[ ! -s "$UPDATE_BRANCH_CALLS" && "$(field pr-behind-wait .stage)" == ready-to-merge ]] || fail 'a spent stale-base hop updated a branch while other checks were pending'
   grep -Fq "merge skipped PR#11 (check failed: $gate; other checks still pending)" "$LOG" || fail 'a completed failure beside a pending check lacks the check failed label'
   ! grep -Fq 'pending or unavailable' "$LOG" || fail 'a completed failure was logged as pending or unavailable'
+
+  # The third update-on-failure path shares the same budget and falls through to its ordinary rerun.
+  units "$(jq -cn --arg sha "$H2" --arg previous "$H1" '{units:[{id:"pr-ci-red-budget",pr:12,stage:"ready-to-merge",approved_sha:$sha,stale_base_hop_used:true,ci_rerun_sha:$previous,history:[]}]}')"
+  GH_RUNS='[{"databaseId":77,"conclusion":"failure"}]'; GH_RERUNS=(); : > "$UPDATE_BRANCH_CALLS"
+  ci_red pr-ci-red-budget 12 "$H2" "$gate_c"
+  [[ ! -s "$UPDATE_BRANCH_CALLS" && "$(field pr-ci-red-budget '.history[-1].stage')" == ci-red-rerun \
+      && "$(field pr-ci-red-budget .ci_rerun_sha)" == "$H2" \
+      && "${GH_RERUNS[*]:-}" == *'run rerun 77 --failed'* ]] || fail 'ci_red ignored the shared stale-base hop budget'
+
   # Not behind main: no hop, the existing red path runs (first red reruns the failed run).
   pr_behind_main() { return 1; }
   GH_HEAD="$H1"; GH_RERUNS=()
