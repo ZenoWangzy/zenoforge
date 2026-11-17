@@ -181,7 +181,7 @@ rows="$(intake_candidates false 0 0)"
 grep -Fq 'intake priority judges deferred=5' "$LOG" || fail "(i) deadline did not count deferred candidates: $(cat "$LOG")"
 echo 'ok (i) an expired intake budget defers all candidate judges'
 
-# (j) a failed judge is stamped through intake_skip_note and is not retried within six hours.
+# (j) an attempted judge that applies no label is stamped silently and is not retried within six hours.
 jq -n '[{number:9501,title:"Judge failure",body:"",state:"OPEN",labels:[{name:"ready-for-agent"}]}]' > "$FALLBACK_ISSUES"
 printf '%s\n' fallback > "$FALLBACK_JUDGE_MODE"
 printf '%s\n' 'not json' > "$FALLBACK_CLAUDE_REPLY"
@@ -192,4 +192,32 @@ intake_candidates false >/dev/null
 intake_candidates false >/dev/null
 [[ "$(wc -l < "$FALLBACK_JUDGE_LOG" | tr -d ' ')" == 1 ]] || fail "(j) failed judge retried within six hours: $(cat "$FALLBACK_JUDGE_LOG")"
 grep -Fq '9501 intake priority label not applied' "$A/intake-skip-noted.tsv" || fail '(j) failed judge was not stamped'
+! grep -Fq 'intake skip issue' "$LOG" || fail "(j) non-applied judge was logged as a skipped issue: $(cat "$LOG")"
 echo 'ok (j) an issue without an applied label is not judged again within six hours'
+
+# (k) outcomes that did not reach a judge do not get a cooldown stamp or skip log.
+for skip_reason in disabled missing-typesafe-key invalid-config; do
+  case "$skip_reason" in
+    disabled)
+      export TYPESAFE_API_KEY=fixture-key
+      jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
+      ;;
+    missing-typesafe-key)
+      unset TYPESAFE_API_KEY TYPESAFE_ENV_FILE
+      jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
+      ;;
+    invalid-config)
+      export TYPESAFE_API_KEY=fixture-key
+      printf '%s\n' 'not json' > "$ZF_CONFIG_ROOT/night.json"
+      ;;
+  esac
+  rm -f -- "$A/intake-skip-noted.tsv"
+  : > "$FALLBACK_JUDGE_LOG"
+  LOG="$test_root/skip-$skip_reason.log"
+  intake_candidates false >/dev/null
+  grep -Fq "intake-priority: skipped ($skip_reason)" "$LOG" || fail "(k) missing skipped status $skip_reason: $(cat "$LOG")"
+  [[ ! -e "$A/intake-skip-noted.tsv" ]] || fail "(k) $skip_reason created a cooldown stamp"
+  [[ ! -s "$FALLBACK_JUDGE_LOG" ]] || fail "(k) $skip_reason reached the judge: $(cat "$FALLBACK_JUDGE_LOG")"
+  ! grep -Fq 'intake skip issue' "$LOG" || fail "(k) $skip_reason logged an intake skip: $(cat "$LOG")"
+done
+echo 'ok (k) disabled, missing-key, and invalid-config outcomes are not stamped or logged as skipped issues'
