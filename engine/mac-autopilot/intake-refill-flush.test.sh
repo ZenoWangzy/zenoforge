@@ -32,11 +32,17 @@ live_workers() { printf '0\n'; }
 startable_pending_count() { printf '0\n'; }
 intake_footprint_snapshot() { printf '[]\n'; }
 predecessor_candidates() { :; }
-intake_candidates() { printf '1\tpr\tt\t[]\t\n2\tpr\tt\t[]\t\n3\tpr\tt\t[]\t\n4\tpr\tt\t[]\t\n'; }
+intake_candidates() {
+  if [[ "${TERMINAL_ROW_ONLY:-}" == true ]]; then printf '1\tpr\tt\t[]\t\n'; else printf '1\tpr\tt\t[]\t\n2\tpr\tt\t[]\t\n3\tpr\tt\t[]\t\n4\tpr\tt\t[]\t\n'; fi
+}
 hotfix_issue_numbers() { return 0; }
 tick_prs_prime() { :; }
 tick_prs() { return 1; }
 intake_gh_read() { printf '[]\n'; }
+closed_unit_calls="$fixture/closed-unit-calls"
+intake_reopen_episodes() { :; }
+intake_ruling_episodes() { :; }
+intake_closed_unit_rows() { printf '%s\n' "$*" >> "$closed_unit_calls"; }
 # The census is partial: no PR list, so every row with an episode is a census_partial row.
 for n in 1 2 3 4; do printf '{"state":"ready-for-agent","scheduler_handoff":{"episode":"e%s"}}\n' "$n" > "$AGENT_HOME/state/$n.json"; done
 updates="$fixture/updates"
@@ -76,5 +82,16 @@ jq -e '[.units[] | select(.issue <= 2)] | all(.hold_handoff_waiting == true and 
 jq -e '[.units[] | select(.issue >= 3 and .issue <= 4)] | all((has("hold_handoff_waiting") or has("hold_handoff_wait_issues")) | not)' "$UNITS" >/dev/null \
   || { echo 'not ok - budget stop marked rows it did not reach' >&2; jq -c '.units[]' "$UNITS" >&2; exit 1; }
 [[ "$(grep -c 'IDLE-CAPACITY' "$alerts" || true)" == 1 ]] || { echo 'not ok - idle alert was not deduplicated within the hour' >&2; cat "$alerts" >&2; exit 1; }
+
+# The detached register step owns terminal-row work; refill only reports that it deferred it.
+reset_units
+jq '(.units[] | select(.issue == 1)) |= (.stage = "closed" | .hold_handoff_episode = "e1")' "$UNITS" > "$UNITS.tmp" && mv -f "$UNITS.tmp" "$UNITS"
+rm -f "$UNITS.view" "$closed_unit_calls"
+TERMINAL_ROW_ONLY=true register_new_issues 0 true
+[[ ! -e "$closed_unit_calls" ]] || { echo 'not ok - refill ran closed-unit handling' >&2; exit 1; }
+grep -Fq 'intake closed units deferred to the register step count=1 ids=1' "$LOG" || { echo 'not ok - refill did not log deferred closed-unit handling' >&2; cat "$LOG" >&2; exit 1; }
+rm -f "$closed_unit_calls"
+TERMINAL_ROW_ONLY=true register_new_issues 0 false
+[[ "$(cat "$closed_unit_calls")" == 1 ]] || { echo 'not ok - non-refill intake did not run closed-unit handling' >&2; exit 1; }
 
 echo 'ok - refill intake writes its census_partial wait marks in one ledger update, also on a budget stop'
