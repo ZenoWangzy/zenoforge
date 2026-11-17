@@ -166,7 +166,7 @@ mixed_fixture() {
   printf '{"workers":[]}\n' > "$A/workers.json"
   DEP_DELIVERED_CACHE=()
   CACHE_ROWS=([102]=$'CLOSED\t' [101]=$'MERGED\t' [103]=$'OPEN\t' [106]=$'OPEN\t' [105]=$'OPEN\t' [107]=$'OPEN\t' [108]=$'OPEN\t' [110]=$'OPEN\t'
-    [111]=$'OPEN\t' [112]=$'OPEN\troadmap-epic' [113]=$'OPEN\t' [115]=$'CLOSED\t' [116]=$'CLOSED\t' [117]=$'OPEN\t' [118]=$'OPEN\t' [119]=$'MERGED\t'
+    [111]=$'OPEN\t' [112]=$'OPEN\troadmap-epic' [113]=$'OPEN\t' [115]=$'CLOSED\t' [116]=$'CLOSED\t' [117]=$'OPEN\t' [118]=$'OPEN\t' [119]=$'MERGED\t' [109]=$'OPEN\t'
     [120]=$'OPEN\t' [121]=$'CLOSED\t' [131]=$'OPEN\t' [140]=$'OPEN\t' [130]=$'CLOSED\t' [133]=$'CLOSED\t' [132]=$'CLOSED\t\tCLOSED\tNOT_PLANNED' [150]=$'CLOSED\t')
 }
 snapshot() { # normalised ledger, log without the timing line, and gh calls
@@ -252,9 +252,9 @@ jq -e '.units[] | select(.id=="issue-9692") | .stage=="supervisor-review" and .d
   || fail "an open needs-owner issue with no unit must use dep-dead proof: $(jq -c '.units[] | select(.id=="issue-9692")' "$UNITS")"
 
 dead_root_fixture \
-  "$(unit issue-9693 9693 parked '.parked_reason="dep-dead-repeat"')" \
+  "$(unit issue-9693 9693 parked '.parked_reason="on-hold"')" \
   "$(unit issue-9694 9694 blocked-external '.blocked_on=9693 | .dep_wait_delivery=9693 | .body_blocked_by=[9693]')"
-CACHE_ROWS=([9693]=$'OPEN\t' [9694]=$'OPEN\t')
+CACHE_ROWS=([9693]=$'OPEN\ton-hold\tOPEN\t' [9694]=$'OPEN\t')
 run_counted
 jq -e '.units[] | select(.id=="issue-9694") | .stage=="supervisor-review" and .dep_dead_proved==9693 and .blocked_on==null and any(.history[]; .stage=="dep-dead-proved")' "$UNITS" >/dev/null \
   || fail "a parked root must use dep-dead proof: $(jq -c '.units[] | select(.id=="issue-9694")' "$UNITS")"
@@ -271,11 +271,12 @@ jq -e '.units[] | select(.id=="issue-9622") | .stage=="blocked-external" and .bl
 # recut queue nor an expiring hold is proof that its dependents are dead.
 dead_root_fixture \
   "$(unit issue-9695 9695 blocked-external '.blocked_on=9621 | .dep_wait_delivery=9621 | .body_blocked_by=[9621]')" \
-  "$(unit issue-9696 9696 blocked-external '.blocked_on=9622 | .dep_wait_delivery=9622 | .body_blocked_by=[9622]')"
-CACHE_ROWS=([9621]=$'OPEN\tneeds-recut\tOPEN\t' [9622]=$'OPEN\ton-hold\tOPEN\t' [9695]=$'OPEN\t' [9696]=$'OPEN\t')
+  "$(unit issue-9696 9696 blocked-external '.blocked_on=9622 | .dep_wait_delivery=9622 | .body_blocked_by=[9622]')" \
+  "$(unit issue-9697 9697 blocked-external '.blocked_on=9624 | .dep_wait_delivery=9624 | .body_blocked_by=[9624]')"
+CACHE_ROWS=([9621]=$'OPEN\tneeds-recut\tOPEN\t' [9622]=$'OPEN\ton-hold\tOPEN\t' [9624]=$'OPEN\topt-lane,pipeline-system\tOPEN\t' [9695]=$'OPEN\t' [9696]=$'OPEN\t' [9697]=$'OPEN\t')
 run_counted
-jq -e '[.units[] | select(.id=="issue-9695" or .id=="issue-9696") | .stage=="blocked-external"] | all' "$UNITS" >/dev/null \
-  || fail 'a no-unit root on the needs-recut route or a live hold must remain blocked'
+jq -e '[.units[] | select(.id=="issue-9695" or .id=="issue-9696" or .id=="issue-9697") | .stage=="blocked-external"] | all' "$UNITS" >/dev/null \
+  || fail 'no-unit roots on recut, hold or opt-lane routes must remain blocked'
 
 # A closed GitHub issue retires an unchanged supervisor-review unit once.
 CACHE_ROWS=([5974]=$'CLOSED\t')
