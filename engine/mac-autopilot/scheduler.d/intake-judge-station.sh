@@ -114,7 +114,7 @@ intake_judge_station_candidates() {
 }
 
 intake_judge_station_worker() { # issue file, result dir, repo, stale seconds
-  local issue_file="$1" result_dir="$2" repo="$3" stale_after="$4" issue number judged=0 applied=0 fallback=0 deferred=0 rc=0
+  local issue_file="$1" result_dir="$2" repo="$3" stale_after="$4" issue number judged=0 applied=0 fallback=0 deferred=0 rc=0 labels gh_limit="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"
   issue="$(cat -- "$issue_file")" || return 1
   number="$(jqf -r '.number' <<<"$issue")" || return 1
   if ! intake_judge_claim_begin "$number" "$stale_after"; then
@@ -124,8 +124,8 @@ intake_judge_station_worker() { # issue file, result dir, repo, stale seconds
     intake_priority_judge_issue "$issue" "$number" "$repo" || rc=$?
     [[ "$INTAKE_PRIORITY_JUDGE_APPLIED" != true ]] || applied=1
     if [[ "$INTAKE_PRIORITY_JUDGE_APPLIED" == true ]]; then
-      local labels
-      labels="$(gh issue view "$number" --repo "$repo" --json labels 2>/dev/null)" || labels=""
+      [[ "$gh_limit" =~ ^[1-9][0-9]*$ ]] || gh_limit=120
+      labels="$(gh_timeout -k 1 "${gh_limit}s" issue view "$number" --repo "$repo" --json labels 2>/dev/null)" || labels=""
       jqf -e 'any(.labels[]?; if type == "string" then . == "judge:fallback" else .name == "judge:fallback" end)' <<<"$labels" >/dev/null 2>&1 \
         && INTAKE_PRIORITY_JUDGE_FALLBACK=true
     fi
@@ -189,7 +189,8 @@ intake_judge_station_pass() {
           printf '%s\0' "${issue_files[@]}" | A="$A" HERE="$HERE" LOG="$LOG" STAMP="$STAMP" REPO="$repo" \
             INTAKE_JUDGE_RESULT_DIR="$result_dir" INTAKE_JUDGE_STALE_SECONDS="$stale_after" \
             xargs -0 -n 1 -P "$parallel" bash -c '
-              source "$HERE/scheduler.d/core.sh" || exit 1
+              jqf() { command jq "$@"; }
+              source "$HERE/../lib.d/transport.sh" || exit 1
               source "$HERE/scheduler.d/intake-steps.sh" || exit 1
               source "$HERE/scheduler.d/intake-judge-station.sh" || exit 1
               intake_judge_station_worker "$1" "$INTAKE_JUDGE_RESULT_DIR" "$REPO" "$INTAKE_JUDGE_STALE_SECONDS"
