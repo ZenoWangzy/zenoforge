@@ -52,9 +52,9 @@ intake_priority_open_unlabelled_cooldown() { # issue number -> 0 while the exist
     "$A/intake-skip-noted.tsv" 2>/dev/null
 }
 intake_priority_judge_issue() { # issue-json number repo; preserve the tick's call and #1206 stamp rules
-  local issue="$1" number="$2" repo="$3" output priority_script="${ZF_INTAKE_PRIORITY_SCRIPT:-$HERE/../intake-priority.sh}"
+  local issue="$1" number="$2" repo="$3" output priority_rc=0 priority_script="${ZF_INTAKE_PRIORITY_SCRIPT:-$HERE/../intake-priority.sh}"
   INTAKE_PRIORITY_JUDGE_OUTPUT="" INTAKE_PRIORITY_JUDGE_APPLIED=false INTAKE_PRIORITY_JUDGE_FALLBACK=false
-  output="$(printf '%s\n' "$issue" | bash "$priority_script" triage "$number" ready-for-agent "$repo" 2>&1)" || true
+  output="$(printf '%s\n' "$issue" | bash "$priority_script" triage "$number" ready-for-agent "$repo" 2>&1)" || priority_rc=$?
   INTAKE_PRIORITY_JUDGE_OUTPUT="$output"
   [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
   case "$output" in
@@ -64,7 +64,8 @@ intake_priority_judge_issue() { # issue-json number repo; preserve the tick's ca
   esac
   if grep -Fq "intake-priority: applied issue=#$number " <<<"$output"; then
     INTAKE_PRIORITY_JUDGE_APPLIED=true
-  else
+  elif ! grep -Fq 'intake-priority: label update failed' <<<"$output" \
+    || { (( priority_rc != 75 )) && ! grep -Eq 'rate limit exhausted|rate-limit backoff active|rc 75' <<<"$output"; }; then
     intake_skip_stamp "$number" 'intake priority label not applied' || return $?
   fi
   if declare -F intake_judge_station_consume_candidate >/dev/null; then intake_judge_station_consume_candidate "$number" || return $?; fi
