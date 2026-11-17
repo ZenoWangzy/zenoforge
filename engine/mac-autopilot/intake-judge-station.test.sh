@@ -21,7 +21,6 @@ mkdir -p "$A"
 export A HERE LOG STAMP REPO
 export ZF_INTAKE_PRIORITY_SCRIPT="$fixture/intake-priority.sh"
 export JUDGE_CALLS="$fixture/judge-calls" JUDGE_MODE=apply JUDGE_FALLBACK_NUMBERS=2,4
-export GH_CALLS="$fixture/gh-calls"
 export ACTIVE_FILE="$fixture/active" ACTIVE_LOCK="$fixture/active.lock" MAX_ACTIVE_FILE="$fixture/max-active"
 export CANDIDATE_FILE="$fixture/candidates.json"
 
@@ -56,7 +55,6 @@ STUB
 cat > "$fixture/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s %s %s fallback=%s\n' "${1:-}" "${2:-}" "${3:-}" "$JUDGE_FALLBACK_NUMBERS" >>"$GH_CALLS"
 case "${1:-} ${2:-}" in
   'issue view')
     number="${3:-}"
@@ -77,12 +75,16 @@ intake_judge_station_raw_candidates() { cat "$CANDIDATE_FILE"; }
 git() { :; }
 
 make_candidates() {
-  jq -cn '[6,5,4,3,2,1] | map({number:.,title:("issue " + tostring),body:"",state:"OPEN",labels:[]})' > "$CANDIDATE_FILE"
+  jq -cn '([6,5,4,3,2,1] | map({number:.,title:("issue " + tostring),body:"",state:"OPEN",labels:[]})) + [
+    {number:7,title:"needs triage",body:"",state:"OPEN",labels:[{name:"needs-triage"}]},
+    {number:8,title:"already prioritized",body:"",state:"OPEN",labels:[{name:"priority:high"}]},
+    {number:9,title:"closed",body:"",state:"CLOSED",labels:[]}
+  ]' > "$CANDIDATE_FILE"
 }
 reset() {
   rm -rf "$INTAKE_JUDGE_LOCK" "$A/.intake-judge-epoch" "$A/.intake-judge-claims" "$PAUSE_FILE"
   rm -f "$A/intake-skip-noted.tsv" "$A/intake-skip-noted.tsv.lock"
-  : > "$LOG"; : > "$JUDGE_CALLS"; : > "$GH_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
+  : > "$LOG"; : > "$JUDGE_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
   JUDGE_MODE=apply; SCHEMA_OK=true; make_candidates
 }
 
@@ -93,7 +95,7 @@ ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass 
 [[ "$(wc -l < "$JUDGE_CALLS" | tr -d ' ')" == 4 ]] || fail 'the pass judged more than its cap'
 [[ "$(cat "$MAX_ACTIVE_FILE")" == 2 ]] || fail "parallelism was not bounded at two: $(cat "$MAX_ACTIVE_FILE")"
 line="$(grep 'intake-judge done' "$LOG")"
-[[ "$line" =~ intake-judge\ done\ secs=[0-9]+\ judged=4\ applied=4\ fallback=2\ deferred=2\ rc=0 ]] || fail "pass summary was wrong: $line; gh reads: $(cat "$GH_CALLS")"
+[[ "$line" =~ intake-judge\ done\ secs=[0-9]+\ judged=4\ applied=4\ fallback=2\ deferred=2\ rc=0 ]] || fail "pass summary was wrong: $line"
 
 # A live claim excludes that issue; the remaining oldest issues still run.
 reset
@@ -101,6 +103,14 @@ mkdir -p "$A/.intake-judge-claims/1"; printf '%s\ttest\n' "$(date +%s)" > "$A/.i
 ZF_INTAKE_JUDGE_PER_PASS=6 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass || fail 'the claimed-issue pass failed'
 ! grep -qx 1 "$JUDGE_CALLS" || fail 'a held claim was judged'
 [[ "$(grep 'intake-judge done' "$LOG")" =~ deferred=1\ rc=0 ]] || fail 'a held claim was not reported as deferred'
+
+# The existing six-hour stamp removes its issue before the pass cap is counted.
+reset
+jq -c '. + [{number:10,title:"cooldown",body:"",state:"OPEN",labels:[]}]' "$CANDIDATE_FILE" > "$CANDIDATE_FILE.tmp" && mv -f "$CANDIDATE_FILE.tmp" "$CANDIDATE_FILE"
+intake_skip_stamp 10 'intake priority label not applied'
+ZF_INTAKE_JUDGE_PER_PASS=10 ZF_INTAKE_JUDGE_PARALLEL=4 intake_judge_station_pass || fail 'the cooldown pass failed'
+[[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2,3,4,5,6' ]] || fail 'the station ignored the existing cooldown'
+[[ "$(grep 'intake-judge done' "$LOG")" =~ judged=6\ applied=6\ fallback=2\ deferred=0\ rc=0 ]] || fail 'filtered candidate counts were wrong'
 
 # A claim older than the station kill timeout is atomically reclaimed.
 reset
@@ -119,6 +129,17 @@ intake_priority_open_unlabelled_candidates '' '' <<<"$(jq -cn '{number:77,title:
 reset; JUDGE_MODE=skip
 ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the skipped pass failed'
 [[ ! -e "$A/intake-skip-noted.tsv" ]] || fail 'a missing-key skip was stamped'
+
+# PAUSE and an invalid state schema stop external work but still leave the epoch and pass line.
+reset; touch "$PAUSE_FILE"
+intake_judge_station_pass || fail 'a paused pass returned nonzero'
+[[ ! -s "$JUDGE_CALLS" && -s "$A/.intake-judge-epoch" ]] || fail 'a paused pass judged or left no epoch'
+[[ "$(grep 'intake-judge done' "$LOG")" =~ rc=0 ]] || fail 'a paused pass did not log its completion'
+reset; SCHEMA_OK=false
+rc=0; intake_judge_station_pass || rc=$?
+[[ "$rc" == 2 && ! -s "$JUDGE_CALLS" ]] || fail 'an invalid schema pass made an external call'
+[[ "$(grep 'intake-judge done' "$LOG")" =~ rc=2 ]] || fail 'an invalid schema pass did not log its refusal'
+SCHEMA_OK=true
 
 # Simultaneous non-applied results serialize the read-modify-write and retain every cooldown row.
 reset; JUDGE_MODE=fail
