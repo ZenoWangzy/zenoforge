@@ -12,7 +12,7 @@ export MAC_AUTOPILOT_ROOT="$fixture/repo"
 export MAC_AUTOPILOT_SUPERVISOR_DIR="$fixture/supervisor"
 export MAC_AUTOPILOT_RUNTIME_DIR="$fixture/supervisor/autopi"
 export REQUIRED_PR_CHECKS_FILE="$engine_dir/mac-autopilot/required-pr-checks.json"
-cp "$engine_dir/mac-autopilot/config.template.json" "$MAC_AUTOPILOT_RUNTIME_DIR/config.json"
+jq '.size_admission_lines = 640' "$engine_dir/mac-autopilot/config.template.json" > "$MAC_AUTOPILOT_RUNTIME_DIR/config.json"
 printf '%s\n' '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
@@ -49,6 +49,36 @@ reconcile_size_recuts
 [[ "$(field issue-6292 '[.history[] | select(.stage == "size-recut-resumed")] | length')" == 1 ]] \
   || fail "second round trip must not resume the unit: $(field issue-6292 '[.history[].stage]' | tr -d '\n')"
 [[ "$(field issue-6292 .size_recut_roundtrips)" == 2 ]] || fail "second round trip must count 2"
+
+# A supervisor waiver that covers the estimate resumes even after the refusal cap, and clears the round-trip count.
+SIZE_RECUT_RESUME_MAX=7
+jq -n '{units:[{id:"issue-6303",issue:6303,branch:"agent/issue-6303",stage:"blocked-external",size_recut_pending:true,
+  size_recut_roundtrips:7,size_waiver:{max_lines:1100},
+  history:[{stage:"size-recut",result:"issue #6303: 1100 lines exceed 640; head=ccc333",at:"2026-11-10T00:00:00Z"}]}]}' > "$UNITS"
+printf '%s\n' '{"state":"ready-for-agent","recut_refused_at":"2026-11-12T10:00:00Z"}' > "$AGENT_HOME/state/6303.json"
+reconcile_size_recuts
+[[ "$(field issue-6303 .stage)" == implement-pending && "$(field issue-6303 .size_recut_roundtrips)" == 0 ]] \
+  || fail "a waiver covering the estimate must resume and reset the refusal count: $(jq -c '.units[0]' "$UNITS")"
+
+# Without the waiver, the same 8th refusal still escalates with the configured limit.
+jq -n '{units:[{id:"issue-6304",issue:6304,branch:"agent/issue-6304",stage:"blocked-external",size_recut_pending:true,
+  size_recut_roundtrips:7,
+  history:[{stage:"size-recut",result:"issue #6304: 1100 lines exceed 640; head=ddd444",at:"2026-11-10T00:00:00Z"}]}]}' > "$UNITS"
+printf '%s\n' '{"state":"ready-for-agent","recut_refused_at":"2026-11-12T10:00:00Z"}' > "$AGENT_HOME/state/6304.json"
+reconcile_size_recuts
+[[ "$(field issue-6304 .stage)" == supervisor-review && "$(field issue-6304 .note)" == "recut refused 8 times; size estimate 1100 > limit 640" ]] \
+  || fail "an unwaived 8th refusal must escalate with limit 640: $(jq -c '.units[0]' "$UNITS")"
+
+# A waived unit at the supervisor cap is parked for the supervisor instead of taking the default recut.
+jq -n '{units:[{id:"issue-6305",issue:6305,branch:"agent/issue-6305",stage:"supervisor-review",size_waiver:{max_lines:1100},
+  history:[{stage:"size-recut",result:"issue #6305: 1100 lines exceed 640; head=eee555",at:"2026-11-10T00:00:00Z"}]}]}' > "$UNITS"
+printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/6305.json"
+supervisor_cap_default issue-6305 "" lifetime
+cap_event="$(field issue-6305 '[.history[] | select(.stage == "supervisor-cap-default")] | last | .result')"
+[[ "$(field issue-6305 .stage)" == parked && "$cap_event" == branch=park:* \
+    && "$cap_event" == *"size waiver max_lines=1100; skipped default recut and parked for supervisor" ]] \
+  || fail "a waiver must select the supervisor park cap default: stage=$(field issue-6305 .stage) event=$cap_event"
+
 # Waiver alone (row 451, head 15:21Z): an implement unit that is past the limit gets .size_waiver without leaving its stage,
 # and the next size admission reads the raised limit. Only *-pending and implement units take it; parked ones need requeue.
 jq -n '{units:[{id:"issue-6300",issue:6300,branch:"agent/issue-6300",stage:"implement-pending",history:[]}]}' > "$UNITS"

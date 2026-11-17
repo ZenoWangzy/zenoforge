@@ -7,7 +7,7 @@ size_recut_sizes() { # unit-json → "lines limit" from the latest size-recut en
     | (capture("(?<x>[0-9]+) lines exceed (?<y>[0-9]+)") // {x: "unknown", y: "unknown"}) | "\(.x) \(.y)"' <<<"$1"
 }
 reconcile_size_recuts() {
-  local u id issue state hold_note reconcile_note k i n cursor=0 deadline rt refused sizes extra
+  local u id issue state hold_note reconcile_note k i n cursor=0 deadline rt refused sizes estimate waived limit extra
   local -a pending=()
   # The budget is checked between units, so a unit already running may finish past it. A stopped walk resumes at its unit next tick, so no unit starves.
   deadline=$((SECONDS + ${SIZE_RECUT_RECONCILE_SECONDS:-300}))
@@ -44,9 +44,17 @@ reconcile_size_recuts() {
       refused=false; jqf -e 'has("recut_refused_at")' <<<"$state" >/dev/null && refused=true
       if [[ "$refused" == true ]] && (( rt > SIZE_RECUT_RESUME_MAX )); then
         sizes="$(size_recut_sizes "$u")"
+        estimate="${sizes% *}"
+        waived="$(jqf -r '.size_waiver.max_lines | select(type == "number") // empty' <<<"$u")"
+        if [[ "$estimate" =~ ^[0-9]+$ && "$waived" =~ ^[0-9]+$ ]] && (( estimate <= waived )); then
+          set_unit "$id" "$(hist size-recut-resumed "issue #$issue returned to implementation under supervisor size waiver ($estimate <= $waived lines)") | .stage=\"implement-pending\" | .note=null | .size_recut_roundtrips=0 | del(.size_recut_pending)"
+          say "size-recut-cap unit=$id issue=#$issue: size waiver $waived covers estimate $estimate; resumed and reset round trips"
+          continue
+        fi
+        limit="$(size_admission_limit_for "$u")"
         set_unit "$id" ".size_recut_roundtrips = $rt"
-        to_supervisor "$id" "recut refused $rt times; size estimate ${sizes% *} > limit ${sizes#* }" \
-          'Stop size-recut loop' "recut refused $rt times" "${sizes% *} lines over ${sizes#* }" '["Resume the unit again at the same scope"]'
+        to_supervisor "$id" "recut refused $rt times; size estimate $estimate > limit $limit" \
+          'Stop size-recut loop' "recut refused $rt times" "$estimate lines over $limit" '["Resume the unit again at the same scope"]'
         say "size-recut-cap unit=$id issue=#$issue round trip $rt of $SIZE_RECUT_RESUME_MAX: sent to supervisor, not resumed"
         continue
       fi

@@ -430,7 +430,7 @@ supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/bran
 }
 
 supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [budget] → 0 当该单元已有、刚得到或暂不该有默认决定
-  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" pr_state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default" current_issue current_pr current_stage
+  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr raw state="" pr_state="" delivered=false verdict recut_done branch reason decision limit_reason tag="supervisor cap default" current_issue current_pr current_stage size_waiver
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
   [[ -n "$u" && "$u" != null ]] || return 1
   # stop-loss：止损遇到同一失败（stop_loss_same_failure）不派 arbiter，用止损自己的 park/recut 阶段：cap-triage-park 会被 arbiter 清扫成一次模型 cap triage。
@@ -483,6 +483,7 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
   [[ "$(jqf -r '[(.history // [])[] | select(.stage == "merged" or .stage == "landed" or .stage == "merge-reverted") | .stage] | last // ""' <<<"$u")" =~ ^(merged|landed)$ ]] && delivered=true
   if [[ "$delivered" != true && "$pr_state" == MERGED ]]; then delivered=true; fi
   verdict="$(jqf -r '.supervisor_cap_verdict // .recut_refused_verdict // ""' <<<"$u")" || verdict=""
+  size_waiver="$(jqf -r '.size_waiver.max_lines | select(type == "number") // empty' <<<"$u")"
   recut_done="$(jqf -r 'any((.history // [])[]?; .stage == "supervisor-budget-recut" or .stage == "supervisor-cap-triage-recut") or .recut_routed == true' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]] \
     && jqf -e '(.hold.kind == "guarded-recut-repeat") or ((try (.recut_refused_at | fromdateiso8601) catch 0) >= now - 604800)' <<<"$raw" >/dev/null; then
@@ -493,16 +494,15 @@ supervisor_cap_default() { # id unit-json [lifetime|daily|repeat|stop-loss] [bud
     reason="issue state ${state:-unknown} or the work is already merged elsewhere"
     [[ "$trigger" != repeat ]] || reason="$tag: $reason"
     cap_set_unit "$id" obsolete "$reason" "" "$(hist obsolete "$reason") | .stage=\"closed\" | .note=$(js "obsolete: $reason") | del(.parked_reason)" || return 1
-  elif [[ "$verdict" == RECUT || "$recut_done" != true ]]; then
+  elif [[ ( "$verdict" == RECUT || "$recut_done" != true ) && ! "$size_waiver" =~ ^[0-9]+$ ]]; then
     reason="$limit_reason; recut the unit once"
     supervisor_budget_recut "$id" "$tag: $reason" "$decision" \
       "$tag could not complete the recut route" "$tag recut" \
       "$park_stage" "$recut_stage" false || return 1
-    branch=park
-    [[ "$(unit_field "$id" '.stage')" != closed ]] || branch=recut
+    branch=park; [[ "$(unit_field "$id" '.stage')" != closed ]] || branch=recut
   else
-    branch=park
-    reason="$limit_reason; recut already tried and last cap verdict (${verdict:-none}) did not converge"
+    branch=park; reason="$limit_reason; recut already tried and last cap verdict (${verdict:-none}) did not converge"
+    [[ ! "$size_waiver" =~ ^[0-9]+$ ]] || reason="$limit_reason; size waiver max_lines=$size_waiver; skipped default recut and parked for supervisor"
     supervisor_budget_park "$id" "$tag: $reason" "$decision" \
       "$tag stopped arbitration" "$park_stage" || return 1
   fi
