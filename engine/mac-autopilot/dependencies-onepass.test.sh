@@ -49,6 +49,12 @@ scheduler_issue_state() { # the dead-blocker cases name their state by predecess
     9510) printf '{"state":"tracker","recut_children":[9781,9782]}' ;;                  # tracker parent, both children delivered
     9512) printf '{\n  "state": "tracker",\n  "recut_children": [9514, 9522, 9523]\n}' ;; # own parent of 9514, pretty-printed like the state file
     9530) printf '{"tracker_parent":true,"state":"tracker","recut_children":[9531,9532]}' ;; # one child still live
+    9600) printf '{"state":"tracker","recut_children":[9601]}' ;;
+    9610) printf '{"state":"tracker"}' ;;
+    9621) printf '{"state":"needs-recut"}' ;;
+    9622) printf '{"state":"on-hold"}' ;;
+    9623|9624) printf '{"state":"ready-for-agent"}' ;;
+    9630) printf '{"state":"ready-for-agent"}' ;;
     *) printf '{"state":"ready-for-agent"}' ;;
   esac
 }
@@ -160,7 +166,7 @@ mixed_fixture() {
   printf '{"workers":[]}\n' > "$A/workers.json"
   DEP_DELIVERED_CACHE=()
   CACHE_ROWS=([102]=$'CLOSED\t' [101]=$'MERGED\t' [103]=$'OPEN\t' [106]=$'OPEN\t' [105]=$'OPEN\t' [107]=$'OPEN\t' [108]=$'OPEN\t' [110]=$'OPEN\t'
-    [111]=$'OPEN\t' [112]=$'OPEN\troadmap-epic' [113]=$'OPEN\t' [115]=$'CLOSED\t' [116]=$'CLOSED\t' [117]=$'OPEN\t' [118]=$'OPEN\t' [119]=$'MERGED\t'
+    [111]=$'OPEN\t' [112]=$'OPEN\troadmap-epic' [113]=$'OPEN\t' [115]=$'CLOSED\t' [116]=$'CLOSED\t' [117]=$'OPEN\t' [118]=$'OPEN\t' [119]=$'MERGED\t' [109]=$'OPEN\t'
     [120]=$'OPEN\t' [121]=$'CLOSED\t' [131]=$'OPEN\t' [140]=$'OPEN\t' [130]=$'CLOSED\t' [133]=$'CLOSED\t' [132]=$'CLOSED\t\tCLOSED\tNOT_PLANNED' [150]=$'CLOSED\t')
 }
 snapshot() { # normalised ledger, log without the timing line, and gh calls
@@ -213,6 +219,64 @@ grep -q 'unit issue-9514 unblocked: #9512 tracker' "$LOG" || fail 'case B: the r
 SIBLING_STAGE=merged tracker_fixture; dep_delivered_snapshot
 dep_cleared "$(unit_json issue-9514)" 9512 || fail 'case B: dispatch must see the siblings delivered (dep_cleared)'
 grep -q 'issue #9514 waits on tracker #9512, its own parent' "$LOG" || fail 'case B: the rewrite must name itself in the log'
+
+# Dead roots either point at live recut work or enter the existing dep-dead path.
+dead_root_fixture() {
+  printf '%s\n' "$@" | jq -cs '{units:.}' > "$UNITS"
+  printf '{"workers":[]}\n' > "$A/workers.json"
+  DEP_DELIVERED_CACHE=()
+  reset_run
+}
+dead_root_fixture \
+  "$(unit issue-9600 9600 closed)" \
+  "$(unit issue-9601 9601 implement-pending)" \
+  "$(unit issue-9690 9690 blocked-external '.blocked_on=9600 | .dep_wait_delivery=9600 | .body_blocked_by=[9600]')"
+CACHE_ROWS=([9600]=$'OPEN\t' [9601]=$'OPEN\t' [9690]=$'OPEN\t')
+run_counted
+jq -e '.units[] | select(.id=="issue-9690") | .stage=="blocked-external" and .blocked_on==9601 and .dep_wait_delivery==9601 and .history[-1].stage=="blocker-repointed"' "$UNITS" >/dev/null \
+  || fail "a latched wait on a closed tracker must follow its open child: $(jq -c '.units[] | select(.id=="issue-9690")' "$UNITS")"
+
+dead_root_fixture \
+  "$(unit issue-9610 9610 closed)" \
+  "$(unit issue-9691 9691 blocked-external '.blocked_on=9610 | .body_blocked_by=[9610]')"
+CACHE_ROWS=([9610]=$'OPEN\t' [9691]=$'OPEN\t')
+run_counted
+jq -e '.units[] | select(.id=="issue-9691") | .stage=="implement-pending" and .blocked_on==null and any(.history[]; .stage=="unblocked" and .result=="#9610 closed on purpose (tracker/spec parent)")' "$UNITS" >/dev/null \
+  || fail "a closed tracker with no open child must use the tracker-parent unblock path: $(jq -c '.units[] | select(.id=="issue-9691")' "$UNITS")"
+
+dead_root_fixture \
+  "$(unit issue-9692 9692 blocked-external '.blocked_on=9623 | .dep_wait_delivery=9623 | .body_blocked_by=[9623]')"
+CACHE_ROWS=([9623]=$'OPEN\tneeds-owner\tOPEN\t' [9692]=$'OPEN\t')
+run_counted
+jq -e '.units[] | select(.id=="issue-9692") | .stage=="supervisor-review" and .dep_dead_proved==9623 and .blocked_on==null and any(.history[]; .stage=="dep-dead-proved")' "$UNITS" >/dev/null \
+  || fail "an open needs-owner issue with no unit must use dep-dead proof: $(jq -c '.units[] | select(.id=="issue-9692")' "$UNITS")"
+
+dead_root_fixture \
+  "$(unit issue-9693 9693 parked '.parked_reason="on-hold"')" \
+  "$(unit issue-9694 9694 blocked-external '.blocked_on=9693 | .dep_wait_delivery=9693 | .body_blocked_by=[9693]')"
+CACHE_ROWS=([9693]=$'OPEN\ton-hold\tOPEN\t' [9694]=$'OPEN\t')
+run_counted
+jq -e '.units[] | select(.id=="issue-9694") | .stage=="blocked-external" and .dep_dead_proved==null and .blocked_on==9693' "$UNITS" >/dev/null \
+  || fail "an on-hold parked root must keep its waiter blocked: $(jq -c '.units[] | select(.id=="issue-9694")' "$UNITS")"
+
+dead_root_fixture \
+  "$(unit issue-9621 9621 implement-pending)" \
+  "$(unit issue-9622 9622 blocked-external '.blocked_on=9621 | .dep_wait_delivery=9621 | .body_blocked_by=[9621]')"
+CACHE_ROWS=([9621]=$'OPEN\t' [9622]=$'OPEN\t')
+run_counted
+jq -e '.units[] | select(.id=="issue-9622") | .stage=="blocked-external" and .blocked_on==9621 and .dep_dead_proved==null' "$UNITS" >/dev/null \
+  || fail "a live root must keep its waiter blocked: $(jq -c '.units[] | select(.id=="issue-9622")' "$UNITS")"
+
+# A no-unit issue still on an automatic route can deliver, so neither the
+# recut queue nor an expiring hold is proof that its dependents are dead.
+dead_root_fixture \
+  "$(unit issue-9695 9695 blocked-external '.blocked_on=9621 | .dep_wait_delivery=9621 | .body_blocked_by=[9621]')" \
+  "$(unit issue-9696 9696 blocked-external '.blocked_on=9622 | .dep_wait_delivery=9622 | .body_blocked_by=[9622]')" \
+  "$(unit issue-9697 9697 blocked-external '.blocked_on=9624 | .dep_wait_delivery=9624 | .body_blocked_by=[9624]')"
+CACHE_ROWS=([9621]=$'OPEN\tneeds-recut\tOPEN\t' [9622]=$'OPEN\ton-hold\tOPEN\t' [9624]=$'OPEN\topt-lane,pipeline-system\tOPEN\t' [9695]=$'OPEN\t' [9696]=$'OPEN\t' [9697]=$'OPEN\t')
+run_counted
+jq -e '[.units[] | select(.id=="issue-9695" or .id=="issue-9696" or .id=="issue-9697") | .stage=="blocked-external"] | all' "$UNITS" >/dev/null \
+  || fail 'no-unit roots on recut, hold or opt-lane routes must remain blocked'
 
 # A closed GitHub issue retires an unchanged supervisor-review unit once.
 CACHE_ROWS=([5974]=$'CLOSED\t')

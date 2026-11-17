@@ -55,6 +55,9 @@ jq -e '.units[] | select(.id=="issue-20") | .stage=="supervisor-review" and .dep
 reset; DEP_DELIVERED_CACHE[10]=1; alive 'a delivered predecessor'
 reset; jq -c '.units[0].stage="merged"' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; alive 'a merged predecessor unit'
 reset; jq -c '.units[0].stage="parked"' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; alive 'a parked predecessor unit'
+reset; printf '{"units":[%s,%s]}\n' "$(jq -c '.stage="parked" | .parked_reason="dep-dead-repeat"' <<<"$dead")" "$(marked 20)" > "$UNITS"; dep_dead_sweep
+jq -e '.units[] | select(.id=="issue-20") | .stage=="supervisor-review" and .dep_dead_proved==10 and .dep_wait_delivery==10 and .blocked_on==null' "$UNITS" >/dev/null \
+  || fail "a dep-dead-repeat predecessor must route its waiter through the dep-dead path: $(jq -c '.units[1]' "$UNITS")"
 norow() { jq -c '.units |= map(select(.id != "issue-10"))' "$UNITS" > "$UNITS.t"; mv "$UNITS.t" "$UNITS"; }
 reset; norow; ISSUE='{"state":"ready-for-agent"}'; alive 'no predecessor row on an issue that is no tracker'
 reset; norow; SUBS=30; CHILD=OPEN; alive 'an open tracker with a live child'
