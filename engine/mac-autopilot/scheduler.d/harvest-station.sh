@@ -190,20 +190,20 @@ harvest_station_tick() {
       [[ -n "${HS_SECS[$name]:-}" ]] && phases+="${phases:+,}${name}:${HS_SECS[$name]}s/${HS_GH[$name]}gh"
     done
     # A PAUSE does not stop it: the paused tick harvests too, and a harvest dispatches nothing.
-    say "harvest-station done secs=$SECONDS $gh_calls $rest_used lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none}"
+    say "harvest-station done secs=$SECONDS $gh_calls lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none} $rest_used"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$HARVEST_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$HARVEST_STATION_LOCK"
 }
 
 report_only_pr_requeue_harvest() { # unit worker-json report-name report-path type → handle a report-only supervisor requeue or return 1
-  local unit="$1" worker="$2" report_name="$3" report_path="$4" type="$5" pr head started unit_json current_head gate_report_name gate_report_path reason runs runs_json run run_count repo
+  local unit="$1" worker="$2" report_name="$3" report_path="$4" type="$5" pr head started unit_json current_head gate_report_name gate_report_path reason runs runs_json run run_count repo sha_re="${SHA_RE:-^[0-9a-f]{40}$}"
   [[ "$type" == implement || "$type" == repair ]] || return 1
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$worker")" != true ]] || return 1
   pr="$(unit_field "$unit" '.pr // empty')"
   [[ "$pr" =~ ^[1-9][0-9]*$ ]] || return 1
   head="$(jqf -r '.pr_head // empty' <<<"$worker")"; started="$(jqf -r '.started // empty' <<<"$worker")"
-  [[ "$head" =~ $SHA_RE && -n "$started" ]] || return 1
+  [[ "$head" =~ $sha_re && -n "$started" ]] || return 1
   unit_json="$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   jqf -e --arg type "$type" --arg started "$started" '
     (.history // []) as $h |

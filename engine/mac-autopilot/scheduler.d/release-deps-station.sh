@@ -24,7 +24,7 @@ release_deps_station_tick_pass() {
     release_dependency_blocks || rc=$?
     gh_calls="$(tick_gh_calls_summary)"
     rest_used="$(tick_rest_usage_summary)"
-    say "release-deps done secs=$SECONDS $gh_calls $rest_used rc=$rc ended=$(date -u +%H:%M:%SZ)"
+    say "release-deps done secs=$SECONDS $gh_calls rc=$rc ended=$(date -u +%H:%M:%SZ) $rest_used"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$RELEASE_DEPS_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$RELEASE_DEPS_STATION_LOCK"

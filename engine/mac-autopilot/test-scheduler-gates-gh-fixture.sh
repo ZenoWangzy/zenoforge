@@ -83,12 +83,24 @@ gh() {
     "pr checks") echo "${GH_CHECKS:-$GH_CHECKS_PASS}" ;;
     "pr merge") GH_MERGES+=("$*") ;;
     "run list")
-      if [[ -n "${GH_RUN_JSON:-}" ]]; then # apply the caller's --jq filter to canned run records
-        local jq_expr=""; while [[ $# -gt 0 ]]; do [[ "$1" == --jq ]] && jq_expr="$2"; shift; done
-        jq -r "${jq_expr:-.[] | .databaseId}" <<<"$GH_RUN_JSON"
-      else echo "$GH_RUNS"; fi
+      local jq_expr="" has_jq=false
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --jq) jq_expr="$2"; has_jq=true; shift 2 ;;
+          --json) shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      if [[ -n "${GH_RUN_JSON:-}" ]]; then
+        if [[ "$has_jq" == true ]]; then jq -r "$jq_expr" <<<"$GH_RUN_JSON"; else printf '%s\n' "$GH_RUN_JSON"; fi
+      else printf '%s\n' "$GH_RUNS"; fi
       return "${GH_RUN_LIST_FAIL:-0}" ;;
-    "run rerun") GH_RERUNS+=("$*"); [[ -z "${GH_RERUN_FAIL_ID:-}" || "$3" != "$GH_RERUN_FAIL_ID" ]] || return 1; return "${GH_RERUN_FAIL:-0}" ;;
+    "run rerun")
+      local rerun_rc="${GH_RERUN_FAIL:-0}"
+      GH_RERUNS+=("$*")
+      [[ -z "${GH_RERUN_FAIL_ID:-}" || "$3" != "$GH_RERUN_FAIL_ID" ]] || rerun_rc=1
+      [[ "$rerun_rc" != 0 ]] || gh_run_jobs_invalidate "$3" || :
+      return "$rerun_rc" ;;
     'api repos/example-maintainer/example-repo/issues/'*'/sub_issues?per_page=100') echo '[]' ;;
     "api --paginate")
       case "$3" in

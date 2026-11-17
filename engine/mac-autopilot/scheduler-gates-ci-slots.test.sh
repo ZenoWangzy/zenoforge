@@ -110,7 +110,7 @@ wait_precheck_output() {
 units "{\"units\":[{\"id\":\"pr-50\",\"pr\":50,\"stage\":\"ready-to-merge\",\"branch\":\"p50\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-51\",\"pr\":51,\"stage\":\"ready-to-merge\",\"branch\":\"p51\",\"approved_sha\":\"$H2\",\"ci_wip_wait\":\"$H2\",\"ready_since\":2,\"history\":[]}]}"
 here_saved="$HERE"; HERE="$fixture/precheck-code"; mkdir -p "$HERE"
 printf '#!/usr/bin/env bash\ncase "$2" in 50) printf "PRECHECK: FAIL changed tests fail locally in packages/x\\n FAIL  tests/a.test.ts > keeps totals\\n" ;; *) echo "PRECHECK: PASS changed tests pass locally in packages/y" ;; esac\n' > "$HERE/precheck.sh"
-gh() { if [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then echo packages/x/a.ts; elif [[ "$*" == "run list --commit"*"select(.conclusion"* ]]; then echo 99; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
+gh() { if [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then echo packages/x/a.ts; elif [[ "$1 $2" == "run list" && "$3" == --commit ]]; then printf '%s\n' '[{"databaseId":99,"conclusion":"cancelled"}]'; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 p50="$(field pr-50 '.precheck_pid // "none"')"
 [[ "$p50" != none && "$(field pr-51 '.precheck_pid // "none"')" == none && "${GH_RERUNS[*]:-}" != *rerun* ]] || fail "unprechecked unit got a CI slot or prechecks ran in parallel (${GH_RERUNS[*]:-none})"

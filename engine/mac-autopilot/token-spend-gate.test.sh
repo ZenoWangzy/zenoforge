@@ -34,13 +34,19 @@ scheduler_route_to_recut() { printf 'route:%s\n' "$1" >> "$calls"; [[ "$ROUTE_RC
 tick_prs_changed() { :; }
 tick_pr_state() { printf 'OPEN\n'; }
 # The PR head and the failed steps of its red run: PR_HEAD empty means no census hit, RED_STEP is the failed step of the one red run.
-PR_HEAD=""; RED_STEP="Set up job"
+PR_HEAD=""; RED_STEP="Set up job"; RED_RUN_ID=90000
 tick_pr_head() { printf '%s\n' "$PR_HEAD"; }
 gh() {
   case "$1 $2" in
     'pr close') printf 'pr-close:%s\n' "$3" >> "$calls" ;;
-    'run list') echo 90001 ;;
-    'api repos/'*/jobs) echo "$RED_STEP" ;;
+    'run list') printf '[{"databaseId":%s,"conclusion":"failure"}]\n' "$RED_RUN_ID" ;;
+    'api -i')
+      local jq_expr="" previous="" arg raw body
+      for arg in "$@"; do [[ "$previous" == --jq ]] && jq_expr="$arg"; previous="$arg"; done
+      raw="$(jq -cn --arg step "$RED_STEP" '{jobs:[{status:"completed",runner_id:null,conclusion:"failure",steps:[{name:$step,conclusion:"failure"}]}]}')"
+      body="$(jq -c "$jq_expr" <<<"$raw")" || return 1
+      printf 'HTTP/2.0 200 OK\n\n%s\n' "$body"
+      ;;
   esac
   return 0
 }
@@ -205,6 +211,7 @@ unit_infra() { # extra-history-json → a unit at the hard line, approved on HEA
     '{units:[{id:"issue-8",issue:8,pr:88,stage:"implement-pending",branch:"agent/issue-8",spend_runs:[$a],reviewed_sha:$sha,reviewed_pr_head:$sha,history:($h + $extra)}]}'
 }
 infra_case() { # extra-history-json → gate the unit; calls and the stage tell what happened
+  RED_RUN_ID=$((RED_RUN_ID + 1)) # each synthetic completed run has an immutable job snapshot
   : > "$calls"; unit_infra "$1" > "$UNITS"; rm -f "$UNITS_ARCHIVE"
   token_spend_gate issue-8 "$(jq -c '.units[0]' "$UNITS")" && fail "past the hard line the unit is held" || true
 }

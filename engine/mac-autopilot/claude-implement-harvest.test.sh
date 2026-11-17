@@ -97,7 +97,7 @@ gh() {
   case "$1 $2" in
     'run list')
       [[ "$3" == --commit && "$4" == "$report_only_head" ]] || fail "CI run list used the wrong head: $*"
-      printf '77\n'
+      printf '%s\n' '[{"databaseId":77,"conclusion":"failure"}]'
       ;;
     'api -X')
       [[ "$3" == POST && "$4" == "repos/$REPO/actions/runs/77/rerun" ]] || fail "unexpected run rerun endpoint: $*"
