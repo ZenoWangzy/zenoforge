@@ -119,14 +119,16 @@ jq -e '[.. | objects | select(has("number")) | .number] | index(9201) == null' "
 echo 'ok (f) --skip-labelled re-judges the marked issue and skips the plain labelled one'
 
 # (g) scheduler intake judges ready issues before tracker/skip-label filtering, and only once they have a priority label.
-source "$SCRIPT_DIR/mac-autopilot/scheduler.d/intake-steps.sh"
-source "$SCRIPT_DIR/mac-autopilot/scheduler.d/intake.sh"
 HERE="$SCRIPT_DIR/mac-autopilot"
 A="$test_root/autopi"
 LOG="$test_root/scheduler.log"
 STAMP=2026-11-16T00:00:00Z
 REPO=fixture/repo
+export TMPDIR="$test_env_root"
 mkdir -p "$A/alerts"
+source "$HERE/scheduler.d/core.sh"
+source "$HERE/scheduler.d/intake-steps.sh"
+source "$HERE/scheduler.d/intake.sh"
 CFG='{"issue_intake":{"labels":["founder-test"],"product_labels":["ready-for-agent"]}}'
 jq -n '{intake_priority:{enabled:true},issue_intake:{labels:["founder-test"],product_labels:["ready-for-agent"]}}' > "$ZF_CONFIG_ROOT/night.json"
 jq -n '[
@@ -137,7 +139,6 @@ jq -n '[
 jqf() { jq "$@"; }
 say() { printf '%s\n' "$*" >> "$LOG"; }
 hotfix_lane_label() { printf 'hotfix-lane\n'; }
-chain_exit_trap() { trap "$1" EXIT; }
 gh_par_throttle() { :; }
 intake_gh_read() { [[ "$1:$2" == issue:list ]] || return 1; cat "$FALLBACK_ISSUES"; }
 printf '%s\n' request-failed > "$FALLBACK_JUDGE_MODE"
