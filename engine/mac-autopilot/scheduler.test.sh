@@ -1071,7 +1071,7 @@ tick() (
   # The host gate reads live memory, PSI and CPU; pin ample readings so a busy test host cannot refuse starts.
   printf 'MemAvailable: 16777216 kB\n' > "$TF/meminfo"; printf 'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$TF/psi"
   export LUNA_PROC_MEMINFO="${LUNA_PROC_MEMINFO:-$TF/meminfo}" LUNA_PROC_PSI_MEMORY="${LUNA_PROC_PSI_MEMORY:-$TF/psi}" LUNA_CPU_TARGET="${LUNA_CPU_TARGET:-100}"
-  [[ ! -f "$TF/roadmap-tree.json" ]] || export ZF_ROADMAP_TREE_CACHE_FILE="$TF/roadmap-tree.json"
+  [[ -f "$TF/roadmap-tree.json" ]] && export ZF_ROADMAP_TREE_CACHE_FILE="$TF/roadmap-tree.json" || unset ZF_ROADMAP_TREE_CACHE_FILE
   git() { tick_git "$@"; }; jq() { tick_jq "$@"; }
   # A dispatched fixture worker stays alive across intra-tick refills until its output is ready.
   ps() {
