@@ -97,6 +97,18 @@ ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass 
 line="$(grep 'intake-judge done' "$LOG")"
 [[ "$line" =~ intake-judge\ done\ secs=[0-9]+\ judged=4\ applied=4\ fallback=2\ deferred=2\ rc=0 ]] || fail "pass summary was wrong: $line"
 
+# A pass without a tick cache uses the configured intake-label query and current issue labels.
+reset
+intake_judge_station_raw_candidates() { intake_judge_station_query_candidates; }
+gh() {
+  [[ "$1 $2" == 'issue list' && "$*" == *'--label ready-for-agent'* ]] || return 97
+  cat "$CANDIDATE_FILE"
+}
+ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass || fail 'the live-query pass failed'
+[[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2,3,4' ]] || fail 'the live query did not choose the oldest eligible issues'
+intake_judge_station_raw_candidates() { cat "$CANDIDATE_FILE"; }
+unset -f gh
+
 # A live claim excludes that issue; the remaining oldest issues still run.
 reset
 mkdir -p "$A/.intake-judge-claims/1"; printf '%s\ttest\n' "$(date +%s)" > "$A/.intake-judge-claims/1/start"
