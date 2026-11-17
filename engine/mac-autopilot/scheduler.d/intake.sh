@@ -125,14 +125,13 @@ prefix = founder_reqs.configured_anomaly_prefix()
 for row in rows:
     row["_auto_filed"] = founder_reqs.is_auto_filed_ticket(row, prefix)
 json.dump(rows, sys.stdout, separators=(",", ":"))
-' | tee "$query_dir/rows.json" | jqf -c '.[]' | while IFS= read -r row; do intake_priority_open_unlabelled_candidate "$row"; printf '%s\n' "$row"; done | jqf -sr --argjson skip "$skip_labels" '
+' | tee "$query_dir/rows.json" | jqf -c 'group_by(.number)[] | sort_by(.lane) | .[0]' | while IFS= read -r row; do intake_priority_open_unlabelled_candidate "$row"; printf '%s\n' "$row"; done | jqf -sr --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
         | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
           elif ($n | index("critical-path")) then 2  # 批次 STATE 的关键路径（#4363）：排在普通功能前、遗留后
           elif ($n | index("focus")) then 3 elif ($n | index("finish-first")) then 4 elif ($n | index("bug")) then 5
           elif ($n | index("legacy")) then 7 else 6 end;
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
-      | group_by(.number) | map(sort_by(.lane) | .[0])
       | sort_by([rank, (if ._auto_filed then 1 else 0 end), -.number])
       | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)"'
     intake_skip_label_report "$query_dir/rows.json" "$skip_labels"
