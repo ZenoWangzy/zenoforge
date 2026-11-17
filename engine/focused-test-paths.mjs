@@ -830,9 +830,9 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
       continue;
     }
 
-    // Release fixtures load mail indirectly, beyond the shell function caller scan.
+    // Keep owner maps for suites loaded through wrappers the shell caller scan cannot follow.
     const functionMapped = helperTests.mappedPaths.has(path)
-      && !['engine/night/maintainer-health-mail.sh', 'engine/notify.sh'].map(packPath).includes(path);
+      && !['engine/night/maintainer-health-mail.sh', 'engine/notify.sh', 'engine/mac-autopilot/scheduler.d/ci-admission.sh', 'engine/mac-autopilot/scheduler.d/harvest-station.sh'].map(packPath).includes(path);
     // A guard fragment is the registry's data: it maps to the same tests as the registry file.
     let candidates = functionMapped ? undefined : RELATED_TESTS.get(path.replace(/\/incident-guards\.d\/[^/]+\.json$/, '/incident-guards.json'));
     if (!candidates && path.startsWith('lessons/')) candidates = [packPath('engine/land-direct-main.test.sh')];
