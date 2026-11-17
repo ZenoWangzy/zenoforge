@@ -27,11 +27,15 @@ intake_steps_say() {
 }
 # Rows intake drops with only a count, or none: skip-label rows in intake_candidates and open-PR mentions in register_new_issues.
 # One `intake skip issue #N: reason` per issue and reason, repeated at most every 6h ($A/intake-skip-noted.tsv: "n reason<TAB>epoch").
+intake_skip_stamp() {
+  local f="$A/intake-skip-noted.tsv" now="${3:-$(date +%s)}"
+  { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$$" && mv -f -- "$f.tmp.$$" "$f"
+}
 intake_skip_note() {
   local f="$A/intake-skip-noted.tsv" now; now="$(date +%s)"
   awk -F'\t' -v k="$1 $2" -v now="$now" '$1==k && now-$2<21600{f=1} END{exit !f}' "$f" 2>/dev/null && return 0
   say "intake skip issue #$1: $2"
-  { awk -F'\t' -v k="$1 $2" -v now="$now" '$1!=k && now-$2<21600' "$f" 2>/dev/null; printf '%s %s\t%s\n' "$1" "$2" "$now"; } > "$f.tmp.$$" && mv -f -- "$f.tmp.$$" "$f"
+  intake_skip_stamp "$1" "$2" "$now"
 }
 intake_skip_refused_recut() { intake_skip_note "$1" "unit=$2 stays closed, recut refused and its reopen is spent"; intake_skip recut_refused; }
 # Open candidates outside needs-triage can bypass run-triage; judge them before intake drops tracker labels.
@@ -54,7 +58,10 @@ intake_priority_open_unlabelled_candidate() {
   intake_judges_used=$((intake_judges_used + 1))
   output="$(printf '%s\n' "$issue" | bash "$HERE/../intake-priority.sh" triage "$number" ready-for-agent "$repo" 2>&1)" || true
   [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
-  grep -Fq "intake-priority: applied issue=#$number " <<<"$output" || intake_skip_note "$number" "$cooldown_reason"
+  case "$output" in
+    *'intake-priority: skipped (disabled)'*|*'intake-priority: skipped (missing-typesafe-key)'*|*'intake-priority: skipped (invalid-config)'*) return 0 ;;
+  esac
+  grep -Fq "intake-priority: applied issue=#$number " <<<"$output" || intake_skip_stamp "$number" "$cooldown_reason"
 }
 intake_priority_open_unlabelled_candidates() { # intake start budget; stdin is the deduplicated issue stream
   local intake_judge_started="${1:-}" intake_judge_budget="${2:-}" intake_judge_cap="${ZF_INTAKE_JUDGE_PER_PASS:-3}" intake_judges_used=0 intake_judges_deferred=0 row
