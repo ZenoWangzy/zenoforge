@@ -97,7 +97,14 @@ printf '2026-09-26T00:00:00Z\trecipients=maintainer@example.test\tsubject=一\ti
 source "$REPORT_SCRIPT"
 # Keep display assertions independent of live systemd units and GitHub queue state.
 maintainer_health_mail_work_counts() { printf '{"active":2,"queued":7}\n'; }
-REPORT="$(daily_perf_report_build "$AGENT_HOME" "$REPO_DIR" "$REPORT_DAY" '{}')"
+GUARD_AUDIT='{"guardObservations":[
+  {"id":"guard-log-missing","state":"log-missing","raw_status":null},
+  {"id":"guard-not-started","state":"not-started","raw_status":null},
+  {"id":"guard-timeout","state":"failed","raw_status":"TIMEOUT"},
+  {"id":"guard-network","state":"failed","raw_status":"NETWORK_ERROR"},
+  {"id":"guard-passed","state":"passed","raw_status":"CHECKED"}
+]}'
+REPORT="$(daily_perf_report_build "$AGENT_HOME" "$REPO_DIR" "$REPORT_DAY" "$GUARD_AUDIT")"
 
 run_mail_audit() {
   local gmail_count="$1" gmail_status="${2:-ok}"
@@ -136,6 +143,12 @@ assert_contains() {
 }
 assert_contains 'daily summary names reporting day in Chinese' "$REPORT" '今日汇总（9月25日）'
 assert_contains 'daily summary includes node and check timing section' "$REPORT" '流程环节与检查耗时'
+assert_contains 'daily summary includes the incident guard section' "$REPORT" '**事故防护检查**'
+assert_contains 'missing guard log is rendered with its reason' "$REPORT" '守护项「guard-log-missing」：日志缺失；未找到运行日志。'
+assert_contains 'unstarted guard is rendered with its reason' "$REPORT" '守护项「guard-not-started」：尚未开始；日志中尚无该项结果。'
+assert_contains 'timeout is rendered as failed with its reason' "$REPORT" '守护项「guard-timeout」：检查失败；检查超时。'
+assert_contains 'network drop is rendered as failed with its reason' "$REPORT" '守护项「guard-network」：检查失败；网络连接中断。'
+assert_contains 'recorded success is rendered with its reason' "$REPORT" '守护项「guard-passed」：成功已记录；日志已记录成功结果。'
 assert_contains 'daily summary includes pipeline efficiency comparison' "$REPORT" '流水线效率'
 assert_contains 'daily summary describes user-visible release' "$REPORT" '现在可以使用「订单搜索」'
 assert_contains 'production version uses date and time, without hash' "$REPORT" '9月26日 04:30 上线的版本'

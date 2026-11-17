@@ -159,6 +159,75 @@ test('guard audit reports historical drift, missing targets, and duplicate check
   assert.deepEqual(JSON.parse(readFileSync(outputPath, 'utf8')), audit);
 });
 
+test('guard audit reports one latest observation with its log evidence per registered guard', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'incident-guard-observation-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, 'repo');
+  const history = path.join(root, 'history');
+  const state = path.join(repo, 'engine/state');
+  mkdirSync(state, { recursive: true });
+  const ids = ['missing-log', 'not-started', 'timed-out', 'network-dropped', 'successful'];
+  writeFileSync(path.join(state, 'incident-guards.json'), JSON.stringify({
+    incidents: ids.map((id) => ({ id, machine_checks: [] })),
+  }));
+  const runAudit = (historyDir) => {
+    const result = spawnSync(process.execPath, [auditScript, '--repo', repo, '--history-dir', historyDir], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ZF_REPO_DIR: repo,
+        ZF_ENGINE_DIR: path.join(repo, 'engine'),
+        ZF_CONFIG_ROOT: path.join(repo, '.zenoforge'),
+        ZF_PACK_DIR: '',
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+
+  const missing = runAudit(path.join(root, 'missing-history'));
+  assert.deepEqual(missing.guardObservations.map(({ id, state: stateName }) => [id, stateName]),
+    ids.map((id) => [id, 'log-missing']));
+  assert.deepEqual(missing.guardObservations[0], {
+    id: 'missing-log', state: 'log-missing', raw_status: null, evidence: { log: null, line: null },
+  });
+
+  mkdirSync(history);
+  const file = 'rulings-progress-20261003T000000.log';
+  writeFileSync(path.join(history, file), [
+    'run started',
+    'CHECKED incident-guard:timed-out previous run succeeded',
+    'TIMEOUT incident-guard:timed-out test exceeded its deadline',
+    'CHECKED incident-guard:network-dropped previous run succeeded',
+    'NETWORK_ERROR incident-guard:network-dropped connection dropped',
+    'CHECKED incident-guard:successful',
+  ].join('\n'));
+  const audit = runAudit(history);
+  const byId = Object.fromEntries(audit.guardObservations.map((observation) => [observation.id, observation]));
+  assert.equal(audit.guardObservations.length, ids.length);
+  assert.deepEqual(byId['missing-log'], {
+    id: 'missing-log', state: 'not-started', raw_status: null,
+    evidence: { log: path.join(history, file), line: null },
+  });
+  assert.deepEqual(byId['not-started'], {
+    id: 'not-started', state: 'not-started', raw_status: null,
+    evidence: { log: path.join(history, file), line: null },
+  });
+  assert.deepEqual(byId['timed-out'], {
+    id: 'timed-out', state: 'failed', raw_status: 'TIMEOUT',
+    evidence: { log: path.join(history, file), line: 3 },
+  });
+  assert.deepEqual(byId['network-dropped'], {
+    id: 'network-dropped', state: 'failed', raw_status: 'NETWORK_ERROR',
+    evidence: { log: path.join(history, file), line: 5 },
+  });
+  assert.deepEqual(byId.successful, {
+    id: 'successful', state: 'passed', raw_status: 'CHECKED',
+    evidence: { log: path.join(history, file), line: 6 },
+  });
+  assert.deepEqual(audit.neverDrifted, ['successful']);
+});
+
 test('with a pack, the registry comes from the engine build and targets resolve against --repo, then the build', (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'incident-guard-audit-pack-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

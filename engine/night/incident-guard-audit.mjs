@@ -337,7 +337,7 @@ async function readGuardHistory(historyDir) {
   } catch (error) {
     if (error.code === 'ENOENT') return {
       files: 0, inProgressFiles: 0, firstFile: null, lastFile: null,
-      observations: 0, checked: 0, drifted: 0, errors: 0, results: new Map(),
+      inProgressLogs: [], observations: 0, checked: 0, drifted: 0, errors: 0, results: new Map(),
     };
     throw error;
   }
@@ -345,6 +345,7 @@ async function readGuardHistory(historyDir) {
     .map((entry) => entry.name).sort();
   const files = [];
   let inProgressFiles = 0;
+  const inProgressLogs = [];
   for (const file of candidates) {
     const match = /^rulings-progress-(\d{8})T(\d{6})\d+-(\d+)\.log$/.exec(file);
     if (match) {
@@ -355,10 +356,12 @@ async function readGuardHistory(historyDir) {
         try {
           process.kill(Number(match[3]), 0);
           inProgressFiles += 1;
+          inProgressLogs.push(file);
           continue;
         } catch (error) {
           if (error.code === 'EPERM') {
             inProgressFiles += 1;
+            inProgressLogs.push(file);
             continue;
           }
           if (error.code !== 'ESRCH') throw error;
@@ -374,24 +377,27 @@ async function readGuardHistory(historyDir) {
   let errors = 0;
   for (const file of files) {
     const lines = createInterface({ input: createReadStream(path.join(historyDir, file)), crlfDelay: Infinity });
+    let lineNumber = 0;
     for await (const line of lines) {
-      const match = /^(CHECKED|DRIFT|ERROR)\s+incident-guard:([A-Za-z0-9._-]+)(?:\s|$)/.exec(line);
+      lineNumber += 1;
+      const match = /^([A-Za-z][A-Za-z0-9_-]*)\s+incident-guard:([A-Za-z0-9._-]+)(?:\s|$)/.exec(line);
       if (!match) continue;
       const [, status, id] = match;
-      const result = results.get(id) ?? { checked: 0, drifted: 0, errors: 0 };
+      const result = results.get(id) ?? { checked: 0, drifted: 0, errors: 0, latest: null };
       if (status === 'CHECKED') result.checked += 1;
       else if (status === 'DRIFT') result.drifted += 1;
       else result.errors += 1;
       if (status === 'CHECKED') checked += 1;
       else if (status === 'DRIFT') drifted += 1;
       else errors += 1;
+      result.latest = { status, file, line: lineNumber };
       results.set(id, result);
       observations += 1;
     }
   }
   return {
     files: files.length, inProgressFiles, firstFile: files[0] ?? null, lastFile: files.at(-1) ?? null,
-    observations, checked, drifted, errors, results,
+    inProgressLogs, observations, checked, drifted, errors, results,
   };
 }
 
@@ -407,8 +413,24 @@ export async function auditIncidentGuards(repoInput, historyDirInput, targetRepo
   const history = await readGuardHistory(historyDir);
   const neverDrifted = incidents.filter((guard) => {
     const result = history.results.get(guard.id);
-    return result && result.checked > 0 && result.drifted === 0;
+    return result && result.checked > 0 && result.drifted === 0 && result.errors === 0;
   }).map((guard) => guard.id).sort();
+  const guardObservations = incidents.map((guard) => {
+    const result = history.results.get(guard.id);
+    const latest = result?.latest;
+    const latestLog = history.lastFile ?? history.inProgressLogs.at(-1) ?? null;
+    const state = !history.files && !history.inProgressFiles ? 'log-missing'
+      : !latest || ['NOT_STARTED', 'NOT-STARTED', 'SKIPPED'].includes(latest.status) ? 'not-started'
+        : latest.status === 'CHECKED' ? 'passed' : 'failed';
+    return {
+      id: guard.id,
+      state,
+      raw_status: latest?.status ?? null,
+      evidence: latest
+        ? { log: path.join(historyDir, latest.file), line: latest.line }
+        : { log: latestLog ? path.join(historyDir, latestLog) : null, line: null },
+    };
+  });
 
   const missingByGuard = new Map();
   const hostOpsManifest = await readHostOpsManifest(targetRepo);
@@ -475,6 +497,7 @@ export async function auditIncidentGuards(repoInput, historyDirInput, targetRepo
       drifted: history.drifted,
       errors: history.errors,
     },
+    guardObservations,
     neverDrifted,
     missingTargets,
     nearDuplicates: duplicateGroups(incidents),
