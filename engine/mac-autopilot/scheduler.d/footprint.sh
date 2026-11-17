@@ -619,6 +619,7 @@ footprint_room() { # unit type; report checks that materially delay dispatch
       dispatch_skip footprint-cap; TICK_FOOTPRINT_CAP_HIT=true
       return 1
     fi
+    TICK_FOOTPRINT_CAP_TRIED["$1"]=true
   fi
   _footprint_room "$@" || rc=$?
   # No room left in the refill: the unit keeps waiting untouched, and the walk ends here.
