@@ -92,6 +92,7 @@ harvest_unit_snapshot() { # return the captured unit row during station harvest;
 }
 hs_timed() { # name command...: add its seconds and gh calls to the pass totals
   local name="$1" t0=$SECONDS g0 rc=0; shift
+  phase_mark "$name"
   g0="$(tick_gh_calls_count)"
   "$@" || rc=$?
   HS_SECS[$name]=$(( ${HS_SECS[$name]:-0} + SECONDS - t0 ))
@@ -114,6 +115,7 @@ harvest_station_pass() { # snapshot under lock; harvest and process checks outsi
   [[ "$live_every" =~ ^[1-9][0-9]*$ ]] || live_every=900
   last="$(cat "$A/.harvest-live-epoch" 2>/dev/null)"
   if [[ ! "$last" =~ ^[0-9]+$ ]] || (( $(date +%s) - last >= live_every )); then live_due=true; date +%s > "$A/.harvest-live-epoch"; fi
+  phase_mark harvest_workers
   hs_lock || { HS_DEFERRED=$((HS_DEFERRED + 1)); return 0; }
   workers_snapshot="$(jqf -c '[.workers[] | select(.harvested != true)]' "$WORKERS" 2>/dev/null || echo '[]')"
   hs_unlock
@@ -144,11 +146,13 @@ harvest_station_pass() { # snapshot under lock; harvest and process checks outsi
     fi
     hs_unlock
   done < <(hs_candidates "$live_due" "$workers_snapshot")
+  phase_mark coord_reap
   hs_lock || return 0
   hs_timed coord_reap coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
   hs_unlock
   hs_timed coord_systemd coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
   hs_timed coord_scheduler coord_reconcile_scheduler_workers || say "scheduler claim reconciliation incomplete; unknown claims remain fail-closed"
+  phase_mark self_check_harvest
   hs_lock || return 0
   hs_timed self_check_harvest self_check_harvest || :
   hs_timed precheck_harvest precheck_harvest || :
@@ -156,7 +160,7 @@ harvest_station_pass() { # snapshot under lock; harvest and process checks outsi
   hs_unlock
 }
 harvest_station_tick() {
-  local old limit gh_calls name phases="" HARVEST_STATION_DEADLINE=0 GH_ETAG_DIR="$A/.gh-etag-harvest"
+  local SCHED_STATION=true old limit gh_calls name phases="" HARVEST_STATION_DEADLINE=0 GH_ETAG_DIR="$A/.gh-etag-harvest"
   local HS_LOCK_WAIT=0 HS_LOCK_HOLD=0 HS_HOLD_FROM=0 HS_WORKERS=0 HS_HARVESTED=0 HS_DEFERRED=0
   local HARVEST_STATION_ACTIVE=true HARVEST_CAS_ACTIVE=false HARVEST_CAS_STALE=false HARVEST_CAS_UNIT="" HARVEST_CAS_PID=""
   local HARVEST_CAS_EXPECTED=null HARVEST_CAS_WORKER_EXPECTED=null HARVEST_CAS_UNIT_SNAPSHOT=null

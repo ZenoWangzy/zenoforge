@@ -42,7 +42,18 @@ log_reliability_breach() {
 # A killed tick never prints tick-phases: leave the running phase for loop.sh's TICK-TIMEOUT / REFILL-TIMEOUT line.
 # A refill runs beside a full tick, so each keeps its own file.
 phase_mark() {
-  local f=.tick-phase
+  local f=.tick-phase holder_phase_tmp
+  SCHED_LOCK_HOLDER_PHASE="$1"
+  if [[ "${SCHED_LOCK_HELD:-false}" == true \
+    && "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then
+    holder_phase_tmp="$SCHED_LOCK/holder-phase.tmp.$BASHPID"
+    if printf '%s\t%s\n' "$BASHPID" "$1" > "$holder_phase_tmp" 2>/dev/null \
+      && mv -f -- "$holder_phase_tmp" "$SCHED_LOCK/holder-phase" 2>/dev/null; then
+      :
+    else
+      rm -f -- "$holder_phase_tmp" 2>/dev/null || :
+    fi
+  fi
   [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || f=.refill-phase
   # A station runs beside the tick and shares the file: its phases named the tick's phase in the kill line.
   [[ "${SCHED_STATION:-false}" != true ]] || return 0
