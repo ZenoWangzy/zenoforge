@@ -164,12 +164,18 @@ run_case() {
   local initial_backend=${7-zc}
   local initial_model=${8:-gpt-6-luna} history=${10:-}
   local gate_queue_seconds=${12:-}
+  local zc_available=${13:-yes}
   local -a queue_override=()
   [[ -z $gate_queue_seconds ]] || queue_override=(WORKER_GATE_QUEUE_SECONDS="$gate_queue_seconds")
   local root="$test_root/$name/.scratch" wt="$test_root/$name/worktree" prompt="$test_root/$name/brief.md"
   local agent_home="$test_root/$name/agent-home" home="$test_root/$name/home" hold=${11:-}
   local key=${9:-test-$name} d rc schema=''
   mkdir -p "$root/tmp" "$root/luna" "$wt" "$agent_home" "$home"
+  if [[ $zc_available == yes ]]; then
+    mkdir -p "$root/zc-src/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$root/zc-src/bin/zcode"
+    chmod +x "$root/zc-src/bin/zcode"
+  fi
   if [[ $hold == active ]]; then
     printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$agent_home/zcode-exhausted-until"
   fi
@@ -284,13 +290,13 @@ run_case explicit-zc-no-hold 0 success success 8 4 zc
 [[ $(cat "$CASE_DIR/backend") == zc && $(cat "$CASE_DIR/attempt-backend") == zc ]] || fail 'explicit zc changed backend without a quota hold'
 printf 'PASS explicit zc stays on zc without a quota hold\n'
 
-run_case explicit-zc-missing 0 success success 8 4 zc
+run_case explicit-zc-missing 0 success success 8 4 zc gpt-6-luna '' '' '' '' no
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'explicit zc started without its executable'
 [[ $(wc -l < "$test_root/explicit-zc-missing.stderr") == 1 ]] || fail 'explicit missing zc did not print exactly one reroute line'
 [[ $(cat "$test_root/explicit-zc-missing.stderr") == "worker: zcode executable missing: $test_root/explicit-zc-missing/.scratch/zc-src/bin/zcode; using luna instead of zc" ]] || fail 'explicit missing zc wrote the wrong reroute line'
 printf 'PASS explicit zc reroutes to luna when its executable is missing\n'
 
-run_case luna-failover-missing-zc 75 success fatal 8 4 luna
+run_case luna-failover-missing-zc 75 success fatal 8 4 luna gpt-6-luna '' '' '' '' no
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'luna failover started missing zc'
 assert_file_contains "$CASE_DIR/failover" "backend=zc skipped; reason=zcode executable missing: $test_root/luna-failover-missing-zc/.scratch/zc-src/bin/zcode"
 [[ $(wc -l < "$test_root/luna-failover-missing-zc.stderr") == 1 ]] || fail 'missing-zc failover did not print exactly one reason line'
