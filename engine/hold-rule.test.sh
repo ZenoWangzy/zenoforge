@@ -14,10 +14,25 @@ chmod +x "$test_env_bin/gh"
 mkdir -p "$AGENT_HOME/state"
 echo '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}' > "$AGENT_HOME/state/5.json"
 echo '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/6.json"
-! hold_rule 6 requeue 7 2>/dev/null || { echo "FAIL: foreign hold accepted" >&2; exit 1; }
-! hold_rule 5 requeue 7 2>/dev/null || { echo "FAIL: non-owner comment accepted" >&2; exit 1; }
-! hold_rule pr-9 recut 7 2>/dev/null || { echo "FAIL: comment on another number accepted for pr-9" >&2; exit 1; }
-! hold_rule 5 requeue 7 "" 800 2>/dev/null || { echo "FAIL: size waiver accepted on a non-owner comment" >&2; exit 1; }
+assert_rule_refusal() { # name expected-rc command... — every refusal has an explanation on stderr
+  local name="$1" expected="$2" rc=0; shift 2
+  "$@" > "$test_env_root/$name.out" 2> "$test_env_root/$name.err" || rc=$?
+  [ "$rc" = "$expected" ] && [ -s "$test_env_root/$name.err" ] || { echo "FAIL: $name refusal rc=$rc stderr=$(cat "$test_env_root/$name.err")" >&2; exit 1; }
+}
+assert_rule_refusal foreign-hold 1 hold_rule 6 requeue 7
+assert_rule_refusal non-owner-comment 1 hold_rule 5 requeue 7
+assert_rule_refusal wrong-comment-issue 1 hold_rule pr-9 recut 7
+assert_rule_refusal non-owner-waiver 1 hold_rule 5 requeue 7 "" 800
+assert_rule_refusal invalid-rule-shape 64 hold_rule not-an-issue reroute 7
+assert_rule_refusal missing-waiver 64 hold_rule 5 waiver 7
+assert_rule_refusal reroute-waiver 64 hold_rule 5 reroute 7 "" 800
+grep -Fq 'reroute keeps an existing waiver' "$test_env_root/reroute-waiver.err" || { echo "FAIL: reroute waiver refusal did not explain the retained waiver" >&2; exit 1; }
+assert_rule_refusal ready-pr 64 hold_rule pr-9 ready 7
+assert_rule_refusal missing-gh-comment 1 hold_rule 5 requeue 99
+original_state_read="$(declare -f state_read)"
+state_read() { return 1; }
+assert_rule_refusal initial-state-read 1 hold_rule 5 requeue 7
+eval "$original_state_read"
 (
   fixture_engine="$test_env_root/hold-rule-engine"
   fixture_runtime="$test_env_root/hold-rule-autopi"
@@ -56,8 +71,8 @@ EOT
   printf '%s\n' '{"units":[{"id":"issue-7","issue":7,"stage":"supervisor-review","pr":12,"lane":"pr","branch":"agent/issue-7","history":[{"stage":"review-request-changes"}]}]}' > "$fixture_runtime/units.json"
   export HOLD_RULE_FAKE_FAIL=1
   rc=0
-  hold_rule 7 requeue 9 > "$test_env_root/hold-rule-failed-requeue.out" 2>&1 || rc=$?
-  [ "$rc" -ne 0 ] && jq -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' "$AGENT_HOME/state/7.json" >/dev/null && jq -e '.units[0].stage == "supervisor-review"' "$fixture_runtime/units.json" >/dev/null || {
+  hold_rule 7 requeue 9 > "$test_env_root/hold-rule-failed-requeue.out" 2> "$test_env_root/hold-rule-failed-requeue.err" || rc=$?
+  [ "$rc" -ne 0 ] && [ -s "$test_env_root/hold-rule-failed-requeue.err" ] && jq -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' "$AGENT_HOME/state/7.json" >/dev/null && jq -e '.units[0].stage == "supervisor-review"' "$fixture_runtime/units.json" >/dev/null || {
     echo "FAIL: failed requeue did not remain non-zero with the unit unchanged" >&2
     exit 1
   }
@@ -318,25 +333,23 @@ EOT
   printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/8.json"
   hold_rule 8 requeue 9 "" 800
   [ "$(cat "$AGENT_HOME/waiver.args")" = '--rule|issue-8|requeue|https://github.com/test/repo/issues/8#issuecomment-9|whole ticket||800|head-owner|' ] || { echo "FAIL: hold_rule did not pass the waiver and author: $(cat "$AGENT_HOME/waiver.args")" >&2; exit 1; }
-  rm -f "$AGENT_HOME/waiver.args"; rc=0; hold_rule 8 requeue 9 "" 1281 >/dev/null 2>&1 || rc=$?
-  [ "$rc" = 1 ] && [ ! -e "$AGENT_HOME/waiver.args" ] || { echo "FAIL: hold_rule ran the ruling with a bad waiver" >&2; exit 1; }
-  rc=0; hold_rule 8 reroute 9 "" 800 >/dev/null 2>&1 || rc=$?
-  [ "$rc" = 64 ] || { echo "FAIL: hold_rule took a waiver with --reroute" >&2; exit 1; }
-  rc=0; hold_cli_main --rule issue-8 --reroute --comment 9 --size-waiver 800 >/dev/null 2>&1 || rc=$?
-  [ "$rc" = 64 ] || { echo "FAIL: hold.sh took --size-waiver with --reroute" >&2; exit 1; }
-  rc=0; hold_cli_main --rule issue-8 --requeue --comment 9 --size-waiver 0 >/dev/null 2>&1 || rc=$?
-  [ "$rc" = 64 ] || { echo "FAIL: hold.sh took --size-waiver 0" >&2; exit 1; }
+  rm -f "$AGENT_HOME/waiver.args"; rc=0; hold_rule 8 requeue 9 "" 1281 >"$test_env_root/bad-waiver.out" 2>"$test_env_root/bad-waiver.err" || rc=$?
+  [ "$rc" = 1 ] && [ ! -e "$AGENT_HOME/waiver.args" ] && [ -s "$test_env_root/bad-waiver.err" ] || { echo "FAIL: hold_rule ran the ruling or stayed silent for a bad waiver" >&2; exit 1; }
+  assert_rule_refusal reroute-waiver-hold-rule 64 hold_rule 8 reroute 9 "" 800
+  grep -Fq 'reroute keeps an existing waiver' "$test_env_root/reroute-waiver-hold-rule.err" || { echo "FAIL: hold_rule reroute waiver refusal omitted the retained waiver" >&2; exit 1; }
+  assert_rule_refusal reroute-waiver-cli 64 hold_cli_main --rule issue-8 --reroute --comment 9 --size-waiver 800
+  grep -Fq 'reroute keeps an existing waiver' "$test_env_root/reroute-waiver-cli.err" || { echo "FAIL: hold.sh reroute waiver refusal omitted the retained waiver" >&2; exit 1; }
+  assert_rule_refusal zero-waiver-cli 64 hold_cli_main --rule issue-8 --requeue --comment 9 --size-waiver 0
   rm -f "$AGENT_HOME/waiver.args"; hold_cli_main --rule issue-8 --requeue --comment 9 --size-waiver 800
   grep -q '|800|head-owner|$' "$AGENT_HOME/waiver.args" || { echo "FAIL: hold.sh --size-waiver did not reach hold_rule" >&2; exit 1; }
 )
 printf 'ok - hold --rule --requeue --size-waiver writes the unit waiver in one event, reopens a recut-closed unit, and refuses a bad range, a non-owner comment and other kinds\n'
 # hold.sh --rule accepts --reroute: it gets past the usage check (64) and stops at the owner-comment check.
-rc=0; hold_cli_main --rule issue-5 --reroute --comment 7 2>/dev/null || rc=$?
-[ "$rc" != 64 ] || { echo "FAIL: hold.sh rejects --reroute" >&2; exit 1; }
+assert_rule_refusal reroute-owner-check 1 hold_cli_main --rule issue-5 --reroute --comment 7
 printf 'ok - hold.sh --rule accepts --reroute\n'
 # --rule usage tells supervisors which wording the unchanged-head report-only harvest recognizes.
 rc=0; bash "$SCRIPT_DIR/hold.sh" --rule >"$test_env_root/hold-rule-usage.out" 2>&1 || rc=$?
-[ "$rc" = 64 ] && grep -Fq 'report only' "$test_env_root/hold-rule-usage.out" || { echo "FAIL: hold.sh --rule usage omits report-only requeue wording" >&2; exit 1; }
+[ "$rc" = 64 ] && [ "$(wc -l < "$test_env_root/hold-rule-usage.out")" = 1 ] && grep -Fq 'report only' "$test_env_root/hold-rule-usage.out" || { echo "FAIL: hold.sh --rule usage omits one-line report-only requeue wording" >&2; exit 1; }
 printf 'ok - hold.sh --rule usage names report-only requeue wording\n'
 # A reroute drops the cleared blocker: the body reader does not re-derive it until a reblock names it again.
 (
@@ -453,7 +466,7 @@ EOT
   _AGENT_LIB_DIR="$fixture_engine"
   rc=0
   hold_cli_main --rule issue-7 --supersede-handoff > "$test_env_root/handoff-supersede-usage.out" 2>&1 || rc=$?
-  [ "$rc" = 64 ] && grep -Fq -- '--comment <id>' "$test_env_root/handoff-supersede-usage.out" || { echo 'FAIL: supersede-handoff without --comment did not refuse with usage' >&2; exit 1; }
+  [ "$rc" = 64 ] && [ "$(wc -l < "$test_env_root/handoff-supersede-usage.out")" = 1 ] && grep -Fq -- '--comment <id>' "$test_env_root/handoff-supersede-usage.out" || { echo 'FAIL: supersede-handoff without --comment did not refuse with one-line usage' >&2; exit 1; }
   rc=0
   hold_cli_main --rule issue-7 --supersede-handoff --comment 9 > "$test_env_root/handoff-supersede.out" 2>&1 || rc=$?
   [ "$rc" = 0 ] || { echo 'FAIL: supersede-handoff ruling was rejected' >&2; cat "$test_env_root/handoff-supersede.out" >&2; exit 1; }
@@ -533,12 +546,59 @@ EOT2
   for case in '{"state":"ready-for-agent"}|OPEN' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}|OPEN' '{"state":"tracker"}|CLOSED' '{"state":"needs-info"}|OPEN' '{"state":"tracker"}|FAIL'; do
     reset "${case%|*}" "${case##*|}"
     state_before="$(cat "$AGENT_HOME/state/6299.json")"; units_before="$(cat "$fixture_runtime/units.json")"
-    rc=0; hold_rule 6299 ready 9 >/dev/null 2>&1 || rc=$?
-    [ "$rc" != 0 ] && [ "$(cat "$AGENT_HOME/state/6299.json")" = "$state_before" ] && [ "$(cat "$fixture_runtime/units.json")" = "$units_before" ] \
+    rc=0; hold_rule 6299 ready 9 >/dev/null 2> "$test_env_root/ready-refused.err" || rc=$?
+    [ "$rc" != 0 ] && [ -s "$test_env_root/ready-refused.err" ] && [ "$(cat "$AGENT_HOME/state/6299.json")" = "$state_before" ] && [ "$(cat "$fixture_runtime/units.json")" = "$units_before" ] \
       || { echo "FAIL: --ready accepted or wrote for ${case%|*} issue ${case##*|}" >&2; exit 1; }
   done
   printf 'ok - hold --rule --ready refuses ready-for-agent, on-hold, other states, closed and unreadable issues without writing\n'
 )
 rc=0; bash "$SCRIPT_DIR/hold.sh" --rule >"$test_env_root/hold-rule-ready-usage.out" 2>&1 || rc=$?
-[ "$rc" = 64 ] && grep -Fq -- '--ready' "$test_env_root/hold-rule-ready-usage.out" || { echo "FAIL: hold.sh --rule usage omits --ready" >&2; exit 1; }
+[ "$rc" = 64 ] && [ "$(wc -l < "$test_env_root/hold-rule-ready-usage.out")" = 1 ] && grep -Fq -- '--ready' "$test_env_root/hold-rule-ready-usage.out" || { echo "FAIL: hold.sh --rule usage omits one-line --ready wording" >&2; exit 1; }
 printf 'ok - hold.sh --rule usage names --ready\n'
+# A post-ruling state read can fail after the scheduler records the verdict; the failure must be explained from either cwd.
+(
+  fixture_engine="$test_env_root/hold-rule-post-read-engine"
+  mkdir -p "$fixture_engine/mac-autopilot"
+  cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$HOLD_RULE_REPRO_RECORD"
+EOT
+  chmod +x "$fixture_engine/mac-autopilot/scheduler.sh"
+  export HOLD_RULE_REPRO_RECORD="$test_env_root/hold-rule-post-read.record"
+  gh() {
+    [[ "$*" == 'api repos/test/repo/issues/comments/9' ]] || return 64
+    printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/6570","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/6570#issuecomment-9","body":"reroute"}'
+  }
+  HOLD_RULE_READ_COUNT="$test_env_root/hold-rule-post-read.count"; export HOLD_RULE_READ_COUNT
+  state_read() {
+    local count; count="$(cat "$HOLD_RULE_READ_COUNT")"; count=$((count + 1)); printf '%s\n' "$count" > "$HOLD_RULE_READ_COUNT"
+    if (( count == 1 )); then printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}'; else return 1; fi
+  }
+  _AGENT_LIB_DIR="$fixture_engine"
+  run_post_read_case() { # outside|inside
+    local cwd="$1" rc=0
+    (
+      if [[ "$cwd" == inside ]]; then cd "$SCRIPT_DIR/.."; else cd "$test_env_root"; fi
+      printf '0\n' > "$HOLD_RULE_READ_COUNT"; rm -f "$HOLD_RULE_REPRO_RECORD"
+      hold_cli_main --rule issue-6570 --reroute --comment 9 >"$test_env_root/hold-rule-post-read.out" 2>"$test_env_root/hold-rule-post-read.err" || rc=$?
+      [ -s "$HOLD_RULE_REPRO_RECORD" ] && grep -Fq -- '--rule issue-6570 reroute' "$HOLD_RULE_REPRO_RECORD" \
+        && [ "$rc" = 1 ] && grep -Fq 'post-ruling state read failed' "$test_env_root/hold-rule-post-read.err" \
+        || { echo "FAIL: $cwd post-ruling state read did not explain the recorded reroute refusal" >&2; cat "$test_env_root/hold-rule-post-read.err" >&2; exit 1; }
+    )
+  }
+  run_post_read_case outside
+  run_post_read_case inside
+  state_read() { printf '%s\n' '{"state":"on-hold","hold":{"holder":"supervisor","kind":"manual","release_condition":"manual hold"}}'; }
+  state_requeue() { return 1; }
+  assert_rule_refusal pre-ruling-release 1 hold_cli_main --rule issue-6570 --recut --comment 9
+  grep -Fq 'pre-ruling hold release failed' "$test_env_root/pre-ruling-release.err" || { echo 'FAIL: pre-ruling state release refusal was silent or unexplained' >&2; exit 1; }
+  state_read() { printf '%s\n' '{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}}'; }
+  assert_rule_refusal final-ruling-release 1 hold_cli_main --rule issue-6570 --reroute --comment 9
+  grep -Fq 'final hold release failed' "$test_env_root/final-ruling-release.err" || { echo 'FAIL: final state release refusal was silent or unexplained' >&2; exit 1; }
+  state_read() { printf '%s\n' '{"state":"tracker"}'; }
+  issue_rest_state() { printf 'OPEN\n'; }
+  issue_transition() { return 1; }
+  assert_rule_refusal ready-transition 1 hold_cli_main --rule issue-6570 --ready --comment 9
+  grep -Fq 'ready-state transition failed' "$test_env_root/ready-transition.err" || { echo 'FAIL: ready transition refusal was silent or unexplained' >&2; exit 1; }
+)
+printf 'ok - hold --rule explains a post-ruling state read failure inside and outside the checkout\n'
