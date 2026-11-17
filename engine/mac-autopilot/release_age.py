@@ -49,6 +49,45 @@ def _deployment_list(repo):
     return records if isinstance(records, list) else None
 
 
+def _commit_at(repo, sha):
+    try:
+        done = subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return _ts(done.stdout.strip()) if done.returncode == 0 else None
+
+
+def production_deploy_fallback(repo):
+    """Newest observed per-service production SHA, used only when no current success is available."""
+    if not repo:
+        return None
+    listing = _deployment_list(repo)
+    if listing is None:
+        return None
+    observations = []
+    for deployment in listing:
+        if not isinstance(deployment, dict):
+            continue
+        payload = deployment.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        image_shas = payload.get("image_shas")
+        at = _ts(deployment.get("created_at"))
+        shas = ({sha for sha in image_shas.values() if isinstance(sha, str) and len(sha) == 40
+                 and all(char in "0123456789abcdef" for char in sha)} if isinstance(image_shas, dict) else set())
+        if payload.get("reconciled") is True and at is not None and shas:
+            observations.append((at, deployment, shas))
+    if not observations:
+        return None
+    at, deployment, shas = max(observations, key=lambda item: item[0])
+    # An unranked running SHA could be the oldest, so keep it ahead of dated candidates.
+    oldest_at = datetime.min.replace(tzinfo=timezone.utc)
+    sha = min(shas, key=lambda value: (_commit_at(repo, value) or oldest_at, value))
+    return {"id": deployment.get("id"), "sha": sha, "at": at,
+            "fallback": "GitHub production deployment payload.image_shas"}
+
+
 def production_deploy(repo, reader=READER):
     """{"id", "sha", "at"} for the live sha's earliest real deployment record, or None when unreadable."""
     if not repo:

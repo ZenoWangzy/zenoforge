@@ -25,6 +25,7 @@ SOURCE = {
     "delivery.merged_not_live": "production deployment record (release_age.production_deploy), else $AGENT_HOME/state/live-sha.json, plus first-parent origin/main history classified by the merge-lane NONPRODUCT_PATHS_RE",
     "delivery.oldest_merged_not_live_hours": "production deployment record (release_age.production_deploy), else $AGENT_HOME/state/live-sha.json, plus first-parent origin/main commit times classified by the merge-lane NONPRODUCT_PATHS_RE",
 }
+_SOURCE_DEFAULT = SOURCE.copy()
 
 
 def valid_sha(value):
@@ -100,18 +101,31 @@ def ancestor_shas(repo_root, live_sha):
     return set(result.stdout.splitlines())
 
 
-def collect_health_metrics(agent_home, now, repo=None, reader=None):
-    """Production's own deployment record decides the live sha; live-sha.json (written after a deploy proof) covers an unreadable one.
-
-    release-train.json and deployed.json are never read: a hand release leaves them on an older sha.
-    """
+def collect_health_metrics(agent_home, now, repo=None, reader=None, fallback_reader=None):
+    """Use the current success SHA, then observed service SHAs, then the optional state record."""
     if reader is None:
         import release_age  # engine/mac-autopilot/release_age.py, landed by #635
         reader = release_age.production_deploy
-    deploy = reader(repo if repo is not None else os.environ.get("RELEASE_TRAIN_REPO") or os.environ.get("ZF_REPO", ""))
+        if fallback_reader is None:
+            fallback_reader = release_age.production_deploy_fallback
+    repo = repo if repo is not None else os.environ.get("RELEASE_TRAIN_REPO") or os.environ.get("ZF_REPO", "")
+    for metric_id, source in _SOURCE_DEFAULT.items():
+        SOURCE[metric_id] = source
+    deploy = reader(repo)
+    valid_deploy = (isinstance(deploy, dict) and valid_sha(deploy.get("sha"))
+                    and isinstance(deploy.get("at"), datetime))
+    fallback = fallback_reader(repo) if not valid_deploy and fallback_reader is not None else None
+    is_fallback = (isinstance(fallback, dict) and valid_sha(fallback.get("sha"))
+                   and isinstance(fallback.get("at"), datetime))
+    if is_fallback:
+        deploy = fallback
     record = None
     if isinstance(deploy, dict) and valid_sha(deploy.get("sha")) and isinstance(deploy.get("at"), datetime):
-        record = {"sha": deploy["sha"], "at": deploy["at"].strftime("%Y-%m-%dT%H:%M:%SZ"), "source": "production-deployments"}
+        record = {"sha": deploy["sha"], "at": deploy["at"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "source": deploy.get("fallback") or "production-deployments"}
+    if is_fallback:
+        for metric_id, source in _SOURCE_DEFAULT.items():
+            SOURCE[metric_id] = f"FALLBACK: {fallback['fallback']} (oldest running service SHA); {source}"
     return health_metrics(repository_root(), record or read_live_sha(agent_home), now.timestamp())
 
 
