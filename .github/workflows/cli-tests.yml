@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    # The merge-pr gate also covers all engine/** and tools/** changes for engine-tests; cli-tests keeps its narrower gate paths.
+    # Gate files only. Must equal the gate regex in tools/merge-pr.sh (merge_pr_gate_ci_ok); engine/pr-ci-gate-paths.test.sh checks it.
     paths:
       - tools/merge-pr.sh
       - tools/merge-pr-bootstrap.sh

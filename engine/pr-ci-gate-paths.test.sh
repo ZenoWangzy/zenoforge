@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Keeps PR CI aligned: engine-tests covers the merge-pr gate regex and all engine/tools changes;
-# cli-tests keeps the existing gate paths, and both workflows retain push-to-main.
+# Keeps the PR CI gate in step: the gate regex in tools/merge-pr.sh (merge_pr_gate_ci_ok) and the
+# pull_request paths of engine-tests.yml and cli-tests.yml must agree, and both must keep push-to-main.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -11,7 +11,7 @@ merge_pr="${PR_CI_GATE_MERGE_PR:-$root/tools/merge-pr.sh}"
 regex="$(sed -n "s/^MERGE_PR_GATE_RE='\(.*\)'\$/\1/p" "$merge_pr" | head -1)"
 [[ -n "$regex" ]] || fail "no gate regex found in tools/merge-pr.sh"
 
-# Every item the regex can match, expanded from the regex itself (a sample for .*). Checked against engine-tests.yml.
+# Every item the regex can match, expanded from the regex itself (a sample for .*). Checked against the workflows below.
 mapfile -t derived < <(node -e '
   const s = process.argv[1]; let i = 0;
   const prod = (a, b) => a.flatMap((x) => b.map((y) => x + y));
@@ -69,7 +69,13 @@ for wf in engine-tests cli-tests; do
   mapfile -t globs < <(awk '/^  pull_request:/{f=1;next} /^  [a-z_]+:/{f=0} f && /^      - /{sub(/^      - /,""); print}' "$file")
   [[ ${#globs[@]} -gt 0 ]] || fail "$wf.yml pull_request has no paths"
 
+  # 11-17: engine-tests also runs the focused selection on every engine/** and tools/** PR (zf-focused-gate waits for it);
+  # merge-pr.sh's gate regex stays the narrow set that merge-pr itself holds for PR CI.
+  if [[ $wf == engine-tests ]]; then
+    for p in 'engine/**' 'tools/**'; do printf '%s\n' "${globs[@]}" | grep -qxF "$p" || fail "engine-tests.yml pull_request paths lost $p"; done
+  fi
   for g in "${globs[@]}"; do
+    [[ $wf == engine-tests && ( $g == 'engine/**' || $g == 'tools/**' ) ]] && continue
     sample="${g//\*\*/sample.sh}"
     [[ "$sample" =~ $regex ]] || fail "$wf.yml path $g is not a gate file in merge-pr.sh"
   done
@@ -81,35 +87,26 @@ for wf in engine-tests cli-tests; do
     done
     [[ $covered == 1 ]] || fail "$wf.yml pull_request paths do not cover gate file $f"
   done
-  if [[ "$wf" == engine-tests ]]; then
-    for prefix in engine tools; do
-      covered=0
-      for g in "${globs[@]}"; do
-        [[ "$g" == "$prefix/**" ]] && covered=1
-      done
-      [[ $covered == 1 ]] || fail "$wf.yml pull_request paths do not include $prefix/**"
+  for f in "${derived[@]}"; do
+    covered=0
+    for g in "${globs[@]}"; do
+      # shellcheck disable=SC2254
+      case "$f" in $g) covered=1; break ;; esac
     done
-    for f in "${derived[@]}"; do
-      covered=0
-      for g in "${globs[@]}"; do
-        # shellcheck disable=SC2254
-        case "$f" in $g) covered=1; break ;; esac
-      done
-      [[ $covered == 1 ]] || fail "$wf.yml pull_request paths do not cover $f, which the merge-pr.sh gate regex matches"
-    done
-  fi
+    [[ $covered == 1 ]] || fail "$wf.yml pull_request paths do not cover $f, which the merge-pr.sh gate regex matches"
+  done
 done
 
 # Mutation: add one regex alternative that no workflow lists. The guard must go red.
 if [[ -z "${PR_CI_GATE_MUTANT_RUN:-}" ]]; then
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp" "$test_env_root"' EXIT
-  sed '/^MERGE_PR_GATE_RE=/s@|engine/.*$@|engine/.*|outside/zz-mutant.sh)$'\''@' "$merge_pr" > "$tmp/merge-pr.sh"
-  [[ "$(grep -c 'outside/zz-mutant.sh' "$tmp/merge-pr.sh")" == 1 ]] || fail "mutation did not apply to the regex"
+  sed 's/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin)/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin|zz-mutant)/' "$merge_pr" > "$tmp/merge-pr.sh"
+  [[ "$(grep -c 'zz-mutant' "$tmp/merge-pr.sh")" == 1 ]] || fail "mutation did not apply to the regex"
   set +e
   out="$(PR_CI_GATE_MERGE_PR="$tmp/merge-pr.sh" PR_CI_GATE_MUTANT_RUN=1 bash "${BASH_SOURCE[0]}" 2>&1)"
   rc=$?
   set -e
-  [[ $rc -ne 0 && "$out" == *'outside/zz-mutant.sh'* ]] || fail "a regex item missing from the workflows did not fail the guard (rc=$rc): $out"
+  [[ $rc -ne 0 && "$out" == *'tools/zz-mutant.sh'* ]] || fail "a regex item missing from the workflows did not fail the guard (rc=$rc): $out"
 fi
 
 echo "pr-ci-gate-paths.test.sh: ok (${#gate_files[@]} gate files, ${#derived[@]} regex items)"

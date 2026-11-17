@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    # Gate files plus all engine/** and tools/** changes; engine/pr-ci-gate-paths.test.sh checks the merge-pr gate.
+    # Gate files (equal to the merge-pr.sh gate regex) plus engine/** and tools/**, which run only the focused selection; engine/pr-ci-gate-paths.test.sh checks both.
     paths:
       - engine/**
       - tools/**
