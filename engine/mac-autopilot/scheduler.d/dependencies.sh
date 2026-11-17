@@ -216,8 +216,8 @@ stack_approved_dependency() { # dependent unit-id issue-number unit-json; 0 when
   say "unit $child stacked on $(jqf -r .id <<<"$predecessor")@$approved"
   return 0
 }
-dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
-  local id="$1" dep="$2" issue="$3" st children c next="" s key all_delivered=true
+dead_blocker_resolve() { # unit-id blocker-issue dependent-issue real-wait
+  local id="$1" dep="$2" issue="$3" real_wait="${4:-false}" st children c next="" s key all_delivered=true
   dep_rows_closed_or_parked "$dep" || return 1; st="$(scheduler_issue_state "$dep")" || return 1
   children="$(jqf -r --argjson i "${issue:-0}" '(.recut_children // [])[] | select(. != $i)' <<<"$st")"
   for c in $children; do
@@ -227,8 +227,8 @@ dead_blocker_resolve() { # unit-id blocker-issue dependent-issue
     [[ "${TRACKER_KIDS[$key]}" == OPEN ]] && { next="$c"; break; }
   done
   if [[ -n "$next" ]]; then set_unit "$id" "$(hist blocker-repointed "#$dep closed in ledger after recut; now waits on child #$next") | .blocked_on=$next | (if .dep_wait_delivery == $dep then .dep_wait_delivery=$next | .unpark_condition=$(js "#$next delivered in the ledger or closed on GitHub") else . end)"; say "unit $id blocker #$dep dead (recut): repointed to child #$next"; return 0; fi
-  if [[ -n "$children" && "$all_delivered" == true ]] && dep_rows_all_closed "$dep"; then unblock_unit "$id" "#$dep recut; children delivered"; return 0; fi
-  if [[ -z "$children" ]] && dep_rows_all_closed "$dep"; then if jqf -e '.state | IN("tracker","concluded","released")' <<<"$st" >/dev/null; then unblock_unit "$id" "#$dep closed on purpose (tracker/spec parent)"; else dep_now to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"; fi; return 0; fi
+  if [[ "$real_wait" != true && -n "$children" && "$all_delivered" == true ]] && dep_rows_all_closed "$dep"; then unblock_unit "$id" "#$dep recut; children delivered"; return 0; fi
+  if [[ "$real_wait" != true && -z "$children" ]] && dep_rows_all_closed "$dep"; then if jqf -e '.state | IN("tracker","concluded","released")' <<<"$st" >/dev/null; then unblock_unit "$id" "#$dep closed on purpose (tracker/spec parent)"; else dep_now to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"; fi; return 0; fi
   return 1
 }
 dep_stopped_waiting_on() { # unit-id blocker [true|false, when the caller already read it] → 0 when the scheduler already released this unit from that blocker once
@@ -444,7 +444,7 @@ release_dependency_blocks_pass() {
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep tracker: every other child delivered"; continue
     fi
-    if [[ "$state" == OPEN ]] && dead_blocker_resolve "$id" "$dep" "$issue"; then
+    if [[ "$state" == OPEN ]] && dead_blocker_resolve "$id" "$dep" "$issue" "$real_wait"; then
       dep_blocker_forget "$issue" "$dep"; continue
     fi
     # 路线图 epic/主题是伞形 issue，永远不会"交付"；停在它上面就是永远停（2026-10-20 六个单元）。放开一次，
