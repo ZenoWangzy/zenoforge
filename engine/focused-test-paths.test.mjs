@@ -1151,6 +1151,16 @@ test('a changed sourced fixture maps to the tests that source it, never to itsel
   }
 });
 
+test('a scheduler core change selects all eight scheduler partitions', () => {
+  const schedulerTest = 'engine/mac-autopilot/scheduler.test.sh';
+  const parts = Array.from({ length: 7 }, (_, index) => `engine/mac-autopilot/scheduler-part-${index + 1}.test.sh`);
+  const suites = [schedulerTest, ...parts];
+  assert.deepEqual(
+    focusedTestPaths(['engine/mac-autopilot/scheduler.d/core.sh'], new Set(suites)),
+    [...suites].sort(),
+  );
+});
+
 test('a test-*.sh suite under a configured pipeline root is still selected', () => {
   const repo = mkdtempSync(join(tmpdir(), 'focused-suite-root-'));
   const suite = 'project-tests/test-advisor-convergence.sh';

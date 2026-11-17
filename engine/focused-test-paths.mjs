@@ -878,6 +878,14 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     || path === 'scripts/check-production-image-contract.mjs' || path === 'scripts/production-image-contract.json'
   ))) tests.add(packPath('engine/ci-infrastructure-focused.test.sh'));
 
+  const schedulerTest = packPath('engine/mac-autopilot/scheduler.test.sh');
+  if (tests.has(schedulerTest)) {
+    for (let part = 1; part <= 7; part++) {
+      const candidate = packPath(`engine/mac-autopilot/scheduler-part-${part}.test.sh`);
+      if (tracked.has(candidate)) tests.add(candidate);
+    }
+  }
+
   return [...tests].sort();
 }
 

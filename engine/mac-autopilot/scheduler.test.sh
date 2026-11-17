@@ -603,6 +603,12 @@ tick_gh() {
     # 递归分发到下面的既有分支（会多记一行去掉 -i 的调用），再用 200 + ETag 头信封包一层。
     'api -i')
       local rest=() skip_next=0 arg body
+      # This case rewrites runner inventory between ticks; keep the fixture validator fixed so a
+      # conditional request exposes any reuse of the prior tick's mutable runner snapshot.
+      if [[ "$*" == *'actions/runners?per_page=100'* && "$*" == *'If-None-Match: "stub"'* ]]; then
+        printf 'HTTP/2.0 304 Not Modified\nEtag: "stub"\n\n'
+        return 0
+      fi
       for arg in "$@"; do
         (( skip_next )) && { skip_next=0; continue; }
         case "$arg" in
