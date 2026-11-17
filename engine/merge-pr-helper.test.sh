@@ -656,6 +656,19 @@ PR_FILES='["engine/lib.d/model-units.sh"]'
 PR_BODY=gh-error
 if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'an unreadable PR skipped the static scans'; fi
 PR_BODY=$'## prior-art\nno external prior art: test fixture'
+scan_tree="$fixture/static-scans"
+mkdir -p "$scan_tree/engine"
+cp "$MODEL_POLICY_TEST_REPO/engine/"{test-env.sh,model-policy.default.json,source-extract-ratchet.test.sh,codex-plugins-off-lint.test.sh} "$scan_tree/engine/"
+printf '0\tengine/source-extract-ratchet.test.sh\n0\tengine/codex-plugins-off-lint.test.sh\n' > "$scan_tree/engine/source-extract-baseline.txt"
+for scan in jq-arg-safety jq-regex-safety scheduler-gh-timeout-safety zcode-launch-set; do printf '#!/usr/bin/env bash\nexit 0\n' > "$scan_tree/engine/$scan.test.sh"; done
+printf '%s%s%s%s\n' 'sed -n ' "'" '/^hidden() {/,/^}/p' "' engine/suite.sh" > "$scan_tree/engine/new.test.sh"
+git -C "$scan_tree" init -q -b main
+git -C "$scan_tree" add engine
+merge_pr_static_scans() { merge_pr_static_scans_in "$scan_tree"; }
+PR_FILES='["engine/new.test.sh"]'
+if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'a source-extract line passed the static scans'; fi
+[[ "$(cat "$fixture/check-output")" == *'static scan failed: source-extract-ratchet: FAIL engine/new.test.sh has 1 source-extract lines, baseline 0'* ]] \
+  || fail "source-extract refusal lost its scan name: $(cat "$fixture/check-output")"
 merge_pr_static_scans() { return 0; }
 
 # A dispatch-queue change runs review-family.test.sh; a red run refuses, other files skip it.

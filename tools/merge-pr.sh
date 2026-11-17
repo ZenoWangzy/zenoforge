@@ -296,8 +296,8 @@ merge_pr_scheduler_prelude_ok() {
 # These scans take seconds, so they run here and hold no merge on CI: #502 reached main past jq-arg-safety.
 merge_pr_static_scans_in() {
   local scan rc=0
-  for scan in jq-arg-safety jq-regex-safety scheduler-gh-timeout-safety zcode-launch-set; do
-    timeout 120 bash "$1/engine/$scan.test.sh" 2>&1 | tail -3
+  for scan in jq-arg-safety jq-regex-safety scheduler-gh-timeout-safety zcode-launch-set source-extract-ratchet codex-plugins-off-lint; do
+    timeout 120 bash "$1/engine/$scan.test.sh" 2>&1 | tail -3 | sed "s/^/$scan: /"
     [[ "${PIPESTATUS[0]}" == 0 ]] || rc=1
   done
   return "$rc"
