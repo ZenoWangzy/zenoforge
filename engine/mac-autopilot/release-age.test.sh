@@ -45,6 +45,7 @@ path="$2"
 case "$path" in
   repos/*/deployments/*/statuses) id="${path#*/deployments/}"; id="${id%/statuses}"; cat "$FAKE_GH_DIR/status-$id.json" ;;
   repos/*/deployments\?*) cat "$FAKE_GH_DIR/deployments.json" ;;
+  repos/*/commits/*) sha="${path##*/}"; jq -r '.commit.committer.date' "$FAKE_GH_DIR/commit-$sha.json" ;;
   *) exit 1 ;;
 esac
 SH
@@ -67,16 +68,20 @@ reader = os.path.join(os.path.dirname(os.path.abspath(release_age.__file__)), ".
 os.environ["FAKE_GH_LOG"] = os.path.join(work, "gh-calls.log")
 
 def fixture(rows):
-    """rows: (id, sha, created_at, reconciled). Every record's newest status is success."""
+    """Rows may add image_shas and statuses after (id, sha, created_at, reconciled)."""
     gh = os.path.join(work, "gh")
     for f in os.listdir(gh):
         os.remove(os.path.join(gh, f))
     deployments = []
-    for rid, sha, created, reconciled in rows:
-        deployments.append({"id": rid, "sha": sha, "created_at": created,
-                            "payload": {"reconciled": True} if reconciled else {}})
+    for row in rows:
+        rid, sha, created, reconciled = row[:4]
+        payload = {"reconciled": True} if reconciled else {}
+        if len(row) > 4:
+            payload["image_shas"] = row[4]
+        deployments.append({"id": rid, "sha": sha, "created_at": created, "payload": payload})
         with open(os.path.join(gh, f"status-{rid}.json"), "w") as out:
-            json.dump([{"state": "success", "created_at": created}], out)
+            statuses = row[5] if len(row) > 5 else [{"state": "success", "created_at": created}]
+            json.dump(statuses, out)
     with open(os.path.join(gh, "deployments.json"), "w") as out:
         json.dump(sorted(deployments, key=lambda d: d["created_at"], reverse=True), out)
 
@@ -185,6 +190,35 @@ check(v is not None and v > 5.9, "paused must still report the value")
 release_age.alert(runtime, agent, repo_root, now + timedelta(hours=3), found)
 check(len(stopped()) == 3, "PAUSE must suppress the alert")
 os.remove(os.path.join(agent, "PAUSE"))
+
+# No current success: use the newest reconciled production image map, then choose its oldest running SHA.
+SHA_OLD = "f" * 40
+SHA_NEW = "a" * 40
+fixture([
+    (107, SHA_OLD, ago(2), True, {"service-old": SHA_OLD},
+     [{"state": "success", "created_at": ago(2)}, {"state": "inactive", "created_at": ago(1.9)}]),
+    (108, SHA_NEW, ago(0.25), True, {"service-new": SHA_NEW, "service-old": SHA_OLD},
+     [{"state": "success", "created_at": ago(0.25)}, {"state": "inactive", "created_at": ago(0.1)}]),
+])
+for sha, committed in ((SHA_OLD, "2026-10-20T00:00:00Z"), (SHA_NEW, "2026-11-06T00:00:00Z")):
+    with open(os.path.join(work, "gh", f"commit-{sha}.json"), "w") as out:
+        json.dump({"commit": {"committer": {"date": committed}}}, out)
+import live_delivery
+captured = []
+real_health_metrics = live_delivery.health_metrics
+live_delivery.health_metrics = lambda repo_root, record, now=None: captured.append(record) or {
+    "delivery.merged_not_live": None, "delivery.oldest_merged_not_live_hours": None}
+fallback_agent = os.path.join(work, "fallback-agent")
+live_delivery.collect_health_metrics(fallback_agent, now, repo=REPO)
+check(captured[-1] is not None and captured[-1]["sha"] == SHA_OLD,
+      f"inactive deployments must fall back to oldest running SHA {SHA_OLD}: {captured[-1]}")
+check("fallback" in live_delivery.SOURCE["delivery.oldest_merged_not_live_hours"].lower(),
+      "metric source must identify the fallback")
+os.environ["FAKE_GH_FAIL"] = "1"
+live_delivery.collect_health_metrics(fallback_agent, now, repo=REPO)
+check(captured[-1] is None, f"unreadable deployment sources must stay NO-DATA: {captured[-1]}")
+del os.environ["FAKE_GH_FAIL"]
+live_delivery.health_metrics = real_health_metrics
 
 # CLI: prints the earliest real deploy time and sha of the live sha, ignoring a later reconciled record.
 fixture([(201, SHA_LIVE, "2026-10-31T04:02:59Z", False), (202, SHA_LIVE, "2026-11-01T09:46:18Z", True)])
