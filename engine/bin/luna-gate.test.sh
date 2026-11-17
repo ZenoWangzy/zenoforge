@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 bin=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+source "$bin/../mac-autopilot/scheduler.d/self-check.sh"
 root=$(mktemp -d); trap 'rm -rf "$root" "$test_env_root"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -68,7 +69,6 @@ cache_reason_case() (
   source "$bin/luna-capacity.sh"
   codex_runs() { echo 0; }
   cpu_busy() { echo 0; }
-  eval "$(sed -n '/^priority_admission_has_room() {/,/^}/p' "$bin/../mac-autopilot/scheduler.d/self-check.sh")"
   declare -A TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_DISPATCH_PENDING_ACTIVE=true
   if priority_admission_has_room normal 0; then fail 'low-memory admission unexpectedly opened'; fi
