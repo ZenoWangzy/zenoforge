@@ -38,6 +38,9 @@ CFG_SAVED="$CFG"; CFG="$(jq '.precheck=false' <<<"$CFG")"; GH_RERUNS=()
 units "{\"units\":[{\"id\":\"pr-30\",\"pr\":30,\"stage\":\"ready-to-merge\",\"branch\":\"a\",\"approved_sha\":\"$H2\",\"ci_adopt_head\":\"$H2\",\"ci_adopt_at\":\"2026-10-29T00:00:00Z\",\"ci_wip_wait\":\"$H2\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"branch\":\"b\",\"approved_sha\":\"$H1\",\"ci_adopt_head\":\"$H1\",\"ci_adopt_at\":\"2026-10-29T00:00:00Z\",\"ci_wip_wait\":\"$H1\",\"ready_since\":2,\"history\":[]},{\"id\":\"pr-32\",\"pr\":32,\"stage\":\"ready-to-merge\",\"hotpatch\":true,\"branch\":\"hp\",\"approved_sha\":\"$H2\",\"ci_adopt_head\":\"$H2\",\"ci_adopt_at\":\"2026-10-29T00:00:00Z\",\"ready_since\":3,\"history\":[]}]}"
 TICK_UNFINISHED="[{\"databaseId\":81,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"b\"},{\"databaseId\":83,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"hp\"}]"
 GH_RUN_JSON='[{"databaseId":82,"conclusion":"cancelled"}]'
+# A successful rerun invalidates the tick's unfinished-run snapshot. The API refresh must
+# return the queued fixture runs too, or the waiting run disappears from the pass.
+GH_RUNS='[{"databaseId":81,"status":"queued","event":"pull_request","headBranch":"b"},{"databaseId":83,"status":"queued","event":"pull_request","headBranch":"hp"}]'
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 [[ "$(field pr-30 '.history[-1].stage'):$(field pr-30 '.history[-1].result')" == "ci-wip-start:slot 1/1" \
   && "${GH_RERUNS[*]:-}" == "run rerun 82 --failed" && "$(field pr-30 '.ci_wip_wait // "none"')" == none ]] \
@@ -45,6 +48,7 @@ root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 [[ "$(cat "$wr/cancelled" 2>/dev/null)" == 81 && "$(field pr-31 .ci_wip_wait)" == "$H1" && "$(field pr-32 '.ci_wip_wait // "none"')" == none ]] \
   || fail "WIP gate held the wrong runs ($(tr '\n' ' ' < "$wr/cancelled" 2>/dev/null))"
 [[ "$(sort -u "$wr/reasons")" == "ci wip" ]] || fail "WIP gate cancel did not carry its reason ($(tr '\n' ',' < "$wr/reasons"))"
+GH_RUNS="[{\"headSha\":\"$M1\",\"conclusion\":\"success\",\"status\":\"completed\",\"createdAt\":\"2026-10-19T00:00:00Z\",\"databaseId\":7}]"
 grep -q 'ci wip: 1 free PR runner slot(s)' "$LOG" || fail 'slot count was not sized from the online PR runners'
 GH_CHECKS='[{"name":"suites","bucket":"cancel"}]'
 run_merge_lane || :
