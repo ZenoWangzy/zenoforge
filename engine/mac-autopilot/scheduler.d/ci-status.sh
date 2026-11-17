@@ -1,8 +1,8 @@
 ci_failed_steps() { # head -> failed step names of the head's failed runs
-  local r runs
-  runs="$(gh run list --commit "$1" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null)" || return 1
+  local r runs jobs
+  runs="$(gh_run_list_cached --commit "$1" | jqf -r '.[] | select(.conclusion=="failure") | .databaseId')" || return 1
   for r in $runs; do
-    gh api "repos/{owner}/{repo}/actions/runs/$r/jobs" --jq '.jobs[] | select(.conclusion=="failure") | .steps[] | select(.conclusion=="failure") | .name' 2>/dev/null || return 1
+    jobs="$(ci_jobs_data "$r" true)" || return 1; jqf -r '.[] | select(.conclusion=="failure") | .steps[]? | select(.conclusion=="failure") | .name' <<<"$jobs" || return 1
   done
 }
 ci_infra_red() { # head -> 0 when every failed step is a runner-environment step
@@ -95,7 +95,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     fi
   fi
   if [[ "$(unit_field "$1" .ci_deferred_sha)" == "$3" ]]; then
-    runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+    runs="$(gh_run_list_cached --commit "$3" | jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId')" \
       || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
     for r in $runs; do
       gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
@@ -105,7 +105,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     return 0
   fi
   if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]]; then
-    runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null)" \
+    runs="$(gh_run_list_cached --commit "$3" | jqf -r '.[] | select(.conclusion=="failure") | .databaseId')" \
       || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
     for r in $runs; do
       gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
@@ -122,7 +122,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     failed_steps="$(ci_failed_steps "$3")" || { say "CI infra red unit=$1: failed to read failed steps for head $3"; return 1; }
     echo "[$STAMP] RUNNER-INFRA-RED PR#$2 head=$3 steps: $(sort -u <<<"$failed_steps" | paste -sd ';') (rerun $((k+1))/$CI_INFRA_RERUNS)" >> "$A/alerts/gate.md"
     if (( k < CI_INFRA_RERUNS )); then
-      runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+      runs="$(gh_run_list_cached --commit "$3" | jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId')" \
         || { say "CI infra red unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
       for r in $runs; do
         gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
@@ -164,7 +164,7 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
     return 0
   fi
   local sel='.conclusion=="cancelled"'; [[ -n "$up" ]] && sel='.conclusion=="cancelled" or .conclusion=="failure"'
-  runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq ".[] | select($sel) | .databaseId" 2>/dev/null)" \
+  runs="$(gh_run_list_cached --commit "$3" | jqf -r ".[] | select($sel) | .databaseId")" \
     || { say "CI cancelled unit=$1: could not list cancelled runs for head $3"; return 1; }
   for r in $runs; do
     ci_admission_cancelled "$r" && say "ci cancel-rerun unit=$1 head=$3 run=$r: rerun of a check admission cancelled"
@@ -288,7 +288,7 @@ ci_fact_hint() { # head facts
 cancel_branch_runs() { # branch reason：reason 里第一个 ';' 之前的部分是写进审计日志的稳定原因
   local r n=0 runs
   [[ -n "$1" ]] || return 0
-  runs="$(gh run list --branch "$1" --limit 20 --json databaseId,status,event --jq '.[] | select(.status != "completed" and .event == "pull_request") | .databaseId' 2>/dev/null)" \
+  runs="$(gh_run_list_cached --branch "$1" --limit 20 | jqf -r '.[] | select(.status != "completed" and .event == "pull_request") | .databaseId')" \
     || { say "could not list PR runs on $1 for cancellation"; return 1; }
   for r in $runs; do
     ZF_CANCEL_REASON="${2%%;*}" bash "${ZF_ENGINE_DIR:-$ROOT/engine}/night/main-ci-recovery.sh" cancel-run "$r" >/dev/null 2>&1 && n=$((n+1))
@@ -730,7 +730,7 @@ unfinished_runs() { # → 状态为 queued/in_progress/pending/waiting 的 run�
   tmpdir="$(mktemp -d)" || return 1
   # 四个状态列表有界并行取（GH_PARALLEL），条件请求命中 304 时免主限流配额。
   for st in queued in_progress pending waiting; do
-    { if gh_api_cached -p "runs-$st" "repos/{owner}/{repo}/actions/runs?status=$st&per_page=100" \
+    { if gh_tick_cache_get "actions-runs-$st.json" gh_api_cached -p "runs-$st" "repos/{owner}/{repo}/actions/runs?status=$st&per_page=100" \
         --jq '.workflow_runs[] | {databaseId: .id, status: .status, event: .event, headBranch: .head_branch, headSha: .head_sha, workflowName: .name, createdAt: .created_at}' \
         >"$tmpdir/$st"; then
       touch "$tmpdir/$st.ok"
@@ -739,9 +739,8 @@ unfinished_runs() { # → 状态为 queued/in_progress/pending/waiting 的 run�
   done
   for pid in "${pids[@]}"; do wait "$pid" || :; done
   TICK_UNFINISHED="$(cat "$tmpdir"/* | jqf -s 'unique_by(.databaseId)')"
-  [[ -e "$tmpdir/in_progress.ok" ]] && TICK_UNFINISHED_IN_PROGRESS_OK=true
   if [[ -e "$tmpdir/queued.ok" && -e "$tmpdir/pending.ok" && -e "$tmpdir/waiting.ok" && -e "$tmpdir/in_progress.ok" ]]; then
-    TICK_UNFINISHED_ALL_OK=true
+    TICK_UNFINISHED_ALL_OK=true; [[ -z "${GH_TICK_CACHE_DIR:-}" ]] || : >"$GH_TICK_CACHE_DIR/actions-runs-all.ok"
   fi
   rm -rf -- "$tmpdir"
   TICK_UNFINISHED_LOADED=true
@@ -754,10 +753,10 @@ ci_jobs_prefetch() { # share full per-run job snapshots within this tick (bounde
   job_dir="$(mktemp -d)" || return 1
   for id in "$@"; do
     [[ "$id" =~ ^[0-9]+$ ]] || continue
-    # 同一 id 只发一次：两个并发的 gh_api_cached 会写同一个 ETag 缓存文件
+    # 同一批次同一 id 只排一次；tick 文件缓存也合并批次外的并发 reader
     [[ -n "${CI_RUN_JOBS_CACHE[$id]+cached}" || -e "$job_dir/$id" ]] && continue
     : >"$job_dir/$id"
-    { gh_api_cached "runjobs-$id" "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | {status, runner_id}]' >"$job_dir/$id" || :; } &
+    { ci_jobs_data "$id" >"$job_dir/$id" || :; } &
     ids+=("$id"); pids+=("$!"); gh_par_throttle pids
   done
   for pid in "${pids[@]}"; do wait "$pid" || :; done
@@ -766,14 +765,14 @@ ci_jobs_prefetch() { # share full per-run job snapshots within this tick (bounde
   done
   rm -rf -- "$job_dir"
 }
-ci_jobs_data() { # run id → one tick's full job snapshot, or a fresh read if it was not prefetched
+ci_jobs_data() { # run id [completed] → shared tick snapshot, or durable completed snapshot
   local jobs
   if [[ -n "${CI_RUN_JOBS_CACHE[$1]+cached}" ]]; then
-    printf '%s' "${CI_RUN_JOBS_CACHE[$1]}"
-    return 0
+    jobs="${CI_RUN_JOBS_CACHE[$1]}"
+    [[ "${2:-false}" != true ]] || gh_run_jobs_store_completed "$1" "$jobs" || :
+  else
+    jobs="$(gh_run_jobs_cached "$1" "${2:-false}")" || return 1; CI_RUN_JOBS_CACHE["$1"]="$jobs"
   fi
-  jobs="$(gh_api_cached "runjobs-$1" "repos/{owner}/{repo}/actions/runs/$1/jobs?per_page=100" --jq '[.jobs[] | {status, runner_id}]')" || return 1
-  CI_RUN_JOBS_CACHE["$1"]="$jobs"
   printf '%s' "$jobs"
 }
 ci_jobs_status() { ci_jobs_data "$1" | jqf '[.[] | .status]'; }

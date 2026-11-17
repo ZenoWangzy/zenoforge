@@ -229,7 +229,7 @@ report_only_pr_requeue_harvest() { # unit worker-json report-name report-path ty
     return 0
   fi
   if [[ "$(unit_field "$unit" '.ci_rerun_sha // empty')" != "$head" ]]; then
-    runs="$(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+    runs="$(gh_run_list_cached --commit "$head" | jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId')" \
       || { to_supervisor "$unit" "could not list failed or cancelled CI runs for unchanged head $head"; return 0; }
     if [[ -n "$runs" ]]; then
       run_count=0

@@ -214,7 +214,7 @@ ci_assign_wip() {
         continue
       fi
       if (( gated )); then gated_ready "$id" "$br" "$head"; gated_started=$((gated_started + 1)); continue; fi
-      cancelled_runs="$(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+      cancelled_runs="$(gh_run_list_cached --commit "$head" | jqf -r '.[] | select(.conclusion=="cancelled") | .databaseId')" \
         || { say "ci wip unit=$id: could not list cancelled runs for head $head; admission deferred"; k=$((k-1)); deferred=$((deferred + 1)); continue; }
       for r in $cancelled_runs; do
         gh run rerun "$r" --failed >/dev/null 2>&1 || true
@@ -334,7 +334,7 @@ ci_cancel_stale_watch() {
     note="nothing readmits it"; [[ "$draft" == true ]] && note="draft, gates skipped"
     chk="$(unit_field "$id" '.ci_cancel_stale_chk // empty')"
     [[ "$chk" != "$head:$stage:"* ]] || (( now - ${chk##*:} >= minutes * 60 )) || continue
-    runs="$(gh run list --commit "$head" --json conclusion,event,updatedAt 2>/dev/null)" || { say "ci cancel watch unit=$id: could not list runs for head $head"; continue; }
+    runs="$(gh_run_list_cached --commit "$head")" || { say "ci cancel watch unit=$id: could not list runs for head $head"; continue; }
     age="$(jqf -r --argjson now "$now" '[.[] | select(.event == "pull_request" and .conclusion != "skipped")] as $r
       | if ($r | length) > 0 and all($r[]; .conclusion == "cancelled") then (($now - ([$r[] | .updatedAt | fromdateiso8601] | max)) / 60 | floor) else -1 end' <<<"$runs" 2>/dev/null)" || continue
     if [[ ! "$age" =~ ^[0-9]+$ ]]; then

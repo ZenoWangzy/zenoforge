@@ -456,7 +456,7 @@ $(decision_scope "$u")"
             local k n=0 r failed_runs rerun_failed=0
             k="$(unit_field "$id" '.ci_infra_reruns // 0')"; [[ "$k" =~ ^[0-9]+$ ]] || k=0
             if (( k < CI_INFRA_RERUNS )); then
-              failed_runs="$(gh run list --commit "$sha" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+              failed_runs="$(gh_run_list_cached --commit "$sha" | jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId')" \
                 || { to_supervisor "$id" "could not list failed CI runs for unchanged approved head $sha"; continue; }
               [[ -n "$failed_runs" ]] || { to_supervisor "$id" "no failed CI run found for unchanged approved head $sha"; continue; }
               for r in $failed_runs; do
