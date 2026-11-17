@@ -80,9 +80,11 @@ if [[ -f $S/luna/rounds.log ]] && awk -v key="$key" '
 fi
 b=${WORKER_BACKEND:-}  # 10-28: zc's 84% failure was our wrapper (json output, Built-in fatal), fixed
 inflight() { local n=0 f; for f in "$S"/luna/*/backend; do [[ $(cat "$f" 2>/dev/null) == "$1" && ! -f ${f%/backend}/rc ]] && n=$((n+1)); done; echo "$n"; }
+zc_executable="$S/zc-src/bin/zcode"
 breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna-breaker"; }
 breaker_open_for() {
   local file now touched
+  [[ $1 == zc && ! -x $zc_executable ]] && return 0
   # 10-30 maintainer: bin/zc-quota holds ZCode before the 5h window runs out; same marker lib.sh's provider_quota_exhausted reads.
   [[ $1 == zc ]] && (( $(cat "$hold_home/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
   [[ $1 == luna ]] && (( $(cat "$hold_home/codex-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
@@ -95,7 +97,11 @@ if [[ -z $b ]]; then
   zc_open=0; luna_open=0
   breaker_open_for zc && zc_open=1
   breaker_open_for luna && luna_open=1
-  if (( zc_open && !luna_open )); then b=luna
+  if (( zc_open && !luna_open )); then
+    b=luna
+    if [[ ! -x $zc_executable ]]; then
+      printf 'worker: zcode executable missing: %s; using luna instead of zc\n' "$zc_executable" >&2
+    fi
   elif (( luna_open && !zc_open )); then b=zc
   else
     # 10-28: both quotas reset; spread load so neither provider hits its weekly cap first (zc-only burned GLM's in ~1 h)
@@ -109,7 +115,11 @@ if [[ -z $b ]]; then
 fi
 if [[ $b == zc ]] && breaker_open_for zc; then
   b=luna
-  printf 'worker: zcode quota hold active; using luna instead of zc\n' >&2
+  if [[ ! -x $zc_executable ]]; then
+    printf 'worker: zcode executable missing: %s; using luna instead of zc\n' "$zc_executable" >&2
+  else
+    printf 'worker: zcode quota hold active; using luna instead of zc\n' >&2
+  fi
 fi
 if [[ $b != luna && $b != zc ]]; then
   printf 'worker: unsupported backend %s\n' "$b" >&2; echo 2 > "$d/rc"; exit 2
@@ -316,7 +326,11 @@ if [[ -n $run_reason ]]; then
   { cat "$prompt"; printf '\n## Resume after backend failover\nAnother agent already worked in this worktree and stopped (%s). Before doing anything else, read `git status`, `git log origin/main..HEAD` and `gh pr list --head "$(git branch --show-current)" --state open`. Continue from that state: reuse the existing commits and PR, and push to the same branch.\n' "$first_reason"; } > "$resume"
   prompt=$resume
   if [[ $next_backend == zc ]] && breaker_open_for zc; then
-    second_reason='zcode quota hold active'
+    if [[ ! -x $zc_executable ]]; then
+      second_reason="zcode executable missing: $zc_executable"
+    else
+      second_reason='zcode quota hold active'
+    fi
     printf '[%s] backend=zc skipped; reason=%s\n' "$(date -u +%FT%TZ)" "$second_reason" >> "$d/failover"
     final_reason="both backends failed: $failed_backend: $first_reason; zc: $second_reason"
     printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
