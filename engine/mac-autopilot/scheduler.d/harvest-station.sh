@@ -160,7 +160,7 @@ harvest_station_pass() { # snapshot under lock; harvest and process checks outsi
   hs_unlock
 }
 harvest_station_tick() {
-  local SCHED_STATION=true old limit gh_calls name phases="" HARVEST_STATION_DEADLINE=0 GH_ETAG_DIR="$A/.gh-etag-harvest"
+  local SCHED_STATION=true old limit gh_calls rest_used name phases="" HARVEST_STATION_DEADLINE=0 GH_ETAG_DIR="$A/.gh-etag-harvest"
   local HS_LOCK_WAIT=0 HS_LOCK_HOLD=0 HS_HOLD_FROM=0 HS_WORKERS=0 HS_HARVESTED=0 HS_DEFERRED=0
   local HARVEST_STATION_ACTIVE=true HARVEST_CAS_ACTIVE=false HARVEST_CAS_STALE=false HARVEST_CAS_UNIT="" HARVEST_CAS_PID=""
   local HARVEST_CAS_EXPECTED=null HARVEST_CAS_WORKER_EXPECTED=null HARVEST_CAS_UNIT_SNAPSHOT=null
@@ -185,18 +185,19 @@ harvest_station_tick() {
     harvest_station_pass || :
     hs_unlock
     gh_calls="$(tick_gh_calls_summary)"
+    rest_used="$(tick_rest_usage_summary)"
     for name in harvest_workers coord_reap coord_systemd coord_scheduler self_check_harvest precheck_harvest recover_orphans; do
       [[ -n "${HS_SECS[$name]:-}" ]] && phases+="${phases:+,}${name}:${HS_SECS[$name]}s/${HS_GH[$name]}gh"
     done
     # A PAUSE does not stop it: the paused tick harvests too, and a harvest dispatches nothing.
-    say "harvest-station done secs=$SECONDS $gh_calls lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none}"
+    say "harvest-station done secs=$SECONDS $gh_calls $rest_used lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none}"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$HARVEST_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$HARVEST_STATION_LOCK"
 }
 
 report_only_pr_requeue_harvest() { # unit worker-json report-name report-path type → handle a report-only supervisor requeue or return 1
-  local unit="$1" worker="$2" report_name="$3" report_path="$4" type="$5" pr head started unit_json current_head gate_report_name gate_report_path reason runs run run_count repo
+  local unit="$1" worker="$2" report_name="$3" report_path="$4" type="$5" pr head started unit_json current_head gate_report_name gate_report_path reason runs runs_json run run_count repo
   [[ "$type" == implement || "$type" == repair ]] || return 1
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$worker")" != true ]] || return 1
   pr="$(unit_field "$unit" '.pr // empty')"
@@ -229,7 +230,8 @@ report_only_pr_requeue_harvest() { # unit worker-json report-name report-path ty
     return 0
   fi
   if [[ "$(unit_field "$unit" '.ci_rerun_sha // empty')" != "$head" ]]; then
-    runs="$(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+    runs_json="$(gh_run_list_cached --commit "$head")" \
+      && runs="$(jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' <<<"$runs_json")" \
       || { to_supervisor "$unit" "could not list failed or cancelled CI runs for unchanged head $head"; return 0; }
     if [[ -n "$runs" ]]; then
       run_count=0

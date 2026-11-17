@@ -271,8 +271,7 @@ main_suites_load() {
   [[ "$MAIN_SUITES_RUNS_LOADED" != true ]] || return 0
   MAIN_SUITES_RUNS_LOADED=true
   local query_seconds started=$SECONDS
-  MAIN_SUITES_RUNS="$(gh run list --workflow "$(main_gate_workflow)" --branch main --limit 100 \
-    --json conclusion,status,createdAt,headSha,databaseId,attempt 2>/dev/null)" || MAIN_SUITES_RUNS=""
+  MAIN_SUITES_RUNS="$(gh_run_list_cached --workflow "$(main_gate_workflow)" --branch main --limit 100)" || MAIN_SUITES_RUNS=""
   jqf -e 'type=="array"' <<<"$MAIN_SUITES_RUNS" >/dev/null || MAIN_SUITES_RUNS=""
   query_seconds=$((SECONDS - started))
   (( query_seconds < 2 )) || say "merge detail main_suites_query=${query_seconds}s"

@@ -88,14 +88,23 @@ cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -u
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
-  label=""
+  label="" issues=""
   for ((i = 1; i <= $#; i++)); do
     if [ "${!i}" = "--label" ]; then j=$((i + 1)); label="${!j}"; fi
   done
   case "$label" in
-    ready-for-agent) echo "${FAKE_ISSUES_A:-}" ;;
-    needs-advisor) echo "${FAKE_ISSUES_B:-}" ;;
+    ready-for-agent) issues="${FAKE_ISSUES_A:-}" ;;
+    needs-advisor) issues="${FAKE_ISSUES_B:-}" ;;
   esac
+  if [[ " $* " == *'--json number,updatedAt'* ]]; then
+    for n in $issues; do
+      var="FAKE_ISSUE_UPDATED_AT_$n"
+      updated_at="${!var:-$(date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)}"
+      printf '%s\t%s\n' "$n" "$updated_at"
+    done
+  else
+    echo "$issues"
+  fi
   exit 0
 fi
 if [ "$1" = "api" ]; then
@@ -129,6 +138,7 @@ if [ "$1" = "api" ]; then
     exit 0
   fi
   if [[ "$path" == *timeline ]]; then
+    [[ -z "${FAKE_GH_TIMELINE_LOG:-}" ]] || printf '%s\n' "$n" >> "$FAKE_GH_TIMELINE_LOG"
     var="FAKE_TIMELINE_$n"
     since=""
     for ((i = 1; i <= $#; i++)); do
@@ -245,6 +255,7 @@ export REPO="test/repo"
 export ZF_REPO_DIR="$FAKE_BIN/repo"
 export AGENT_DRY_RUN=1
 export FAKE_GH_WRITE_LOG="$FAKE_BIN/writes.log"
+export FAKE_GH_TIMELINE_LOG="$FAKE_BIN/timelines.log"
 export FAKE_GH_ISSUE_LABELS_DIR="$FAKE_BIN/issue-labels"
 mkdir -p "$FAKE_GH_ISSUE_LABELS_DIR"
 : > "$FAKE_GH_WRITE_LOG"
@@ -263,6 +274,12 @@ run_once() {
     mkdir -p "$agent_home/state"
     printf '%s\n' "$FAKE_WRITER_RECEIPTS" > "$agent_home/state/ticket-transitions.jsonl"
   fi
+  set +e
+  RUN_OUTPUT="$(bash "$DETECTOR_SRC" 2>&1)"
+  RUN_STATUS=$?
+  set -e
+}
+run_again() {
   set +e
   RUN_OUTPUT="$(bash "$DETECTOR_SRC" 2>&1)"
   RUN_STATUS=$?
@@ -449,6 +466,21 @@ run_once
 assert_not_contains "transitions before a reopen do not freeze the new lifecycle" \
   "$RUN_OUTPUT" "#108 crossed"
 unset FAKE_TIMELINE_108 FAKE_REOPEN_108 FAKE_COMMENTS_108
+
+# --- scenario 10: unchanged issues do not trigger another timeline read ----
+export FAKE_ISSUES_A="109"
+export FAKE_ISSUES_B=""
+export FAKE_ISSUE_UPDATED_AT_109="$(ago 10)"
+export FAKE_TIMELINE_109="$(alternating_timeline ready-for-agent needs-advisor "$(ago 10)" "$(ago 5)")"
+: > "$FAKE_GH_TIMELINE_LOG"
+run_once
+assert_eq "initial label-churn pass succeeds" "0" "$RUN_STATUS"
+timelines_after_first="$(wc -l < "$FAKE_GH_TIMELINE_LOG" | tr -d ' ')"
+run_again
+timelines_after_second="$(wc -l < "$FAKE_GH_TIMELINE_LOG" | tr -d ' ')"
+assert_eq "unchanged updated_at skips the next timeline read" "$timelines_after_first" "$timelines_after_second"
+assert_eq "the first pass read this issue timeline once" "1" "$timelines_after_first"
+unset FAKE_TIMELINE_109 FAKE_ISSUE_UPDATED_AT_109
 
 if [ "$FAILED" -ne 0 ]; then
   echo "FAILED"

@@ -180,7 +180,7 @@ intake_judge_station_worker() { # issue file, result dir, repo, stale seconds
 }
 
 intake_judge_station_pass() {
-  local lock="${INTAKE_JUDGE_LOCK:-$A/.intake-judge-station.lock}" old rc=0 started=$SECONDS cap parallel stale_after repo candidates selected total deferred=0 judged=0 applied=0 fallback=0 work_dir result_dir issue number result j a f d w xargs_rc=0
+  local lock="${INTAKE_JUDGE_LOCK:-$A/.intake-judge-station.lock}" old rc=0 started=$SECONDS cap parallel stale_after repo candidates selected total deferred=0 judged=0 applied=0 fallback=0 work_dir result_dir issue number result j a f d w xargs_rc=0 rest_used
   local -a issue_files=() issue_numbers=()
   cd "$ROOT" || { say "scheduler: root $ROOT unavailable"; return 1; }
   mkdir -p -- "$A" || return 1
@@ -192,6 +192,7 @@ intake_judge_station_pass() {
   fi
   printf '%s\n' "$$" >"$lock/pid"
   date +%s >"$A/.intake-judge-epoch"
+  tick_gh_calls_begin
   if [[ -e "$PAUSE_FILE" ]]; then
     say "intake-judge paused by $PAUSE_FILE: no pass"
   elif ! state_schema_ok; then
@@ -251,7 +252,9 @@ intake_judge_station_pass() {
       fi
     fi
   fi
-  say "intake-judge done secs=$((SECONDS - started)) judged=$judged applied=$applied fallback=$fallback deferred=$deferred rc=$rc"
+  rest_used="$(tick_rest_usage_summary)"
+  say "intake-judge done secs=$((SECONDS - started)) judged=$judged applied=$applied fallback=$fallback deferred=$deferred rc=$rc $rest_used"
+  rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   [[ "$(cat "$lock/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$lock"
   return "$rc"
 }

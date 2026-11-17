@@ -4,7 +4,7 @@
 # is held across the pass, and each ledger write takes the lock only for that write. The tick continues immediately, and later gate reads
 # use the dependency cache the pass left (dep-check.cache.json, paced by DEP_CHECK_SECONDS).
 release_deps_station_tick_pass() {
-  local old rc=0 gh_calls
+  local old rc=0 gh_calls rest_used
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   if ! mkdir "$RELEASE_DEPS_STATION_LOCK" 2>/dev/null; then
     old="$(cat "$RELEASE_DEPS_STATION_LOCK/pid" 2>/dev/null || true)"
@@ -23,7 +23,8 @@ release_deps_station_tick_pass() {
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" # the stacked-release restack reads it; the tick's fetch refreshes it
     release_dependency_blocks || rc=$?
     gh_calls="$(tick_gh_calls_summary)"
-    say "release-deps done secs=$SECONDS $gh_calls rc=$rc ended=$(date -u +%H:%M:%SZ)"
+    rest_used="$(tick_rest_usage_summary)"
+    say "release-deps done secs=$SECONDS $gh_calls $rest_used rc=$rc ended=$(date -u +%H:%M:%SZ)"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$RELEASE_DEPS_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$RELEASE_DEPS_STATION_LOCK"

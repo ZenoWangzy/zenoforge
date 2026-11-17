@@ -604,7 +604,7 @@ run_refill_intake_dispatch_phases() {
   (( INTAKE_ADDED == 0 || SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )) || phase dispatch_pending true
 }
 refill_tick() {
-  local TICK_LOCAL_REFILL=true TICK_REFILL_STARTED=$SECONDS refill_log_offset=0 live metrics
+  local TICK_LOCAL_REFILL=true TICK_REFILL_STARTED=$SECONDS refill_log_offset=0 live metrics rest_used
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   refill_log_offset="$(cat "$A/.refill-dispatch-log-offset" 2>/dev/null || true)"
   if [[ ! "$refill_log_offset" =~ ^[0-9]+$ ]]; then
@@ -653,11 +653,12 @@ refill_tick() {
   live="$(live_workers)"
   metrics="$(refill_dispatch_metrics "$refill_log_offset" "$live")" \
     || metrics='free_slots=unknown pending=unknown skips=footprint:unknown,handoff:unknown,memory:unknown'
-  say "refill done live=$live $metrics secs=$SECONDS ended=$(date -u +%H:%M:%SZ) $gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
+  rest_used="$(tick_rest_usage_summary)"
+  say "refill done live=$live $metrics secs=$SECONDS ended=$(date -u +%H:%M:%SZ) $gh_calls $rest_used${TICK_PHASES:+ slow:$TICK_PHASES}"
 }
 
 main() {
-  local views_mode=dashboard gh_calls=0 tick_harvests=false
+  local views_mode=dashboard gh_calls=0 rest_used tick_harvests=false
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   acquire_scheduler_lock || { echo "[$STAMP] scheduler tick skipped: another tick holds $SCHED_LOCK" >> "$LOG"; return 75; } # loop.sh retries soon
   if ! state_schema_ok; then
@@ -760,7 +761,8 @@ main() {
   GH_TICK_CALLS_FILE=""
   TICK_INTAKE_READS_FILE=""
   local tick_skips; tick_skips="$(dispatch_skip_summary)"
-  say "tick done units=$(jqf '.units | length' "$UNITS") live=$(live_workers) secs=$SECONDS ended=$(date -u +%H:%M:%SZ) $gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}${tick_skips:+ skips=$tick_skips}"
+  rest_used="$(tick_rest_usage_summary)"
+  say "tick done units=$(jqf '.units | length' "$UNITS") live=$(live_workers) secs=$SECONDS ended=$(date -u +%H:%M:%SZ) $gh_calls $rest_used${TICK_PHASES:+ slow:$TICK_PHASES}${tick_skips:+ skips=$tick_skips}"
 }
 
 if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" == "true" ]]; then

@@ -497,10 +497,11 @@ $(decision_scope "$u")"
           if [[ "$pr_num" =~ ^[0-9]+$ ]] && approved_ci_repair_unchanged "$u" "$sha" "$pr_head"; then
             # Repair returned the exact approved head after a CI red: reuse the existing unit-row retry budget,
             # and mark this head rerun so the merge lane does not spend an uncounted first retry.
-            local k n=0 r failed_runs rerun_failed=0
+            local k n=0 r failed_runs failed_runs_json rerun_failed=0
             k="$(unit_field "$id" '.ci_infra_reruns // 0')"; [[ "$k" =~ ^[0-9]+$ ]] || k=0
             if (( k < CI_INFRA_RERUNS )); then
-              failed_runs="$(gh run list --commit "$sha" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+              failed_runs_json="$(gh_run_list_cached --commit "$sha")" \
+                && failed_runs="$(jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' <<<"$failed_runs_json")" \
                 || { to_supervisor "$id" "could not list failed CI runs for unchanged approved head $sha"; continue; }
               [[ -n "$failed_runs" ]] || { to_supervisor "$id" "no failed CI run found for unchanged approved head $sha"; continue; }
               for r in $failed_runs; do

@@ -598,6 +598,7 @@ session_day="${TODAY//-//}"
 tick_gh() {
   printf 'gh %s\n' "$*" >> "$TF/calls"
   case "$1 $2" in
+    'api rate_limit') printf '%s\n' '{"remaining":5000,"reset":1790000000}' ;;
     # #4725 条件请求包装（gh_api_cached）发出的 `gh api -i [-H …] …`：剥掉 -i/-H 后按原样
     # 递归分发到下面的既有分支（会多记一行去掉 -i 的调用），再用 200 + ETag 头信封包一层。
     'api -i')
@@ -3068,12 +3069,15 @@ command jq -e 'any(.workers[]; .unit=="issue-8802" and .type=="implement" and .h
   || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill tick did not record the dispatched worker' >&2; exit 1; }
 command jq -e 'any(.workers[]; .unit=="issue-8801" and .harvested==true)' "$TF/supervisor/autopi/workers.json" >/dev/null \
   || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill tick did not locally harvest the direct-main implementation result' >&2; exit 1; }
-grep -Fq 'refill done' "$TF/supervisor/autopi/scheduler.log" || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'scheduler.test.sh: refill tick omitted its completion log line' >&2; exit 1; }
+grep -Eq 'refill done .*rest_used=0([[:space:]]|$)' "$TF/supervisor/autopi/scheduler.log" || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'scheduler.test.sh: refill tick omitted its REST usage completion field' >&2; exit 1; }
 if grep -Fq 'tick done' "$TF/supervisor/autopi/scheduler.log"; then
   echo 'scheduler.test.sh: refill entry ran the slow tick' >&2; exit 1
 fi
 refill_calls="$(tail -n +$((calls_before + 1)) "$TF/calls")"
-if grep -Eq '^gh ' <<<"$refill_calls" || grep -Eq '^git fetch .* origin([[:space:]]|$)' <<<"$refill_calls"; then
+[[ "$(grep -Fc 'gh api rate_limit --jq .resources.core' <<<"$refill_calls" || true)" == 2 ]] \
+  || { echo 'scheduler.test.sh: refill tick did not take exactly two rate-limit measurements' >&2; exit 1; }
+if grep -E '^gh ' <<<"$refill_calls" | grep -Evq '^gh api rate_limit --jq \.resources\.core$' \
+  || grep -Eq '^git fetch .* origin([[:space:]]|$)' <<<"$refill_calls"; then
   printf '%s\n' "$refill_calls" >&2; echo 'scheduler.test.sh: refill tick touched GitHub or fetched a remote' >&2; exit 1
 fi
 refill_worker_pid="$(command jq -r '.workers[] | select(.unit=="issue-8802" and .harvested!=true) | .pid' "$TF/supervisor/autopi/workers.json")"

@@ -170,7 +170,7 @@ ready_since_epoch() { # → jq 表达式：.ready_since 归一为 epoch 秒（IS
   printf '%s' '(.ready_since // 0 | if type=="string" then (try (sub("\\.[0-9]+"; "") | fromdateiso8601) catch 0) else . end)'
 }
 gh() {
-  local api_class started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}"
+  local api_class started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}" run_id
   local timeout_op="${1:-unknown}" timeout_unit="${id:-unknown}"
   local timeout_seconds="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"
   if [[ -n "${GH_TICK_CALLS_FILE:-}" ]]; then
@@ -181,6 +181,14 @@ gh() {
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || timeout_seconds=120
   [[ -z "${2:-}" ]] || timeout_op+=" $2"
   gh_timeout -k 1 "${timeout_seconds}s" "$@" || rc=$?
+  if (( rc == 0 )); then
+    if [[ "${1:-}" == run && "${2:-}" == rerun && "${3:-}" =~ ^[0-9]+$ ]]; then
+      gh_run_jobs_invalidate "$3"
+    elif [[ "${1:-}" == api && "${2:-}" == -X && "${3:-}" == POST && "${4:-}" == repos/*/actions/runs/*/rerun ]]; then
+      run_id="$(sed -E 's#^.*/actions/runs/([0-9]+)/rerun$#\1#' <<<"$4")"
+      [[ "$run_id" =~ ^[0-9]+$ ]] && gh_run_jobs_invalidate "$run_id"
+    fi
+  fi
   (( rc != 124 )) || say "gh timeout op=$timeout_op unit=$timeout_unit after=${timeout_seconds}s"
   if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]]; then
     elapsed=$((SECONDS - started))
@@ -204,12 +212,17 @@ scheduler_auto_filed_issue_create() {
   fi
 }
 tick_gh_calls_begin() {
+  tick_rest_usage_begin
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
   : >"$GH_TICK_CALLS_FILE" 2>/dev/null || GH_TICK_CALLS_FILE=""
   ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$A/deployment-status.$BASHPID"
   rm -rf -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || :
   mkdir -p -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR=""
+  [[ -z "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" ]] || chain_exit_trap 'rm -rf -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR"'
   export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR
+  GH_TICK_CACHE_DIR="${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR:+$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR/.gh-cache}"
+  [[ -z "$GH_TICK_CACHE_DIR" ]] || mkdir -p -- "$GH_TICK_CACHE_DIR" 2>/dev/null || GH_TICK_CACHE_DIR=""
+  export GH_TICK_CACHE_DIR
   TICK_INTAKE_READS_FILE="$A/intake-reads.$BASHPID"
   printf '0\n' >"$TICK_INTAKE_READS_FILE" 2>/dev/null || TICK_INTAKE_READS_FILE=""
   TICK_PHASE_DETAILS=""
@@ -217,9 +230,10 @@ tick_gh_calls_begin() {
   TICK_LOCK_WAIT=0
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
-  find "$A" -maxdepth 1 -type d -name 'deployment-status.*' -mmin +120 -exec rm -rf -- {} + 2>/dev/null || :
+  find "$A" -maxdepth 1 -type d -name 'deployment-status.*' -mmin +60 -exec rm -rf -- {} + 2>/dev/null || :
   find "$A" -maxdepth 1 -name 'intake-reads.*' -mmin +120 -delete 2>/dev/null || :
   find "$GH_ETAG_DIR" -type f -mmin +360 -delete 2>/dev/null || :
+  find "$A/.gh-run-jobs" -maxdepth 1 -type f -name '*.json' -mmin +10080 -delete 2>/dev/null || :
 }
 # One roadmap tree per tick for issue_transition's parent check: a shell variable, not exported, so detached workers never see it.
 # The first transition fetches into this file (roadmap_ensure_issue_parent); a killed tick's leftover is swept after 120 min.
@@ -236,6 +250,32 @@ tick_roadmap_cache_end() {
 }
 tick_gh_calls_count() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf '0\n'; return 0; }; awk 'END {print NR}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf '0\n'; }
 tick_gh_calls_summary() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf 'gh_calls=0 gql=0 rest=0\n'; return 0; }; awk '$0 == "graphql" {gql++} $0 == "rest" {rest++} END {printf "gh_calls=%d gql=%d rest=%d\n", NR, gql, rest}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf 'gh_calls=0 gql=0 rest=0\n'; }
+# Rate-limit deltas are host-wide; other callers share the same token.
+tick_rest_usage_begin() {
+  local core remaining reset
+  TICK_REST_REMAINING_BEFORE="" TICK_REST_RESET_BEFORE=""
+  core="$(gh_timeout 10s api rate_limit --jq .resources.core 2>/dev/null)" || return 0
+  remaining="$(jqf -r '.remaining // empty' <<<"$core" 2>/dev/null)" || return 0
+  reset="$(jqf -r '.reset // empty' <<<"$core" 2>/dev/null)" || return 0
+  [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 0
+  TICK_REST_REMAINING_BEFORE="$remaining" TICK_REST_RESET_BEFORE="$reset"
+}
+tick_rest_usage_summary() {
+  local core remaining reset
+  if [[ "${TICK_REST_REMAINING_BEFORE:-}" =~ ^[0-9]+$ && "${TICK_REST_RESET_BEFORE:-}" =~ ^[0-9]+$ ]] \
+    && core="$(gh_timeout 10s api rate_limit --jq .resources.core 2>/dev/null)" \
+    && remaining="$(jqf -r '.remaining // empty' <<<"$core" 2>/dev/null)" \
+    && reset="$(jqf -r '.reset // empty' <<<"$core" 2>/dev/null)" \
+    && [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]]; then
+    if [[ "$TICK_REST_RESET_BEFORE" != "$reset" ]]; then
+      printf 'rest_used=reset\n'
+    else
+      printf 'rest_used=%d\n' "$((10#$TICK_REST_REMAINING_BEFORE - 10#$remaining))"
+    fi
+  else
+    printf 'rest_used=unknown\n'
+  fi
+}
 gh_par_throttle() { # pid 数组名：在途数达到 GH_PARALLEL 时等最早的一个结束
   local -n _gh_pids="$1"
   while (( ${#_gh_pids[@]} >= GH_PARALLEL )); do wait "${_gh_pids[0]}" || :; _gh_pids=("${_gh_pids[@]:1}"); done
@@ -276,6 +316,80 @@ gh_api_cached() { # [-p] key url [gh api 参数…]；--jq 的输出即缓存正
     && mv -f "$GH_ETAG_DIR/$key.body.tmp" "$GH_ETAG_DIR/$key.body" || return 1
   [[ -n "$etag" ]] && printf '%s\n' "$etag" >"$GH_ETAG_DIR/$key.etag" || :
   printf '%s' "$body"
+}
+gh_tick_cache_get() { # key fetch_function [args…] → shared file for subshell readers in this tick
+  local key="$1" fetch="$2" cache lock_fd="" output="" tmp="" rc=0
+  shift 2
+  [[ -n "${GH_TICK_CACHE_DIR:-}" ]] || { "$fetch" "$@"; return $?; }
+  cache="$GH_TICK_CACHE_DIR/$key"
+  mkdir -p -- "$GH_TICK_CACHE_DIR" 2>/dev/null || { "$fetch" "$@"; return $?; }
+  exec {lock_fd}>>"$cache.lock" || return 1
+  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 1; }
+  if [[ -f "$cache" ]]; then
+    cat "$cache" || rc=$?
+  else
+    output="$("$fetch" "$@")" || rc=$?
+    if (( rc == 0 )); then
+      tmp="$(mktemp "$cache.XXXXXX")" || tmp=""
+      if [[ -n "$tmp" ]]; then
+        if printf '%s' "$output" >"$tmp" && mv -f -- "$tmp" "$cache"; then :; else rm -f -- "$tmp"; fi
+      fi
+      printf '%s' "$output"
+    fi
+  fi
+  flock -u "$lock_fd" || :
+  exec {lock_fd}>&-
+  return "$rc"
+}
+gh_run_list_fetch() {
+  gh run list "$@" --json databaseId,conclusion,event,status,headBranch,headSha,createdAt,updatedAt,workflowName,displayTitle,attempt 2>/dev/null
+}
+gh_run_list_cached() { # list filters → one shared snapshot per query in this tick
+  local key
+  key="$(printf '%s\0' "$@" | base64 | tr '/+' '_-' | tr -d '=\n')"
+  gh_tick_cache_get "runs-$key.json" gh_run_list_fetch "$@"
+}
+gh_run_jobs_fetch() {
+  local id="$1" pages
+  pages="$(gh_api_cached -p "runjobs-$id" "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=100" \
+    --jq '[.jobs[] | {status, runner_id, conclusion, steps}]')" || return 1
+  jqf -s 'add' <<<"$pages"
+}
+gh_run_jobs_store_completed() { # run id jobs-json → immutable completed snapshot
+  local id="$1" jobs="$2" file tmp
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  jqf -e 'type == "array"' <<<"$jobs" >/dev/null 2>&1 || return 1
+  mkdir -p -- "$A/.gh-run-jobs" 2>/dev/null || return 1
+  file="$A/.gh-run-jobs/$id.json"
+  [[ -s "$file" ]] && return 0
+  tmp="$(mktemp "$file.XXXXXX")" || return 1
+  if printf '%s\n' "$jobs" >"$tmp" && mv -f -- "$tmp" "$file"; then return 0; fi
+  rm -f -- "$tmp"
+  return 1
+}
+gh_run_jobs_invalidate() { # run id → forget snapshots after a successful rerun
+  local id="$1" dir
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  for dir in "${GH_ETAG_DIR:-}" "$A"/.gh-etag "$A"/.gh-etag-*; do
+    [[ -d "$dir" ]] || continue
+    rm -f -- "$dir/runjobs-$id.body" "$dir/runjobs-$id.etag"
+  done
+  rm -f -- "$A/.gh-run-jobs/$id.json"
+  if [[ -n "${GH_TICK_CACHE_DIR:-}" ]]; then
+    rm -f -- "$GH_TICK_CACHE_DIR/runjobs-$id.json" "$GH_TICK_CACHE_DIR"/runs-*.json \
+      "$GH_TICK_CACHE_DIR"/actions-runs-*.json "$GH_TICK_CACHE_DIR/actions-runs-all.ok"
+  fi
+  if declare -p CI_RUN_JOBS_CACHE >/dev/null 2>&1; then unset "CI_RUN_JOBS_CACHE[$id]"; fi
+  TICK_UNFINISHED_LOADED=false TICK_UNFINISHED_ALL_OK=false
+}
+gh_run_jobs_cached() { # run id [completed] → one shared tick snapshot, then durable if complete
+  local id="$1" completed="${2:-false}" file jobs
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  file="$A/.gh-run-jobs/$id.json"
+  [[ ! -s "$file" ]] || { cat "$file"; return 0; }
+  jobs="$(gh_tick_cache_get "runjobs-$id.json" gh_run_jobs_fetch "$id")" || return 1
+  [[ "$completed" != true ]] || gh_run_jobs_store_completed "$id" "$jobs" || :
+  printf '%s' "$jobs"
 }
 required_checks_without_pass() {
   # `gh pr checks` bucket and same-name de-dup semantics differ on old gh; an older gh never merges.

@@ -5,7 +5,7 @@ ci_stuck_unqueued_pending() { # unit-id pr head branch → 0 when this head was 
   local tree_sha new_head patched_head endpoint
   local -a stuck_run_ids=()
   [[ -n "$branch" && "$branch" != main ]] || return 1
-  [[ "${TICK_UNFINISHED_ALL_OK:-false}" == true ]] || return 1
+  [[ "${TICK_UNFINISHED_ALL_OK:-false}" == true || ( -n "${GH_TICK_CACHE_DIR:-}" && -f "$GH_TICK_CACHE_DIR/actions-runs-all.ok" ) ]] || return 1
   command git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 || return 1
 
   runs="$(unfinished_runs | jqf -c --arg head "$head" --arg branch "$branch" \

@@ -466,9 +466,9 @@ publish_pr_run_snapshot() {
   # main CI 与 infra run 列表并行取。
   query_started=$SECONDS
   ci_file="$(mktemp)" || ci_file=/dev/null
-  { gh run list --workflow CI --branch main --limit 100 --json databaseId,headSha,status,conclusion,createdAt,attempt >"$ci_file" 2>/dev/null || :; } &
+  { gh_run_list_cached --workflow CI --branch main --limit 100 >"$ci_file" || :; } &
   ci_pid=$!
-  infra="$(gh run list -R "${ZF_INFRA_REPO-example-org/example-infra}" --limit 30 --json databaseId,status,conclusion,createdAt,headSha,workflowName,displayTitle 2>/dev/null)" || infra=""
+  infra="$(gh_run_list_cached -R "${ZF_INFRA_REPO-example-org/example-infra}" --limit 30)" || infra=""
   wait "$ci_pid" || :
   ci="$(cat "$ci_file" 2>/dev/null)"
   [[ "$ci_file" == /dev/null ]] || rm -f -- "$ci_file"
