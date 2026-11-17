@@ -581,7 +581,7 @@ dep_dead_sweep() { # at most one unit per sweep reaches the arbiter; no state, s
       to_supervisor "$id" "$evidence. Decide: recut this unit with the prerequisite included, close it, or rule that it starts without #$dep"
     fi
     return 0
-  done < <(jqf -c '[.units[] | select(.size_recut_pending != true and ((.stage=="blocked-external" and (.blocked_on | type)=="number" and (.dep_wait_delivery == null or .dep_wait_delivery == .blocked_on)) or (.stage=="parked" and .parked_reason=="waiting-predecessor" and (.blocked_on | type)=="number")))] | sort_by(-.issue) | .[]' "$UNITS")
+  done < <(jqf -c '.units as $units | [$units[] | select(.size_recut_pending != true and ((.stage=="blocked-external" and (.blocked_on | type)=="number" and (.dep_wait_delivery == null or .dep_wait_delivery == .blocked_on)) or (.stage=="parked" and .parked_reason=="waiting-predecessor" and (.blocked_on | type)=="number"))) | . as $w | ($units | map(select(.issue == $w.blocked_on))) as $rows | select(($rows | length)==0 or all($rows[]; .stage | IN("closed","parked")))] | sort_by(-.issue) | .[]' "$UNITS")
 }
 dep_dead_unpark() { # delivery clears every repeat park; a dead undelivered blocker gets only the one pre-repeat release, so a refusing worker cannot loop
   local u id dep
