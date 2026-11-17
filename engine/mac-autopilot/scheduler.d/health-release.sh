@@ -187,11 +187,11 @@ open_main_red_unit() { # sha run-id attempt (a repeated, classified code failure
   gate_wf="$(main_gate_workflow)"
   local recovery_session="${AGENT_HOME:-${HOME:-}/.zenoforge}/main-red/$1.json"
   [[ "$attempt" =~ ^[1-9][0-9]*$ ]] || return 0
-  if jqf -e --arg sha "$1" '
+  if jqf_optional_file "$recovery_session" -e --arg sha "$1" '
     .red_sha == $sha and .red_workflow == "pipeline-suites.yml"
       and (.status == "rerun-requested" or .status == "bisecting"
         or .status == "culprit-found" or .status == "revert-open" or .status == "unattributed")
-  ' "$recovery_session" >/dev/null 2>&1; then
+  ' >/dev/null 2>&1; then
     say "main-red unit $id deferred to the Pipeline suites bisect session"
     return 0
   fi
