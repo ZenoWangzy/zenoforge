@@ -26,6 +26,9 @@ A="$MAC_AUTOPILOT_RUNTIME_DIR"
 STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # A contended lock: the wait takes at least 2 s on the SECONDS clock, then the lock is ours.
+mkdir -p "$SCHED_LOCK"
+printf '%s\n' "$$" > "$SCHED_LOCK/pid"
+printf '%s\tdispatch_pending\n' "$$" > "$SCHED_LOCK/holder-phase"
 printf '%s\n' dispatch_pending > "$A/.tick-phase"
 acquire_scheduler_lock_wait() { local t=$SECONDS; while (( SECONDS - t < 2 )); do sleep 0.1; done; SCHED_LOCK_HELD=true; }
 release_scheduler_lock() { SCHED_LOCK_HELD=false; }
@@ -35,7 +38,7 @@ set_unit issue-1 '.note="waited for the lock"' || fail "set_unit returned rc $?"
 line="$(grep -F 'dispatch detail ledger_write unit=issue-1' "$LOG" || true)"
 [[ -n "$line" ]] || fail "no ledger_write line after a 2 s lock wait: $(cat "$LOG")"
 [[ "$line" == *'lock_wait='* ]] || fail "ledger_write line has no lock_wait=: $line"
-[[ "$line" == *'holder_phase=dispatch_pending'* ]] || fail "ledger_write line has no holder_phase= of the lock holder: $line"
+[[ "$line" == *"holder_phase=dispatch_pending/$$"* ]] || fail "ledger_write line has no holder_phase= of the lock holder: $line"
 [[ "$(jq -r '.units[0].note' "$UNITS")" == 'waited for the lock' ]] || fail "the write itself did not land"
 
 # A write to an id with no row fails with rc 3, is logged, and leaves units.json byte-identical.
