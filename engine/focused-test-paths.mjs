@@ -830,7 +830,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
       continue;
     }
 
-    // Keep owner maps for suites loaded through wrappers the shell caller scan cannot follow.
+    // Release fixtures load mail indirectly, beyond the shell function caller scan. 11-17: so do the ci-admission.sh and harvest-station.sh suites (wrappers).
     const functionMapped = helperTests.mappedPaths.has(path)
       && !['engine/night/maintainer-health-mail.sh', 'engine/notify.sh', 'engine/mac-autopilot/scheduler.d/ci-admission.sh', 'engine/mac-autopilot/scheduler.d/harvest-station.sh'].map(packPath).includes(path);
     // A guard fragment is the registry's data: it maps to the same tests as the registry file.
