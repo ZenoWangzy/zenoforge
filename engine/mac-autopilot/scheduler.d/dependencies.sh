@@ -1,5 +1,5 @@
 # Dead proof's active routes differ from intake skips: it includes live routes and excludes two terminal labels.
-readonly -a DEP_DEAD_ACTIVE_LABELS=(on-hold needs-info awaiting-release ready-for-agent needs-advisor needs-triage roadmap roadmap-epic roadmap-theme needs-recut checks-blocked awaiting-pipeline-sync hotfix opt-lane session-owned pipeline-system finish-first concluded)
+DEP_DEAD_ACTIVE_LABELS=(on-hold needs-info awaiting-release ready-for-agent needs-advisor needs-triage roadmap roadmap-epic roadmap-theme needs-recut checks-blocked awaiting-pipeline-sync hotfix opt-lane session-owned pipeline-system finish-first concluded)
 
 # 依赖链（2026-10-20：#3680–#3686 是同一张日报的串行票，前置未交付时 worker 正确地拒绝动手）：
 # 报告写 BLOCKED-ON #N → 单元停在 blocked-external（不占开发产能），前置单元合并/落地或 issue 关闭后自动回到 implement-pending。
@@ -115,6 +115,9 @@ dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached Git
   local info state labels
   dep_delivered_in_ledger "$2" && return 0
   ! dep_dead_ruled "$1" "$2" || return 0
+  # 11-17: once dead_blocker_resolve moved this unit off a recut root, the root no longer blocks it; the body gate re-blocked
+  # issue-2941/4388/4397 on #2911 after every tracker release (repoint -> release -> re-block, 6 cycles in 30 min).
+  jqf -e --arg p "#$2 closed in ledger after recut;" 'any(.history[]?; .stage == "blocker-repointed" and ((.result // "") | startswith($p)))' <<<"$1" >/dev/null && return 0
   info="$(dep_cache_info "$2")"
   state="$(jqf -r '.state // empty' <<<"$info")"
   # A requeued unit can reach dispatch before the next cache refresh listed its blockers: no entry is unknown, not open (#1135 parked on #1133, closed not_planned). One fresh read decides; unreadable or OPEN still blocks.
