@@ -775,6 +775,8 @@ PR_CHECKS='[{"name":"suites (0)","bucket":"cancel"}]'
 if merge_pr_gate_ci_ok 17 "$PR_CHECKS" >"$fixture/check-output" 2>&1; then fail 'a gate file merged on cancelled suites'; fi
 PR_CHECKS='[{"name":"suites (0)","bucket":"pass"}]'
 merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'a gate file with green suites was refused'
+PR_CHECKS='[{"name":"suites (0)","bucket":"skipping"}]'
+merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'an empty focused selection (skipped suites) was refused'
 PR_CHECKS='[{"name":"suites (0)","bucket":"pending"}]' PR_FILES='["tools/quick-land.sh"]'
 merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'a non-gate file waited for pending suites'
 for preserved in engine/worktree-lifecycle.sh engine/mac-autopilot/rescued_gc.sh engine/mac-autopilot/scheduler.d/cleanup.sh engine/mac-autopilot/scheduler.d/units.sh; do

@@ -69,7 +69,13 @@ for wf in engine-tests cli-tests; do
   mapfile -t globs < <(awk '/^  pull_request:/{f=1;next} /^  [a-z_]+:/{f=0} f && /^      - /{sub(/^      - /,""); print}' "$file")
   [[ ${#globs[@]} -gt 0 ]] || fail "$wf.yml pull_request has no paths"
 
+  # 11-17: engine-tests also runs the focused selection on every engine/** and tools/** PR (zf-focused-gate waits for it);
+  # merge-pr.sh's gate regex stays the narrow set that merge-pr itself holds for PR CI.
+  if [[ $wf == engine-tests ]]; then
+    for p in 'engine/**' 'tools/**'; do printf '%s\n' "${globs[@]}" | grep -qxF "$p" || fail "engine-tests.yml pull_request paths lost $p"; done
+  fi
   for g in "${globs[@]}"; do
+    [[ $wf == engine-tests && ( $g == 'engine/**' || $g == 'tools/**' ) ]] && continue
     sample="${g//\*\*/sample.sh}"
     [[ "$sample" =~ $regex ]] || fail "$wf.yml path $g is not a gate file in merge-pr.sh"
   done
