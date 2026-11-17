@@ -116,7 +116,7 @@ A="$CACHE_A" LOG="$CACHE_LOG" STAMP=fixture GH_ETAG_DIR="$CACHE_A/.gh-etag"
 source "$SCHEDULER_DIR/scheduler.d/core.sh"
 jqf() { command jq "$@"; }
 gh_timeout() { shift; [[ "$1 $2" == 'api rate_limit' ]] && printf '%s\n' '{"remaining":5000,"reset":1790000000}'; }
-trap 'touch "$PRIOR_MARKER"' EXIT
+trap 'touch "$PRIOR_MARKER"' EXIT # subshell trap: the probe is its own bash process and never sources test-env.sh
 tick_gh_calls_begin
 printf '%s\n' "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" > "$CURRENT_DIR_FILE"
 EOF
