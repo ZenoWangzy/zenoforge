@@ -241,8 +241,8 @@ dead_root_fixture \
   "$(unit issue-9691 9691 blocked-external '.blocked_on=9610 | .body_blocked_by=[9610]')"
 CACHE_ROWS=([9610]=$'OPEN\t' [9691]=$'OPEN\t')
 run_counted
-jq -e '.units[] | select(.id=="issue-9691") | .stage=="supervisor-review" and .dep_dead_proved==9610 and .dep_wait_delivery==9610 and .blocked_on==null and any(.history[]; .stage=="dep-dead-proved")' "$UNITS" >/dev/null \
-  || fail "a closed tracker with no open child must use dep-dead proof: $(jq -c '.units[] | select(.id=="issue-9691")' "$UNITS")"
+jq -e '.units[] | select(.id=="issue-9691") | .stage=="implement-pending" and .blocked_on==null and any(.history[]; .stage=="unblocked" and .result=="#9610 closed on purpose (tracker/spec parent)")' "$UNITS" >/dev/null \
+  || fail "a closed tracker with no open child must use the tracker-parent unblock path: $(jq -c '.units[] | select(.id=="issue-9691")' "$UNITS")"
 
 dead_root_fixture \
   "$(unit issue-9692 9692 blocked-external '.blocked_on=9623 | .dep_wait_delivery=9623 | .body_blocked_by=[9623]')"

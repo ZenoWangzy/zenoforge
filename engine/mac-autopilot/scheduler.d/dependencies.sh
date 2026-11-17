@@ -542,7 +542,7 @@ dep_predecessor_dead() { # waiter-unit-json predecessor; fail closed and print a
     | ["on-hold","needs-info","awaiting-release","ready-for-agent","needs-advisor","needs-triage","roadmap","roadmap-epic","roadmap-theme","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane","session-owned","pipeline-system","finish-first","concluded"] as $active
     | if length == 0 then $st[0].state == "tracker" or $st[0].tracker_parent == true or
         ((any($l[]; IN("needs-owner","ready-for-human"))) and all($l[]; . as $label | $active | index($label) == null))
-      else all(.[]; .stage | IN("closed","parked")) and (any(.[]; .stage == "parked") or $st[0].state == "tracker" or $st[0].state == "ready-for-agent" or $st[0].tracker_parent == true or
+      else all(.[]; .stage == "closed" or (.stage == "parked" and .parked_reason == "dep-dead-repeat")) and (any(.[]; .stage == "parked") or $st[0].state == "tracker" or $st[0].state == "ready-for-agent" or $st[0].tracker_parent == true or
         (($st[0].state | IN("on-hold","needs-recut","needs-triage","ready-for-agent","needs-advisor","checks-blocked","awaiting-pipeline-sync","awaiting-release","finish-first","session-owned") | not)
           and all($l[]; . as $label | $active | index($label) == null)))
       end' <<<"$rows" >/dev/null || return 1
