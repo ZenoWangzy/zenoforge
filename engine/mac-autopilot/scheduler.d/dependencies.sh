@@ -236,7 +236,10 @@ dead_blocker_resolve() { # unit-id blocker-issue dependent-issue real-wait
     if [[ -z "${TRACKER_KIDS[$key]+x}" ]]; then s="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$c")")"; [[ -n "$s" ]] || s="$(dep_fresh_state "$c")"; TRACKER_KIDS["$key"]="${s:-unknown}"; fi
     [[ "${TRACKER_KIDS[$key]}" == OPEN ]] && { next="$c"; break; }
   done
-  if [[ -n "$next" ]]; then set_unit "$id" "$(hist blocker-repointed "#$dep closed in ledger after recut; now waits on child #$next") | .blocked_on=$next | (if .dep_wait_delivery == $dep then .dep_wait_delivery=$next | .unpark_condition=$(js "#$next delivered in the ledger or closed on GitHub") else . end)"; say "unit $id blocker #$dep dead (recut): repointed to child #$next"; return 0; fi
+  # 11-17: after the repoint the worker still read #$dep in the body and reported BLOCKED-ON it (issue-2941, 29k tokens a round); tell it once.
+  if [[ -n "$next" ]]; then jqf -e --arg id "$id" --arg p "Scheduler note: predecessor #$dep was recut" 'any(.units[]; .id == $id and ((.task // "") | contains($p)))' "$UNITS" >/dev/null \
+      || dep_task_note "$id" "Scheduler note: predecessor #$dep was recut and is closed in the ledger; its open work is #$next. Do not report BLOCKED-ON #$dep. If the work of #$next is a real code dependency, report BLOCKED-ON #$next."
+    set_unit "$id" "$(hist blocker-repointed "#$dep closed in ledger after recut; now waits on child #$next") | .blocked_on=$next | (if .dep_wait_delivery == $dep then .dep_wait_delivery=$next | .unpark_condition=$(js "#$next delivered in the ledger or closed on GitHub") else . end)"; say "unit $id blocker #$dep dead (recut): repointed to child #$next"; return 0; fi
   if [[ "$real_wait" != true && -n "$children" && "$all_delivered" == true ]] && dep_rows_all_closed "$dep"; then unblock_unit "$id" "#$dep recut; children delivered"; return 0; fi
   if [[ "$real_wait" != true && -z "$children" ]] && dep_rows_all_closed "$dep"; then if jqf -e '.state | IN("tracker","concluded","released")' <<<"$st" >/dev/null; then unblock_unit "$id" "#$dep closed on purpose (tracker/spec parent)"; else dep_now to_supervisor "$id" "blocker #$dep is closed in the ledger but its issue is open with no recut children: decide"; fi; return 0; fi
   return 1
