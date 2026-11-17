@@ -208,8 +208,18 @@ rm -rf "$SCHED_LOCK"; SCHED_LOCK_HELD=true; TICK_LOCAL_REFILL=true
 SCHED_LOCK_HELD=false; rm -rf "$SCHED_LOCK"
 jq -n '{workers: [range(0;70) | {pid: (. + 1000), unit: "u\(.)", harvested: true, started: "2026-11-07T00:00:\(10 + (. % 50))Z"}]}' > "$WORKERS"
 sys_tmp="$(mktemp -d)"
+eval "real_jqf() $(declare -f jqf | tail -n +2)"
+trim_filter_lock_state="$A/worker-trim-jq.lock-state"
+: > "$trim_filter_lock_state"
+jqf() {
+  if [[ "${1:-}" == *"select(.harvested != true)"* ]]; then
+    printf '%s\n' "${SCHED_LOCK_HELD:-false}" > "$trim_filter_lock_state"
+  fi
+  real_jqf "$@"
+}
 AP_SYSTEM_TMP="$sys_tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || : # its last step is a best-effort branch sweep
 [[ "$(jq '.workers | length' "$WORKERS")" == 60 ]] || fail 'cleanup_tick did not trim the workers ledger without the lock held'
 [[ ! -e "$SCHED_LOCK" && "$SCHED_LOCK_HELD" == false ]] || fail 'cleanup_tick kept the ledger lock'
+[[ "$(cat "$trim_filter_lock_state")" == false ]] || fail "cleanup_tick filtered workers while the ledger lock was held ($(cat "$trim_filter_lock_state"))"
 SCHED_LOCK_HELD=true
 echo 'refill-room.test.sh: ok'

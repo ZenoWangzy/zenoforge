@@ -335,17 +335,29 @@ cleanup_tick() {
   n_total="$(jqf '.workers | length' "$WORKERS" 2>/dev/null || echo 0)"
   if (( n_total > 60 )); then
     # 未回收的 worker 一律保留，只裁剪已回收的旧记录。
-    # The tick's tail runs without the ledger lock, so this one write takes it (set_unit's own-lock pattern).
-    # 2026-11-08: a refill held the ledger lock and this wait ran the tick into its 1800 s kill. The wait is bounded; a busy lock skips the trim to the next tick.
-    local own_lock=false t0=$SECONDS
-    if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then acquire_scheduler_lock_wait 5 && own_lock=true; fi
-    if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
-      jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' "$WORKERS" | write_state "$WORKERS"
-      say "trim workers ledger $n_total secs=$((SECONDS - t0))"
+    # Prepare the full-file jq result without the lock; commit only if no writer changed the input meanwhile.
+    local own_lock=false t0=$SECONDS trim_snapshot="" trim_result=""
+    trim_snapshot="$(mktemp "${WORKERS}.trim.XXXXXX")" || trim_snapshot=""
+    trim_result="${trim_snapshot}.result"
+    if [[ -n "$trim_snapshot" ]] && cp -- "$WORKERS" "$trim_snapshot" \
+      && jqf '{workers: ([.workers[] | select(.harvested != true)] + ([.workers[] | select(.harvested == true)] | sort_by(.started) | .[-60:]))}' \
+        "$trim_snapshot" > "$trim_result"; then
+      if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then acquire_scheduler_lock_wait 5 && own_lock=true; fi
+      if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
+        if cmp -s "$trim_snapshot" "$WORKERS"; then
+          cat "$trim_result" | write_state "$WORKERS"
+          say "trim workers ledger $n_total secs=$((SECONDS - t0))"
+        else
+          say "cleanup trim skipped at ${SECONDS}s: workers ledger changed during preparation"
+        fi
+      else
+        say "cleanup trim skipped at ${SECONDS}s: ledger lock busy"
+      fi
+      [[ "$own_lock" != true ]] || release_scheduler_lock
     else
-      say "cleanup trim skipped at ${SECONDS}s: ledger lock busy"
+      say "cleanup trim skipped at ${SECONDS}s: workers snapshot unavailable"
     fi
-    [[ "$own_lock" != true ]] || release_scheduler_lock
+    [[ -z "$trim_snapshot" ]] || rm -f -- "$trim_snapshot" "$trim_result"
   fi
   # 只删一天无写入的超大日志：活 worker 的日志仍在写，不会被删。
   find "$SUP" -maxdepth 1 -name '*.worker.log' -size +4M -mmin +1440 -delete 2>/dev/null
