@@ -42,10 +42,9 @@ dispatch_stop_loss_worker_enqueue() { # unit → persist a launch marker and que
   say "dispatch detail stop_loss_escalate_queued unit=$id"
 }
 
-dispatch_stop_loss_workers_start() { # called by tick_step_lock_run after both step and scheduler locks are free
-  local id since queued limit step_lock_fd="${TICK_STEP_LOCK_FD:-}"
+dispatch_stop_loss_workers_launch() { # scheduler lock is free; start queued stop-loss workers
+  local id since queued limit rc=0 worker_pid step_lock_fd="${TICK_STEP_LOCK_FD:-}"
   ((${#TICK_DISPATCH_STOP_LOSS_QUEUE[@]})) || return 0
-  [[ "${SCHED_LOCK_HELD:-false}" != true ]] || { say 'dispatch stop-loss workers: scheduler lock still held'; return 1; }
   limit="${AUTOPI_TICK_STEP_KILL_SECONDS:-900}"; [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=900
   for queued in "${TICK_DISPATCH_STOP_LOSS_QUEUE[@]}"; do
     id="${queued%%:*}"; since="${queued#*:}"
@@ -54,8 +53,20 @@ dispatch_stop_loss_workers_start() { # called by tick_step_lock_run after both s
       export A LOG
       exec setsid timeout -k 30 "$limit" bash "$HERE/scheduler.sh" --stop-loss-worker "$id"
     ) >> "$A/loop.out" 2>&1 < /dev/null &
+    worker_pid=$!
+    if [[ "${AUTOPI_TEST_INLINE_TICK_STEPS:-false}" == true ]]; then wait "$worker_pid" || rc=$?; fi
   done
   TICK_DISPATCH_STOP_LOSS_QUEUE=()
+  return "$rc"
+}
+
+dispatch_stop_loss_workers_start() { # after the dispatch step lock is free; yield the scheduler lock if this caller still holds it
+  ((${#TICK_DISPATCH_STOP_LOSS_QUEUE[@]})) || return 0
+  if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
+    phase_yield_lock_batch dispatch_stop_loss_workers_launch
+  else
+    dispatch_stop_loss_workers_launch
+  fi
 }
 
 dispatch_stop_loss_escalation_run() { # unit stage budget unit-json → perform the existing escalation outside the dispatch pass
