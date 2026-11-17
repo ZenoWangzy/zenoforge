@@ -4,8 +4,9 @@
 # unit history (refills the stop-loss/arbitration budgets; a parked unit is moved by scheduler.sh --rule) and releases a
 # scheduler-stop-loss hold, or a supervisor/head hold on the allowlist below, if the issue has one. COMMENT must be an owner comment on the issue (or the PR for pr-N).
 # A fifth argument (hold.sh --requeue --size-waiver N, or hold.sh --waiver --size-waiver N for an implement or *-pending unit) sets the unit's .size_waiver with the comment author and first line as the reason; the waiver alone keeps the stage and the hold.
+# 2026-11-17 (issue-4354): close sets the unit closed with a supervisor-close event and leaves the GitHub issue, its labels and its open PR alone; rule_entry refuses an open PR.
 hold_rule_usage() {
-  printf '%s\n' 'hold.sh --rule: invalid arguments; usage: --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock|--supersede-handoff|--ready --comment <id> [--blocked-on <N>]|--waiver --comment <id> --size-waiver <max_lines>; --size-waiver is allowed only with --requeue or alone as --waiver; --reroute keeps an existing waiver; --ready requires an open tracker, needs-advisor or needs-triage issue; report only on an unchanged PR head must say "report only" or "report-only".' >&2
+  printf '%s\n' 'hold.sh --rule: invalid arguments; usage: --rule <issue|issue-N|pr-N> --requeue|--reroute|--approve|--arbiter|--recut|--reblock|--supersede-handoff|--ready|--close --comment <id> [--blocked-on <N>]|--waiver --comment <id> --size-waiver <max_lines>; --size-waiver is allowed only with --requeue or alone as --waiver; --reroute keeps an existing waiver; --ready requires an open tracker, needs-advisor or needs-triage issue; report only on an unchanged PR head must say "report only" or "report-only".' >&2
   return 64
 }
 
@@ -13,7 +14,7 @@ hold_rule_usage() {
 hold_rule() {
   local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" waiver="${5:-}" unit n state="" current_state comment sched issue_state allow_release=0 release_patch=. rc
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
-  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|waiver)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || { echo "hold_rule: invalid target, action, or comment id" >&2; return 64; }
+  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ && "$comment_id" =~ ^[1-9][0-9]*$ ]] || { echo "hold_rule: invalid target, action, or comment id" >&2; return 64; }
   unit="$target"; n="${unit#*-}"
   [[ "$action" != waiver || -n "$waiver" ]] || { echo "hold_rule: waiver needs --size-waiver N" >&2; return 64; }
   [[ -z "$waiver" || ( ( "$action" == requeue || "$action" == waiver ) && "$waiver" =~ ^[1-9][0-9]*$ ) ]] || { echo "hold_rule: --size-waiver is allowed only with --requeue or alone as --waiver; --reroute keeps an existing waiver" >&2; return 64; }

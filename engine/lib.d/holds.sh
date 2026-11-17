@@ -799,7 +799,7 @@ hold_cli_main() {
     (($# == 2)) || { echo "usage: hold.sh --restore <issue>" >&2; return 64; }
     hold_restore "$2"
   elif [ "${1:-}" = --rule ]; then
-    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|waiver)$ && "$4" = --comment ]] && { [ "$3" != --waiver ] || { (($# == 7)) && [ "$6" = --size-waiver ] && [[ "$7" =~ ^[1-9][0-9]*$ ]]; }; } && { (($# == 5)) || [ "$6" = --blocked-on ] || { [ "$6" = --size-waiver ] && [ "$3" = --requeue ] && [[ "$7" =~ ^[1-9][0-9]*$ ]]; } || [ "$3" = --waiver ]; } || { hold_rule_usage; return 64; }
+    (($# == 5 || $# == 7)) && [[ "$3" =~ ^--(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ && "$4" = --comment ]] && { [ "$3" != --waiver ] || { (($# == 7)) && [ "$6" = --size-waiver ] && [[ "$7" =~ ^[1-9][0-9]*$ ]]; }; } && { (($# == 5)) || [ "$6" = --blocked-on ] || { [ "$6" = --size-waiver ] && [ "$3" = --requeue ] && [[ "$7" =~ ^[1-9][0-9]*$ ]]; } || [ "$3" = --waiver ]; } || { hold_rule_usage; return 64; }
     if [ "${6:-}" = --size-waiver ]; then hold_rule "$2" "${3#--}" "$5" "" "$7"; else hold_rule "$2" "${3#--}" "$5" "${7:-}"; fi
   elif [ "${1:-}" = --answer ]; then
     (($# == 4)) && [ "$3" = --comment ] || { echo "usage: hold.sh --answer <issue> --comment <id>" >&2; return 64; }

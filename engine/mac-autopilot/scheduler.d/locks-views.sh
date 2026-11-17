@@ -229,10 +229,10 @@ closed_unit_refusal() { # id [rc]：已关闭单元的拒绝语只指向本环�
 }
 
 rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready ref [guidance] [blocker] [size-waiver max_lines] [comment author]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
-  [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|waiver)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|waiver <ref> [guidance]" >&2; return 64; }
+  [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
-  local issue stage rc waiver="${6:-}" author="${7:-}" reason patch=""
+  local issue stage rc waiver="${6:-}" author="${7:-}" reason patch="" pr pr_state
   [[ "$2" != waiver || -n "$waiver" ]] || { echo "rule: waiver needs --size-waiver <max_lines>" >&2; return 64; }
   if [[ -n "$waiver" ]]; then # size waiver ($6 max_lines, $7 comment author): rides the requeue's single unit write, one size-waiver event before supervisor-requeue
     [[ "$2" == requeue || "$2" == waiver ]] || { echo "rule: --size-waiver goes with --requeue, or alone on an implement or *-pending unit" >&2; return 64; }
@@ -261,6 +261,13 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
       ( source "$SCHEDULER_AGENT_LIB" && state_merge "$issue" '.recut_rounds = 0' ) || return 1
       scheduler_route_to_recut "$issue" || return 1
       set_unit "$1" "$(hist supervisor-recut "supervisor ruling: $3") | .stage=\"closed\" | .note=$(js "supervisor ruling sent issue #$issue to recut: $3")" ;;
+    close) # 2026-11-17 issue-4354: the ruling closes the unit only; the issue, its labels and an open PR stay as they are
+      pr="$(unit_field "$1" '.pr // empty')"
+      if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+        pr_state="$(tick_pr_state "$pr")" || { echo "rule: $1 PR #$pr state is unreadable; close refused" >&2; return 1; }
+        [[ "$pr_state" != OPEN ]] || { echo "rule: $1 has open PR #$pr; close or merge it first" >&2; return 1; }
+      fi
+      set_unit "$1" "$(hist supervisor-close "supervisor ruling $3: ${4:-see ruling}") | .stage=\"closed\" | .note=$(js "supervisor ruling: ${4:-see ruling}") | del(.parked_reason)" ;;
     reroute) [[ "$(unit_field "$1" .stage)" != closed ]] || { closed_unit_refusal "$1"; return 1; }
       supervisor_requeue_unit "$1" reroute "supervisor ruling $3: ${4:-see ruling}" null ;; # releases blocked_on and moves the unit back to its work stage, parked or not
     *) if [[ "$2" == requeue ]]; then
