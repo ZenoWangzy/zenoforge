@@ -466,9 +466,9 @@ hold_sweep() {
   done
   numbers="$(printf '%s\n' "$numbers" | LC_ALL=C sort -u | shuf)" || return 1
   now_epoch="$(date -u +%s)" || return 1
-  pending_numbers="$(jq -r 'select(.state == "on-hold" and .hold_sweep_refusal.reason == "expiry-comment-pending") | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))' "$STATE_DIR"/*.json 2>/dev/null)" || true
+  pending_numbers="$(jq -r 'select(.state == "on-hold" and .hold_sweep_refusal.reason == "expiry-comment-pending") | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))' "$STATE_DIR"/*.json 2>/dev/null | grep -Fxf <(printf '%s\n' "$live_hold_numbers"))" || true
   expired_numbers="$(jq -r --argjson now "$now_epoch" 'select(.state == "on-hold") | ((.hold.expires_at // "") | try fromdateiso8601 catch null) as $e
-    | select($e != null and $e <= $now) | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))' "$STATE_DIR"/*.json 2>/dev/null)" || true
+    | select($e != null and $e <= $now) | input_filename | split("/")[-1] | rtrimstr(".json") | select(test("^[1-9][0-9]*$"))' "$STATE_DIR"/*.json 2>/dev/null | grep -Fxf <(printf '%s\n' "$live_hold_numbers"))" || true # State-only rows reconcile after live expiry candidates.
   numbers="$(printf '%s\n' "$pending_numbers" "$numbers" | awk 'NF && !seen[$0]++')" || return 1
   numbers="$(awk 'NR == FNR { first[$0]; next } $0 in first { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }' <(printf '%s\n' "$expired_numbers") - <<< "$numbers")" || return 1
   state_label_json="$(printf '%s\n' "${ALL_STATE_LABELS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
