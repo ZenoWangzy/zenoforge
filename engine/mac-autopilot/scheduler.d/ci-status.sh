@@ -1,6 +1,6 @@
 ci_failed_steps() { # head -> failed step names of the head's failed runs
-  local r runs jobs
-  runs="$(gh_run_list_cached --commit "$1" | jqf -r '.[] | select(.conclusion=="failure") | .databaseId')" || return 1
+  local r runs runs_json jobs
+  runs_json="$(gh_run_list_cached --commit "$1")" && runs="$(jqf -r '.[] | select(.conclusion=="failure") | .databaseId' <<<"$runs_json")" || return 1
   for r in $runs; do
     jobs="$(ci_jobs_data "$r" true)" || return 1; jqf -r '.[] | select(.conclusion=="failure") | .steps[]? | select(.conclusion=="failure") | .name' <<<"$jobs" || return 1
   done
@@ -84,7 +84,7 @@ ci_update_branch() { # pr head
 }
 
 ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（多为 runner 抖动），重跑后仍红才派 repair
-  local r n=0 runs infra_rc failed_steps
+  local r n=0 runs runs_json infra_rc failed_steps
   if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
     # 落后 main 的红多半是旧 base 的红（2026-10-19：main 自身 suites 红，5 个就绪 PR 跟着红）：服务端合入 main 再跑，
     # 不在旧 base 上重跑、不派 LLM 修复；干净合并的新 head 沿用原批准（approval_carries）。
@@ -95,8 +95,8 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     fi
   fi
   if [[ "$(unit_field "$1" .ci_deferred_sha)" == "$3" ]]; then
-    runs="$(gh_run_list_cached --commit "$3" | jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId')" \
-      || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
+    runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
+    runs="$(jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' <<<"$runs_json")" || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
     for r in $runs; do
       gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
     done
@@ -105,8 +105,8 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     return 0
   fi
   if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]]; then
-    runs="$(gh_run_list_cached --commit "$3" | jqf -r '.[] | select(.conclusion=="failure") | .databaseId')" \
-      || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
+    runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
+    runs="$(jqf -r '.[] | select(.conclusion=="failure") | .databaseId' <<<"$runs_json")" || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
     for r in $runs; do
       gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
     done
@@ -122,8 +122,8 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     failed_steps="$(ci_failed_steps "$3")" || { say "CI infra red unit=$1: failed to read failed steps for head $3"; return 1; }
     echo "[$STAMP] RUNNER-INFRA-RED PR#$2 head=$3 steps: $(sort -u <<<"$failed_steps" | paste -sd ';') (rerun $((k+1))/$CI_INFRA_RERUNS)" >> "$A/alerts/gate.md"
     if (( k < CI_INFRA_RERUNS )); then
-      runs="$(gh_run_list_cached --commit "$3" | jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId')" \
-        || { say "CI infra red unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
+      runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI infra red unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
+      runs="$(jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' <<<"$runs_json")" || { say "CI infra red unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
       for r in $runs; do
         gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
       done
@@ -154,7 +154,7 @@ ci_admission_cancelled() { # run-id -> 0 when the audit's latest reason for the 
     | jqf -es --arg r "$1" '[.[] | select(.run_id == $r and (.reason // "") != "")] | last | (.reason // "" | split(";")[0]) | IN("ci wip", "ci deferred")' >/dev/null 2>&1
 }
 ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不动批准与重跑额度；同一 head 第 CI_CANCEL_RERUNS 次后交 supervisor；upstream=1 时 run 结论是聚合 job 的 failure
-  local r n=0 k up="${5:-}" decision runs
+  local r n=0 k up="${5:-}" decision runs runs_json
   k=0; [[ "$(unit_field "$1" .ci_cancel_head)" == "$3" ]] && k="$(unit_field "$1" .ci_cancel_reruns)"
   [[ "$k" =~ ^[0-9]+$ ]] || k=0
   if (( k >= CI_CANCEL_RERUNS )); then
@@ -164,8 +164,8 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
     return 0
   fi
   local sel='.conclusion=="cancelled"'; [[ -n "$up" ]] && sel='.conclusion=="cancelled" or .conclusion=="failure"'
-  runs="$(gh_run_list_cached --commit "$3" | jqf -r ".[] | select($sel) | .databaseId")" \
-    || { say "CI cancelled unit=$1: could not list cancelled runs for head $3"; return 1; }
+  runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI cancelled unit=$1: could not list cancelled runs for head $3"; return 1; }
+  runs="$(jqf -r ".[] | select($sel) | .databaseId" <<<"$runs_json")" || { say "CI cancelled unit=$1: could not list cancelled runs for head $3"; return 1; }
   for r in $runs; do
     ci_admission_cancelled "$r" && say "ci cancel-rerun unit=$1 head=$3 run=$r: rerun of a check admission cancelled"
     gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
@@ -286,10 +286,10 @@ ci_fact_hint() { # head facts
 # 12 个 runner 被 PR CI 占满时 main 验证 run 要排队 50 分钟（2026-10-20）。马上会被新 head 取代的 PR run
 # （修复已派出）和快车道根本不用的 PR run 先取消，把 runner 让给 main 验证和就绪 PR。
 cancel_branch_runs() { # branch reason：reason 里第一个 ';' 之前的部分是写进审计日志的稳定原因
-  local r n=0 runs
+  local r n=0 runs runs_json
   [[ -n "$1" ]] || return 0
-  runs="$(gh_run_list_cached --branch "$1" --limit 20 | jqf -r '.[] | select(.status != "completed" and .event == "pull_request") | .databaseId')" \
-    || { say "could not list PR runs on $1 for cancellation"; return 1; }
+  runs_json="$(gh_run_list_cached --branch "$1" --limit 20)" || { say "could not list PR runs on $1 for cancellation"; return 1; }
+  runs="$(jqf -r '.[] | select(.status != "completed" and .event == "pull_request") | .databaseId' <<<"$runs_json")" || { say "could not list PR runs on $1 for cancellation"; return 1; }
   for r in $runs; do
     ZF_CANCEL_REASON="${2%%;*}" bash "${ZF_ENGINE_DIR:-$ROOT/engine}/night/main-ci-recovery.sh" cancel-run "$r" >/dev/null 2>&1 && n=$((n+1))
   done

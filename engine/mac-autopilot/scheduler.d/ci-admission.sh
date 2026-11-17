@@ -146,7 +146,7 @@ slot_sync() { # id head gated next
 }
 
 ci_assign_wip() {
-  local wip k=0 id br head r st jobs n=0 started=0 gated_started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs sync_rc deferred=0 stopped=0
+  local wip k=0 id br head r st jobs n=0 started=0 gated_started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs cancelled_runs_json sync_rc deferred=0 stopped=0
   local detail_started detail_elapsed
   local -a jobs_to_load=()
   SLOT_SYNC_SPENT=0
@@ -214,7 +214,8 @@ ci_assign_wip() {
         continue
       fi
       if (( gated )); then gated_ready "$id" "$br" "$head"; gated_started=$((gated_started + 1)); continue; fi
-      cancelled_runs="$(gh_run_list_cached --commit "$head" | jqf -r '.[] | select(.conclusion=="cancelled") | .databaseId')" \
+      cancelled_runs_json="$(gh_run_list_cached --commit "$head")" \
+        && cancelled_runs="$(jqf -r '.[] | select(.conclusion=="cancelled") | .databaseId' <<<"$cancelled_runs_json")" \
         || { say "ci wip unit=$id: could not list cancelled runs for head $head; admission deferred"; k=$((k-1)); deferred=$((deferred + 1)); continue; }
       for r in $cancelled_runs; do
         gh run rerun "$r" --failed >/dev/null 2>&1 || true
@@ -394,7 +395,7 @@ ci_station_fresh() { # 0 = a station pass started within the freshness window, s
 ci_station_tick() {
   # Own ETag cache: gh_api_cached writes body and etag as two files, and the tick and refill share the default dir.
   # The starvation watch counts passes; 3 slow ticks was about an hour, so keep that span at 120 s passes.
-  local old limit gh_calls CI_STATION_DEADLINE="" GH_ETAG_DIR="$A/.gh-etag-ci" CI_SLOT_STARVE_SLOW_TICKS="${CI_SLOT_STARVE_SLOW_TICKS:-30}"
+  local old limit gh_calls rest_used CI_STATION_DEADLINE="" GH_ETAG_DIR="$A/.gh-etag-ci" CI_SLOT_STARVE_SLOW_TICKS="${CI_SLOT_STARVE_SLOW_TICKS:-30}"
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   if ! mkdir "$CI_STATION_LOCK" 2>/dev/null; then
     old="$(cat "$CI_STATION_LOCK/pid" 2>/dev/null || true)"
@@ -426,7 +427,8 @@ ci_station_tick() {
       merge_tree_sweep # after admission, own time bound: a conflict found when main moves starts its repair now, not at review or merge
     fi
     gh_calls="$(tick_gh_calls_summary)"
-    say "ci station done secs=$SECONDS $gh_calls limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
+    rest_used="$(tick_rest_usage_summary)"
+    say "ci station done secs=$SECONDS $gh_calls $rest_used limit=${limit}s ended=$(date -u +%H:%M:%SZ)"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$CI_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$CI_STATION_LOCK"

@@ -215,7 +215,7 @@ refill_merge_pass() {
 # starts no worker: no dispatch, no intake. One pass at a time across the tick, the refill and this entry stays with run_merge_lane's flock;
 # MERGE_LANE_WAIT=0 makes this entry skip a pass already in progress instead of queueing behind it.
 merge_entry() {
-  local gh_calls
+  local gh_calls rest_used
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   date +%s > "$A/.merge-station-epoch" # also while paused or busy: the tick and the refill must not start a second merger beside a live station
   if [[ -e "$PAUSE_FILE" ]]; then
@@ -238,7 +238,8 @@ merge_entry() {
   fi
   engine_batch_land || : # the Zenoforge engine PRs, behind engine_batch_land.enabled (scheduler.d/engine-batch-land.sh)
   gh_calls="$(tick_gh_calls_summary)"
-  say "merge entry done secs=$SECONDS $gh_calls ended=$(date -u +%H:%M:%SZ)"
+  rest_used="$(tick_rest_usage_summary)"
+  say "merge entry done secs=$SECONDS $gh_calls $rest_used ended=$(date -u +%H:%M:%SZ)"
   rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
 }
 # A failed open-PR read left every candidate with no check rows, so the whole pass skipped and waited a round (2026-11-04: 10 PRs, 27 minutes).

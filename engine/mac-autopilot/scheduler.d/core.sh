@@ -212,11 +212,13 @@ scheduler_auto_filed_issue_create() {
   fi
 }
 tick_gh_calls_begin() {
+  tick_rest_usage_begin
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
   : >"$GH_TICK_CALLS_FILE" 2>/dev/null || GH_TICK_CALLS_FILE=""
   ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$A/deployment-status.$BASHPID"
   rm -rf -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || :
   mkdir -p -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR=""
+  [[ -z "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" ]] || chain_exit_trap 'rm -rf -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR"'
   export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR
   GH_TICK_CACHE_DIR="${ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR:+$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR/.gh-cache}"
   [[ -z "$GH_TICK_CACHE_DIR" ]] || mkdir -p -- "$GH_TICK_CACHE_DIR" 2>/dev/null || GH_TICK_CACHE_DIR=""
@@ -228,9 +230,10 @@ tick_gh_calls_begin() {
   TICK_LOCK_WAIT=0
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
-  find "$A" -maxdepth 1 -type d -name 'deployment-status.*' -mmin +120 -exec rm -rf -- {} + 2>/dev/null || :
+  find "$A" -maxdepth 1 -type d -name 'deployment-status.*' -mmin +60 -exec rm -rf -- {} + 2>/dev/null || :
   find "$A" -maxdepth 1 -name 'intake-reads.*' -mmin +120 -delete 2>/dev/null || :
   find "$GH_ETAG_DIR" -type f -mmin +360 -delete 2>/dev/null || :
+  find "$A/.gh-run-jobs" -maxdepth 1 -type f -name '*.json' -mmin +10080 -delete 2>/dev/null || :
 }
 # One roadmap tree per tick for issue_transition's parent check: a shell variable, not exported, so detached workers never see it.
 # The first transition fetches into this file (roadmap_ensure_issue_parent); a killed tick's leftover is swept after 120 min.
@@ -247,6 +250,32 @@ tick_roadmap_cache_end() {
 }
 tick_gh_calls_count() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf '0\n'; return 0; }; awk 'END {print NR}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf '0\n'; }
 tick_gh_calls_summary() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf 'gh_calls=0 gql=0 rest=0\n'; return 0; }; awk '$0 == "graphql" {gql++} $0 == "rest" {rest++} END {printf "gh_calls=%d gql=%d rest=%d\n", NR, gql, rest}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf 'gh_calls=0 gql=0 rest=0\n'; }
+# Rate-limit deltas are host-wide; other callers share the same token.
+tick_rest_usage_begin() {
+  local core remaining reset
+  TICK_REST_REMAINING_BEFORE="" TICK_REST_RESET_BEFORE=""
+  core="$(gh_timeout 10s api rate_limit --jq .resources.core 2>/dev/null)" || return 0
+  remaining="$(jqf -r '.remaining // empty' <<<"$core" 2>/dev/null)" || return 0
+  reset="$(jqf -r '.reset // empty' <<<"$core" 2>/dev/null)" || return 0
+  [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 0
+  TICK_REST_REMAINING_BEFORE="$remaining" TICK_REST_RESET_BEFORE="$reset"
+}
+tick_rest_usage_summary() {
+  local core remaining reset
+  if [[ "${TICK_REST_REMAINING_BEFORE:-}" =~ ^[0-9]+$ && "${TICK_REST_RESET_BEFORE:-}" =~ ^[0-9]+$ ]] \
+    && core="$(gh_timeout 10s api rate_limit --jq .resources.core 2>/dev/null)" \
+    && remaining="$(jqf -r '.remaining // empty' <<<"$core" 2>/dev/null)" \
+    && reset="$(jqf -r '.reset // empty' <<<"$core" 2>/dev/null)" \
+    && [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]]; then
+    if [[ "$TICK_REST_RESET_BEFORE" != "$reset" ]]; then
+      printf 'rest_used=reset\n'
+    else
+      printf 'rest_used=%d\n' "$((10#$TICK_REST_REMAINING_BEFORE - 10#$remaining))"
+    fi
+  else
+    printf 'rest_used=unknown\n'
+  fi
+}
 gh_par_throttle() { # pid 数组名：在途数达到 GH_PARALLEL 时等最早的一个结束
   local -n _gh_pids="$1"
   while (( ${#_gh_pids[@]} >= GH_PARALLEL )); do wait "${_gh_pids[0]}" || :; _gh_pids=("${_gh_pids[@]:1}"); done
@@ -321,9 +350,10 @@ gh_run_list_cached() { # list filters → one shared snapshot per query in this 
   gh_tick_cache_get "runs-$key.json" gh_run_list_fetch "$@"
 }
 gh_run_jobs_fetch() {
-  local id="$1"
-  gh_api_cached -p "runjobs-$id" "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=100" \
-    --jq '[.jobs[] | {status, runner_id, conclusion, steps}]' | jqf -s 'add'
+  local id="$1" pages
+  pages="$(gh_api_cached -p "runjobs-$id" "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=100" \
+    --jq '[.jobs[] | {status, runner_id, conclusion, steps}]')" || return 1
+  jqf -s 'add' <<<"$pages"
 }
 gh_run_jobs_store_completed() { # run id jobs-json → immutable completed snapshot
   local id="$1" jobs="$2" file tmp
