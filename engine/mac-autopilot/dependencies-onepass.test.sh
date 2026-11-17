@@ -236,6 +236,8 @@ run_counted
 jq -e '.units[] | select(.id=="issue-9690") | .stage=="blocked-external" and .blocked_on==9601 and .dep_wait_delivery==9601 and .history[-1].stage=="blocker-repointed"' "$UNITS" >/dev/null \
   || fail "a latched wait on a closed tracker must follow its open child: $(jq -c '.units[] | select(.id=="issue-9690")' "$UNITS")"
 # The body still names the recut root: after the repoint it must not re-block on it (11-17 loop on issue-2941/#2911).
+jq -e '.units[] | select(.id=="issue-9690") | .task | contains("Do not report BLOCKED-ON #9600")' "$UNITS" >/dev/null \
+  || fail "a repointed unit's brief must tell the worker not to report BLOCKED-ON the recut root"
 if dep="$(blocking_body_dependency "$(jq -c '.units[] | select(.id=="issue-9690")' "$UNITS")")"; then fail "a repointed unit must not re-block on its recut root through the body: #$dep"; fi
 
 dead_root_fixture \

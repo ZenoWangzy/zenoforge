@@ -199,7 +199,7 @@
       "id": "issue-9",
       "issue": 9,
       "stage": "blocked-external",
-      "task": "t"
+      "task": "t\n\nScheduler note: predecessor #108 was recut and is closed in the ledger; its open work is #109. Do not report BLOCKED-ON #108. If the work of #109 is a real code dependency, report BLOCKED-ON #109."
     },
     {
       "branch": "agent/issue-110",
@@ -996,7 +996,7 @@ api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
       "id": "issue-9",
       "issue": 9,
       "stage": "blocked-external",
-      "task": "t"
+      "task": "t\n\nScheduler note: predecessor #108 was recut and is closed in the ledger; its open work is #109. Do not report BLOCKED-ON #108. If the work of #109 is a real code dependency, report BLOCKED-ON #109."
     },
     {
       "branch": "agent/issue-110",
