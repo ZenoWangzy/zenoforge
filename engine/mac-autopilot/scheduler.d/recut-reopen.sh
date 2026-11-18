@@ -81,7 +81,7 @@ intake_closed_unit_noted() { # issue → 0 while the note covers the issue's cur
 intake_closed_units_note() { # issue state_changed_at stages: the marker first, so a failed write is retried and a written one never repeats the supervisor note
   local n="$1" at="$2" stages="$3"
   if (source "$SCHEDULER_AGENT_LIB"; state_merge "$n" ".closed_units_noted_at = $(js "$at")"); then
-    supervisor_inbox_append closed-units "intake closed-units issue=#$n needs a ruling: all units $stages" \
+    (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append closed-units "intake closed-units issue=#$n needs a ruling: all units $stages") \
       || say "intake closed-units issue=#$n: supervisor note not written; the marker is set, so it is not retried"
   else
     say "intake closed-units issue=#$n: could not record the note; retry next tick"
