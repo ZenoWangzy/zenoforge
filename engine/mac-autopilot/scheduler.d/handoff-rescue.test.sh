@@ -575,6 +575,10 @@ jq -e --arg sha "$conflict_sha" --arg ref "$conflict_ref80" '.units[0].stage == 
   and ([.units[0].history[] | select(.stage=="supervisor-escalated" and .integration_sha==$sha)] | length) == 1
   and (.units[0].repair_hint | contains($ref) and contains("do not merge it"))' "$UNITS" >/dev/null \
   || fail 'the second conflict did not drop the snapshot, keep the rescue ref named, and skip the supervisor'
+new_branch80="$(jq -r '.units[0].branch' "$UNITS")"
+[[ "$new_branch80" != agent/issue-80 && "$new_branch80" == "agent/issue-80-fresh-${STAMP//[-:]/}" ]] || fail "the dropped unit kept its branch: $new_branch80"
+jq -e --arg old agent/issue-80 --arg new "$new_branch80" '[.units[0].history[] | select(.stage=="handoff-dropped" and (.result|contains($old)) and (.result|contains($new)))] | length == 1' "$UNITS" >/dev/null \
+  || fail 'the handoff-dropped entry did not record the old and new branch names'
 git --git-dir="$origin" show-ref --verify -q "refs/heads/$conflict_ref80" || fail 'the dropped snapshot deleted its remote rescue ref'
 
 resume_handoff_integration issue-81 "$side_wt" || fail 'a clean snapshot merge failed'

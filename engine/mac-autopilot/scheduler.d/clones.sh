@@ -281,10 +281,13 @@ record_handoff_integration() { # unit clone observed-PR-head
 }
 
 handoff_drop_conflicting_snapshot() { # unit integrated-sha: second conflict for one snapshot; the rescue ref stays on the remote, read only
-  local id="$1" integrated="$2" rescue_ref
+  local id="$1" integrated="$2" rescue_ref old_branch new_branch
   rescue_ref="$(unit_field "$id" '.handoff_start_ref // empty')"
   [[ -n "$rescue_ref" ]] || rescue_ref='(no rescue ref recorded)'
-  set_unit "$id" "$(hist handoff-dropped "integrated SHA $integrated; start ref $rescue_ref; second merge conflict with the updated branch; the rescue ref stays on the remote for reading") | del(.handoff_integration_sha, .handoff_original_pr_head, .handoff_delivery_verified_sha, .handoff_worktree, .handoff_worktree_sha, .handoff_worktree_dirty, .handoff_worktree_applied, .handoff_start_ref, .handoff_start_sha, .handoff_start_applied) | .repair_hint=$(js "rescue ref $rescue_ref is read-only reference: do not merge it; implement fresh on origin/main")"
+  old_branch="$(unit_field "$id" '.branch // empty')"
+  # A fresh name: ensure_clone_impl would reuse an unpushed local branch and its dropped commits.
+  new_branch="$old_branch-fresh-${STAMP//[-:]/}"
+  set_unit "$id" "$(hist handoff-dropped "integrated SHA $integrated; start ref $rescue_ref; old branch $old_branch; new branch $new_branch; second merge conflict with the updated branch; the rescue ref stays on the remote for reading") | del(.handoff_integration_sha, .handoff_original_pr_head, .handoff_delivery_verified_sha, .handoff_worktree, .handoff_worktree_sha, .handoff_worktree_dirty, .handoff_worktree_applied, .handoff_start_ref, .handoff_start_sha, .handoff_start_applied) | .branch=$(js "$new_branch") | .repair_hint=$(js "rescue ref $rescue_ref is read-only reference: do not merge it; implement fresh on origin/main")"
 }
 
 resume_handoff_integration() { # unit clone: preserve the recorded snapshot if the PR moved
