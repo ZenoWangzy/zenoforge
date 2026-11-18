@@ -2,6 +2,8 @@
 dep_predecessor_dead() { # waiter-unit-json predecessor
   local dep="$2" waiter rows st prs subs c b sha branches="" labels active_labels
   dep_delivered_in_ledger "$dep" && return 1
+  # The sweep and the blocked-external loop must agree: a tracker the loop clears is not dead, and that loop wakes the waiter on the next pass.
+  tracker_dep_cleared "$dep" "$(jqf -r '.issue // empty' <<<"$1")" && return 1
   if (( DEP_ROWS_PASS && DEP_ROWS_BUILT )); then
     if [[ -z "${DEP_ROWS_IDS[$dep]:-}" ]]; then rows='[]'; else dep_rows_flag "$dep" 1 || return 1; rows="$(dep_rows_json "$dep")" || return 1; fi
   else rows="$(dep_rows_json "$dep")" || return 1; fi
@@ -36,4 +38,23 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
   done
   printf 'predecessor #%s can never deliver (%s), no open PR, no live worker, no live child; branches:%s' \
     "$dep" "$(jqf -r 'if length == 0 then "open tracker with no unit" else "unit closed undelivered: " + (last.note // "no note" | .[0:200]) end' <<<"$rows")" "$branches"
+}
+
+declare -A DEP_NATIVE_KIDS=() # blocker → its OPEN native sub-issue numbers as a JSON array, "!" when the read failed; one read per blocker per tick
+# A native parent (#2628, umbrella of #5028) names its children in GitHub, not in recut_children. Only a native parent or a tracker without
+# recut_children pays the read, so ordinary blockers never reach gh. Closed native children are left out: they are not waited on.
+dep_native_kids() { # blocker state-json → 0 with DEP_NATIVE_KIDS[blocker] set; 1 when the native read failed, so the blocker is not cleared
+  local dep="$1" st="$2" json
+  if [[ -z "${DEP_NATIVE_KIDS[$dep]:-}" ]]; then
+    DEP_NATIVE_KIDS["$dep"]='[]'
+    if jqf -e '.native_subissue_parent == true or (((.state == "tracker") or .tracker_parent == true) and ((.recut_children | type) != "array"))' <<<"$st" >/dev/null 2>&1; then
+      # Per-blocker subshell: recut.sh loads there, not into the scheduler (lib-bridge.sh). A test may define the function already.
+      if ! scheduler_lib_context || ! json="$(REPO="$SCHEDULER_LIB_REPO"; declare -F native_parent_subissues_json >/dev/null || scheduler_scope_lib recut blockers; native_parent_subissues_json "$dep")"; then
+        DEP_NATIVE_KIDS["$dep"]='!'
+      else
+        DEP_NATIVE_KIDS["$dep"]="$(jqf -c '[.[] | select(.state == "open") | .number]' <<<"$json")"
+      fi
+    fi
+  fi
+  [[ "${DEP_NATIVE_KIDS[$dep]}" != '!' ]]
 }

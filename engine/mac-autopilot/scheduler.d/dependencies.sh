@@ -63,7 +63,7 @@ unit_body_blockers() { # unit-json → stored full-body IDs, or fallback IDs fro
 }
 dep_delivered_snapshot() {
   local dep pr sha
-  DEP_DELIVERED_CACHE=() DEP_DELIVERED_PR=() TRACKER_KIDS=()
+  DEP_DELIVERED_CACHE=() DEP_DELIVERED_PR=() TRACKER_KIDS=() DEP_NATIVE_KIDS=()
   while IFS=$'\t' read -r dep pr sha; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     DEP_DELIVERED_CACHE["$dep"]=1
@@ -96,8 +96,9 @@ tracker_dep_cleared() { # blocker blocked-issue → 0 when the blocker is a trac
   if [[ -z "${TRACKER_KIDS[$dep]:-}" ]]; then
     kids=""
     # shortcut: the text test skips jq for the common non-tracker blocker (the release pass must not grow its jq runs with blocked units); pretty or compact JSON both match
-    if st="$(scheduler_issue_state "$dep" 2>/dev/null)" && [[ "$st" == *'"recut_children"'* ]]; then
-      kids="$(jqf -r 'if (.state == "tracker" or .tracker_parent == true) and ((.recut_children | type) == "array") then [.recut_children[] | select(type == "number")] | join(" ") else empty end' <<<"$st")"
+    if st="$(scheduler_issue_state "$dep" 2>/dev/null)" && [[ "$st" == *'"recut_children"'* || "$st" == *'"native_subissue_parent"'* || "$st" == *'"tracker'* ]]; then
+      dep_native_kids "$dep" "$st" || return 1
+      kids="$(jqf -r --argjson n "${DEP_NATIVE_KIDS[$dep]}" '((if (.state == "tracker" or .tracker_parent == true) and ((.recut_children | type) == "array") then [.recut_children[] | select(type == "number")] else [] end) + $n) | join(" ")' <<<"$st")"
     fi
     TRACKER_KIDS["$dep"]="${kids:--}"
   fi
@@ -229,7 +230,8 @@ stack_approved_dependency() { # dependent unit-id issue-number unit-json; 0 when
 dead_blocker_resolve() { # unit-id blocker-issue dependent-issue real-wait
   local id="$1" dep="$2" issue="$3" real_wait="${4:-false}" st children c next="" s key all_delivered=true
   dep_rows_closed_or_parked "$dep" || return 1; st="$(scheduler_issue_state "$dep")" || return 1
-  children="$(jqf -r --argjson i "${issue:-0}" '(.recut_children // [])[] | select(. != $i)' <<<"$st")"
+  dep_native_kids "$dep" "$st" || return 1 # native read failed: not cleared, so no repoint and no unblock
+  children="$(jqf -r --argjson i "${issue:-0}" --argjson n "${DEP_NATIVE_KIDS[$dep]}" '((.recut_children // []) + $n)[] | select(. != $i)' <<<"$st")"
   for c in $children; do
     dep_delivered_in_ledger "$c" && continue
     all_delivered=false; key="$dep:$c"
