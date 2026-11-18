@@ -23,6 +23,7 @@ git init -q "$tmp/agent/checkout"; g -C "$tmp/agent/checkout" checkout -q -b mai
 g -C "$tmp/agent/checkout" remote add origin "$tmp/product-origin.git"
 mkdir -p "$tmp/agent/checkout/.zenoforge/build"
 printf '#!/usr/bin/env bash\necho converge >> "$PIN_CALLS"\n' > "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"; chmod +x "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"
+mkdir -p "$tmp/agent/engine-live"; printf '#!/usr/bin/env bash\necho wrapper >> "$PIN_CALLS"\n' > "$tmp/agent/engine-live/engine-sync.sh"; chmod +x "$tmp/agent/engine-live/engine-sync.sh"
 g -C "$tmp/agent/checkout" add -A; g -C "$tmp/agent/checkout" commit -qm baseline
 g -C "$tmp/agent/checkout" push -q -u origin main; g -C "$tmp/agent/checkout" fetch -q origin main
 g clone -q "$tmp/product-origin.git" "$tmp/product-writer"
@@ -97,11 +98,12 @@ grep -q PIN-FAILED "$tmp/out" || fail 'no PIN-FAILED line'
 [[ $(last) == "$c2" ]] || fail "failed commit not skipped: $(last)"
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail "second pass did not pin main's head: $(last)"
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail 'idle pass moved state'
-[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c4 converge " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+! grep -qx converge "$PIN_CALLS" || fail 'a successful pin called the VectA hook directly'
+[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c4 wrapper " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 # a batch of three merges since the last pin is pinned once, at the newest (ruling zenoforge-batch-land-2026-11-08)
 : > "$PIN_CALLS"; b1=$(commit batch1); b2=$(commit batch2); b3=$(commit batch3)
 auto_pin_pass > /dev/null; [[ $(last) == "$b3" ]] || fail "batch pass did not pin the newest: $(last)"
-[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$b3 converge " ]] || fail "batch calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$b3 wrapper " ]] || fail "batch calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 c4=$b3  # later cases continue from the batch head
 
 # a pin refused for a dirty checkout is retried once the tree clears, with no new main commit
