@@ -159,6 +159,34 @@ canary tick-complete
 grep -Fq 'ROLLBACK engine candidate -> old: no tick done within tick limit' "$CF_RUNTIME/scheduler.log" \
   || { echo 'FAIL: no-tick-done rollback event missing' >&2; exit 1; }
 
+# A REFILL-TIMEOUT stamped before the swap came from a process started on the old engine: it must not roll the new one back.
+make_swap_fixture canary-prestart
+slow_tick
+slow_tick
+ZF_REPO_DIR="$CF_TARGET" AGENT_HOME="$CF_AGENT" MAC_AUTOPILOT_SUPERVISOR_DIR="$CF_SUP" \
+  "$here/engine-sync.sh" --converge >/dev/null
+canary tick-begin
+printf '[2000-01-01T00:00:00Z] REFILL-TIMEOUT stop: ledger lock wait stopped at 285s\n' >> "$CF_RUNTIME/scheduler.log"
+printf '[2000-01-01T00:00:01Z] tick done units=0\n' >> "$CF_RUNTIME/scheduler.log"
+canary tick-complete
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/candidate/engine" ]] \
+  || { echo 'FAIL: line stamped before the swap rolled the new engine back' >&2; exit 1; }
+[[ "$(jq -r '"\(.status) \(.remaining_ticks)"' "$CF_AGENT/engine-versions/.swap-record.json")" == 'pending 1' ]] \
+  || { echo 'FAIL: line stamped before the swap did not count the tick as a pass' >&2; exit 1; }
+
+# The same line stamped after the swap is the new engine's own failure: it still rolls back.
+make_swap_fixture canary-postswap
+slow_tick
+slow_tick
+ZF_REPO_DIR="$CF_TARGET" AGENT_HOME="$CF_AGENT" MAC_AUTOPILOT_SUPERVISOR_DIR="$CF_SUP" \
+  "$here/engine-sync.sh" --converge >/dev/null
+canary tick-begin
+printf '[2999-01-01T00:00:00Z] REFILL-TIMEOUT stop: ledger lock wait stopped at 285s\n' >> "$CF_RUNTIME/scheduler.log"
+printf '[2999-01-01T00:00:01Z] tick done units=0\n' >> "$CF_RUNTIME/scheduler.log"
+canary tick-complete
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/old/engine" ]] \
+  || { echo 'FAIL: REFILL-TIMEOUT stamped after the swap did not roll back' >&2; exit 1; }
+
 # A product pin rollback to a previously-live version skips only config/ref comparisons.
 return_root="$test_env_root/previously-live"
 return_target="$return_root/target"
