@@ -33,7 +33,7 @@ export PATH="$fixture/bin:$PATH"
 export TICK_INTAKE_GH_INVOKE="$fixture/bin/gh"
 say() { printf '%s\n' "$*" >> "$log"; }
 intake_skip() { :; }
-scheduler_issue_transition() { printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$trans"; return "${FAIL_TRANSITION:-0}"; }
+scheduler_issue_transition() { printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$trans"; SECONDS=$((SECONDS + ${SLOW_TRANSITION:-0})); return "${FAIL_TRANSITION:-0}"; }
 CFG='{"issue_intake":{"trusted_authors":["friend"]}}'
 
 author() { printf '{"author_association":"%s","user":{"login":"%s"}}\n' "$2" "$3" > "$fixture/author-$1.json"; }
@@ -87,4 +87,12 @@ rm -f "$fixture/author-11.json"
 [[ "$(run 11)" == 1 ]] || fail 'unreadable author did not return retry'
 [[ ! -s "$trans" ]] && ! commented || fail 'unreadable author changed the issue'
 grep -Fq 'author read failed; retry next tick' "$log" || fail "read failure not logged: $(cat "$log")"
+
+# A gate that takes 10 s or more logs one slow line naming the slow step; a fast gate logs none.
+author 12 NONE stranger; comments 12 '[]'
+[[ "$(SLOW_TRANSITION=11 run 12)" == 1 ]] || fail 'slow outsider admitted'
+grep -Eq 'intake author gate slow issue=#12 total=1[12]s read=0s comments=0s comment=0s transition=11s' "$log" || fail "slow gate did not name its step: $(cat "$log")"
+author 14 NONE stranger; comments 14 '[]'
+[[ "$(run 14)" == 1 ]] || fail 'fast outsider admitted'
+! grep -Fq 'author gate slow' "$log" || fail "fast gate logged slow: $(cat "$log")"
 echo 'intake-author.test.sh: ok'

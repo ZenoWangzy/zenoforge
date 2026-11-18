@@ -79,3 +79,20 @@ printf '0\n' > "$TICK_INTAKE_READS_FILE"
 GH_FAIL_LIST=true phase register_new_issues || fail 'failed census should be handled'
 [[ ! -e "$A/intake-full-tick-at" ]] || fail 'failed full census marked fresh'
 printf 'ok - failed full census does not mark intake fresh\n'
+
+# A held read lock makes the reserve give up after its wait instead of blocking the tick.
+printf '0\n' > "$TICK_INTAKE_READS_FILE"
+exec 8>"$TICK_INTAKE_READS_FILE.lock"; flock -x 8
+ISSUE_INTAKE_REMOTE_READ_LOCK_WAIT=1
+( intake_remote_read_reserve ) & waiter=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$waiter" 2>/dev/null || break; sleep 1; done
+if kill -0 "$waiter" 2>/dev/null; then
+  pkill -P "$waiter" 2>/dev/null || true; kill "$waiter" 2>/dev/null || true
+  flock -u 8; exec 8>&-
+  fail 'reserve blocked on a held read lock'
+fi
+rc=0; wait "$waiter" || rc=$?
+flock -u 8; exec 8>&-
+(( rc == 75 )) || fail "reserve rc=$rc after lock wait, want 75"
+grep -Fq 'intake remote read lock wait timed out after 1s' "$LOG" || fail 'lock wait timeout not logged'
+printf 'ok - held intake read lock times out and skips the read\n'

@@ -7,12 +7,21 @@ intake_author_route() { # association login → admit|hold
     else ({OWNER:"admit",MEMBER:"admit",COLLABORATOR:"admit"} + (.issue_intake.author_routes // {}))[$a] // "hold" end' <<<"$CFG"
 }
 intake_author_gate() { # issue issue_json → 0 放行；1 挡下或本拍重试（读取失败不改 issue）
-  local n="$1" issue_json="$2" meta assoc login comments ca cl released=0 marker='<!-- zf-intake-author-hold -->'
-  meta="$(intake_gh_read api "repos/{owner}/{repo}/issues/$n" 2>/dev/null)" || { say "intake issue #$n author read failed; retry next tick"; return 1; }
+  local n="$1" started=$SECONDS rc=0 t_read=0 t_comments=0 t_comment=0 t_transition=0
+  intake_author_gate_steps "$@" || rc=$?
+  (( SECONDS - started < 10 )) || say "intake author gate slow issue=#$n total=$((SECONDS - started))s read=${t_read}s comments=${t_comments}s comment=${t_comment}s transition=${t_transition}s"
+  return "$rc"
+}
+# 各步的 t_* 计时由外层 intake_author_gate 的 local 接收（bash 动态作用域）；步骤顺序和错误处理不变。
+intake_author_gate_steps() {
+  local n="$1" issue_json="$2" meta assoc login comments ca cl released=0 marker='<!-- zf-intake-author-hold -->' s
+  s=$SECONDS; meta="$(intake_gh_read api "repos/{owner}/{repo}/issues/$n" 2>/dev/null)" || { t_read=$((SECONDS - s)); say "intake issue #$n author read failed; retry next tick"; return 1; }
+  t_read=$((SECONDS - s))
   assoc="$(jqf -r '.author_association // ""' <<<"$meta")"; login="$(jqf -r '.user.login // ""' <<<"$meta")"
   [[ -n "$assoc$login" ]] || { say "intake issue #$n author unknown; retry next tick"; return 1; }
   [[ "$(intake_author_route "$assoc" "$login")" == admit ]] && return 0
-  comments="$(intake_gh_read api "repos/{owner}/{repo}/issues/$n/comments?per_page=100" --paginate 2>/dev/null)" || { say "intake issue #$n comments read failed; retry next tick"; return 1; }
+  s=$SECONDS; comments="$(intake_gh_read api "repos/{owner}/{repo}/issues/$n/comments?per_page=100" --paginate 2>/dev/null)" || { t_comments=$((SECONDS - s)); say "intake issue #$n comments read failed; retry next tick"; return 1; }
+  t_comments=$((SECONDS - s))
   comments="$(jqf -cs 'add // [] | .[] | {a:(.author_association // ""), l:(.user.login // ""), b:(.body // "")}' <<<"$comments")" || return 1
   while IFS=$'\t' read -r ca cl; do
     [[ "$(intake_author_route "$ca" "$cl")" == admit ]] && { released=1; break; }
@@ -23,11 +32,13 @@ intake_author_gate() { # issue issue_json → 0 放行；1 挡下或本拍重试
     return 0
   fi
   if ! grep -Fq -- "$marker" <<<"$comments"; then
-    gh issue comment "$n" --body "$marker
+    s=$SECONDS; gh issue comment "$n" --body "$marker
 Zenoforge 没有开始实现：作者 \`$login\`（$assoc）不在准入名单内，这个 issue 只留在分诊。维护者确认后，在评论里写 \`/release-intake\`，并把 issue 放回 ready-for-agent。" >/dev/null 2>&1 \
-      || { say "intake issue #$n author hold comment failed; retry next tick"; return 1; }
+      || { t_comment=$((SECONDS - s)); say "intake issue #$n author hold comment failed; retry next tick"; return 1; }
+    t_comment=$((SECONDS - s))
   fi
-  scheduler_issue_transition "$n" needs-triage "intake-author-hold:$assoc" . 0 "$issue_json" || { say "intake issue #$n author hold transition failed; retry next tick"; return 1; }
+  s=$SECONDS; scheduler_issue_transition "$n" needs-triage "intake-author-hold:$assoc" . 0 "$issue_json" || { t_transition=$((SECONDS - s)); say "intake issue #$n author hold transition failed; retry next tick"; return 1; }
+  t_transition=$((SECONDS - s))
   say "intake issue #$n held at triage: author association $assoc is not admitted"
   return 1
 }
