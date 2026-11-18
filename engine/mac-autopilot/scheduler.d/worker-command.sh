@@ -59,8 +59,8 @@ claude_review_disallowed_tools() { # explicit deny list protects the review cont
 
 # 实现/修复：claude -p stream-json；repair 在同一提供方与模型、会话文件仍在时 --resume（session id 来自上一次 result 流）。
 # 不加载用户设置/钩子/MCP/技能/记忆（--safe-mode --setting-sources "" --strict-mcp-config），权限 dontAsk 只认上面的白名单。
-build_claude_implement_command() { # type model effort unit prompt failure workdir
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="$6" workdir="$7" prior session_id cold_prompt
+build_claude_implement_command() { # type model effort unit prompt failure workdir [report-only-resume] [expected-session-id]
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="$6" workdir="$7" report_only="${8:-false}" expected_session_id="${9:-}" prior session_id cold_prompt tools=Read,Grep,Glob allowed=Read,Grep,Glob
   local -a resume=() common=()
   local note="
 （本次运行只能写当前工作目录，无权写其他路径：把完整报告正文作为最终回答输出，调度器会原样落盘为报告。Bash 只认白名单单条命令：git status/diff/log/show/add/commit/stash/merge/fetch、git push origin 本单元分支、pnpm、npx vitest、node --test、bash <file>.test.sh、node scripts/branch-delivery-preflight.mjs、rg/grep/sed/cat/ls/head/tail/wc/jq；一条被拒就拆成白名单单条命令重试，不要换路绕过。）"
@@ -82,11 +82,14 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
     fi
   fi
   [[ "$(unit_field "$unit" '.self_fix_active // false')" != true || "$CODEX_MODE" == resume ]] || return 1
+  # A report-only continuation is read-only and never starts fresh or in another session (the codex branch's rule).
+  [[ "$report_only" != true || ( "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$expected_session_id" ) ]] || return 1
+  [[ "$report_only" == true ]] || { tools=Read,Edit,Write,Grep,Glob,Bash; allowed="$(claude_implement_tools "$workdir" "$unit")"; }
   WORKER_STDOUT_REPORT=0  # stream-json 不是报告：harvest 从 result 行取最终回答
   CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'  # result 行是本次调用自己的用量
   common=(--model "$model" --effort "$effort" --output-format stream-json --verbose \
     --permission-mode dontAsk --safe-mode --setting-sources "" --strict-mcp-config \
-    --tools "Read,Edit,Write,Grep,Glob,Bash" --allowedTools "$(claude_implement_tools "$workdir" "$unit")")
+    --tools "$tools" --allowedTools "$allowed")
   CODEX_COMMAND=(claude -p "$prompt" ${resume[@]+"${resume[@]}"} "${common[@]}")
   # codex-repair-run.sh falls back to this cold start when a resume dies before any work.
   CODEX_FRESH_COMMAND=(claude -p "$cold_prompt" "${common[@]}")
@@ -103,7 +106,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   WORKER_STDOUT_REPORT=0
   CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'
   if [[ "$report_only" == true ]]; then
-    [[ "$type" == repair && "$provider" == codex && -n "$expected_session_id" ]] || return 1
+    [[ "$type" == repair && ( "$provider" == codex || "$provider" == claude ) && -n "$expected_session_id" ]] || return 1
     sandbox_mode=read-only
   fi
   if [[ "$type" == review || "$type" == rereview ]]; then
@@ -127,7 +130,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     return 0
   fi
   if [[ "$provider" == claude && ( "$type" == implement || "$type" == repair ) ]]; then
-    build_claude_implement_command "$type" "$model" "$effort" "$unit" "$prompt_arg" "$failure" "$workdir"
+    build_claude_implement_command "$type" "$model" "$effort" "$unit" "$prompt_arg" "$failure" "$workdir" "$report_only" "$expected_session_id"
     return $?
   fi
   if [[ "$provider" == claude ]]; then

@@ -402,14 +402,14 @@ Source: https://example.invalid/incident-reference
 VERDICT: READY
 REPORT
 write_unit "$fresh_source_name"
-jqf '.units[0].pr=71001 | .units[0].stage="implement"' "$UNITS" | write_state "$UNITS"
+jqf '.units[0].stage="implement"' "$UNITS" | write_state "$UNITS"
 write_worker implement "$fresh_source_name" impl-71001-fresh-source.worker.log
 jqf '.workers[0].session_id=""' "$WORKERS" | write_state "$WORKERS"
 printf 'session id: %s\n' "$session_id" > "$sup/impl-71001-fresh-source.worker.log"
 before_resumes=$RESUME_DISPATCHES
 harvest_workers
 [[ "$(jqf -r '.units[0].stage' "$UNITS")" == repair && "$RESUME_DISPATCHES" == $((before_resumes + 1)) ]] \
-  || fail "a fresh implement worker with a missing decision-log did not get a session continuation before review (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES)"
+  || fail "a fresh implement worker with a missing decision-log did not get a session continuation before review (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES gate_fail=$(jqf -c '.units[0].report_gate_fail // null' "$UNITS") last=$(jqf -r '.units[0].history[-1].stage // empty' "$UNITS"))"
 jqf -e --arg sid "$session_id" '.incident_report_resume == true and .incident_report_resume_session_id == $sid and .incident_report_resume_source_report == "impl-71001-fresh-source.md"' \
   <<<"$LAST_CONTEXT" >/dev/null || fail 'fresh continuation did not carry the session id and source report'
 

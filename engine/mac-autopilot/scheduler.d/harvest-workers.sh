@@ -38,9 +38,9 @@ dispatch_incident_report_resume() { # worker-json source-report gate-reason → 
   say "report resume dispatched unit=$unit source=$source_report output=$output_report"
 }
 
-incident_report_pre_review() { # implement/repair worker-json report-name report-path → start one report-only continuation when needed; rc 1 = one is now running
+incident_report_pre_review() { # implement/repair worker-json report-name report-path [harvested-session-id] → start one report-only continuation when needed; rc 1 = one is now running; the row predates harvest, so a fresh run's id comes from the caller
   local w="$1" report_name="$2" report_path="$3" unit wtype incident_unit_json reason n worker_report
-  wtype="$(jqf -r '.type // empty' <<<"$w")"
+  w="$(jqf --arg sid "${4:-}" 'if (.session_id // "") == "" then .session_id=$sid else . end' <<<"$w")"; wtype="$(jqf -r '.type // empty' <<<"$w")"
   [[ "$wtype" == implement || "$wtype" == repair ]] || return 0
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" != true ]] || return 0
   unit="$(jqf -r '.unit // empty' <<<"$w")"
@@ -383,7 +383,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             size_admission_recheck "$unit" "$recheck_dir" "$recheck_branch" "on $recheck_branch after repair" "${recheck_dir:+$(git -C "$recheck_dir" rev-parse -q --verify HEAD 2>/dev/null)}" || :
           fi
           # The report check runs before the breaker: a continuation fixing the report is part of this round, so the breaker waits for the next one.
-          incident_report_pre_review "$w" "$report" "$rep" && { repair_breaker "$unit" "$rep" || :; } ;;
+          incident_report_pre_review "$w" "$report" "$rep" "$session_id" && { repair_breaker "$unit" "$rep" || :; } ;;
         land)
           local land_result; land_result="$(head -1 "$rep")"
           case "$land_result" in
@@ -426,7 +426,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         implement|triage) harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only" ;;
       esac
       fi
-      [[ "$wtype" != implement || "$report_only_requeue_handled" == true ]] || incident_report_pre_review "$w" "$report" "$rep" || :
+      [[ "$wtype" != implement || "$report_only_requeue_handled" == true ]] || incident_report_pre_review "$w" "$report" "$rep" "$session_id" || :
     else
       if [[ "$(jqf -r '.incident_report_resume // false' <<<"$w")" == true ]]; then
         report_resume_source="$(jqf -r '.incident_report_resume_source_report // empty' <<<"$w")"
