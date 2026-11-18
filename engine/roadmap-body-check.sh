@@ -2,14 +2,14 @@
 # Sourced by roadmap.sh (kept apart: roadmap.sh sits at the 800-line size-ratchet cap).
 # roadmap_body_check_refuse <body-file> <label>... -> rc 0 to create; rc 1 with the check's output on stderr to refuse.
 # Rule: night.json `roadmap.body_check_command` (target, then pack, then engine). A ready-for-agent ticket without
-# bug/hotfix/engine runs it on the body; a non-zero exit refuses. No setting, nothing runs.
+# bug/hotfix/engine/pipeline-system runs it on the body; a non-zero exit refuses. No setting, nothing runs.
 roadmap_body_check_refuse() {
   local body_file="$1" config_file check_cmd check_out label is_feature=0
   shift
   for label in "$@"; do
     case "$label" in
       ready-for-agent) is_feature=1 ;;
-      bug|hotfix|engine) return 0 ;;
+      bug|hotfix|engine|pipeline-system) return 0 ;; # pipeline-system: engine incidents, not feature tickets (597)
     esac
   done
   [[ "$is_feature" == 1 ]] || return 0

@@ -59,7 +59,6 @@ engine/night/production-tenant-marker-readonly.test.sh
 engine/optimistic-merge.test.sh
 engine/owner-stop-request.test.sh
 engine/pipeline-issue-upsert-label-limit.test.sh
-engine/pipeline-issue-upsert.test.sh
 engine/pipeline-system-close-evidence.test.sh
 engine/pre-push-guard.test.sh
 engine/proc.test.sh

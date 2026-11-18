@@ -261,6 +261,14 @@ none_url="$(ZF_CONFIG_ROOT="$body_none" guarded_write gh issue create --repo "$R
 assert_eq 'without roadmap.body_check_command nothing runs and the ticket is created' \
   'https://github.com/example-maintainer/example-repo/issues/99022' "$none_url"
 assert_eq 'without roadmap.body_check_command the check does not run' 0 "$(wc -l < "$body_check_log")"
+# 597: engine incident tickets (ci-checks.sh:303 shape: repeated --label, inline --body) skip the target body check.
+: > "$body_check_log"; : > "$FAKE_GH_LOG"
+FAKE_NEXT_ISSUE=99023 export FAKE_NEXT_ISSUE
+incident_url="$(ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Automated dispatch rule validation incident' \
+  --label pipeline-system --label ready-for-agent --body 'Incident body without feature sections.')"
+assert_eq 'ci-checks incident shape (pipeline-system, inline body) is created under a refusing check' \
+  'https://github.com/example-maintainer/example-repo/issues/99023' "$incident_url"
+assert_eq 'pipeline-system ticket does not run the check' 0 "$(wc -l < "$body_check_log")"
 unset ZF_ROADMAP_TREE_CACHE_FILE
 
 echo 'roadmap-issue-create.test.sh: PASS'
