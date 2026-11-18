@@ -781,6 +781,20 @@ assert_not_contains "a tracker with a newly observed child is not reported as a 
 assert_not_contains "a tracker with a newly observed child is not sent to triage" \
   "$(cat "$ROOT_WRITE_LOG")" "--add-label needs-triage"
 
+# A childless split parent (its unit recorded a split follow-up) returns to delivery, not triage.
+cat > "$STATE_DIR/500126.json" <<'JSON'
+{"state":"tracker","tracker_parent":true}
+JSON
+mkdir -p "$TEST_HOME/split-units"
+# stage closed: a unit that is not terminal counts as active delivery and is skipped before this check.
+echo '{"units":[{"id":"issue-500126","issue":500126,"stage":"closed","split_followup":500127}]}' > "$TEST_HOME/split-units/units.json"
+BLOCKER_GRAPH_JSON='[{"number":500126,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+: > "$ROOT_WRITE_LOG"
+MAC_AUTOPILOT_RUNTIME_DIR="$TEST_HOME/split-units" sweep_blocking_issue_roots 2>/dev/null || true
+unset BLOCKER_GRAPH_JSON
+assert_contains "childless split parent goes back to ready-for-agent" "$(cat "$ROOT_WRITE_LOG")" "ready-for-agent"
+assert_not_contains "childless split parent is not sent to triage" "$(cat "$ROOT_WRITE_LOG")" "--add-label needs-triage"
+
 # A real transition failure (the live owner-admission timeout shape) still reaches the inbox.
 cat > "$STATE_DIR/500123.json" <<'JSON'
 {"state":"tracker","tracker_parent":true,"recut_comment_scanned":true}

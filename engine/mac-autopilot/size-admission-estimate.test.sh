@@ -48,7 +48,7 @@ pass_recheck || fail 'a recheck in a pass failed'
 [[ "$(grep -c '^set ' "$calls")" == 1 ]] || fail "an unchanged footprint was written again ($(grep -c '^set ' "$calls") writes)"
 unset -f gh git set_unit pass_recheck
 
-# A split delivery moves its parent to tracker; a failed move goes to the supervisor and the split still returns 0.
+# A split leaves its parent in its delivery state (no tracker move): the parent delivers its own first slice, so a split never leaves a childless tracker.
 gh() { return 1; }
 scheduler_auto_filed_issue_create() { echo "https://github.com/o/r/issues/41"; }
 unit_field() { echo t; }
@@ -60,7 +60,5 @@ scheduler_issue_transition() { transitions="$1|$2|$3|$4"; return "${TRANSITION_R
 to_supervisor() { supervisor_msg="$1|$2"; }
 printf 'slice report\n' > "$fixture/split-report"
 split_followup_issue issue-40 40 50 'SPLIT: the rest' "$fixture/split-report"
-[[ "$transitions" == '40|tracker|intake-parent:roadmap-container:split-delivery|.tracker_parent = true' ]] || fail "a split did not move the parent to tracker ($transitions)"
-TRANSITION_RC=1; rc=0; split_followup_issue issue-40 40 50 'SPLIT: the rest' "$fixture/split-report" || rc=$?
-[[ "$rc" == 0 && "$supervisor_msg" == 'issue-40|split remainder #41 filed but parent #40 could not transition to tracker' ]] || fail "a failed tracker move was not sent to the supervisor with rc 0 (rc=$rc $supervisor_msg)"
+[[ -z "$transitions" ]] || fail "a split moved the parent to tracker with no children ($transitions)"
 echo "size-admission-estimate.test.sh: all assertions passed"

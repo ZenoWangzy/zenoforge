@@ -163,11 +163,16 @@ tracker_back_to_triage() { # issue number
 
 # Return 3 when either child source disproves childlessness; read and transition failures remain errors.
 tracker_childless_to_triage() { # issue number, state JSON
-  local n="$1" state_json="$2" native
+  local n="$1" state_json="$2" native units="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:?}/.scratch-supervisor/autopi}/units.json"
   jq -e 'type == "object" and ((.recut_children // []) | type) == "array"' <<< "$state_json" >/dev/null 2>&1 || return 1
   jq -e '((.recut_children // []) | length) == 0' <<< "$state_json" >/dev/null 2>&1 || return 3
   native="$(native_parent_subissues_json "$n")" || return 1
   jq -e 'type == "array" and length == 0' <<< "$native" >/dev/null 2>&1 || return 3
+  # A split parent (its unit recorded a split follow-up, #776) goes back to delivery, not triage; the reason is not stored in state.
+  if [ -r "$units" ] && jq -e --argjson n "$n" 'any(.units[]?; .issue == $n and .split_followup != null)' "$units" >/dev/null 2>&1; then
+    issue_transition "$n" ready-for-agent "split-delivery tracker has no child; back to delivery"
+    return
+  fi
   tracker_back_to_triage "$n"
 }
 
