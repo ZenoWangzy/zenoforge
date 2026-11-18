@@ -44,7 +44,11 @@ case "${1:-} ${2:-}" in
     ;;
   "label list") printf '[]\n' ;;
   "api"*)
-    if [[ " $* " == *"/issues/9021 --jq"* ]]; then
+    if [[ " $* " == *"/issues/9031 --jq .parent_issue_url"* ]]; then
+      :
+    elif [[ " $* " == *"/issues/9031 --jq"* ]]; then
+      printf '9031001\n'
+    elif [[ " $* " == *"/issues/9021 --jq"* ]]; then
       printf '9021001\n'
     elif [[ " $* " == *"/issues/101/sub_issues"* ]]; then
       printf '%s\n' 'An error occurred while adding the sub-issue to the parent issue. Parent cannot have more than N sub-issues' >&2
@@ -179,6 +183,25 @@ expect_eq 'parent-full route failure is logged' true \
   "$(grep -F 'intake-priority: route placement failed for #9021:' "$test_root/parent-full.out" >/dev/null && echo true || echo false)"
 expect_eq 'parent-full warning keeps the GitHub rejection reason' true \
   "$(grep -F 'Parent cannot have more than N sub-issues' "$test_root/parent-full.out" >/dev/null && echo true || echo false)"
+
+# An orphan none-fits issue (creation-time placement failed, row 580) gets the default placement.
+orphan_issue_file="$test_root/orphan.issue.json"
+orphan_result_file="$test_root/orphan.result.json"
+orphan_log="$test_root/orphan-gh.log"
+jq -cn '{number:9031,title:"Orphan none-fits fixture",body:"",labels:[]}' > "$orphan_issue_file"
+jq -cn '{status:"answered",adopted:true,confidence:0.99,
+  decision:({priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
+  intake_context:{roadmap_containers:[]}}' > "$orphan_result_file"
+jq -cn '{roots:[{number:90,title:"Roadmap",state:"OPEN",labels:["roadmap"],children:[
+  {number:91,title:"Theme",state:"OPEN",labels:["roadmap-theme"],children:[
+    {number:102,title:"待归类",state:"OPEN",labels:["roadmap-epic"],children:[]}
+  ]}
+]}]}' > "$test_root/orphan-roadmap.json"
+INTAKE_OVERLAY_LOG="$orphan_log" ZF_ROADMAP_TREE_CACHE_FILE="$test_root/orphan-roadmap.json" \
+  bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$orphan_issue_file" --result-file "$orphan_result_file" \
+  > "$test_root/orphan.out" 2>&1 || true
+expect_eq 'orphan none-fits issue is placed under the 待归类 epic' true \
+  "$(grep -qF 'repos/fixture/repo/issues/102/sub_issues' "$orphan_log" && echo true || echo false)"
 
 founder_issue_file="$test_root/founder.issue.json"
 founder_result_file="$test_root/founder.result.json"
