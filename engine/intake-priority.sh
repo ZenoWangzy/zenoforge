@@ -59,6 +59,11 @@ intake_priority_judge_policy() {
   }' <<< "$1"
 }
 
+# The tree read pages every open issue; on the live repo it runs about 60 s, so the 60 s default bound killed it (83% of calls).
+intake_priority_fetch_tree() {
+  ZF_ROADMAP_QUERY_TIMEOUT_SECONDS=180 roadmap_fetch_tree "$@"
+}
+
 intake_priority_route_context() {
   local repo="$1" issue_json="$2" tree='' cache_file='' temp_dir='' containers='[]' route='none-fits' candidate
   cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
@@ -67,7 +72,7 @@ intake_priority_route_context() {
   else
     temp_dir="$(mktemp -d)" || return 1
     export ZF_ROADMAP_SNAPSHOT_FILE="$temp_dir/snapshot.json"
-    if roadmap_fetch_tree "$temp_dir/tree.json" "$repo"; then
+    if intake_priority_fetch_tree "$temp_dir/tree.json" "$repo"; then
       cache_file="$temp_dir/tree.json"
       tree="$(cat -- "$cache_file")" || tree=''
     fi
@@ -258,7 +263,7 @@ intake_priority_place_route() {
   if [[ -z "$tree" ]] || ! roadmap_tree_is_valid "$tree"; then
     temp_dir="$(mktemp -d)" || return 1
     cache_file="$temp_dir/tree.json"
-    if ! ZF_ROADMAP_SNAPSHOT_FILE="$temp_dir/snapshot.json" roadmap_fetch_tree "$cache_file" "$REPO"; then
+    if ! ZF_ROADMAP_SNAPSHOT_FILE="$temp_dir/snapshot.json" intake_priority_fetch_tree "$cache_file" "$REPO"; then
       rm -rf -- "$temp_dir"
       echo 'intake-priority: roadmap tree fetch failed for selected route' >&2
       return 1
