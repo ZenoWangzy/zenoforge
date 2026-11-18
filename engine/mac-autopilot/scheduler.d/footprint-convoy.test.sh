@@ -435,4 +435,26 @@ footprint_expand_rows "$cache_rows" false
 [[ -n "$old_main" ]] || fail 'fixture lost the old main'
 unset -f hotspot_expand_batch
 
-echo 'footprint-convoy.test.sh: pass (stale-owner release, live-owner lock, convoy dedupe, refill metrics, expansion cache)'
+# Refill admission (require_fresh) reuses the expansion of an unchanged main and head across refill passes; a live overlap still refuses.
+room_expand_file="$test_env_root/room-expand-calls"; : > "$room_expand_file"
+hotspot_expand_batch() { echo x >> "$room_expand_file"; jq -c '[.[] | {id,scope,old_scope:.scope,counts:{}}]' <<<"$1"; }
+room_expands() { wc -l < "$room_expand_file" | tr -d ' '; }
+TICK_FOOTPRINT_DEFER=true
+printf '%s\n' '{"units":[{"id":"room-cand","stage":"implement-pending","footprint":["a.txt"],"footprint_source":"pr-diff"}]}' > "$UNITS"
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+room_cand_unit="$(jqf -c '.units[] | select(.id=="room-cand")' "$UNITS")"
+TICK_ACTIVE_FOOTPRINTS='[]'; TICK_ACTIVE_FOOTPRINTS_VALID=true
+footprint_drop_check_scope_cache
+_footprint_room room-cand "$room_cand_unit" true || fail 'an admissible candidate was refused in the first refill pass'
+footprint_drop_check_scope_cache
+_footprint_room room-cand "$room_cand_unit" true || fail 'an admissible candidate was refused in the second refill pass'
+[[ "$(room_expands)" == 1 ]] || fail "two refill passes on one main and head expanded $(room_expands) times, want 1"
+printf '%s\n' '{"units":[{"id":"room-cand","stage":"implement-pending","footprint":["a.txt"],"footprint_source":"pr-diff"},{"id":"room-owner","stage":"implement","footprint":["a.txt"],"footprint_source":"pr-diff"}]}' > "$UNITS"
+printf '%s\n' '{"workers":[{"pid":200,"unit":"room-owner","type":"implement"}]}' > "$WORKERS"
+footprint_drop_check_scope_cache
+if _footprint_room room-cand "$room_cand_unit" true; then fail 'a live overlap was admitted from the cached expansion'; fi
+[[ "$(jqf -r '.units[] | select(.id=="room-cand") | .footprint_wait_owner // empty' "$UNITS")" == room-owner ]] || fail 'the live overlap did not record its owner'
+[[ "$(room_expands)" == 1 ]] || fail "the refusal pass expanded again ($(room_expands) calls)"
+unset -f hotspot_expand_batch
+
+echo 'footprint-convoy.test.sh: pass (stale-owner release, live-owner lock, convoy dedupe, refill metrics, expansion cache, refill expansion reuse)'
