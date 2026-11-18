@@ -32,7 +32,8 @@ scheduler_term_stop() {
   (( ${#alive[@]} )) && kill -KILL "${alive[@]}" 2>/dev/null
   exit 143 # the EXIT trap (release_scheduler_lock) runs after the children are gone
 }
-# Waiters queue on tickets in $SCHED_LOCK.q, one file per waiter named <epoch_us>-<pid> with its start ticks inside: the oldest live ticket takes the lock.
+# Waiters queue on tickets in $SCHED_LOCK.q, one file per waiter named <class>-<epoch_us>-<pid> with its start ticks inside: the oldest live ticket takes the lock.
+# class 0 = refill waiter, 1 = any other: the sorted glob puts a refill ahead of a full tick's queued waiters. The pid stays the last field.
 scheduler_ticket_live() { # $1 ticket: 0 while its waiter is alive; a pid whose start ticks differ is reused, so the ticket is dead
   local pid="${1##*-}" want now
   kill -0 "$pid" 2>/dev/null || return 1
@@ -124,7 +125,8 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
   refill_stopped && return 1
   lock_us_now; local w0=$LOCK_US; w_start=$LOCK_US
   local me=$BASHPID ticket_start # $BASHPID inside $(...) would name the subshell, so the ticket records the waiter's own start
-  mkdir -p "$SCHED_LOCK.q" 2>/dev/null; lock_us_now; SCHED_LOCK_TICKET="$SCHED_LOCK.q/$LOCK_US-$me"
+  local cls=1; if [[ "${TICK_LOCAL_REFILL:-false}" == true ]]; then cls=0; fi # same test as refill_lock_wait_spent: a refill goes first
+  mkdir -p "$SCHED_LOCK.q" 2>/dev/null; lock_us_now; SCHED_LOCK_TICKET="$SCHED_LOCK.q/$cls-$LOCK_US-$me"
   ticket_start="$(coord_process_start_ticks "$me" 2>/dev/null || true)"
   printf '%s\n' "$ticket_start" > "$SCHED_LOCK_TICKET" 2>/dev/null || :
   chain_exit_trap scheduler_ticket_drop # the EXIT trap drops the ticket of a wait that ends early
