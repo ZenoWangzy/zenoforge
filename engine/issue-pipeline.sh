@@ -3021,18 +3021,9 @@ latest_production_deployment_sha() {
 # dispatches one release from the newest green main SHA, and merging continues
 # throughout. The former daily release window is superseded for these batches.
 # A persisted fleet-roll continuation is an in-flight release, not a new batch,
-# so it does not consume a window.
+# so it does not consume a window. The cadence marker does not stop fleet continuations; RELEASE_BATCH_HOLD_FILE does.
 RELEASE_BATCH_CADENCE_FILE="$AGENT_HOME/release-batch-last-dispatch"
-release_batch_cadence_mark() {
-  guarded_state_write "$RELEASE_BATCH_CADENCE_FILE" "$(date +%s)" \
-    || echo "issue-pipeline: could not record the release-batch cadence marker" >&2
-}
-release_batch_cadence_open() {
-  local last
-  last="$(cat "$RELEASE_BATCH_CADENCE_FILE" 2>/dev/null || true)"
-  [[ "$last" =~ ^[0-9]+$ ]] || return 0
-  [ $(( $(date +%s) - last )) -ge 7200 ]
-}
+RELEASE_BATCH_HOLD_FILE="$AGENT_HOME/release-batch-hold"
 
 select_release_batch() {
   local release_slots release_issue_numbers release_candidate_sha release_dispatch_block_gate=""
@@ -3041,6 +3032,7 @@ select_release_batch() {
   local -a release_batch_issues=()
   local -A release_issue_seen=()
 
+  release_batch_hold_active && return 0
   release_slots="$(cap_slots_remaining "$RELEASE_CAP" "$(stage_unit_count release)")"
   if ! release_list_json="$(gh issue list --repo "$REPO" --state open \
       --label awaiting-release --limit 1000 --json number,labels)"; then

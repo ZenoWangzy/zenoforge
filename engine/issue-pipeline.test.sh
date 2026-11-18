@@ -1968,7 +1968,7 @@ fi
 # Release selection pins one main SHA, validates each ticket against it, then
 # dispatches one release unit for the whole eligible cohort.
 RELEASE_SELECTION_FN="$(sed -n '/^select_release_batch() {/,/^}/p' "$PIPELINE_SRC")"
-RELEASE_CADENCE_FN="$(sed -n '/^release_batch_cadence_mark() {/,/^}/p; /^release_batch_cadence_open() {/,/^}/p' "$PIPELINE_SRC")"
+RELEASE_CADENCE_FN="$(sed -n '/^release_batch_cadence_mark() {/,/^}/p; /^release_batch_cadence_open() {/,/^}/p' "$PIPELINE_SRC" "$SCRIPT_DIR/lib.d/release-walk.sh")"
 PRODUCTION_DEPLOYMENT_SHA_FN="$(sed -n '/^latest_production_deployment_sha() {/,/^}/p' "$PIPELINE_SRC")"
 mkdir -p "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh"
 cat > "$ISSUE_PIPELINE_TEST_AGENT_HOME/deployment-gh/gh" <<'GH'
@@ -2095,6 +2095,7 @@ run_release_selection() (
     printf 'dispatch:release-batch:%s:%s\n' "$1" "$2"
   }
   RELEASE_BATCH_CADENCE_FILE="$AGENT_HOME/release-batch-last-dispatch"
+  RELEASE_BATCH_HOLD_FILE="$AGENT_HOME/release-batch-hold"
   eval "$RELEASE_CADENCE_FN"
   eval "$RELEASE_SELECTION_FN"
   select_release_batch || return $?
@@ -2292,6 +2293,19 @@ assert_eq 'a persisted fleet roll resumes without waiting for a window' \
 assert_eq 'a closed window dispatches the Fleet roll and skips other tickets before the walk' \
   $'release-decision issue=#910161 outcome=skipped gate=release-cadence object=zf-release-batch reason=window-not-elapsed\ndispatch:release-batch:910162:candidate-sha\nrelease-decision issue=#910162 outcome=dispatched gate=fleet-roll object=zf-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
   "$(run_release_selection '[{"number":910161},{"number":910162}]' all '' 1 '' 1 910201 910162)"
+# Head's hold file (2026-11-18): an epoch "until" stops every release batch, fleet continuations included.
+RELEASE_HOLD_FILE="$ISSUE_PIPELINE_TEST_AGENT_HOME/release-batch-hold"
+printf '%s\n' "$(date +%s)" > "$RELEASE_CADENCE_FILE"
+RELEASE_HOLD_UNTIL=$(( $(date +%s) + 7200 ))
+printf '%s\n' "$RELEASE_HOLD_UNTIL" > "$RELEASE_HOLD_FILE"
+assert_eq 'a future release hold stops a pending fleet continuation in a closed window' \
+  "issue-pipeline: release hold until $(date -u -d "@$RELEASE_HOLD_UNTIL" +%Y-%m-%dT%H:%M:%SZ) (release-batch-hold); no release batch, fleet continuations included"$'\nselector-side-effects:none\npending-marker:pending' \
+  "$(run_release_selection '[{"number":910171}]' 910171 '' 1 '' 1 910201 910171 2>&1)"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$RELEASE_HOLD_FILE"
+assert_eq 'a past release hold leaves the fleet continuation to dispatch as before' \
+  $'dispatch:release-batch:910172:candidate-sha\nrelease-decision issue=#910172 outcome=dispatched gate=fleet-roll object=zf-release-batch reason=retry-persisted-rollout\nselector-side-effects:none\npending-marker:pending' \
+  "$(run_release_selection '[{"number":910172}]' 910172 '' 1 '' 1 910201 910172)"
+rm -f "$RELEASE_HOLD_FILE"
 rm -f "$RELEASE_CADENCE_FILE"
 
 RELEASE_LOOP_BODY="$(sed -n '/^while IFS= read -r n; do$/,/^done <<< "\$release_issue_numbers"$/p' "$PIPELINE_SRC")"
