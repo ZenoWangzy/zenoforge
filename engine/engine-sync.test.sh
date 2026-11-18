@@ -187,6 +187,35 @@ canary tick-complete
 [[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/old/engine" ]] \
   || { echo 'FAIL: REFILL-TIMEOUT stamped after the swap did not roll back' >&2; exit 1; }
 
+# A chronic REFILL-TIMEOUT on the engine before the old one (old has no rows) is pre-existing within the 1 h baseline window.
+seed_history() { # engine id, completed epoch, signature
+  printf '{"engine_id":"%s","completed_at":"%s","signatures":["%s"]}\n' "$1" "$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%SZ)" "$3" \
+    >> "$CF_AGENT/engine-versions/.canary-ticks.jsonl"
+}
+make_swap_fixture canary-window-baseline
+seed_history engine-a "$(( $(date +%s) - 1200 ))" REFILL-TIMEOUT
+slow_tick
+slow_tick
+ZF_REPO_DIR="$CF_TARGET" AGENT_HOME="$CF_AGENT" MAC_AUTOPILOT_SUPERVISOR_DIR="$CF_SUP" \
+  "$here/engine-sync.sh" --converge >/dev/null
+slow_tick 'REFILL-TIMEOUT stop: ledger lock wait stopped at 285s'
+slow_tick 'REFILL-TIMEOUT stop: ledger lock wait stopped at 285s'
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/candidate/engine" ]] \
+  || { echo 'FAIL: chronic REFILL-TIMEOUT from 20 min before the swap rolled the new pin back' >&2; exit 1; }
+[[ "$(jq -r '.status' "$CF_AGENT/engine-versions/.swap-record.json")" == passed ]] \
+  || { echo 'FAIL: chronic-window canary did not complete its configured ticks' >&2; exit 1; }
+
+# The same signature only 2 h before the swap is outside the window: it still rolls the new pin back.
+make_swap_fixture canary-window-expired
+seed_history engine-a "$(( $(date +%s) - 7200 ))" REFILL-TIMEOUT
+slow_tick
+slow_tick
+ZF_REPO_DIR="$CF_TARGET" AGENT_HOME="$CF_AGENT" MAC_AUTOPILOT_SUPERVISOR_DIR="$CF_SUP" \
+  "$here/engine-sync.sh" --converge >/dev/null
+slow_tick 'REFILL-TIMEOUT stop: ledger lock wait stopped at 285s'
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/old/engine" ]] \
+  || { echo 'FAIL: REFILL-TIMEOUT seen 2 h before the swap was treated as pre-existing' >&2; exit 1; }
+
 # A product pin rollback to a previously-live version skips only config/ref comparisons.
 return_root="$test_env_root/previously-live"
 return_target="$return_root/target"
