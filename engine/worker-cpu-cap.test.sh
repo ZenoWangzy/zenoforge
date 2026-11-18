@@ -36,7 +36,12 @@ assert_cpu_props() { # label quota weight
   (( n > 0 )) || fail "$1: systemd-run was never called"
   [[ "$(grep -Fxc "CPUQuota=$2" "$calls")" == "$n" ]] || fail "$1: $n call(s) but not each has CPUQuota=$2"
   [[ "$(grep -Fxc "CPUWeight=$3" "$calls")" == "$n" ]] || fail "$1: $n call(s) but not each has CPUWeight=$3"
+  assert_slice "$1"
   printf 'PASS %s: CPUQuota=%s CPUWeight=%s\n' "$1" "$2" "$3"
+}
+# Every worker joins one slice (ZF_WORKER_SLICE, default zf-workers.slice), so the host CPU guard caps them all in one place.
+assert_slice() { # label: the recorded systemd-run call carries the slice
+  grep -Fxq -- '--slice=zf-workers.slice' "$calls" || fail "$1: no --slice=zf-workers.slice, got: $(tr '\n' ' ' < "$calls")"
 }
 # MemoryHigh throttles a worker past the line instead of killing it, so the scheduler scope sets no MemoryMax.
 assert_mem_props() { # label memoryhigh tasksmax [nomax]
@@ -46,6 +51,7 @@ assert_mem_props() { # label memoryhigh tasksmax [nomax]
 }
 assert_inline_props() { # label quota weight: the property pair as one -p each, as bin/luna and friends pass them
   grep -Fxq "CPUQuota=$2" "$calls" && grep -Fxq "CPUWeight=$3" "$calls" || fail "$1: expected CPUQuota=$2 CPUWeight=$3, got: $(tr '\n' ' ' < "$calls")"
+  assert_slice "$1"
   printf 'PASS %s: CPUQuota=%s CPUWeight=%s\n' "$1" "$2" "$3"
 }
 assert_scope_stop() { # label: the run's own scope (--unit of its systemd-run) is stopped after its rc file is written
@@ -136,3 +142,9 @@ assert_inline_props 'factory/launch.sh default' 200% 10
 assert_mem_props 'factory/launch.sh default' 2G 500 nomax
 : > "$calls"; HOME="$fhome" LUNA_CPU_QUOTA=250% WORKER_SCRATCH_ROOT="$fhome/.zenoforge/scratch" "$engine/factory/launch.sh" f1 0 "$root/note.md" >/dev/null 2>&1 || :
 assert_inline_props 'factory/launch.sh LUNA_CPU_QUOTA' 250% 10
+
+# Launch sites the stubs above do not drive (dispatch-codex owner unit, night hand agents) must name the same slice.
+for f in mac-autopilot/scheduler.d/worker-scope.sh bin/luna bin/zc factory/launch.sh dispatch-codex.sh night/dispatch.sh; do
+  grep -Fq 'ZF_WORKER_SLICE:-zf-workers.slice' "$engine/$f" || fail "$f launches a worker outside the worker slice"
+done
+printf 'PASS every worker launch site names the worker slice\n'
