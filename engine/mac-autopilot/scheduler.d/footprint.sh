@@ -567,8 +567,10 @@ _footprint_room() {
   if [[ "${TICK_CHECK_SCOPE_SOURCE[$id]:-}" == "$scope" ]]; then
     check_scope="${TICK_CHECK_SCOPE[$id]}"
   else
-    # require_fresh asks for a verdict that cannot be older than this call: it recomputes the expansion and refreshes the cache entry.
-    footprint_expand_rows "$(jq -cn --arg id "$id" --argjson scope "$scope" --arg head "$(footprint_unit_head "$u")" '[{id:$id,scope:$scope,head:$head}]')" "$require_fresh" || return 1
+    # The expansion is a pure function of its cache key (scope, unit head, origin/main, checkout HEAD, hotspot floor, UTC day), so a
+    # refill pass reuses the entry an earlier pass wrote for the same key; the live writers are still re-read below. A forced
+    # recompute here repeated the hotspot jq (19 s for an 800-path scope, measured) on every refill for unchanged inputs.
+    footprint_expand_rows "$(jq -cn --arg id "$id" --argjson scope "$scope" --arg head "$(footprint_unit_head "$u")" '[{id:$id,scope:$scope,head:$head}]')" false || return 1
     check_scope="${TICK_CHECK_SCOPE[$id]}"
     TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
   fi
