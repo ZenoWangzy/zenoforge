@@ -161,4 +161,23 @@ touch "$a/query-failed"
 python3 "$script_dir/ci_spend.py" --runtime "$a" --hours 5 --now 2026-10-21T13:00:00Z >/dev/null
 jq -e '(.lines | has("202") | not) and (.nontest_added | has("202") | not) and .lines["201"] == 400 and .lines["203"] == 500' "$a/pr-sizes.json" >/dev/null \
   || fail 'a failed size query reused an unverified open PR size'
+# approval-carried: the merge sha in "clean main merge <sha> on approved <sha>" counts as approved, and a failed superseded run is not waste.
+# Expected superseded_unapproved = 6 min: only run 15 (superseded, unapproved, all green) counts.
+c="$a/carry"; mkdir -p "$c"
+H=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; N=ffffffffffffffffffffffffffffffffffffffff; G=1111111111111111111111111111111111111111
+K=2222222222222222222222222222222222222222; J=3333333333333333333333333333333333333333; M=4444444444444444444444444444444444444444
+echo "{\"units\":[{\"id\":\"pr-40\",\"pr\":40,\"stage\":\"review-pending\",\"history\":[{\"stage\":\"approval-carried\",\"result\":\"clean main merge $H on approved $J\"}]}]}" > "$c/units.json"
+cat > "$c/fixture.json" <<JSON
+{"runs":[
+ $(run 11 CI pull_request agent/c "$H" 10:00 "feat: c"),
+ $(run 12 CI pull_request agent/c "$N" 11:00 "fix: c"),
+ $(run 13 CI pull_request agent/d "$G" 10:00 "feat: d"),
+ $(run 14 CI pull_request agent/d "$K" 11:00 "fix: d"),
+ $(run 15 CI pull_request agent/e "$J" 10:00 "feat: e"),
+ $(run 16 CI pull_request agent/e "$M" 11:00 "fix: e")],
+ "jobs":{"11":[$(job success 10)],"13":[$(job failure 08)],"15":[$(job success 06)]}}
+JSON
+python3 "$script_dir/ci_spend.py" --runtime "$c" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$c/fixture.json" >/dev/null
+[[ "$(jq -r .by_reason.superseded_unapproved "$c/ci-spend.json")" == 6 ]] \
+  || fail "approval-carried or failed-superseded case wrong: $(cat "$c/ci-spend.json")"
 echo 'ci_spend.test.sh: PASS'
