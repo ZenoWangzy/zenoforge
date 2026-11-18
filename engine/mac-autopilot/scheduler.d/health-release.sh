@@ -155,7 +155,7 @@ run_release_train() {
   # 本服务只有大写代理变量；-E 一个未设置的小写名会让 systemd 设成空串，libcurl 优先读小写，
   # 空 https_proxy = 直连被墙的 GitHub（10-22 17:37Z 起委托切片的 git fetch 每次卡 60s 超时）
   local -x http_proxy="${http_proxy:-${HTTP_PROXY:-}}" https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" no_proxy="${no_proxy:-${NO_PROXY:-}}"
-  if systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-train --collect -p RuntimeMaxSec=10800 \
+  if systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-train --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}" -p RuntimeMaxSec=10800 \
       -E PATH -E HOME -E HTTP_PROXY -E HTTPS_PROXY -E ALL_PROXY -E NO_PROXY \
       -E http_proxy -E https_proxy -E no_proxy -E NODE_USE_ENV_PROXY \
       -E MAC_AUTOPILOT_RUNTIME_DIR="$A" -E MAC_AUTOPILOT_ROOT="$ROOT" \

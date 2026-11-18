@@ -717,7 +717,7 @@ dispatch() {
       return 0
     fi
   fi
-  if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect \
+  if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
     "${advisor_env[@]}" \
     -p "RuntimeMaxSec=$runtime_max" \
@@ -766,7 +766,7 @@ dispatch_release_batch() {
     record_env_fault "env:leg-not-executable:release-batch" release "$anchor" "$script is not executable (git mode bit)"
     return 0
   fi
-  if release_deployment_record_readable && guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect \
+  if release_deployment_record_readable && guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY \
     -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" -p SuccessExitStatus=75 \
@@ -846,7 +846,7 @@ dispatch_advisor_batch() {
       return 75
     fi
   fi
-  if pipeline_batch_launch advisor "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect \
+  if pipeline_batch_launch advisor "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" -E "ZF_QUARANTINE_CANARY_SCOPES=$canary_scopes" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
     "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}"; then
@@ -930,7 +930,7 @@ dispatch_triage_batch() {
       return 1
     fi
   fi
-  if pipeline_batch_launch triage "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect \
+  if pipeline_batch_launch triage "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \
     "${memory_args[@]}" "${result_args[@]}" \
@@ -1092,7 +1092,7 @@ dispatch_gitnexus_refresh() {
   gitnexus_index_matches_origin_main "$REPO_DIR" && return 0
   systemctl --user is-active --quiet ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh && return 0
   local dispatch_status
-  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect \
+  if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY \
     -p RuntimeMaxSec=2700 \
     bash -c 'source "$2/lib.sh" || exit 1

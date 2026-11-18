@@ -534,7 +534,7 @@ web_advisor_provider_start_job_unit() {
   if [[ -n "${ADVISOR_BATCH_CONTEXT_CHUNK_BYTES:-}" ]]; then
     ask_env=(-E "ADVISOR_BATCH_CONTEXT_CHUNK_BYTES=$ADVISOR_BATCH_CONTEXT_CHUNK_BYTES")
   fi
-  guarded_write systemd-run --user --unit "${ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX}-web-advisor-provider-$job_id" --collect \
+  guarded_write systemd-run --user --unit "${ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX}-web-advisor-provider-$job_id" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E HOME -E "AGENT_HOME=$AGENT_HOME" "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" \
     -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -E "WEB_SESSION_LEASE_FILE=$WEB_SESSION_LEASE_FILE" \

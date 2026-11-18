@@ -55,7 +55,7 @@ land_merge_pr "$pr" "$head_sha" --subject "$title [hotfix] (#$pr)"
 
 if [[ "$image_lane" == 1 ]]; then
   gate_wait="${HF_RELEASE_GATE_WAIT_SECONDS:-7200}"
-  systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-hf-release-$pr" --collect \
+  systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-hf-release-$pr" --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY \
     -p WorkingDirectory="$PWD" -p "RuntimeMaxSec=$((gate_wait + 900))" \
     "$here/hf-release.sh" "$pr" "$anchor" || {
