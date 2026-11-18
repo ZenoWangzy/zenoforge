@@ -1,6 +1,8 @@
 # Focused policy tests run one admission stage with a fresh per-call cancellation ledger.
 # 一拍内的 run/job 快照在准入各阶段间共享（8ca4eceaa）：每次聚焦调用先清缓存重新取；
 # 夹具预置的 TICK_UNFINISHED 就是一份完整快照（含 in_progress，各阶段不再单独回读 gh）。
+# Cases redefine cpu_busy between calls in the same second, so the 10 s CPU-sample reuse is off here (luna-gate.test.sh covers it).
+export LUNA_CPU_SAMPLE_TTL=0
 ci_tick_reset() {
   CI_RUN_JOBS_CACHE=()
   GATED_CENSUS_LOADED=false
