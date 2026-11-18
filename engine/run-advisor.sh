@@ -129,11 +129,8 @@ fail_attempt() {
   exit 1
 }
 
-if ! ISSUE_JSON="$(gh issue view "$N" --repo "$REPO" \
-  --json number,title,body,author,comments,createdAt,labels,state)"; then
-  record_env_fault env:gh-api advisor "$N" "gh issue view failed (api.github.com unreachable or timed out)"
-  exit 1
-fi
+ISSUE_JSON="$(gh issue view "$N" --repo "$REPO" \
+  --json number,title,body,author,comments,createdAt,labels,state)" || { gh_backoff_refusal "$?" || record_env_fault env:gh-api advisor "$N" "gh issue view failed (api.github.com unreachable or timed out)"; exit 1; } # rc 75 = gh's own backoff, not an outage
 
 # 2026-09-19: issue-pipeline.sh's orphan-verdict recovery loop (b2-orphan,
 # advisor_pending_orphan_candidates()) dispatches this script straight off
