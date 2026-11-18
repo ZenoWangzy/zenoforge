@@ -243,7 +243,11 @@ harvest_pr_implement() { # unit report-path
       # the PR branch already exists at its older head. Publish the same topic ref
       # with a fast-forward before opening/reusing the PR; the missing-branch path
       # below cannot recover this common case because ls-remote already succeeded.
-      if push_out="$(git -C "$dir" push origin "refs/heads/$branch:refs/heads/$branch" 2>&1)"; then
+      # A branch fast-forwarded to main has no commit of its own: no push, the empty-delivery route below (issue-6882).
+      git -C "$dir" fetch -q origin main 2>/dev/null || true
+      if [[ -z "$(git -C "$dir" rev-list -n1 "refs/remotes/origin/main..$local_head" 2>/dev/null)" ]]; then
+        head=""
+      elif push_out="$(git -C "$dir" push origin "refs/heads/$branch:refs/heads/$branch" 2>&1)"; then
         head="$local_head"
         set_unit "$1" "$(hist implement-push-recovered "engine pushed worker commit $local_head to $branch")"
         say "implement-no-push unit=$1: engine pushed committed work $local_head -> $branch"

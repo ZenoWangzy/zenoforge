@@ -63,6 +63,28 @@ harvest_pr_implement issue-907 "$sup/impl-907.md" || :
 [[ "$(field issue-907 '.history[] | select(.stage=="pr-opened") | .result')" == "PR#4200 $np_local_head" ]] \
   || fail 'the PR was not recorded at the published integrated head'
 
+# 1c) 本地分支只快进到 origin/main、没有自己的提交，PR 分支停在更旧的头：不得把 main 的提交推上去，走空交付路由。
+command git init -q --bare -b main "$np/origin-ff.git"
+command git -C "$np/src" push -q "$np/origin-ff.git" main
+command git clone -q "$np/origin-ff.git" "$np/ff-seed"
+command git -C "$np/ff-seed" checkout -q -b agent/issue-908
+printf 'old pr head\n' >> "$np/ff-seed/f"; command git -C "$np/ff-seed" commit -qam 'old pr head'
+command git -C "$np/ff-seed" push -q origin agent/issue-908
+np_ff_pr_head="$(command git -C "$np/ff-seed" rev-parse HEAD)"
+command git -C "$np/ff-seed" checkout -q main
+command git -C "$np/ff-seed" merge -q --ff-only agent/issue-908
+printf 'main moved on\n' >> "$np/ff-seed/f"; command git -C "$np/ff-seed" commit -qam 'main moved on'
+command git -C "$np/ff-seed" push -q origin main
+command git clone -q "$np/origin-ff.git" "$WT_ROOT/wt-issue-908"
+np_wt issue-908 checkout -q -b agent/issue-908 origin/main
+units '{"units":[{"id":"issue-908","issue":908,"title":"ff only","branch":"agent/issue-908","lane":"pr","stage":"implement","history":[]}]}'
+printf 'report only\n' > "$sup/impl-908.md"
+harvest_pr_implement issue-908 "$sup/impl-908.md" || :
+[[ "$(command git -C "$np/origin-ff.git" rev-parse refs/heads/agent/issue-908)" == "$np_ff_pr_head" ]] \
+  || fail "fast-forward-only local branch moved the PR branch to main's commits (got $(command git -C "$np/origin-ff.git" rev-parse refs/heads/agent/issue-908), want $np_ff_pr_head)"
+[[ "$(stage_of issue-908 implement-no-changes)" == 1 && "$(field issue-908 .stage)" == implement-pending && "$(stage_of issue-908 implement-push-recovered)" == 0 ]] \
+  || fail "fast-forward-only branch did not take the empty-delivery route ($(field issue-908 .stage))"
+
 # 2) 空交付（#5246：改动落在别的 checkout/远端，指定 worktree 既无提交也无未提交改动）。
 command git clone -q "$np/origin.git" "$WT_ROOT/wt-issue-902"
 np_wt issue-902 checkout -q -b agent/issue-902
