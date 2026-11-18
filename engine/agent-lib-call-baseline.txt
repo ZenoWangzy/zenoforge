@@ -37,7 +37,7 @@ engine/mac-autopilot/scheduler.d/models.sh 47
 engine/mac-autopilot/scheduler.d/no-human-wait.sh 1
 engine/mac-autopilot/scheduler.d/orphan-prs.sh 2
 engine/mac-autopilot/scheduler.d/park-label-sweep.sh 0
-engine/mac-autopilot/scheduler.d/recut-reopen.sh 3
+engine/mac-autopilot/scheduler.d/recut-reopen.sh 2
 engine/mac-autopilot/scheduler.d/release-deps-station.sh 0
 engine/mac-autopilot/scheduler.d/reports.sh 0
 engine/mac-autopilot/scheduler.d/review-fixes.sh 0
