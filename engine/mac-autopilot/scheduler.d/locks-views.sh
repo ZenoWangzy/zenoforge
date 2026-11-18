@@ -55,11 +55,17 @@ acquire_scheduler_lock() {
   printf '%s\t%s\n' "$owner" "$holder_phase" > "$SCHED_LOCK/holder-phase" 2>/dev/null || :
   SCHED_LOCK_HELD=true
   trap scheduler_term_stop TERM # stops this holder's children before the EXIT trap releases the lock
-  lock_us_now; SCHED_LOCK_AT_US=$LOCK_US # the existing-walk station sums holds and waits per pass
+  lock_us_now; SCHED_LOCK_AT_US=$LOCK_US SCHED_LOCK_FROM_PHASE=$holder_phase # the existing-walk station sums holds and waits per pass
   chain_exit_trap 'release_scheduler_lock'
 }
 release_scheduler_lock() {
   [[ "${SCHED_LOCK_HELD:-false}" == true ]] || return 0
+  lock_us_now
+  if (( LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US} >= ${SCHED_LOCK_HOLD_LOG_SECS:-20} * 1000000 )); then # long holds name the phases they span (lock-hold-log)
+    local to_phase=unknown
+    IFS=$'\t' read -r _ to_phase 2>/dev/null < "$SCHED_LOCK/holder-phase" || :
+    say "scheduler lock hold pid=$BASHPID secs=$(( (LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US}) / 1000000 )) from_phase=${SCHED_LOCK_FROM_PHASE:-unknown} to_phase=${to_phase:-unknown}"
+  fi
   if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then
     rm -rf -- "$SCHED_LOCK"
   fi
@@ -90,22 +96,31 @@ ledger_lock_holder_phase() { # the current holder phase is recorded beside its p
   fi
 }
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
-  local t0=$SECONDS
+  local t0=$SECONDS rc=0 w_start holders="" nholders=0 h
   refill_stopped && return 1
-  lock_us_now; local w0=$LOCK_US
+  lock_us_now; local w0=$LOCK_US; w_start=$LOCK_US
   until acquire_scheduler_lock; do
     lock_us_now; LOCK_WAIT_US=$((${LOCK_WAIT_US:-0} + LOCK_US - w0)); w0=$LOCK_US # waited so far, to the last refused try
+    h="$(ledger_lock_holder_phase)" # phase/pid: the wait line names each holder as pid/phase, at most 8 distinct
+    if [[ "${h##*/}" =~ ^[0-9]+$ ]] && (( nholders < 8 )) && [[ ",$holders," != *",${h##*/}/${h%/*},"* ]]; then
+      holders="${holders:+$holders,}${h##*/}/${h%/*}"; nholders=$((nholders + 1))
+    fi
     if refill_lock_wait_spent; then
       : > "$A/.refill-stop"
       local holder holder_phase
       holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"; holder="${holder:-none}"
-      holder_phase="$(ledger_lock_holder_phase)"
+      holder_phase="$h"
       say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): holder=$holder holder_phase=$holder_phase: the refill limit is near, the refill ends here and the next one resumes"
-      return 1
+      rc=1; break
     fi
-    if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then return 1; fi
+    if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then rc=1; break; fi
     sleep 0.05
   done
+  lock_us_now
+  if (( LOCK_US - w_start >= ${SCHED_LOCK_HOLD_LOG_SECS:-20} * 1000000 )); then # long waits name the holders seen while polling (lock-hold-log)
+    say "scheduler lock wait pid=$BASHPID secs=$(( (LOCK_US - w_start) / 1000000 )) phase=${SCHED_LOCK_HOLDER_PHASE:-unknown} holders=${holders:-none}"
+  fi
+  return "$rc"
 }
 reacquire_scheduler_lock_timed() { # the seconds waiting here go to tick-phases lock_wait=
   local t0=$SECONDS rc=0
