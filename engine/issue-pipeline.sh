@@ -813,7 +813,8 @@ dispatch_advisor_batch() {
         budget_result="$(issue_spend_budget_status "$n")" || return 1
         IFS=$'\t' read -r budget_state budget_calls budget_tokens <<< "$budget_result"
         if [ "$budget_state" = over ]; then
-          route_issue_spend_budget "$n" "$budget_calls" "$budget_tokens" || return 1
+          # shortcut: a failed route skips only this ticket and retries next tick, no backoff, upgrade if route failures flood the journal.
+          route_issue_spend_budget "$n" "$budget_calls" "$budget_tokens" || echo "issue-pipeline: #$n spend-budget route failed; not dispatching it this tick" >&2
         elif [ "$budget_state" = clear ]; then
           ensure_issue_roadmap_parent_for_dispatch "$n" needs-advisor || continue
           issue_ids+=("$n")
