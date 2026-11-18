@@ -221,7 +221,7 @@ export const RELATED_TESTS = new Map([
   ['engine/state/rule-files.json', ['engine/land-direct-main.test.sh']],
   ['engine/state/rulings.json', ['engine/state/rulings.test.mjs']],
   ['engine/land-queue.sh', ['engine/land-queue.test.sh', 'engine/land-direct-main.test.sh', 'engine/land-queue-completed-rebase.test.sh']],
-  ['engine/roadmap.sh', ['engine/roadmap-order.test.sh']],
+  ['engine/roadmap.sh', ['engine/roadmap-order.test.sh']], ['engine/roadmap-body-check.sh', ['engine/roadmap-issue-create.test.sh']],
   ['engine/check-rulings.sh', [
     'engine/check-rulings.test.sh',
     'engine/night/night.test.sh',
