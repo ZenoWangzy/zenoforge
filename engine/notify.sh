@@ -390,7 +390,7 @@ def convert(text):
     return "\n".join(out)
 
 if __name__ == "__main__":
-    body = sys.argv[1]
+    body = sys.stdin.read()
     content = convert(body)
     sys.stdout.write(
         '<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f5f5f5;">'
@@ -472,44 +472,25 @@ gmail_curl() {
 # under AGENT_DRY_RUN=1 or in isolation.
 markdown_to_html_email() {
   local body="$1"
-  python3 -c "$MD_TO_HTML_PY" "$body" 2>/dev/null
+  printf '%s' "$body" | python3 -c "$MD_TO_HTML_PY" 2>/dev/null
 }
 
 # build_gmail_raw_message <to> <subject> <plain> <issue> [mailer-id [html [images-json]]]
 # Pure stdlib RFC822 builder; images are {cid,filename,data} rows with base64 PNG data.
 build_gmail_raw_message() {
   local to_addr="$1" subject="$2" body="$3" issue_marker="$4" mailer_id="${5:-fixture}" html_body="${6:-}" images_json="${7:-[]}"
+  local body_file html_file images_file encoded=""
   [ -n "$html_body" ] || html_body="$(markdown_to_html_email "$body")" || return 1
   [ -n "$html_body" ] || return 1
-  python3 -c '
-import base64, json, re
-import sys
-from email.message import EmailMessage
-
-to_addr, subject, body, issue_marker, mailer_id, html_body, images_json = sys.argv[1:8]
-msg = EmailMessage()
-msg["To"] = to_addr
-msg["Subject"] = subject
-msg["X-Zenoforge-Agent-Mailer"] = "zf-pipeline-v1"
-msg["X-Zenoforge-Agent-Mailer-ID"] = mailer_id
-if issue_marker:
-    msg["X-Zenoforge-Agent-Issue"] = issue_marker
-msg.set_content(body)
-if html_body:
-    msg.add_alternative(html_body, subtype="html")
-    html_part = msg.get_payload()[-1]
-    images = json.loads(images_json)
-    if not isinstance(images, list) or len(images) > 8: raise ValueError("invalid inline images")
-    seen = set()
-    for image in images:
-        cid = image.get("cid", "")
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", cid) or cid in seen or "cid:"+cid not in html_body: raise ValueError("invalid image CID")
-        seen.add(cid)
-        data = base64.b64decode(image.get("data", ""), validate=True)
-        if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 2_000_000: raise ValueError("invalid PNG")
-        html_part.add_related(data, maintype="image", subtype="png", cid="<"+cid+">", filename=image.get("filename", cid+".png"), disposition="inline")
-sys.stdout.write(base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii"))
-' "$to_addr" "$subject" "$body" "$issue_marker" "$mailer_id" "$html_body" "$images_json" 2>/dev/null
+  # argv is capped at 128 KiB per argument: body, html and images go through files.
+  body_file="$(mktemp)" || return 1
+  html_file="$(mktemp)" || { rm -f "$body_file"; return 1; }
+  images_file="$(mktemp)" || { rm -f "$body_file" "$html_file"; return 1; }
+  if printf '%s' "$body" > "$body_file" && printf '%s' "$html_body" > "$html_file" && printf '%s' "$images_json" > "$images_file"; then
+    encoded="$(python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/notify-mime.py" "$to_addr" "$subject" "$body_file" "$issue_marker" "$mailer_id" "$html_file" "$images_file" 2>/dev/null)"
+  fi
+  rm -f "$body_file" "$html_file" "$images_file"
+  printf '%s' "$encoded"
 }
 
 # Shared transport: audit and contract checks precede MIME construction and Gmail.
@@ -518,7 +499,7 @@ _send_email_logged() {
   local mode="$1" subject="$2" body="$3" issue_marker="$4" maintainer_kind="$5"
   local NOTIFY_LOG_MODE="$mode"
   local NOTIFY_MAILER_ID="$(date -u +%s%N)-$$-${RANDOM}"
-  local rejection gcloud_bin token to_header encoded encoded_file payload raw curl_status http_code resp_body msg_id
+  local rejection gcloud_bin token to_header encoded encoded_file payload_file raw curl_status http_code resp_body msg_id
   local failure_reason gcloud_stderr_file
   local NOTIFY_LOG_STAGE="" NOTIFY_LOG_CURL_EXIT="" NOTIFY_LOG_HTTP_STATUS="" NOTIFY_LOG_CONTRACT_REASON=""
   # Before the request is issued, every failure proves Gmail received nothing.
@@ -621,17 +602,24 @@ $body" >&2
     return 0
   fi
 
+  # The body can exceed MAX_ARG_STRLEN (128 KiB) with charts, so curl reads it from a file.
+  payload_file="$(mktemp)" || {
+    notify_log_send "$issue_marker" "$subject" failed transport "${recipients[@]}" || true
+    [ "$mode" != strict ] || return 1
+    return 0
+  }
   encoded_file="$(jq_arg_file "$encoded")"
-  payload="$(jq -n --rawfile raw "$encoded_file" '{raw: $raw}')"
+  jq -n --rawfile raw "$encoded_file" '{raw: $raw}' > "$payload_file"
   rm -f "$encoded_file"
   # After request start, a timeout or lost response can hide a successful send.
   NOTIFY_LAST_SEND_RETRY_SAFE=0
   NOTIFY_LOG_STAGE=gmail-api-send
   raw="$(gmail_curl "$token" -sS --max-time "$GMAIL_TIMEOUT_SECONDS" -X POST "$GMAIL_SEND_URL" \
     -H "Content-Type: application/json" \
-    -d "$payload" \
+    --data-binary @"$payload_file" \
     -w '\n%{http_code}' 2>&1)"
   curl_status=$?
+  rm -f -- "$payload_file"
   http_code="$(echo "$raw" | tail -n1)"
   resp_body="$(echo "$raw" | sed '$d')"
   # curl's 000 means no HTTP response; audit only actual status codes.
@@ -1106,7 +1094,10 @@ maintainer_user_outcome_is_readable() {
 # does not reach.
 maintainer_user_outcome_matches_title() {
   # ponytail: Chinese overlap uses stopword-filtered bigrams; add a tokenizer only if real false matches appear.
-  python3 - "$1" "$2" "${3:-}" <<'PY'
+  local body_file rc=0
+  body_file="$(mktemp)" || return 1
+  printf '%s' "${3:-}" > "$body_file"
+  python3 - "$1" "$2" "$body_file" <<'PY' || rc=$?
 import re
 import sys
 
@@ -1130,7 +1121,8 @@ def terms(text):
         )
     return result
 
-title, outcome, body = sys.argv[1], sys.argv[2], sys.argv[3]
+title, outcome, body_path = sys.argv[1], sys.argv[2], sys.argv[3]
+body = open(body_path, encoding="utf-8", newline="").read()
 if terms(title) & terms(outcome):
     raise SystemExit(0)
 
@@ -1146,6 +1138,8 @@ if not re.search(r"[\u3400-\u9fff]", title) and len(cjk_bigrams(body) & cjk_bigr
     raise SystemExit(0)
 raise SystemExit(1)
 PY
+  rm -f "$body_file"
+  return "$rc"
 }
 
 maintainer_user_outcome_is_internal() {

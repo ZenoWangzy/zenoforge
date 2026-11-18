@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FAILED=0
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf "$TMP_DIR" "$test_env_root"' EXIT
 ZF_CONFIG_ROOT="$TMP_DIR/.zenoforge"
 mkdir -p "$ZF_CONFIG_ROOT/prompts"
 cp "$SCRIPT_DIR/prompts/founder-outcome.schema.json" "$ZF_CONFIG_ROOT/prompts/founder-outcome.schema.json"
@@ -1068,6 +1068,55 @@ NOTIFY_LAST_SEND_RETRY_SAFE=1
 send_email_strict "[example] watchdog test" body a@b.invalid >/dev/null 2>&1 || true
 assert_eq "send_email_strict: uncertain POST timeout is not retry-safe" "0" "$NOTIFY_LAST_SEND_RETRY_SAFE"
 FAKE_CURL_FAIL=""
+
+# Large payloads must reach curl as --data-binary @<file>: one argv string over
+# 128 KiB makes exec fail with E2BIG (rc 126), which is what main does. Two
+# cases: a text body over 200 KiB, and inline images over 128 KiB of base64.
+BIG_BIN="$TMP_DIR/bigbin"
+BIG_CURL_LOG="$TMP_DIR/big-curl.log"
+mkdir -p "$BIG_BIN"
+cat > "$BIG_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = --data-binary ] && [[ "$arg" == @* ]]; then
+    printf 'file %s %s\n' "$(wc -c < "${arg#@}" | tr -d '[:space:]')" "${arg#@}" >> "$BIG_CURL_LOG"
+  fi
+  prev="$arg"
+done
+printf '{"id":"big-msg"}\n200\n'
+EOF
+chmod +x "$BIG_BIN/curl"
+OLD_STRICT_PATH="$PATH"
+export PATH="$BIG_BIN:$PATH" BIG_CURL_LOG
+big_body="$(PYTHONIOENCODING=utf-8 python3 -c 'print("这是一段用于测试的正文内容。" * 4900)')"
+big_bytes="$(printf '%s' "$big_body" | wc -c | tr -d '[:space:]')"
+assert_eq "send_email_strict: long-body fixture is over 200 KiB" "yes" \
+  "$([ "$big_bytes" -ge 204800 ] && echo yes || echo no)"
+: > "$NOTIFY_LOG_FILE"
+: > "$BIG_CURL_LOG"
+run_strict "[example] watchdog test" "$big_body" "a@b.invalid"
+assert_eq "send_email_strict: body over 200 KiB sends" "0" "$STRICT_STATUS"
+big_seen="$(awk 'NR==1{print $2}' "$BIG_CURL_LOG")"
+big_path="$(awk 'NR==1{print $3}' "$BIG_CURL_LOG")"
+assert_eq "send_email_strict: curl got the long body from a file over 200 KiB" "yes" \
+  "$([ "${big_seen:-0}" -ge 204800 ] && echo yes || echo no)"
+assert_eq "send_email_strict: long-body file is removed after curl returns" "gone" \
+  "$([ -n "$big_path" ] && [ -e "$big_path" ] && echo present || echo gone)"
+
+# Inline images: a synthetic PNG (valid signature, 100 KB) makes the base64 row over 128 KiB.
+IMG_JSON="$(python3 -c 'import base64, json; print(json.dumps([{"cid": "chart1", "filename": "chart1.png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 100000).decode("ascii")}]))')"
+img_bytes="$(printf '%s' "$IMG_JSON" | wc -c | tr -d '[:space:]')"
+assert_eq "send_email_strict: inline-image fixture is over 128 KiB" "yes" \
+  "$([ "$img_bytes" -ge 131072 ] && echo yes || echo no)"
+: > "$NOTIFY_LOG_FILE"
+: > "$BIG_CURL_LOG"
+run_strict "[example] watchdog test" "chart" --html-body '<p>chart</p><img src="cid:chart1">' --inline-images "$IMG_JSON" "a@b.invalid"
+assert_eq "send_email_strict: inline images over 128 KiB send" "0" "$STRICT_STATUS"
+img_seen="$(awk 'NR==1{print $2}' "$BIG_CURL_LOG")"
+assert_eq "send_email_strict: curl got the image mail from a file over 128 KiB" "yes" \
+  "$([ "${img_seen:-0}" -ge 131072 ] && echo yes || echo no)"
+export PATH="$OLD_STRICT_PATH"
 
 # non-success HTTP response
 FAKE_CURL_HTTP_CODE=503
