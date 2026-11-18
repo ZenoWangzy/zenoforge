@@ -128,13 +128,20 @@ append_history() { # engine id, signatures file, completed time
 record_swap() {
   (($# == 6)) || { echo 'usage: engine-canary.sh record-swap OLD NEW OLD_ENGINE_LINK NEW_ENGINE_LINK OLD_AUTOPI_LINK NEW_AUTOPI_LINK' >&2; return 2; }
   local old_id="$1" new_id="$2" old_engine_target="$3" new_engine_target="$4"
-  local old_autopi_target="$5" new_autopi_target="$6" ticks baseline count time generation tmp
+  local old_autopi_target="$5" new_autopi_target="$6" ticks baseline count time generation tmp window
   [[ "$old_id" != "$new_id" ]] || return 0
   ticks="$(canary_ticks)"
+  window="${CANARY_BASELINE_WINDOW_SECS:-3600}"
+  [[ "$window" =~ ^[0-9]+$ ]] || window=3600
   baseline='[]'; count=0
   if [[ -r "$HISTORY" ]] && (( ticks > 0 )); then
-    baseline="$(jq -sc --arg old "$old_id" --argjson n "$ticks" \
-      '[.[] | select(.engine_id == $old)] | .[-$n:] | map(.signatures // []) | add // [] | unique' \
+    # Chronic signatures (e.g. REFILL-TIMEOUT) also come from rows of any engine completed within the window, so a pin
+    # whose predecessor has no rows does not inherit an empty baseline and roll back on the same chronic line.
+    baseline="$(jq -sc --arg old "$old_id" --argjson n "$ticks" --argjson w "$window" \
+      '([.[] | select(.engine_id == $old)] | .[-$n:]) as $own
+       | ((now - $w) | strftime("%Y-%m-%dT%H:%M:%SZ")) as $cutoff
+       | ($own + [.[] | select((.completed_at // "") >= $cutoff)])
+       | map(.signatures // []) | add // [] | unique' \
       "$HISTORY" 2>/dev/null || printf '[]')"
     count="$(jq -sc --arg old "$old_id" --argjson n "$ticks" \
       '[.[] | select(.engine_id == $old)] | .[-$n:] | length' "$HISTORY" 2>/dev/null || printf '0')"
