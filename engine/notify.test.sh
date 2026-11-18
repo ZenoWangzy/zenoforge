@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FAILED=0
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf "$TMP_DIR" "$test_env_root"' EXIT
 ZF_CONFIG_ROOT="$TMP_DIR/.zenoforge"
 mkdir -p "$ZF_CONFIG_ROOT/prompts"
 cp "$SCRIPT_DIR/prompts/founder-outcome.schema.json" "$ZF_CONFIG_ROOT/prompts/founder-outcome.schema.json"
