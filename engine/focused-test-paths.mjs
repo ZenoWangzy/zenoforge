@@ -819,9 +819,9 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
   for (const path of changedPaths) {
     if (path.startsWith(`${PACK_PREFIX}vendor/`)) continue; // vendored upstream text has no pipeline test of ours
     // Growth of any engine/tools source file (or an edit to the baseline) must fail before merge, not on main CI.
-    if (path === 'tools/size-baseline.txt' || (/^(?:engine|tools)\/.*\.(?:sh|mjs|py|js|ts|cjs)$/.test(path) && !/\.test\.|(?:^|\/)test-[^/]*\.sh$|\/vendor\/|\/fixtures?\//.test(path))) {
-      for (const candidate of resolveTrackedSuitePaths([packPath('engine/size-ratchet.test.sh')], tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
-    }
+    if (path === 'tools/size-baseline.txt' || (/^(?:engine|tools)\/.*\.(?:sh|mjs|py|js|ts|cjs)$/.test(path) && !/\.test\.|(?:^|\/)test-[^/]*\.sh$|\/vendor\/|\/fixtures?\//.test(path))) for (const candidate of resolveTrackedSuitePaths([packPath('engine/size-ratchet.test.sh')], tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
+    // 11-18: #1244 grew scheduler-gates.test.sh past its source-extract baseline and turned main red; the ratchet was never selected.
+    if (path === 'engine/source-extract-baseline.txt' || /^engine\/.*\.test\.sh$/.test(path)) for (const candidate of resolveTrackedSuitePaths([packPath('engine/source-extract-ratchet.test.sh')], tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
     if (path.startsWith(PACK_PREFIX) && /\.(?:sh|[cm]?js|ts|py)$/.test(path)) for (const candidate of resolveTrackedSuitePaths(CROSS_SCRIPT_TESTS, tracked, refs.cwd ?? process.cwd())) tests.add(candidate);
 
     if (/\.test\.(?:sh|mjs)$/.test(path)) {
