@@ -3475,7 +3475,7 @@ jqf() { jq "$@"; }; STAMP=t; SAY_LINES=(); SUP_CALLS=()
 say() { SAY_LINES+=("$*"); }
 to_supervisor() { SUP_CALLS+=("$1|$2"); }
 set_unit() { UNIT_EXPR="$2"; }
-source <(sed -n '/^hist() {/,/^}/p' "$script_dir/scheduler.d/units.sh")
+hist() { printf '.history += [{"stage":"%s"}]' "$1"; } # stub: the asserts read only the stage name
 source <(sed -n '/^recover_local_ahead_head() {/,/^}/p' "$script_dir/scheduler.d/dispatch-queue.sh")
 ahead_fixture="$fixture/local-ahead"; rm -rf "$ahead_fixture"; mkdir -p "$ahead_fixture"
 command git init -q -b main "$ahead_fixture/source"

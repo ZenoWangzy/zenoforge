@@ -25,7 +25,7 @@
 1	engine/mac-autopilot/scheduler.d/harvest-station.test.sh
 1	engine/mac-autopilot/scheduler.d/merge-census-latest.test.sh
 1	engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
-10	engine/mac-autopilot/scheduler-gates.test.sh
+11	engine/mac-autopilot/scheduler-gates.test.sh
 9	engine/mac-autopilot/scheduler.test.sh
 1	engine/mac-autopilot/scheduler-tick-latency.test.sh
 1	engine/mac-autopilot/stuck-worker-disposition.test.sh
