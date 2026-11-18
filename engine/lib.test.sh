@@ -3526,6 +3526,65 @@ assert_eq "route_to_recut rejects a recut_children ticket instead of reapplying 
 assert_eq "route_to_recut never edits labels for a child-completed parent" \
   "0" "$(grep -c "gh issue edit 800002" <<< "$ROUTE_RECUT_GH_LOG_CONTENT")"
 
+# tracker-state-recut (row 565): a stale tracker label must not refuse a recut
+# ruling, while a tracker with a live child or an unreadable child list still
+# refuses it. TRACKER_RECUT_SUB picks the sub_issues read: empty, open or error.
+TRACKER_RECUT_HOME="$(mktemp -d)"
+jq '.roles.advisor.disabled = false' "$MODEL_POLICY_TEST_DEFAULT_FILE" > "$TRACKER_RECUT_HOME/model-policy.json"
+mkdir -p "$TRACKER_RECUT_HOME/state"
+TRACKER_RECUT_BIN="$(mktemp -d)"
+TRACKER_RECUT_GH_LOG="$TRACKER_RECUT_HOME/gh.log"
+cat > "$TRACKER_RECUT_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >> "$TRACKER_RECUT_GH_LOG"
+if [ "$1" = api ]; then
+  case "${TRACKER_RECUT_SUB:-empty}" in
+    empty) echo '[]' ;;
+    open) echo '[{"number":8802,"state":"open","closed_at":null,"labels":[]}]' ;;
+    *) exit 1 ;;
+  esac
+elif [ "$1" = issue ] && [ "$2" = view ]; then printf '%s\n' '{"number":1,"labels":[],"body":"","comments":[]}'; fi
+exit 0
+EOF
+chmod +x "$TRACKER_RECUT_BIN/gh"
+# run_tracker_recut <issue> <sub-issue mode> <state JSON> -> prints rc=<n>; state and gh log stay in TRACKER_RECUT_HOME
+run_tracker_recut() {
+  printf '%s\n' "$3" > "$TRACKER_RECUT_HOME/state/$1.json"
+  : > "$TRACKER_RECUT_GH_LOG"
+  PATH="$TRACKER_RECUT_BIN:$PATH" AGENT_HOME="$TRACKER_RECUT_HOME" ZF_REPO="test/repo" \
+    TRACKER_RECUT_SUB="$2" TRACKER_RECUT_GH_LOG="$TRACKER_RECUT_GH_LOG" bash -c '
+      source "$0/lib.sh"
+      roadmap_ensure_issue_parent() { :; }
+      if route_to_recut "$1"; then echo "rc=0"; else echo "rc=$?"; fi
+    ' "$SCRIPT_DIR" "$1" 2>>"$TRACKER_RECUT_HOME/stderr.log"
+}
+TRACKER_RECUT_STALE_RC="$(run_tracker_recut 800101 empty '{"state":"tracker","tracker_parent":true}')"
+TRACKER_RECUT_STALE_STATE="$(jq -r .state "$TRACKER_RECUT_HOME/state/800101.json")"
+TRACKER_RECUT_STALE_WRITES="$(grep -c -F -- '--add-label needs-recut' "$TRACKER_RECUT_GH_LOG" || true)"
+TRACKER_RECUT_OPEN_RC="$(run_tracker_recut 800102 open '{"state":"tracker","tracker_parent":true}')"
+TRACKER_RECUT_OPEN_STATE="$(jq -r .state "$TRACKER_RECUT_HOME/state/800102.json")"
+TRACKER_RECUT_ERROR_RC="$(run_tracker_recut 800103 error '{"state":"tracker","tracker_parent":true}')"
+TRACKER_RECUT_ERROR_STATE="$(jq -r .state "$TRACKER_RECUT_HOME/state/800103.json")"
+printf '%s\n' '{"state":"tracker","tracker_parent":true,"recut_children":[8803]}' > "$TRACKER_RECUT_HOME/state/800104.json"
+TRACKER_RECUT_CHILD_RC="$(PATH="$TRACKER_RECUT_BIN:$PATH" AGENT_HOME="$TRACKER_RECUT_HOME" ZF_REPO="test/repo" \
+  TRACKER_RECUT_SUB=empty TRACKER_RECUT_GH_LOG="$TRACKER_RECUT_GH_LOG" bash -c '
+    source "$0/lib.sh"
+    if issue_transition "$1" needs-recut recut-route; then echo "rc=0"; else echo "rc=$?"; fi
+  ' "$SCRIPT_DIR" 800104 2>>"$TRACKER_RECUT_HOME/stderr.log")"
+TRACKER_RECUT_CHILD_STATE="$(jq -r .state "$TRACKER_RECUT_HOME/state/800104.json")"
+rm -rf "$TRACKER_RECUT_HOME" "$TRACKER_RECUT_BIN"
+
+assert_eq "stale tracker (no recut children, no open sub-issues) routes to needs-recut" \
+  "needs-recut" "$TRACKER_RECUT_STALE_STATE"
+assert_eq "stale tracker recut route returns success" "rc=0" "$TRACKER_RECUT_STALE_RC"
+assert_eq "stale tracker recut route writes the needs-recut label once" "1" "$TRACKER_RECUT_STALE_WRITES"
+assert_eq "tracker with an open native sub-issue still refuses the recut route" "rc=1" "$TRACKER_RECUT_OPEN_RC"
+assert_eq "tracker with an open native sub-issue stays tracker" "tracker" "$TRACKER_RECUT_OPEN_STATE"
+assert_eq "tracker whose sub-issue read fails still refuses the recut route" "rc=1" "$TRACKER_RECUT_ERROR_RC"
+assert_eq "tracker whose sub-issue read fails stays tracker" "tracker" "$TRACKER_RECUT_ERROR_STATE"
+assert_eq "tracker with a recut child refuses the needs-recut transition" "rc=1" "$TRACKER_RECUT_CHILD_RC"
+assert_eq "tracker with a recut child stays tracker" "tracker" "$TRACKER_RECUT_CHILD_STATE"
+
 # --- recut_marker_blocks: the one predicate both needs-recut skip sites use --
 # Live shape (row 148, synthetic ids; run-recut.test.sh runs the whole path).
 # A stale refusal is ignored only on needs-recut, when the label came after it.
