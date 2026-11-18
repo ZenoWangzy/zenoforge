@@ -381,4 +381,69 @@ harvest_workers
   && "$LAST_PROMPT" == *'## why lacks a commit SHA'* ]] \
   || fail 'a missing how/why citation did not enter the existing one-session report continuation'
 
+# A fresh worker's row has no session id (dispatch records only a resumed one); harvest knows the id from the run's log. The continuation must still start from that session.
+fresh_source_name=impl-71001-fresh-source.md
+cat > "$sup/$fresh_source_name" <<'REPORT'
+## how
+The scheduler checks implementation reports before review.
+
+## why
+Commit 97ed8be added this report gate for issue #880.
+
+## root-cause
+The persisted state was selected incorrectly.
+
+## recurrence-guard
+kind: test
+
+## prior-art
+Source: https://example.invalid/incident-reference
+
+VERDICT: READY
+REPORT
+write_unit "$fresh_source_name"
+jqf '.units[0].pr=71001 | .units[0].stage="implement"' "$UNITS" | write_state "$UNITS"
+write_worker implement "$fresh_source_name" impl-71001-fresh-source.worker.log
+jqf '.workers[0].session_id=""' "$WORKERS" | write_state "$WORKERS"
+printf 'session id: %s\n' "$session_id" > "$sup/impl-71001-fresh-source.worker.log"
+before_resumes=$RESUME_DISPATCHES
+harvest_workers
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == repair && "$RESUME_DISPATCHES" == $((before_resumes + 1)) ]] \
+  || fail "a fresh implement worker with a missing decision-log did not get a session continuation before review (stage=$(jqf -r '.units[0].stage' "$UNITS") resumes=$RESUME_DISPATCHES)"
+jqf -e --arg sid "$session_id" '.incident_report_resume == true and .incident_report_resume_session_id == $sid and .incident_report_resume_source_report == "impl-71001-fresh-source.md"' \
+  <<<"$LAST_CONTEXT" >/dev/null || fail 'fresh continuation did not carry the session id and source report'
+
+# The continuation writes the missing section into its own report: the gate passes and the unit reaches review with that report.
+fixed_resume_name=incident-report-issue-71001-fresh-T5.md
+{ printf '## decision-log\nTried the continuation, checked the gate, and verified the report.\n\n'; cat "$sup/$fresh_source_name"; } > "$sup/$fixed_resume_name"
+write_worker repair "$fixed_resume_name" incident-report-issue-71001-fresh-T5.worker.log \
+  "$(jqf -cn --arg source "$fresh_source_name" --arg sid "$session_id" '{incident_report_resume:true,incident_report_resume_source_type:"implement",incident_report_resume_source_report:$source,incident_report_resume_pending_stage:"review-pending",incident_report_resume_session_id:$sid}')"
+harvest_workers
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == review-pending && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$fixed_resume_name" ]] \
+  || fail "a continuation that wrote the missing section did not reach review with its report (stage=$(jqf -r '.units[0].stage' "$UNITS") report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
+
+# The same reason again, from a repair that really fails, still escalates to the supervisor.
+write_unit "$fresh_source_name"
+jqf '.units[0].pr=71001 | .units[0].stage="repair" | .units[0].report_gate_fail={reason:"missing ## decision-log",n:1}' "$UNITS" | write_state "$UNITS"
+repair_fail_name=impl-71001-fresh-repair.md
+printf 'Fix note that does not repeat the section.\n\nVERDICT: READY\n' > "$sup/$repair_fail_name"
+write_worker repair "$repair_fail_name" impl-71001-fresh-repair.worker.log
+harvest_workers || :
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == supervisor-review ]] \
+  || fail "the same gate reason twice did not escalate to the supervisor (stage=$(jqf -r '.units[0].stage' "$UNITS"))"
+
+# A Claude implement run is continued read-only too: it resumes only the expected session, with read tools only.
+claude_session_file_for_id() { printf '%s\n' "$fixture/claude/$1.jsonl"; }
+mkdir -p "$fixture/claude" && touch "$fixture/claude/$session_id.jsonl"
+write_unit "$fresh_source_name"
+jqf --arg sid "$session_id" '.units[0].sessions.repair={id:$sid,provider:"claude",model:"claude-haiku-5-5"}' "$UNITS" | write_state "$UNITS"
+CODEX_ENV_ARGS=()
+build_codex_command repair claude-haiku-5-5 high issue-71001 'report-only prompt' '' "$fixture/repo" claude true "$session_id" \
+  || fail 'read-only Claude continuation was not resumable from the recorded session'
+[[ "$CODEX_MODE" == resume && " ${CODEX_COMMAND[*]} " == *" --resume $session_id "* && " ${CODEX_COMMAND[*]} " == *" --tools Read,Grep,Glob "* ]] \
+  || fail "read-only Claude continuation did not resume with read tools only (mode=$CODEX_MODE command=${CODEX_COMMAND[*]})"
+if build_codex_command repair claude-haiku-5-5 high issue-71001 'report-only prompt' '' "$fixture/repo" claude true aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee; then
+  fail 'read-only Claude continuation accepted a different session id'
+fi
+
 echo 'ok - incident report failures get at most one read-only same-session resume before review'
