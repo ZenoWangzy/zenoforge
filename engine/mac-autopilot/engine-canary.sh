@@ -116,6 +116,10 @@ drop_before_swap() { # swapped_at, file
   awk -v t="$1" 'substr($0,1,1)=="[" && substr($0,22,1)=="]" && substr($0,2,20) < t { next } { print }' "$2"
 }
 
+keep_window() { # from, to (exclusive), file: lines stamped in [from, to)
+  awk -v lo="$1" -v hi="$2" 'substr($0,1,1)=="[" && substr($0,22,1)=="]" && substr($0,2,20) >= lo && substr($0,2,20) < hi { print }' "$3"
+}
+
 append_history() { # engine id, signatures file, completed time
   local engine_id="$1" sig_file="$2" completed_at="$3" signatures row
   signatures="$(jq -Rsc 'split("\n") | map(select(length > 0))' < "$sig_file")"
@@ -128,11 +132,13 @@ append_history() { # engine id, signatures file, completed time
 record_swap() {
   (($# == 6)) || { echo 'usage: engine-canary.sh record-swap OLD NEW OLD_ENGINE_LINK NEW_ENGINE_LINK OLD_AUTOPI_LINK NEW_AUTOPI_LINK' >&2; return 2; }
   local old_id="$1" new_id="$2" old_engine_target="$3" new_engine_target="$4"
-  local old_autopi_target="$5" new_autopi_target="$6" ticks baseline count time generation tmp window
+  local old_autopi_target="$5" new_autopi_target="$6" ticks baseline count time generation tmp window cutoff window_sigs
   [[ "$old_id" != "$new_id" ]] || return 0
   ticks="$(canary_ticks)"
   window="${CANARY_BASELINE_WINDOW_SECS:-3600}"
   [[ "$window" =~ ^[0-9]+$ ]] || window=3600
+  time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  cutoff="$(date -u -d "@$(( $(date +%s) - window ))" +%Y-%m-%dT%H:%M:%SZ)"
   baseline='[]'; count=0
   if [[ -r "$HISTORY" ]] && (( ticks > 0 )); then
     # Chronic signatures (e.g. REFILL-TIMEOUT) also come from rows of any engine completed within the window, so a pin
@@ -146,7 +152,12 @@ record_swap() {
     count="$(jq -sc --arg old "$old_id" --argjson n "$ticks" \
       '[.[] | select(.engine_id == $old)] | .[-$n:] | length' "$HISTORY" 2>/dev/null || printf '0')"
   fi
-  time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Tick rows only read lines appended between tick-begin and tick-complete, so a chronic line logged between ticks
+  # never reaches them: every signature stamped in the window before the swap is baseline too.
+  if [[ -r "$SCHED_LOG" ]]; then
+    window_sigs="$(keep_window "$cutoff" "$time" "$SCHED_LOG" | extract_signatures | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    baseline="$(jq -cn --argjson a "$baseline" --argjson b "$window_sigs" '$a + $b | unique')"
+  fi
   generation="$time-$new_id-$$-$RANDOM"
   tmp="$(mktemp "$VERSIONS/.swap-record.XXXXXX")"
   jq -cn --arg old_id "$old_id" --arg new_id "$new_id" --arg swapped_at "$time" \
