@@ -24,6 +24,33 @@ dispatch_steps_say() {
   done < <(for step_name in "${!dispatch_step_secs[@]}"; do printf '%s %s\n' "${dispatch_step_secs[$step_name]}" "$step_name"; done | sort -k1,1nr -k2,2 | cut -d' ' -f2)
   say "$step_line"
 }
+# checkout_pr_head 拒绝检出时（本地分支带未推送的修复提交）：分支严格领先 PR head 且含 origin/main 没有的提交就快进推送，
+# 下一拍评审新 head；只有分叉分支转 supervisor 并写明两个 head，瞬时失败静默返回、下一拍重试（row 553，issue-6965 循环 3 h）。
+recover_local_ahead_head() { # id wt pr-head branch；返回 0 = 已推送，1 = 未推送（下一拍重试，或已转 supervisor）
+  local id=$1 wt=$2 pr_head=$3 branch=$4 local_head push_out
+  local_head="$(git -C "$wt" rev-parse -q --verify "refs/heads/$branch^{commit}" 2>/dev/null || true)"
+  # 下面四种情况 checkout_pr_head 没有拒绝分支，失败是瞬时的（拉取失败、PR head 刚被推动）：静默返回，下一拍重试。
+  [[ "$local_head" =~ $SHA_RE && "$local_head" != "$pr_head" ]] || return 1
+  git -C "$wt" fetch -q origin main 2>/dev/null || true
+  if git -C "$wt" merge-base --is-ancestor "$local_head" "$pr_head" 2>/dev/null \
+    || git -C "$wt" merge-base --is-ancestor "$local_head" refs/remotes/origin/main 2>/dev/null; then
+    return 1
+  fi
+  # 分支严格领先 PR head 且有 origin/main 没有的提交：快进推送。
+  if ! git -C "$wt" merge-base --is-ancestor "$pr_head" "$local_head" 2>/dev/null; then
+    # 分叉：既不在 PR head 之上，也不在 origin/main 之内，会每拍循环，只有这种情况转 supervisor。
+    to_supervisor "$id" "PR head $pr_head unavailable: local $branch $local_head diverged from the PR head and from origin/main"
+    return 1
+  fi
+  if push_out="$(git -C "$wt" push origin "refs/heads/$branch:refs/heads/$branch" 2>&1)"; then
+    set_unit "$id" "$(hist review-push-recovered "engine pushed local $local_head to $branch over PR head $pr_head")"
+    say "review-push-recovered unit=$id: $pr_head -> $local_head on $branch"
+    return 0
+  fi
+  push_out="$(grep -am1 -E '(! \[remote rejected\]|^error:|^fatal:|^remote:)' <<<"$push_out" | cut -c1-160)"
+  to_supervisor "$id" "local $local_head on $branch is ahead of PR head $pr_head but publishing it failed: ${push_out:-git push exited nonzero}"
+  return 1
+}
 implement_report_sections() {
   cat <<'EOF'
 报告必须包含以下章节：
@@ -535,7 +562,7 @@ $(decision_scope "$u")"
         fi
         dmark head_compare
         dcapture wt clone ensure_clone "$id" || { say "rereview-pending unit=$id: clone unavailable"; continue; }
-        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" "$branch" || { say "rereview-pending unit=$id: PR head $sha unavailable"; continue; }
+        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" "$branch" || { recover_local_ahead_head "$id" "$wt" "$pr_head" "$branch" || say "rereview-pending unit=$id: PR head $sha unavailable"; continue; }
         prev_report="$(jqf -r '.review_report // empty' <<<"$u")"
         # 增量复审的前提是上轮 head 是当前 head 的真祖先（prev..sha 即修复增量）。PR head 随每次修复推送而变，
         # 不能用"PR head 未变"当前提：7c38abda0 那样判定后，2026-10-20 起 PR 车道零增量复审，每轮都是重新抽样的全量评审，
@@ -571,7 +598,7 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
         [[ "$lane" == direct-main ]] || ! dstep pr_conflict review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
         dstep reviewer_pick pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
         dcapture wt clone ensure_clone "$id" || { say "review-pending unit=$id: clone unavailable"; continue; }
-        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" "$branch" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
+        dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" "$branch" || { recover_local_ahead_head "$id" "$wt" "$pr_head" "$branch" || say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"
         prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         prompt+="$(ci_red_evidence_rule "$u" "$sha" "$(jqf -r '.reviewed_sha // empty' <<<"$u")")"
