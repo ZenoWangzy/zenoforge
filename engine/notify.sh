@@ -390,7 +390,7 @@ def convert(text):
     return "\n".join(out)
 
 if __name__ == "__main__":
-    body = sys.argv[1]
+    body = sys.stdin.read()
     content = convert(body)
     sys.stdout.write(
         '<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f5f5f5;">'
@@ -472,21 +472,31 @@ gmail_curl() {
 # under AGENT_DRY_RUN=1 or in isolation.
 markdown_to_html_email() {
   local body="$1"
-  python3 -c "$MD_TO_HTML_PY" "$body" 2>/dev/null
+  printf '%s' "$body" | python3 -c "$MD_TO_HTML_PY" 2>/dev/null
 }
 
 # build_gmail_raw_message <to> <subject> <plain> <issue> [mailer-id [html [images-json]]]
 # Pure stdlib RFC822 builder; images are {cid,filename,data} rows with base64 PNG data.
 build_gmail_raw_message() {
   local to_addr="$1" subject="$2" body="$3" issue_marker="$4" mailer_id="${5:-fixture}" html_body="${6:-}" images_json="${7:-[]}"
+  local body_file html_file images_file encoded=""
   [ -n "$html_body" ] || html_body="$(markdown_to_html_email "$body")" || return 1
   [ -n "$html_body" ] || return 1
-  python3 -c '
+  # argv is capped at 128 KiB per argument: body, html and images go through files.
+  body_file="$(mktemp)" || return 1
+  html_file="$(mktemp)" || { rm -f "$body_file"; return 1; }
+  images_file="$(mktemp)" || { rm -f "$body_file" "$html_file"; return 1; }
+  if printf '%s' "$body" > "$body_file" && printf '%s' "$html_body" > "$html_file" && printf '%s' "$images_json" > "$images_file"; then
+    encoded="$(python3 -c '
 import base64, json, re
 import sys
 from email.message import EmailMessage
 
-to_addr, subject, body, issue_marker, mailer_id, html_body, images_json = sys.argv[1:8]
+to_addr, subject, body_path, issue_marker, mailer_id, html_path, images_path = sys.argv[1:8]
+def read_text(path):
+    with open(path, encoding="utf-8", newline="") as handle:
+        return handle.read()
+body, html_body, images_json = read_text(body_path), read_text(html_path), read_text(images_path)
 msg = EmailMessage()
 msg["To"] = to_addr
 msg["Subject"] = subject
@@ -509,7 +519,10 @@ if html_body:
         if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 2_000_000: raise ValueError("invalid PNG")
         html_part.add_related(data, maintype="image", subtype="png", cid="<"+cid+">", filename=image.get("filename", cid+".png"), disposition="inline")
 sys.stdout.write(base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii"))
-' "$to_addr" "$subject" "$body" "$issue_marker" "$mailer_id" "$html_body" "$images_json" 2>/dev/null
+' "$to_addr" "$subject" "$body_file" "$issue_marker" "$mailer_id" "$html_file" "$images_file" 2>/dev/null)"
+  fi
+  rm -f "$body_file" "$html_file" "$images_file"
+  printf '%s' "$encoded"
 }
 
 # Shared transport: audit and contract checks precede MIME construction and Gmail.
@@ -1113,7 +1126,10 @@ maintainer_user_outcome_is_readable() {
 # does not reach.
 maintainer_user_outcome_matches_title() {
   # ponytail: Chinese overlap uses stopword-filtered bigrams; add a tokenizer only if real false matches appear.
-  python3 - "$1" "$2" "${3:-}" <<'PY'
+  local body_file rc=0
+  body_file="$(mktemp)" || return 1
+  printf '%s' "${3:-}" > "$body_file"
+  python3 - "$1" "$2" "$body_file" <<'PY' || rc=$?
 import re
 import sys
 
@@ -1137,7 +1153,8 @@ def terms(text):
         )
     return result
 
-title, outcome, body = sys.argv[1], sys.argv[2], sys.argv[3]
+title, outcome, body_path = sys.argv[1], sys.argv[2], sys.argv[3]
+body = open(body_path, encoding="utf-8", newline="").read()
 if terms(title) & terms(outcome):
     raise SystemExit(0)
 
@@ -1153,6 +1170,8 @@ if not re.search(r"[\u3400-\u9fff]", title) and len(cjk_bigrams(body) & cjk_bigr
     raise SystemExit(0)
 raise SystemExit(1)
 PY
+  rm -f "$body_file"
+  return "$rc"
 }
 
 maintainer_user_outcome_is_internal() {
