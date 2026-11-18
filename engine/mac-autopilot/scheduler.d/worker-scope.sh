@@ -57,7 +57,7 @@ worker_scope_prepare() { # config/systemd probe, cached for this scheduler tick
   probe="$(type -P true 2>/dev/null || true)"
   [[ -n "$probe" ]] || probe=true
   status=0
-  "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" \
+  "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" -p "TasksMax=$WORKER_TASKS_MAX" \
     -p "CPUQuota=${AGENT_WORKER_CPU_QUOTA:-200%}" -p "CPUWeight=${AGENT_WORKER_CPU_WEIGHT:-10}" -p "MemoryHigh=${AGENT_WORKER_MEM_HIGH:-2G}" -- "$probe" \
     >/dev/null 2>&1 || status=$?
   if (( status != 0 )); then
@@ -111,7 +111,7 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
   shift
   worker_command=("$@")
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
-    exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" \
+    exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" -p "TasksMax=$WORKER_TASKS_MAX" \
       -p "CPUQuota=${AGENT_WORKER_CPU_QUOTA:-200%}" -p "CPUWeight=${AGENT_WORKER_CPU_WEIGHT:-10}" -p "MemoryHigh=${AGENT_WORKER_MEM_HIGH:-2G}" -- \
       setsid bash -c 'pid_file=$1; st=$(</proc/$$/stat); st=(${st##*) }); printf "%s %s\n" "$$" "${st[19]}" > "$pid_file" || exit 125
         [[ -z $6 ]] || printf "%s\n" "$$" > "$6" || exit 125

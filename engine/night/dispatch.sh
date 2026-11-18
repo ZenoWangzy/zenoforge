@@ -351,7 +351,7 @@ codex_home_args=()
 # its 1800 s budget, so landed commits went unverified. Agents are batch work: weight 20 against the default
 # 100 lets verification, the pipeline services and supervisor sessions run first; idle CPU still goes to agents.
 HAND_CPU_WEIGHT="${AGENT_HAND_CPU_WEIGHT:-20}"
-HAND_CPU_ARGS=(-p "CPUWeight=$HAND_CPU_WEIGHT" -p "IOWeight=$HAND_CPU_WEIGHT")
+HAND_CPU_ARGS=(-p "CPUWeight=$HAND_CPU_WEIGHT" -p "IOWeight=$HAND_CPU_WEIGHT" --slice="${ZF_WORKER_SLICE:-zf-workers.slice}")
 # Run the agent in its own transient scope. setsid alone leaves it in the
 # caller's cgroup, so a one-shot launcher can kill the agent when it exits.
 if [ "$PROVIDER" = codex ]; then

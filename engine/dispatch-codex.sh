@@ -624,7 +624,7 @@ if [ -n "$OWNER_UNIT" ]; then
   OWNER_RUNTIME_MAX_SECONDS="${ZF_NODE_OWNER_RUNTIME_MAX_SECONDS:-3600}"
   [[ "$OWNER_RUNTIME_MAX_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "invalid node owner runtime budget"
   SYSTEMD_ARGS=(
-    --user --unit "$OWNER_UNIT" --collect --no-block --quiet
+    --user --unit "$OWNER_UNIT" --collect --no-block --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}"
     -p "WorkingDirectory=$WORKTREE"
     -p "RuntimeMaxSec=$OWNER_RUNTIME_MAX_SECONDS"
     -p "CPUQuota=${AGENT_WORKER_CPU_QUOTA:-200%}" -p "CPUWeight=${AGENT_WORKER_CPU_WEIGHT:-10}"
