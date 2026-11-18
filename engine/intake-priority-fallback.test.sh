@@ -243,3 +243,19 @@ FALLBACK_PRIORITY_RC=75
 intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(l) rc 75 label failure returned non-zero'
 [[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(l) rc 75 label failure was stamped'
 echo 'ok (l) rate-limited label failures are unstamped; ordinary label failures retain the cooldown'
+
+# (m) the triage roadmap tree read is bounded at 180 s, not the 60 s default that the live full-tree read overran.
+export FALLBACK_TIMEOUT_LOG="$test_root/timeout-calls.log" FALLBACK_REAL_TIMEOUT="$(command -v timeout)"
+cat > "$test_root/bin/timeout" <<'STUB'
+#!/usr/bin/env bash
+[[ "${2:-}" == gh ]] && printf '%s\n' "$1" >> "$FALLBACK_TIMEOUT_LOG"
+exec "$FALLBACK_REAL_TIMEOUT" "$@"
+STUB
+chmod +x "$test_root/bin/timeout"
+printf 'answered\n' > "$FALLBACK_JUDGE_MODE"
+printf '{"priority":"low","route":null}\n' > "$FALLBACK_CLAUDE_REPLY"
+: > "$FALLBACK_TIMEOUT_LOG"
+jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
+env -u ZF_ROADMAP_TREE_CACHE_FILE bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$test_root/issue.json" --dry-stub > "$test_root/m.result" 2> "$test_root/m.err" || fail "(m) judge failed: $(cat "$test_root/m.err")"
+grep -Fxq '180s' "$FALLBACK_TIMEOUT_LOG" || fail "(m) roadmap tree read bound was: $(tr '\n' ' ' < "$FALLBACK_TIMEOUT_LOG")"
+echo 'ok (m) the triage roadmap tree read is bounded at 180 s'
