@@ -227,11 +227,21 @@ assert [n.status_of(v, crit[2], crit[3], crit[4]) for v in (None, 100, 50.0, 49.
 assert n.MEANING["supervisor.fresh_requeue_delivery_24h"] and n.SOURCE["supervisor.fresh_requeue_delivery_24h"]
 print("node_health fresh-signal requeue delivery metric: PASS")
 CHECK
-python3 - "$script_dir" <<'CHECK' || fail 'parked-cancel bound must come from the measured 7-day p50/p90 (healthy 3, bug 6), not the frozen M1 baseline'
+python3 - "$script_dir" <<'CHECK' || fail 'parked-cancel bound stays healthy 3, bug 6 (2026-11-07 baseline, now in parks)'
 import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
 parked = n.CRITERIA["ci.cancel_parked_per_day"]
 assert parked[2:4] == (3, 6), parked
 assert [n.status_of(v, parked[2], parked[3], parked[4]) for v in (0, 3, 5, 6)] == ["OK", "OK", "WARN", "UNHEALTHY"]
+CHECK
+python3 - "$script_dir" <<'CHECK' || fail 'six cancels of one park plus one cancel of another must read 2 parks, not 7 runs'
+import sys, datetime as dt; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = dt.datetime(2026, 10, 19, 12, 0, tzinfo=dt.timezone.utc)
+at = lambda s: (dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.timezone.utc) + dt.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+repo = "example-maintainer/example-repo"
+rows = [{"when": at(3 * i), "run_id": f"head-a-{i}", "repo": repo, "reason": "parked for the supervisor"} for i in range(6)]
+rows.append({"when": at(1800), "run_id": "head-b-0", "repo": repo, "reason": "parked at the hard token line"})
+per_day = n.cancel_metrics(rows, now - dt.timedelta(hours=24), now)[0]["ci.cancel_parked_per_day"]
+assert per_day == 2.0, per_day
 CHECK
 quiet="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 0.2 --now 2026-10-19T12:00:00Z)"
 grep -Eq 'findings block % +0 +<=5' <<<"$quiet" || fail "no rejection records in the window must show 0, not NO-DATA: $(grep -F 'findings block' <<<"$quiet")"

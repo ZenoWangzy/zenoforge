@@ -21,6 +21,7 @@ from threading import Lock
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, release_deps_health, metric_windows
 import line_holds, intake_laneless_health, wip_hold
 import release_age
+from cancel_audit import cancel_metrics, read_cancel_audit
 import release_batch
 import release_retained
 import station_standards
@@ -84,7 +85,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **existing_wal
     "ci.cancel_tests_red_per_day": ("ci+merge", "M1 audited cancelled runs/day: tests already red", 62, 124, False),
     "ci.cancel_review_changes_per_day": ("ci+merge", "M1 audited cancelled runs/day: review requested changes", 0, 60, False),
     "ci.cancel_review_blocked_per_day": ("ci+merge", "M1 audited cancelled runs/day: review blocked", 2, 5, False),
-    "ci.cancel_parked_per_day": ("ci+merge", "M1 audited cancelled runs/day: parked", 3, 6, False),
+    "ci.cancel_parked_per_day": ("ci+merge", "M1 audited parks/day: parked", 3, 6, False),
     "ci.cancel_superseded_per_day": ("ci+merge", "M1 audited cancelled runs/day: superseded main run", 30, 60, False),
     "ci.cancel_other_per_day": ("ci+merge", "M1 audited cancelled runs/day: other or unclassified", 0, 1, False),
     "ci.gated_pr_pct":          ("ci+merge", "active agent PRs with the agent/ci-gated label %", 80, 50, True),
@@ -160,7 +161,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_h
     "ci.cancel_tests_red_per_day": "M1：共享取消审计中，原因是 tests already red 的不同 PR run 数按天折算；健康上限为冻结基线日均数，bug 线为其两倍。",
     "ci.cancel_review_changes_per_day": "M1：共享取消审计中，原因是 review requested changes 的不同 PR run 数按天折算；健康为零，bug 线取冻结基线日均数。",
     "ci.cancel_review_blocked_per_day": "M1：共享取消审计中，原因是 review blocked 的不同 PR run 数按天折算；健康上限为冻结基线日均数，bug 线为其两倍。",
-    "ci.cancel_parked_per_day": "M1：共享取消审计中，原因是 parked 的不同 PR run 数按天折算；健康上限为最近 7 天滚动 24 小时读数的 p90，bug 线为其两倍；样本薄：7 天内只有 6 个 parked run，来自 4 个单元。",
+    "ci.cancel_parked_per_day": "M1：共享取消审计中，原因是 parked 的停车数按天折算；一次停车是同一 repo 内相隔不超过 60 秒的 parked 取消行（一次 cancel_unit_runs 爆发），同一 head 多次停车计多次；健康上限沿用 2026-11-07 基线（7 天 4 个单元的 6 个 parked run，p90 3；停车数不多于 run 数，故仍为 3），bug 线为其两倍（6）；不按当前偏高读数放宽；样本：7 天 23 次停车、21 个不同 head。",
     "ci.cancel_superseded_per_day": "M1：共享取消审计中，原因是 superseded by newer main head（main 防抖：更新的 main 头取代尚在排队的旧 run）的不同 run 数按天折算；数量随 main 合入节奏，边界为运维设定值。",
     "ci.cancel_other_per_day": "M1：共享取消审计中，原因不在已知类别里的不同 PR run 数按天折算。",
     "ci.gated_pr_pct": "M12：当前活跃 agent/issue-* PR 中带服务端 agent/ci-gated 标签的比例；不读本机台账镜像。",
@@ -238,7 +239,7 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_heal
     "ci.cancel_tests_red_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=tests already red ÷ 窗口小时 × 24；边界取冻结基线 M1。",
     "ci.cancel_review_changes_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=review requested changes ÷ 窗口小时 × 24；边界取冻结基线 M1。",
     "ci.cancel_review_blocked_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=review blocked ÷ 窗口小时 × 24；边界取冻结基线 M1。",
-    "ci.cancel_parked_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 parked reason ÷ 窗口小时 × 24；边界取最近 7 天滚动 24 小时读数的 p90（3）及其两倍（6），样本见 NODE-HEALTH.md。",
+    "ci.cancel_parked_per_day": "共享 actions-run-cancellations.jsonl：窗口内 reason 为 parked 的取消行（缺省沿用该 run 最后一个非空 reason），同一 repo 内相隔不超过 60 秒的记为一次停车，停车数 ÷ 窗口小时 × 24；边界取最近 7 天滚动 24 小时读数的 p90（10）及其两倍（20），样本见 NODE-HEALTH.md。",
     "ci.cancel_superseded_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=superseded by newer main head ÷ 窗口小时 × 24。",
     "ci.cancel_other_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的其他或缺失 reason ÷ 窗口小时 × 24。",
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
@@ -951,91 +952,6 @@ def load_prod_incidents(agent_home):
                 for r in rows] + [{"date": day} for day in days]
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
-
-
-def read_cancel_audit(path, repo):
-    """Read shared cancel-cause records for this repo; None means the source is unavailable."""
-    try:
-        rows = []
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(row, dict) or not row.get("when") or not row.get("run_id"):
-                    continue
-                if row.get("repo") and row["repo"] != repo:
-                    continue
-                rows.append(row)
-        return rows
-    except OSError:
-        return None
-
-
-def cancel_reason(reason):
-    text = str(reason or "").split(";", 1)[0].strip().lower()
-    if text == "ci deferred":
-        return "deferred"
-    if text == "ci wip":
-        return "slot_wait"
-    if text.startswith("repair dispatched"):
-        return "repair"
-    if text.startswith("tests already red"):
-        return "tests_red"
-    if text.startswith("review requested changes"):
-        return "review_changes"
-    if text.startswith("review blocked"):
-        return "review_blocked"
-    if text.startswith("parked"):
-        return "parked"
-    if text == "superseded by newer main head":
-        return "superseded"
-    if text == "ci hold":
-        return "priority_hold"
-    return "other"
-
-
-def audited_cancel_reasons(records, since, until):
-    """Latest non-empty cause per run in a window; duplicate API attempts remain one M1 run."""
-    if records is None:
-        return None
-    by_run = {}
-    for index, row in enumerate(records):
-        at = ts(row.get("when"))
-        if not at or not since <= at <= until:
-            continue
-        key = (row.get("repo") or "", str(row["run_id"]))
-        previous = by_run.get(key)
-        reason = row.get("reason") or (previous[2] if previous else "")
-        if previous is None or (at, index) >= (previous[0], previous[1]):
-            by_run[key] = (at, index, reason)
-    return [cancel_reason(reason) for _, _, reason in by_run.values()]
-
-
-def cancel_metrics(records, since, until):
-    counts = audited_cancel_reasons(records, since, until)
-    ids = {
-        "deferred": "ci.cancel_deferred_per_day",
-        "slot_wait": "ci.cancel_slot_wait_per_day",
-        "repair": "ci.cancel_repair_per_day",
-        "tests_red": "ci.cancel_tests_red_per_day",
-        "review_changes": "ci.cancel_review_changes_per_day",
-        "review_blocked": "ci.cancel_review_blocked_per_day",
-        "parked": "ci.cancel_parked_per_day",
-        "superseded": "ci.cancel_superseded_per_day",
-        "other": "ci.cancel_other_per_day",
-    }
-    if counts is None:
-        return {metric: None for metric in ids.values()}, None
-    hours = (until - since).total_seconds() / 3600
-    per_day = {metric: 0 for metric in ids.values()}
-    if hours <= 0:
-        return {metric: None for metric in ids.values()}, 0
-    for cause in counts:
-        if cause in ids:
-            per_day[ids[cause]] += 24 / hours
-    return per_day, counts.count("priority_hold")
 
 
 def gated_agent_pr_share(repo):
