@@ -216,6 +216,33 @@ slow_tick 'REFILL-TIMEOUT stop: ledger lock wait stopped at 285s'
 [[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/old/engine" ]] \
   || { echo 'FAIL: REFILL-TIMEOUT seen 2 h before the swap was treated as pre-existing' >&2; exit 1; }
 
+# Tick rows of the old engine carry no signatures, yet a chronic REFILL-TIMEOUT logged 20 min before the swap is baseline:
+# a post-swap REFILL-TIMEOUT must not roll back, while a signature first seen after the swap still does.
+window_stamp() { date -u -d "@$(( $(date +%s) + $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
+chronic_baseline_fixture() { # name
+  make_swap_fixture "$1"
+  printf '[%s] REFILL-TIMEOUT stop: ledger lock wait stopped at 285s\n' "$(window_stamp -1200)" >> "$CF_RUNTIME/scheduler.log"
+  printf '{"engine_id":"old","completed_at":"%s","signatures":[]}\n' "$(window_stamp -1200)" >> "$CF_AGENT/engine-versions/.canary-ticks.jsonl"
+  printf '{"engine_id":"old","completed_at":"%s","signatures":[]}\n' "$(window_stamp -600)" >> "$CF_AGENT/engine-versions/.canary-ticks.jsonl"
+  ZF_REPO_DIR="$CF_TARGET" AGENT_HOME="$CF_AGENT" MAC_AUTOPILOT_SUPERVISOR_DIR="$CF_SUP" \
+    "$here/engine-sync.sh" --converge >/dev/null
+  canary tick-begin
+}
+chronic_baseline_fixture canary-log-window-baseline
+printf '[%s] REFILL-TIMEOUT stop: ledger lock wait stopped at 285s\n' "$(window_stamp 5)" >> "$CF_RUNTIME/scheduler.log"
+printf '[%s] tick done units=0\n' "$(window_stamp 6)" >> "$CF_RUNTIME/scheduler.log"
+canary tick-complete
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/candidate/engine" ]] \
+  || { echo 'FAIL: post-swap REFILL-TIMEOUT rolled back though the same signature was logged 20 min before the swap' >&2; exit 1; }
+[[ "$(jq -r '"\(.status) \(.remaining_ticks)"' "$CF_AGENT/engine-versions/.swap-record.json")" == 'pending 1' ]] \
+  || { echo 'FAIL: chronic REFILL-TIMEOUT tick did not count as a pass' >&2; exit 1; }
+chronic_baseline_fixture canary-log-window-novel
+printf '[%s] jqf error (rc=5) in f: never seen before the swap\n' "$(window_stamp 5)" >> "$CF_RUNTIME/scheduler.log"
+printf '[%s] tick done units=0\n' "$(window_stamp 6)" >> "$CF_RUNTIME/scheduler.log"
+canary tick-complete
+[[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/old/engine" ]] \
+  || { echo 'FAIL: signature first seen after the swap did not roll back with a pre-swap baseline present' >&2; exit 1; }
+
 # A product pin rollback to a previously-live version skips only config/ref comparisons.
 return_root="$test_env_root/previously-live"
 return_target="$return_root/target"
