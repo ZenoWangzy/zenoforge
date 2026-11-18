@@ -27,15 +27,19 @@ dispatch_steps_say() {
 # checkout_pr_head 拒绝检出时（本地分支带未推送的修复提交）：分支严格领先 PR head 且含 origin/main 没有的提交就快进推送，
 # 下一拍评审新 head；其余情况转 supervisor 并写明两个 head，不再每拍静默重试（row 553，issue-6965 循环 3 h）。
 recover_local_ahead_head() { # id wt pr-head branch；返回 0 = 已推送，1 = 已转 supervisor
-  local id=$1 wt=$2 pr_head=$3 branch=$4 local_head ahead="" push_out
+  local id=$1 wt=$2 pr_head=$3 branch=$4 local_head push_out
   local_head="$(git -C "$wt" rev-parse -q --verify "refs/heads/$branch^{commit}" 2>/dev/null || true)"
-  if [[ "$local_head" =~ $SHA_RE && "$local_head" != "$pr_head" ]] \
-    && git -C "$wt" merge-base --is-ancestor "$pr_head" "$local_head" 2>/dev/null; then
-    git -C "$wt" fetch -q origin main 2>/dev/null || true
-    ahead="$(git -C "$wt" rev-list -n1 "refs/remotes/origin/main..$local_head" 2>/dev/null)"
+  # 下面四种情况 checkout_pr_head 没有拒绝分支，失败是瞬时的（拉取失败、PR head 刚被推动）：静默返回，下一拍重试。
+  [[ "$local_head" =~ $SHA_RE && "$local_head" != "$pr_head" ]] || return 1
+  git -C "$wt" fetch -q origin main 2>/dev/null || true
+  if git -C "$wt" merge-base --is-ancestor "$local_head" "$pr_head" 2>/dev/null \
+    || git -C "$wt" merge-base --is-ancestor "$local_head" refs/remotes/origin/main 2>/dev/null; then
+    return 1
   fi
-  if [[ -z "$ahead" ]]; then
-    to_supervisor "$id" "PR head $pr_head unavailable: local $branch is ${local_head:-missing}, not a descendant of the PR head with commits beyond origin/main"
+  # 分支严格领先 PR head 且有 origin/main 没有的提交：快进推送。
+  if ! git -C "$wt" merge-base --is-ancestor "$pr_head" "$local_head" 2>/dev/null; then
+    # 分叉：既不在 PR head 之上，也不在 origin/main 之内，会每拍循环，只有这种情况转 supervisor。
+    to_supervisor "$id" "PR head $pr_head unavailable: local $branch $local_head diverged from the PR head and from origin/main"
     return 1
   fi
   if push_out="$(git -C "$wt" push origin "refs/heads/$branch:refs/heads/$branch" 2>&1)"; then

@@ -3494,12 +3494,23 @@ recover_local_ahead_head pr-41 "$ahead_fixture/clone" "$ahead_pr_head" agent/iss
 [[ "$(command git --git-dir="$ahead_fixture/remote.git" rev-parse refs/heads/agent/issue-41)" == "$ahead_local" ]] || fail 'recovery did not fast-forward the PR branch to the local head'
 [[ "$UNIT_EXPR" == *'"stage":"review-push-recovered"'* && ${#SUP_CALLS[@]} == 0 ]] || fail "recovery did not record review-push-recovered (expr=$UNIT_EXPR)"
 command git clone -q "$ahead_fixture/remote.git" "$ahead_fixture/clone-main"
+# (b) 分叉：本地提交既不在 PR head 之上，也不在 origin/main 之内 -> 转 supervisor，不推送
 command git -C "$ahead_fixture/clone-main" checkout -q -B agent/issue-41 origin/main
+command git -C "$ahead_fixture/clone-main" commit -q --allow-empty -m diverged
+diverged_local="$(command git -C "$ahead_fixture/clone-main" rev-parse HEAD)"
 SUP_CALLS=(); UNIT_EXPR=""
 if recover_local_ahead_head pr-41 "$ahead_fixture/clone-main" "$ahead_local" agent/issue-41; then
-  fail 'a branch that only reached origin/main was pushed as recovered work'
+  fail 'a diverged branch was pushed as recovered work'
 fi
-[[ "$(command git --git-dir="$ahead_fixture/remote.git" rev-parse refs/heads/agent/issue-41)" == "$ahead_local" ]] || fail 'a branch with nothing beyond origin/main moved the PR branch'
-[[ ${#SUP_CALLS[@]} == 1 && "${SUP_CALLS[0]}" == "pr-41|PR head $ahead_local unavailable"* && -z "$UNIT_EXPR" ]] || fail "a branch with nothing beyond origin/main did not go to the supervisor (${SUP_CALLS[*]:-none})"
+[[ "$(command git --git-dir="$ahead_fixture/remote.git" rev-parse refs/heads/agent/issue-41)" == "$ahead_local" ]] || fail 'a diverged branch moved the PR branch'
+[[ ${#SUP_CALLS[@]} == 1 && "${SUP_CALLS[0]}" == "pr-41|PR head $ahead_local unavailable"* && -z "$UNIT_EXPR" ]] || fail "a diverged branch did not go to the supervisor (${SUP_CALLS[*]:-none})"
+# (c) 瞬时：本地分支等于 PR head（拉取失败后 checkout 未拒绝）、或只是 origin/main 的祖先 -> 静默返回 1，不推送，不转 supervisor
+SUP_CALLS=(); UNIT_EXPR=""
+command git -C "$ahead_fixture/clone-main" checkout -q -B agent/issue-41 "$ahead_local"
+if recover_local_ahead_head pr-41 "$ahead_fixture/clone-main" "$ahead_local" agent/issue-41; then fail 'a local branch equal to the PR head was treated as recovered'; fi
+[[ ${#SUP_CALLS[@]} == 0 && -z "$UNIT_EXPR" ]] || fail "a local branch equal to the PR head reached the supervisor or history (${SUP_CALLS[*]:-none})"
+command git -C "$ahead_fixture/clone-main" checkout -q -B agent/issue-41 origin/main
+if recover_local_ahead_head pr-41 "$ahead_fixture/clone-main" "$ahead_local" agent/issue-41; then fail 'a branch at origin/main was treated as recovered'; fi
+[[ ${#SUP_CALLS[@]} == 0 && -z "$UNIT_EXPR" && "$(command git --git-dir="$ahead_fixture/remote.git" rev-parse refs/heads/agent/issue-41)" == "$ahead_local" ]] || fail 'a branch at origin/main reached the supervisor or moved the PR branch'
 
 echo 'scheduler-gates.test.sh: PASS'
