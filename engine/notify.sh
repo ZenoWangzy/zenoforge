@@ -518,7 +518,7 @@ _send_email_logged() {
   local mode="$1" subject="$2" body="$3" issue_marker="$4" maintainer_kind="$5"
   local NOTIFY_LOG_MODE="$mode"
   local NOTIFY_MAILER_ID="$(date -u +%s%N)-$$-${RANDOM}"
-  local rejection gcloud_bin token to_header encoded encoded_file payload raw curl_status http_code resp_body msg_id
+  local rejection gcloud_bin token to_header encoded encoded_file payload_file raw curl_status http_code resp_body msg_id
   local failure_reason gcloud_stderr_file
   local NOTIFY_LOG_STAGE="" NOTIFY_LOG_CURL_EXIT="" NOTIFY_LOG_HTTP_STATUS="" NOTIFY_LOG_CONTRACT_REASON=""
   # Before the request is issued, every failure proves Gmail received nothing.
@@ -621,17 +621,24 @@ $body" >&2
     return 0
   fi
 
+  # The body can exceed MAX_ARG_STRLEN (128 KiB) with charts, so curl reads it from a file.
+  payload_file="$(mktemp)" || {
+    notify_log_send "$issue_marker" "$subject" failed transport "${recipients[@]}" || true
+    [ "$mode" != strict ] || return 1
+    return 0
+  }
   encoded_file="$(jq_arg_file "$encoded")"
-  payload="$(jq -n --rawfile raw "$encoded_file" '{raw: $raw}')"
+  jq -n --rawfile raw "$encoded_file" '{raw: $raw}' > "$payload_file"
   rm -f "$encoded_file"
   # After request start, a timeout or lost response can hide a successful send.
   NOTIFY_LAST_SEND_RETRY_SAFE=0
   NOTIFY_LOG_STAGE=gmail-api-send
   raw="$(gmail_curl "$token" -sS --max-time "$GMAIL_TIMEOUT_SECONDS" -X POST "$GMAIL_SEND_URL" \
     -H "Content-Type: application/json" \
-    -d "$payload" \
+    --data-binary @"$payload_file" \
     -w '\n%{http_code}' 2>&1)"
   curl_status=$?
+  rm -f -- "$payload_file"
   http_code="$(echo "$raw" | tail -n1)"
   resp_body="$(echo "$raw" | sed '$d')"
   # curl's 000 means no HTTP response; audit only actual status codes.

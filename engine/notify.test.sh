@@ -1069,6 +1069,38 @@ send_email_strict "[example] watchdog test" body a@b.invalid >/dev/null 2>&1 || 
 assert_eq "send_email_strict: uncertain POST timeout is not retry-safe" "0" "$NOTIFY_LAST_SEND_RETRY_SAFE"
 FAKE_CURL_FAIL=""
 
+# An encoded body over 128 KiB (charts) must reach curl as --data-binary @<file>: as one
+# argument it makes exec fail with E2BIG, and the send returns rc 126 on main.
+BIG_BIN="$TMP_DIR/bigbin"
+BIG_CURL_LOG="$TMP_DIR/big-curl.log"
+mkdir -p "$BIG_BIN"
+cat > "$BIG_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = --data-binary ] && [[ "$arg" == @* ]]; then
+    printf 'file %s %s\n' "$(wc -c < "${arg#@}" | tr -d '[:space:]')" "${arg#@}" >> "$BIG_CURL_LOG"
+  fi
+  prev="$arg"
+done
+printf '{"id":"big-msg"}\n200\n'
+EOF
+chmod +x "$BIG_BIN/curl"
+big_body="$(PYTHONIOENCODING=utf-8 python3 -c 'print("这是一段用于测试的正文内容。" * 2900)')"
+: > "$NOTIFY_LOG_FILE"
+: > "$BIG_CURL_LOG"
+OLD_STRICT_PATH="$PATH"
+export PATH="$BIG_BIN:$PATH" BIG_CURL_LOG
+run_strict "[example] watchdog test" "$big_body" "a@b.invalid"
+export PATH="$OLD_STRICT_PATH"
+assert_eq "send_email_strict: body over 128 KiB sends" "0" "$STRICT_STATUS"
+big_seen="$(awk 'NR==1{print $2}' "$BIG_CURL_LOG")"
+big_path="$(awk 'NR==1{print $3}' "$BIG_CURL_LOG")"
+assert_eq "send_email_strict: curl got the body from a file over 128 KiB" "yes" \
+  "$([ "${big_seen:-0}" -ge 131072 ] && echo yes || echo no)"
+assert_eq "send_email_strict: body file is removed after curl returns" "gone" \
+  "$([ -n "$big_path" ] && [ -e "$big_path" ] && echo present || echo gone)"
+
 # non-success HTTP response
 FAKE_CURL_HTTP_CODE=503
 : > "$NOTIFY_LOG_FILE"
