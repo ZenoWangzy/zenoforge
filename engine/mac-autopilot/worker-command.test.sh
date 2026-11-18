@@ -221,3 +221,13 @@ build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fa
 printf '%s\n' 'PASS scheduler Codex commands disable configured MCP servers and cap tool output (64 KB default, implement 8000 tokens)'
 printf '%s\n' 'PASS Sonnet fallback allows focused tests and confines review fixes to the PR branch'
 printf '%s\n' 'PASS Claude implement is stream-json, worktree-scoped, branch-only push, resumes its own session'
+
+# Claude implement workers may rename or delete tracked files (VectA 6942 could not renumber 0222); review stays read-only.
+implement_tools="$(claude_implement_tools "$test_env_root/wt" implement-1)"
+review_tools="$(claude_review_tools "$test_env_root/wt")"
+review_denied="$(claude_review_disallowed_tools)"
+[[ ",$implement_tools," == *",Bash(git rm:*),"* ]] || fail "claude implement tools lack Bash(git rm:*)"
+[[ ",$implement_tools," == *",Bash(git mv:*),"* ]] || fail "claude implement tools lack Bash(git mv:*)"
+[[ "$review_tools" != *"Bash(git rm"* && "$review_tools" != *"Bash(git mv"* ]] || fail "claude review tools allow git rm or git mv"
+[[ ",$review_denied," == *",Bash(git commit:*),"* ]] || fail "claude review deny list lost Bash(git commit:*)"
+printf '%s\n' 'PASS Claude implement tools allow git rm and git mv; review tools stay read-only'
