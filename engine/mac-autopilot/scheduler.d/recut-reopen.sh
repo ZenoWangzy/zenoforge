@@ -73,13 +73,28 @@ intake_ruling_episodes() { # issue...
 # restore it once per unit; a unit that closes again stays closed and counted. A unit closed on purpose (obsolete, pr-closed)
 # is not restored. A delivered unit (merged) is not routed anywhere here: no signal says whether its PR did the whole work,
 # and triage would conclude it as awaiting-release (triage_merged_pr_for_issue); only a ruling after the delivery restores it.
+# The no-path note for a delivered or handled unit set is written once per state episode: closed_units_noted_at holds the
+# state_changed_at it was written under, so a state change makes the row live again and no reset code is needed.
+intake_closed_unit_noted() { # issue → 0 while the note covers the issue's current state episode
+  [[ "$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$1.json" -r 'if (.closed_units_noted_at != null and .closed_units_noted_at == (.state_changed_at // "")) then "yes" else "no" end' 2>/dev/null)" == yes ]]
+}
+intake_closed_units_note() { # issue state_changed_at stages: the marker first, so a failed write is retried and a written one never repeats the supervisor note
+  local n="$1" at="$2" stages="$3"
+  if (source "$SCHEDULER_AGENT_LIB"; state_merge "$n" ".closed_units_noted_at = $(js "$at")"); then
+    supervisor_inbox_append closed-units "intake closed-units issue=#$n needs a ruling: all units $stages" \
+      || say "intake closed-units issue=#$n: supervisor note not written; the marker is set, so it is not retried"
+  else
+    say "intake closed-units issue=#$n: could not record the note; retry next tick"
+  fi
+}
 intake_closed_unit_rows() { # issue...
   local n row units cap id
   cap="$(intake_attempt_cap)"; [[ "$cap" =~ ^[0-9]+$ ]] || return 0
   for n; do
     row="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -c --argjson cap "$cap" 'select(.state == "ready-for-agent" and .hold == null
       and (.attempts // 0) < $cap and .external_deliverable.required != true)
-      | {at: (.state_changed_at // ""), from: (.state_changed_from // ""), episode: (.scheduler_handoff.episode // "")}' 2>/dev/null)" || continue
+      | {at: (.state_changed_at // ""), from: (.state_changed_from // ""), episode: (.scheduler_handoff.episode // ""),
+         noted: (.closed_units_noted_at != null and .closed_units_noted_at == (.state_changed_at // ""))}' 2>/dev/null)" || continue
     [[ -n "$row" ]] || continue
     units="$(jqf -c --argjson n "$n" --argjson row "$row" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
       | (($us | map((.history // [])[-1].at // "") | max) // "") as $at
@@ -109,7 +124,9 @@ intake_closed_unit_rows() { # issue...
       # A delivered unit is not routed (triage would conclude on a partial PR); a handled unit set also stays closed. Route
       # every other terminal set back to automated triage, and mark it so a later ready-for-agent state cannot loop.
       if jqf -e '.merged or .spent' <<<"$units" >/dev/null; then
+        jqf -e '.noted' <<<"$row" >/dev/null && continue # noted for this state episode: silent until state_changed_at moves
         intake_skip_note "$n" "all units terminal ($(jqf -r ".stages" <<<"$units")) and no restore path applies; no worker starts, a ruling is needed (a unit closed by a recut: hold.sh --rule $(jqf -r '.ids[0] // empty' <<<"$units") requeue)"
+        intake_closed_units_note "$n" "$(jqf -r '.at' <<<"$row")" "$(jqf -r '.stages' <<<"$units")"
       elif scheduler_issue_transition "$n" needs-triage closed-units-no-path >/dev/null 2>&1; then
         while IFS= read -r id; do
           [[ -n "$id" ]] || continue
