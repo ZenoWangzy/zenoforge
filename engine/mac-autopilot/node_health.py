@@ -23,7 +23,6 @@ import line_holds, intake_laneless_health, wip_hold
 import release_age
 import release_batch
 import release_retained
-import rulings_copies
 import station_standards
 import pr_census
 import delivery_diagnostics
@@ -279,9 +278,8 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_heal
 CRITERIA.update({**line_holds.CRITERIA, **intake_laneless_health.CRITERIA, **station_standards.CRITERIA, **worker_cost.TOKEN_EFFICIENCY_CRITERIA})
 MEANING.update({**line_holds.MEANING, **intake_laneless_health.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
 SOURCE.update({**line_holds.SOURCE, **intake_laneless_health.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
-# release.hours_since_release lives in release_age.py, rulings.copies_differ in rulings_copies.py, for the same size-ratchet reason.
+# release.hours_since_release lives in release_age.py, for the same size-ratchet reason.
 for part in (release_age, release_retained, release_batch): CRITERIA.update(part.CRITERIA); MEANING.update(part.MEANING); SOURCE.update(part.SOURCE)
-CRITERIA.update(rulings_copies.CRITERIA); MEANING.update(rulings_copies.MEANING); SOURCE.update(rulings_copies.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -1567,7 +1565,6 @@ def main():
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
     line_holds.collect(metrics, a, agent_home, now)
-    rulings_copies.collect(metrics, agent_home)
     release_found = release_age.collect(metrics, now)
     registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
