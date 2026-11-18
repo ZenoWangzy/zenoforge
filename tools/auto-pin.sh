@@ -89,7 +89,8 @@ auto_pin_pass() {
     systemctl --user start --no-block vecta-agent.service 2>/dev/null || :
     echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} via-pr committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
   elif ((rc == 0)); then
-    AGENT_HOME=$AGENT_HOME timeout 280 "$AGENT_HOME/checkout/.zenoforge/build/engine-sync.sh" --converge "$AGENT_HOME/checkout" "$AGENT_HOME" >>"$log" 2>&1 || echo "$(date -u +%H:%M:%S) CONVERGE-FAILED ${next:0:12}"  # live now, not at the next timer run
+    # The live wrapper, not the VectA hook: only the wrapper records the swap that the engine canary watches.
+    AGENT_HOME=$AGENT_HOME timeout 280 "$AGENT_HOME/engine-live/engine-sync.sh" --converge "$AGENT_HOME/checkout" "$AGENT_HOME" >>"$log" 2>&1 || echo "$(date -u +%H:%M:%S) CONVERGE-FAILED ${next:0:12}"  # live now, not at the next timer run
     echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
   else
     vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
