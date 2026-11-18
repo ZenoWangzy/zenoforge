@@ -35,10 +35,11 @@ worker_rules() { # unit-json type provider
 claude_session_file_for_id() { compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/$1.jsonl" | head -n1; }
 
 # Claude 实现 worker 的工具面：只写自己的工作目录，只推单元分支（direct-main 车道完全不推，与 Codex 实现提示一致）。
+# 2026-11-18：允许 git rm/mv，因为 VectA 6942 的改号 0222 没法删旧文件（只动 worker 自己 repo 的 tracked 文件，不放行裸 rm/mv）。
 # 没有 OS 沙箱：这是权限规则，不是隔离；测试运行器仍会执行 worker 写的代码（Codex 实现同样是 danger-full-access，见 SECURITY.md）。
 claude_implement_tools() { # workdir unit → --allowedTools 值
   local workdir="$1" unit="$2" branch tools
-  tools="Grep,Glob,Read(/$workdir/**),Edit(/$workdir/**),Write(/$workdir/**),Bash(cd:*),Bash(pwd),Bash(echo:*),Bash(printf:*),Bash(sed:*),Bash(sort:*),Bash(uniq:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(mkdir:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(git branch --show-current),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh),Bash(node scripts/branch-delivery-preflight.mjs:*),Bash(node engine/verification-plan.mjs:*)"
+  tools="Grep,Glob,Read(/$workdir/**),Edit(/$workdir/**),Write(/$workdir/**),Bash(cd:*),Bash(pwd),Bash(echo:*),Bash(printf:*),Bash(sed:*),Bash(sort:*),Bash(uniq:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(mkdir:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(git rm:*),Bash(git mv:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(git branch --show-current),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh),Bash(node scripts/branch-delivery-preflight.mjs:*),Bash(node engine/verification-plan.mjs:*)"
   [[ -z "${SUP:-}" ]] || tools+=",Read(/$SUP/**)"
   branch="$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [[ "$(unit_field "$unit" '.lane // empty')" != direct-main && "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != main ]]; then
