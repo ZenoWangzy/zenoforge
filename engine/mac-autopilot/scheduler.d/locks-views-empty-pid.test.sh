@@ -115,4 +115,59 @@ wait_out="$(env AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$short
 if grep -q 'scheduler lock wait' "$short_lock.log" 2>/dev/null; then stop_holders; fail 'a short wait logged a wait line'; fi
 stop_holders
 
+# Queue order: with the lock held, waiter A starts before B; on release A takes the lock first. Eight rounds, so a poll race (B first) shows up.
+fifo_probe="$fixture/fifo-waiter.sh"
+cat > "$fifo_probe" <<'FIFO_PROBE'
+set -euo pipefail
+source "$SCHED_DIR/core.sh"
+source "$SCHED_DIR/../../coord.sh"
+source "$SCHED_DIR/locks-views.sh"
+if acquire_scheduler_lock_wait 20; then printf '%s\n' "$WAITER" >> "$ORDER"; release_scheduler_lock; fi
+FIFO_PROBE
+fifo_run() { env AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$1" LOG="$1.log" STAMP=test ORDER="$2" WAITER="$3" bash "$fifo_probe"; }
+for round in 1 2 3 4 5 6 7 8; do
+  lock="$fixture/fifo-$round.lock"; order="$fixture/fifo-$round.order"
+  command sleep 60 & fifo_holder=$!
+  mkdir "$lock"; echo "$fifo_holder" > "$lock/pid"
+  fifo_run "$lock" "$order" A & wa=$!
+  for _ in $(seq 100); do compgen -G "$lock.q/*" >/dev/null && break; command sleep 0.05; done # A has queued (bounded: main has no queue)
+  fifo_run "$lock" "$order" B & wb=$!
+  for _ in $(seq 100); do [[ "$(compgen -G "$lock.q/*" | wc -l)" -ge 2 ]] && break; command sleep 0.05; done
+  command sleep 0.2
+  rm -rf -- "$lock"
+  wait "$wa" || :; wait "$wb" || :
+  kill "$fifo_holder" 2>/dev/null || :; wait "$fifo_holder" 2>/dev/null || :
+  if [[ "$(head -n 1 "$order" 2>/dev/null)" != A ]]; then fail "round $round: waiter B took the lock before the earlier waiter A (order: $(tr '\n' ' ' < "$order" 2>/dev/null))"; fi
+done
+
+# A ticket from a dead pid does not block a live waiter, and the dead ticket is removed when it is passed over.
+dead_lock="$fixture/dead-ticket.lock"
+command sleep 0 & dead_pid=$!; wait "$dead_pid" || :
+mkdir -p "$dead_lock.q"; dead_ticket="$dead_lock.q/0000000000000001-$dead_pid"; : > "$dead_ticket"
+fifo_run "$dead_lock" "$fixture/dead-ticket.order" C || fail 'a live waiter failed behind a dead ticket'
+[[ "$(cat "$fixture/dead-ticket.order")" == C ]] || fail 'a live waiter was blocked by a dead pid ticket'
+[[ ! -e "$dead_ticket" ]] || fail 'a dead pid ticket was left in the queue'
+
+# A REFILL-TIMEOUT stop leaves no ticket: the stop finds the waiter's own ticket in the queue, and none is left after it.
+stop_lock="$fixture/stop-ticket.lock"; stop_A="$fixture/stop-A"; mkdir -p "$stop_A"
+command sleep 60 & stop_holder=$!
+mkdir "$stop_lock"; echo "$stop_holder" > "$stop_lock/pid"
+stop_probe="$fixture/stop-waiter.sh"
+cat > "$stop_probe" <<'STOP_PROBE'
+set -euo pipefail
+source "$SCHED_DIR/core.sh"
+source "$SCHED_DIR/../../coord.sh"
+source "$SCHED_DIR/locks-views.sh"
+say() { echo "[$STAMP] $*" >> "$LOG"; echo "tickets_at_stop=$(ls -1 "$SCHED_LOCK.q" 2>/dev/null | wc -l)" >> "$LOG"; }
+TICK_LOCAL_REFILL=true AUTOPI_REFILL_LIMIT_SECONDS=10 AUTOPI_REFILL_LOCK_MARGIN_SECONDS=0
+SECONDS=10
+rc=0; acquire_scheduler_lock_wait || rc=$?
+echo "rc=$rc tickets_after=$(ls -1 "$SCHED_LOCK.q" 2>/dev/null | wc -l)" >> "$LOG"
+STOP_PROBE
+env AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$stop_lock" LOG="$stop_lock.log" STAMP=test A="$stop_A" bash "$stop_probe" || :
+kill "$stop_holder" 2>/dev/null || :; wait "$stop_holder" 2>/dev/null || :
+grep -q 'REFILL-TIMEOUT stop: ledger lock wait stopped' "$stop_lock.log" || fail 'the refill past its deadline did not stop the wait'
+grep -q 'tickets_at_stop=1' "$stop_lock.log" || fail 'the waiter held no ticket while it waited in the queue'
+grep -q 'rc=1 tickets_after=0' "$stop_lock.log" || fail 'a REFILL-TIMEOUT stop left a ticket in the queue'
+
 echo 'locks-views-empty-pid.test.sh: all assertions passed'
