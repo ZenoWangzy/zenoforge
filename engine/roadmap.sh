@@ -494,6 +494,8 @@ roadmap_place_issue() {
   roadmap_ledger_add "$placed_file" "$number" "$placed_file.lock"
 }
 
+source "$(dirname -- "${BASH_SOURCE[0]}")/roadmap-body-check.sh" # roadmap_body_check_refuse
+
 roadmap_issue_create() {
   local -a command_args=("$@")
   local -a labels=() parsed_labels=()
@@ -577,6 +579,8 @@ roadmap_issue_create() {
     rm -rf -- "$temp_dir"
     return 64
   fi
+
+  roadmap_body_check_refuse "$body_file" "${labels[@]}" || { rm -rf -- "$temp_dir"; return 64; }
 
   for value in "${labels[@]}"; do
     if roadmap_stage_requires_parent "$value"; then has_stage_label=1; break; fi

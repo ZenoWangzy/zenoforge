@@ -206,4 +206,61 @@ assert_eq 'missing tree is reported before issue creation' false \
 assert_eq 'missing tree refusal is explicit' true \
   "$(grep -Fq 'refusing to create' "$test_tmp/no-tree.log" && echo true || echo false)"
 
+# roadmap.body_check_command (night.json): a ready-for-agent feature ticket's body must pass the target's check.
+body_check_log="$test_tmp/body-check.log" body_cfg="$test_tmp/body-check-config" body_none="$test_tmp/body-check-none"
+mkdir -p "$body_cfg" "$body_none"
+cat > "$test_tmp/body-check.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$body_check_log"
+grep -q 'delivery form' "\$1" && exit 0
+echo 'R1: missing delivery form'
+exit 1
+SH
+chmod +x "$test_tmp/body-check.sh"
+printf '{"roadmap":{"body_check_command":"%s"}}\n' "$test_tmp/body-check.sh" > "$body_cfg/night.json"
+printf 'Feature body without the required section.\n' > "$test_tmp/feature-bad.md"
+printf 'Feature body.\n\ndelivery form: Agent tool and /chat/ UI block.\n' > "$test_tmp/feature-good.md"
+ZF_ROADMAP_TREE_CACHE_FILE="$test_tmp/tree.json"
+export ZF_ROADMAP_TREE_CACHE_FILE FAKE_LINK_FAIL=0
+
+: > "$body_check_log"; : > "$FAKE_GH_LOG"
+if ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Agent feature' \
+  --body-file "$test_tmp/feature-bad.md" --label ready-for-agent,enhancement \
+  > "$test_tmp/body-check-refused.stdout" 2> "$test_tmp/body-check-refused.stderr"; then
+  body_refused_rc=0
+else
+  body_refused_rc=$?
+fi
+assert_eq 'ready-for-agent feature whose check exits 1 is refused with rc 64' 64 "$body_refused_rc"
+assert_eq 'refused feature ticket does not call gh issue create' false \
+  "$(grep -Eq '^issue create ' "$FAKE_GH_LOG" && echo true || echo false)"
+assert_eq 'refusal prints the check output' true \
+  "$(grep -Fq 'R1: missing delivery form' "$test_tmp/body-check-refused.stderr" && echo true || echo false)"
+assert_eq 'check ran on the body file' true \
+  "$(grep -Fq "$test_tmp/feature-bad.md" "$body_check_log" && echo true || echo false)"
+
+: > "$body_check_log"; : > "$FAKE_GH_LOG"
+FAKE_NEXT_ISSUE=99020 export FAKE_NEXT_ISSUE
+body_ok_url="$(ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Agent feature' \
+  --body-file "$test_tmp/feature-good.md" --label ready-for-agent,enhancement)"
+assert_eq 'ready-for-agent feature whose check exits 0 is created' \
+  'https://github.com/example-maintainer/example-repo/issues/99020' "$body_ok_url"
+
+: > "$body_check_log"; : > "$FAKE_GH_LOG"
+FAKE_NEXT_ISSUE=99021 export FAKE_NEXT_ISSUE
+bug_url="$(ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Agent bug' \
+  --body-file "$test_tmp/feature-bad.md" --label ready-for-agent,bug)"
+assert_eq 'bug-labelled ticket skips the body check and is created' \
+  'https://github.com/example-maintainer/example-repo/issues/99021' "$bug_url"
+assert_eq 'bug-labelled ticket does not run the check' 0 "$(wc -l < "$body_check_log")"
+
+: > "$body_check_log"; : > "$FAKE_GH_LOG"
+FAKE_NEXT_ISSUE=99022 export FAKE_NEXT_ISSUE
+none_url="$(ZF_CONFIG_ROOT="$body_none" guarded_write gh issue create --repo "$REPO" --title 'Agent feature' \
+  --body-file "$test_tmp/feature-bad.md" --label ready-for-agent,enhancement)"
+assert_eq 'without roadmap.body_check_command nothing runs and the ticket is created' \
+  'https://github.com/example-maintainer/example-repo/issues/99022' "$none_url"
+assert_eq 'without roadmap.body_check_command the check does not run' 0 "$(wc -l < "$body_check_log")"
+unset ZF_ROADMAP_TREE_CACHE_FILE
+
 echo 'roadmap-issue-create.test.sh: PASS'
