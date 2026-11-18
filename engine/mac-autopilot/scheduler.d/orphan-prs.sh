@@ -71,7 +71,7 @@ reconcile_orphan_prs() {
     handoff_pr_waiting "$prn" 0 && continue
     jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' <(units_history_index) >/dev/null && continue
     jqf -e --argjson p "$prn" 'any(.[]; .number == $p)' <<<"$prs" >/dev/null || continue
-    jqf --argjson prn "$prn" --arg b "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .headRefName' <<<"$prs")" \
+    jqf -c --argjson prn "$prn" --arg b "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .headRefName' <<<"$prs")" \
       --arg t "$(jqf -r --argjson p "$prn" '.[] | select(.number == $p) | .title' <<<"$prs")" --arg now "$now" --arg h "$HOTPATCH_HINT" \
       --argjson owned "$(hotfix_lane_supervisor_owned && echo true || echo false)" \
       '.units += [({id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, branch:$b, critical:true, hotpatch:true, repair_hint:$h,
@@ -108,7 +108,7 @@ reconcile_orphan_prs() {
     if [[ "$draft" == true ]]; then
       if [[ "$branch" =~ $GATED_BRANCH_RE ]]; then gated_flag_pr "$prn" && gated=1; else tick_prs_changed; gh pr ready "$prn" >/dev/null 2>&1; fi
     fi
-    jqf --argjson prn "$prn" --argjson n "$n" --arg b "$branch" --arg t "$title" --arg now "$now" --argjson labels "${issue_labels:-[]}" \
+    jqf -c --argjson prn "$prn" --argjson n "$n" --arg b "$branch" --arg t "$title" --arg now "$now" --argjson labels "${issue_labels:-[]}" \
       '.units += [{id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, issue:$n, branch:$b, labels:$labels,
         critical:([.units[] | select(.stage=="blocked-external" and .blocked_on == $n)] | length > 0),
         history:[{stage:"orphan-registered", result:"open PR outside the ledger", at:$now}]}]' "$UNITS" | write_state "$UNITS"
