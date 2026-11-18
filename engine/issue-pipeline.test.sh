@@ -1820,8 +1820,8 @@ assert_eq 'ordinary per-issue launch failure still records its fault' \
 # Execute the scheduler's real recut status branch as well as the dispatch.
 # Supply the refusal through the real caller branch.
 run_recut_admission_caller() (
-  local dispatch_status=0 next_recut=910101 recut_slots=1
-  dispatch_policy_unit() { return 75; }
+  local stub_status="${1:-75}" dispatch_status=0 next_recut=910101 recut_slots=1
+  dispatch_policy_unit() { return $stub_status; }
   record_env_fault() { printf 'fault:%s\n' "$1"; }
   record_implement_decision() { :; }
   for candidate in one; do
@@ -1832,6 +1832,9 @@ run_recut_admission_caller() (
 )
 assert_eq 'recut scheduler leaves a deferred candidate queued without a policy fault' \
   'slots:1' "$(run_recut_admission_caller)"
+# 2026-11-18 (row 579): a per-ticket spend skip or route failure (status 80) is not a policy fault.
+assert_eq 'recut scheduler skips a spend-budget candidate without a policy fault' \
+  'slots:1' "$(run_recut_admission_caller 80)"
 run_refresh_admission_case() (
   local launch_status="$1" status=0
   REPO_DIR="$SCRIPT_DIR/.." ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf
@@ -1945,6 +1948,29 @@ run_advisor_route_failure_case() (
 )
 assert_eq 'a failed spend-budget route skips only its ticket; the batch still dispatches the rest' \
   $'launched:7045\nstatus:0' "$(run_advisor_route_failure_case)"
+# 2026-11-18 (row 579): a failed spend-budget status read for one ticket returned 1 from the whole triage batch.
+run_triage_status_failure_case() (
+  AGENT_HOME="$(mktemp -d)"
+  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap, as in run_advisor_route_failure_case
+  TRIAGE_RUNTIME_MAX_SEC=60 DRY_RUN=1 UNIT_PREFIX_TRANSIENT=zf ZF_ENGINE_DIR="$AGENT_HOME"
+  printf '#!/usr/bin/env bash\n' > "$AGENT_HOME/run-triage-batch.sh"; chmod +x "$AGENT_HOME/run-triage-batch.sh"
+  model_policy() { :; }
+  model_config_fault_blocked() { return 1; }
+  issue_spend_budget_status() { if [ "$1" = 7044 ]; then return 1; fi; printf 'clear\t0\t0\n'; }
+  coord_new_owner() { printf 'fixture-owner'; }
+  pipeline_batch_claim_acquire() { return 0; }
+  pipeline_batch_claim_drop() { :; }
+  pipeline_batch_claim_keep() { :; }
+  consume_unit_memory_oom() { return 1; }
+  state_read() { printf '{}'; }
+  pipeline_batch_launch() { printf 'launched:%s\n' "$2"; }
+  eval "$(sed -n '/^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC")"
+  status=0
+  dispatch_triage_batch 7044 7045 || status=$?
+  printf 'status:%s\n' "$status"
+)
+assert_eq 'a failed spend-budget status read skips only its ticket; the triage batch still launches the rest' \
+  $'launched:7045\nstatus:0' "$(run_triage_status_failure_case)"
 run_triage_admission_caller() (
   local launch_status="$1"
   TRIAGE_BATCH_IDS=(910101)

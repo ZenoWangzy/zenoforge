@@ -810,7 +810,7 @@ dispatch_advisor_batch() {
       if hand_agent_issue_is_live_owned "$n"; then
         record_hand_owned_decision advisor "$n"
       else
-        budget_result="$(issue_spend_budget_status "$n")" || return 1
+        budget_result="$(issue_spend_budget_status "$n")" || { echo "issue-pipeline: #$n spend-budget status failed; not dispatching it this tick" >&2; continue; }
         IFS=$'\t' read -r budget_state budget_calls budget_tokens <<< "$budget_result"
         if [ "$budget_state" = over ]; then
           # shortcut: a failed route skips only this ticket and retries next tick, no backoff, upgrade if route failures flood the journal.
@@ -875,10 +875,10 @@ dispatch_triage_batch() {
   local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status; local -a issue_ids=() memory_args=() result_args=()
   for n in "$@"; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
-    budget_result="$(issue_spend_budget_status "$n")" || return 1
+    budget_result="$(issue_spend_budget_status "$n")" || { echo "issue-pipeline: #$n spend-budget status failed; not dispatching it this tick" >&2; continue; }
     IFS=$'\t' read -r budget_state budget_calls budget_tokens <<< "$budget_result"
     if [ "$budget_state" = over ]; then
-      route_issue_spend_budget "$n" "$budget_calls" "$budget_tokens" || return 1
+      route_issue_spend_budget "$n" "$budget_calls" "$budget_tokens" || { echo "issue-pipeline: #$n spend-budget route failed; not dispatching it this tick" >&2; continue; }
       continue
     fi
     [ "$budget_state" = clear ] || { echo "issue-pipeline: #$n spend ledger unreadable; holding triage dispatch" >&2; continue; }
@@ -963,7 +963,7 @@ dispatch_policy_unit() {
       # The budget route sends oversized tickets to recut; recut runs once per
       # parent, so it must not be held by the budget that routed it (1983, 1703).
       if [ "$unit" != recut ]; then
-        route_issue_spend_budget "$n" "$budget_calls" "$budget_tokens" || return 1
+        route_issue_spend_budget "$n" "$budget_calls" "$budget_tokens" || return 80 # Route failure; the recut caller skips it like a spend skip.
         local budget_window_end
         budget_window_end="$(state_read "$n" | jq -r '.issue_spend_budget.window_end // empty')" || return 1
         [ -n "$budget_window_end" ] || return 1
@@ -2943,6 +2943,7 @@ if [ "$recut_slots" -gt 0 ]; then
       case "$dispatch_status" in
         75) break ;;
         78) continue ;;
+        80) continue ;;
         79)
           record_implement_decision "$next_recut" skipped roadmap-parent \
             "路线图父级挂接失败；保留在 needs-recut 队列，后续 tick 重试" "#$next_recut"
