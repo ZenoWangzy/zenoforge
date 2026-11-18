@@ -306,7 +306,8 @@ resume_handoff_integration() { # unit clone: preserve the recorded snapshot if t
   fi
   git -C "$dir" merge --abort >/dev/null 2>&1 || true
   # Count earlier conflicts for this same snapshot (recorded on their supervisor-escalated entries); the second one drops it.
-  prior="$(unit_field "$id" "[(.history // [])[] | select(.stage == \"supervisor-escalated\" and .integration_sha == \"$sha\")] | length")"
+  # Legacy entries from before integration_sha was recorded count too; a legacy entry may name another snapshot, which is accepted.
+  prior="$(jqf -r --arg sha "$sha" '[.[] | select(.stage == "supervisor-escalated" and (.integration_sha == $sha or (.integration_sha == null and ((.result // "") | startswith("handoff snapshot conflicts")))))] | length' <<<"$(unit_field "$id" '.history // []')")"
   if (( prior >= 1 )); then
     handoff_drop_conflicting_snapshot "$id" "$sha"
     # Return 1 so the caller skips this tick: the next tick sees no snapshot fields and takes the fresh implement path.

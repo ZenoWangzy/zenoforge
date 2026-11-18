@@ -584,4 +584,20 @@ git --git-dir="$origin" show-ref --verify -q "refs/heads/$conflict_ref80" || fai
 resume_handoff_integration issue-81 "$side_wt" || fail 'a clean snapshot merge failed'
 [[ -e "$side_wt/side.txt" ]] || fail 'a clean snapshot merge did not bring its commit in'
 
+# (d) A unit whose only escalation predates integration_sha (legacy entry, no SHA) drops on its first conflict.
+git -C "$side_wt" checkout -q -b legacy-snap "$conflict_base"
+printf 'legacy line\n' > "$side_wt/a.txt"; git -C "$side_wt" add a.txt
+git -C "$side_wt" -c user.name=t -c user.email=t@example.com commit -qm legacy
+legacy_sha="$(git -C "$side_wt" rev-parse HEAD)"
+git -C "$side_wt" checkout -q agent/issue-80
+command jq -n --arg sha "$legacy_sha" '{units:[{id:"issue-82",branch:"agent/issue-80",stage:"implement-pending",
+  history:[{stage:"supervisor-escalated",result:"handoff snapshot conflicts with the updated branch; inspect the preserved work",at:"2026-11-18T12:31:37Z"}],
+  handoff_integration_sha:$sha,handoff_start_ref:"rescued/agent-issue-82-legacy",handoff_start_sha:$sha,handoff_start_applied:true}]}' > "$UNITS"
+if resume_handoff_integration issue-82 "$side_wt"; then fail 'a conflict with a legacy escalation kept the snapshot'; fi
+jq -e '.units[0].stage == "implement-pending"
+  and ([.units[0] | keys[] | select(startswith("handoff_"))] | length) == 0
+  and ([.units[0].history[] | select(.stage=="handoff-dropped")] | length) == 1
+  and ([.units[0].history[] | select(.stage=="supervisor-escalated")] | length) == 1' "$UNITS" >/dev/null \
+  || fail 'a legacy escalation did not count: the first conflict after it escalated instead of dropping'
+
 echo "handoff-rescue.test.sh: all assertions passed"
