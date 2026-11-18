@@ -544,4 +544,40 @@ jq -s -e --arg integrated "$handoff_integrated" --arg ref "$handoff_ref71" '
   and (.[0].body|contains($integrated)) and (.[0].body|contains($ref))' "$pr_comments" >/dev/null \
   || fail "the PR did not receive exactly one comment carrying the dropped rescue diffstat ($(cat "$pr_comments"))"
 
+# A snapshot that conflicts with the branch escalates once; the second conflict for the same SHA drops it, keeps the rescue ref for reading, and does not escalate again.
+new_clone
+conflict_base="$(git -C "$wt" rev-parse HEAD)"
+printf 'snapshot line\n' > "$wt/a.txt"; git -C "$wt" commit -qam 'snapshot'
+conflict_sha="$(git -C "$wt" rev-parse HEAD)"; conflict_ref80="rescued/agent-issue-80-$conflict_sha"
+git -C "$wt" push -q origin "HEAD:refs/heads/$conflict_ref80"
+git -C "$wt" checkout -q -B agent/issue-80 "$conflict_base"
+printf 'branch line\n' > "$wt/a.txt"; git -C "$wt" commit -qam 'branch moved'
+git -C "$wt" push -q origin HEAD:refs/heads/agent/issue-80
+side_wt="$WT_ROOT/wt-issue-80"; rm -rf "$side_wt"; git clone -q "$origin" "$side_wt"
+git -C "$side_wt" checkout -q -b agent/issue-80 refs/remotes/origin/agent/issue-80
+git -C "$side_wt" checkout -q -b side-clean refs/remotes/origin/main
+printf 'side\n' > "$side_wt/side.txt"; git -C "$side_wt" add side.txt
+git -C "$side_wt" -c user.name=t -c user.email=t@example.com commit -qm side
+side_sha="$(git -C "$side_wt" rev-parse HEAD)"
+git -C "$side_wt" checkout -q agent/issue-80
+command jq -n --arg sha "$conflict_sha" --arg ref "$conflict_ref80" --arg clean "$side_sha" '{units:[
+  {id:"issue-80",branch:"agent/issue-80",stage:"implement-pending",history:[],handoff_integration_sha:$sha,handoff_start_ref:$ref,handoff_start_sha:$sha,handoff_start_applied:true},
+  {id:"issue-81",branch:"agent/issue-80",stage:"implement-pending",history:[],handoff_integration_sha:$clean}]}' > "$UNITS"
+
+if resume_handoff_integration issue-80 "$side_wt"; then fail 'a conflicting snapshot merged'; fi
+jq -e '.units[0].stage == "supervisor-review"' "$UNITS" >/dev/null || fail 'the first conflict did not escalate to the supervisor'
+
+command jq '(.units[] | select(.id=="issue-80")).stage="implement-pending"' "$UNITS" > "$fixture/units-requeued.json" && mv "$fixture/units-requeued.json" "$UNITS"
+if resume_handoff_integration issue-80 "$side_wt"; then fail 'the second conflict kept the snapshot'; fi
+jq -e --arg sha "$conflict_sha" --arg ref "$conflict_ref80" '.units[0].stage == "implement-pending"
+  and ([.units[0] | keys[] | select(startswith("handoff_"))] | length) == 0
+  and ([.units[0].history[] | select(.stage=="handoff-dropped" and (.result|contains($sha)) and (.result|contains($ref)))] | length) == 1
+  and ([.units[0].history[] | select(.stage=="supervisor-escalated" and .integration_sha==$sha)] | length) == 1
+  and (.units[0].repair_hint | contains($ref) and contains("do not merge it"))' "$UNITS" >/dev/null \
+  || fail 'the second conflict did not drop the snapshot, keep the rescue ref named, and skip the supervisor'
+git --git-dir="$origin" show-ref --verify -q "refs/heads/$conflict_ref80" || fail 'the dropped snapshot deleted its remote rescue ref'
+
+resume_handoff_integration issue-81 "$side_wt" || fail 'a clean snapshot merge failed'
+[[ -e "$side_wt/side.txt" ]] || fail 'a clean snapshot merge did not bring its commit in'
+
 echo "handoff-rescue.test.sh: all assertions passed"

@@ -280,6 +280,13 @@ record_handoff_integration() { # unit clone observed-PR-head
   set_unit "$id" ".handoff_integration_sha=$(js "$sha") | .handoff_original_pr_head=$(js "$original") | .handoff_delivery_verified_sha=null | if .handoff_worktree_sha != null then .handoff_worktree_applied=true else . end | if .handoff_start_ref != null then .handoff_start_applied=true else . end"
 }
 
+handoff_drop_conflicting_snapshot() { # unit integrated-sha: second conflict for one snapshot; the rescue ref stays on the remote, read only
+  local id="$1" integrated="$2" rescue_ref
+  rescue_ref="$(unit_field "$id" '.handoff_start_ref // empty')"
+  [[ -n "$rescue_ref" ]] || rescue_ref='(no rescue ref recorded)'
+  set_unit "$id" "$(hist handoff-dropped "integrated SHA $integrated; start ref $rescue_ref; second merge conflict with the updated branch; the rescue ref stays on the remote for reading") | del(.handoff_integration_sha, .handoff_original_pr_head, .handoff_delivery_verified_sha, .handoff_worktree, .handoff_worktree_sha, .handoff_worktree_dirty, .handoff_worktree_applied, .handoff_start_ref, .handoff_start_sha, .handoff_start_applied) | .repair_hint=$(js "rescue ref $rescue_ref is read-only reference: do not merge it; implement fresh on origin/main")"
+}
+
 resume_handoff_integration() { # unit clone: preserve the recorded snapshot if the PR moved
   local id="$1" dir="$2" sha started=$SECONDS elapsed
   sha="$(unit_field "$id" '.handoff_integration_sha // empty')"
@@ -295,7 +302,15 @@ resume_handoff_integration() { # unit clone: preserve the recorded snapshot if t
     return 0
   fi
   git -C "$dir" merge --abort >/dev/null 2>&1 || true
+  # Count earlier conflicts for this same snapshot (recorded on their supervisor-escalated entries); the second one drops it.
+  prior="$(unit_field "$id" "[(.history // [])[] | select(.stage == \"supervisor-escalated\" and .integration_sha == \"$sha\")] | length")"
+  if (( prior >= 1 )); then
+    handoff_drop_conflicting_snapshot "$id" "$sha"
+    # Return 1 so the caller skips this tick: the next tick sees no snapshot fields and takes the fresh implement path.
+    return 1
+  fi
   to_supervisor "$id" "handoff snapshot conflicts with the updated branch; inspect the preserved work"
+  set_unit "$id" "(.history | map(.stage) | rindex(\"supervisor-escalated\")) as \$k | .history[\$k].integration_sha=$(js "$sha")"
   elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( elapsed < 2 )) || say "dispatch detail resume_integration unit=$id result=failed secs=${elapsed}s"
   return 1
