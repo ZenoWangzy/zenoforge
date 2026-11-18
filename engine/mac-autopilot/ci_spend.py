@@ -5,7 +5,7 @@ Usage: ci_spend.py [--runtime DIR] [--hours N] [--fixture FILE] [--repo OWNER/NA
 
 Waste is runner time on work whose result nobody can use:
   cancelled            a job that held a runner and was then cancelled (L64: mostly our own cancellations)
-  superseded_unapproved a PR run on a head that was replaced before anyone approved it
+  superseded_unapproved a PR run on a head that was replaced before approval and not failed
   nonproduct_postsubmit the product Postsubmit on a [skip ci] main commit: no product code changed (L65)
 Completed runs never change, so their job minutes are cached (ci-spend-cache.json); each sample only
 fetches jobs of runs that completed since the last one. --fixture reads {"runs": [...], "jobs": {id: [...]}}
@@ -142,13 +142,19 @@ def job_minutes(jobs):
 
 
 def approved_heads(units):
+    # why 2026-11-18: 36.6% waste was 682 of 719 min superseded_unapproved; those heads were approval-carried merge shas, never 40-char results.
     heads = set()
     for u in units:
         if u.get("approved_sha"):
             heads.add(u["approved_sha"])
         for h in u.get("history") or []:
-            if h.get("stage") in ("review-approve", "supervisor-approve", "merged") and len(str(h.get("result", ""))) == 40:
-                heads.add(h["result"])
+            result = str(h.get("result", ""))
+            if h.get("stage") in ("review-approve", "supervisor-approve", "merged") and len(result) == 40:
+                heads.add(result)
+            elif h.get("stage") == "approval-carried":
+                carried = re.match(r"clean main merge ([0-9a-f]{40})", result)
+                if carried:
+                    heads.add(carried.group(1))
     return heads
 
 
@@ -167,7 +173,8 @@ def classify(runs, minutes, approved):
         cancelled = sum(m for c, m in rows if c == "cancelled")
         if r["event"] == "workflow_dispatch" and r["branch"] == "main" and r["name"] == "CI" and r["skip_ci"]:
             by["nonproduct_postsubmit"] += run_min
-        elif r["event"] in PR_EVENTS and r["head"] != newest.get(r["branch"]) and r["head"] not in approved:
+        elif (r["event"] in PR_EVENTS and r["head"] != newest.get(r["branch"]) and r["head"] not in approved
+              and not any(c == "failure" for c, _ in rows)):
             by["superseded_unapproved"] += run_min
         else:
             by["cancelled"] += cancelled
