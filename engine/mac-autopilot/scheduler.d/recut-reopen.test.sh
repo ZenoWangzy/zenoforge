@@ -24,8 +24,11 @@ NOW_EPOCH="$(date +%s)"
 SCHED_LOCK_HELD=true
 
 fail() { echo "recut-reopen.test.sh: $*" >&2; exit 1; }
-SUP_CALLS=""
-supervisor_inbox_append() { SUP_CALLS+=" $1"; } # the test harness does not load the inbox; the note is counted, not written
+# The inbox stub lives in the sourced agent lib, not in this shell: a bare supervisor_inbox_append from scheduler context
+# fails here as it does live (engine rollback 2026-11-18T14:02:54Z, ab059b6fcc83).
+SUP_LOG="$fixture/sup-calls"; : > "$SUP_LOG"
+printf 'source %q\nsupervisor_inbox_append() { printf " %%s" "$1" >> %q; }\n' "$SCHEDULER_AGENT_LIB" "$SUP_LOG" > "$fixture/agent-lib-stub.sh"
+SCHEDULER_AGENT_LIB="$fixture/agent-lib-stub.sh"
 unit_json() { jq -c --arg id "$1" '.units[] | select(.id == $id)' "$UNITS"; }
 starts() { jq -n --argjson n "$TICKET_ROUND_BUDGET" '[range($n) | {stage:"write-start",at:"2026-01-01T00:00:00Z",work_type:"implement"}]'; }
 # unit id, issue, last history stage, close time; state file: issue, label state, refused time ("" = none)
@@ -242,20 +245,20 @@ CU_REFUSE=""
 [[ "$(unit_json issue-36 | jq -r '.closed_units_restored_at // "none"')" == none ]] || fail "a refused transition must leave its marker unset"
 [[ "$(unit_json issue-37 | jq -r '.closed_units_restored_at // "none"')" == "$STAMP" ]] || fail "later successful transition must record its marker"
 # (a) A merged unit set is noted once per state episode: one marker and one supervisor note, then a repeat pass is silent.
-SUP_CALLS=""
+: > "$SUP_LOG"
 cu_issue_unit 50 issue-50 closed merged | jq -s '{units:.}' > "$UNITS"
 cu_state 50 needs-hold
 intake_closed_unit_rows 50
 [[ "$(jq -r '.closed_units_noted_at' "$AGENT_HOME/state/50.json")" == 2026-01-01T00:00:00Z ]] || fail "first merged note must write closed_units_noted_at"
-[[ "$SUP_CALLS" == " closed-units" ]] || fail "first merged note must raise the supervisor once, got:$SUP_CALLS"
-SUP_CALLS=""
+[[ "$(cat "$SUP_LOG")" == " closed-units" ]] || fail "first merged note must raise the supervisor once, got:$(cat "$SUP_LOG")"
+: > "$SUP_LOG"
 intake_closed_unit_rows 50
-[[ -z "$SUP_CALLS" ]] || fail "a repeat pass in the same state episode must not raise the supervisor again: $SUP_CALLS"
+[[ -z "$(cat "$SUP_LOG")" ]] || fail "a repeat pass in the same state episode must not raise the supervisor again: $(cat "$SUP_LOG")"
 # (b) A state change moves state_changed_at, so the same unit set is noted again for the new episode.
 jq '.state_changed_at = "2026-01-05T00:00:00Z"' "$AGENT_HOME/state/50.json" > "$AGENT_HOME/state/50.json.tmp" && mv -f -- "$AGENT_HOME/state/50.json.tmp" "$AGENT_HOME/state/50.json"
-SUP_CALLS=""
+: > "$SUP_LOG"
 intake_closed_unit_rows 50
-[[ "$SUP_CALLS" == " closed-units" ]] || fail "a new state episode must be noted again, got:$SUP_CALLS"
+[[ "$(cat "$SUP_LOG")" == " closed-units" ]] || fail "a new state episode must be noted again, got:$(cat "$SUP_LOG")"
 [[ "$(jq -r '.closed_units_noted_at' "$AGENT_HOME/state/50.json")" == 2026-01-05T00:00:00Z ]] || fail "the new episode must move the marker"
 # (c) The intake collection leaves a noted row out of intake_terminal_rows; a moved state puts it back.
 intake_closed_unit_noted 50 || fail "a row noted for its current episode must be excluded from the collection"
