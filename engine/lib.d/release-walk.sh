@@ -54,3 +54,25 @@ release_cadence_keep_fleet() {
   done <<< "$1"
   [ -n "$RELEASE_FLEET_IDS" ]
 }
+
+release_batch_cadence_mark() {
+  guarded_state_write "$RELEASE_BATCH_CADENCE_FILE" "$(date +%s)" \
+    || echo "issue-pipeline: could not record the release-batch cadence marker" >&2
+}
+release_batch_cadence_open() {
+  local last
+  last="$(cat "$RELEASE_BATCH_CADENCE_FILE" 2>/dev/null || true)"
+  [[ "$last" =~ ^[0-9]+$ ]] || return 0
+  [ $(( $(date +%s) - last )) -ge 7200 ]
+}
+
+# release_batch_hold_active: head's hold file holds an epoch "until" and stops every release batch, fleet
+# continuations included. Why: 2026-11-18 the cadence marker held the train 2 h, yet at 00:09Z a fleet
+# continuation passed the closed window and started a release anyway.
+release_batch_hold_active() {
+  local until
+  until="$(cat "$RELEASE_BATCH_HOLD_FILE" 2>/dev/null || true)"
+  [[ "$until" =~ ^[0-9]+$ ]] && [ "$until" -gt "$(date +%s)" ] || return 1
+  echo "issue-pipeline: release hold until $(date -u -d "@$until" +%Y-%m-%dT%H:%M:%SZ) (release-batch-hold); no release batch, fleet continuations included" >&2
+  return 0
+}
