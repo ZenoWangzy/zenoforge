@@ -216,8 +216,9 @@ roadmap_fetch_tree() {
   query="$(roadmap_tree_graphql_query)" || return 1
   page_size="${ZF_ROADMAP_QUERY_PAGE_SIZE:-20}"
   [[ "$page_size" =~ ^[1-9][0-9]{0,3}$ ]] || page_size=20
+  # 60s default timed out at 68s for 3076 tree nodes (2026-11-18 16:10Z); tree grows, so 300s.
   raw="$(gh_bound_query_run roadmap "$page_size" -- \
-    timeout "${ZF_ROADMAP_QUERY_TIMEOUT_SECONDS:-60}s" gh api graphql --paginate --slurp \
+    timeout "${ZF_ROADMAP_QUERY_TIMEOUT_SECONDS:-300}s" gh api graphql --paginate --slurp \
     -f query="$query" -F owner="$owner" -F name="$name" -F pageSize=__ZF_QUERY_PAGE__)" || return 1
   tree="$(roadmap_tree_normalize_pages "$raw")" || return 1
   roadmap_tree_is_valid "$tree" || return 1
