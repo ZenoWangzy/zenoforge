@@ -3942,6 +3942,15 @@ EOF
     # unknown signature: no probe (2), no repair (1)
     rc=0; env_fault_probe env:nothing-known || rc=$?; echo "probe_unknown_rc=$rc"
     rc=0; env_fault_repair env:nothing-known || rc=$?; echo "repair_unknown_rc=$rc"
+    # The gh rate-limit backoff refusal (rc 75) opens no env:gh-api fault; a real timeout still does.
+    gh_backoff_stub() { echo "gh: issue rate-limit backoff active until epoch=$((t0 + 900)) (rc 75)" >&2; return 75; }
+    gh_timeout_stub() { echo "Get \"https://api.github.com/graphql\": i/o timeout" >&2; return 1; }
+    for gh_case in 701:gh_backoff_stub 702:gh_timeout_stub; do
+      gh_n="${gh_case%%:*}"; gh_fn="${gh_case#*:}"
+      gh_out="$("$gh_fn" 2>&1)" && gh_rc=0 || gh_rc=$?
+      gh_backoff_refusal "$gh_rc" "$gh_out" || record_env_fault env:gh-api triage "$gh_n" "gh issue view failed (api.github.com unreachable or timed out)" "" "$t0"
+    done
+    echo "gh_fault_ledger=701:$(awk -F"\t" "\$3==701" "$ENV_FAULT_DIR/env:gh-api.log" 2>/dev/null | wc -l | tr -d " ") 702:$(awk -F"\t" "\$3==702" "$ENV_FAULT_DIR/env:gh-api.log" 2>/dev/null | wc -l | tr -d " ")"
     echo "key_sanitized=$(env_fault_key "env:test-gate:../../x y")"
     ' 2>&1
   )"
@@ -4010,6 +4019,7 @@ assert_eq "env_fault_repair: idempotent -- a second reconcile appends nothing" "
 assert_eq "env_fault_probe: an unknown signature has no probe (canary only)" "2" "$(ef probe_unknown_rc)"
 assert_eq "env_fault_repair: an unknown signature has no repair (the allowlist is closed)" "1" "$(ef repair_unknown_rc)"
 assert_eq "env_fault_key: a signature cannot escape the ledger directory (no slash survives; a dot is harmless inside one file name)" "env:test-gate:.._.._x_y" "$(ef key_sanitized)"
+assert_eq "gh rate-limit backoff refusal (rc 75) writes no env:gh-api fault; a real timeout still does" "701:0 702:1" "$(ef gh_fault_ledger)"
 
 OPS_PAUSE_HOME="$(mktemp -d)"
 OPS_PAUSE_OUT="$(AGENT_HOME="$OPS_PAUSE_HOME" AGENT_DRY_RUN=0 OPS_LIB_DIR="$SCRIPT_DIR" bash -c '

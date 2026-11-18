@@ -15,6 +15,14 @@ env_fault_key() {
 }
 
 
+# gh_backoff_refusal <rc> [output] -- true when gh() refused the call under its
+# own shared rate-limit backoff (rc 75, or the refusal line). That backoff is
+# self-imposed and expires on its own, so callers skip record_env_fault and
+# leave the ticket queued instead of opening a triage quarantine.
+gh_backoff_refusal() {
+  [ "$1" = 75 ] || grep -q 'rate-limit backoff active' <<< "${2:-}"
+}
+
 # record_env_fault <signature> <stage> <issue> <detail> [package_dir] [now] [refund_attempt]
 record_env_fault() {
   agent_pipeline_write_guard record_env_fault "$AGENT_HOME" "$ENV_FAULT_DIR" || return 1

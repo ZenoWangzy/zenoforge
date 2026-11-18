@@ -145,9 +145,12 @@ fi
 # `set -e` with nothing recorded anywhere. Recorded as an environment
 # fault, not charged, retried next tick; systemic -> the scheduler
 # quarantines triage rather than letting every ticket die the same way.
-if ! ISSUE_JSON="$(gh issue view "$N" --repo "$REPO" \
-  --json number,title,body,author,comments,createdAt,updatedAt,labels,state)"; then
-  record_env_fault env:gh-api triage "$N" "gh issue view failed (api.github.com unreachable or timed out)"
+ISSUE_RC=0
+ISSUE_JSON="$(gh issue view "$N" --repo "$REPO" \
+  --json number,title,body,author,comments,createdAt,updatedAt,labels,state)" || ISSUE_RC=$?
+if [ "$ISSUE_RC" -ne 0 ]; then
+  # 2026-11-18: gh's own backoff refusal (rc 75) is not an outage; leave the ticket queued.
+  gh_backoff_refusal "$ISSUE_RC" || record_env_fault env:gh-api triage "$N" "gh issue view failed (api.github.com unreachable or timed out)"
   exit 1
 fi
 VERDICT_SNAPSHOT_JSON="$ISSUE_JSON"
@@ -160,8 +163,10 @@ fi
 MAINTAINER_TEST=0
 if [ "$(jq -r '.state // empty' <<< "$ISSUE_JSON")" = OPEN ] \
   && { issue_is_maintainer_test "$ISSUE_JSON" || issue_is_maintainer_test "$VERDICT_SNAPSHOT_JSON"; }; then
-  if ! label_maintainer_test_issue "$ISSUE_JSON"; then
-    record_env_fault env:gh-api triage "$N" "could not persist founder-test priority label"
+  LABEL_RC=0
+  label_maintainer_test_issue "$ISSUE_JSON" || LABEL_RC=$?
+  if [ "$LABEL_RC" -ne 0 ]; then
+    gh_backoff_refusal "$LABEL_RC" || record_env_fault env:gh-api triage "$N" "could not persist founder-test priority label"
     exit 1
   fi
   MAINTAINER_TEST=1

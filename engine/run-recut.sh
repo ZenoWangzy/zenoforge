@@ -287,9 +287,11 @@ if ! git -C "$REPO_DIR" worktree add -q "$WT" origin/main; then
   exit 1
 fi
 
-if ! ISSUE_JSON="$(gh issue view "$N" --repo "$REPO" \
-  --json number,title,body,author,comments,createdAt,labels,state)"; then
-  record_env_fault env:gh-api recut "$N" "gh issue view failed (api.github.com unreachable or timed out)"
+ISSUE_RC=0
+ISSUE_JSON="$(gh issue view "$N" --repo "$REPO" \
+  --json number,title,body,author,comments,createdAt,labels,state)" || ISSUE_RC=$?
+if [ "$ISSUE_RC" -ne 0 ]; then
+  gh_backoff_refusal "$ISSUE_RC" || record_env_fault env:gh-api recut "$N" "gh issue view failed (api.github.com unreachable or timed out)"
   exit 1
 fi
 PIPELINE_SYSTEM_MATCH_STATUS=0
