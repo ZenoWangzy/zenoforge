@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
@@ -178,3 +178,14 @@ fi
 [[ "$(jq 'length' "$FAKE_ISSUES")" == 6 ]]
 [[ "$(grep -c '^issue create ' "$FAKE_GH_LOG")" == 5 ]]
 echo 'ok - unreadable issue list fails closed without creating a duplicate'
+
+# 597: a target roadmap.body_check_command that refuses every body must never block an engine incident filing.
+mkdir -p "$tmp/refuse-cfg"
+printf '#!/usr/bin/env bash\necho "R1: refused"\nexit 1\n' > "$tmp/refuse-check.sh"
+chmod +x "$tmp/refuse-check.sh"
+printf '{"roadmap":{"body_check_command":"%s"}}\n' "$tmp/refuse-check.sh" > "$tmp/refuse-cfg/night.json"
+# run_zf_upsert: its REPO matches the target, so the create goes through roadmap_issue_create (run_upsert's does not).
+refuse_out="$(ZF_CONFIG_ROOT="$tmp/refuse-cfg" run_zf_upsert --class refusing-target-check \
+  --title 'Automation issue tracking incident' --body-file "$tmp/incident.md")"
+[[ "$refuse_out" == *'for class refusing-target-check'* ]]
+echo 'ok - a refusing roadmap.body_check_command does not block a pipeline-system incident'
