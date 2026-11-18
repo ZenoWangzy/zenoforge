@@ -3470,4 +3470,36 @@ ci_no_key="$(classify_ci_failure '')"
 ci_unreachable="$(classify_ci_failure test-unreachable-key)"
 [[ -n "$ci_no_key" && "$ci_unreachable" == "$ci_no_key" ]] || fail "merge-prep TypeSafe fallback changed CI class: no-key=$ci_no_key unreachable=$ci_unreachable"
 
+# row 553：评审 checkout 被本地未推送修复挡住（issue-6965 循环 3 h）。领先 PR head 的修复快进推送并记历史；只快进到 origin/main 的分支转 supervisor。
+jqf() { jq "$@"; }; STAMP=t; SAY_LINES=(); SUP_CALLS=()
+say() { SAY_LINES+=("$*"); }
+to_supervisor() { SUP_CALLS+=("$1|$2"); }
+set_unit() { UNIT_EXPR="$2"; }
+source <(sed -n '/^hist() {/,/^}/p' "$script_dir/scheduler.d/units.sh")
+source <(sed -n '/^recover_local_ahead_head() {/,/^}/p' "$script_dir/scheduler.d/dispatch-queue.sh")
+ahead_fixture="$fixture/local-ahead"; rm -rf "$ahead_fixture"; mkdir -p "$ahead_fixture"
+command git init -q -b main "$ahead_fixture/source"
+command git -C "$ahead_fixture/source" commit -q --allow-empty -m base
+command git -C "$ahead_fixture/source" checkout -q -b agent/issue-41
+command git -C "$ahead_fixture/source" commit -q --allow-empty -m PR-head
+ahead_pr_head="$(command git -C "$ahead_fixture/source" rev-parse HEAD)"
+command git init -q --bare "$ahead_fixture/remote.git"
+command git -C "$ahead_fixture/source" remote add origin "$ahead_fixture/remote.git"
+command git -C "$ahead_fixture/source" push -q origin main agent/issue-41
+command git clone -q "$ahead_fixture/remote.git" "$ahead_fixture/clone"
+command git -C "$ahead_fixture/clone" checkout -q -B agent/issue-41 origin/agent/issue-41
+command git -C "$ahead_fixture/clone" commit -q --allow-empty -m real-repair
+ahead_local="$(command git -C "$ahead_fixture/clone" rev-parse HEAD)"
+recover_local_ahead_head pr-41 "$ahead_fixture/clone" "$ahead_pr_head" agent/issue-41 || fail 'local branch ahead of the PR head was not recovered'
+[[ "$(command git --git-dir="$ahead_fixture/remote.git" rev-parse refs/heads/agent/issue-41)" == "$ahead_local" ]] || fail 'recovery did not fast-forward the PR branch to the local head'
+[[ "$UNIT_EXPR" == *'"stage":"review-push-recovered"'* && ${#SUP_CALLS[@]} == 0 ]] || fail "recovery did not record review-push-recovered (expr=$UNIT_EXPR)"
+command git clone -q "$ahead_fixture/remote.git" "$ahead_fixture/clone-main"
+command git -C "$ahead_fixture/clone-main" checkout -q -B agent/issue-41 origin/main
+SUP_CALLS=(); UNIT_EXPR=""
+if recover_local_ahead_head pr-41 "$ahead_fixture/clone-main" "$ahead_local" agent/issue-41; then
+  fail 'a branch that only reached origin/main was pushed as recovered work'
+fi
+[[ "$(command git --git-dir="$ahead_fixture/remote.git" rev-parse refs/heads/agent/issue-41)" == "$ahead_local" ]] || fail 'a branch with nothing beyond origin/main moved the PR branch'
+[[ ${#SUP_CALLS[@]} == 1 && "${SUP_CALLS[0]}" == "pr-41|PR head $ahead_local unavailable"* && -z "$UNIT_EXPR" ]] || fail "a branch with nothing beyond origin/main did not go to the supervisor (${SUP_CALLS[*]:-none})"
+
 echo 'scheduler-gates.test.sh: PASS'
