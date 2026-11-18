@@ -151,37 +151,6 @@ intake_backlog_rate_allows_apply() {
   return "$rc"
 }
 
-# Native blockedBy edges from "Blocked by: #N" body lines. The dispatcher reads only native
-# edges, so a body-only blocker lets a ticket dispatch first. Same repo, open blockers only,
-# existing edges skipped, nothing removed. Sets blocked_by_added.
-intake_backlog_sync_blocked_by() {
-  local issues="$1" open_numbers n rest blocker existing state
-  open_numbers="$(jq -c '[.[].number]' <<< "$issues")"
-  while IFS=$'\t' read -r n rest; do
-    while IFS= read -r blocker; do
-      blocker="${blocker#\#}"
-      [[ "$blocker" != "$n" ]] || continue
-      if ! jq -e --argjson b "$blocker" 'index($b) != null' <<< "$open_numbers" >/dev/null; then
-        state="$(gh api "repos/$repo/issues/$blocker" 2>/dev/null | jq -r '.state' 2>/dev/null)" || state=''
-        [[ "$state" == open ]] || continue
-      fi
-      if ! existing="$(gh api "repos/$repo/issues/$n/dependencies/blocked_by")"; then
-        echo "intake-backlog: could not read blockers of #$n; edge to #$blocker skipped" >&2
-        continue
-      fi
-      jq -e --argjson b "$blocker" 'any(.[]; .number == $b)' <<< "$existing" >/dev/null && continue
-      intake_backlog_rate_allows_apply || return 0
-      if REPO="$repo" add_issue_blocked_by "$n" "$blocker"; then
-        blocked_by_added=$((blocked_by_added + 1))
-      else
-        echo "intake-backlog: blocked-by edge #$n <- #$blocker failed" >&2
-      fi
-    done < <(grep -oP '(?<![A-Za-z0-9_/])#[0-9]+' <<< "$rest" || true)
-  done < <(jq -r '.[] | . as $issue | (.body // "") | split("\n")[]
-    | select(test("^\\s*[-*]?\\s*\\**\\s*blocked by"; "i"))
-    | "\($issue.number)\t\(sub("^\\s*[-*]?\\s*\\**\\s*blocked by\\s*:?\\s*\\**"; ""; "i"))"' <<< "$issues")
-}
-
 if [[ -z "${ZF_ROADMAP_TREE_CACHE_FILE:-}" || ! -r "$ZF_ROADMAP_TREE_CACHE_FILE" ]]; then
   export ZF_ROADMAP_SNAPSHOT_FILE="$temp_dir/roadmap.snapshot.json"
   if roadmap_fetch_tree "$temp_dir/roadmap.json" "$repo" > "$temp_dir/roadmap.log" 2>&1; then
@@ -220,7 +189,8 @@ jq -e 'type == "array" and all(.[]; (.number | type == "number" and . > 0) and (
 }
 blocked_by_added=0
 if (( apply == 1 && dry_stub == 0 )); then
-  intake_backlog_sync_blocked_by "$issues"
+  intake_sync_blocked_by "$repo" "$issues" intake_backlog_rate_allows_apply
+  blocked_by_added="$INTAKE_BLOCKED_BY_ADDED"
 fi
 # An issue with the judge:fallback marker is re-judged even when it already has a priority label.
 fallback_marker="$(jq -r '.labels.fallback_marker' <<< "$config")"

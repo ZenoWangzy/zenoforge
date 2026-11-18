@@ -20,6 +20,56 @@ add_issue_blocked_by() {
 }
 
 
+# intake_sync_blocked_by <repo> <issues-json> [write-gate] -- native blockedBy edges from
+# "Blocked by: #N" body lines (the dispatcher reads only native edges). Same repo, open blockers
+# only, existing edges skipped, nothing removed. At most ZF_INTAKE_BLOCKED_BY_CAP (default 30) new
+# edges per call, so a backfill spreads over ticks and a rerun resumes. A write-gate command, when
+# given, runs before each write; a failing gate ends the pass. Sets INTAKE_BLOCKED_BY_ADDED.
+intake_sync_blocked_by() {
+  local repo="$1" issues="$2" gate="${3:-}" cap="${ZF_INTAKE_BLOCKED_BY_CAP:-30}"
+  local open_numbers n rest blocker existing state
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=30
+  INTAKE_BLOCKED_BY_ADDED=0
+  open_numbers="$(jq -c '[.[].number]' <<< "$issues")"
+  while IFS=$'\t' read -r n rest; do
+    while IFS= read -r blocker; do
+      blocker="${blocker#\#}"
+      [[ "$blocker" != "$n" ]] || continue
+      if ! jq -e --argjson b "$blocker" 'index($b) != null' <<< "$open_numbers" >/dev/null; then
+        state="$(gh api "repos/$repo/issues/$blocker" 2>/dev/null | jq -r '.state' 2>/dev/null)" || state=''
+        [[ "$state" == open ]] || continue
+      fi
+      if ! existing="$(gh api "repos/$repo/issues/$n/dependencies/blocked_by")"; then
+        echo "intake: could not read blockers of #$n; edge to #$blocker skipped" >&2
+        continue
+      fi
+      jq -e --argjson b "$blocker" 'any(.[]; .number == $b)' <<< "$existing" >/dev/null && continue
+      (( INTAKE_BLOCKED_BY_ADDED < cap )) || return 0
+      if [[ -n "$gate" ]] && ! "$gate"; then return 0; fi
+      if REPO="$repo" add_issue_blocked_by "$n" "$blocker"; then
+        INTAKE_BLOCKED_BY_ADDED=$((INTAKE_BLOCKED_BY_ADDED + 1))
+      else
+        echo "intake: blocked-by edge #$n <- #$blocker failed" >&2
+      fi
+    done < <(grep -oP '(?<![A-Za-z0-9_/])#[0-9]+' <<< "$rest" || true)
+  done < <(jq -r '.[] | . as $issue | (.body // "") | split("\n")[]
+    | select(test("^\\s*[-*]?\\s*\\**\\s*blocked by"; "i"))
+    | "\($issue.number)\t\(sub("^\\s*[-*]?\\s*\\**\\s*blocked by\\s*:?\\s*\\**"; ""; "i"))"' <<< "$issues")
+}
+
+# intake_tick_sync_blocked_by -- the issue-loop tick's blocked-by step: open issues only, and it
+# never calls the TypeSafe judge. ZF_INTAKE_BLOCKED_BY_ENABLED=0 turns it off. Returns 1 only when
+# the open-issue read fails; the caller logs it and the tick goes on.
+intake_tick_sync_blocked_by() {
+  local issues
+  [[ "${ZF_INTAKE_BLOCKED_BY_ENABLED:-1}" == 1 ]] || return 0
+  issues="$(gh issue list --repo "$REPO" --state open --limit 1000 --json number,body)" || return 1
+  jq -e 'type == "array"' <<< "$issues" >/dev/null || return 1
+  INTAKE_BLOCKED_BY_ADDED=0
+  intake_sync_blocked_by "$REPO" "$issues"
+  (( INTAKE_BLOCKED_BY_ADDED == 0 )) || echo "issue-pipeline: blocked-by edges added=$INTAKE_BLOCKED_BY_ADDED" >&2
+}
+
 # add_issue_related <issue> <related> -- create a native GitHub related edge.
 add_issue_related() {
   local issue="$1" related="$2" related_json related_id relations endpoint related_state
