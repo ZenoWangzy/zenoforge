@@ -102,12 +102,22 @@ worker_scope_of_pid() { # pid -> scope unit name
   [[ "$line" =~ ^run-p[1-9][0-9]*-i[^/]*\.scope$ ]] && printf '%s\n' "$line"
   return 0
 }
-worker_tree_cpu_usec() { # pid -> usage_usec of its run-p scope (the whole worker tree); empty when it is in none
+# CPU time plus memory-stall time (PSI "some" total) of one cgroup dir, in usec. A worker held at the slice's MemoryHigh sleeps in
+# reclaim throttling with little CPU; the kernel counts that sleep as a memory stall, so it reads as busy, not idle (head, row 601).
+worker_cgroup_busy_usec() { # cgroup dir -> usec; empty when cpu.stat is unreadable
+  local cpu mem
+  cpu="$(awk '$1 == "usage_usec" { print $2 }' "$1/cpu.stat" 2>/dev/null || true)"
+  [[ "$cpu" =~ ^[0-9]+$ ]] || return 0
+  mem="$(awk '$1 == "some" { for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub(/^total=/, "", $i); print $i } }' "$1/memory.pressure" 2>/dev/null || true)"
+  [[ "$mem" =~ ^[0-9]+$ ]] || mem=0
+  printf '%s\n' "$(( cpu + mem ))"
+}
+worker_tree_busy_usec() { # pid -> busy usec of its run-p scope (the whole worker tree); empty when it is in none
   local rel
   [[ -n "$(worker_scope_of_pid "$1")" ]] || return 0
   rel="$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null)"
   [[ -n "$rel" ]] || return 0
-  awk '$1 == "usage_usec" { print $2 }' "/sys/fs/cgroup$rel/cpu.stat" 2>/dev/null || true
+  worker_cgroup_busy_usec "/sys/fs/cgroup$rel"
 }
 
 worker_scope_exec() { # pid-file output-file launcher... -- command...; executed inside the worker's output/session wrapper

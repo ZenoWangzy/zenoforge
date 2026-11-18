@@ -777,7 +777,7 @@ stuck_worker_disposition() {
         unchanged_window=$((unchanged_window + 1))
         continue
       fi
-      cpu_now="$(worker_tree_cpu_usec "$pid")"; cpu_then="$(jqf -r '.cpu // empty' <<<"$probe")" # silent but ≥1% CPU in the window is working (a child test/build): keep, re-baseline
+      cpu_now="$(worker_tree_busy_usec "$pid")"; cpu_then="$(jqf -r '.cpu // empty' <<<"$probe")" # silent but ≥1% CPU or memory stall in the window is working (a child build, or reclaim-throttled at MemoryHigh): keep, re-baseline
       if grep -qxF -- "$id" <<<"$widened" && [[ $cpu_now =~ ^[0-9]+$ && $cpu_then =~ ^[0-9]+$ ]] && (( (cpu_now - cpu_then) * 100 >= held * 1000000 )); then
         set_unit "$id" ".stuck_probe={at:\"$STAMP\",fp:$(js "$fp"),cpu:$cpu_now}"; unchanged_window=$((unchanged_window + 1)); continue
       fi
@@ -833,7 +833,7 @@ stuck_worker_disposition() {
     elif [[ -z "$probe" || "$(jqf -r .fp <<<"$probe")" != "$fp" ]]; then
       # 有进展（指纹变了）或首次探测：刷新探针时间戳，长任务因此不会被停。
       if [[ -z "$probe" ]]; then first_seen=$((first_seen + 1)); else progress=$((progress + 1)); fi
-      cpu_now="$(worker_tree_cpu_usec "$pid")"; [[ $cpu_now =~ ^[0-9]+$ ]] || cpu_now=null
+      cpu_now="$(worker_tree_busy_usec "$pid")"; [[ $cpu_now =~ ^[0-9]+$ ]] || cpu_now=null
       set_unit "$id" ".stuck_probe={at:\"$STAMP\",fp:$(js "$fp"),cpu:$cpu_now}"
     fi
   done
