@@ -32,7 +32,31 @@ scheduler_term_stop() {
   (( ${#alive[@]} )) && kill -KILL "${alive[@]}" 2>/dev/null
   exit 143 # the EXIT trap (release_scheduler_lock) runs after the children are gone
 }
-acquire_scheduler_lock() {
+# Waiters queue on tickets in $SCHED_LOCK.q, one file per waiter named <epoch_us>-<pid> with its start ticks inside: the oldest live ticket takes the lock.
+scheduler_ticket_live() { # $1 ticket: 0 while its waiter is alive; a pid whose start ticks differ is reused, so the ticket is dead
+  local pid="${1##*-}" want now
+  kill -0 "$pid" 2>/dev/null || return 1
+  want="$(cat "$1" 2>/dev/null || true)"
+  [[ "$want" =~ ^[0-9]+$ ]] || return 0
+  now="$(coord_process_start_ticks "$pid" 2>/dev/null)" || return 0
+  [[ "$now" == "$want" ]]
+}
+scheduler_queue_clear() { # $1: this waiter's ticket, or "" for a direct call; 0 when no live ticket is older. Dead tickets passed are removed.
+  local f
+  for f in "$SCHED_LOCK.q"/*; do
+    [[ -e "$f" ]] || continue
+    [[ "$f" == "$1" ]] && return 0
+    scheduler_ticket_live "$f" && return 1
+    rm -f -- "$f"
+  done
+  return 0
+}
+scheduler_ticket_drop() { [[ -z "${SCHED_LOCK_TICKET:-}" ]] || rm -f -- "$SCHED_LOCK_TICKET"; SCHED_LOCK_TICKET=""; }
+acquire_scheduler_lock() { # no wait: a live queued waiter goes first, so this fails and the caller retries behind the queue
+  scheduler_queue_clear "" || return 1
+  scheduler_lock_try
+}
+scheduler_lock_try() {
   local old start age owner="$BASHPID" holder_phase="${SCHED_LOCK_HOLDER_PHASE:-unknown}"
   if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
     old="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
@@ -99,7 +123,12 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
   local t0=$SECONDS rc=0 w_start holders="" nholders=0 h
   refill_stopped && return 1
   lock_us_now; local w0=$LOCK_US; w_start=$LOCK_US
-  until acquire_scheduler_lock; do
+  local me=$BASHPID ticket_start # $BASHPID inside $(...) would name the subshell, so the ticket records the waiter's own start
+  mkdir -p "$SCHED_LOCK.q" 2>/dev/null; lock_us_now; SCHED_LOCK_TICKET="$SCHED_LOCK.q/$LOCK_US-$me"
+  ticket_start="$(coord_process_start_ticks "$me" 2>/dev/null || true)"
+  printf '%s\n' "$ticket_start" > "$SCHED_LOCK_TICKET" 2>/dev/null || :
+  chain_exit_trap scheduler_ticket_drop # the EXIT trap drops the ticket of a wait that ends early
+  until scheduler_queue_clear "$SCHED_LOCK_TICKET" && scheduler_lock_try; do
     lock_us_now; LOCK_WAIT_US=$((${LOCK_WAIT_US:-0} + LOCK_US - w0)); w0=$LOCK_US # waited so far, to the last refused try
     h="$(ledger_lock_holder_phase)" # phase/pid: the wait line names each holder as pid/phase, at most 8 distinct
     if [[ "${h##*/}" =~ ^[0-9]+$ ]] && (( nholders < 8 )) && [[ ",$holders," != *",${h##*/}/${h%/*},"* ]]; then
@@ -116,6 +145,7 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
     if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then rc=1; break; fi
     sleep 0.05
   done
+  scheduler_ticket_drop # acquired, refused by the bound, or stopped by REFILL-TIMEOUT: the queue never keeps a ticket of a finished wait
   lock_us_now
   if (( LOCK_US - w_start >= ${SCHED_LOCK_HOLD_LOG_SECS:-20} * 1000000 )); then # long waits name the holders seen while polling (lock-hold-log)
     say "scheduler lock wait pid=$BASHPID secs=$(( (LOCK_US - w_start) / 1000000 )) phase=${SCHED_LOCK_HOLDER_PHASE:-unknown} holders=${holders:-none}"
