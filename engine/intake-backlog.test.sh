@@ -56,6 +56,15 @@ case "${1:-} ${2:-}" in
         printf '%s\n' 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)' >&2
         exit 1
       fi
+    elif [[ "$*" == *"/dependencies/blocked_by"* ]]; then
+      if [[ "$*" == *"--method POST"* ]]; then exit 0; fi
+      number="$(sed -nE 's#.*issues/([0-9]+)/dependencies.*#\1#p' <<< "$*")"
+      if [[ "$number" == 12 ]]; then printf '%s\n' '[{"id":10011,"number":11}]'; else printf '%s\n' '[]'; fi
+    elif [[ "$*" =~ ^api\ repos/[^[:space:]]+/issues/([0-9]+)$ ]]; then
+      number="${BASH_REMATCH[1]}"
+      state=open
+      [[ "$number" == 99 ]] && state=closed
+      printf '{"id":%s,"number":%s,"state":"%s"}\n' "$((10000 + number))" "$number" "$state"
     elif [[ -n "${INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT:-}" \
       && "$*" == *"/issues/${INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT}/sub_issues"* ]]; then
       printf '%s\n' 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)' >&2
@@ -220,6 +229,26 @@ judge_rate_report="$(cat "$test_root/rate-limit-judge.json")"
 [[ "$(grep -F 'labels:11' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
 [[ "$(grep -F 'judge:13' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
 unset TYPESAFE_API_KEY INTAKE_BACKLOG_RATE_LIMIT_SEARCH INTAKE_BACKLOG_DELAY_SEARCH
+
+# Body "Blocked by: #N" lines become native blockedBy edges on a live run: 11 is a self
+# reference, 12 already has 11 (skipped), 13 is new, 99 is closed, owner/repo#5 is cross-repo.
+# The rate-limit cases above leave shared backoff markers; this case needs a clean read path.
+rm -f -- "$AGENT_HOME/gh-rate-limit-until.graphql" "$AGENT_HOME/gh-rate-limit-until.rest"
+cp "$INTAKE_BACKLOG_ISSUES" "$test_root/issues.orig.json"
+jq '(.[] | select(.number == 11) | .body) = "Blocked by: #11"
+  | (.[] | select(.number == 12) | .body) = "**Blocked by:** #11 and #13"
+  | (.[] | select(.number == 13) | .body) = "Blocked by: #99 and owner/repo#5"' "$test_root/issues.orig.json" > "$INTAKE_BACKLOG_ISSUES"
+export TYPESAFE_API_KEY=fixture-key
+: > "$INTAKE_BACKLOG_JUDGE_LOG"
+: > "$INTAKE_BACKLOG_EVENTS"
+: > "$INTAKE_BACKLOG_GH_LOG"
+bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/blocked-by.json" --limit 3 --concurrency 1 --apply > "$test_root/blocked-by.out"
+[[ "$(grep -c -- '--method POST repos/fixture/repo/issues/12/dependencies/blocked_by -F issue_id=10013' "$INTAKE_BACKLOG_GH_LOG")" == 1 ]]
+[[ "$(grep -c 'dependencies/blocked_by -F' "$INTAKE_BACKLOG_GH_LOG")" == 1 ]]
+[[ "$(grep -c 'issues/5/' "$INTAKE_BACKLOG_GH_LOG")" == 0 ]]
+grep -Fq 'blocked_by_edges=1' "$test_root/blocked-by.out"
+cp "$test_root/issues.orig.json" "$INTAKE_BACKLOG_ISSUES"
+unset TYPESAFE_API_KEY
 
 export TYPESAFE_API_KEY=fixture-key
 export INTAKE_BACKLOG_JUDGE_FALLBACK=credits-exhausted
