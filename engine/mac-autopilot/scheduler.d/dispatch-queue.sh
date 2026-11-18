@@ -25,8 +25,8 @@ dispatch_steps_say() {
   say "$step_line"
 }
 # checkout_pr_head 拒绝检出时（本地分支带未推送的修复提交）：分支严格领先 PR head 且含 origin/main 没有的提交就快进推送，
-# 下一拍评审新 head；其余情况转 supervisor 并写明两个 head，不再每拍静默重试（row 553，issue-6965 循环 3 h）。
-recover_local_ahead_head() { # id wt pr-head branch；返回 0 = 已推送，1 = 已转 supervisor
+# 下一拍评审新 head；只有分叉分支转 supervisor 并写明两个 head，瞬时失败静默返回、下一拍重试（row 553，issue-6965 循环 3 h）。
+recover_local_ahead_head() { # id wt pr-head branch；返回 0 = 已推送，1 = 未推送（下一拍重试，或已转 supervisor）
   local id=$1 wt=$2 pr_head=$3 branch=$4 local_head push_out
   local_head="$(git -C "$wt" rev-parse -q --verify "refs/heads/$branch^{commit}" 2>/dev/null || true)"
   # 下面四种情况 checkout_pr_head 没有拒绝分支，失败是瞬时的（拉取失败、PR head 刚被推动）：静默返回，下一拍重试。
