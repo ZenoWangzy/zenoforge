@@ -29,7 +29,7 @@ wake_batch_harvest() {
   [[ "$job_id" == advisor-batch-* && -n "${ZF_REPO_DIR:-}" ]] || return 0
   systemctl --user is-active --quiet "$prefix-agent.timer" || return 0
   live="$(readlink -e -- "$AGENT_HOME/engine-live")" || live="$SCRIPT_DIR"
-  if systemd-run --user --unit "$prefix-advisor-batch" --collect "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" \
+  if systemd-run --user --unit "$prefix-advisor-batch" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" \
     -E "ZF_ENGINE_DIR=$live" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" \
     -p RuntimeMaxSec=3600 "$live/run-advisor-batch.sh" --poll-only --scheduled >/dev/null 2>&1; then
     echo "web-advisor-provider-job: job $job_id done; harvest woken" >&2

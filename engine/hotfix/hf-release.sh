@@ -63,7 +63,7 @@ sha=$(gh pr view "$pr" --json mergeCommit -q .mergeCommit.oid)
 epoch=$(date +%s)
 # Same transient unit as issue-pipeline dispatch_release_batch: a running batch makes systemd-run refuse.
 # The wrapper reports the end (and any unrun acceptance) once run-release exits.
-systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect \
+systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}" \
   -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY \
   -p "RuntimeMaxSec=$((7 * 60 * 60))" \
   bash -c 'rc=0; "$1" "$2" "$3" || rc=$?; "$4" --report-end "$5" "$2" "$3" "$6" "$rc" || true; exit "$rc"' \
