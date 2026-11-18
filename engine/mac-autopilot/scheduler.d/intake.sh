@@ -7,12 +7,12 @@
 # founder-test 是维护者提的 issue，队列里排第一（docs/agents/issue-pipeline.md），不是跳过标签（2026-10-20 曾误跳过 30 个）。
 declare -F tick_step_lock_run >/dev/null 2>&1 || source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/tick-steps.sh"
 intake_remote_read_reserve() { # Reserve one bounded GH read across this tick and any intake subprocesses.
-  local cap="${ISSUE_INTAKE_REMOTE_READ_CAP:-24}" used=0 marker
+  local cap="${ISSUE_INTAKE_REMOTE_READ_CAP:-24}" wait="${ISSUE_INTAKE_REMOTE_READ_LOCK_WAIT:-20}" used=0 marker
   [[ -n "${TICK_INTAKE_READS_FILE:-}" ]] || return 0
   [[ "$cap" =~ ^[0-9]+$ ]] || cap=24
   (
     exec 9>"$TICK_INTAKE_READS_FILE.lock" || exit 1
-    flock -x 9 || exit 1
+    flock -x -w "$wait" 9 || { say "intake remote read lock wait timed out after ${wait}s"; exit 75; }
     IFS= read -r used < "$TICK_INTAKE_READS_FILE" || used=0
     [[ "$used" =~ ^[0-9]+$ ]] || used=0
     if (( used >= cap )); then
