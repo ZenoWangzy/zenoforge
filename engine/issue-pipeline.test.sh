@@ -1919,58 +1919,6 @@ assert_eq 'triage admission 75 with a runtime dir logs one reason and issue line
 # A missing runtime dir is a no-op: the exit status stays 75 and no scheduler.log appears.
 assert_eq 'triage admission 75 without a runtime dir keeps status and writes no scheduler.log' \
   $'status:75\nactive:no' "$(run_batch_admission_case triage 75 absent)"
-# 2026-11-18 (row 577): one over-budget ticket whose hold read failed (#7044, gh backoff) returned 1 from the
-# whole batch, so the slice exited 1 and #7045 never dispatched. A failed route skips only that ticket.
-run_advisor_route_failure_case() (
-  AGENT_HOME="$(mktemp -d)"
-  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
-  ADVISOR_RUNTIME_MAX_SEC=60 UNIT_PREFIX_TRANSIENT=zf ZF_ENGINE_DIR="$SCRIPT_DIR" ZF_REPO_DIR="$AGENT_HOME" ZF_CONFIG_ROOT="$AGENT_HOME"
-  ZF_ADVISOR_BATCH_UNIT_ENV=()
-  NEEDS_ADVISOR_IDS="7044 7045"
-  printf '#!/usr/bin/env bash\n' > "$AGENT_HOME/runner.sh"; chmod +x "$AGENT_HOME/runner.sh"
-  zf_advisor_batch_runner() { printf '%s\n' "$AGENT_HOME/runner.sh"; }
-  pipeline_advisor_issue_skip_inflight() { return 1; }
-  hand_agent_issue_is_live_owned() { return 1; }
-  issue_spend_budget_status() { if [ "$1" = 7044 ]; then printf 'over\t7\t2766815\n'; else printf 'clear\t0\t0\n'; fi; }
-  route_issue_spend_budget() { return 1; }
-  ensure_issue_roadmap_parent_for_dispatch() { return 0; }
-  agent_memory_floor_allows() { return 0; }
-  stage_unit_active() { return 1; }
-  coord_new_owner() { printf 'fixture-owner'; }
-  pipeline_batch_claim_acquire() { return 0; }
-  pipeline_batch_claim_drop() { :; }
-  pipeline_batch_claim_keep() { :; }
-  pipeline_batch_launch() { printf 'launched:%s\n' "$2"; }
-  eval "$(sed -n '/^dispatch_advisor_batch() {/,/^}/p' "$PIPELINE_SRC")"
-  status=0
-  dispatch_advisor_batch 0 || status=$?
-  printf 'status:%s\n' "$status"
-)
-assert_eq 'a failed spend-budget route skips only its ticket; the batch still dispatches the rest' \
-  $'launched:7045\nstatus:0' "$(run_advisor_route_failure_case)"
-# 2026-11-18 (row 579): a failed spend-budget status read for one ticket returned 1 from the whole triage batch.
-run_triage_status_failure_case() (
-  AGENT_HOME="$(mktemp -d)"
-  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap, as in run_advisor_route_failure_case
-  TRIAGE_RUNTIME_MAX_SEC=60 DRY_RUN=1 UNIT_PREFIX_TRANSIENT=zf ZF_ENGINE_DIR="$AGENT_HOME"
-  printf '#!/usr/bin/env bash\n' > "$AGENT_HOME/run-triage-batch.sh"; chmod +x "$AGENT_HOME/run-triage-batch.sh"
-  model_policy() { :; }
-  model_config_fault_blocked() { return 1; }
-  issue_spend_budget_status() { if [ "$1" = 7044 ]; then return 1; fi; printf 'clear\t0\t0\n'; }
-  coord_new_owner() { printf 'fixture-owner'; }
-  pipeline_batch_claim_acquire() { return 0; }
-  pipeline_batch_claim_drop() { :; }
-  pipeline_batch_claim_keep() { :; }
-  consume_unit_memory_oom() { return 1; }
-  state_read() { printf '{}'; }
-  pipeline_batch_launch() { printf 'launched:%s\n' "$2"; }
-  eval "$(sed -n '/^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC")"
-  status=0
-  dispatch_triage_batch 7044 7045 || status=$?
-  printf 'status:%s\n' "$status"
-)
-assert_eq 'a failed spend-budget status read skips only its ticket; the triage batch still launches the rest' \
-  $'launched:7045\nstatus:0' "$(run_triage_status_failure_case)"
 run_triage_admission_caller() (
   local launch_status="$1"
   TRIAGE_BATCH_IDS=(910101)
@@ -2575,7 +2523,57 @@ EOF
 chmod +x "$ENV_PROXY_FAKE_BIN/systemctl"
 ENV_PROXY_CAPTURE="$AGENT_HOME/env-proxy-systemd-run.log"
 : > "$ENV_PROXY_CAPTURE"
-eval "$(sed -n '/^dispatch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p' "$PIPELINE_SRC")"
+eval "$(sed -n '/^dispatch() {/,/^}/p; /^dispatch_advisor_batch() {/,/^}/p; /^dispatch_triage_batch() {/,/^}/p' "$PIPELINE_SRC")"
+# 2026-11-18 (row 577): one over-budget ticket whose hold read failed (#7044, gh backoff) returned 1 from the
+# whole batch, so the slice exited 1 and #7045 never dispatched. A failed route skips only that ticket.
+run_advisor_route_failure_case() (
+  AGENT_HOME="$(mktemp -d)"
+  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
+  ADVISOR_RUNTIME_MAX_SEC=60 UNIT_PREFIX_TRANSIENT=zf ZF_ENGINE_DIR="$SCRIPT_DIR" ZF_REPO_DIR="$AGENT_HOME" ZF_CONFIG_ROOT="$AGENT_HOME"
+  ZF_ADVISOR_BATCH_UNIT_ENV=()
+  NEEDS_ADVISOR_IDS="7044 7045"
+  printf '#!/usr/bin/env bash\n' > "$AGENT_HOME/runner.sh"; chmod +x "$AGENT_HOME/runner.sh"
+  zf_advisor_batch_runner() { printf '%s\n' "$AGENT_HOME/runner.sh"; }
+  pipeline_advisor_issue_skip_inflight() { return 1; }
+  hand_agent_issue_is_live_owned() { return 1; }
+  issue_spend_budget_status() { if [ "$1" = 7044 ]; then printf 'over\t7\t2766815\n'; else printf 'clear\t0\t0\n'; fi; }
+  route_issue_spend_budget() { return 1; }
+  ensure_issue_roadmap_parent_for_dispatch() { return 0; }
+  agent_memory_floor_allows() { return 0; }
+  stage_unit_active() { return 1; }
+  coord_new_owner() { printf 'fixture-owner'; }
+  pipeline_batch_claim_acquire() { return 0; }
+  pipeline_batch_claim_drop() { :; }
+  pipeline_batch_claim_keep() { :; }
+  pipeline_batch_launch() { printf 'launched:%s\n' "$2"; }
+  status=0
+  dispatch_advisor_batch 0 || status=$?
+  printf 'status:%s\n' "$status"
+)
+assert_eq 'a failed spend-budget route skips only its ticket; the batch still dispatches the rest' \
+  $'launched:7045\nstatus:0' "$(run_advisor_route_failure_case)"
+# 2026-11-18 (row 579): a failed spend-budget status read for one ticket returned 1 from the whole triage batch.
+run_triage_status_failure_case() (
+  AGENT_HOME="$(mktemp -d)"
+  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap, as in run_advisor_route_failure_case
+  TRIAGE_RUNTIME_MAX_SEC=60 DRY_RUN=1 UNIT_PREFIX_TRANSIENT=zf ZF_ENGINE_DIR="$AGENT_HOME"
+  printf '#!/usr/bin/env bash\n' > "$AGENT_HOME/run-triage-batch.sh"; chmod +x "$AGENT_HOME/run-triage-batch.sh"
+  model_policy() { :; }
+  model_config_fault_blocked() { return 1; }
+  issue_spend_budget_status() { if [ "$1" = 7044 ]; then return 1; fi; printf 'clear\t0\t0\n'; }
+  coord_new_owner() { printf 'fixture-owner'; }
+  pipeline_batch_claim_acquire() { return 0; }
+  pipeline_batch_claim_drop() { :; }
+  pipeline_batch_claim_keep() { :; }
+  consume_unit_memory_oom() { return 1; }
+  state_read() { printf '{}'; }
+  pipeline_batch_launch() { printf 'launched:%s\n' "$2"; }
+  status=0
+  dispatch_triage_batch 7044 7045 || status=$?
+  printf 'status:%s\n' "$status"
+)
+assert_eq 'a failed spend-budget status read skips only its ticket; the triage batch still launches the rest' \
+  $'launched:7045\nstatus:0' "$(run_triage_status_failure_case)"
 run_env_proxy_site() (
   PATH="$ENV_PROXY_FAKE_BIN:$PATH"
   RELEASE_RUNTIME_MAX_SEC=3600
