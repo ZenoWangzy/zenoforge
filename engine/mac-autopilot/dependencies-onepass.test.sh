@@ -55,9 +55,23 @@ scheduler_issue_state() { # the dead-blocker cases name their state by predecess
     9622) printf '{"state":"on-hold"}' ;;
     9623|9624) printf '{"state":"ready-for-agent"}' ;;
     9630) printf '{"state":"ready-for-agent"}' ;;
+    2628) printf '{"state":"tracker","native_subissue_parent":true}' ;;
+    5028) printf '{"state":"tracker","native_subissue_parent":true,"recut_children":[5947]}' ;;
     *) printf '{"state":"ready-for-agent"}' ;;
   esac
 }
+# The native sub-issue read (recut.sh): 2628 has open child 5028 and closed child 5029; NATIVE_STUB_FAIL=1 makes the read fail (rc 2).
+native_calls="$fixture/native-calls"
+native_parent_subissues_json() {
+  printf '%s\n' "$1" >> "$native_calls"
+  [[ "${NATIVE_STUB_FAIL:-0}" != 1 ]] || return 2
+  case "$1" in
+    2628) printf '[{"number":5028,"state":"open","closed_at":"","labels":[]},{"number":5029,"state":"closed","closed_at":"2026-11-10T00:00:00Z","labels":[]}]\n' ;;
+    *) printf '[]\n' ;;
+  esac
+}
+# scheduler_lib_context reads the repo from lib.sh once per process; the test presets it so no lib.sh load happens.
+SCHEDULER_LIB_CONTEXT_FOR="${SCHEDULER_AGENT_LIB:-}" SCHEDULER_LIB_REPO=test/repo SCHEDULER_LIB_REPO_DIR="$fixture/repo"
 dep_states() { # number → state<TAB>labels<TAB>issue state<TAB>reason, from the table the case fills
   local d row
   for d in "$@"; do
@@ -83,7 +97,10 @@ gh() {
   fi
   case "$*" in
     "pr close"*) return 0 ;;
-    *sub_issues*) return 0 ;;
+    *sub_issues*) # dead-root sweep reads the same children: 2628 has open child 5028; the failure switch fails this read too
+      [[ "${NATIVE_STUB_FAIL:-0}" != 1 ]] || return 1
+      [[ "$*" != *"/issues/2628/"* ]] || printf '5028\n'
+      return 0 ;;
     *git/ref/heads/*) printf 'abcdef0123456789\n'; return 0 ;;
   esac
   return 1
@@ -291,6 +308,33 @@ CACHE_ROWS=([9621]=$'OPEN\tneeds-recut\tOPEN\t' [9622]=$'OPEN\ton-hold\tOPEN\t' 
 run_counted
 jq -e '[.units[] | select(.id=="issue-9695" or .id=="issue-9696" or .id=="issue-9697") | .stage=="blocked-external"] | all' "$UNITS" >/dev/null \
   || fail 'no-unit roots on recut, hold or opt-lane routes must remain blocked'
+
+# Native parent: #2628 has no recut_children; its open native child is #5028, a tracker whose recut child #5947 is delivered.
+native_root_rows() {
+  dead_root_fixture \
+    "$(unit issue-2628 2628 closed)" \
+    "$(unit issue-1271 1271 blocked-external '.blocked_on=2628 | .dep_wait_delivery=2628 | .body_blocked_by=[2628]')" \
+    "$(unit issue-5947 5947 merged)"
+  CACHE_ROWS=([2628]=$'OPEN\t' [5028]=$'OPEN\t')
+}
+# (a) and (b): the first pass repoints the waiter to #5028 (not "closed on purpose"); the next pass clears it through #5028's delivered recut child.
+native_root_rows; : > "$native_calls"; run_counted
+jq -e '.units[] | select(.id=="issue-1271") | .stage=="blocked-external" and .blocked_on==5028 and .dep_wait_delivery==5028
+  and any(.history[]; .stage=="blocker-repointed") and ([.history[] | select(.stage=="unblocked")] | length == 0)' "$UNITS" >/dev/null \
+  || fail "(a) a closed native parent with no recut_children must repoint its waiter to its open native child: $(unit_json issue-1271)"
+rm -f "$A/dep-check.epoch"; run_counted
+jq -e '.units[] | select(.id=="issue-1271") | .stage=="implement-pending" and .blocked_on==null' "$UNITS" >/dev/null \
+  || fail "(b) the next pass must clear the waiter once #5028's recut child #5947 is delivered: $(unit_json issue-1271)"
+# (c) the native read fails: the blocker is not cleared, so the waiter is neither repointed nor unblocked.
+native_root_rows; : > "$native_calls"; export NATIVE_STUB_FAIL=1; run_counted; unset NATIVE_STUB_FAIL
+jq -e '.units[] | select(.id=="issue-1271") | .stage=="blocked-external" and .blocked_on==2628 and ([.history[] | select(.stage=="unblocked" or .stage=="blocker-repointed")] | length == 0)' "$UNITS" >/dev/null \
+  || fail "(c) a failed native read must neither repoint nor unblock the waiter: $(unit_json issue-1271)"
+# (d) a plain closed blocker with no native flag and no children never reaches the native read.
+dead_root_fixture \
+  "$(unit issue-9698 9698 closed)" \
+  "$(unit issue-9699 9699 blocked-external '.blocked_on=9698 | .body_blocked_by=[9698]')"
+CACHE_ROWS=([9698]=$'OPEN\t' [9699]=$'OPEN\t'); : > "$native_calls"; run_counted
+[[ ! -s "$native_calls" ]] || fail "(d) a plain blocker must not cost a native sub-issue read: $(cat "$native_calls")"
 
 # A closed GitHub issue retires an unchanged supervisor-review unit once.
 CACHE_ROWS=([5974]=$'CLOSED\t')
