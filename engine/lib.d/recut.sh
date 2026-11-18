@@ -172,6 +172,25 @@ tracker_childless_to_triage() { # issue number, state JSON
 }
 
 
+# A tracker label on an issue under active delivery (open agent PR, or a unit past intake) is not childless.
+# 0 skipped with one log line, 1 not under delivery, 2 unknown (blocker_root_fail; the root waits for the next tick).
+tracker_skip_active_delivery() { # issue number
+  local n="$1" open_status=0 delivering=0 units="${MAC_AUTOPILOT_RUNTIME_DIR:-${REPO_DIR:?}/.scratch-supervisor/autopi}/units.json"
+  issue_own_open_agent_pr "$n" || open_status=$?
+  case "$open_status" in 0) delivering=1 ;; 1) ;; *) blocker_root_fail "active-delivery PR read failed for #$n"; return 2 ;; esac
+  if [ "$delivering" = 0 ] && [ -e "$units" ]; then
+    [ -r "$units" ] && jq -e 'type == "object" and (.units | type) == "array"' "$units" >/dev/null 2>&1 \
+      || { blocker_root_fail "active-delivery unit ledger unreadable for #$n"; return 2; }
+    jq -e --argjson issue "$n" --arg done "$SCHEDULER_UNIT_TERMINAL_STAGES intake needs-triage" '
+      any(.units[]; (.issue // null) == $issue and ((.stage // "") | IN($done | split(" ")[]) | not))
+    ' "$units" >/dev/null 2>&1 && delivering=1
+  fi
+  [ "$delivering" = 1 ] || return 1
+  echo "tracker label on an issue under active delivery; skipped #$n" >&2
+  return 0
+}
+
+
 recut_parent_has_open_child() {
   local n="$1" open_issues_json="${2:-[]}" state_json="${3:-}" allow_comment_fallback="${4:-1}" children child state native_json known_parent=0
   [ -n "$state_json" ] || state_json="$(state_read "$n")" || return 2

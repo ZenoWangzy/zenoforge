@@ -97,6 +97,10 @@ gh() {
          labels:($m.labels // (if $state == "closed" then [] elif $n == 500053 or $n == 500054 then [{name:"concluded"}, {name:"pipeline-system"}] else [{name:"concluded"}] end))}'
     return 0
   fi
+  if [ "${1:-}" = pr ] && [ "${2:-}" = list ]; then
+    printf '%s\n' "${OPEN_PR_JSON:-[]}"
+    return 0
+  fi
   if [ "${1:-}" = issue ] && [ "${2:-}" = list ]; then
     if [[ " $* " == *" --json number,title,state,labels,author,blockedBy,blocking "* ]]; then
       printf '%s\n' "${BLOCKER_GRAPH_JSON:-[]}"
@@ -795,6 +799,45 @@ assert_contains "the real label-write refusal is preserved" "$(cat "$ROOT_WRITE_
 assert_contains "a failed childless tracker transition still rings the supervisor" \
   "$(cat "$AGENT_HOME/supervisor-inbox")" \
   "blocker-root-failed issue=#500123 reason=childless tracker triage failed for #500123"
+
+# A childless tracker that is under active delivery (an open agent PR, or a unit past intake) is skipped, not sent to triage.
+rm -f "$AGENT_HOME/blocker-root-sweep.cursor"
+cat > "$STATE_DIR/500130.json" <<'JSON'
+{"state":"tracker","tracker_parent":true,"recut_comment_scanned":true}
+JSON
+BLOCKER_GRAPH_JSON='[{"number":500130,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+OPEN_PR_JSON='[{"number":500131}]'
+: > "$AGENT_HOME/supervisor-inbox"; : > "$ROOT_WRITE_LOG"
+sweep_blocking_issue_roots 2>"$TEST_HOME/delivery-pr.err" || true
+unset OPEN_PR_JSON BLOCKER_GRAPH_JSON
+assert_not_contains "childless tracker with an open PR is not sent to triage" "$(cat "$ROOT_WRITE_LOG")" "needs-triage"
+assert_not_contains "childless tracker with an open PR raises no blocker-root-failed" "$(cat "$AGENT_HOME/supervisor-inbox")" "blocker-root-failed issue=#500130"
+assert_contains "the skipped open-PR tracker names its reason" "$(cat "$TEST_HOME/delivery-pr.err")" "tracker label on an issue under active delivery; skipped #500130"
+
+# A childless tracker with a unit in repair (no open PR) is skipped the same way.
+mkdir -p "$TEST_HOME/autopi"
+printf '%s\n' '{"units":[{"id":"issue-500140","issue":500140,"stage":"repair"}]}' > "$TEST_HOME/autopi/units.json"
+cat > "$STATE_DIR/500140.json" <<'JSON'
+{"state":"tracker","tracker_parent":true,"recut_comment_scanned":true}
+JSON
+BLOCKER_GRAPH_JSON='[{"number":500140,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+rm -f "$AGENT_HOME/blocker-root-sweep.cursor"
+: > "$AGENT_HOME/supervisor-inbox"; : > "$ROOT_WRITE_LOG"
+MAC_AUTOPILOT_RUNTIME_DIR="$TEST_HOME/autopi" sweep_blocking_issue_roots 2>/dev/null || true
+unset BLOCKER_GRAPH_JSON
+assert_not_contains "childless tracker with a unit in repair is not sent to triage" "$(cat "$ROOT_WRITE_LOG")" "needs-triage"
+assert_not_contains "childless tracker with a unit in repair raises no blocker-root-failed" "$(cat "$AGENT_HOME/supervisor-inbox")" "blocker-root-failed issue=#500140"
+
+# A childless tracker with no open PR and no unit still goes to triage.
+cat > "$STATE_DIR/500150.json" <<'JSON'
+{"state":"tracker","tracker_parent":true,"recut_comment_scanned":true}
+JSON
+BLOCKER_GRAPH_JSON='[{"number":500150,"state":"OPEN","labels":[{"name":"tracker"}],"blockedBy":{"nodes":[]},"blocking":{"nodes":[]}}]'
+rm -f "$AGENT_HOME/blocker-root-sweep.cursor" "$TEST_HOME/autopi/units.json"
+: > "$ROOT_WRITE_LOG"
+MAC_AUTOPILOT_RUNTIME_DIR="$TEST_HOME/autopi" sweep_blocking_issue_roots 2>/dev/null || true
+unset BLOCKER_GRAPH_JSON
+assert_contains "childless tracker with no PR and no unit still goes to triage" "$(cat "$ROOT_WRITE_LOG")" "needs-triage"
 
 # A parent requeued after its children closed has its own remaining work
 # (issue 1397 was reclosed five minutes after a supervisor requeue).
