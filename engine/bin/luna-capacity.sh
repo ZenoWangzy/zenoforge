@@ -23,7 +23,11 @@ box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, a
     BOX_ROOM_WHY="runs $runs/$cap avail ${avail}MB full $full"
     return 1
   fi
-  cpu=$(cpu_busy)
+  # The CPU sample takes 2 s: reuse one from the last LUNA_CPU_SAMPLE_TTL seconds. Assigned here, not inside $(...), so the cache outlives the call.
+  if [[ -z "${LUNA_CPU_BUSY_AT:-}" ]] || (( SECONDS - LUNA_CPU_BUSY_AT >= ${LUNA_CPU_SAMPLE_TTL:-10} )); then
+    LUNA_CPU_BUSY_VALUE=$(cpu_busy); LUNA_CPU_BUSY_AT=$SECONDS
+  fi
+  cpu=$LUNA_CPU_BUSY_VALUE
   if (( cpu < ${LUNA_CPU_TARGET:-85} )); then return 0; fi
   BOX_ROOM_WHY="runs $runs/$cap avail ${avail}MB full $full cpu ${cpu}/${LUNA_CPU_TARGET:-85}%"
   return 1

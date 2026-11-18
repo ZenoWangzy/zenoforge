@@ -474,6 +474,7 @@ dispatch_skip_summary() { # name:count,... for the reasons that fired this pass,
   for k in $(printf '%s\n' "${!TICK_DISPATCH_SKIPS[@]}" | sort); do out+="${out:+,}$k:${TICK_DISPATCH_SKIPS[$k]}"; done
   printf '%s' "$out"
 }
+declare -F dmark >/dev/null || dmark() { :; } # dispatch-queue.sh defines the step timer; a unit test that loads this file alone gets a no-op
 room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=true] [report-only=false]：焦点与并发检查
   local u="${3:-}" priority waiter impl_cap n_impl hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false why_unit="$1"
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
@@ -491,6 +492,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
     return 1
   fi
   priority="$(unit_dispatch_priority "$u")"
+  dmark room_pre
   gate_started=$SECONDS
   if [[ "$2" != review && "$2" != rereview ]] && higher_priority_waiting "$priority" \
     && priority_wait_should_hold "$priority" "$PRIORITY_WAITING_WAITER"; then
@@ -513,6 +515,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   elif [[ "$u" == *'"priority_hold":'* ]]; then
     set_unit "$1" 'del(.priority_hold)' || return 1
   fi
+  dmark room_priority_gate
   gate_elapsed=$((SECONDS - gate_started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( gate_elapsed < 2 )) || say "dispatch detail priority_gate unit=$1 secs=${gate_elapsed}s"
   if [[ "$gate_waiting" == true ]]; then
@@ -521,6 +524,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
     return 1
   fi
   if ! dispatch_capacity_free; then say "skip dispatch unit=$1 (capacity $(live_workers)/$MAX)"; dispatch_why "$1" capacity; return 1; fi
+  dmark room_live_workers
   # Same host gate as bin/luna (CPU, memory, PSI, run cap); the waiter age keeps an aged waiter's admission rule.
   # 11-13: CPU busy sat over 85% at the host baseline (load ~20 on 12 cores) and held live=0-2 of 8 with 31 pending for hours.
   # Scheduler workers run at CPUWeight=10 (worker-scope.sh), so they already yield the CPU to sessions: this start ignores
@@ -531,9 +535,11 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   if [[ "$2" != review && "$2" != rereview && "${6:-false}" != true && -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] && ! LUNA_CPU_TARGET="${AUTOPI_DISPATCH_CPU_TARGET:-101}" priority_admission_has_room "$priority" "${PRIORITY_WAITING_AGE_SECONDS:-0}"; then
     say "skip dispatch unit=$1 priority=$priority (host capacity: ${BOX_ROOM_WHY:-unknown})"; dispatch_why "$1" host-capacity; return 1
   fi
+  dmark room_host_capacity
   impl_cap="$IMPLEMENT_CAP"
   if [[ ( "$2" == "implement" || "$2" == "repair" ) && "$check_footprint" == true ]]; then
-    footprint_room "$1" "$u" "$fresh_footprint" || return 1
+    footprint_room "$1" "$u" "$fresh_footprint" || { dmark room_footprint; return 1; }
+    dmark room_footprint
   fi
   if [[ "$2" == "implement" || "$2" == "repair" ]]; then
     n_impl=$(live_by_type "implement|repair")
@@ -615,10 +621,12 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   prompt="$(incident_worker_prompt "$3" "$unit_json" "$prompt")"
   [[ "$report_only" != true ]] || failure_prompt="$prompt"
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]] && jqf -e '.pr == null' <<<"$unit_json" >/dev/null && pre_dispatch_skip "$unit_json"; then return 1; fi
-  room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || return 1
+  room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || { dmark dispatch_room_for; return 1; }
+  dmark dispatch_room_for
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     local sa_rc=0
     size_admission_write_start "$1" "${10:-}" "$unit_json" || sa_rc=$?
+    dmark dispatch_size_admission
     if (( sa_rc == 2 )); then dispatch_why "$1" size-admission-deferred; return 1; fi # local refill: the slow tick records the rejection
     (( sa_rc == 0 )) || { dispatch_why "$1" size-admission-start; return 1; }
   fi
@@ -639,7 +647,8 @@ $(tail -80 "$check_output" 2>/dev/null)"
     && git -C "${10}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     reviewer_git_identity_configure "${10}" "$provider" "$6" || return 1
   fi
-  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || return 1
+  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || { dmark dispatch_call; return 1; }
+  dmark dispatch_call
   # A successful start can change whether later candidates fit; only reuse admission samples between starts.
   TICK_PRIORITY_ADMISSION_CACHE=()
   dispatch_why_clear "$1"

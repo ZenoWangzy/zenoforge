@@ -78,4 +78,28 @@ cache_reason_case() (
   [[ "${BOX_ROOM_WHY:-}" == "$expected" ]] || fail "cached admission reason: got ${BOX_ROOM_WHY:-}, want $expected"
 )
 cache_reason_case
+# The CPU sample (2 s) is reused within LUNA_CPU_SAMPLE_TTL seconds; the memory check still reads fresh each call.
+cpu_sample_reuse_case() (
+  local mem="$root/reuse-meminfo" psi="$root/reuse-psi" samples="$root/reuse-samples"
+  printf 'MemAvailable: 6144000 kB\n' > "$mem"
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  export LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85 LUNA_CPU_SAMPLE_TTL=10
+  source "$bin/luna-capacity.sh"
+  codex_runs() { echo 0; }
+  cpu_busy() { echo x >> "$samples"; echo 50; }
+  samples_taken() { if [[ -f "$samples" ]]; then wc -l < "$samples"; else echo 0; fi; }
+  SECONDS=100
+  box_has_room 0 || fail 'first call refused'
+  SECONDS=105
+  box_has_room 0 || fail 'call within the TTL refused'
+  [[ "$(samples_taken)" == 1 ]] || fail "cpu_busy ran $(samples_taken) times within the TTL, want 1"
+  printf 'MemAvailable: 1024 kB\n' > "$mem"
+  SECONDS=106
+  if box_has_room 0; then fail 'low memory admitted within the TTL: memory must stay fresh'; fi
+  printf 'MemAvailable: 6144000 kB\n' > "$mem"
+  SECONDS=111
+  box_has_room 0 || fail 'call after the TTL refused'
+  [[ "$(samples_taken)" == 2 ]] || fail "cpu_busy ran $(samples_taken) times after the TTL, want 2"
+)
+cpu_sample_reuse_case
 echo "ok - hotfix admits at 3 GB with full < 10; normal and aging admit at the 3328 MB floor with full < 10; full 12 refused; in luna and zc"
