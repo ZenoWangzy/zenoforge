@@ -3479,6 +3479,8 @@ source <(sed -n '/^hist() {/,/^}/p' "$script_dir/scheduler.d/units.sh")
 source <(sed -n '/^recover_local_ahead_head() {/,/^}/p' "$script_dir/scheduler.d/dispatch-queue.sh")
 ahead_fixture="$fixture/local-ahead"; rm -rf "$ahead_fixture"; mkdir -p "$ahead_fixture"
 command git init -q -b main "$ahead_fixture/source"
+command git -C "$ahead_fixture/source" config user.name t
+command git -C "$ahead_fixture/source" config user.email t@example.invalid
 command git -C "$ahead_fixture/source" commit -q --allow-empty -m base
 command git -C "$ahead_fixture/source" checkout -q -b agent/issue-41
 command git -C "$ahead_fixture/source" commit -q --allow-empty -m PR-head
@@ -3487,6 +3489,8 @@ command git init -q --bare "$ahead_fixture/remote.git"
 command git -C "$ahead_fixture/source" remote add origin "$ahead_fixture/remote.git"
 command git -C "$ahead_fixture/source" push -q origin main agent/issue-41
 command git clone -q "$ahead_fixture/remote.git" "$ahead_fixture/clone"
+command git -C "$ahead_fixture/clone" config user.name t
+command git -C "$ahead_fixture/clone" config user.email t@example.invalid
 command git -C "$ahead_fixture/clone" checkout -q -B agent/issue-41 origin/agent/issue-41
 command git -C "$ahead_fixture/clone" commit -q --allow-empty -m real-repair
 ahead_local="$(command git -C "$ahead_fixture/clone" rev-parse HEAD)"
@@ -3494,6 +3498,8 @@ recover_local_ahead_head pr-41 "$ahead_fixture/clone" "$ahead_pr_head" agent/iss
 [[ "$(command git --git-dir="$ahead_fixture/remote.git" rev-parse refs/heads/agent/issue-41)" == "$ahead_local" ]] || fail 'recovery did not fast-forward the PR branch to the local head'
 [[ "$UNIT_EXPR" == *'"stage":"review-push-recovered"'* && ${#SUP_CALLS[@]} == 0 ]] || fail "recovery did not record review-push-recovered (expr=$UNIT_EXPR)"
 command git clone -q "$ahead_fixture/remote.git" "$ahead_fixture/clone-main"
+command git -C "$ahead_fixture/clone-main" config user.name t
+command git -C "$ahead_fixture/clone-main" config user.email t@example.invalid
 # (b) 分叉：本地提交既不在 PR head 之上，也不在 origin/main 之内 -> 转 supervisor，不推送
 command git -C "$ahead_fixture/clone-main" checkout -q -B agent/issue-41 origin/main
 command git -C "$ahead_fixture/clone-main" commit -q --allow-empty -m diverged
