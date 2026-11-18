@@ -410,7 +410,7 @@ register_new_issues_pass() {
     # A row whose units are all terminal and whose episode (if any) is consumed has nothing to hand off:
     # skip it from the ledger before the handoff path reads PRs (gh pr view per merged PR).
     if (( ! existing_only )) && intake_row_terminal "$n" "$episode"; then
-      intake_terminal_rows+=("$n"); intake_skip terminal; continue
+      intake_closed_unit_noted "$n" || intake_terminal_rows+=("$n"); intake_skip terminal; continue
     fi; intake_mark terminal_check
     if (( existing_only )); then
       intake_unit_for_row "$n" "$handoff_pr"; intake_mark recut_refused_precheck
