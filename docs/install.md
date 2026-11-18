@@ -162,6 +162,7 @@ Set these in the unit files (with a drop-in, see section 7), in `capacity.env`, 
 | `AUTOPI_REFILL_SECONDS` / `AUTOPI_REFILL_LIMIT_SECONDS` | 30 / 300 | Refill cadence and time limit |
 | `WORKER_BACKEND` | unset (balance) | `luna` (Codex) or `zc` (ZCode) for `bin/worker` |
 | `WORKER_STALL_MINUTES` | 10 | No-progress limit for one worker |
+| `WORKER_IDLE_KILL_MINUTES` | 30 | Silent-log limit before a scheduler worker with under 1% CPU in the window is stopped and requeued |
 | `WORKER_BREAKER_SECONDS` | 1800 | How long a failed backend is skipped |
 | `WORKER_SCRATCH_ROOT` | `~/.zenoforge/scratch` | Where `bin/worker` keeps its runs |
 | `LUNA_MAX`, `LUNA_CPU_TARGET`, `LUNA_MEM_MAX`, `LUNA_PRIORITY` | 10, 85, 4G, `normal` | The Codex wrapper's gate. `LUNA_PRIORITY` can be `hotfix`, `opt`, or `normal` |
