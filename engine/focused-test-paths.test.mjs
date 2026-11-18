@@ -1120,6 +1120,15 @@ test('a grown engine or tools source file selects the size ratchet; tests and ve
   }
 });
 
+test('a changed engine shell test or the extract baseline selects the source-extract ratchet', () => {
+  const ratchet = 'engine/source-extract-ratchet.test.sh';
+  const tracked = new Set([ratchet, 'engine/mac-autopilot/scheduler-gates.test.sh']);
+  for (const path of ['engine/mac-autopilot/scheduler-gates.test.sh', 'engine/source-extract-baseline.txt']) {
+    assert.ok(focusedTestPaths([path], tracked).includes(ratchet), path);
+  }
+  assert.ok(!focusedTestPaths(['engine/notes.md'], tracked).includes(ratchet));
+});
+
 test('a changed sourced fixture maps to the tests that source it, never to itself', () => {
   const repo = mkdtempSync(join(tmpdir(), 'focused-fixture-'));
   const fixture = 'engine/mac-autopilot/test-scheduler-gates-fixture.sh';
