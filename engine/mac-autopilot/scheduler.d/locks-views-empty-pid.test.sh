@@ -140,6 +140,23 @@ for round in 1 2 3 4 5 6 7 8; do
   if [[ "$(head -n 1 "$order" 2>/dev/null)" != A ]]; then fail "round $round: waiter B took the lock before the earlier waiter A (order: $(tr '\n' ' ' < "$order" 2>/dev/null))"; fi
 done
 
+# Refill priority: with the lock held, a non-refill waiter A queues first and a refill waiter R second; on release R takes the lock before A.
+prio_run() { env AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$1" LOG="$1.log" STAMP=test A="$fixture" ORDER="$2" WAITER="$3" TICK_LOCAL_REFILL="$4" bash "$fifo_probe"; }
+for round in 1 2 3; do
+  lock="$fixture/prio-$round.lock"; order="$fixture/prio-$round.order"
+  command sleep 60 & prio_holder=$!
+  mkdir "$lock"; echo "$prio_holder" > "$lock/pid"
+  prio_run "$lock" "$order" A false & pa=$!
+  for _ in $(seq 100); do compgen -G "$lock.q/*" >/dev/null && break; command sleep 0.05; done # A has queued
+  prio_run "$lock" "$order" R true & pr=$!
+  for _ in $(seq 100); do [[ "$(compgen -G "$lock.q/*" | wc -l)" -ge 2 ]] && break; command sleep 0.05; done
+  command sleep 0.2
+  rm -rf -- "$lock"
+  wait "$pa" || :; wait "$pr" || :
+  kill "$prio_holder" 2>/dev/null || :; wait "$prio_holder" 2>/dev/null || :
+  if [[ "$(head -n 1 "$order" 2>/dev/null)" != R ]]; then fail "round $round: non-refill waiter A took the lock before refill waiter R (order: $(tr '\n' ' ' < "$order" 2>/dev/null))"; fi
+done
+
 # A ticket from a dead pid does not block a live waiter, and the dead ticket is removed when it is passed over.
 dead_lock="$fixture/dead-ticket.lock"
 command sleep 0 & dead_pid=$!; wait "$dead_pid" || :
