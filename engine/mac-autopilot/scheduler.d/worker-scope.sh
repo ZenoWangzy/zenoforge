@@ -102,6 +102,13 @@ worker_scope_of_pid() { # pid -> scope unit name
   [[ "$line" =~ ^run-p[1-9][0-9]*-i[^/]*\.scope$ ]] && printf '%s\n' "$line"
   return 0
 }
+worker_tree_cpu_usec() { # pid -> usage_usec of its run-p scope (the whole worker tree); empty when it is in none
+  local rel
+  [[ -n "$(worker_scope_of_pid "$1")" ]] || return 0
+  rel="$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null)"
+  [[ -n "$rel" ]] || return 0
+  awk '$1 == "usage_usec" { print $2 }' "/sys/fs/cgroup$rel/cpu.stat" 2>/dev/null || true
+}
 
 worker_scope_exec() { # pid-file output-file launcher... -- command...; executed inside the worker's output/session wrapper
   local pid_file="$1" label="${2##*/}"; shift 2

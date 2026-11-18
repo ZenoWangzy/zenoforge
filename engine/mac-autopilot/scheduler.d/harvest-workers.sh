@@ -673,7 +673,7 @@ coord_reconcile_scheduler_workers() { # snapshot workers; check processes unlock
   (( unknown == 0 ))
 }
 stuck_worker_disposition() {
-  local scorecard="$A/node-health.json" bound offenders id w pid wtype probe fp held kills next issue hold_cli hold_ok
+  local scorecard="$A/node-health.json" bound offenders id w pid wtype probe fp held kills next issue hold_cli hold_ok cpu_now cpu_then
   local signal_active=0 named_count=0 live_count=0 killed_count=0
   local first_seen=0 progress=0 unchanged_window=0 unchanged_confirmed=0 no_live_worker=0 action
   local cap_worker cap_pid cap_unit cap_log cap_count cap_commands cap_summary cap_workdir cap_issue cap_branch cap_evidence cap_recut_ok cap_stash
@@ -744,14 +744,14 @@ stuck_worker_disposition() {
     fi
   fi
   # 盲区：点名名单只含 wip_age oldest[]（有上限），名单外的 worker 永远不被探测。
-  # 把所有日志静默超过 slow_worker_minutes 的活 worker 也并入同一个探测输入，走同一条停止路径。
-  local slow_min widened
-  slow_min="$(jqf -r '.waste.slow_worker_minutes // 60' <<<"$CFG")"
+  # 把日志静默超过 WORKER_IDLE_KILL_MINUTES（默认 30，原为 slow_worker_minutes=60）的活 worker 也并入同一个探测输入，走同一条停止路径。
+  local idle_min widened
+  idle_min="${WORKER_IDLE_KILL_MINUTES:-30}"; [[ "$idle_min" =~ ^[1-9][0-9]*$ ]] || idle_min=30
   widened="$(jqf -c '.workers[] | select(.harvested != true and (.type | test("^(implement|repair|review|rereview|land)$")))' "$WORKERS" 2>/dev/null | while IFS= read -r slow_worker; do
     harvest_worker_alive "$slow_worker" || continue
     wunit="$(jqf -r '.unit' <<<"$slow_worker")"; wlog="$(jqf -r '.log' <<<"$slow_worker")"
     mt="$(stat -c %Y "$SUP/$wlog" 2>/dev/null || true)"
-    if [[ "$mt" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - mt > slow_min * 60 )); then echo "$wunit"; fi
+    if [[ "$mt" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - mt > idle_min * 60 )); then echo "$wunit"; fi
   done || true)"
   for id in $widened; do
     case " $offenders " in *" $id "*) ;; *) offenders="$offenders $id" ;; esac
@@ -776,6 +776,10 @@ stuck_worker_disposition() {
       if (( held < STUCK_CONFIRM_MINUTES * 60 )); then
         unchanged_window=$((unchanged_window + 1))
         continue
+      fi
+      cpu_now="$(worker_tree_cpu_usec "$pid")"; cpu_then="$(jqf -r '.cpu // empty' <<<"$probe")" # silent but ≥1% CPU in the window is working (a child test/build): keep, re-baseline
+      if grep -qxF -- "$id" <<<"$widened" && [[ $cpu_now =~ ^[0-9]+$ && $cpu_then =~ ^[0-9]+$ ]] && (( (cpu_now - cpu_then) * 100 >= held * 1000000 )); then
+        set_unit "$id" ".stuck_probe={at:\"$STAMP\",fp:$(js "$fp"),cpu:$cpu_now}"; unchanged_window=$((unchanged_window + 1)); continue
       fi
       unchanged_confirmed=$((unchanged_confirmed + 1))
       stuck_worker_stop "$pid" "$(jqf -r '.process_group // empty' <<<"$w")"
@@ -829,7 +833,8 @@ stuck_worker_disposition() {
     elif [[ -z "$probe" || "$(jqf -r .fp <<<"$probe")" != "$fp" ]]; then
       # 有进展（指纹变了）或首次探测：刷新探针时间戳，长任务因此不会被停。
       if [[ -z "$probe" ]]; then first_seen=$((first_seen + 1)); else progress=$((progress + 1)); fi
-      set_unit "$id" ".stuck_probe={at:\"$STAMP\",fp:$(js "$fp")}"
+      cpu_now="$(worker_tree_cpu_usec "$pid")"; [[ $cpu_now =~ ^[0-9]+$ ]] || cpu_now=null
+      set_unit "$id" ".stuck_probe={at:\"$STAMP\",fp:$(js "$fp"),cpu:$cpu_now}"
     fi
   done
   # 信号恢复或单元离开超龄名单：清掉旧探针，下一次卡住从新指纹起算。

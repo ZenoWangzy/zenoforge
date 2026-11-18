@@ -256,6 +256,31 @@ write_units "$(mk_unit pr-55 "$(probe_update 90 "$(fp_of pr-55 "$pid8")")")" "$(
 STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
 wait_dead "$pid8" || fail "unnamed worker with a log silent past slow_worker_minutes must be stopped"
 
+# ---- 7b. 日志静默超过 WORKER_IDLE_KILL_MINUTES（默认 30）即被探测并停止；仍在写日志的 worker 不停 ----
+pid9="$(spawn_worker pr-44-idle)"; pid10="$(spawn_worker pr-33-growing)"
+seed_log pr-44; seed_log pr-33
+touch -d '40 minutes ago' "$sup/worker-pr-44.log"
+printf 'still writing\n' >> "$sup/worker-pr-33.log"
+write_workers "[$(mk_worker pr-44 "$pid9"), $(mk_worker pr-33 "$pid10")]"
+write_units "$(mk_unit pr-44 "$(probe_update 90 "$(fp_of pr-44 "$pid9")")")" "$(mk_unit pr-33 "$(probe_update 5 "$(fp_of pr-33 "$pid10")")")" "$(mk_unit pr-99)"
+STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
+wait_dead "$pid9" || fail "worker whose log has been silent for 40 min (idle-kill 30) must be stopped"
+process_running "$pid10" || fail "worker whose log is still growing must not be stopped"
+kill -TERM -- "-$pid10" 2>/dev/null || true
+
+# ---- 7c. 静默但仍在用 CPU（窗口内 ≥1%）的 worker 不停，并把探针的 CPU 基线重置到当前 ----------
+pid11="$(spawn_worker pr-22-busy)"
+seed_log pr-22
+touch -d '40 minutes ago' "$sup/worker-pr-22.log"
+worker_tree_cpu_usec() { printf "60000000\n"; }
+write_workers "[$(mk_worker pr-22 "$pid11")]"
+write_units "$(mk_unit pr-22 ".stuck_probe = {at:\"$(iso_ago 90)\", fp:\"$(fp_of pr-22 "$pid11")\", cpu:0}")" "$(mk_unit pr-88)" "$(mk_unit pr-99)"
+STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
+process_running "$pid11" || fail "silent worker still burning >=1% CPU over its window must not be stopped"
+jq -e '.units[] | select(.id=="pr-22") | .stuck_probe.cpu == 60000000' "$UNITS" >/dev/null || fail "busy worker must re-baseline its CPU sample"
+unset -f worker_tree_cpu_usec
+kill -TERM -- "-$pid11" 2>/dev/null || true
+
 # ---- 8. Implement command cap: over-cap workers route to recut, with supervisor fallback ----
 test_cap="$(jqf -r '.implement_command_cap // 230' "$sup/autopi/config.json")"
 [[ "$test_cap" == 230 ]] || fail "template command cap should default to 230, got $test_cap"
