@@ -111,6 +111,11 @@ read_after_offset() { # file, byte offset
   tail -c +$((offset + 1)) -- "$file" 2>/dev/null || true
 }
 
+# The stamp is the process start: a line stamped before the swap came from a process that began on the old engine.
+drop_before_swap() { # swapped_at, file
+  awk -v t="$1" 'substr($0,1,1)=="[" && substr($0,22,1)=="]" && substr($0,2,20) < t { next } { print }' "$2"
+}
+
 append_history() { # engine id, signatures file, completed time
   local engine_id="$1" sig_file="$2" completed_at="$3" signatures row
   signatures="$(jq -Rsc 'split("\n") | map(select(length > 0))' < "$sig_file")"
@@ -208,7 +213,7 @@ rollback() { # first new signature
 
 tick_complete() {
   [[ -r "$TICK_START" ]] || return 0
-  local tmpdir start_generation start_engine_id start_autopi_target start_autopi_id current_generation status new_id current_id new_autopi_target
+  local tmpdir start_generation start_engine_id start_autopi_target start_autopi_id current_generation status new_id current_id new_autopi_target swapped_at
   local scheduler_offset loop_offset tick_scheduler_offset tick_done=0 first_new=''
   tmpdir="$(mktemp -d "$MAC_AUTOPILOT_RUNTIME_DIR/.engine-canary-complete.XXXXXX")"
   start_generation="$(jq -r '.generation // empty' "$TICK_START")"
@@ -228,8 +233,10 @@ tick_complete() {
   fi
   read_after_offset "$SCHED_LOG" "$scheduler_offset" > "$tmpdir/scheduler.log"
   read_after_offset "$LOOP_LOG" "$loop_offset" > "$tmpdir/loop.out"
-  { extract_signatures < "$tmpdir/scheduler.log"; extract_signatures < "$tmpdir/loop.out"; } \
-    | awk 'NF && !seen[$0]++' > "$tmpdir/signatures"
+  swapped_at="$(jq -r '.swapped_at // empty' "$STATE" 2>/dev/null || true)"
+  { drop_before_swap "$swapped_at" "$tmpdir/scheduler.log" | extract_signatures
+    drop_before_swap "$swapped_at" "$tmpdir/loop.out" | extract_signatures
+  } | awk 'NF && !seen[$0]++' > "$tmpdir/signatures"
   read_after_offset "$SCHED_LOG" "$tick_scheduler_offset" > "$tmpdir/current-scheduler.log"
   grep -Fq 'tick done' "$tmpdir/current-scheduler.log" && tick_done=1 || :
   if (( tick_done == 0 )) && grep -Fq 'scheduler tick skipped' "$tmpdir/current-scheduler.log"; then
