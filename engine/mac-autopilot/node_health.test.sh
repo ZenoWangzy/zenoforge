@@ -1472,6 +1472,48 @@ jq -e '.flow.entered == 2 and .flow.merged == 3
   || fail "waiting unit count wrong: $(flowval flow.wait_stage_units) vs $(jq -c '[.flow.wip_age[] | select(.waiting)]' "$fa/node-health.json")"
 [[ "$(flowval flow.wait_stage_p90_hours)" == "210.0 UNHEALTHY" ]] \
   || fail "waiting age p90/sample guard wrong: $(flowval flow.wait_stage_p90_hours)"
+# Queue row 78: score the oldest open ready-for-agent issue not yet started and the oldest current supervisor-review unit.
+ages="$test_env_root/oldest-ages"; mkdir -p "$ages"
+cache_at="$(date -u -d '2026-10-19T12:00:00Z' +%s)"
+age_candidate() { # number createdAt label state -> intake cache row
+  local number="$1" created="$2" label="$3" state="${4:-OPEN}" issue labels
+  issue="$(jq -cn --argjson number "$number" --arg createdAt "$created" --arg label "$label" --arg state "$state" \
+    '{number:$number,createdAt:$createdAt,state:$state,labels:[{name:$label}]}')"
+  labels="$(jq -cn --arg label "$label" '[$label]')"
+  printf '%s\tpr\tfixture\t%s\t%s\n' "$number" "$labels" "$(printf '%s' "$issue" | base64 -w0)"
+}
+write_age_fixture() { # ready-createdAt review-entered-at
+  local ready_at="$1" review_at="$2"
+  printf '{"units":[{"id":"issue-5302","issue":5302,"stage":"implement-pending","history":[{"stage":"write-start","work_type":"implement","at":"2026-10-18T00:00:00Z"}]},\
+{"id":"issue-5389","issue":5389,"stage":"supervisor-review","history":[{"stage":"review-request-changes","at":"2026-10-18T20:00:00Z"},{"stage":"supervisor-escalated","at":"%s"}]}]}\n' "$review_at" > "$ages/units.json"
+  jq -cn --argjson at "$cache_at" --arg rows "$(
+    age_candidate 5301 "$ready_at" ready-for-agent
+    age_candidate 5302 2026-10-16T00:00:00Z ready-for-agent
+    age_candidate 5303 2026-10-15T00:00:00Z bug
+    age_candidate 5304 2026-10-14T00:00:00Z ready-for-agent CLOSED
+  )" '{schema:4,created_at:$at,rows:$rows}' > "$ages/intake-candidates.json"
+}
+write_age_fixture 2026-10-18T06:00:00Z 2026-10-18T21:30:00Z
+flowrun "$ages" --json "$ages/node-health.json" >/dev/null
+ageval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$ages/node-health.json"; }
+[[ "$(ageval intake.oldest_never_started_rfa_hours)" == "30.0 UNHEALTHY" ]] \
+  || fail "stale never-started ready-for-agent age wrong: $(ageval intake.oldest_never_started_rfa_hours)"
+[[ "$(ageval supervisor.oldest_review_hours)" == "14.5 UNHEALTHY" ]] \
+  || fail "stale supervisor-review age wrong: $(ageval supervisor.oldest_review_hours)"
+jq -e '[.metrics[] | select(.id == "intake.oldest_never_started_rfa_hours")][0].node == "intake"
+  and [.metrics[] | select(.id == "supervisor.oldest_review_hours")][0].node == "supervisor"' "$ages/node-health.json" >/dev/null \
+  || fail 'new age metrics did not name their owners'
+write_age_fixture 2026-10-19T02:00:00Z 2026-10-19T09:00:00Z
+flowrun "$ages" --json "$ages/node-health.json" >/dev/null
+[[ "$(ageval intake.oldest_never_started_rfa_hours)" == "10.0 OK" ]] \
+  || fail "fresh never-started ready-for-agent age wrong: $(ageval intake.oldest_never_started_rfa_hours)"
+[[ "$(ageval supervisor.oldest_review_hours)" == "3.0 OK" ]] \
+  || fail "fresh supervisor-review age wrong: $(ageval supervisor.oldest_review_hours)"
+missing="$test_env_root/missing-ages"; mkdir -p "$missing"
+flowrun "$missing" --json "$missing/node-health.json" >/dev/null
+jq -e '([.metrics[] | select(.id == "intake.oldest_never_started_rfa_hours")][0] | .value == null and .status == "NO-DATA")
+  and ([.metrics[] | select(.id == "supervisor.oldest_review_hours")][0] | .value == null and .status == "NO-DATA")' "$missing/node-health.json" >/dev/null \
+  || fail "missing age inputs must be NO-DATA, not zero: $(jq -c '[.metrics[] | select(.id | endswith("oldest_review_hours") or endswith("oldest_never_started_rfa_hours"))]' "$missing/node-health.json")"
 # 无积压（全部终态且在窗口前）：合入速率不计值，不读成 0
 ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"
 printf '{"units":[{"id":"pr-31","stage":"merged","history":[{"stage":"created","at":"2026-10-18T10:00:00Z"},{"stage":"merged","at":"2026-10-18T11:00:00Z"}]}]}' > "$sa/units.json"

@@ -103,7 +103,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       [[ -n "$lane" && -n "$label" ]] || continue
       [[ "$refill_mode" != true || $index -lt 1 ]] || break
       query_file="$query_dir/$index.json"
-      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,subIssuesSummary,blockedBy >"$query_file" 2>/dev/null &
+      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,createdAt,subIssuesSummary,blockedBy >"$query_file" 2>/dev/null &
       query_pids+=("$!"); query_files+=("$query_file"); query_lanes+=("$lane")
       gh_par_throttle query_pids
       index=$((index + 1))
@@ -134,7 +134,7 @@ json.dump(rows, sys.stdout, separators=(",", ":"))
           elif ($n | index("legacy")) then 7 else 6 end;
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
       | sort_by([rank, (if ._auto_filed then 1 else 0 end), -.number])
-      | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)"'
+      | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,createdAt,subIssuesSummary,blockedBy} | @base64)"'
     intake_skip_label_report "$query_dir/rows.json" "$skip_labels"
     if (( valid_queries == expected_queries && ${#query_files[@]} == expected_queries )); then : >"$cache_valid_tmp"; fi
   ) >"$cache_rows_tmp"
