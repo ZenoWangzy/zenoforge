@@ -31,6 +31,7 @@ supervisor_arbiter_live_candidate() { # stale unit-json → id<TAB>current candi
   candidate_unit="$(jqf -c --arg id "$candidate_id" '[.units[] | select(.id==$id)][0] // empty' "$UNITS")"
   [[ -n "$candidate_unit" && "$candidate_unit" != null ]] || return 1
   jqf -e '(.stage == "supervisor-review" or .stage == "parked") and (.hold_handoff_waiting // false)==false and (.supervisor_owned // false)==false' <<<"$candidate_unit" >/dev/null || return 1
+  supervisor_no_change_waiting "$candidate_unit" && return 1 # row 613: a repeated NO-CHANGE waits for a ruling; no arbiter run, no requeue
   printf '%s\t%s\n' "$candidate_id" "$candidate_unit"
 }
 # At the lifetime cap with no ruling, head gets SUPERVISOR_CAP_WAIT_S from the last run; then one default decision (the recut route once), and a second cap closes durably.

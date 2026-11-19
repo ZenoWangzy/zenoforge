@@ -216,6 +216,29 @@ implement_nothing_escalate() { # unit message [dirty]
   fi
   to_supervisor "$1" "$2"
 }
+# NO-CHANGE repeat (row 613). A ruling is a human/head decision, not an arbiter or scheduler verdict: advisor-ruling, review-approve,
+# supervisor-approve, or a hand-written supervisor-* entry with no decision object (hold.sh --rule, head requeue). Arbiter and
+# scheduler entries always carry a decision, so the arbiter's own requeue never resets the window, which is the loop being stopped.
+# Reason match: equal after the "(report <name>)" suffix is dropped and whitespace is trimmed and collapsed. No fuzzy matching.
+NO_CHANGE_RULING_JQ='
+  def norm: (. // "") | sub("\\s*\\(report [^()]*\\)\\s*$"; "") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+  def ruling: (.stage // "") as $s
+    | $s == "advisor-ruling" or $s == "review-approve" or $s == "supervisor-approve"
+      or (($s | startswith("supervisor-")) and ($s | startswith("supervisor-arbiter") | not)
+          and $s != "supervisor-escalated" and $s != "supervisor-review" and (.decision == null));'
+no_change_repeat() { # unit-json reason → 0 when an earlier NO-CHANGE escalation with the same reason lies after the last ruling
+  jqf -e --arg reason "$2" "$NO_CHANGE_RULING_JQ"'
+    (.history // []) as $h
+    | ([$h | to_entries[] | select(.value | ruling) | .key] | max // -1) as $r
+    | [$h[($r + 1):][] | select(.stage == "supervisor-escalated" and ((.result // "") | startswith("decision: implementer chose no change on purpose:"))
+        and ((.result | norm) == ($reason | norm)))] | length > 0' <<<"$1" >/dev/null
+}
+supervisor_no_change_waiting() { # unit-json → 0 while the latest escalation is a repeated NO-CHANGE and no ruling came after it (no arbiter run)
+  jqf -e "$NO_CHANGE_RULING_JQ"'
+    (.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage == "supervisor-escalated") | .key] | last) as $e
+    | $e != null and ($h[$e].no_change_repeat == true) and ([$h[($e + 1):][] | select(ruling)] | length == 0)' <<<"$1" >/dev/null
+}
 # 产品 issue 的实现：worker 推分支，流水线开 PR（Refs #N）→ 进评审；OBSOLETE 直接结案。
 pr_create_failure_transient() { # gh output rc → true for retryable server/transport failures
   local output="${1:-}" rc="${2:-0}"
@@ -223,7 +246,7 @@ pr_create_failure_transient() { # gh output rc → true for retryable server/tra
   grep -Eiq 'HTTP([[:space:]]|/[0-9.]+[[:space:]])5[0-9]{2}|GraphQL:[[:space:]]*Something went wrong|ECONNRESET|ETIMEDOUT|timeout|timed[[:space:]]+out|deadline exceeded' <<<"$output"
 }
 harvest_pr_implement() { # unit report-path
-  local first issue branch dir head title pr out base local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc
+  local first issue branch dir head title pr out base local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc reason repeat
   first="$(grep -m1 -v '^[[:space:]]*$' "$2" 2>/dev/null)"
   issue="$(unit_field "$1" .issue)"; branch="$(unit_field "$1" .branch)"; dir="$WT_ROOT/wt-$1"
   local dep; dep="$(blocked_on_of "$2")"
@@ -286,7 +309,15 @@ harvest_pr_implement() { # unit report-path
       # 也无未提交改动）：提示语点名原因，两次空交付才转 supervisor，消息同样带原因。
       if [[ "$first" == NO-CHANGE:* ]]; then
         # 实现者有意不改代码（如 SPLIT 无可独立交付切片）是决定，不是交付失败：不重试，连同原因交 supervisor。
-        to_supervisor "$1" "decision: implementer chose no change on purpose:${first#NO-CHANGE:} (report $(basename "$2"))"
+        # 同一原因再来一次（裁决之后）：留在 supervisor-review，不派 arbiter 也不重排，等人或 head 裁决。
+        reason="decision: implementer chose no change on purpose:${first#NO-CHANGE:}"
+        repeat=false
+        no_change_repeat "$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0]' "$UNITS")" "$reason" && repeat=true
+        to_supervisor "$1" "$reason (report $(basename "$2"))"
+        if [[ "$repeat" == true ]]; then
+          set_unit "$1" '(.history | map(.stage) | rindex("supervisor-escalated")) as $k | .history[$k].no_change_repeat=true'
+          say "no-change repeat unit=$1: same reason again; waits at supervisor-review for a ruling, no arbiter run"
+        fi
         return 0
       fi
       if [[ "$(unit_retries "$1" implement-no-changes)" == 0 ]]; then
