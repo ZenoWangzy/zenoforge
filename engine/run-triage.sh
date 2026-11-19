@@ -704,8 +704,6 @@ if [ "$STATE" = "ready-for-agent" ] && [ "$PRECUT" != "1" ] \
 $BRIEF"
   fi
 fi
-printf '%s\n' "$ISSUE_JSON" | bash "$SCRIPT_DIR/intake-priority.sh" triage "$N" "$STATE" "$REPO" || true
-
 if [ "$DRY_RUN" = "1" ]; then
   cat <<VERDICT
 issue: #$N
@@ -736,6 +734,8 @@ if ! issue_verdict_snapshot_guard "$N" "$VERDICT_SNAPSHOT_JSON"; then
   echo "run-triage: #$N -- $ISSUE_VERDICT_GUARD_REASON; skipping stale triage verdict and all writes" >&2
   exit 0
 fi
+# After the guard: intake's own label write must not make the verdict look stale.
+printf '%s\n' "$ISSUE_JSON" | bash "$SCRIPT_DIR/intake-priority.sh" triage "$N" "$STATE" "$REPO" || true
 record_triage_related_issues "$N" "$RESULT" || echo "run-triage: #$N related not recorded" >&2
 TRIAGE_MERGED_PR=""
 if [ "$STATE" = awaiting-release ]; then
