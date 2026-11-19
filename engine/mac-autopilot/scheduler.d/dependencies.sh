@@ -112,8 +112,17 @@ tracker_dep_cleared() { # blocker blocked-issue → 0 when the blocker is a trac
   [[ " ${TRACKER_KIDS[$dep]} " != *" $issue "* ]] || say "issue #$issue waits on tracker #$dep, its own parent: dependency rewritten to its sibling children, all delivered"
   return 0
 }
+# Merged but awaiting-release is not delivered for a dependent that needs it live: its dep-disagreement marker or its own text says so (2026-11-18 #7075 ran on #7074 twice).
+dep_awaiting_release_holds() { # unit-json predecessor → 0 while the predecessor is merged, awaiting-release (not released), and this unit needs it live
+  local info labels
+  jqf -e --argjson d "$2" --arg re "(needs|需要|等待?) ?#$2"'([^0-9]|$)[^\n]{0,20}(live|released|delivered|上线|发布|交付)' '(.dep_wait_delivery == $d) or ((.task // "") | test($re; "i"))' <<<"$1" >/dev/null 2>&1 || return 1
+  info="$(dep_cache_info "$2")"
+  labels=",$(jqf -r '.labels // ""' <<<"$info"),"
+  [[ "$(jqf -r '.state // empty' <<<"$info")" == MERGED && "$labels" == *,awaiting-release,* && "$labels" != *,released,* ]]
+}
 dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached GitHub state already count it as cleared
   local info state labels
+  dep_awaiting_release_holds "$1" "$2" && return 1
   dep_delivered_in_ledger "$2" && return 0
   ! dep_dead_ruled "$1" "$2" || return 0
   # 11-17: once dead_blocker_resolve moved this unit off a recut root, the root no longer blocks it; the body gate re-blocked
@@ -145,8 +154,9 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   local dep state
   dep="$(jqf -r '.dep_wait_delivery // empty' <<<"$1")"
   [[ "$dep" =~ ^[0-9]+$ ]] || return 1
-  dep_delivered_in_ledger "$dep" && return 1
   ! dep_dead_ruled "$1" "$dep" || return 1
+  dep_awaiting_release_holds "$1" "$dep" && { printf '%s' "$dep"; return 0; }
+  dep_delivered_in_ledger "$dep" && return 1
   state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
   [[ "$state" != MERGED ]] || return 1
   if [[ "$state" == CLOSED ]] && ! dep_has_unit "$dep"; then # a stale closed cache frees nothing: one fresh read decides (#536)
@@ -435,6 +445,7 @@ release_dependency_blocks_pass() {
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     if [[ "$recut" == true ]]; then continue; fi
     if [[ "$stacked" == true ]] && ! dep_body_declares "$bb" "$u" "$dep"; then continue; fi
+    if [[ "$labels" == *awaiting-release* ]] && dep_awaiting_release_holds "$(jqf -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS")" "$dep"; then continue; fi
     if dep_delivered_in_ledger "$dep"; then
       dep_blocker_forget "$issue" "$dep"
       dep_release_delivered "$id" "$dep" "$has_note"; continue
