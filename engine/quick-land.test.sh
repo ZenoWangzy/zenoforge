@@ -79,7 +79,9 @@ QUICK_LAND_FOCUSED='printf %s\n engine/a.test.sh engine/mac-autopilot/scheduler-
 [[ "$(quick_land_missing_focused 'bash engine/a.test.sh')" == engine/b.test.mjs ]] || fail 'a focused test missing from --test was not named'
 [[ -z "$(quick_land_missing_focused 'bash engine/a.test.sh node engine/b.test.mjs')" ]] || fail 'all focused tests given still refused'
 [[ -z "$(quick_land_missing_focused 'bash engine/a.test.sh node engine/b.test.mjs' | grep scheduler-part)" ]] || fail 'a scheduler partition was required locally'
-unset QUICK_LAND_FOCUSED
+QUICK_LAND_FOCUSED=false
+[[ "$(quick_land_commit_refusal 'bash engine/a.test.sh')" == 'focused-test-paths failed'* ]] || fail 'a failing focused selection was not a refusal'
+QUICK_LAND_FOCUSED=true # the fixture repos below have no focused-test-paths.mjs: select nothing
 [[ "$(quick_land_override_hit engine/over.sh)" == engine/over.sh ]] || fail 'the override table no longer names engine/over.sh, so no pin dry run would run'
 reset_fixture
 

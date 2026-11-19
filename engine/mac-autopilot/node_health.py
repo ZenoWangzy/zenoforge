@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, release_deps_health, metric_windows
-import line_holds, intake_laneless_health, wip_hold
+import line_holds, intake_laneless_health, wip_hold, flow_unstarted_health
 import release_age
 from cancel_audit import cancel_metrics, read_cancel_audit
 import release_batch
@@ -276,9 +276,9 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_heal
     "delivery.unlinked_incidents_30d": "night/founder-health-mail.json incidents (issue joined to accepted issue IDs) plus logs/head-watch.alerts PROD-DB-TIMEOUT episodes, which name no issue",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
-CRITERIA.update({**line_holds.CRITERIA, **intake_laneless_health.CRITERIA, **station_standards.CRITERIA, **worker_cost.TOKEN_EFFICIENCY_CRITERIA})
-MEANING.update({**line_holds.MEANING, **intake_laneless_health.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
-SOURCE.update({**line_holds.SOURCE, **intake_laneless_health.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
+CRITERIA.update({**line_holds.CRITERIA, **intake_laneless_health.CRITERIA, **flow_unstarted_health.CRITERIA, **station_standards.CRITERIA, **worker_cost.TOKEN_EFFICIENCY_CRITERIA})
+MEANING.update({**line_holds.MEANING, **intake_laneless_health.MEANING, **flow_unstarted_health.MEANING, **station_standards.MEANING, **worker_cost.TOKEN_EFFICIENCY_MEANING})
+SOURCE.update({**line_holds.SOURCE, **intake_laneless_health.SOURCE, **flow_unstarted_health.SOURCE, **station_standards.SOURCE, **worker_cost.TOKEN_EFFICIENCY_SOURCE})
 # release.hours_since_release lives in release_age.py, for the same size-ratchet reason.
 for part in (release_age, release_retained, release_batch): CRITERIA.update(part.CRITERIA); MEANING.update(part.MEANING); SOURCE.update(part.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
@@ -1451,7 +1451,7 @@ def main():
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
-    metrics["ci.held_ready_pct"] = held_ready_pct(units, ledger_history.live_ledger_readable(a))
+    ledger_ok = ledger_history.live_ledger_readable(a); metrics["ci.held_ready_pct"] = held_ready_pct(units, ledger_ok); metrics.update(flow_unstarted_health.collect(a, units, now, ledger_ok))
     spend = read_json(os.path.join(a, "ci-spend.json"))
     fresh = ts(spend.get("sampled_at"))
     metrics["ci.waste_runner_pct"] = spend.get("waste_pct") if fresh and (now - fresh).total_seconds() < 7200 else None

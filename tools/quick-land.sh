@@ -62,6 +62,9 @@ quick_land_missing_focused() { # <test commands> -> prints each focused test pat
 
 quick_land_commit_refusal() { # [test commands]
   local out missing
+  # A selection error (a changed script with no mapped test) is a refusal, not an empty selection.
+  ${QUICK_LAND_FOCUSED:-node engine/focused-test-paths.mjs} --range origin/main HEAD >/dev/null 2>&1 \
+    || { echo "focused-test-paths failed for origin/main..HEAD (run it to see why; a new script needs a RELATED_TESTS row)"; return 0; }
   missing="$(quick_land_missing_focused "${1:-}")"
   [[ -z "$missing" ]] || { echo "focused tests missing from --test: $(paste -sd' ' <<<"$missing")"; return 0; }
   [[ -f engine/rule-lane.sh ]] || { echo 'engine/rule-lane.sh is missing'; return 0; }
