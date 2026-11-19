@@ -811,6 +811,12 @@ expect_suite 'removed non-engine test' '[{"filename":"tools/old.test.sh","status
 expect_suite 'removed engine script' '[{"filename":"engine/old.sh","status":"removed","changes":3}]' pass
 PR_FILE_STATUSES='[]'
 
+# 11-19: #1283 was closed at 04:37:35Z and the lane merged it at 04:38:24Z; the squash step re-reads the state.
+: > "$fixture/gh-calls"
+if out="$(PR_META='{"title":"fixture","body":"","state":"closed"}' merge_pr_squash 17 "$PR_HEAD" 2>&1)"; then fail "closed PR was squashed: $out"; fi
+[[ "$out" == *'closed after the lane read it'* ]] || fail "closed PR refusal lacks its reason: $out"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'closed PR reached the merge call'
+
 # A silent revert: removed lines that a PR merged in the last 24 h added to the same file are refused unless the title or body says revert. A failed read warns and passes.
 expect_revert() {
   local label="$1" verdict="$2" must="$3" out
@@ -834,6 +840,10 @@ PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five)" '[{filename:
 expect_revert 'five removed lines under half of the merged PR' pass ''
 PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
 expect_revert 'normal edit of the same file' pass ''
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
+moved="$(for i in one two three four five six; do printf '+  alpha %s\n' "$i"; done)"
+PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" --arg m "$moved" '[{filename:"engine/a.sh",status:"modified",patch:$p},{filename:"engine/lib.sh",status:"modified",patch:$m}]')"
+expect_revert 'lines moved to another file are not a revert' pass ''
 PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
 PR_META='{"title":"Revert #640: dashboard mail age","body":""}' expect_revert 'stated revert in the title' pass ''
 PR_META='{"title":"fixture","body":"This reverts #640 on purpose."}' expect_revert 'stated revert in the body' pass ''

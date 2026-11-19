@@ -644,8 +644,8 @@ ensure_issue_roadmap_parent_for_dispatch() {
 }
 
 dispatch() {
-  local stage="$1" n="$2" runtime_max script memory_max oom_count consume_status claim_status claim_unit claim_key dispatch_status slice
-  shift 2; slice="${ZF_BATCH_SLICE:-zf-batch.slice}"; [[ "$stage" != implement ]] || slice="${ZF_WORKER_SLICE:-zf-workers.slice}" # implement workers join the worker slice
+  local stage="$1" n="$2" runtime_max script memory_max oom_count consume_status claim_status claim_unit claim_key dispatch_status
+  shift 2
   # Belt and braces with legs_executable_check() (lib.sh) at the top of the
   # tick: never hand systemd a script it cannot spawn -- that ends as a
   # 203/EXEC unit failure indistinguishable from a leg that ran and refused.
@@ -717,7 +717,7 @@ dispatch() {
       return 0
     fi
   fi
-  if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect --slice="$slice" \
+  if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
     "${advisor_env[@]}" \
     -p "RuntimeMaxSec=$runtime_max" \

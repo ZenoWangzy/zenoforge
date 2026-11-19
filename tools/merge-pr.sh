@@ -437,11 +437,11 @@ merge_pr_revert_ok() {
       printf 'merge-pr: warning: could not read merged PR #%s files for the revert check; skipping it\n' "$num" >&2
       continue
     fi
-    # A file both PRs touch: removed lines of this PR that equal lines the merged PR added, at least 5 and half its added lines.
+    # A file both PRs touch: removed lines of this PR that equal lines the merged PR added, at least 5 and half its added lines; lines this PR adds back elsewhere are a move (#1280).
     hit="$(printf '%s\n%s\n' "$mine" "$theirs" | jq -rs '
       def lines($s): [.patch // "" | split("\n")[] | select(startswith($s)) | .[1:] | select(test("\\S"))];
-      .[0] as $mine | .[1] as $theirs
-      | $mine[] as $m | ($m | lines("-")) as $r | select($r | length > 0)
+      def trim: gsub("^\\s+|\\s+$"; ""); .[0] as $mine | .[1] as $theirs | [$mine[] | lines("+")[] | trim] as $moved
+      | $mine[] as $m | ($m | lines("-") | map(select(trim as $t | all($moved[]; . != $t)))) as $r | select($r | length > 0)
       | $theirs[] | select(.filename == $m.filename) | lines("+") as $a | select($a | length > 0)
       | ([$r[] as $x | select(any($a[]; . == $x))] | length) as $hit
       | select($hit >= 5 and $hit * 2 >= ($a | length))
@@ -481,9 +481,9 @@ merge_pr_cancel_ci() {
     | while read -r id; do gh run cancel "$id" >/dev/null 2>&1 || true; done
 }
 
-# GraphQL gh pr merge refused: squash over REST pinned to the head read here, then drop the head ref.
+# GraphQL gh pr merge refused: squash over REST pinned to the head read here, then drop the head ref. A PR closed meanwhile is a stop.
 merge_pr_squash() {
-  local pr="$1" sha="$2" LAND_MERGE_PR_REFUSAL=1
+  local pr="$1" sha="$2" LAND_MERGE_PR_REFUSAL=1; [[ "$(gh api "repos/{owner}/{repo}/pulls/$pr" 2>/dev/null | jq -r '.state // empty' 2>/dev/null)" != closed ]] || { merge_pr_refuse "$pr" 'closed after the lane read it; reopen it to land (11-19: #1283 merged 49 s after its close)'; return 1; }
   LAND_MERGE_REST_FALLBACK=1 land_merge_pr "$pr" "$sha" --delete-branch || return 1
 }
 
