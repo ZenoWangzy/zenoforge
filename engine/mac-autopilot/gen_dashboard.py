@@ -488,8 +488,7 @@ def ssh_out(cmd):
                               capture_output=True, text=True, timeout=20).stdout
     except Exception:
         return ""
-# 部署事实来自 GitHub Deployment。低频主机对账仍看容器的运行镜像和 compose 发布层；发现与最近记录不符时，把观测写成新的 production Deployment。
-RELEASE_DIR_RE = r"/releases/[^/\s,]*?-([0-9a-f]{7,40})/"
+# 部署事实来自 GitHub Deployment。低频主机对账看容器的运行镜像 digest 和镜像 revision label；发现与最近记录不符时，把观测写成新的 production Deployment。
 def sha_epoch(sha):
     try:
         out = subprocess.run(["git", "-C", ROOT, "show", "-s", "--format=%ct", sha],
@@ -550,17 +549,16 @@ try:
 except OSError:
     reconciliation_due = True
 if reconciliation_due and deployment_readable and deployment_records:
+    # Source SHA = the running image's revision label, never an overlay dir name: rollback-6361-<sha> names what it rolled back (11-19).
     inspect_output = ssh_out("docker ps -q | xargs -r docker inspect --format '{{.Image}} "
-                              "{{.Config.Image}} {{index .Config.Labels \"com.docker.compose.project.config_files\"}}'")
+                              "{{.Config.Image}} {{index .Config.Labels \"org.opencontainers.image.revision\"}}'")
     for line in inspect_output.splitlines():
-        digest, _, rest = line.partition(" ")
-        image, _, chain = rest.partition(" ")
-        layers = [full_sha(x) for x in re.findall(RELEASE_DIR_RE, chain)]
-        layers = [x for x in layers if x and sha_epoch(x)]  # compose overlays are appended per deploy: the last layer is what the container runs
-        if not layers or not digest:
+        digest, image, revision = (line.split() + ["", "", ""])[:3]
+        source = full_sha(revision) if re.fullmatch(r"[0-9a-f]{7,40}", revision) else ""
+        if not source or not sha_epoch(source):
             continue
         name = re.sub(r"[:@].*$", "", image.split("/", 1)[-1])
-        observed_pairs.setdefault(name, []).append((layers[-1], digest))
+        observed_pairs.setdefault(name, []).append((source, digest))
     try:
         with open(RECONCILIATION_MARKER, "w", encoding="utf-8") as marker:
             marker.write(str(int(time.time())))

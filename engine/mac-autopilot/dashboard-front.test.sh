@@ -145,7 +145,8 @@ GH
 cat > "$f/bin/ssh" <<SH
 #!/usr/bin/env bash
 echo inspected >> "\$FAKE_SSH_LOG"
-echo "\${FAKE_OBSERVED_IMAGE:-sha256:observed} reg/example-admin:live \${FAKE_OBSERVED_OLD:+/srv/app/releases/main-\$FAKE_OBSERVED_OLD/compose.yml,}/srv/app/releases/main-\${FAKE_OBSERVED_SHA:-$deployed}/compose.yml"
+# fields: running digest, image ref, image revision label, compose config_files (overlay dir names are not a revision)
+echo "\${FAKE_OBSERVED_IMAGE:-sha256:observed} reg/example-admin:live \${FAKE_OBSERVED_REV:-\${FAKE_OBSERVED_SHA:-$deployed}} /srv/app/releases/\${FAKE_OBSERVED_DIR:-main-\${FAKE_OBSERVED_SHA:-$deployed}}/compose.yml"
 SH
 cat > "$f/bin/systemctl" <<'SH'
 #!/usr/bin/env bash
@@ -336,12 +337,17 @@ jq -e --arg sha "$main" '.ref == $sha and .payload.sha == $sha
 grep -Fxq create "$FAKE_DEPLOYMENT_WRITES" && grep -Fxq status "$FAKE_DEPLOYMENT_WRITES" \
   || fail 'host reconciliation Deployment did not receive a success status'
 
-# Compose overlays are appended per deploy: with an older layer first, the container runs the LAST layer, so a record that already
-# names that layer is not drift and must not be rewritten with the older one.
-jq -n --arg sha "$main" '[{id:9,sha:$sha,created_at:"2026-10-24T00:00:00Z",payload:{sha:$sha,images:{"example-admin":"sha256:observed"},image_shas:{"example-admin":$sha}}}]' > "$FAKE_DEPLOYMENTS"
+# 11-19: a rollback overlay dir carries the rolled-back SHA (rollback-6361-<new>) while the container runs the old image.
+# The observed source is the image's revision label, never the overlay dir name.
+jq -n --arg sha "$main" '[{id:9,sha:$sha,created_at:"2026-10-24T00:00:00Z",payload:{sha:$sha,images:{"example-admin":"sha256:new"},image_shas:{"example-admin":$sha}}}]' > "$FAKE_DEPLOYMENTS"
+: > "$FAKE_DEPLOYMENT_WRITES"; rm -f "$a/production-reconciliation-checked" "$FAKE_DEPLOYMENT_WRITES.body"
+FAKE_OBSERVED_DIR="rollback-6361-$main" FAKE_OBSERVED_REV="$deployed" FAKE_OBSERVED_IMAGE=sha256:old run
+jq -e --arg old "$deployed" '.ref == $old and .payload.image_shas["example-admin"] == $old and .payload.images["example-admin"] == "sha256:old"' \
+  "$FAKE_DEPLOYMENT_WRITES.body" >/dev/null || fail "rollback overlay read as the new SHA: $(cat "$FAKE_DEPLOYMENT_WRITES.body" 2>/dev/null)"
+# An image without a revision label is not reconciled at all.
 : > "$FAKE_DEPLOYMENT_WRITES"; rm -f "$a/production-reconciliation-checked"
-FAKE_OBSERVED_OLD="$deployed" FAKE_OBSERVED_SHA="$main" FAKE_OBSERVED_IMAGE=sha256:observed run
-[[ ! -s "$FAKE_DEPLOYMENT_WRITES" ]] || fail "multi-layer compose chain read as drift (oldest layer used): $(cat "$FAKE_DEPLOYMENT_WRITES")"
+FAKE_OBSERVED_REV='<no value>' FAKE_OBSERVED_IMAGE=sha256:other run
+[[ ! -s "$FAKE_DEPLOYMENT_WRITES" ]] || fail "unlabelled image produced a Deployment: $(cat "$FAKE_DEPLOYMENT_WRITES")"
 
 # 7. 看板页面把前段拆进入口 / 顾问 / 发布三个模块渲染，且每块都有"数据不可用"分支（逐模块渲染见 dashboard-modules.test.sh）
 for m in intake advisor release; do grep -Fq "{id:\"$m\"" "$script_dir/dashboard.html" || fail "dashboard.html has no $m module for the front"; done
