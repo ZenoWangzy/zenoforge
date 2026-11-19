@@ -1242,13 +1242,12 @@ $trimmed"
 }
 
 reconcile_needs_info_issues() {
-  local n issue_json lane_match_status last_comment_body
-  for n in $(gh issue list --repo "$REPO" --limit 1000 --label needs-info --state open --json number -q '.[].number'); do
+  local n issue_json issue_list lane_match_status last_comment_body
+  # One list call returns labels and comments for every needs-info issue; a per-issue view was one call each.
+  issue_list="$(gh issue list --repo "$REPO" --limit 1000 --label needs-info --state open --json number,labels,comments)" || return 0
+  for n in $(jq -r '.[].number' <<< "$issue_list"); do
     is_on_hold "$n" && continue
-    if ! issue_json="$(gh issue view "$n" --repo "$REPO" --json number,labels,comments)"; then
-      echo "issue-pipeline: could not read #$n labels/comments; leaving needs-info unchanged" >&2
-      continue
-    fi
+    issue_json="$(jq -c --argjson n "$n" '.[] | select(.number == $n)' <<< "$issue_list")"
     lane_match_status=0
     pipeline_system_issue_matches "$issue_json" || lane_match_status=$?
     case "$lane_match_status" in

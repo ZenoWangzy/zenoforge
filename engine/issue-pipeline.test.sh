@@ -2815,6 +2815,28 @@ rm -f "$CODEX_UNAVAILABLE_MARKER_FILE"
 clock_rc=0; advisor_hold_clock || clock_rc=$?
 assert_eq 'the first tick after the hold ends still charges its last interval' 2 "$(wc -l < "$CODEX_UNAVAILABLE_HOLD_LEDGER")"
 rm -rf "$HOLD_HOME"
+# reconcile_needs_info_issues: one issue list call supplies every row; no per-issue view.
+needs_info_loop_case() (
+  NEEDS_INFO_LOG="$(mktemp)"
+  trap 'rm -f -- "$NEEDS_INFO_LOG"' EXIT  # subshell trap: keeps the test-env cleanup intact
+  gh() {
+    printf '%s\n' "$*" >> "$NEEDS_INFO_LOG"
+    case "$1 $2" in
+      'issue list') printf '%s\n' '[{"number":991301,"labels":[{"name":"needs-info"}],"comments":[{"body":"q"}]},{"number":991302,"labels":[{"name":"needs-info"}],"comments":[]}]' ;;
+      *) return 1 ;;
+    esac
+  }
+  is_on_hold() { return 1; }
+  pipeline_system_issue_matches() { return 1; }
+  needs_info_timeout_step() { printf '%s:%s\n' "$1" "$(jq -r .number <<< "$2")" >> "$NEEDS_INFO_LOG"; NEEDS_INFO_TIMEOUT_ACTION=none; }
+  needs_info_resume_answered_issue() { :; }
+  comment_is_bot() { return 1; }
+  reconcile_needs_info_issues
+  printf 'list=%s view=%s\n' "$(grep -c '^issue list ' "$NEEDS_INFO_LOG" || true)" "$(grep -c '^issue view ' "$NEEDS_INFO_LOG" || true)"
+  grep '^99130' "$NEEDS_INFO_LOG" | grep -v ' ' || true
+)
+assert_eq 'needs-info loop makes one issue list call and no issue view' $'list=1 view=0' "$(needs_info_loop_case | head -1)"
+assert_eq 'needs-info loop hands each listed issue its own row' $'991301:991301\n991302:991302' "$(needs_info_loop_case | tail -n +2)"
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL PASSED"
 else
