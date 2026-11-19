@@ -1484,8 +1484,7 @@ age_candidate() { # number createdAt label state -> intake cache row
 }
 write_age_fixture() { # ready-createdAt review-entered-at
   local ready_at="$1" review_at="$2"
-  printf '{"units":[{"id":"issue-5302","issue":5302,"stage":"implement-pending","history":[{"stage":"write-start","work_type":"implement","at":"2026-10-18T00:00:00Z"}]},\
-{"id":"issue-5389","issue":5389,"stage":"supervisor-review","history":[{"stage":"review-request-changes","at":"2026-10-18T20:00:00Z"},{"stage":"supervisor-escalated","at":"%s"}]}]}\n' "$review_at" > "$ages/units.json"
+  printf '{"units":[{"id":"issue-5302","issue":5302,"stage":"implement-pending","history":[{"stage":"write-start","work_type":"implement","at":"2026-10-18T00:00:00Z"}]},{"id":"issue-5389","issue":5389,"stage":"supervisor-review","history":[{"stage":"review-request-changes","at":"2026-10-18T20:00:00Z"},{"stage":"supervisor-escalated","at":"%s"}]}]}\n' "$review_at" > "$ages/units.json"
   jq -cn --argjson at "$cache_at" --arg rows "$(
     age_candidate 5301 "$ready_at" ready-for-agent
     age_candidate 5302 2026-10-16T00:00:00Z ready-for-agent
