@@ -71,7 +71,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
     cached_at="$(jqf_optional_file "$cache_file" -r '.created_at // empty' 2>/dev/null || true)"
     now="$(date +%s)"
     if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
-      && jqf_optional_file "$cache_file" -e '.schema == 5 and (.rows | type == "string")' >/dev/null 2>&1; then
+      && jqf_optional_file "$cache_file" -e '(.schema == 4 or .schema == 5) and (.rows | type == "string")' >/dev/null 2>&1; then
       if cache_rows="$(jqf_optional_file "$cache_file" -r '.rows')"; then
         printf '%s\n' "$cache_rows"
         return 0
@@ -368,7 +368,7 @@ register_new_issues_pass() {
     intake_left=$(( ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - intake_started - 30 ))
     (( intake_budget <= intake_left )) || intake_budget=$(( intake_left > 0 ? intake_left : 0 ))
   fi
-  intake_skip_cache_load; intake_walk_started=$SECONDS
+  (( existing_only )) || intake_skip_cache_load; intake_walk_started=$SECONDS # the existing walk never reads the skip cache
   while IFS=$'\t' read -r n lane title labels issue64 issue_updated_at; do
     intake_step_at=$SECONDS; [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
@@ -379,7 +379,7 @@ register_new_issues_pass() {
     intake_walked=$((intake_walked + 1))
     intake_candidate_json=''; intake_candidate_scope=''; intake_conflict=''
     issue_json=""
-    [[ "$issue64" == - || -z "$issue64" ]] || issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true; [[ -n "$issue_updated_at" ]] || issue_updated_at="$(jqf -r '.updated_at // .updatedAt // empty' <<<"${issue_json:-{}}" 2>/dev/null || true)"
+    [[ "$issue64" == - || -z "$issue64" ]] || issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true; [[ -n "$issue_updated_at" || -z "$issue_json" ]] || issue_updated_at="$(jqf -r '.updated_at // .updatedAt // empty' <<<"$issue_json" 2>/dev/null || true)"
     state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json"
     # Existing ordinary issues are already registered. Preserve the handoff path
     # whenever any state file exists, including unreadable or malformed files.
