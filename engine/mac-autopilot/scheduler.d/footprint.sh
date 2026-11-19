@@ -442,14 +442,17 @@ hotspot_expand_batch() { # Includes old-rule scope and counts for attribution wi
   local candidates="$1" log min
   log="$(hotspot_log)"
   min="$(hotspot_minimum)"
+  # Ancestor dirs are built once per path and membership is a key read: the old scan of scope per file took 20 s at 800 paths.
   jqf -Rsc --arg min "$min" --slurpfile candidates <(printf '%s' "$candidates") '
-    def in_scope($scope; $path): any($scope[]; . as $s | . == $path or ($path | startswith($s + "/")));
     (split("\u0001") | map(split("\n") | map(select(length > 0)) | unique)) as $commits
+    | ([$commits[][]] | unique | map({key:., value:(split("/") as $parts | [range(0; $parts|length-1) as $k | $parts[0:$k+1] | join("/")])}) | from_entries) as $anc
     | [$candidates[0][] as $candidate
         | ($candidate.scope) as $scope
-        | ([ $commits[] | select(length > 1 and length <= 40)
-             | select(any(.[]; in_scope($scope; .)))
-             | .[] | select(in_scope($scope; .) | not) ]
+        | ($scope | map({key:., value:true}) | from_entries) as $set
+        | def covered($p): ($set[$p] // false) or any(($anc[$p] // [])[]; $set[.] // false);
+          ([ $commits[] | select(length > 1 and length <= 40)
+             | select(any(.[]; covered(.)))
+             | .[] | select(covered(.) | not) ]
           | group_by(.) | map(select(length >= 2) | {f:.[0],n:length})
           | sort_by(-.n) | .[:12]) as $old
         | ($old | map(select($min != "off" and .n >= ($min | tonumber)))) as $added
