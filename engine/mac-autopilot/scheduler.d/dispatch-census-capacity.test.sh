@@ -45,7 +45,6 @@ gh() {
   case "${1:-} ${2:-}" in
     'pr list') cat "$FIXTURE_PRS" ;;
     'pr view') printf 'CONFLICTING %s\n' "$sha" ;; # the one GitHub re-check merge_conflict_to_repair makes
-    'api repos/{owner}/{repo}/issues/'*'/dependencies/blocked_by'*) printf '[]\n' ;; # one native blocked-by read per started implement unit (row 300)
     *) printf 'unexpected gh query during dispatch: %s\n' "$*" >&2; return 97 ;;
   esac
 }
@@ -163,7 +162,7 @@ self_fix_calls=0; stop_loss_calls=0
 self_fix_dispatch() { self_fix_calls=$((self_fix_calls + 1)); }
 to_supervisor() { stop_loss_calls=$((stop_loss_calls + 1)); }
 : > "$fixture/hold.sh"; export ZF_ENGINE_DIR="$fixture"
-gh() { [[ " $* " != *"/dependencies/blocked_by"* ]] || printf '[]\n'; return 0; } # no open native blockers (row 300)
+gh() { return 0; }
 ticket_budget_reason() { printf '9 rounds\n'; }
 : > "$LOG"; SECONDS=0; dispatch_pending false
 [[ "$self_fix_calls" == 0 && "$stop_loss_calls" == 1 ]] || fail "a self-fix passed the stop-loss (fix=$self_fix_calls supervisor=$stop_loss_calls)"

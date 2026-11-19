@@ -624,36 +624,6 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
         fi
         dmark body_block
         dstep room_for room_for "$id" implement "$u" false || { dispatch_why_reason "$id" room-for; continue; }
-        local native_blockers native_blockers_prompt open_native_blockers first_open_native_blocker blocker_number native_issue
-        # After room_for (a full tick makes no gh call) and with this unit's own issue, never a value left by an earlier unit.
-        native_issue="$(jqf -r '.issue // empty' <<<"$u")"
-        # A unit with no issue number has no GitHub issue, so no native blockers to read.
-        if [[ ! "$native_issue" =~ ^[0-9]+$ ]]; then native_blockers='[]'
-        elif ! native_blockers="$(gh api "repos/{owner}/{repo}/issues/$native_issue/dependencies/blocked_by?per_page=100")"; then
-          say "unit $id held: native blocked-by lookup failed"
-          dispatch_skip native-blocker-lookup; continue
-        fi
-        native_blockers="$(jqf -ce 'if type == "array" then map({number,title,state}) else error("blocked_by response is not an array") end' <<<"$native_blockers")" || {
-          say "unit $id held: native blocked-by lookup failed"
-          dispatch_skip native-blocker-lookup; continue
-        }
-        native_blockers_prompt="$(jqf -r 'if length == 0 then "- None" else map("- #\(.number) — \(.title) (\(.state))") | join("\n") end' <<<"$native_blockers")"
-        if jqf -e 'any(.[]; .state == "open")' <<<"$native_blockers" >/dev/null; then
-          dep_delivered_snapshot
-          open_native_blockers=""
-          first_open_native_blocker=""
-          while IFS= read -r blocker_number; do
-            dep_delivered_in_ledger "$blocker_number" && continue
-            if [[ -n "$open_native_blockers" ]]; then open_native_blockers+=", "; fi
-            open_native_blockers+="#$blocker_number"
-            if [[ -z "$first_open_native_blocker" ]]; then first_open_native_blocker="$blocker_number"; fi
-          done < <(jqf -r '[.[] | select(.state == "open") | .number][]' <<<"$native_blockers")
-          if [[ -n "$first_open_native_blocker" ]]; then
-            say "unit $id held for open native blocker(s): $open_native_blockers"
-            park_blocked "$id" "$first_open_native_blocker"
-            dispatch_skip native-blocked; continue
-          fi
-        fi
         dstep pick pick implement "$u" || { dispatch_skip pick; dispatch_why_reason "$id" picker-unavailable; continue; }
         dstep footprint_room footprint_room "$id" "$u" true || {
           local footprint_reason=footprint-check-failed
@@ -739,9 +709,6 @@ $(implement_report_sections)
         feature_brief="$(verification_plan_brief "$feature_plan")"
         prompt="GOAL：
 $task
-
-GitHub native blocked-by issues at dispatch time:
-$native_blockers_prompt
 
 SCOPE：
 issue 写明的前置 issue 尚未交付（仍 open、没有已合并的修复）时不要改代码，报告第一行写 BLOCKED-ON: #<前置 issue 号>，流水线会在前置交付后重派。路线图 epic/主题（roadmap-epic、roadmap-theme、roadmap 标签的伞形 issue）不是前置：不要对它写 BLOCKED-ON，直接实现本 issue 自己的切片。

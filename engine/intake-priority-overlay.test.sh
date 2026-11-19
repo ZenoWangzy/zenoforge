@@ -50,8 +50,6 @@ case "${1:-} ${2:-}" in
       printf '9031001\n'
     elif [[ " $* " == *"/issues/9021 --jq"* ]]; then
       printf '9021001\n'
-    elif [[ " $* " == *"/dependencies/blocked_by"* ]]; then
-      printf '[]\n' # the dispatch native-blocker gate (row 300): no blockers in this fixture
     elif [[ " $* " == *"/issues/101/sub_issues"* ]]; then
       printf '%s\n' 'An error occurred while adding the sub-issue to the parent issue. Parent cannot have more than N sub-issues' >&2
       exit 1

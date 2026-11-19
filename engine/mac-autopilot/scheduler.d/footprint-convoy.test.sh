@@ -18,7 +18,6 @@ printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
-gh() { [[ " $* " == *"/dependencies/blocked_by"* ]] && printf '[]\n'; } # the native blocked-by read (row 300); no other gh call here
 
 LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
 UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
