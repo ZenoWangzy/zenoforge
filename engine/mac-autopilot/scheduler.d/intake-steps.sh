@@ -25,6 +25,72 @@ intake_steps_say() {
   while IFS= read -r step_name; do step_line+=" $step_name=${intake_step_secs[$step_name]}s/${intake_step_counts[$step_name]}"; done < <(for step_name in "${!intake_step_secs[@]}"; do printf '%s %s\n' "${intake_step_secs[$step_name]}" "$step_name"; done | sort -k1,1nr -k2,2 | cut -d' ' -f2)
   say "$step_line"
 }
+issue_skip_labels() {
+  jqf -cn --arg hotfix "$(hotfix_lane_label)" \
+    '["on-hold","needs-info","awaiting-release","ready-for-human","needs-owner","needs-advisor","needs-triage","roadmap-epic","roadmap-theme","roadmap","concluded","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane","session-owned",$hotfix] | unique'
+}
+# A parent verdict also reads other issues (sub-issues, blockers), whose change need not move this issue's updatedAt,
+# so a cached verdict lives at most INTAKE_SKIP_CACHE_TTL seconds (default 1 h) and is then read again.
+intake_skip_cache_load() {
+  local n updated_at verdict stamped now ttl="${INTAKE_SKIP_CACHE_TTL:-3600}"
+  now="$(date +%s)"
+  while IFS=$'\t' read -r n updated_at verdict stamped; do
+    [[ "$n" =~ ^[0-9]+$ && -n "$updated_at" && "$stamped" =~ ^[0-9]+$ ]] || continue
+    (( now >= stamped && now - stamped < ttl )) || continue
+    case "$verdict" in parent|author_hold|m5|task) ;; *) continue ;; esac
+    intake_skip_cache_at["$n"]="$updated_at"; intake_skip_cache_verdict["$n"]="$verdict"; intake_skip_cache_stamp["$n"]="$stamped"
+  done < <(jqf_optional_file "$A/intake-candidates.json" -r '
+    if .schema == 5 and (.skipped | type == "object") then
+      .skipped | to_entries[] | [.key, .value.updated_at // "", .value.verdict // "", (.value.at // "" | tostring)] | @tsv
+    else empty end' 2>/dev/null || true)
+}
+intake_skip_cache_hit() {
+  local n="$1" updated_at="$2" verdict="${intake_skip_cache_verdict[$1]:-}"
+  [[ -n "$updated_at" && "${intake_skip_cache_at[$n]:-}" == "$updated_at" && -n "$verdict" ]] || return 1
+  intake_skip "$verdict" cached
+}
+intake_skip_cache_flush() {
+  local cache_file="$A/intake-candidates.json" cache_tmp updates cache n
+  (( ${#intake_skip_cache_pending[@]} )) || return 0
+  updates="$(for n in "${!intake_skip_cache_pending[@]}"; do
+    printf '%s\t%s\t%s\t%s\n' "$n" "${intake_skip_cache_at[$n]}" "${intake_skip_cache_verdict[$n]}" "${intake_skip_cache_stamp[$n]}"
+  done | jqf -Rn '[inputs | split("\t") | {key:.[0],value:{updated_at:.[1],verdict:.[2],at:(.[3] | tonumber)}}] | from_entries')" || return 0
+  cache_tmp="$cache_file.skip.$BASHPID.$RANDOM.tmp"
+  if ! (
+    exec 9>"$cache_file.lock" || exit 1
+    flock -x 9 || exit 1
+    cache="$(jqf_optional_file "$cache_file" -c '.' 2>/dev/null || printf '{}')"
+    jqf -cn --argjson cache "$cache" --argjson updates "$updates" \
+      '{schema:5,created_at:($cache.created_at // 0),rows:($cache.rows // ""),skipped:(($cache.skipped // {}) + $updates)}' >"$cache_tmp" \
+      && mv -f -- "$cache_tmp" "$cache_file"
+  ); then
+    rm -f -- "$cache_tmp"
+    say "intake skip cache write failed"
+  fi
+}
+intake_candidates_cache_write() {
+  local cache_file="$1" rows_file="$2" json_tmp="$3" created_at="$4" skipped
+  (
+    exec 9>"$cache_file.lock" || exit 1
+    flock -x 9 || exit 1
+    skipped="$(jqf_optional_file "$cache_file" -c '.skipped // {}' 2>/dev/null || printf '{}')"
+    jqf -Rs --argjson created_at "$created_at" --argjson skipped "$skipped" '
+      . as $rows
+      | ($rows | split("\n") | map(select(length > 0) | split("\t")[0] | tonumber?)) as $numbers
+      | {schema:5,created_at:$created_at,rows:($rows | rtrimstr("\n")),
+          skipped:($skipped | with_entries(select((.key | tonumber?) as $n | $n != null and (($numbers | index($n)) != null))))}' \
+      <"$rows_file" >"$json_tmp" && mv -f -- "$json_tmp" "$cache_file"
+  )
+}
+intake_skip() {
+  intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); intake_mark "skip_$1"
+  if [[ "${2:-}" != cached && -n "${issue_updated_at:-}" && "${n:-}" =~ ^[0-9]+$ ]]; then
+    case "$1" in
+      parent|author_hold|m5|task)
+        intake_skip_cache_at["$n"]="$issue_updated_at"; intake_skip_cache_verdict["$n"]="$1"; intake_skip_cache_stamp["$n"]="$(date +%s)"; intake_skip_cache_pending["$n"]=1 ;;
+    esac
+  fi
+}
 # Rows intake drops with only a count, or none: skip-label rows in intake_candidates and open-PR mentions in register_new_issues.
 # One `intake skip issue #N: reason` per issue and reason, repeated at most every 6h ($A/intake-skip-noted.tsv: "n reason<TAB>epoch").
 intake_skip_stamp() {

@@ -24,6 +24,7 @@ source "$script_dir/scheduler.d/intake-steps.sh"
 source "$script_dir/scheduler.d/intake-index.sh"
 source "$script_dir/scheduler.d/recut-reopen.sh"
 source "$script_dir/scheduler.d/intake.sh"
+real_intake_candidates="$(declare -f intake_candidates)"
 UNITS_ARCHIVE="$A/units-archive.json"
 
 refill_room() { return 0; }
@@ -36,6 +37,7 @@ intake_candidates() {
   if [[ "${TERMINAL_ROW_ONLY:-}" == true ]]; then printf '1\tpr\tt\t[]\t\n'; else printf '1\tpr\tt\t[]\t\n2\tpr\tt\t[]\t\n3\tpr\tt\t[]\t\n4\tpr\tt\t[]\t\n'; fi
 }
 hotfix_issue_numbers() { return 0; }
+hotfix_lane_label() { printf 'hotfix-lane\n'; }
 tick_prs_prime() { :; }
 tick_prs() { return 1; }
 intake_gh_read() { printf '[]\n'; }
@@ -60,7 +62,7 @@ reset_units() {
 }
 
 # All four rows are census_partial: one ledger write for the walk, and every row's wait is there at the end.
-jq -cn '{schema:4,created_at:0,rows:"1\tpr\tt\t[]\t\n2\tpr\tt\t[]\t\n3\tpr\tt\t[]\t\n4\tpr\tt\t[]\t\n"}' > "$A/intake-candidates.json"
+jq -cn '{schema:5,created_at:0,rows:"1\tpr\tt\t[]\t\n2\tpr\tt\t[]\t\n3\tpr\tt\t[]\t\n4\tpr\tt\t[]\t\n",skipped:{}}' > "$A/intake-candidates.json"
 reset_units
 register_new_issues 0 true
 [[ "$(grep -c -- '--slurpfile ops' "$updates")" == 1 ]] || { echo 'not ok - refill census_partial rows were not one ledger update' >&2; cat "$updates" >&2; exit 1; }
@@ -93,5 +95,66 @@ grep -Fq 'intake closed units deferred to the register step count=1 ids=1' "$LOG
 rm -f "$closed_unit_calls"
 TERMINAL_ROW_ONLY=true register_new_issues 0 false
 [[ "$(cat "$closed_unit_calls")" == 1 ]] || { echo 'not ok - non-refill intake did not run closed-unit handling' >&2; exit 1; }
+
+# Reuse an issue-derived skip while updated_at is stable, and revisit the issue after it changes.
+issue_reads="$fixture/issue-views"; : > "$issue_reads"
+candidate_updated_at=2026-11-12T00:00:00Z
+intake_candidates() { printf '99\tpr\tfixture\t[]\t-\t%s\n' "$candidate_updated_at"; }
+intake_gh_read() {
+  if [[ "$1 $2" == 'issue view' ]]; then
+    printf '%s\n' "$*" >> "$issue_reads"
+    printf '%s\n' '{"number":99,"title":"fixture","body":"","state":"OPEN","labels":[{"name":"ready-for-agent"}]}'
+  else
+    printf '[]\n'
+  fi
+}
+scheduler_issue_intake_parent_reason() { return 1; }
+scheduler_lib_context() { :; }
+intake_author_gate() { return 1; }
+HANDOFF_PR_CENSUS='[]' HANDOFF_CENSUS_PARTIAL=1 HANDOFF_WAIT_PRS='[]' HANDOFF_WAIT_BRANCHES='[]'
+jq -cn --arg rows "$(printf '99\tpr\tfixture\t[]\t-\t%s' "$candidate_updated_at")" \
+  '{schema:5,created_at:0,rows:$rows,skipped:{}}' > "$A/intake-candidates.json"
+jq -n '{units:[]}' > "$UNITS"
+register_new_issues 0 true
+[[ "$(wc -l < "$issue_reads")" == 1 ]] || { echo 'not ok - first walk did not read issue 99 once' >&2; exit 1; }
+cp "$LOG" "$fixture/first-walk.log"
+: > "$LOG"
+register_new_issues 0 true
+[[ "$(wc -l < "$issue_reads")" == 1 ]] || { echo 'not ok - unchanged issue 99 was reread' >&2; cat "$issue_reads" >&2; exit 1; }
+grep -Eq 'intake walk refill=true walked=1 cached=0 secs=[0-9]+' "$fixture/first-walk.log" || { echo 'not ok - first walk metrics' >&2; cat "$fixture/first-walk.log" >&2; exit 1; }
+grep -Eq 'intake walk refill=true walked=0 cached=1 secs=[0-9]+' "$LOG" || { echo 'not ok - cached walk metrics' >&2; cat "$LOG" >&2; exit 1; }
+candidate_updated_at=2026-11-12T00:00:01Z
+: > "$LOG"
+register_new_issues 0 true
+[[ "$(wc -l < "$issue_reads")" == 2 ]] || { echo 'not ok - changed issue 99 updated_at did not trigger a reread' >&2; cat "$issue_reads" >&2; exit 1; }
+jq -e '.skipped["99"].updated_at == "2026-11-12T00:00:01Z"' "$A/intake-candidates.json" >/dev/null \
+  || { echo 'not ok - changed updated_at did not replace the cached verdict key' >&2; cat "$A/intake-candidates.json" >&2; exit 1; }
+grep -Eq 'intake walk refill=true walked=1 cached=0 secs=[0-9]+' "$LOG" || { echo 'not ok - changed walk metrics' >&2; cat "$LOG" >&2; exit 1; }
+# A parent verdict also reads other issues, so a cached verdict past its TTL is read again even with the same updated_at.
+jq '.skipped["99"].at = 1' "$A/intake-candidates.json" > "$A/intake-candidates.next" && mv -f "$A/intake-candidates.next" "$A/intake-candidates.json"
+: > "$LOG"
+register_new_issues 0 true
+[[ "$(wc -l < "$issue_reads")" == 3 ]] || { echo 'not ok - a cached verdict past its TTL was not read again' >&2; cat "$issue_reads" >&2; exit 1; }
+jq '.skipped["100"] = {updated_at:"2026-11-12T00:00:00Z",verdict:"parent"}' "$A/intake-candidates.json" > "$A/intake-candidates.next"
+mv -f "$A/intake-candidates.next" "$A/intake-candidates.json"
+eval "$real_intake_candidates"
+# Do not let the optional priority judge inherit a live repository from the test runner.
+HERE="$script_dir" GH_PARALLEL=1 REPO= ZF_REPO=
+list_args="$fixture/issue-list-args"; : > "$list_args"
+intake_gh_read() {
+  if [[ "$1 $2" == 'issue list' ]]; then
+    printf '%s\n' "$*" >> "$list_args"
+    printf '%s\n' '[{"number":99,"title":"fixture","body":"","state":"OPEN","labels":[{"name":"ready-for-agent"}],"subIssuesSummary":{"total":0},"blockedBy":{"nodes":[]},"updatedAt":"2026-11-12T00:00:01Z"}]'
+  else
+    printf '[]\n'
+  fi
+}
+actual_candidate_rows="$(intake_candidates false)"
+grep -Fq -- '--json number,title,body,state,labels,subIssuesSummary,blockedBy,updatedAt' "$list_args" \
+  || { echo 'not ok - issue list did not request updatedAt' >&2; cat "$list_args" >&2; exit 1; }
+[[ "$(cut -f6 <<<"$actual_candidate_rows")" == 2026-11-12T00:00:01Z ]] \
+  || { echo 'not ok - candidate row did not carry updatedAt' >&2; printf '%s\n' "$actual_candidate_rows" >&2; exit 1; }
+jq -e '.schema == 5 and ([.skipped | keys[]] == ["99"])' "$A/intake-candidates.json" >/dev/null \
+  || { echo 'not ok - candidate refresh kept verdicts for removed issues' >&2; cat "$A/intake-candidates.json" >&2; exit 1; }
 
 echo 'ok - refill intake writes its census_partial wait marks in one ledger update, also on a budget stop'

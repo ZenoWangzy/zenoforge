@@ -30,10 +30,6 @@ intake_gh_read() {
   (( SECONDS - started < 2 )) || say "intake detail gh_${1:-read}_${2:-query} secs=$((SECONDS - started))s"
   return "$rc"
 }
-issue_skip_labels() {
-  jqf -cn --arg hotfix "$(hotfix_lane_label)" \
-    '["on-hold","needs-info","awaiting-release","ready-for-human","needs-owner","needs-advisor","needs-triage","roadmap-epic","roadmap-theme","roadmap","concluded","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane","session-owned",$hotfix] | unique'
-}
 issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement 任务文本
   local json body task body_blocked_by skip_labels labels
   if [[ "${2:-}" == require-ready ]]; then
@@ -75,7 +71,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
     cached_at="$(jqf_optional_file "$cache_file" -r '.created_at // empty' 2>/dev/null || true)"
     now="$(date +%s)"
     if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
-      && jqf_optional_file "$cache_file" -e '.schema == 4 and (.rows | type == "string")' >/dev/null 2>&1; then
+      && jqf_optional_file "$cache_file" -e '.schema == 5 and (.rows | type == "string")' >/dev/null 2>&1; then
       if cache_rows="$(jqf_optional_file "$cache_file" -r '.rows')"; then
         printf '%s\n' "$cache_rows"
         return 0
@@ -103,7 +99,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       [[ -n "$lane" && -n "$label" ]] || continue
       [[ "$refill_mode" != true || $index -lt 1 ]] || break
       query_file="$query_dir/$index.json"
-      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,subIssuesSummary,blockedBy >"$query_file" 2>/dev/null &
+      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,subIssuesSummary,blockedBy,updatedAt >"$query_file" 2>/dev/null &
       query_pids+=("$!"); query_files+=("$query_file"); query_lanes+=("$lane")
       gh_par_throttle query_pids
       index=$((index + 1))
@@ -134,15 +130,14 @@ json.dump(rows, sys.stdout, separators=(",", ":"))
           elif ($n | index("legacy")) then 7 else 6 end;
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
       | sort_by([rank, (if ._auto_filed then 1 else 0 end), -.number])
-      | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)"'
+      | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)\t\(.updatedAt // .updated_at // "")"'
     intake_skip_label_report "$query_dir/rows.json" "$skip_labels"
     if (( valid_queries == expected_queries && ${#query_files[@]} == expected_queries )); then : >"$cache_valid_tmp"; fi
   ) >"$cache_rows_tmp"
   if [[ -f "$cache_valid_tmp" ]]; then
     rm -f -- "$cache_valid_tmp"
     now="$(date +%s)"
-    if jqf -Rs --argjson created_at "$now" '{schema:4,created_at:$created_at,rows:rtrimstr("\n")}' \
-      <"$cache_rows_tmp" >"$cache_json_tmp" && mv -f -- "$cache_json_tmp" "$cache_file"; then
+    if intake_candidates_cache_write "$cache_file" "$cache_rows_tmp" "$cache_json_tmp" "$now"; then
       if [[ "$refill_mode" != true && -n "${INTAKE_FULL_SCAN_FLAG:-}" ]]; then : > "$INTAKE_FULL_SCAN_FLAG"; fi
     else
       rm -f -- "$cache_json_tmp"
@@ -234,7 +229,6 @@ startable_pending_count() { # pending units eligible to start under intake's #15
 # station_health.py reads this marker so a pass that took nothing on purpose is HELD, not STALLED. It keeps the hold's first
 # time (a long hold is measured from its start) and goes when a pass gets past the held checks, which is when intake can add.
 intake_hold_mark() { [[ -e "$A/intake-held-since" ]] || date -u +%Y-%m-%dT%H:%M:%SZ > "$A/intake-held-since"; }
-intake_skip() { intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); intake_mark "skip_$1"; } # bumps register_new_issues' local intake_skip_counts (dynamic scope); a skipped row's time goes to skip_<reason>
 intake_census_prime() { # the open-PR census the handoff block reads; register_new_issues calls it, and so does a tick that left the walk to the existing-walk station
   local cached_prs pr_number
   HANDOFF_CENSUS_PARTIAL=0; HANDOFF_WAIT_PRS='[]'; HANDOFF_WAIT_BRANCHES='[]'
@@ -259,13 +253,13 @@ register_new_issues_pass() {
   local cached_prs busy_prs issue64
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
   local issue_json parent_reason parent_status parent_step parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_candidate_stage intake_conflict state_read_status state_read_value
-  local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
-  local intake_budget intake_left intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue
+  local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room intake_walk_refill=false; [[ "$refill_mode" != true ]] || intake_walk_refill=true
+  local intake_budget intake_left intake_started=$SECONDS step_started=$SECONDS candidate_started full_at now fresh_seconds existing_issue issue_updated_at intake_walked=0 intake_cached=0 intake_walk_started=$SECONDS
   local l_ambiguous wait_ops='' wait_ops_on=1 ix_sig='' ix_ok=0 cx_src=$'\001' cx_ok=0 lookup_fast=0 known_prs known_list=() hotfix_prs l_amb l_hot l_count l_first_pr l_first_head l_ids l_hotpath row_consumed lookup_rc
   local -A ix_issue=() ix_branch=() ix_pr=() ix_ref=() cx_issue=() cx_has=() cx_hotnum=() cx_bynum=(); local -a ix_id=() ix_stage=() ix_prn=() ix_ep=() ix_prnum=() ix_iany=() cx_num=() cx_amb=() cx_hotf=() cx_head=() cx_ent=() cx_entf=()
   local walk_cursor="$A/intake-existing-cursor" walk_from walk_start='' walk_rows=0 walk_broke=''
   local INTAKE_FULL_SCAN_FLAG="$A/.intake-full-scan.$BASHPID.$RANDOM"
-  local -A intake_known_issues=() intake_skip_counts=() intake_step_secs=() intake_step_counts=()
+  local -A intake_known_issues=() intake_skip_counts=() intake_step_secs=() intake_step_counts=() intake_skip_cache_at=() intake_skip_cache_verdict=() intake_skip_cache_stamp=() intake_skip_cache_pending=()
   local intake_step_at=$SECONDS skip_key skip_line step_name step_line
   [[ "$refill_mode" != true ]] || refill_room register_new_issues || return 0
   if [[ "$refill_mode" == true ]]; then
@@ -374,16 +368,18 @@ register_new_issues_pass() {
     intake_left=$(( ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - intake_started - 30 ))
     (( intake_budget <= intake_left )) || intake_budget=$(( intake_left > 0 ? intake_left : 0 ))
   fi
-  while IFS=$'\t' read -r n lane title labels issue64; do
+  intake_skip_cache_load; intake_walk_started=$SECONDS
+  while IFS=$'\t' read -r n lane title labels issue64 issue_updated_at; do
     intake_step_at=$SECONDS; [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
     refill_stopped && break # a refused ledger lock wait ended the refill
     # The existing walk always takes its first row, so a census longer than the budget still moves the cursor.
     (( SECONDS - intake_started < intake_budget || (existing_only && walk_rows == 0) )) || { say "intake budget spent after ${intake_budget}s: rows from #$n wait for the next tick"; walk_broke="$n"; intake_skip budget; break; }
     walk_rows=$((walk_rows+1))
+    intake_walked=$((intake_walked + 1))
     intake_candidate_json=''; intake_candidate_scope=''; intake_conflict=''
     issue_json=""
-    [[ -n "$issue64" ]] && issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true
+    [[ "$issue64" == - || -z "$issue64" ]] || issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true; [[ -n "$issue_updated_at" ]] || issue_updated_at="$(jqf -r '.updated_at // .updatedAt // empty' <<<"${issue_json:-{}}" 2>/dev/null || true)"
     state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json"
     # Existing ordinary issues are already registered. Preserve the handoff path
     # whenever any state file exists, including unreadable or malformed files.
@@ -615,6 +611,9 @@ register_new_issues_pass() {
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
       ! intake_parent_retry_waiting "$n" || { intake_skip parent_retry; continue; }
+      if intake_skip_cache_hit "$n" "$issue_updated_at"; then
+        intake_walked=$((intake_walked - 1)); intake_cached=$((intake_cached + 1)); continue
+      fi
       [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary,blockedBy 2>/dev/null)" || { intake_skip issue_read; continue; }; intake_mark issue_read
       scheduler_lib_context || true # prime here: the substitution below is a subshell and cannot cache
       if parent_reason="$(scheduler_issue_intake_parent_reason "$n" "$issue_json")"; then
@@ -771,6 +770,7 @@ register_new_issues_pass() {
     added=$((added+1)); INTAKE_ADDED=$((${INTAKE_ADDED:-0}+1)) # refill dispatches again only when intake added work
     say "intake issue #$n -> implement-pending ($lane)"
   done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode" "$intake_started" "$intake_budget"; fi)
+  say "intake walk refill=$intake_walk_refill walked=$intake_walked cached=$intake_cached secs=$((SECONDS - intake_walk_started))"; intake_skip_cache_flush
   intake_ops_flush
   if (( existing_only )); then
     if [[ -n "$walk_broke" ]]; then printf '%s\n' "$walk_broke" > "$walk_cursor"; else rm -f -- "$walk_cursor"; fi
