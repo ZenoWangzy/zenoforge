@@ -48,8 +48,22 @@ quick_land_refusal() { # <number of --test> <prior-art text> [test commands] →
 }
 
 # Checks that need the new commit: the rule lane and the size ratchet, on this change's own files only.
-quick_land_commit_refusal() {
-  local out
+# 11-19: 47bc387 landed with only intake-refill-flush.test.sh while the focused selection also named intake-existing-walk and
+# intake-missing-state; both went red on main. Every focused test must be a --test, except the whole scheduler suites that take
+# about 25 min each (scheduler.test.sh, scheduler-gates.test.sh, scheduler-part-N.test.sh): main CI runs those.
+quick_land_missing_focused() { # <test commands> -> prints each focused test path of origin/main..HEAD the commands do not name
+  local path
+  while IFS= read -r path; do
+    [[ "$path" == engine/* || "$path" == tools/* ]] || continue
+    case "${path##*/}" in scheduler.test.sh|scheduler-gates.test.sh|scheduler-part-*.test.sh) continue ;; esac
+    [[ " ${1:-} " == *" $path "* ]] || printf '%s\n' "$path"
+  done < <(${QUICK_LAND_FOCUSED:-node engine/focused-test-paths.mjs} --range origin/main HEAD 2>/dev/null)
+}
+
+quick_land_commit_refusal() { # [test commands]
+  local out missing
+  missing="$(quick_land_missing_focused "${1:-}")"
+  [[ -z "$missing" ]] || { echo "focused tests missing from --test: $(paste -sd' ' <<<"$missing")"; return 0; }
   [[ -f engine/rule-lane.sh ]] || { echo 'engine/rule-lane.sh is missing'; return 0; }
   bash engine/rule-lane.sh origin/main HEAD >/dev/null 2>&1 || { echo 'rule-lane refused the change'; return 0; }
   local hit log="${TMPDIR:-/tmp}/quick-land-pin-$(git rev-parse --short HEAD).log"
@@ -98,7 +112,7 @@ quick_land_main() {
   git switch -q -c "$branch"
   git commit -qm "$subject" ${prior:+-m $'## prior-art\n'"$prior"} ${trailer:+-m "$trailer"}
   # From here a refusal keeps the committed branch for inspection or a PR; only a landed change returns to origin/main.
-  reason="$(quick_land_commit_refusal)"
+  reason="$(quick_land_commit_refusal "${tests[*]-}")"
   if [[ -n "$reason" ]]; then
     echo "quick-land: use the normal PR path: $reason (branch $branch kept)" >&2
     return 1

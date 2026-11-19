@@ -74,6 +74,12 @@ reset_fixture
 printf 'x\n' > engine/over.sh
 git add -A
 [[ -z "$(quick_land_refusal 1 "$pa")" ]] || fail 'an overridden file was refused before its pin dry run (founder 11-19: changes go live directly)'
+# Focused tests (11-19, 47bc387): a focused path not named by a --test refuses; the 25-min scheduler suites are left to CI.
+QUICK_LAND_FOCUSED='printf %s\n engine/a.test.sh engine/mac-autopilot/scheduler-part-3.test.sh engine/b.test.mjs #'
+[[ "$(quick_land_missing_focused 'bash engine/a.test.sh')" == engine/b.test.mjs ]] || fail 'a focused test missing from --test was not named'
+[[ -z "$(quick_land_missing_focused 'bash engine/a.test.sh node engine/b.test.mjs')" ]] || fail 'all focused tests given still refused'
+[[ -z "$(quick_land_missing_focused 'bash engine/a.test.sh node engine/b.test.mjs' | grep scheduler-part)" ]] || fail 'a scheduler partition was required locally'
+unset QUICK_LAND_FOCUSED
 [[ "$(quick_land_override_hit engine/over.sh)" == engine/over.sh ]] || fail 'the override table no longer names engine/over.sh, so no pin dry run would run'
 reset_fixture
 
