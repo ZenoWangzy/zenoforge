@@ -652,8 +652,8 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
 }
 
 coord_reconcile_scheduler_workers() { # snapshot workers; check processes unlocked; mutate claims under a short ledger lock
-  local worker key owner unit pid harvested expired workers_snapshot unknown=0 rc
-  workers_snapshot="$(coord_with_scheduler_lock jqf -c '.workers[]' "$WORKERS")" || return 1
+  local worker key owner unit pid harvested expired workers_snapshot unknown=0 rc; RECONCILE_SETTLED=()
+  workers_snapshot="$(coord_with_scheduler_lock jqf -c '.workers[] | select(.claim_key and .claim_owner and .claim_released != true and (.harvested == true or .lease_expired != true))' "$WORKERS")" || return 1
   while IFS= read -r worker; do
     key="$(jqf -r '.claim_key // empty' <<<"$worker")"
     owner="$(jqf -r '.claim_owner // empty' <<<"$worker")"
@@ -669,7 +669,7 @@ coord_reconcile_scheduler_workers() { # snapshot workers; check processes unlock
         coord_with_scheduler_lock coord_reconcile_scheduler_worker_locked "$worker" renew || { rc=$?; (( rc == 3 )) && { unknown=1; say "claim reconciliation deferred unit=$unit"; }; }
       fi
     fi
-  done <<<"$workers_snapshot"
+  done <<<"$workers_snapshot"; coord_mark_settled_claims || :
   (( unknown == 0 ))
 }
 stuck_worker_disposition() {

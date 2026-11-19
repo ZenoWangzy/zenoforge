@@ -69,6 +69,14 @@ assert '--last' not in calls[0] and '--ephemeral' not in calls[0], calls
 PY
 echo 'PASS repair resumes with only new failure'
 harvest_completed
+# A settled claim is marked once and never re-released on later ticks (11-19: 48 settled claims cost ~1000 forks a tick).
+jq -e '[.workers[] | select(.harvested == true and .claim_key)] | length > 0 and all(.claim_released == true)' "$WORKERS" >/dev/null \
+  || fail "a released claim was not marked settled: $(jq -c '.workers' "$WORKERS")"
+eval "$(declare -f coord_release | sed '1s/^coord_release/coord_release_real/')"
+coord_release() { echo "$1" >> "$fixture/releases"; coord_release_real "$@"; }
+coord_reconcile_scheduler_workers || fail "claim reconciliation failed on the settled ledger"
+[[ ! -s "$fixture/releases" ]] || fail "a settled claim was released again: $(cat "$fixture/releases")"
+eval "$(declare -f coord_release_real | sed '1s/^coord_release_real/coord_release/')"
 
 assert_call() { # expected mode, prompt, optional session id
   python3 - "$CALLS" "$1" "$2" "${3:-}" <<'PY'

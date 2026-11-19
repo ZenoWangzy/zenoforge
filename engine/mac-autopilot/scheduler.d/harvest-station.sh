@@ -79,9 +79,16 @@ coord_reconcile_scheduler_worker_locked() { # snapshot action; call only under t
   expected="$(jqf -cS . <<<"$worker")"
   [[ "$current" == "$expected" ]] || return 0
   case "$action" in
-    release) coord_release "$key" "$owner" >/dev/null 2>&1 || : ;;
+    release) coord_release "$key" "$owner" >/dev/null 2>&1; (( $? > 1 )) || RECONCILE_SETTLED+=("$owner") ;; # 0 released, 1 gone or not ours
     renew) coord_renew "$key" "$owner" || say "claim renewal lost unit=$(jqf -r '.unit' <<<"$worker")" ;;
   esac
+}
+# A settled claim (released, gone, or another owner's) is marked once; coord_reconcile_scheduler_workers skips marked
+# workers and expired unharvested leases. 11-19 every refill re-released 48 settled claims, about 1000 forks a tick.
+coord_mark_settled_claims() {
+  (( ${#RECONCILE_SETTLED[@]} )) || return 0
+  workers_update --argjson owners "$(printf '%s\n' "${RECONCILE_SETTLED[@]}" | jq -Rsc 'split("\n")[:-1]')" \
+    '(.workers[] | select(.harvested == true and (.claim_owner as $o | $owners | index($o))) | .claim_released) = true'
 }
 harvest_unit_snapshot() { # return the captured unit row during station harvest; otherwise read the ledger
   if [[ "${HARVEST_CAS_ACTIVE:-false}" == true && "$1" == "${HARVEST_CAS_UNIT:-}" ]]; then
