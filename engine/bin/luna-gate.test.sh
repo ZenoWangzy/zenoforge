@@ -5,6 +5,7 @@ bin=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$bin/../mac-autopilot/scheduler.d/self-check.sh"
 root=$(mktemp -d); trap 'rm -rf "$root" "$test_env_root"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
+export LUNA_WORKER_SLICE_DIR="$root/no-slice" # cases below must not read the host's live worker slice
 
 # gate <file> <avail_mb> <psi_full> <priority> <age_seconds> <cpu_busy> [runs]: prints admission and any refusal reason.
 # Loads the real box_has_room from the file. PSI some is fixed at 32 (the live value that used to block hotfix).
@@ -102,4 +103,23 @@ cpu_sample_reuse_case() (
   [[ "$(samples_taken)" == 2 ]] || fail "cpu_busy ran $(samples_taken) times after the TTL, want 2"
 )
 cpu_sample_reuse_case
+# Worker slice budget (11-19): one worker peak must fit under memory.high, for every tier including hotfix.
+slice_budget_case() (
+  local mem="$root/slice-meminfo" psi="$root/slice-psi" sl="$root/slice"
+  mkdir -p "$sl"; echo 3221225472 > "$sl/memory.high"
+  printf 'MemAvailable: 6144000 kB\n' > "$mem"
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
+  export LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" LUNA_MIN=2 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=101 LUNA_WORKER_SLICE_DIR="$sl"
+  source "$bin/luna-capacity.sh"
+  codex_runs() { echo 0; }
+  cpu_busy() { echo 0; }
+  echo $(( 2400 * 1048576 )) > "$sl/memory.current"
+  if LUNA_PRIORITY=hotfix box_has_room 0; then fail 'a start with 672 MB left under the slice high was admitted'; fi
+  [[ "$BOX_ROOM_WHY" == 'worker slice 672MB left under memory.high < 1200MB worker peak' ]] || fail "slice reason: $BOX_ROOM_WHY"
+  echo $(( 1000 * 1048576 )) > "$sl/memory.current"
+  box_has_room 0 || fail "a start with 2072 MB left under the slice high was refused: $BOX_ROOM_WHY"
+  echo max > "$sl/memory.high"
+  box_has_room 0 || fail 'memory.high=max must not refuse'
+)
+slice_budget_case
 echo "ok - hotfix admits at 3 GB with full < 10; normal and aging admit at the 3328 MB floor with full < 10; full 12 refused; in luna and zc"

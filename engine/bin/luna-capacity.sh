@@ -5,15 +5,31 @@ luna_run_cap() { local cap="${LUNA_MAX:-$LUNA_RUNS_HARD_CAP}"; (( cap < LUNA_RUN
 cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
   local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
   echo $(( 100 * busy / (busy + idle + 1) )); }
+# 11-19 (head row, vecta-81 cgroup read): zf-workers.slice sat at its MemoryHigh while MemAvailable still passed, so admitted
+# workers were throttled in reclaim (load1 60 with idle CPU). A start needs one worker peak (measured 603-1165 MB) left under
+# the slice's memory.high; no slice dir or memory.high=max skips the check.
+LUNA_WORKER_SLICE_DIR="${LUNA_WORKER_SLICE_DIR:-/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/zf.slice/zf-workers.slice}"
+slice_room_mb() { # prints MB left under the worker slice's memory.high, or nothing when there is no bound to read
+  local high cur
+  high=$(cat "$LUNA_WORKER_SLICE_DIR/memory.high" 2>/dev/null) || return 0
+  cur=$(cat "$LUNA_WORKER_SLICE_DIR/memory.current" 2>/dev/null) || return 0
+  [[ "$high" =~ ^[0-9]+$ && "$cur" =~ ^[0-9]+$ ]] || return 0
+  echo $(( (high - cur) / 1048576 ))
+}
 BOX_ROOM_WHY=""
 box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, and the priority hold
-  local age="${1:-$SECONDS}" runs avail cpu full cap
+  local age="${1:-$SECONDS}" runs avail cpu full cap slice
   BOX_ROOM_WHY=""
   [[ "$age" =~ ^[0-9]+$ ]] || age=0
   runs=$(codex_runs)
   cap=$(luna_run_cap)
   avail=$(awk '/^MemAvailable:/{print int($2/1024)}' "${LUNA_PROC_MEMINFO:-/proc/meminfo}")
   full=$(awk -F'avg10=' '/^full/{print int($2)}' "${LUNA_PROC_PSI_MEMORY:-/proc/pressure/memory}")
+  slice=$(slice_room_mb)
+  if [[ -n "$slice" ]] && (( slice < ${LUNA_WORKER_PEAK_MB:-1200} )); then
+    BOX_ROOM_WHY="worker slice ${slice}MB left under memory.high < ${LUNA_WORKER_PEAK_MB:-1200}MB worker peak"
+    return 1
+  fi
   (( runs < ${LUNA_MIN:-2} && avail >= 2048 )) && return 0
   # Hotfix may cross the run cap, but still requires memory headroom and no full-memory pressure.
   [[ "${LUNA_PRIORITY:-}" == hotfix ]] && (( avail >= 3072 && full < 10 )) && return 0
