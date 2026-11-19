@@ -4,7 +4,8 @@
 #   bash tools/quick-land.sh [--test '<cmd>']... [--prior-art '<URL or: no external prior art: reason>'] '<commit subject>' ['<commit trailer>']
 # Code needs --prior-art (written into the commit message as a `## prior-art` section; ruling
 # zenoforge-limited-allow-research-first-2026-11-05) and at least one --test; each runs through tools/test-receipt.sh at the committed HEAD, and one red stops the
-# landing with the branch kept. Gate files, rule files and overridden files still go through a PR.
+# landing with the branch kept. Founder 2026-11-19 ("改动都直接上线，立刻生效"): a gate file lands here with its own suite
+# (--test 'bash engine/merge-pr-helper.test.sh'); a VectA-overridden file lands after a pin-vecta dry run passes. Rule files still go through a PR.
 # shortcut: a --test is one plain command split on spaces (no shell operators); wrap pipes in a script.
 # shortcut: merge-pr.sh's static scans, scheduler prelude, review-family and revert checks do not run here; pass them as --test.
 # CI runs on the push to main (a red main opens an incident) and zf-auto-pin publishes the merged SHA.
@@ -25,12 +26,12 @@ quick_land_override_hit() { # <staged engine paths>
   grep -xFf <(awk -F'\t' '$1 != "" && $1 !~ /^#/ { print "engine/" $1 }' <<<"$table") <<<"$1" | head -1 || true
 }
 
-quick_land_refusal() { # <number of --test> <prior-art text> → staged diff; prints why it is not quick-landable; prints nothing when it is
+quick_land_refusal() { # <number of --test> <prior-art text> [test commands] → staged diff; prints why it is not quick-landable; prints nothing when it is
   local tests="$1" prior="${2:-}" paths path code=0 hit
   paths="$(git diff --cached --name-only)"
   [[ -n "$paths" ]] || { echo 'nothing to land'; return 0; }
   while IFS= read -r path; do
-    [[ "$path" =~ $MERGE_PR_GATE_RE ]] && { echo "gate file: $path"; return 0; }
+    [[ "$path" =~ $MERGE_PR_GATE_RE && " ${3:-} " != *engine/merge-pr-helper.test.sh* ]] && { echo "gate file $path needs --test 'bash engine/merge-pr-helper.test.sh'"; return 0; }
     case "$path" in
       engine/vendor/*) echo "vendored file: $path"; return 0 ;;
       *.md) ;;
@@ -39,10 +40,6 @@ quick_land_refusal() { # <number of --test> <prior-art text> → staged diff; pr
   done <<<"$paths"
   hit="$(git diff --cached --name-only --diff-filter=DR --no-renames | grep -E '^engine/.*\.test\.(sh|py|mjs)$' | head -1 || true)"
   [[ -z "$hit" ]] || { echo "deletes or renames away test suite: $hit"; return 0; }
-  if grep -q '^engine/' <<<"$paths"; then
-    hit="$(quick_land_override_hit "$(grep '^engine/' <<<"$paths")")"
-    [[ -z "$hit" ]] || { echo "VectA override table file: $hit"; return 0; }
-  fi
   if ((code && !tests)); then echo 'code change needs at least one --test'; return 0; fi
   # Same acceptance as merge_pr_prior_art_ok: a source URL or a "no external prior art: <reason>" line.
   if ((code)) && ! grep -Eiq 'https?://[^[:space:])>]+|^no external prior art:[[:space:]]*[^[:space:]]' <<<"$prior"; then
@@ -55,6 +52,12 @@ quick_land_commit_refusal() {
   local out
   [[ -f engine/rule-lane.sh ]] || { echo 'engine/rule-lane.sh is missing'; return 0; }
   bash engine/rule-lane.sh origin/main HEAD >/dev/null 2>&1 || { echo 'rule-lane refused the change'; return 0; }
+  local hit log="${TMPDIR:-/tmp}/quick-land-pin-$(git rev-parse --short HEAD).log"
+  hit="$(quick_land_override_hit "$(git diff --name-only origin/main HEAD | grep '^engine/' || true)")"
+  if [[ -n "$hit" ]]; then # the pin merges this file into the VectA pack copy: prove the pin still builds and passes before main moves
+    ZF_LOCAL_CLONE="$PWD" bash tools/pin-vecta.sh "$(git rev-parse HEAD)" "${AGENT_HOME:-${ZF_HOME:-$HOME/.vecta-agent}}/checkout" >"$log" 2>&1 \
+      || { echo "pin dry run failed for VectA override file $hit (log $log)"; return 0; }
+  fi
   out="$({ bash tools/size-ratchet.sh 2>&1 || true; } | awk 'NR == FNR { own[$0] = 1; next } $1 == "FAIL" && $2 in own' <(git diff --name-only origin/main HEAD) -)"
   [[ -z "$out" ]] || echo "size-ratchet: $out"
 }
@@ -86,7 +89,7 @@ quick_land_main() {
     return 1
   fi
   git add -A
-  reason="$(quick_land_refusal "${#tests[@]}" "$prior")"
+  reason="$(quick_land_refusal "${#tests[@]}" "$prior" "${tests[*]-}")"
   if [[ -n "$reason" ]]; then
     echo "quick-land: use the normal PR path: $reason" >&2
     return 1

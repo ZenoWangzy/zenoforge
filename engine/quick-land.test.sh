@@ -67,12 +67,14 @@ reset_fixture
 
 printf 'x\n' > tools/merge-pr.sh
 git add -A
-[[ "$(quick_land_refusal 1 "$pa")" == 'gate file: tools/merge-pr.sh' ]] || fail 'a gate file was accepted'
+[[ "$(quick_land_refusal 1 "$pa")" == "gate file tools/merge-pr.sh needs --test 'bash engine/merge-pr-helper.test.sh'" ]] || fail 'a gate file was accepted without its own suite'
+[[ -z "$(quick_land_refusal 1 "$pa" 'bash engine/merge-pr-helper.test.sh')" ]] || fail 'a gate file with its own suite was refused (founder 11-19: changes go live directly)'
 reset_fixture
 
 printf 'x\n' > engine/over.sh
 git add -A
-[[ "$(quick_land_refusal 1 "$pa")" == 'VectA override table file: engine/over.sh' ]] || fail 'an overridden file was accepted'
+[[ -z "$(quick_land_refusal 1 "$pa")" ]] || fail 'an overridden file was refused before its pin dry run (founder 11-19: changes go live directly)'
+[[ "$(quick_land_override_hit engine/over.sh)" == engine/over.sh ]] || fail 'the override table no longer names engine/over.sh, so no pin dry run would run'
 reset_fixture
 
 printf 'x\n' > engine/other.sh
