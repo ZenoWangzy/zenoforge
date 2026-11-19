@@ -2594,9 +2594,8 @@ dispatch_gitnexus_refresh || true
 # own budgets and the slice deadline, and never block dispatch; their results
 # are picked up by the next tick's selection.
 if [ "$(triage_slice_seconds_left)" -ge 10 ]; then
-  if ! ZF_INTAKE_ADMIT_RESERVE_SECONDS=5 intake_admit_unlabeled_issues; then
-    echo "issue-pipeline: unlabeled-issue intake admission incomplete; remaining issues retry next tick" >&2
-  fi
+  ZF_INTAKE_ADMIT_RESERVE_SECONDS=5 intake_admit_unlabeled_issues || echo "issue-pipeline: unlabeled-issue intake admission incomplete; remaining issues retry next tick" >&2
+  intake_tick_sync_blocked_by || echo "issue-pipeline: blocked-by edge sync failed; remaining edges retry next tick" >&2
   if [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = 0 ] \
     && ! ZF_FOUNDER_TEST_LABEL_RESERVE_SECONDS=5 label_maintainer_test_candidates "$NEEDS_TRIAGE_JSON" >/dev/null; then
     echo "issue-pipeline: founder-test labelling failed after dispatch; retrying next tick" >&2
