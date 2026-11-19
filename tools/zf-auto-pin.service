@@ -1,7 +1,9 @@
 # systemd user unit template for tools/auto-pin.sh. Install: cp to ~/.config/systemd/user/zf-auto-pin.service, edit the clone path, then
 #   systemctl --user daemon-reload && systemctl --user enable --now zf-auto-pin
 # The daemon checks out new commits in its clone, so it runs a copy under ~/.zenoforge/bin, never the clone's own file.
-# The leading "-" on ExecStartPre keeps the previous copy when the clone sits on a commit older than tools/auto-pin.sh.
+# The copy comes from the committed origin/main, never the clone's working tree: an uncommitted edit there went live on every
+# restart, and a merged fix reached the host only by hand (row 608, 2026-11-18). A new file is moved over the old one, because
+# the running daemon reads its script while it runs. The leading "-" keeps the previous copy when the fetch fails.
 [Unit]
 Description=zf-auto-pin: pin each new zenoforge main commit into the vecta checkout
 
@@ -9,7 +11,7 @@ Description=zf-auto-pin: pin each new zenoforge main commit into the vecta check
 # gh, node and pnpm live here; systemd's default PATH has none of them.
 Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 Environment=ZF_AUTO_PIN_CLONE=%h/.zenoforge/clones/pz-zf-review-verdict-clobber
-ExecStartPre=-/usr/bin/install -D -m 0755 %h/.zenoforge/clones/pz-zf-review-verdict-clobber/tools/auto-pin.sh %h/.zenoforge/bin/zf-auto-pin
+ExecStartPre=-/bin/sh -c 'git -C "${ZF_AUTO_PIN_CLONE}" fetch -q origin main && mkdir -p %h/.zenoforge/bin && git -C "${ZF_AUTO_PIN_CLONE}" show origin/main:tools/auto-pin.sh > %h/.zenoforge/bin/zf-auto-pin.new && chmod 0755 %h/.zenoforge/bin/zf-auto-pin.new && mv %h/.zenoforge/bin/zf-auto-pin.new %h/.zenoforge/bin/zf-auto-pin'
 ExecStart=/usr/bin/bash %h/.zenoforge/bin/zf-auto-pin
 Restart=always
 RestartSec=30
