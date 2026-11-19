@@ -133,7 +133,7 @@ grep -Eq 'intake walk refill=true walked=1 cached=0 secs=[0-9]+' "$LOG" || { ech
 jq '.skipped["100"] = {updated_at:"2026-11-12T00:00:00Z",verdict:"parent"}' "$A/intake-candidates.json" > "$A/intake-candidates.next"
 mv -f "$A/intake-candidates.next" "$A/intake-candidates.json"
 eval "$real_intake_candidates"
-GH_PARALLEL=1
+HERE="$script_dir" GH_PARALLEL=1
 list_args="$fixture/issue-list-args"; : > "$list_args"
 intake_gh_read() {
   if [[ "$1 $2" == 'issue list' ]]; then
