@@ -81,4 +81,13 @@ if ! HAND_PRIORITY_STATE=/live/hand-priority.json bash -c '
   exit 1
 fi
 
+# The host pause file must not reach tests (11-19: VectA pin preflight red while ~/.vecta-agent/PAUSE existed).
+if ! AUTOPILOT_PAUSE_FILE=/live/PAUSE bash -c '
+  source "$1"
+  [[ ! -v AUTOPILOT_PAUSE_FILE ]]
+' _ "$(dirname -- "${BASH_SOURCE[0]}")/test-env.sh"; then
+  echo 'test environment leaked AUTOPILOT_PAUSE_FILE' >&2
+  exit 1
+fi
+
 echo 'test-env.test.sh: PASS'

@@ -12,6 +12,8 @@ done < <(compgen -e)
 # land-queue.sh runs the lander's preflight with these; land-direct-main.test.sh
 # then took the queued ticket's PLAN_PACKAGE instead of its fixture branch.
 unset PLAN_PACKAGE REPO_DIR HAND_PRIORITY_STATE
+# The lander sources the host deploy.env (AUTOPILOT_PAUSE_FILE=~/.vecta-agent/PAUSE); 11-19 a host PAUSE held dispatch in a pack suite.
+unset AUTOPILOT_PAUSE_FILE
 # A hook/gate exports GIT_DIR; a fixture's `git init --bare` then re-inits the shared
 # live .git as bare (10-29 18:01Z and 18:17Z flipped core.bare on ~/.zenoforge/checkout).
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
