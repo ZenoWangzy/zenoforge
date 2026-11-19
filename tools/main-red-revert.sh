@@ -2,6 +2,7 @@
 # Takes out the commit that turned <workflow> red on <branch>, so main passes its tests again; the fix comes afterwards.
 # Engine changes land on main without waiting for CI, so this acts after the fact: no merge queue. Run it in a clone of the repo.
 # Stop: touch "${ZF_MAIN_RED_REVERT_HOME:-$HOME/.zenoforge}/main-red-revert.stop".
+# Hold: a line "<sha-prefix> <who> <epoch-seconds>" in "${ZF_MAIN_RED_REVERT_HOME:-$HOME/.zenoforge}/main-red-revert.hold" makes it only alert for ZF_MAIN_RED_REVERT_HOLD_SECS (default 7200); malformed or expired lines are ignored.
 set -euo pipefail
 
 home=${ZF_MAIN_RED_REVERT_HOME:-$HOME/.zenoforge}
@@ -71,6 +72,26 @@ fi
 if grep -Fq -e "Revert \"$subject\"" -e "$culprit" <<<"$later"; then
   alert MAIN-RED-NO-CULPRIT "culprit ${culprit:0:7} is already reverted on $branch"; decided; exit 0
 fi
+# Someone is fixing the culprit: a fresh claim line in the hold file, or an open PR that names it.
+hold_file=$home/main-red-revert.hold hold_secs=${ZF_MAIN_RED_REVERT_HOLD_SECS:-7200}
+hold_shown=$hold_file; [[ $hold_shown == "$HOME"/* ]] && hold_shown="~${hold_shown#"$HOME"}"
+claimhint="; to fix a commit yourself next time claim it first: echo \"${culprit:0:7} <you> \$(date +%s)\" >> $hold_shown"
+holder=
+if [[ -f $hold_file ]]; then
+  while read -r csha cwho cepoch cextra || [[ -n $csha ]]; do
+    [[ $csha =~ ^[0-9a-f]{7,}$ && $cepoch =~ ^[0-9]+$ && -n $cwho && -z $cextra ]] || continue
+    if [[ $culprit == "$csha"* ]] && (($(date +%s) - cepoch < hold_secs)); then holder=$cwho; break; fi
+  done <"$hold_file"
+fi
+if [[ -z $holder ]]; then
+  pr=$(gh pr list -R "$repo" --state open --search "${culprit:0:7}" --json number --jq '.[0].number // empty' 2>/dev/null) || pr=
+  if [[ -n $pr ]]; then holder="PR #$pr"; fi
+fi
+if [[ -n $holder ]]; then
+  if ((dry)); then echo "WOULD-HOLD $culprit $holder"; exit 0; fi
+  alert MAIN-RED-FIX-IN-PROGRESS "culprit ${culprit:0:7} $subject is being fixed by $holder; not reverted. If the fix does not land, remove the claim and the next red head is decided again"
+  decided; exit 0
+fi
 if ((dry)); then echo "WOULD-REVERT $culprit $subject"; exit 0; fi
 
 wt=$(mktemp -d "${TMPDIR:-/tmp}/main-red-revert.XXXXXX")/wt
@@ -80,7 +101,7 @@ mflag=
 if (($(git rev-list --parents -n 1 "$culprit" | wc -w) > 2)); then mflag=1; fi # merge commit: revert against its first parent
 if ! git -C "$wt" revert --no-commit ${mflag:+-m 1} "$culprit" >/dev/null 2>&1; then
   git -C "$wt" revert --abort >/dev/null 2>&1 || true
-  alert MAIN-RED-REVERT-CONFLICT "revert of ${culprit:0:7} ($subject) conflicts with later commits; a human decides"
+  alert MAIN-RED-REVERT-CONFLICT "revert of ${culprit:0:7} ($subject) conflicts with later commits; a human decides$claimhint"
   decided; exit 0
 fi
 printf 'Revert "%s"\n\nAutomatic revert: %s on %s failed at %s (run %s); last green %s.\nRe-land with a fix.\n' \
@@ -88,5 +109,5 @@ printf 'Revert "%s"\n\nAutomatic revert: %s on %s failed at %s (run %s); last gr
 if ! git -C "$wt" push -q origin "HEAD:$branch"; then # no force: a moved main is decided by the next run
   alert MAIN-RED-REVERT-CONFLICT "push of the revert of ${culprit:0:7} was rejected, main moved"; exit 0
 fi
-alert MAIN-CI-AUTO-REVERT "culprit ${culprit:0:7} $subject run $id; reverted as $(git -C "$wt" rev-parse --short HEAD)"
+alert MAIN-CI-AUTO-REVERT "culprit ${culprit:0:7} $subject run $id; reverted as $(git -C "$wt" rev-parse --short HEAD)$claimhint"
 decided

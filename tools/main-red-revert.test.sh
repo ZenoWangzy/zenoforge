@@ -10,6 +10,10 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
+if [[ "$1 $2" == "pr list" ]]; then # the fixture holds the answer after --jq: a PR number, or nothing
+  if [[ -f $PR_FIXTURE ]]; then cat "$PR_FIXTURE"; fi
+  exit 0
+fi
 [[ "$1 $2" == "run list" ]] || { echo "fake gh: unexpected $*" >&2; exit 1; }
 cat "$RUNS_JSON"
 GH
@@ -24,7 +28,7 @@ case_dir() { # <name>: fresh bare origin and a clone to run the script in
   git clone -q "$d/origin.git" "$d/work" 2>/dev/null
   git -C "$d/work" checkout -q -B main
   bare=$d/origin.git work=$d/work
-  export RUNS_JSON=$d/runs.json ZF_MAIN_RED_REVERT_HOME=$d/home ZF_ALERTS_FILE=$d/alerts.log
+  export RUNS_JSON=$d/runs.json PR_FIXTURE=$d/pr.txt ZF_MAIN_RED_REVERT_HOME=$d/home ZF_ALERTS_FILE=$d/alerts.log
 }
 put() { # <file> <content> <subject> -> pushes one commit to origin main, prints its sha
   printf '%s\n' "$2" >"$work/$1"
@@ -151,6 +155,75 @@ run
 check "(i) exit 0" exit_is 0
 check "(i) nothing pushed" head_is "$b"
 check "(i) no alert" no_alerts
+
+# (k) a fresh claim on the culprit: alert names the claimer, nothing pushed, state written
+case_dir k
+g=$(put a.txt good green); b=$(put a.txt bad "break")
+runs "$g:completed:success:1" "$b:completed:failure:2"
+mkdir -p "$ZF_MAIN_RED_REVERT_HOME"; echo "${b:0:7} alice $(date +%s)" >"$ZF_MAIN_RED_REVERT_HOME/main-red-revert.hold"
+run
+check "(k) exit 0" exit_is 0
+check "(k) nothing pushed" head_is "$b"
+check "(k) alert MAIN-RED-FIX-IN-PROGRESS names the claimer" grep -q 'MAIN-RED-FIX-IN-PROGRESS .*being fixed by alice' "$ZF_ALERTS_FILE"
+check "(k) state file written" test -f "$ZF_MAIN_RED_REVERT_HOME/main-red-revert.last"
+
+# (l) an expired claim (3 h old): reverted as before
+case_dir l
+g=$(put a.txt good green); b=$(put a.txt bad "break")
+runs "$g:completed:success:1" "$b:completed:failure:2"
+mkdir -p "$ZF_MAIN_RED_REVERT_HOME"; echo "${b:0:7} alice $(($(date +%s) - 10800))" >"$ZF_MAIN_RED_REVERT_HOME/main-red-revert.hold"
+run
+check "(l) exit 0" exit_is 0
+check "(l) expired claim: culprit reverted" origin_file_is a.txt good
+check "(l) alert MAIN-CI-AUTO-REVERT written" alert_has MAIN-CI-AUTO-REVERT
+
+# (m) a fresh claim for another sha: culprit reverted
+case_dir m
+g=$(put a.txt good green); b=$(put a.txt bad "break")
+runs "$g:completed:success:1" "$b:completed:failure:2"
+mkdir -p "$ZF_MAIN_RED_REVERT_HOME"; echo "${g:0:7} dave $(date +%s)" >"$ZF_MAIN_RED_REVERT_HOME/main-red-revert.hold"
+run
+check "(m) exit 0" exit_is 0
+check "(m) claim for another sha: culprit reverted" origin_file_is a.txt good
+
+# (n) an open PR found by the search holds the culprit
+case_dir n
+g=$(put a.txt good green); b=$(put a.txt bad "break")
+runs "$g:completed:success:1" "$b:completed:failure:2"
+echo 42 >"$PR_FIXTURE"
+run
+check "(n) exit 0" exit_is 0
+check "(n) nothing pushed" head_is "$b"
+check "(n) alert names PR #42" grep -q 'being fixed by PR #42' "$ZF_ALERTS_FILE"
+
+# (o) dry run with a fresh claim prints WOULD-HOLD and changes nothing
+case_dir o
+g=$(put a.txt good green); b=$(put a.txt bad "break")
+runs "$g:completed:success:1" "$b:completed:failure:2"
+mkdir -p "$ZF_MAIN_RED_REVERT_HOME"; echo "${b:0:7} alice $(date +%s)" >"$ZF_MAIN_RED_REVERT_HOME/main-red-revert.hold"
+run --dry-run
+check "(o) prints WOULD-HOLD with the culprit and claimer" grep -q "^WOULD-HOLD $b alice\$" <<<"$out"
+check "(o) nothing pushed" head_is "$b"
+check "(o) no state file, no alert" dry_left_nothing
+
+# (p) malformed claim lines (two fields, non-numeric epoch) are ignored, no crash
+case_dir p
+g=$(put a.txt good green); b=$(put a.txt bad "break")
+runs "$g:completed:success:1" "$b:completed:failure:2"
+mkdir -p "$ZF_MAIN_RED_REVERT_HOME"; printf '%s\n' "${b:0:7} erin" "${b:0:7} erin soon" >"$ZF_MAIN_RED_REVERT_HOME/main-red-revert.hold"
+run
+check "(p) exit 0" exit_is 0
+check "(p) malformed claims ignored: culprit reverted" origin_file_is a.txt good
+
+# (q) a fresh claim as the last line without a trailing newline still holds the culprit
+case_dir q
+g=$(put a.txt good green); b=$(put a.txt bad "break")
+runs "$g:completed:success:1" "$b:completed:failure:2"
+mkdir -p "$ZF_MAIN_RED_REVERT_HOME"; printf '%s %s %s' "${b:0:7}" alice "$(date +%s)" >"$ZF_MAIN_RED_REVERT_HOME/main-red-revert.hold"
+run
+check "(q) exit 0" exit_is 0
+check "(q) nothing pushed" head_is "$b"
+check "(q) alert MAIN-RED-FIX-IN-PROGRESS written" alert_has MAIN-RED-FIX-IN-PROGRESS
 
 if ((failures)); then echo "main-red-revert.test.sh: $failures failed"; exit 1; fi
 echo "main-red-revert.test.sh: all passed"
