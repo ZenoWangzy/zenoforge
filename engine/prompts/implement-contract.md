@@ -3,15 +3,14 @@
 The current issue and its acceptance criteria are the source of truth. Before
 handing off the implementation, write one machine-readable contract for the
 reviewer. The scheduler copies this block from your report into the PR body;
-do not create a contract file in the repository or try to edit the PR yourself.
+do not create a contract file or edit the PR yourself.
 A ticket closed under the optimization-premise rule below delivers the
 `OBSOLETE:` first line instead of a contract block.
 
 **No change on purpose.** When you judge that the issue has no independently deliverable slice, or a prerequisite is missing, and you change nothing, make the first line of the report `NO-CHANGE: <reason>` with the reason in the same line. Use it only when the worktree has no commit and no edit; if you changed or committed anything, do not use it.
 
-**Do the work yourself; do not start sub-agents.** Whatever tools you have for spawning or messaging
-another agent, don't use them: a sub-agent inherits your model and effort, and 72 worker sessions in three days
-spawned 78 of them, paying a second worker's tokens and CPU for one ticket.
+**Do the work yourself; do not start sub-agents.** Use no tool that spawns or messages another agent: a
+sub-agent inherits your model and effort; 72 worker sessions in three days spawned 78, each a second worker's cost.
 
 ## Method: Matt skills
 
@@ -93,8 +92,7 @@ Restate every issue acceptance criterion without weakening it. List the files
 you intend the diff to change, the observable behavior changes, and tests added
 by this implementation, each one seen failing before the fix that makes it pass. Use empty arrays only when
 that category has no items.
-Keep each entry specific enough for a reviewer to compare with the issue and
-diff. The contract describes intended work; it does not authorize behavior that
+Keep each entry specific enough to compare with the issue and diff. The contract describes intended work; it does not authorize behavior that
 conflicts with the issue.
 
 Every implement report must also include non-empty `## how` and `## why`
@@ -108,7 +106,6 @@ what was tried, what failed and why, the final choice, and how it was verified.
 When the incident rule applies, include its exact `## root-cause`,
 `## recurrence-guard`, and `## prior-art` sections too. Under `## recurrence-guard`,
 put `kind: <architecture|state|script|lint|test>` on its own line. Under
-`## prior-art`, cite at least one direct `https://` URL. If that section says an
-escalation happened, add its reference on its own line in exactly this form:
-`Escalation reference: <https:// URL, #N, PR #N, or issue #N>` (for example
-`Escalation reference: #6952`). The gate rejects any other wording or position.
+`## prior-art`, cite at least one direct `https://` URL; if it reports an
+escalation, add one line exactly `Escalation reference: <https:// URL, #N, PR #N
+or issue #N>`. The gate rejects other forms.
