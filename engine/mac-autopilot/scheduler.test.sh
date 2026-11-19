@@ -3002,7 +3002,8 @@ for mode in resume fresh; do
   new_tick_fixture "dispatch-$mode"
   touch "$TF/allow-dispatch" "$TF/worker-alive"
   printf "NEW REVIEW FAILURE\n" > "$TF/supervisor/prior.md"
-  command jq '.max_workers=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  # pr-201 hashes into the Claude share bucket; a host with the claude CLI then routed it off Codex sessions (row 619, red locally since 11-16).
+  command jq '.max_workers=1 | .models.implement_share={claude:0,codex:100,zcode:0}' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
   command jq -n --arg mode "$mode" '{units:[{id:"pr-201",pr:201,lane:"pr",stage:"repair-pending",footprint:[],title:"token accounting",branch:"fix/token-fixture",review_report:"prior.md",history:[],sessions:(if $mode=="resume" then {repair:{id:"11111111-2222-3333-4444-555555555555",provider:"codex",model:"gpt-6-luna"}} else {} end),session_ids:{repair:(if $mode=="resume" then "11111111-2222-3333-4444-555555555555" else null end)}}]}' > "$TF/supervisor/autopi/units.json"
   mkdir -p "$TF/sessions/$session_day"
   dispatch_session="$TF/sessions/$session_day/rollout-11111111-2222-3333-4444-555555555555.jsonl"
