@@ -37,6 +37,7 @@ intake_candidates() {
   if [[ "${TERMINAL_ROW_ONLY:-}" == true ]]; then printf '1\tpr\tt\t[]\t\n'; else printf '1\tpr\tt\t[]\t\n2\tpr\tt\t[]\t\n3\tpr\tt\t[]\t\n4\tpr\tt\t[]\t\n'; fi
 }
 hotfix_issue_numbers() { return 0; }
+hotfix_lane_label() { printf 'hotfix-lane\n'; }
 tick_prs_prime() { :; }
 tick_prs() { return 1; }
 intake_gh_read() { printf '[]\n'; }
@@ -132,6 +133,7 @@ grep -Eq 'intake walk refill=true walked=1 cached=0 secs=[0-9]+' "$LOG" || { ech
 jq '.skipped["100"] = {updated_at:"2026-11-12T00:00:00Z",verdict:"parent"}' "$A/intake-candidates.json" > "$A/intake-candidates.next"
 mv -f "$A/intake-candidates.next" "$A/intake-candidates.json"
 eval "$real_intake_candidates"
+GH_PARALLEL=1
 list_args="$fixture/issue-list-args"; : > "$list_args"
 intake_gh_read() {
   if [[ "$1 $2" == 'issue list' ]]; then
