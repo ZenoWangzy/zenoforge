@@ -12,6 +12,8 @@ mkdir -p "$target/.zenoforge/build"
 git init -q -b main "$target"
 printf '{"hook":".zenoforge/build/hook.sh"}\n' > "$target/.zenoforge/build.json"
 printf '# path\tbase\nover.sh\tabc\n' > "$target/.zenoforge/build/overrides.tsv"
+mkdir -p "$target/.zenoforge/build/pack/scripts/zenoforge-pack"
+printf 'queue = engine_root / "mac-autopilot/patched.sh"\n' > "$target/.zenoforge/build/pack/scripts/zenoforge-pack/patch-x.py"
 git -C "$target" add -A
 git -C "$target" -c user.name=t -c user.email=t@example.invalid commit -qm table
 git -C "$target" update-ref refs/remotes/origin/main HEAD
@@ -83,6 +85,8 @@ QUICK_LAND_FOCUSED=false
 [[ "$(quick_land_commit_refusal 'bash engine/a.test.sh')" == 'focused-test-paths failed'* ]] || fail 'a failing focused selection was not a refusal'
 QUICK_LAND_FOCUSED=true # the fixture repos below have no focused-test-paths.mjs: select nothing
 [[ "$(quick_land_override_hit engine/over.sh)" == engine/over.sh ]] || fail 'the override table no longer names engine/over.sh, so no pin dry run would run'
+[[ "$(quick_land_override_hit engine/mac-autopilot/patched.sh)" == engine/mac-autopilot/patched.sh ]] || fail 'a file a VectA pack patch rewrites got no pin dry run (11-19 PIN-STALL)'
+[[ -z "$(quick_land_override_hit engine/mac-autopilot/other.sh)" ]] || fail 'a file no pack patch names was sent to the pin dry run'
 reset_fixture
 
 printf 'x\n' > engine/other.sh

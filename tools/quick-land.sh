@@ -22,8 +22,9 @@ quick_land_override_hit() { # <staged engine paths>
   git -C "$target" fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
   hook="$(git -C "$target" show origin/main:.zenoforge/build.json 2>/dev/null | jq -er '.hook | select(type == "string" and length > 0)')" \
     || { echo "cannot read the override table from $target"; return 0; }
-  table="$(git -C "$target" show "origin/main:$(dirname -- "$hook")/overrides.tsv" 2>/dev/null)" || return 0 # no table: nothing is overridden
-  grep -xFf <(awk -F'\t' '$1 != "" && $1 !~ /^#/ { print "engine/" $1 }' <<<"$table") <<<"$1" | head -1 || true
+  table="$(git -C "$target" show "origin/main:$(dirname -- "$hook")/overrides.tsv" 2>/dev/null)" || table="" # no table: nothing is overridden
+  # 11-19: 00fabfb changed a file a pack patch-*.py rewrites and stalled every pin for 25 min; those files get the dry run too.
+  grep -xFf <({ awk -F'\t' '$1 != "" && $1 !~ /^#/ { print "engine/" $1 }' <<<"$table"; git -C "$target" grep -hoE '"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+"' origin/main -- '.zenoforge/build/pack/scripts/zenoforge-pack/patch-*.py' 2>/dev/null | tr -d '"' | sed 's#^#engine/#'; }) <<<"$1" | head -1 || true
 }
 
 quick_land_refusal() { # <number of --test> <prior-art text> [test commands] → staged diff; prints why it is not quick-landable; prints nothing when it is
