@@ -106,6 +106,9 @@ if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then
 fi
 if [ "${1:-}" = api ] && [[ "$*" == *"-X POST repos/"*"/issues/"*"/labels"* ]]; then
   echo "gh $*" >> "$FAKE_GH_LOG"
+  for a in "$@"; do
+    case "$a" in labels\[\]=*) printf '%s\n' "${a#labels\[\]=}" >> "${FAKE_GH_LOG}.posted-labels" ;; esac
+  done
   exit 0
 fi
 if [ "${1:-}" = api ] && [[ "${2:-}" == *'/comments?per_page=100'* ]]; then echo '[]'; exit 0; fi
@@ -153,6 +156,10 @@ case "$sub" in
     fi
     if [ -n "${FAKE_PRIORITY_LABEL:-}" ]; then
       labels="$(jq -c --arg l "$FAKE_PRIORITY_LABEL" '. + [{name:$l}]' <<< "$labels")"
+    fi
+    # Labels written by REST POST (intake priority) are visible to later views.
+    if [ -s "${FAKE_GH_LOG}.posted-labels" ]; then
+      labels="$(jq -c --slurpfile p <(jq -Rc '{name:.}' "${FAKE_GH_LOG}.posted-labels") '. + $p' <<< "$labels")"
     fi
     if [ "$view_count" -gt 1 ]; then
       case "${FAKE_TRIAGE_STALE_MODE:-}" in
@@ -367,7 +374,7 @@ run_once() {
   fi
 
   set +e
-  bash "$TRIAGE_SRC" "$N" > "$agent_home/run-triage.stdout" 2> "$agent_home/run-triage.stderr"
+  bash "$TRIAGE_SRC" ${RUN_TRIAGE_FLAGS:-} "$N" > "$agent_home/run-triage.stdout" 2> "$agent_home/run-triage.stderr"
   RUN_STATUS=$?
   set -e
   RUN_STDERR_CONTENT="$(cat "$agent_home/run-triage.stderr")"
@@ -447,6 +454,21 @@ run_once "$RAW_BODY"
 unset TYPESAFE_API_KEY FAKE_PRIORITY_LABEL
 assert_eq "already-labeled issue makes no intake judge call" triage-size "$(cat "$INTAKE_PRIORITY_TEST_CALLS")"
 assert_contains "already-labeled issue logs its skip" "$RUN_STDERR_CONTENT" 'intake-priority: skipped (already-labeled)'
+# Row 609: intake's priority write lands after the snapshot. Its label POST must
+# not make the guard skip the verdict, and the label is written once.
+export TYPESAFE_API_KEY=fixture-only
+: > "$INTAKE_PRIORITY_TEST_CALLS"
+run_once "$RAW_BODY"
+unset TYPESAFE_API_KEY
+assert_not_contains "intake label write after the snapshot does not skip the verdict" "$RUN_STDERR_CONTENT" "labels changed since snapshot"
+assert_eq "intake label write after the snapshot still applies the model verdict" ready-for-agent "$(jq -r '.state' <<< "$STATE_CONTENT")"
+assert_eq "intake priority label is written exactly once" 1 "$(grep -Fc 'labels[]=priority:top' <<< "$GH_LOG_CONTENT" || true)"
+# Row 609: a dry run writes nothing, so it must not reach intake-priority either.
+export TYPESAFE_API_KEY=fixture-only
+: > "$INTAKE_PRIORITY_TEST_CALLS"
+RUN_TRIAGE_FLAGS=--dry-run run_once "$RAW_BODY"
+unset TYPESAFE_API_KEY
+assert_not_contains "dry run never calls intake-priority" "$(cat "$INTAKE_PRIORITY_TEST_CALLS")" "intake-priority"
 jq -n '{intake_priority:{enabled:true,labels:{needs_triage:"needs-triage"}}}' > "$ZF_CONFIG_ROOT/night.json"
 INTAKE_CONFIG_RC=0
 bash "$SCRIPT_DIR/intake-priority.sh" config > /dev/null 2>&1 || INTAKE_CONFIG_RC=$?
