@@ -15,19 +15,25 @@ product_fetch_time=$ZF_AUTO_PIN_HOME/auto-pin-product-fetch.last
 # Head 2026-11-05: an override pin must take the PR lane; merge that PR here so it does not wait for head.
 # Only a PR holding build.json, overrides.tsv and, optionally, the pack copies merged by this pin, with no failed check.
 # A clean three-way merge that leaves a pack copy byte-identical adds no pack file, so the PR is base-only.
-merge_override_pin() { # log -> 0 merged, 1 leave for head
-  local log=$1 url pr allowed files bad head_sha checks i
+merge_override_pin() { # log [intended-row expected-head] -> 0 merged, 1 leave for head
+  local log=$1 kind=${2:-override} expected_head=${3:-} url pr allowed files bad head_sha checks i
   url=$(sed -n 's/.*result=pr-open route=PR landed=no pr=\([^ ]*\).*/\1/p' "$log" | tail -1)
   pr=${url##*/}; [[ $pr =~ ^[1-9][0-9]*$ ]] || { echo 'override-pin: no PR number in the pin log'; return 1; }
-  allowed=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv; sed -n 's#^pin-vecta: merged override \([^ ]*\) base=.*#.zenoforge/build/pack/scripts/agent/\1#p' "$log")
-  [[ $(wc -l <<<"$allowed") -ge 3 ]] || { echo "override-pin: #$pr merged no override"; return 1; }
   files=$(gh api --paginate "repos/ZenoWangzy/vecta/pulls/$pr/files" --jq '.[].filename') || return 1
-  if [[ -n $(comm -23 <(sort <<<"$files") <(sort <<<"$allowed")) \
-     || -n $(comm -13 <(sort <<<"$files") <(sort <<<".zenoforge/build.json"$'\n'".zenoforge/build/overrides.tsv")) ]]; then
-    echo "override-pin: #$pr files are not the pin, its overrides and their pack copies"; return 1
+  if [[ $kind == intended-row ]]; then
+    [[ $files == .zenoforge/build/intended-changes.tsv ]] \
+      || { echo "override-pin: #$pr files are not only the intended-changes row"; return 1; }
+  else
+    allowed=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv; sed -n 's#^pin-vecta: merged override \([^ ]*\) base=.*#.zenoforge/build/pack/scripts/agent/\1#p' "$log")
+    [[ $(wc -l <<<"$allowed") -ge 3 ]] || { echo "override-pin: #$pr merged no override"; return 1; }
+    if [[ -n $(comm -23 <(sort <<<"$files") <(sort <<<"$allowed")) \
+       || -n $(comm -13 <(sort <<<"$files") <(sort <<<".zenoforge/build.json"$'\n'".zenoforge/build/overrides.tsv")) ]]; then
+      echo "override-pin: #$pr files are not the pin, its overrides and their pack copies"; return 1
+    fi
   fi
   # Failed = a completed check run or a legacy commit status in failure/error. Pending runs are not failed.
   head_sha=$(gh api "repos/ZenoWangzy/vecta/pulls/$pr" --jq .head.sha) || return 1
+  [[ -z $expected_head || $head_sha == "$expected_head" ]] || { echo "override-pin: #$pr head changed before merge"; return 1; }
   checks=$(gh api --paginate --slurp "repos/ZenoWangzy/vecta/commits/$head_sha/check-runs?per_page=100") || return 1
   bad=$(jq '[.[].check_runs[] | select(.status == "completed") | select((.conclusion // "") | test("^(failure|cancelled|timed_out|action_required|startup_failure)$"))] | length' <<<"$checks") || return 1
   statuses=$(gh api "repos/ZenoWangzy/vecta/commits/$head_sha/status" --jq '[.statuses[] | select(.state == "failure" or .state == "error")] | length') || return 1
@@ -41,12 +47,109 @@ merge_override_pin() { # log -> 0 merged, 1 leave for head
   echo "override-pin: #$pr not MERGED after the wait"; return 1
 }
 
-# The row retry needs the row the refusal named: the line after "add this row" is path TAB reason TAB hash, and tsv must hold a line with that path and hash.
-row_named_declared() { # log tsv -> 0 when tsv declares the row named in log
-  local log=$1 tsv=$2 path='' hash=''
-  IFS=$'\t' read -r path hash < <(awk -F'\t' 'f { if (NF >= 3) print $1 "\t" $NF; exit } /add this row/ { f = 1 }' "$log" 2>/dev/null)
+# pin-vecta prints path<TAB>reason<TAB>hash after this line.
+row_named_fields() { awk -F'\t' 'f { if (NF >= 3) { print $1 "\t" $NF; exit } } /add this row/ { f = 1 }' "$1" 2>/dev/null; }
+
+# An engine-SHA row from anywhere in the pending pin range still names this change; content rows must match the refusal.
+row_named_declared() { # log tsv last next -> 0 when tsv declares the refused path
+  local log=$1 tsv=$2 last=$3 next=$4 path='' hash='' row_path row_hash commit range
+  IFS=$'\t' read -r path hash < <(row_named_fields "$log")
   [[ -n $path && -n $hash ]] || return 1
-  awk -F'\t' -v p="$path" -v h="$hash" '$1 == p && $NF == h { ok = 1 } END { exit !ok }' "$tsv" 2>/dev/null
+  if [[ $hash == sha256:* ]]; then
+    awk -F'\t' -v p="$path" -v h="$hash" '$1 == p && $NF == h { ok = 1 } END { exit !ok }' "$tsv" 2>/dev/null
+    return
+  fi
+  [[ $hash =~ ^[0-9a-f]{7,40}$ ]] || return 1
+  range=$(git -C "$C" rev-list --first-parent "$last..$next" 2>/dev/null) || return 1
+  while IFS=$'\t' read -r row_path _ row_hash; do
+    [[ $row_path == "$path" && $row_hash =~ ^[0-9a-f]{7,40}$ ]] || continue
+    commit=$(git -C "$C" rev-parse --verify -q "$row_hash^{commit}" 2>/dev/null) || continue
+    grep -Fxq "$commit" <<<"$range" && return 0
+  done < "$tsv"
+  return 1
+}
+
+row_named_exact_declared() { # log tsv -> 0 when the refused scope is already present
+  local log=$1 tsv=$2 path='' hash='' row_path row_hash expected actual
+  IFS=$'\t' read -r path hash < <(row_named_fields "$log")
+  [[ -n $path && -n $hash ]] || return 1
+  if [[ $hash == sha256:* ]]; then
+    awk -F'\t' -v p="$path" -v h="$hash" '$1 == p && $NF == h { ok = 1 } END { exit !ok }' "$tsv" 2>/dev/null
+    return
+  fi
+  expected=$(git -C "$C" rev-parse --verify -q "$hash^{commit}" 2>/dev/null) || return 1
+  while IFS=$'\t' read -r row_path _ row_hash; do
+    [[ $row_path == "$path" && $row_hash =~ ^[0-9a-f]{7,40}$ ]] || continue
+    actual=$(git -C "$C" rev-parse --verify -q "$row_hash^{commit}" 2>/dev/null) || continue
+    [[ $actual == "$expected" ]] && return 0
+  done < "$tsv"
+  return 1
+}
+
+reviewed_merge() { # engine sha -> 0 when a merge-pr receipt or lane pin records it
+  local sha=$1 hold="$ZF_AUTO_PIN_HOME/state/work/merge-lane-hold.txt" receipt_dir receipt
+  if [[ -f $hold ]] && awk -v sha="$sha" '$1 == "pin" && $3 == sha { found = 1 } END { exit !found }' "$hold"; then
+    return 0
+  fi
+  receipt_dir=$(git -C "$C" rev-parse --git-path zenoforge-merge-pr 2>/dev/null) || return 1
+  [[ $receipt_dir == /* ]] || receipt_dir="$C/$receipt_dir"
+  receipt="$receipt_dir/$sha.json"
+  jq -e --arg sha "$sha" '
+    .sha == $sha and .green == true and .cli_exit_code == 0
+    and (.engine_shards | type == "array" and length == 8
+      and ([.[].shard] | sort == [0,1,2,3,4,5,6,7])
+      and all(.[]; .exit_code == 0))
+  ' "$receipt" >/dev/null 2>&1
+}
+
+auto_pin_land_row() { # log last next -> path on success
+  local log=$1 last=$2 next=$3
+  (
+    local target="$AGENT_HOME/checkout" row_rel=.zenoforge/build/intended-changes.tsv path='' hash='' reason='' branch='' worktree='' start_head='' row_file='' row_head='' pr_url='' title='' body=''
+    cleanup() {
+      [[ -z $worktree ]] || git -C "$target" worktree remove --force "$worktree" >>"$log" 2>&1 || :
+      [[ -z $branch ]] || git -C "$target" branch -D "$branch" >>"$log" 2>&1 || :
+      git -C "$target" worktree prune >>"$log" 2>&1 || :
+    }
+    trap cleanup EXIT
+    IFS=$'\t' read -r path hash < <(row_named_fields "$log")
+    [[ -n $path && $path != /* && $path != *$'\t'* && $path != *$'\n'* ]] || return 1
+    case "/$path/" in */../*) return 1 ;; esac
+    [[ $hash =~ ^[0-9a-f]{7,40}$ || $hash =~ ^sha256:[0-9a-f]{12,64}$ ]] || return 1
+    reviewed_merge "$next" || return 1
+    [[ -z $(git -C "$target" status --porcelain 2>/dev/null) ]] || return 1
+    git -C "$target" fetch -q origin main >>"$log" 2>&1 || return 1
+    start_head=$(git -C "$target" rev-parse origin/main 2>/dev/null) || return 1
+    row_file=$(git -C "$target" show "$start_head:$row_rel" 2>/dev/null || :)
+    if awk -F'\t' -v p="$path" -v h="$hash" '$1 == p && $NF == h { found = 1 } END { exit !found }' <<<"$row_file"; then
+      git -C "$target" merge --ff-only "$start_head" >>"$log" 2>&1 || return 1
+      printf '%s\n' "$path"
+      return 0
+    fi
+    branch="chore/auto-pin-row-${next:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+    worktree="$target/.worktrees/auto-pin-row-${next:0:12}-$$-$RANDOM"
+    mkdir -p "$target/.worktrees" || return 1
+    git -C "$target" worktree add -b "$branch" "$worktree" "$start_head" >>"$log" 2>&1 || return 1
+    mkdir -p "$(dirname -- "$worktree/$row_rel")" || return 1
+    [[ -f "$worktree/$row_rel" ]] || : > "$worktree/$row_rel"
+    reason="auto: reviewed merge ${next:0:12}"
+    printf '%s\t%s\t%s\n' "$path" "$reason" "$hash" >>"$worktree/$row_rel"
+    git -C "$worktree" add -- "$row_rel" >>"$log" 2>&1 || return 1
+    git -C "$worktree" -c user.name='Zeno Wang' -c user.email='163096107+ZenoWangzy@users.noreply.github.com' \
+      commit -m "chore: approve intended change for ${next:0:12}" >>"$log" 2>&1 || return 1
+    row_head=$(git -C "$worktree" rev-parse HEAD) || return 1
+    git -C "$worktree" push -u origin "$branch" >>"$log" 2>&1 || return 1
+    title="chore: approve intended change for ${next:0:12}"
+    body="Auto-pin intended-changes row for reviewed engine merge ${next:0:12}: $path"
+    pr_url=$(cd "$worktree" && gh pr create --base main --head "$branch" --title "$title" --body "$body" 2>>"$log") \
+      || { echo 'override-pin: gh pr create failed for the intended-changes row' >>"$log"; return 1; }
+    printf 'pin-vecta: result=pr-open route=PR landed=no pr=%s\n' "$pr_url" >>"$log"
+    merge_override_pin "$log" intended-row "$row_head" >>"$log" 2>&1 || return 1
+    systemctl --user start --no-block vecta-agent.service >>"$log" 2>&1 || :
+    git -C "$target" fetch -q origin main >>"$log" 2>&1 || return 1
+    git -C "$target" merge --ff-only origin/main >>"$log" 2>&1 || return 1
+    printf '%s\n' "$path"
+  ) 2>>"$log"
 }
 
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
@@ -104,6 +207,15 @@ auto_pin_pass() {
     vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
     product_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)
     echo "$(date -u +%H:%M:%S) PIN-FAILED ${next:0:12} log=$log"; grep -E 'pin-vecta:|refus|add this row' "$log" | tail -4 | cut -c1-200
+    # A reviewed merge can land its own missing row through the checked VectA PR path; keep the pending engine SHA for the next pass.
+    if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
+      && reviewed_merge "$next" && ! row_named_exact_declared "$log" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv"; then
+      if row_path=$(auto_pin_land_row "$log" "$last" "$next"); then
+        : > "$log.row-retried"
+        echo "$(date -u +%H:%M:%S) PIN-ROW-AUTO ${next:0:12} $row_path"
+        return 0
+      fi
+    fi
     # A rate limit (GraphQL or REST, primary or secondary) clears with time, not with a new main commit: pin this commit again after a backoff, at most 3 times.
     if grep -qi 'rate limit' "$log"; then
       tries=$(ls "$log".rate-retry-* 2>/dev/null | wc -l)
@@ -121,7 +233,7 @@ auto_pin_pass() {
       grep -q 'source checkout has changes' "$log" && [[ -z "$(git -C "$AGENT_HOME/checkout" status --porcelain 2>/dev/null)" ]] && return 0
       # A row declared after the refusal, the one it named: try it again, since a new main commit would make the row stale. Once only.
       if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
-        && row_named_declared "$log" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv"; then
+        && row_named_declared "$log" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" "$last" "$next"; then
         : > "$log.row-retried"; return 0
       fi
       # A product origin/main move may fix a fork refusal; refresh at most once per interval.
