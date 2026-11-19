@@ -115,7 +115,7 @@ tracker_dep_cleared() { # blocker blocked-issue → 0 when the blocker is a trac
 # Merged but awaiting-release is not delivered for a dependent that needs it live: its dep-disagreement marker or its own text says so (2026-11-18 #7075 ran on #7074 twice).
 dep_awaiting_release_holds() { # unit-json predecessor → 0 while the predecessor is merged, awaiting-release (not released), and this unit needs it live
   local info labels
-  jqf -e --argjson d "$2" '(.dep_wait_delivery == $d) or ((.task // "") | test("needs #\($d)([^0-9]|$)[^\\n]{0,20}(live|released|delivered)"; "i"))' <<<"$1" >/dev/null 2>&1 || return 1
+  jqf -e --argjson d "$2" '(.dep_wait_delivery == $d) or ((.task // "") | test("(needs|需要|等待?) ?#\($d)([^0-9]|$)[^\\n]{0,20}(live|released|delivered|上线|发布|交付)"; "i"))' <<<"$1" >/dev/null 2>&1 || return 1
   info="$(dep_cache_info "$2")"
   labels=",$(jqf -r '.labels // ""' <<<"$info"),"
   [[ "$(jqf -r '.state // empty' <<<"$info")" == MERGED && "$labels" == *,awaiting-release,* && "$labels" != *,released,* ]]
