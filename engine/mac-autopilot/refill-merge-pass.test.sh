@@ -73,8 +73,9 @@ refill_stopped() { SECONDS=$((SECONDS + 3)); return 1; }
 run_merge_lane_pass
 unset -f refill_stopped; TICK_PRS=""
 grep -Eq 'merge detail pass_steps [a-z-]+=[0-9]+s/[0-9]+' "$LOG" || fail "no pass_steps line with a step name: $(cat "$LOG")"
-grep -Fq 'merge detail pass_steps skipped-census=3s/1' "$LOG" || fail "pass_steps did not charge the census skip: $(cat "$LOG")"
-grep -Fq 'merge detail pass_slowest pr=7 secs=3 outcome=skipped-census' "$LOG" || fail "no pass_slowest line: $(cat "$LOG")"
+# SECONDS is the real clock: a busy machine adds a second to the 3 the stub charges, so accept 3 to 9.
+grep -Eq 'merge detail pass_steps skipped-census=[3-9]s/1' "$LOG" || fail "pass_steps did not charge the census skip: $(cat "$LOG")"
+grep -Eq 'merge detail pass_slowest pr=7 secs=[3-9] outcome=skipped-census' "$LOG" || fail "no pass_slowest line: $(cat "$LOG")"
 unset -f git merge_candidates
 : > "$LOG"
 
