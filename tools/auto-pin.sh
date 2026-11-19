@@ -41,6 +41,14 @@ merge_override_pin() { # log -> 0 merged, 1 leave for head
   echo "override-pin: #$pr not MERGED after the wait"; return 1
 }
 
+# The row retry needs the row the refusal named: the line after "add this row" is path TAB reason TAB hash, and tsv must hold a line with that path and hash.
+row_named_declared() { # log tsv -> 0 when tsv declares the row named in log
+  local log=$1 tsv=$2 path='' hash=''
+  IFS=$'\t' read -r path hash < <(awk -F'\t' 'f { if (NF >= 3) print $1 "\t" $NF; exit } /add this row/ { f = 1 }' "$log" 2>/dev/null)
+  [[ -n $path && -n $hash ]] || return 1
+  awk -F'\t' -v p="$path" -v h="$hash" '$1 == p && $NF == h { ok = 1 } END { exit !ok }' "$tsv" 2>/dev/null
+}
+
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
   local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head product_fetch_secs product_fetch_now product_fetch_last product_fetch_rc product_tries
@@ -111,9 +119,9 @@ auto_pin_pass() {
       [[ "$(git -C "$C" rev-parse origin/main)" == "$next" ]] || break
       # A dirty checkout clears with no new main commit, so try the same commit again.
       grep -q 'source checkout has changes' "$log" && [[ -z "$(git -C "$AGENT_HOME/checkout" status --porcelain 2>/dev/null)" ]] && return 0
-      # A row declared for this commit after the refusal: try it again, since a new main commit would make the row stale. Once only.
+      # A row declared after the refusal, the one it named: try it again, since a new main commit would make the row stale. Once only.
       if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
-        && grep -Eq "$next|sha256:" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" 2>/dev/null; then
+        && row_named_declared "$log" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv"; then
         : > "$log.row-retried"; return 0
       fi
       # A product origin/main move may fix a fork refusal; refresh at most once per interval.

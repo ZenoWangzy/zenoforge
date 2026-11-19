@@ -122,13 +122,23 @@ echo 0 > "$PIN_RC"
 auto_pin_pass > /dev/null; [[ $(last) == "$c5" ]] || fail "retry did not pin the same commit: $(last)"
 [[ $(grep -c "$c5" "$PIN_CALLS") == 2 ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 
-# a pin refused for a missing intended-changes row is retried once the row lands, with no new main commit, and only once
-: > "$PIN_CALLS"; c6=$(commit six); echo 1 > "$PIN_RC"
-sed -i '2s/.*/echo "pin-vecta: add this row to intended-changes.tsv and rerun:"/' "$tmp/clone/tools/pin-vecta.sh"
+# a pin refused for a missing intended-changes row is retried once the row it names lands (same path and hash), with no new main commit, and only once
+row_path=state/rulings.json row_hash=sha256:6d6f5c0a1b2c
+tsv=$tmp/agent/checkout/.zenoforge/build/intended-changes.tsv
+cat > "$tmp/clone/tools/pin-vecta.sh" <<STUB
+#!/usr/bin/env bash
+echo "\$1" >> "\$PIN_CALLS"
+echo "pin-vecta: add this row to intended-changes.tsv and rerun:"
+printf '%s\t%s\t%s\n' '$row_path' 'engine pin changes resolved config' '$row_hash'
+exit 1
+STUB
+: > "$PIN_CALLS"; c6=$(commit six)
+printf 'other/file.json\tdeclared\tsha256:aaaaaaaaaaaa\n' > "$tsv"
 auto_pin_pass > "$tmp/out" & pass=$!
 sleep 1
-kill -0 "$pass" 2>/dev/null || fail 'a refused pin ended the wait before the row landed'
-printf 'state/rulings.json\tdeclared\t%s\n' "$c6" > "$tmp/agent/checkout/.zenoforge/build/intended-changes.tsv"
+kill -0 "$pass" 2>/dev/null || fail 'unrelated sha256 rows triggered a row retry'
+[[ $(grep -c "$c6" "$PIN_CALLS") == 1 ]] || fail "unrelated row retried: $(tr '\n' ' ' < "$PIN_CALLS")"
+printf 'other/file.json\tdeclared\tsha256:aaaaaaaaaaaa\n%s\tdeclared\t%s\n' "$row_path" "$row_hash" > "$tsv"
 wait "$pass" || fail 'row retry pass returned non-zero'
 [[ $(last) == "$c5" ]] || fail 'state moved before the row retry pinned'
 auto_pin_pass > "$tmp/out" & pass=$!
