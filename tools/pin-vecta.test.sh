@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 pin_script="$script_dir/pin-vecta.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/pin-vecta-test.XXXXXXXX")
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'chmod -R u+w -- "$tmp" 2>/dev/null; rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/tmp"
 export TMPDIR="$tmp/tmp"
 export PATH="$tmp/bin:$PATH"
@@ -74,6 +74,7 @@ fi
 echo 'publish-preflight: OK'
 PREFLIGHT
     chmod +x "$version/engine/engine-sync.sh"
+    chmod -R a-w "$version" # the real build leaves its tree read-only
     echo "engine-sync: built $version"
     ;;
   --check)
@@ -319,7 +320,8 @@ git -C "$direct_target" worktree list | grep -Fq "$direct_worktree" && fail 'suc
 direct_branch=$(branch_of "$tmp/direct.out")
 [[ -n "$direct_branch" ]] || fail 'pin did not print its branch'
 direct_out=$(sed -n 's/^pin-vecta: out=//p' "$tmp/direct.out" | tail -1)
-[[ -n "$direct_out" && -d "$direct_out" ]] || fail 'fresh out directory was not created'
+[[ -n "$direct_out" ]] || fail 'fresh out directory was not printed'
+[[ ! -e "$direct_out" ]] || fail 'successful pin left its read-only build output behind'
 subject=$(git -C "$direct_target" log -1 --format=%s "$direct_branch")
 [[ "$subject" == '[skip ci]'* ]] || fail "direct route commit lacks [skip ci]: $subject"
 grep -Fq 'pin-vecta: prepared route=land-direct-main' "$tmp/direct.out" || fail 'pin-only diff did not select land-direct-main'
@@ -652,5 +654,9 @@ run_pin "$prune_calls" "$prune_scopes" "$prune_agent" "$prune_target" > "$tmp/pr
 [[ -d "$prune_wt/pin-vecta-fresh" ]] || fail 'fresh pin-vecta worktree was pruned'
 [[ -d "$prune_wt/other-worktree" ]] || fail 'non-pin worktree was pruned'
 ok 'stale pin-vecta worktrees are pruned; live, fresh and non-pin worktrees are kept'
+
+leaked_out=$(find "$TMPDIR" -maxdepth 1 -name 'zf-pin-vecta-out.*' -print)
+[[ -z "$leaked_out" ]] || fail "runs left build output dirs behind: $leaked_out"
+ok 'no run (prepared, landed, PR, refused or failed) leaves its build output dir behind'
 
 echo 'pin-vecta.test.sh: PASS'

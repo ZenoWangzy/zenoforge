@@ -113,8 +113,14 @@ pack_agent_rel=".zenoforge/build/pack/scripts/agent"
 short_sha=${engine_sha:0:12}
 merge_stage=$(mktemp -d "${TMPDIR:-/tmp}/zf-pin-merge.XXXXXXXX")
 pin_worktree='' # set once this run creates its worktree; cleanup removes only that one
+out_root=''     # set once this run creates its build output dir; every step log is already printed
 cleanup() {
   rm -rf -- "$merge_stage"
+  if [[ -n "$out_root" ]]; then
+    # engine-sync leaves the built tree read-only, so a plain rm fails; 15 such dirs once filled a temp disk.
+    chmod -R u+w -- "$out_root" 2>/dev/null || true
+    rm -rf -- "$out_root"
+  fi
   if [[ -n "$pin_worktree" ]]; then
     git -C "$target" worktree remove --force "$pin_worktree" >/dev/null 2>&1 || true
     git -C "$target" worktree prune
