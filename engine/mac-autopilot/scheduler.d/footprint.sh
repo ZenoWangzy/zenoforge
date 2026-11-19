@@ -442,19 +442,21 @@ hotspot_expand_batch() { # Includes old-rule scope and counts for attribution wi
   local candidates="$1" log min
   log="$(hotspot_log)"
   min="$(hotspot_minimum)"
-  # Ancestor dirs are built once per path and membership is a key read: the old scan of scope per file took 20 s at 800 paths.
+  # One index per batch: path or dir prefix -> the commits (2..40 files) that touch a file under it. A candidate reads only the commits
+  # its scope reaches, not the whole log; the scan of every commit per candidate was 25-30 s at 800 candidates.
   jqf -Rsc --arg min "$min" --slurpfile candidates <(printf '%s' "$candidates") '
+    def prefixes($p): ($p | split("/")) as $parts | [range(0; $parts|length) as $k | $parts[0:$k+1] | join("/")];
     (split("\u0001") | map(split("\n") | map(select(length > 0)) | unique)) as $commits
-    | ([$commits[][]] | unique | map({key:., value:(split("/") as $parts | [range(0; $parts|length-1) as $k | $parts[0:$k+1] | join("/")])}) | from_entries) as $anc
+    | ([ $commits | to_entries[] | select(.value | length > 1 and length <= 40) | .key as $c | .value[] | prefixes(.)[] | {k:., v:$c} ]
+       | group_by(.k) | map({key:.[0].k, value:(map(.v) | unique)}) | from_entries) as $idx
     | [$candidates[0][] as $candidate
         | ($candidate.scope) as $scope
         | ($scope | map({key:., value:true}) | from_entries) as $set
-        | def covered($p): ($set[$p] // false) or any(($anc[$p] // [])[]; $set[.] // false);
-          ([ $commits[] | select(length > 1 and length <= 40)
-             | select(any(.[]; covered(.)))
-             | .[] | select(covered(.) | not) ]
+        | def covered($p): any(prefixes($p)[]; $set[.] // false);
+          ([$scope[] as $a | ($idx[$a] // [])[]] | unique) as $near
+          | ([ $near[] as $c | $commits[$c][] | select(covered(.) | not) ]
           | group_by(.) | map(select(length >= 2) | {f:.[0],n:length})
-          | sort_by(-.n) | .[:12]) as $old
+          | sort_by([-.n, .f]) | .[:12]) as $old
         | ($old | map(select($min != "off" and .n >= ($min | tonumber)))) as $added
         | {id:$candidate.id, scope:(($scope + ($added | map(.f))) | unique),
            old_scope:(($scope + ($old | map(.f))) | unique),

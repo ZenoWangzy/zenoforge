@@ -138,11 +138,13 @@ footprint_filter_rows_main() { # filter scope and optional old_scope for every r
     field_name="${path_rows[$i]#*$'\t'}"; field_name="${field_name%%$'\t'*}"
     records+="$row_index"$'\t'"$field_name"$'\t'"$kind"$'\t'"${path_values[$i]}"$'\n'
   done
+  # Paths are grouped by (row, field) once: a scan of every path per row and field was quadratic (15 s at 800 rows).
   jqf -Rn --slurpfile rows <(printf '%s' "$rows") '[inputs | split("\t") | select(length >= 4) | {row:(.[0]|tonumber),field:.[1],kind:.[2],path:(.[3:]|join("\t"))}] as $paths
+    | ($paths | group_by([.row,.field]) | map({key:"\(.[0].row)\u0001\(.[0].field)", value:.}) | from_entries) as $by
     | [$rows[0] | to_entries[] as $entry | $entry.value as $row
        | reduce ["scope","old_scope"][] as $field ($row;
            if (.preserve // false) == true or (.[$field]|type) != "array" or any(.[$field][]; type != "string") then .
-           else ([$paths[] | select(.row == $entry.key and .field == $field)] as $found
+           else (($by["\($entry.key)\u0001\($field)"] // []) as $found
              | if any($found[]; .kind == "empty") then .
                else .[$field] = ([$found[] | select(.kind != "missing") | .path] | unique) end)
            end)]' <<<"$records"
