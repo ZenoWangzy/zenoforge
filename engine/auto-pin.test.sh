@@ -22,6 +22,7 @@ g -C "$tmp/product-origin.git" symbolic-ref HEAD refs/heads/main
 git init -q "$tmp/agent/checkout"; g -C "$tmp/agent/checkout" checkout -q -b main
 g -C "$tmp/agent/checkout" remote add origin "$tmp/product-origin.git"
 mkdir -p "$tmp/agent/checkout/.zenoforge/build"
+: > "$tmp/agent/checkout/.zenoforge/build/intended-changes.tsv"
 printf '#!/usr/bin/env bash\necho converge >> "$PIN_CALLS"\n' > "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"; chmod +x "$tmp/agent/checkout/.zenoforge/build/engine-sync.sh"
 mkdir -p "$tmp/agent/engine-live"; printf '#!/usr/bin/env bash\necho wrapper >> "$PIN_CALLS"\n' > "$tmp/agent/engine-live/engine-sync.sh"; chmod +x "$tmp/agent/engine-live/engine-sync.sh"
 g -C "$tmp/agent/checkout" add -A; g -C "$tmp/agent/checkout" commit -qm baseline
@@ -36,6 +37,7 @@ export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc
 unset ZF_AUTO_PIN_PRODUCT_FETCH_SECS
 REAL_GIT=$(command -v git); export REAL_GIT PRODUCT_FETCH_CALLS=$tmp/product-fetches AUTO_PIN_MAIN_FETCH_CALLS=$tmp/main-fetches
 mkdir -p "$tmp/bin"; : > "$PRODUCT_FETCH_CALLS" "$AUTO_PIN_MAIN_FETCH_CALLS"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/systemctl"; chmod +x "$tmp/bin/systemctl"
 cat > "$tmp/bin/git" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1-}" == -C && "${2-}" == "$AGENT_HOME/checkout" && "${3-}" == fetch ]]; then
@@ -345,17 +347,116 @@ wait "$daemon" || fail 'the self-restart exit was not clean'
 grep -q 'newer script' "$tmp/out" || fail "no self-restart line: $(cat "$tmp/out")"
 # merge_override_pin: a base-only override move (clean three-way, pack copy byte-identical) has no pack file in the PR and must still merge
 green_checks='[{"check_runs":[{"status":"completed","conclusion":"success"}]}]'
-gh() { # stub of the REST reads: files from GH_FILES, check runs from GH_CHECKS (default green), the merge completes at once
+export GH_HEAD_FILE=$tmp/gh-head GH_CALLS=$tmp/gh-calls
+gh() { # stub of the REST reads and row PR landing
+  echo "$*" >> "$GH_CALLS"
   case "$*" in
+    *"pr create"*)
+      local branch=''
+      while (($#)); do
+        if [[ $1 == --head ]]; then branch=${2-}; shift 2; else shift; fi
+      done
+      git -C "$AGENT_HOME/checkout" rev-parse "$branch" > "$GH_HEAD_FILE" || return 1
+      echo 'https://github.com/ZenoWangzy/vecta/pull/42'
+      ;;
     *"/files"*) printf '%s\n' "$GH_FILES" ;;
-    *"--jq .head.sha"*) echo deadbeef ;;
+    *"--jq .head.sha"*) [[ ! -s $GH_HEAD_FILE ]] || cat "$GH_HEAD_FILE"; [[ -s $GH_HEAD_FILE ]] || echo deadbeef ;;
     *"/check-runs"*) printf '%s\n' "${GH_CHECKS:-$green_checks}" ;;
     *"/status"*) echo 0 ;;
-    *"pr merge"*) echo merged ;;
+    *"pr merge"*)
+      if [[ -n ${GH_MERGE_TARGET_GIT:-} && -s $GH_HEAD_FILE ]]; then
+        git --git-dir "$GH_MERGE_TARGET_GIT" update-ref refs/heads/main "$(cat "$GH_HEAD_FILE")" || return 1
+      fi
+      echo merged
+      ;;
     *"--jq .merged"*) echo true ;;
     *) echo "gh stub: unexpected $*" >&2; return 1 ;;
   esac
 }
+# A reviewed refusal lands just its intended row as a VectA PR, then the next pass retries the same engine SHA.
+git -C "$AGENT_HOME/checkout" checkout -q main
+git -C "$AGENT_HOME/checkout" reset --hard -q origin/main
+echo 0 > "$PIN_RC"
+: > "$PIN_CALLS"
+: > "$GH_CALLS"
+: > "$GH_HEAD_FILE"
+GH_MERGE_TARGET_GIT=$tmp/product-origin.git; export GH_MERGE_TARGET_GIT
+GH_FILES=.zenoforge/build/intended-changes.tsv
+ROW_PATH=state/rulings.json; export ROW_PATH
+cat > "$tmp/clone/tools/pin-vecta.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$1" >> "$PIN_CALLS"
+row_file="$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv"
+reason="auto: reviewed merge ${1:0:12}"
+if awk -F'\t' -v p="$ROW_PATH" -v r="$reason" -v h="$1" '$1 == p && $2 == r && $3 == h { found = 1 } END { exit !found }' "$row_file"; then exit 0; fi
+echo 'pin-vecta: add this row to intended-changes.tsv and rerun:' >&2
+printf '%s\tengine pin %s changes resolved config\t%s\n' "$ROW_PATH" "${1:0:12}" "$1" >&2
+exit 1
+STUB
+: > "$PIN_CALLS"
+c_reviewed=$(commit reviewed-merge)
+mkdir -p "$tmp/clone/.git/zenoforge-merge-pr"
+jq -n --arg sha "$c_reviewed" '{sha:$sha,green:true,cli_exit_code:0,engine_shards:[range(0;8)|{shard:.,exit_code:0}]}' \
+  > "$tmp/clone/.git/zenoforge-merge-pr/$c_reviewed.json"
+mkdir -p "$ZF_AUTO_PIN_HOME/state/work"
+date +%s > "$ZF_AUTO_PIN_HOME/auto-pin-product-fetch.last"
+auto_pin_pass > "$tmp/reviewed.out" & pass=$!
+for _ in {1..200}; do
+  grep -q 'PIN-ROW-AUTO' "$tmp/reviewed.out" 2>/dev/null && break
+  kill -0 "$pass" 2>/dev/null || break
+  sleep 0.05
+done
+if kill -0 "$pass" 2>/dev/null; then kill "$pass" 2>/dev/null || :; wait "$pass" 2>/dev/null || :; fail 'reviewed row did not land and return for retry'; fi
+wait "$pass" || fail 'reviewed row landing pass failed'
+grep -Fq "PIN-ROW-AUTO ${c_reviewed:0:12} $ROW_PATH" "$tmp/reviewed.out" || fail 'reviewed merge did not log its auto-landed row'
+expected_auto_row=$(printf '%s\tauto: reviewed merge %s\t%s' "$ROW_PATH" "${c_reviewed:0:12}" "$c_reviewed")
+grep -Fqx "$expected_auto_row" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv" || fail 'reviewed merge row was not landed with the required reason and SHA'
+[[ $(grep -Fc "$c_reviewed" "$PIN_CALLS") == 1 ]] || fail 'row landing did not leave exactly one initial refused pin'
+[[ $(last) != "$c_reviewed" ]] || fail 'row landing advanced auto-pin state before retry'
+auto_pin_pass > "$tmp/reviewed-retry.out" || fail 'reviewed row retry failed'
+[[ $(grep -Fc "$c_reviewed" "$PIN_CALLS") == 2 ]] || fail 'reviewed merge did not retry the same engine SHA'
+[[ $(last) == "$c_reviewed" ]] || fail 'reviewed retry did not pin the refused SHA'
+rm "$tmp/clone/.git/zenoforge-merge-pr/$c_reviewed.json"
+printf 'pin 245 %s\n' "$c_reviewed" > "$ZF_AUTO_PIN_HOME/state/work/merge-lane-hold.txt"
+reviewed_merge "$c_reviewed" || fail 'a lane hold pin line did not mark its engine SHA reviewed'
+
+# Without either review marker, a refused row stays a hand step and creates no VectA PR.
+: > "$PIN_CALLS"
+: > "$GH_CALLS"
+c_unreviewed=$(commit unreviewed-merge)
+printf 'pin 245 %s\n' "$c_reviewed" > "$ZF_AUTO_PIN_HOME/state/work/merge-lane-hold.txt"
+row_count_before=$(wc -l < "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv")
+date +%s > "$ZF_AUTO_PIN_HOME/auto-pin-product-fetch.last"
+auto_pin_pass > "$tmp/unreviewed.out" & pass=$!
+wait_for_pin_calls "$c_unreviewed" 1 || fail 'unreviewed refusal did not start'
+sleep 0.5
+kill -0 "$pass" 2>/dev/null || fail 'unreviewed row refusal did not keep the hand step'
+[[ ! -s $GH_CALLS ]] || fail "unreviewed refusal created a VectA PR: $(cat "$GH_CALLS")"
+[[ $(wc -l < "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv") == "$row_count_before" ]] || fail 'unreviewed refusal wrote an intended row'
+kill "$pass" 2>/dev/null || :; wait "$pass" 2>/dev/null || :
+echo 0 > "$PIN_RC"
+cat > "$tmp/clone/tools/pin-vecta.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$1" >> "$PIN_CALLS"; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
+STUB
+auto_pin_pass > /dev/null
+[[ $(last) == "$c_unreviewed" ]] || fail 'unreviewed test cleanup did not restore normal pinning'
+unset GH_MERGE_TARGET_GIT
+
+# An existing engine-SHA row from anywhere in last..next is accepted, but one before last is not.
+range_last=$(last)
+c_range_old=$(commit row-range-old)
+c_range_next=$(commit row-range-next)
+g -C "$ZF_AUTO_PIN_CLONE" fetch -q origin main
+row_log=$tmp/row-range.log; row_tsv=$tmp/row-range.tsv
+printf 'pin-vecta: add this row to intended-changes.tsv and rerun:\n%s\tengine pin\t%s\n' "$ROW_PATH" "$c_range_next" > "$row_log"
+printf '%s\thand row\t%s\n' "$ROW_PATH" "$c_range_old" > "$row_tsv"
+row_named_declared "$row_log" "$row_tsv" "$range_last" "$c_range_next" || fail 'an older engine SHA in last..next was not accepted'
+printf '%s\thand row\t%s\n' "$ROW_PATH" "$range_last" > "$row_tsv"
+if row_named_declared "$row_log" "$row_tsv" "$range_last" "$c_range_next"; then fail 'an engine SHA before last was accepted'; fi
+echo 0 > "$PIN_RC"; auto_pin_pass > /dev/null
+[[ $(last) == "$c_range_next" ]] || fail 'engine-SHA range test cleanup did not finish pinning'
+
 ovlog=$tmp/override.log
 printf '%s\n' 'result=pr-open route=PR landed=no pr=https://github.com/ZenoWangzy/vecta/pull/5876' \
   'pin-vecta: merged override mac-autopilot/scheduler.d/dispatch-queue.sh base=416ca459497a -> engine=cb9fd885a3b6 (clean three-way merge)' > "$ovlog"
