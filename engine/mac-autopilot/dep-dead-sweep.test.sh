@@ -218,7 +218,9 @@ NOW_EPOCH=$((NOW_EPOCH + 600)); closed_state CLOSED; dep_marker_open "$(marked 2
 rm -f "$A/dep-states.calls" "$A"/dep-fresh-*
 reset; nounit; closed_state CLOSED; CHILD=CLOSED
 ! dep_marker_open "$(marked 20)" >/dev/null && ! dep_marker_open "$(marked 20)" >/dev/null || fail 'a fresh CLOSED read must end the marker every time'
-[[ "$(calls)" == 2 ]] || fail "a CLOSED read must not be memoized, got $(calls) reads"
+[[ "$(calls)" == 1 ]] || fail "a CLOSED read is read once per tick (#1286), got $(calls) reads"
+STAMP=next-tick; ! dep_marker_open "$(marked 20)" >/dev/null || fail 'a CLOSED read must still end the marker on the next tick'
+[[ "$(calls)" == 2 ]] || fail "a CLOSED read must not be kept past its tick, got $(calls) reads"
 # A fresh MERGED under a stale CLOSED cache releases as delivered, not as a closed-issue unblock (#536).
 reset; nounit; closed_state CLOSED; CHILD=MERGED; release_dependency_blocks
 jq -e '.units[] | select(.id=="issue-20") | .stage != "blocked-external" and any(.released_deps[]?; .issue == 10 and .kind == "delivered")' "$UNITS" >/dev/null \
