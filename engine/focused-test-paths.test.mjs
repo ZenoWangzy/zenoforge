@@ -1192,3 +1192,10 @@ test('a test-*.sh suite under a configured pipeline root is still selected', () 
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// 11-19: #1281 grew engine/prompts/implement-contract.md past its byte budget in run-triage-batch.test.sh; no focused run picked that suite and main went red.
+test('a stage prompt change runs the prompt byte-budget suite', () => {
+  const tracked = new Set(['engine/run-triage-batch.test.sh', 'engine/run-recut.test.sh']);
+  assert.deepEqual(focusedTestPaths(['engine/prompts/implement-contract.md'], tracked), ['engine/run-triage-batch.test.sh']);
+  assert.deepEqual(focusedTestPaths(['engine/prompts/recut.md'], tracked).sort(), ['engine/run-recut.test.sh', 'engine/run-triage-batch.test.sh']);
+});

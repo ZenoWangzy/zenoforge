@@ -848,10 +848,10 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
         ['recut.md', 'run-recut'],
         ['recut.schema.json', 'run-recut'],
       ]).get(prompt);
-      if (promptOwner) {
-        candidates = (Array.isArray(promptOwner) ? promptOwner : [promptOwner])
-          .map((owner) => `${PACK_PREFIX}${owner}.test.sh`);
-      }
+      // Every .md prompt also runs run-triage-batch.test.sh: it holds the prompt byte budgets (#1281 went past one; main red).
+      candidates = [...(Array.isArray(promptOwner) ? promptOwner : promptOwner ? [promptOwner] : []), ...(prompt.endsWith('.md') ? ['run-triage-batch'] : [])]
+        .map((owner) => `${PACK_PREFIX}${owner}.test.sh`);
+      if (!candidates.length) candidates = undefined;
     }
     if (!candidates && path === 'scripts/code-intelligence-preflight.mjs') candidates = ['scripts/code-intelligence-preflight.test.mjs'];
 
