@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-source "$engine_dir/engine/mac-autopilot/scheduler.d/feature-map-maintain.sh"
+source "$engine_dir/engine/mac-autopilot/scheduler.d/locks-views.sh"
 
 fail() { echo "feature-map-maintain.test.sh: $*" >&2; exit 1; }
 fixture="$test_env_root/feature-map-maintain"

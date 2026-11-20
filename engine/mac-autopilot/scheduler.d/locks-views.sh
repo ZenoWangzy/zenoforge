@@ -1,3 +1,4 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/feature-map-maintain.sh"
 lock_us_now() { LOCK_US="${EPOCHREALTIME:-0}"; LOCK_US="${LOCK_US//[.,]/}"; } # microseconds since the epoch; 0 where bash has no EPOCHREALTIME
 scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's start ticks name another process (PID reuse)
   local want now
