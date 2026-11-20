@@ -4,7 +4,7 @@
 # nothing changes until a variable is set. Sourcing runs no git, gh or network call; its only write is the host-id file (below).
 #   ZF_HOST_ID     logical host name in published records: default = $AGENT_HOME/host-id when valid, else the sanitized short
 #                     hostname, written to that file once when AGENT_HOME exists. A caller-set value wins.
-#   ZF_COORD       this host's coordination switch: default = off. Nothing reads it yet.
+#   ZF_COORD       this host's coordination switch: default = off; on uses shared Git claim refs.
 #   ZF_ENGINE_DIR  the engine's own files (lib.sh, run-*.sh, night/, ...): default = the directory this file lives in.
 #   ZF_REPO_DIR    the target repository the engine works on: default = two levels above the engine (the engine
 #                     lives inside it today).

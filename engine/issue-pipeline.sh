@@ -667,7 +667,7 @@ dispatch() {
   # MemoryPeak 6.5 GB) and pushed the box below 1.6 GB MemAvailable. A cap
   # makes the OOM kill land inside that unit, not on the whole WSL box.
   # Release is exempt: an OOM kill mid-deploy would leave production half-rolled.
-  local -a memory_args=() result_args=() advisor_env=()
+  local -a memory_args=() result_args=() advisor_env=() coord_env=()
   if [[ "$stage" == advisor ]]; then
     advisor_env=(-E ZF_WEB_ADVISOR_PROVIDER_JOB_DIR -E "ZF_QUARANTINE_CANARY_SCOPES=$(quarantine_canary_scope_list_for_stage advisor)")
   fi
@@ -717,9 +717,10 @@ dispatch() {
       return 0
     fi
   fi
+  if [[ "${ZF_COORD:-off}" == on && -n "$PIPELINE_CLAIM_KEY" && -n "$PIPELINE_CLAIM_OWNER" ]]; then coord_env=(-E ZF_COORD=on -E ZF_COORD_RUN=1 -E "ZF_COORD_KEY=$PIPELINE_CLAIM_KEY" -E "ZF_COORD_OWNER=$PIPELINE_CLAIM_OWNER" -E "ZF_COORD_STAGE=$stage"); fi
   if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
-    "${advisor_env[@]}" \
+    "${advisor_env[@]}" "${coord_env[@]}" \
     -p "RuntimeMaxSec=$runtime_max" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$@" \

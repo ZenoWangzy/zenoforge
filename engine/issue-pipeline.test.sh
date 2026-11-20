@@ -1759,6 +1759,71 @@ PROVIDER_DISPATCH_OUT="$(
   codex_quota_exhausted() { return 1; }
   dispatch() { printf '%s\n' "$1" > "$AGENT_HOME/dispatched-$1"; }
   systemctl() { return 1; }
+  run_two_host_dispatch() (
+    local remote_home="$AGENT_HOME/two-host" remote="$AGENT_HOME/two-host/origin.git" sink="$AGENT_HOME/two-host/dispatches" host
+    git init --bare --quiet "$remote"
+    for host in a b; do
+      mkdir -p "$remote_home/$host/repo"
+      git -C "$remote_home/$host/repo" init --quiet
+      git -C "$remote_home/$host/repo" remote add origin "$remote"
+      : > "$remote_home/$host/result"
+    done
+    : > "$sink"
+    run_host_dispatch() (
+      local host="$1" status=0
+      AGENT_HOME="$remote_home/$host/home" REPO_DIR="$remote_home/$host/repo" ZF_COORD=on
+      PIPELINE_CLAIM_KEY='' PIPELINE_CLAIM_OWNER='' PIPELINE_CLAIM_UNIT='' PIPELINE_CLAIM_STAGE=''
+      mkdir -p "$AGENT_HOME"
+      source "$SCRIPT_DIR/coord.sh"
+      coord_issue_live_worker() { return 1; }
+      if pipeline_claim_begin 910558 implement "zf-implement-910558"; then
+        if coord_assert_owned "$PIPELINE_CLAIM_KEY" "$PIPELINE_CLAIM_OWNER" >/dev/null; then
+          printf 'dispatch:%s\n' "$host" >> "$sink"
+        else
+          status=$?
+        fi
+      else
+        status=$?
+      fi
+      printf '%s:%s\n' "$host" "$status" > "$remote_home/$host/result"
+    )
+    run_host_dispatch a &
+    run_host_dispatch b &
+    wait
+    printf 'two-host-dispatches=%s\n' "$(wc -l < "$sink")"
+    run_manual_enter_exit() (
+      AGENT_HOME="$remote_home/a/home" REPO_DIR="$remote_home/a/repo" ZF_COORD=on
+      source "$SCRIPT_DIR/coord.sh"
+      coord_enter 910561 triage
+    )
+    run_manual_enter_exit
+    AGENT_HOME="$remote_home/a/home" REPO_DIR="$remote_home/a/repo" ZF_COORD=on
+    source "$SCRIPT_DIR/coord.sh"
+    if coord_read issue-910561 >/dev/null; then echo 'manual-release=no'; else status=$?; echo "manual-release=$([[ "$status" -eq 1 ]] && echo yes || echo unknown)"; fi
+  )
+  run_unknown_remote_dispatch() (
+    local bad_home="$AGENT_HOME/unknown-remote" attempts=0 status=0
+    mkdir -p "$bad_home/repo" "$bad_home/home"
+    git -C "$bad_home/repo" init --quiet
+    git -C "$bad_home/repo" remote add origin "$bad_home/missing.git"
+    state_bump_attempts() { attempts=$((attempts + 1)); }
+    dispatch() { : > "$bad_home/dispatched"; }
+    AGENT_HOME="$bad_home/home" REPO_DIR="$bad_home/repo" ZF_COORD=on
+    source "$SCRIPT_DIR/coord.sh"
+    coord_issue_live_worker() { return 1; }
+    dispatch_policy_unit implement 910559 ready-for-agent 1 || status=$?
+    echo "status=$status attempts=$attempts dispatched=$([[ -e "$bad_home/dispatched" ]] && echo yes || echo no)"
+  )
+  run_two_host_dispatch
+  run_unknown_remote_dispatch
+  run_off_mode_entry() (
+    AGENT_HOME="$AGENT_HOME/off-mode" ZF_COORD=off
+    source "$SCRIPT_DIR/coord.sh"
+    git() { echo unexpected-git-call >&2; return 99; }
+    coord_enter 910560 triage
+    [ ! -e "$AGENT_HOME/coord" ]
+  )
+  if run_off_mode_entry; then echo 'off-mode-entry=unchanged'; else echo 'off-mode-entry=changed'; fi
   dispatch_policy_unit implement 910555 ready-for-agent 1
   echo "OTHER-IMPLEMENT:$([ -f "$AGENT_HOME/dispatched-implement" ] && echo yes || echo no)"
   jq -n --argjson config "$(jq -c '.roles.work' "$MODEL_POLICY_FILE")" \
@@ -1772,11 +1837,19 @@ PROVIDER_DISPATCH_OUT="$(
 assert_contains "unrelated provider hold still dispatches Codex implement" "$PROVIDER_DISPATCH_OUT" 'OTHER-IMPLEMENT:yes'
 assert_contains "failed work role blocks recut dispatch" "$PROVIDER_DISPATCH_OUT" 'FAILED-RECUT:no'
 assert_contains "failed work role blocks triage batch dispatch" "$PROVIDER_DISPATCH_OUT" 'FAILED-TRIAGE:no'
+assert_contains 'two hosts sharing one bare remote dispatch a ticket once' "$PROVIDER_DISPATCH_OUT" 'two-host-dispatches=1'
+assert_contains 'direct stage entry releases its remote claim on exit' "$PROVIDER_DISPATCH_OUT" 'manual-release=yes'
+assert_contains 'unknown remote claim read dispatches nothing and charges no attempt' "$PROVIDER_DISPATCH_OUT" 'status=78 attempts=0 dispatched=no'
+assert_contains 'off mode enters no remote claim path or filesystem state' "$PROVIDER_DISPATCH_OUT" 'off-mode-entry=unchanged'
+assert_cond 'triage, recut, and advisor wrappers enter coordination and release on exit' \
+  "$(grep -Fq 'coord_enter "$N" triage' "$SCRIPT_DIR/run-triage.sh" && grep -Fq 'coord_enter "$N" recut' "$SCRIPT_DIR/run-recut.sh" && grep -Fq 'coord_enter "$N" advisor' "$SCRIPT_DIR/run-advisor.sh" && grep -Fq 'coord_exit "$rc"' "$SCRIPT_DIR/run-triage.sh" && grep -Fq 'coord_exit "$rc"' "$SCRIPT_DIR/run-recut.sh" && grep -Fq 'coord_exit "$rc"' "$SCRIPT_DIR/run-advisor.sh" && echo 1 || echo 0)"
+assert_cond 'single-ticket systemd dispatch forwards coordination mode and owner' \
+  "$(grep -Fq 'coord_env=(-E ZF_COORD=on -E ZF_COORD_RUN=1' "$PIPELINE_SRC" && grep -Fq '"${coord_env[@]}"' "$PIPELINE_SRC" && echo 1 || echo 0)"
 rm -f "$AGENT_HOME/model-config-advisor.json" "$AGENT_HOME/model-config-work.json" "$WEB_ADVISOR_PROVIDER_EXHAUSTED_MARKER_FILE" "$AGENT_HOME/dispatched-implement"
 
 # Exercise the real policy and launch boundary with admission refused.
 run_issue_admission_case() (
-  local stage="$1" launch_status="$2" status=0 attempts=0 active=no claim=none
+  local stage="$1" launch_status="$2" claim_read_status="${3:-0}" status=0 attempts=0 active=no claim=none
   ZF_ENGINE_DIR="$AGENT_HOME/admission-legs" UNIT_PREFIX_TRANSIENT=zf
   mkdir -p "$ZF_ENGINE_DIR"
   : > "$ZF_ENGINE_DIR/run-$stage.sh"
@@ -1803,7 +1876,7 @@ run_issue_admission_case() (
   ensure_issue_roadmap_parent_for_dispatch() { return 0; }
   pipeline_claim_begin() { PIPELINE_CLAIM_KEY="issue:$1"; PIPELINE_CLAIM_STAGE="$2"; PIPELINE_CLAIM_UNIT="$3"; PIPELINE_CLAIM_OWNER=fixture; claim=held; }
   coord_issue_key() { printf 'issue:%s' "$1"; }
-  coord_assert_owned() { return 0; }
+  coord_assert_owned() { return "$claim_read_status"; }
   pipeline_claim_drop() { claim=dropped; }
   consume_unit_memory_oom() { return 1; }
   guarded_write() { return "$launch_status"; }
@@ -1817,6 +1890,8 @@ assert_eq 'implement admission refunds the attempt and leaves queued work withou
   'status:75 attempts:0 active:no claim:dropped queue:queued' "$(run_issue_admission_case implement 75)"
 assert_eq 'ordinary per-issue launch failure still records its fault' \
   $'fault:env:systemd-run-dispatch-failed:recut\nstatus:1 attempts:0 active:no claim:dropped queue:queued' "$(run_issue_admission_case recut 1)"
+assert_eq 'unknown claim read prevents dispatch and attempt accounting' \
+  'status:78 attempts:0 active:no claim:dropped queue:queued' "$(run_issue_admission_case implement 0 3)"
 # Execute the scheduler's real recut status branch as well as the dispatch.
 # Supply the refusal through the real caller branch.
 run_recut_admission_caller() (

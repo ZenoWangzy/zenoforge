@@ -41,6 +41,7 @@ N="${ARGS[0]:?usage: run-triage.sh [--dry-run] [--batch-result <json-file>] <iss
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+coord_enter "$N" triage
 # shellcheck source=./lib.d/triage-default.sh
 source "$SCRIPT_DIR/lib.d/triage-default.sh"
 if [ -n "$BATCH_RESULT_FILE" ] && ! triage_result_matches_schema "$BATCH_RESULT_FILE" "$(zf_config_file prompts/triage.schema.json)"; then
@@ -101,7 +102,7 @@ cleanup() {
   [[ -z "$TRIAGE_JUDGE_ISSUE_FILE" ]] || rm -f -- "$TRIAGE_JUDGE_ISSUE_FILE"
   [[ -z "$TRIAGE_JUDGE_RESULT_FILE" ]] || rm -f -- "$TRIAGE_JUDGE_RESULT_FILE"
 }
-trap 'codex_budget_release "${CODEX_BUDGET_RESERVATION_ID:-}" || true; cleanup' EXIT
+trap 'rc=$?; codex_budget_release "${CODEX_BUDGET_RESERVATION_ID:-}" || true; cleanup; coord_exit "$rc"' EXIT
 
 if [ -z "$BATCH_RESULT_FILE" ] && [ "$TRIAGE_ON_CLAUDE" = 0 ]; then
   CODEX_BUDGET_ROLE="$(model_policy step-role "$MODEL_POLICY_STEP")"

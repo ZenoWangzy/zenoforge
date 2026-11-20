@@ -9,6 +9,9 @@ COORD_LEASE_SECONDS="${ZF_COORD_LEASE_SECONDS:-900}"
 # Keep released claims briefly for inspection; readers treat them as absent and sweeps scan every claim file.
 COORD_RELEASED_RETAIN_SECONDS="${ZF_COORD_RELEASED_RETAIN_SECONDS:-3600}"
 COORD_OWNER_SEQ=0
+COORD_REMOTE_REPO=""
+COORD_REMOTE_OID=""
+COORD_REMOTE_EXPIRED=0
 
 coord_issue_key() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || return 2
@@ -107,6 +110,207 @@ _coord_write_locked() {
   }
 }
 
+coord_remote_enabled() { [[ "${ZF_COORD:-off}" == on ]]; }
+
+coord_remote_init() {
+  local repo="$AGENT_HOME/coord/repo.git" remote existing lock_fd status=0 was_new=0 line name value
+  remote="$(git -C "${REPO_DIR:-}" remote get-url origin 2>/dev/null)" \
+    || { echo "coord_init: repository origin unavailable" >&2; return 3; }
+  mkdir -p "$AGENT_HOME/coord" || return 3
+  exec {lock_fd}>"$AGENT_HOME/coord/repo.lock" || return 3
+  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 3; }
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    (umask 077; git init --bare --quiet "$repo") || status=3
+    (( status != 0 )) || was_new=1
+  fi
+  if (( status == 0 )); then
+    existing="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+    if [[ -z "$existing" ]]; then
+      git -C "$repo" remote add origin "$remote" || status=3
+    elif [[ "$existing" != "$remote" ]]; then
+      echo "coord_init: coordination origin does not match repository origin" >&2
+      status=3
+    fi
+  fi
+  if (( status == 0 )); then
+    git -C "$repo" config fetch.prune true \
+      && git -C "$repo" config user.name zenoforge-coord \
+      && git -C "$repo" config user.email zenoforge-coord@users.noreply.github.com \
+      || status=3
+  fi
+  if (( status == 0 && was_new == 1 )); then
+    while IFS= read -r line; do
+      name="${line%% *}"; value="${line#* }"
+      git -C "$repo" config --add "$name" "$value" || status=3
+    done < <(git -C "$REPO_DIR" config --get-regexp '^(credential|http|url)\.' 2>/dev/null || true)
+  fi
+  if (( status == 0 )); then chmod 600 "$repo/config" || status=3; fi
+  flock -u "$lock_fd" || :
+  exec {lock_fd}>&-
+  (( status == 0 )) || return 3
+  COORD_REMOTE_REPO="$repo"
+}
+
+_coord_remote_record_valid() {
+  jq -e --arg key "$1" '
+    type == "object" and .version == 1 and .key == $key
+    and ((.owner == null) or (.owner | type == "string" and length > 0))
+    and (.owner_kind | type == "string" and length > 0)
+    and (.subject | type == "string")
+    and (.unit | type == "string" and length > 0 and test("^[A-Za-z0-9_.@:-]+$"))
+    and (.stage | type == "string" and length > 0)
+    and (.expires_at | type == "number" and floor == .)
+  ' <<<"$2" >/dev/null 2>&1
+}
+
+coord_remote_refresh() { # one complete remote claim snapshot per host every 30 s
+  local stamp="$AGENT_HOME/coord/refresh.stamp" lock_fd now last status=0
+  coord_remote_init || return 3
+  exec {lock_fd}>"$AGENT_HOME/coord/refresh.lock" || return 3
+  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 3; }
+  now="$(date +%s)"; last="$(cat "$stamp" 2>/dev/null || true)"
+  if [[ "$last" =~ ^[0-9]+$ ]] && (( now >= last && now - last < 30 )); then
+    flock -u "$lock_fd" || :; exec {lock_fd}>&-
+    return 0
+  fi
+  if git_fetch_bounded "$COORD_REMOTE_REPO" '+refs/claims/*:refs/seen/claims/*' >/dev/null 2>&1; then
+    printf '%s\n' "$now" >"$stamp" || status=3
+  else
+    echo "coord_refresh: remote claim snapshot unknown" >&2
+    status=3
+  fi
+  flock -u "$lock_fd" || :
+  exec {lock_fd}>&-
+  return "$status"
+}
+
+_coord_remote_cached_read() { # key -> COORD_RECORD; absent/released=1, malformed=3
+  local key="$1" ref="refs/seen/claims/$1" record status
+  COORD_RECORD=""
+  if git -C "$COORD_REMOTE_REPO" show-ref --verify --quiet "$ref"; then :; else
+    status=$?
+    (( status == 1 )) && return 1
+    return 3
+  fi
+  record="$(git -C "$COORD_REMOTE_REPO" cat-file blob "$ref:claim.json" 2>/dev/null)" || return 3
+  _coord_remote_record_valid "$key" "$record" \
+    || { echo "coord_read: malformed or unsupported claim key=$key" >&2; return 3; }
+  COORD_RECORD="$record"
+  [[ -n "$(jq -r '.owner // empty' <<<"$record")" ]] || return 1
+}
+
+_coord_remote_read() { # key -> COORD_RECORD and COORD_REMOTE_OID; absent/released=1, unknown=3
+  local key="$1" ref seen output oid remote_ref seen_oid record expires
+  COORD_RECORD="" COORD_REMOTE_OID="" COORD_REMOTE_EXPIRED=0
+  _coord_paths "$key" || return 2
+  coord_remote_init || return 3
+  ref="refs/claims/$key"; seen="refs/seen/claims/$key"
+  output="$(git -C "$COORD_REMOTE_REPO" ls-remote --refs origin "$ref" 2>/dev/null)" \
+    || { echo "coord_read: remote claim read unknown key=$key" >&2; return 3; }
+  [[ -n "$output" ]] || return 1
+  [[ "$output" != *$'\n'* ]] || { echo "coord_read: ambiguous remote claim read key=$key" >&2; return 3; }
+  IFS=$'\t' read -r oid remote_ref <<<"$output"
+  [[ "$remote_ref" == "$ref" && "$oid" =~ ^[0-9a-f]{40,64}$ ]] \
+    || { echo "coord_read: malformed remote ref key=$key" >&2; return 3; }
+  git_fetch_bounded "$COORD_REMOTE_REPO" "+$ref:$seen" >/dev/null 2>&1 \
+    || { echo "coord_read: remote claim fetch unknown key=$key" >&2; return 3; }
+  seen_oid="$(git -C "$COORD_REMOTE_REPO" rev-parse "$seen" 2>/dev/null)" || return 3
+  [[ "$seen_oid" == "$oid" ]] || { echo "coord_read: remote claim changed during read key=$key" >&2; return 3; }
+  record="$(git -C "$COORD_REMOTE_REPO" cat-file blob "$seen:claim.json" 2>/dev/null)" || return 3
+  _coord_remote_record_valid "$key" "$record" \
+    || { echo "coord_read: malformed or unsupported claim key=$key" >&2; return 3; }
+  COORD_RECORD="$record" COORD_REMOTE_OID="$oid"
+  [[ -n "$(jq -r '.owner // empty' <<<"$record")" ]] || return 1
+  expires="$(jq -r '.expires_at' <<<"$record")"
+  (( expires > $(date +%s) )) || COORD_REMOTE_EXPIRED=1
+  return 0
+}
+
+_coord_remote_store() { # key expected-oid record; create/update with a remote compare-and-swap
+  local key="$1" expected="$2" record="$3" ref blob tree commit output oid remote_ref
+  coord_remote_init || return 3
+  ref="refs/claims/$key"
+  blob="$(printf '%s\n' "$record" | git -C "$COORD_REMOTE_REPO" hash-object -w --stdin)" || return 3
+  tree="$(printf '100644 blob %s\tclaim.json\n' "$blob" | git -C "$COORD_REMOTE_REPO" mktree)" || return 3
+  commit="$(GIT_AUTHOR_NAME=zenoforge-coord GIT_AUTHOR_EMAIL=zenoforge-coord@users.noreply.github.com \
+    GIT_COMMITTER_NAME=zenoforge-coord GIT_COMMITTER_EMAIL=zenoforge-coord@users.noreply.github.com \
+    git -C "$COORD_REMOTE_REPO" commit-tree "$tree" -m "claim $key")" || return 3
+  output="$(git -C "$COORD_REMOTE_REPO" push --porcelain --force-with-lease="$ref:$expected" \
+    origin "$commit:$ref" 2>&1)" || {
+      if grep -qE '^!.*\((stale info|already exists)\)' <<<"$output"; then return 1; fi
+      if output="$(git -C "$COORD_REMOTE_REPO" ls-remote --refs origin "$ref" 2>/dev/null)"; then
+        [[ -n "$output" ]] || return 1
+      else
+        echo "coord_write: remote claim readback unknown key=$key" >&2
+        return 3
+      fi
+      if [[ "$output" != *$'\n'* ]]; then
+        IFS=$'\t' read -r oid remote_ref <<<"$output"
+        [[ "$remote_ref" == "$ref" && "$oid" =~ ^[0-9a-f]{40,64}$ ]] || {
+          echo "coord_write: remote claim readback malformed key=$key" >&2
+          return 3
+        }
+        if [[ "$oid" == "$commit" ]]; then COORD_REMOTE_OID="$commit"; return 0; fi
+        [[ "$oid" == "$expected" ]] || return 1
+      fi
+      echo "coord_write: remote claim update unknown key=$key" >&2
+      return 3
+    }
+  grep -qE '^[*+=][[:space:]]' <<<"$output" || { echo "coord_write: remote claim update unconfirmed key=$key" >&2; return 3; }
+  COORD_REMOTE_OID="$commit"
+}
+
+_coord_remote_acquire() { # same status contract as coord_acquire
+  local key="$1" owner="$2" kind="$3" subject="$4" unit="$5" stage="$6" status now record expected
+  [[ -n "$owner" && -n "$kind" ]] || return 2
+  [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || return 3
+  if _coord_remote_read "$key"; then return 1; else status=$?; fi
+  (( status == 1 )) || return "$status"
+  expected="$COORD_REMOTE_OID"; now="$(date +%s)"
+  record="$(jq -cn --arg key "$key" --arg owner "$owner" --arg kind "$kind" \
+    --arg subject "$subject" --arg unit "$unit" --arg stage "$stage" \
+    --argjson now "$now" --argjson lease "$COORD_LEASE_SECONDS" \
+    '{version:1,key:$key,owner:$owner,owner_kind:$kind,subject:$subject,unit:$unit,stage:$stage,
+      acquired_at:$now,renewed_at:$now,expires_at:($now+$lease)}')" || return 3
+  _coord_remote_store "$key" "$expected" "$record"
+}
+
+_coord_remote_renew() { # key owner; an expired claim cannot be revived
+  local key="$1" owner="$2" status now record
+  if _coord_remote_read "$key"; then :; else status=$?; return "$status"; fi
+  [[ "$(jq -r '.owner' <<<"$COORD_RECORD")" == "$owner" ]] || return 1
+  (( COORD_REMOTE_EXPIRED == 0 )) || return 3
+  now="$(date +%s)"
+  record="$(jq -c --argjson now "$now" --argjson lease "$COORD_LEASE_SECONDS" \
+    '.renewed_at=$now | .expires_at=($now+$lease)' <<<"$COORD_RECORD")" || return 3
+  _coord_remote_store "$key" "$COORD_REMOTE_OID" "$record"
+}
+
+_coord_remote_release() {
+  local key="$1" owner="$2" status now record
+  if _coord_remote_read "$key"; then :; else status=$?; return "$status"; fi
+  [[ "$(jq -r '.owner' <<<"$COORD_RECORD")" == "$owner" ]] || return 1
+  now="$(date +%s)"
+  record="$(jq -c --argjson now "$now" '.last_owner=.owner | .owner=null | .expires_at=0 | .released_at=$now | .release_reason="released"' <<<"$COORD_RECORD")" || return 3
+  _coord_remote_store "$key" "$COORD_REMOTE_OID" "$record"
+}
+
+_coord_remote_assert_owned() {
+  local key="$1" owner="$2" status
+  if _coord_remote_read "$key"; then :; else status=$?; return "$status"; fi
+  [[ "$(jq -r '.owner' <<<"$COORD_RECORD")" == "$owner" ]] || return 1
+  (( COORD_REMOTE_EXPIRED == 0 )) || return 3
+}
+
+coord_remote_active() { # stage issue -> 0 claimed / 1 confirmed absent / 3 unknown
+  local issue="${2:-}" key status
+  coord_remote_enabled || return 1
+  key="$(coord_issue_key "$issue")" || return 2
+  coord_remote_refresh || return 3
+  if _coord_remote_cached_read "$key"; then return 0; else status=$?; fi
+  return "$status"
+}
+
 _coord_expire_locked() {
   local key="$1" record="$COORD_RECORD" kind now released unit stage state
   kind="$(jq -r '.owner_kind' <<<"$record")"
@@ -145,6 +349,9 @@ _coord_expire_locked() {
 
 coord_read() { # key -> JSON / exit 1 confirmed absent / exit 3 unknown
   local key="${1:-}" lock_fd rc now expires
+  if coord_remote_enabled; then
+    if _coord_remote_read "$key"; then printf '%s\n' "$COORD_RECORD"; return 0; else return $?; fi
+  fi
   _coord_paths "$key" || return 2
   mkdir -p -- "$COORD_DIR" || { echo "coord_read: claim directory unavailable" >&2; return 3; }
   exec {lock_fd}>"$COORD_LOCK_FILE" || return 3
@@ -169,6 +376,7 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
   local lock_fd rc now lease record held=0
   [[ -n "$owner" && -n "$kind" ]] || return 2
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "coord_acquire: invalid lease duration" >&2; return 3; }
+  if coord_remote_enabled; then _coord_remote_acquire "$key" "$owner" "$kind" "$subject" "$unit" "$stage"; return $?; fi
   _coord_paths "$key" || return 2
   mkdir -p -- "$COORD_DIR" || { echo "coord_acquire: claim directory unavailable" >&2; return 3; }
   exec {lock_fd}>"$COORD_LOCK_FILE" || return 3
@@ -290,6 +498,7 @@ coord_renew() { # key owner [local pid [pid-start-ticks]]; a lease that has alre
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || return 3
   [[ -z "$pid" || "$pid" =~ ^[1-9][0-9]*$ ]] || return 2
   [[ -z "$pid_start" || ( -n "$pid" && "$pid_start" =~ ^[0-9]+$ ) ]] || return 2
+  if coord_remote_enabled; then _coord_remote_renew "$key" "$owner"; return $?; fi
   _coord_paths "$key" || return 2
   exec {lock_fd}>"$COORD_LOCK_FILE" || return 3
   flock -x "$lock_fd" || { exec {lock_fd}>&-; return 3; }
@@ -319,6 +528,7 @@ coord_renew() { # key owner [local pid [pid-start-ticks]]; a lease that has alre
 
 coord_release() { # key owner; release is conditional on current ownership
   local key="${1:-}" owner="${2:-}" lock_fd rc now record
+  if coord_remote_enabled; then _coord_remote_release "$key" "$owner"; return $?; fi
   _coord_paths "$key" || return 2
   exec {lock_fd}>"$COORD_LOCK_FILE" || return 3
   flock -x "$lock_fd" || { exec {lock_fd}>&-; return 3; }
@@ -345,6 +555,7 @@ coord_release() { # key owner; release is conditional on current ownership
 
 coord_assert_owned() { # key owner; only a fresh, current owner passes
   local key="${1:-}" owner="${2:-}" lock_fd rc now expires
+  if coord_remote_enabled; then _coord_remote_assert_owned "$key" "$owner"; return $?; fi
   _coord_paths "$key" || return 2
   mkdir -p -- "$COORD_DIR" || return 3
   exec {lock_fd}>"$COORD_LOCK_FILE" || return 3
@@ -367,6 +578,7 @@ coord_assert_owned() { # key owner; only a fresh, current owner passes
 
 coord_reap_expired() { # sweep expired claims; per-ticket locks keep reads and reaps atomic
   local file key lock_fd rc now
+  coord_remote_enabled && return 0
   [[ "$COORD_RELEASED_RETAIN_SECONDS" =~ ^[0-9]+$ ]] \
     || { echo "coord_reap: invalid released claim retention duration" >&2; return 3; }
   mkdir -p -- "$COORD_DIR" || return 3
@@ -396,4 +608,45 @@ coord_reap_expired() { # sweep expired claims; per-ticket locks keep reads and r
     (( rc == 3 )) && return 3
   done
   return 0
+}
+
+COORD_ENTRY_KEY=""
+COORD_ENTRY_OWNER=""
+coord_enter() { # issue stage; dispatched owners must prove the feeder's claim
+  local issue="${1:-}" stage="${2:-}" key owner status
+  coord_remote_enabled || return 0
+  key="$(coord_issue_key "$issue")" || return 2
+  if [[ -n "${ZF_COORD_RUN:-}" ]]; then
+    [[ "$ZF_COORD_RUN" == 1 && "${ZF_COORD_KEY:-}" == "$key" \
+      && "${ZF_COORD_STAGE:-}" == "$stage" && -n "${ZF_COORD_OWNER:-}" ]] || return 3
+    owner="$ZF_COORD_OWNER"
+    if coord_assert_owned "$key" "$owner" >/dev/null; then
+      :
+    else
+      status=$?
+      echo "coord_enter: dispatched claim unavailable key=$key status=$status" >&2
+      return "$status"
+    fi
+  else
+    owner="$(coord_new_owner)"
+    if coord_acquire "$key" "$owner" manual-worker "$issue" "manual-$stage-$issue" "$stage"; then
+      :
+    else
+      status=$?
+      echo "coord_enter: manual claim unavailable key=$key status=$status" >&2
+      return "$status"
+    fi
+  fi
+  COORD_ENTRY_KEY="$key" COORD_ENTRY_OWNER="$owner"
+  trap 'coord_exit "$?"' EXIT
+}
+
+coord_exit() { # status; release only the claim this wrapper entered with
+  local status="${1:-$?}"
+  trap - EXIT
+  if [[ -n "$COORD_ENTRY_KEY" && -n "$COORD_ENTRY_OWNER" ]]; then
+    coord_release "$COORD_ENTRY_KEY" "$COORD_ENTRY_OWNER" >/dev/null 2>&1 || :
+    COORD_ENTRY_KEY="" COORD_ENTRY_OWNER=""
+  fi
+  exit "$status"
 }
