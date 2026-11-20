@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+script="$script_dir/prompt-observer-report.sh"
+tmp="$(mktemp -d)"
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
+runtime="$tmp/runtime"
+mkdir -p "$runtime" "$tmp/bin"
+cat > "$runtime/units.json" <<'JSON'
+{"units":[
+  {"id":"unit-1","stage":"merged","prompt":"triage","history":[{"stage":"review-request-changes"},{"stage":"supervisor-approve"}]},
+  {"id":"unit-2","stage":"merged","prompt":"triage","history":[{"stage":"review-approve"}]},
+  {"id":"unit-3","stage":"merged","prompt":"triage"},
+  {"id":"pending","stage":"review-pending","prompt":"triage","history":[{"stage":"review-approve"}]}
+]}
+JSON
+cp "$runtime/units.json" "$tmp/units.json.original"
+cat > "$tmp/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_GH_CALLS"
+exit 1
+STUB
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH" TEST_GH_CALLS="$tmp/gh.calls"
+
+run_report() {
+  MAC_AUTOPILOT_RUNTIME_DIR="$runtime" ZF_REPO_DIR="$tmp/no-repo" \
+    PROMPT_OBSERVER_REPORT="$tmp/report.jsonl" PROMPT_OBSERVER_SAMPLE_RATE="${1:-1}" \
+    PROMPT_OBSERVER_MIN_SAMPLES="${2:-5}" bash "$script"
+}
+
+# Exactly the minimum known units gets a score; null signals do not dilute it or join its unit list.
+run_report 1 2 > /dev/null
+jq -s -e 'length == 1 and .[0].stage == "merged" and .[0].prompt == "triage" and
+  .[0].sample_size == 2 and (.[0].score > 0.83 and .[0].score < 0.84) and
+  .[0].unit_ids == ["unit-1","unit-2"] and (.[0] | has("status") | not)' "$tmp/report.jsonl" >/dev/null
+
+# One below the boundary reports insufficient data and omits score.
+run_report 1 3 > /dev/null
+jq -s -e 'length == 1 and .[0].sample_size == 2 and .[0].status == "insufficient-data" and
+  (.[0] | has("score") | not) and .[0].unit_ids == ["unit-1","unit-2"]' "$tmp/report.jsonl" >/dev/null
+
+# A zero rate samples no finished unit; unfinished units never enter the report.
+run_report 0 1 > /dev/null
+[[ ! -s "$tmp/report.jsonl" ]]
+cmp "$runtime/units.json" "$tmp/units.json.original"
+[[ ! -e "$TEST_GH_CALLS" ]]
