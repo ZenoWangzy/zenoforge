@@ -6,22 +6,18 @@ tmp=$(mktemp -d); owner_pid=""; decoy_pid=""
 cleanup() { for pid in "$owner_pid" "$decoy_pid"; do [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }; done; rm -rf "$CRASH_TEST_ROOT" "$test_env_root"; }
 trap cleanup EXIT
 H="$tmp/agent"; NIGHT="$H/night"; LOG="$NIGHT/log"; REPO_DIR="$tmp/repo"
-mkdir -p "$NIGHT" "$REPO_DIR/engine/night" "$tmp/bin" "$tmp/wt"
+mkdir -p "$NIGHT" "$REPO_DIR/engine/night" "$tmp/wt"
 AGENT_HOME="$H"; export AGENT_HOME
 ZF_REPO_DIR="$tmp/repo"; export ZF_REPO_DIR
 export CRASH_TEST_ROOT="$tmp"
 export ZF_LAND_QUEUE_DIR="$tmp/land-queue"
 export DQ_QUEUE="$NIGHT/supervisor-dispatch-queue.tsv"
-cat > "$tmp/bin/uptime" <<'EOF'
-#!/bin/bash
-date -d "${CRASH_BOOT_AGE:-3600} seconds ago" '+%Y-%m-%d %H:%M:%S'
-EOF
-cat > "$REPO_DIR/engine/night/dispatch.sh" <<'EOF'
-#!/bin/bash
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'EOF'
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$3" "$4" "$6" "$5" "${8:-0}" "${9:-}" >> "$CRASH_TEST_ROOT/dispatched"
 EOF
-chmod +x "$tmp/bin/uptime"
-PATH="$tmp/bin:$PATH"
+} > "$REPO_DIR/engine/night/dispatch.sh"
 source "$root/engine/lib.sh"
 source "$root/engine/night/hand-crash-recovery.sh"
 ZF_ENGINE_DIR="$REPO_DIR/engine" # the stub dispatcher lives in the fixture repo

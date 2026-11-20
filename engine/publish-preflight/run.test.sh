@@ -24,7 +24,7 @@ grep -q 'unit-paths-check: OK' <<<"$out" && grep -q 'resolved-config-check: OK' 
 # A live unit path failure stops the runner before resolved-config or suite checks.
 mkdir -p "$t/live/engine" "$HOME/.config/systemd/user"
 touch "$t/live/engine/retained.sh"
-echo 'ExecStart=/bin/bash %h/.agent/engine-live/retained.sh' > "$HOME/.config/systemd/user/example.service"
+echo "ExecStart=$BASH %h/.agent/engine-live/retained.sh" > "$HOME/.config/systemd/user/example.service"
 out=$(bash "$here/run.sh" "$t/live" "$t/new" "$t/repo" "$base_ref" "$base_ref" 2>&1) && { echo "FAIL: expected unit-path failure"; exit 1; }
 grep -q 'publish-preflight: unit-paths check failed' <<<"$out" \
   && ! grep -q 'resolved-config-check:' <<<"$out" || { echo "FAIL: did not stop at unit-path failure: $out"; exit 1; }

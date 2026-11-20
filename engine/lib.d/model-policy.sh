@@ -549,7 +549,7 @@ model_policy() {
       # by today's roles turned 4 in-flight agents BROKEN for hours after a role change (2026-09-30).
       # Forbidden names still apply to it.
       policy_age=$(( $(date +%s) - $(stat -c %Y "$MODEL_POLICY_FILE") ))
-      ps -ww -eo etimes=,comm=,args= | awk -v forbidden_words="$forbidden_words" \
+      ps -ww -eo etime=,comm=,args= | awk -v forbidden_words="$forbidden_words" \
         -v allowed_identities="$allowed_identities" -v policy_age="$policy_age" \
         -v worktrees="$pipeline_worktrees" -v settings="$pipeline_settings" -v legacy_settings="$legacy_settings" '
         BEGIN {
@@ -557,9 +557,11 @@ model_policy() {
           forbidden_count = split(forbidden_words, forbidden, ",")
           allowed_count = split(allowed_identities, allowed, ",")
         }
-        function basename(value) {
-          sub(/^.*\//, "", value)
-          return tolower(value)
+        function basename(value) { sub(/^.*\//, "", value); return tolower(value) }
+        function elapsed_seconds(value, parts, count) {
+          count = split(value, parts, /[-:]/)
+          if (value ~ /-/) return parts[1] * 86400 + parts[2] * 3600 + parts[3] * 60 + parts[4]
+          return count == 3 ? parts[1] * 3600 + parts[2] * 60 + parts[3] : count == 2 ? parts[1] * 60 + parts[2] : value + 0
         }
         # Whole-token match: a substring test flagged package paths such as
         # example-admin and turned model-policy BROKEN on ordinary runs.
@@ -574,13 +576,11 @@ model_policy() {
           return 0
         }
         function allowed_identity(model, effort, i, identity) {
-          identity = tolower(model ":" effort)
-          for (i = 1; i <= allowed_count; i++)
-            if (identity == tolower(allowed[i])) return 1
+          identity = tolower(model ":" effort); for (i = 1; i <= allowed_count; i++) if (identity == tolower(allowed[i])) return 1
           return 0
         }
         {
-          predates_policy = ($1 + 0 > policy_age + 0)
+          predates_policy = (elapsed_seconds($1) > policy_age + 0)
           $1 = ""
           $0 = $0
           has_forbidden_executable = 0

@@ -6,21 +6,28 @@ export ZF_REPO=test/repo ZF_REPO_DIR="$root" AGENT_DRY_RUN=0
 export ZF_NIGHT_DIR="$AGENT_HOME/night" ADDENDUM_ISSUE="$test_env_root/issue.json"
 mkdir -p "$AGENT_HOME/state" "$ZF_NIGHT_DIR/briefs" "$ZF_NIGHT_DIR/hand-registry"
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$root/engine/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
-cat > "$test_env_bin/ps" <<'SH'
-#!/bin/bash
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'SH'
 exit 0
 SH
-cat > "$test_env_bin/systemctl" <<'SH'
-#!/bin/bash
+} > "$test_env_bin/ps"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'SH'
 exit 0
 SH
-cat > "$test_env_bin/git" <<'SH'
-#!/bin/bash
+} > "$test_env_bin/systemctl"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'SH'
 if [ -n "${ADDENDUM_REAL_GIT:-}" ]; then exec "$ADDENDUM_REAL_GIT" "$@"; fi
 exit 0
 SH
-cat > "$test_env_bin/gh-real" <<'SH'
-#!/bin/bash
+} > "$test_env_bin/git"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'SH'
 set -euo pipefail
 case "$1 $2" in
   'issue list')
@@ -49,6 +56,7 @@ case "$1 $2" in
   *) echo "unexpected gh call: $1 $2" >&2; exit 1 ;;
 esac
 SH
+} > "$test_env_bin/gh-real"
 chmod +x "$test_env_bin/ps" "$test_env_bin/systemctl" "$test_env_bin/git" "$test_env_bin/gh-real"
 export ZF_GH_REAL_CLI="$test_env_bin/gh-real" PATH="$root/engine/gh-shim:$test_env_bin:$PATH"
 helper="$root/engine/night/brief-addendum.sh"
@@ -183,7 +191,7 @@ jq -e --arg sha "$prior_sha" '.scheduler_handoff.start_ref=="rescued/hand-777" a
 echo 'PASS hand lifecycle rescue is found by the hold sweep'
 
 jq -n --arg wt "$fixture_worktree" '{worktree:$wt}' > "$ZF_NIGHT_DIR/hand-registry/hand-777.json"
-printf '#!/bin/bash\nexit 3\n' > "$test_env_bin/systemctl"
+printf '#!%s\nexit 3\n' "$BASH" > "$test_env_bin/systemctl"
 for fixture_holder in hand-777 supervisor; do
   printf '%s\n' '{"number":777,"state":"OPEN","labels":[{"name":"on-hold"}],"comments":[]}' > "$ADDENDUM_ISSUE"
   jq -n --arg holder "$fixture_holder" '{state:"on-hold",hold:{holder:$holder,kind:"manual",created_at:"2026-10-29T00:00:00Z",expires_at:"2026-10-29T01:00:00Z",stage_before:"ready-for-agent",durable_record:true,release_condition:"finish follow-up"}}' > "$AGENT_HOME/state/777.json"

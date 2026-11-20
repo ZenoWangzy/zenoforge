@@ -498,7 +498,7 @@ case "$MEM_AVAILABLE_KIB" in
 esac
 if [ "$MEM_AVAILABLE_KIB" -lt "$MIN_AVAILABLE_KIB" ]; then
   echo "$SCRIPT_NAME: refusing launch: MemAvailable $((MEM_AVAILABLE_KIB / 1024))MiB is below $((MIN_AVAILABLE_KIB / 1024))MiB (class=$ADMISSION_TIER); largest RSS holders:" >&2
-  ps -eo pid=,ppid=,rss=,comm= --sort=-rss | sed -n '1,8p' >&2 || true
+  ps -eo pid=,ppid=,rss=,comm= | sort -k3,3nr | sed -n '1,8p' >&2 || true
   exit 1
 fi
 

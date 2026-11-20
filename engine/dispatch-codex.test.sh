@@ -211,7 +211,7 @@ chmod +x "$FAKE_BIN/ps"
 
 cat > "$LOW_MEMORY_BIN/ps" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' ' 4242     1 3145728 pipeline-hog'
+[[ " $* " != *" --sort="* ]] || exit 1; printf '%s\n' ' 4242     1 3145728 pipeline-hog'
 EOF
 chmod +x "$LOW_MEMORY_BIN/ps"
 

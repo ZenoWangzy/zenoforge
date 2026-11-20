@@ -1836,8 +1836,8 @@ queue_recover() {
   local request state unit ticket result_dir range_base range_head range_extra retry_after now started=0 errors=0 direct_errors conclusion_errors
   local boot_epoch boot_age boot_recovery=0 recovery_active=0 active_units=""
   queue_recovery_progress scan "$started" "$errors"
-  boot_epoch="$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0)"
-  boot_age=$(( $(date +%s) - boot_epoch ))
+  boot_epoch="$(if [[ "$OSTYPE" == darwin* ]]; then sysctl -n kern.boottime 2>/dev/null | awk -F '[ =,]+' '{ print $3 }'; else awk '$1 == "btime" { print $2; exit }' /proc/stat 2>/dev/null; fi)"
+  boot_age=$(( $(date +%s) - ${boot_epoch:-0} ))
   (( boot_age >= 0 && boot_age < 900 )) && boot_recovery=1
   local -a requests=()
   mkdir -p -- "$REQUEST_DIR" || return 1

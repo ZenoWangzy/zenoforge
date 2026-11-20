@@ -729,16 +729,16 @@ assert_eq "source scan rejects forbidden CLI model selection" 1 "$POLICY_SELECTI
 assert_contains "source scan reports forbidden CLI model selection" \
   "$POLICY_SELECTION_SCAN_OUTPUT" "forbidden model name 'sonnet'"
 
-ps() { printf '%s\n' "$MODEL_POLICY_TEST_PROCESSES"; }
-MODEL_POLICY_TEST_PROCESSES='0 claude claude --version'
+ps() { [[ "$*" == *'etime='* && "$*" != *'etimes='* ]] || return 1; printf '%s\n' "$MODEL_POLICY_TEST_PROCESSES"; }
+MODEL_POLICY_TEST_PROCESSES='00:00 claude claude --version'
 assert_eq "live scan ignores an unrelated interactive Claude process" clean "$(model_policy live)"
 MODEL_POLICY_TOKEN_TEST="$(printf 'node\tnode $HOME/wt/x/packages/example-admin/build.mjs\n' | awk -v forbidden_words="sol" "$(sed -n '/function prohibited/,/^          return 0$/p' "$SCRIPT_DIR/lib.d/model-policy.sh")"'
           }
           { print prohibited($0) }')"
 assert_eq "live scan matches forbidden names as whole tokens, not substrings" 0 "$MODEL_POLICY_TOKEN_TEST"
-MODEL_POLICY_TEST_PROCESSES="0 bash bash -c rg claude -- $HOME/wt/issue-42 --glob '*.sh'"
+MODEL_POLICY_TEST_PROCESSES="00:00 bash bash -c rg claude -- $HOME/wt/issue-42 --glob '*.sh'"
 assert_eq "live scan ignores forbidden model text in a worktree shell command" clean "$(model_policy live)"
-MODEL_POLICY_TEST_PROCESSES="0 claude claude --model custom --settings $AGENT_HOME/checkout/engine/prompts/agent-settings.json --add-dir $HOME/wt/issue-42"
+MODEL_POLICY_TEST_PROCESSES="00:00 claude claude --model custom --settings $AGENT_HOME/checkout/engine/prompts/agent-settings.json --add-dir $HOME/wt/issue-42"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?
@@ -752,7 +752,7 @@ MODEL_POLICY_PREVIOUS_CONFIG_ROOT="${ZF_CONFIG_ROOT-}"
 MODEL_POLICY_CONFIG_ROOT_WAS_SET=0
 [[ -n "${ZF_CONFIG_ROOT+x}" ]] && MODEL_POLICY_CONFIG_ROOT_WAS_SET=1
 ZF_CONFIG_ROOT="$MODEL_POLICY_SETTINGS_CONFIG"
-MODEL_POLICY_TEST_PROCESSES="0 claude claude --model custom --settings $MODEL_POLICY_SETTINGS_CONFIG/prompts/agent-settings.json"
+MODEL_POLICY_TEST_PROCESSES="00:00 claude claude --model custom --settings $MODEL_POLICY_SETTINGS_CONFIG/prompts/agent-settings.json"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?
@@ -760,13 +760,13 @@ set -e
 assert_eq "live scan recognizes target-config agent settings" "1" "$MODEL_POLICY_LIVE_STATUS"
 assert_contains "target-config settings mark a pipeline Claude process" "$MODEL_POLICY_LIVE_OUTPUT" forbidden
 if (( MODEL_POLICY_CONFIG_ROOT_WAS_SET )); then ZF_CONFIG_ROOT="$MODEL_POLICY_PREVIOUS_CONFIG_ROOT"; else unset ZF_CONFIG_ROOT; fi
-MODEL_POLICY_TEST_PROCESSES="0 claude claude --model custom --cd $HOME/wt/issue-42"
+MODEL_POLICY_TEST_PROCESSES="00:00 claude claude --model custom --cd $HOME/wt/issue-42"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?
 set -e
 assert_eq "live scan rejects noninteractive pipeline Claude without settings marker" "1" "$MODEL_POLICY_LIVE_STATUS"
-MODEL_POLICY_TEST_PROCESSES="0 codex codex exec --cd $HOME/wt/issue-42 -m $FORBIDDEN_TEST_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
+MODEL_POLICY_TEST_PROCESSES="00:00 codex codex exec --cd $HOME/wt/issue-42 -m $FORBIDDEN_TEST_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?
@@ -774,13 +774,13 @@ set -e
 assert_eq "live scan rejects a forbidden Codex model" "1" "$MODEL_POLICY_LIVE_STATUS"
 assert_contains "live scan reports a forbidden Codex model" "$MODEL_POLICY_LIVE_OUTPUT" forbidden
 UNCONFIGURED_MODEL="unconfigured-$POLICY_WORK_MODEL"
-MODEL_POLICY_TEST_PROCESSES="0 codex codex exec --cd $HOME/wt/issue-42 -m $UNCONFIGURED_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
+MODEL_POLICY_TEST_PROCESSES="00:00 codex codex exec --cd $HOME/wt/issue-42 -m $UNCONFIGURED_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?
 set -e
 assert_eq "live scan rejects unconfigured Codex model" "1" "$MODEL_POLICY_LIVE_STATUS"
-MODEL_POLICY_TEST_PROCESSES="0 codex codex exec --cd $HOME/wt/issue-42 -m $POLICY_WORK_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
+MODEL_POLICY_TEST_PROCESSES="00:00 codex codex exec --cd $HOME/wt/issue-42 -m $POLICY_WORK_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?
@@ -792,15 +792,15 @@ assert_not_contains "live scan has no jq compile error for an allowed identity" 
 # forbidden names apply to it, so a role change does not turn in-flight agents BROKEN.
 EARLIER_POLICY_MODEL="earlier-$POLICY_WORK_MODEL"
 EARLIER_POLICY_EFFORT="earlier-$POLICY_WORK_EFFORT"
-MODEL_POLICY_TEST_PROCESSES="99999999 codex codex exec --cd $HOME/wt/issue-42 -m $EARLIER_POLICY_MODEL -c model_reasoning_effort=$EARLIER_POLICY_EFFORT"
+MODEL_POLICY_TEST_PROCESSES="1157-09:46:39 codex codex exec --cd $HOME/wt/issue-42 -m $EARLIER_POLICY_MODEL -c model_reasoning_effort=$EARLIER_POLICY_EFFORT"
 assert_eq "live scan accepts a run that predates the policy file under an earlier role" clean "$(model_policy live)"
-MODEL_POLICY_TEST_PROCESSES="0 codex codex exec --cd $HOME/wt/issue-42 -m $EARLIER_POLICY_MODEL -c model_reasoning_effort=$EARLIER_POLICY_EFFORT"
+MODEL_POLICY_TEST_PROCESSES="00:00 codex codex exec --cd $HOME/wt/issue-42 -m $EARLIER_POLICY_MODEL -c model_reasoning_effort=$EARLIER_POLICY_EFFORT"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?
 set -e
 assert_eq "live scan still rejects a new run outside the configured roles" "1" "$MODEL_POLICY_LIVE_STATUS"
-MODEL_POLICY_TEST_PROCESSES="99999999 codex codex exec --cd $HOME/wt/issue-42 -m $FORBIDDEN_TEST_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
+MODEL_POLICY_TEST_PROCESSES="1157-09:46:39 codex codex exec --cd $HOME/wt/issue-42 -m $FORBIDDEN_TEST_MODEL -c model_reasoning_effort=$POLICY_WORK_EFFORT"
 set +e
 MODEL_POLICY_LIVE_OUTPUT="$(model_policy live 2>&1)"
 MODEL_POLICY_LIVE_STATUS=$?

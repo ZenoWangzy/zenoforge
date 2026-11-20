@@ -7,13 +7,13 @@ t="$test_env_root/unit-paths"
 mkdir -p "$t/base/engine/lib.d" "$t/new/engine/lib.d" "$t/units"
 touch "$t/base/engine/launcher.sh" "$t/base/engine/index-helper.sh" "$t/base/engine/kept.sh" "$t/new/engine/kept.sh" "$t/base/engine/local-fallback.sh"
 printf '%s\n' \
-  "ExecStart=:/bin/bash -c 'exec \"\${e:-%h/.agent/checkout/scripts/agent}/launcher.sh\"'" \
-  'ExecStartPre=/bin/bash %h/.agent/engine-live/kept.sh' \
-  "ExecStartPost=:/bin/bash -c 'exec node \"\${e:-%h/.agent/checkout/scripts/agent}/bridge.mjs\"'" \
+  "ExecStart=:$BASH -c 'exec \"\${e:-%h/.agent/checkout/scripts/agent}/launcher.sh\"'" \
+  "ExecStartPre=$BASH %h/.agent/engine-live/kept.sh" \
+  "ExecStartPost=:$BASH -c 'exec node \"\${e:-%h/.agent/checkout/scripts/agent}/bridge.mjs\"'" \
   > "$t/units/a.service"
 touch "$t/base/engine/bridge.mjs"
 # A unit that runs a host-owned copy does not require the engine file.
-echo 'ExecStart=/bin/bash %h/.agent/host-ops/scripts/agent/local-fallback.sh' > "$t/units/b.service"
+echo "ExecStart=$BASH %h/.agent/host-ops/scripts/agent/local-fallback.sh" > "$t/units/b.service"
 echo 'h="$(zf_host_ops_file "scripts/agent/index-helper.sh" "${_AGENT_LIB_DIR}/index-helper.sh")"' > "$t/new/engine/lib.d/g.sh"
 echo 'local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/local-exec.py"' >> "$t/new/engine/lib.d/g.sh"
 touch "$t/base/engine/local-exec.py"
