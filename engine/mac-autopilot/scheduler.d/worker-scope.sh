@@ -121,19 +121,22 @@ worker_tree_busy_usec() { # pid -> busy usec of its run-p scope (the whole worke
 }
 
 worker_scope_exec() { # pid-file output-file launcher... -- command...; executed inside the worker's output/session wrapper
-  local pid_file="$1" label="${2##*/}"; shift 2
+  local pid_file="$1" label="${2##*/}" proc_sh; shift 2
   local -a launcher=() worker_command=()
   while (($#)) && [[ "$1" != -- ]]; do launcher+=("$1"); shift; done
   [[ "${1:-}" == -- ]] || return 2
   shift
   worker_command=("$@")
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
+    proc_sh="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/proc.sh"
     exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" -p "TasksMax=$WORKER_TASKS_MAX" \
       -p "CPUQuota=${AGENT_WORKER_CPU_QUOTA:-200%}" -p "CPUWeight=${AGENT_WORKER_CPU_WEIGHT:-10}" -p "MemoryHigh=${AGENT_WORKER_MEM_HIGH:-2G}" -- \
-      setsid bash -c 'pid_file=$1; st=$(</proc/$$/stat); st=(${st##*) }); printf "%s %s\n" "$$" "${st[19]}" > "$pid_file" || exit 125
+      setsid bash -c 'source "$8" || exit 125
+        st="$(pid_start_id "$$")" || exit 125
+        pid_file=$1; printf "%s %s\n" "$$" "$st" > "$pid_file" || exit 125
         [[ -z $6 ]] || printf "%s\n" "$$" > "$6" || exit 125
-        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" "$7" & shift 7; exec "$@"' \
-      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${WORKER_PIDFILE:-}" "${WORKER_COST_TAG:-}" "${worker_command[@]}"
+        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" "$7" & shift 8; exec "$@"' \
+      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${WORKER_PIDFILE:-}" "${WORKER_COST_TAG:-}" "$proc_sh" "${worker_command[@]}"
   fi
   exec "${launcher[@]}" "${worker_command[@]}"
 }
