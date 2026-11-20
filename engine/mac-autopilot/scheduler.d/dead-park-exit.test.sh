@@ -27,15 +27,25 @@ unit_json() { jq -c --arg id "$1" '.units[] | select(.id == $id)' "$UNITS"; }
 events() { jq -r --arg id "$1" '[.units[] | select(.id == $id) | .history[].stage] | join(",")' "$UNITS"; }
 stage() { jq -r --arg id "$1" '.units[] | select(.id == $id) | .stage' "$UNITS"; }
 
-ROUTES="$fixture/routes"; CLOSES="$fixture/closes"; NATIVE_SUBISSUE_LOOKUPS="$fixture/native-subissue-lookups"
+ROUTES="$fixture/routes"; CLOSES="$fixture/closes"; CREATES="$fixture/creates"; NATIVE_SUBISSUE_LOOKUPS="$fixture/native-subissue-lookups"
 OPEN_CHILD_LOOKUPS="$fixture/open-child-lookups"
-: > "$ROUTES"; : > "$CLOSES"; : > "$NATIVE_SUBISSUE_LOOKUPS"; : > "$OPEN_CHILD_LOOKUPS"
+: > "$ROUTES"; : > "$CLOSES"; : > "$CREATES"; : > "$NATIVE_SUBISSUE_LOOKUPS"; : > "$OPEN_CHILD_LOOKUPS"
 scheduler_route_to_recut() { echo "$1" >> "$ROUTES"; }
 tick_pr_state() { echo OPEN; }
 tick_prs_changed() { :; }
 ISSUE_LABELS='{}'; ISSUE_STATES='{}'; export REPO=fixture/repo
 scheduler_issue_state() { jq -cn --argjson states "$ISSUE_STATES" --arg number "$1" '$states[$number] // {state:"ready-for-agent"}'; }
 gh() {
+  if [[ "$1 $2" == 'pr view' ]]; then
+    printf '{"title":"orphan PR intent","body":"restore the reviewed implementation","headRefName":"agent/orphan-work"}\n'
+    return 0
+  fi
+  if [[ "$1 $2" == 'label create' ]]; then return 0; fi
+  if [[ "$1 $2" == 'issue create' ]]; then
+    printf '%s\n' "$*" >> "$CREATES"
+    printf 'https://github.com/fixture/repo/issues/9201\n'
+    return 0
+  fi
   if [[ "$1 $2" == 'pr close' ]]; then echo "$3" >> "$CLOSES"; return 0; fi
   if [[ "$1" == api && "${2:-}" == repos/fixture/repo/issues/*/sub_issues?per_page=100 ]]; then
     local parent="${2#repos/fixture/repo/issues/}"
@@ -62,7 +72,9 @@ gh() {
   fi
   return 97
 }
-PRS='[{"number":9102,"labels":[{"name":"session-owned"}]},{"number":9109,"labels":[]}]'
+PRS='[{"number":9102,"labels":[{"name":"session-owned"}]},{"number":9109,"labels":[]},
+{"number":9161,"labels":[]},{"number":9162,"labels":[]},{"number":9163,"labels":[]},
+{"number":9164,"labels":[]},{"number":9165,"labels":[]}]'
 tick_prs() { printf '%s' "$PRS"; }
 
 # id issue pr reason park-stage park-result [extra jq fields]: a parked unit whose last history event is the park
@@ -88,9 +100,20 @@ cap_default() { jq -c '.history += [{stage:"supervisor-cap-default",result:"bran
   parked issue-9112 9112 9112 supervisor-budget supervisor-budget-park 'stop-loss budget' '{"hold_handoff_waiting":true}'
   parked issue-9113 9113 9113 supervisor-budget supervisor-park 'handed to a session' | cap_default
   parked issue-9114 9114 null supervisor-budget supervisor-budget-park 'stop-loss budget'
-  parked issue-9115 9115 null supervisor-budget supervisor-budget-park 'stop-loss budget'; } | jq -s '{units:.}' > "$UNITS"
+  parked issue-9115 9115 null supervisor-budget supervisor-budget-park 'stop-loss budget'
+  parked pr-9161 null 9161 supervisor-budget supervisor-budget-park 'arbitration budget exhausted for pr-9161 (runs=4 entries=4)' '{"title":"orphan PR intent"}' | cap_default
+  parked issue-9163 9163 9163 supervisor-budget supervisor-budget-park 'arbitration budget exhausted for issue-9163 (runs=4 entries=4)' | cap_default
+  parked issue-9164 9164 9164 supervisor-budget supervisor-budget-park 'arbitration budget exhausted for issue-9164 (runs=4 entries=4)' | cap_default
+  parked issue-9165 9165 9165 supervisor-budget supervisor-budget-park 'arbitration budget exhausted for issue-9165 (runs=4 entries=4)' '{"awaiting_release_pending":9165}' | cap_default
+  jq -cn '{id:"issue-9162",issue:9162,pr:9162,branch:"agent/issue-9162",stage:"supervisor-review",recut_reopened_at:"2026-11-01T02:00:00Z",repair_hint:"R1 fix the reviewed finding",history:[
+    {stage:"supervisor-arbiter",at:"2026-10-30T00:00:00Z"},{stage:"supervisor-arbiter",at:"2026-10-30T01:00:00Z"},
+    {stage:"supervisor-arbiter",at:"2026-10-30T02:00:00Z"},{stage:"supervisor-arbiter",at:"2026-10-30T03:00:00Z"},
+    {stage:"supervisor-cap-default",result:"branch=recut: arbitration cap reached",at:"2026-10-30T04:00:00Z"},
+    {stage:"supervisor-requeue",result:"budget park repair pass: arbitration budget exhausted",at:"2026-10-30T05:00:00Z"},
+    {stage:"supervisor-requeue",result:"recut refused at 2026-11-01T01:00:00Z; reopened with a refilled stop-loss budget",at:"2026-11-01T02:00:00Z"}]}'
+  } | jq -s '{units:.}' > "$UNITS"
 ISSUE_LABELS='{"9114":[{"name":"session-owned"}]}'
-ISSUE_STATES='{"9115":{"state":"on-hold","hold":{"holder":"head"}}}'
+ISSUE_STATES='{"9115":{"state":"on-hold","hold":{"holder":"head"}},"9163":{"state":"on-hold","hold":{"holder":"scheduler-stop-loss"}},"9164":{"state":"awaiting-release"}}'
 
 # Dead park classes recut once; an arbitration-budget PR park gets one repair pass.
 dead_park_exit
@@ -104,6 +127,19 @@ done
     && "$(jq -r '.units[] | select(.id == "issue-9109") | .repair_hint' "$UNITS")" == 'R1 engine/sample.sh:12 — fix the reviewed finding' \
     && "$(jq -r '[.units[] | select(.id == "issue-9109") | .history[] | select(.stage == "supervisor-requeue" and ((.result // "") | startswith("budget park repair pass:")))] | length' "$UNITS")" == 1 ]] \
   || fail "an arbitration-budget park with an open PR did not get one repair pass: $(unit_json issue-9109)"
+[[ "$(stage pr-9161)" == repair-pending && "$(jq -r '.units[] | select(.id == "pr-9161") | .issue' "$UNITS")" == 9201 \
+    && "$(events pr-9161)" == *supervisor-cap-default,supervisor-requeue && "$(cat "$CLOSES")" != *9161* ]] \
+  || fail "a no-issue cap park did not create a ticket and get one repair pass: $(unit_json pr-9161)"
+grep -Fq 'Continue work from PR #9161' "$CREATES" \
+  && grep -Fq -- '--label ready-for-agent --label auto-filed' "$CREATES" \
+  || fail "the auto-filed ticket did not preserve the PR intent or ready lane: $(cat "$CREATES")"
+set_unit pr-9161 '.stage="parked" | .parked_reason="supervisor-budget" | .history += [{stage:"supervisor-budget-park",result:"arbitration budget exhausted again",at:"2026-11-01T02:30:00Z"}]'
+dead_park_exit
+[[ "$(stage pr-9161)" == closed && "$(tail -1 "$ROUTES")" == 9161 && "$(tail -1 "$CLOSES")" == 9161 ]] \
+  || fail "a no-issue unit that did not converge after its repair pass did not recut and close its PR: $(unit_json pr-9161)"
+[[ "$(stage issue-9162)" == repair-pending && "$(jq -r '.units[] | select(.id == "issue-9162") | .repair_hint' "$UNITS")" == 'R1 fix the reviewed finding' \
+    && "$(jq -r '[.units[] | select(.id == "issue-9162") | .history[] | select(.stage == "supervisor-requeue" and ((.result // "") | startswith("reopened over-cap repair pass:")))] | length' "$UNITS")" == 1 ]] \
+  || fail "a reopened over-cap unit did not get one repair pass: $(unit_json issue-9162)"
 routes_before="$(wc -l < "$ROUTES")"; closes_before="$(wc -l < "$CLOSES")"
 dead_park_exit
 [[ "$(stage issue-9109)" == repair-pending && "$(events issue-9109 | tr ',' '\n' | grep -c '^supervisor-requeue$')" == 1 \
@@ -115,9 +151,15 @@ dead_park_exit
   || fail "a later arbitration-budget park repeated the one-shot repair: $(unit_json issue-9109)"
 
 # Owned, other-class and in-flight handoff units are untouched; the three above prove the pass ran.
-for id in issue-9102 issue-9105 issue-9106 issue-9107 issue-9108 issue-9110 issue-9111 issue-9112 issue-9113 issue-9114 issue-9115; do
+for id in issue-9102 issue-9105 issue-9106 issue-9107 issue-9108 issue-9110 issue-9111 issue-9112 issue-9113 issue-9114 issue-9115 issue-9163 issue-9164 issue-9165; do
   [[ "$(stage "$id")" == parked && "$(events "$id")" != *dead-park-exit* ]] || fail "$id must stay parked and untouched: $(unit_json "$id")"
 done
+[[ "$(stage issue-9162)" == repair-pending && "$(jq -r '[.units[] | select(.id == "issue-9162") | .history[] | select(.stage == "supervisor-requeue" and ((.result // "") | startswith("reopened over-cap repair pass:")))] | length' "$UNITS")" == 1 ]] \
+  || fail "a reopened over-cap unit got a duplicate repair pass: $(unit_json issue-9162)"
+set_unit issue-9162 '.stage="supervisor-review" | .history += [{stage:"review-request-changes",at:"2026-11-01T03:00:00Z"}]'
+dead_park_exit
+[[ "$(stage issue-9162)" == closed && "$(tail -1 "$ROUTES")" == 9162 && "$(tail -1 "$CLOSES")" == 9162 ]] \
+  || fail "a reopened unit that did not converge after its repair pass did not recut and close its PR: $(unit_json issue-9162)"
 
 # A unit that parks again within 24h is not exited again; a day later it gets a recut again, not a requeue.
 set_unit issue-9104 '.stage = "parked" | .recut_routed = null | .history += [{stage:"supervisor-budget-park",result:"stop-loss budget",at:"2026-11-09T00:00:00Z"}]'

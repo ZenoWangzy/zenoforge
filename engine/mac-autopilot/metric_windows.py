@@ -15,8 +15,10 @@ LEDGER_WINDOWS = WINDOWS[:4]
 LEDGER_ZERO_COUNTS = frozenset(("workers.deaths", "ci.precheck_setup_failures",
     "supervisor.arbiter_dispatches_24h", "supervisor.cap_default_24h", "supervisor.repeat_guard_24h",
     "supervisor.token_parks_24h", "supervisor.spend_ledger_blind"))
-LEDGER_SNAPSHOTS = frozenset(("supervisor.stop_loss_same_failure_parked",))
-SNAPSHOT_METRICS = frozenset(("supervisor.stop_loss_same_failure_parked", "workers.local_test_db",
+LEDGER_SNAPSHOTS = frozenset(("supervisor.stop_loss_same_failure_parked", "supervisor.over_cap_parked",
+    "supervisor.oldest_over_cap_park_hours"))
+SNAPSHOT_METRICS = frozenset(("supervisor.stop_loss_same_failure_parked", "supervisor.over_cap_parked",
+    "supervisor.oldest_over_cap_park_hours", "workers.local_test_db",
     "host.prereqs_missing", "host.stale_worktrees", "intake.closed_units_open_issues", "engine.follow_lag_hours",
     "workorders.over_standard", "ci.held_ready_pct", "flow.wip_age_stage_p90_hours", "flow.wait_stage_p90_hours",
     "flow.wait_stage_units", "release.hours_waiting", "release.hotpatch_blockers", "pipeline.orphan_prs",
