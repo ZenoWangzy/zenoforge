@@ -2,12 +2,15 @@
 recover_orphan_landing() { # landing 无活 land worker（被杀/重启）→ 回 ready-to-merge 重试
   local id wp has_live
   for id in $(jqf -r '.units[] | select(.stage=="landing") | .id' "$UNITS"); do
+    scheduler_lock_yield_between_units || return 1
+    [[ "${SCHEDULER_LOCK_YIELDED:-false}" != true || "$(unit_field "$id" '.stage // empty')" == landing ]] || continue
     has_live=false
     for wp in $(jqf -r --arg u "$id" '.workers[] | select(.unit==$u and .harvested != true) | .pid' "$WORKERS"); do
       alive "$wp" && has_live=true && break
     done
     [[ "$has_live" == true ]] || { set_unit "$id" "$(hist orphan-recover 'landing worker missing; retry merge') | .stage=\"ready-to-merge\""; say "orphan-recover unit=$id landing -> ready-to-merge"; }
   done
+  scheduler_lock_yield_between_units || return 1
 }
 
 # 失败回合数：只数返工/阻断/回退/无产出，不数正常推进（批准、合并不算）。
@@ -183,6 +186,18 @@ stop_loss_unpark_sweep() { # requeue (refilled budget) when the PR head changed 
   local id from head red_sha pr park_epoch park_main cur resolved why timed
   while IFS=$'\t' read -r id from head red_sha pr park_epoch park_main; do
     [[ -n "$id" ]] || continue
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+      && ! jqf -e --arg id "$id" --arg head "$head" --arg from "$from" --arg red "$red_sha" \
+        --arg pr "$pr" --arg epoch "$park_epoch" --arg main "$park_main" \
+        'any(.units[]; .id==$id and .stage=="parked"
+          and ((.stop_loss_park_head | if .=="" then "-" else . end)==$head)
+          and (.parked_from_stage // "-")==$from and (.parked_main_red_sha // "-")==$red
+          and ((.pr // "-") | tostring)==$pr
+          and ((.stop_loss_park_epoch // "-") | tostring)==$epoch
+          and ((.stop_loss_park_main // "-") | tostring)==$main)' "$UNITS" >/dev/null; then
+      continue
+    fi
     why=""
     if [[ "$pr" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]]; then
       cur="$(tick_pr_head "$pr" 2>/dev/null || true)"
@@ -208,6 +223,7 @@ stop_loss_unpark_sweep() { # requeue (refilled budget) when the PR head changed 
       && say "stop-loss same failure unit=$id requeued at $from: $why"
   done < <(jqf -r '.units[] | select(.stage == "parked" and .stop_loss_park_head != null)
     | [.id, (.parked_from_stage // "-"), (.stop_loss_park_head | if . == "" then "-" else . end), (.parked_main_red_sha // "-"), (.pr // "-"), (.stop_loss_park_epoch // "-"), (.stop_loss_park_main // "-")] | @tsv' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }
 
 # Token spend gate. Every finished worker log is one `spend_runs` record on its unit (spend_ledger.py; fresh tokens come from the

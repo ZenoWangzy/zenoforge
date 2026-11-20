@@ -84,6 +84,11 @@ live_event_watch() { # 每拍：等待生产事件的直落单——事件出现
   jqf -e 'any(.units[]; .stage=="awaiting-live-event")' "$UNITS" >/dev/null || return 0
   while read -r u; do
     id="$(jqf -r .id <<<"$u")"
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id and .stage=="awaiting-live-event")' "$UNITS")"
+      [[ -n "$u" ]] || continue
+    fi
     issue="$(jqf -r '.issue // empty' <<<"$u")"
     stored="$(jqf -ce '.acceptance // empty' <<<"$u" 2>/dev/null)"
     landed="$(jqf -r '.landed_at // empty' <<<"$u")"
@@ -144,4 +149,5 @@ live_event_watch() { # 每拍：等待生产事件的直落单——事件出现
       to_supervisor "$id" "M5：#$issue 落地后超过沉默上限 ${bound}h 仍未出现登记事件 ${ref}，已落地、待生效转 supervisor"
     fi
   done < <(jqf -c '.units[] | select(.stage=="awaiting-live-event")' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }

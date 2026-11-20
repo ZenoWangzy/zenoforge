@@ -92,6 +92,7 @@ refill_room() { # stage -> 0 when the stage fits in what is left of the refill, 
 # Dispatch refreshes itself because running workers may have pushed.
 phase() {
   local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0 phase_name="$1" elapsed
+  SCHEDULER_LOCK_YIELDED=false # stays true after a yield so later snapshot rows are revalidated
   refill_stopped && return 1 # a refused ledger lock wait ended the refill: no later phase runs
   gh_before="$(tick_gh_calls_count)"
   phase_mark "$phase_name"
@@ -123,6 +124,13 @@ stage_slo_watch() {
   budgets="$(jqf -c '.stage_slo_minutes // {"pending":30,"ready-to-merge":120,"landing":60,"supervisor-review":60,"blocked-external":240}' <<<"$CFG")"
   while IFS=$'\t' read -r id stage since key; do
     [[ -n "$id" ]] || continue
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+      && ! jqf -e --arg id "$id" --arg stage "$stage" --arg key "$key" \
+        'any(.units[]; .id==$id and .stage==$stage and (.slo_alerted // "") != $key
+          and (([.history[]? | select(.at != null) | .at] | last // "") as $at | ($stage + "@" + $at)==$key))' "$UNITS" >/dev/null; then
+      continue
+    fi
     set_unit "$id" ".slo_alerted=$(js "$key")"
     echo "[$STAMP] SLO-BREACH unit=$id stage=$stage waiting ${since}min" >> "$A/alerts/slo.md"
   done < <(jqf -r --argjson b "$budgets" --argjson now "$NOW_EPOCH" '
@@ -133,6 +141,7 @@ stage_slo_watch() {
       | select($b[$class] != null and ($now - $t) > ($b[$class] * 60))
       | (.stage + "@" + $at) as $key | select((.slo_alerted // "") != $key)
       | "\(.id)\t\(.stage)\t\((($now - $t) / 60) | floor)\t\($key)"' "$UNITS" 2>/dev/null)
+  scheduler_lock_yield_between_units || return 1
 }
 
 # ---------- 4c. 发布列车：每 15 分钟触发 issue-pipeline 的 release 选择器（单实例） ----------
@@ -274,6 +283,13 @@ unpark_resolved_main_red_units() {
   while IFS=$'\t' read -r id red_sha prior_stage; do
     [[ -n "$id" && "$red_sha" =~ $SHA_RE ]] || continue
     (( unparked < unpark_cap )) || break
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+      && ! jqf -e --arg id "$id" --arg red "$red_sha" --arg prior "$prior_stage" \
+        'any(.units[]; .id==$id and .stage=="parked" and .parked_reason=="main-red"
+          and .parked_main_red_sha==$red and (.parked_from_stage // "")==$prior)' "$UNITS" >/dev/null; then
+      continue
+    fi
     resolved_sha="$(jqf -r --arg red "$red_sha" '
       first(.units[] | select(.main_red==true and .ci_sha==$red and .stage=="closed"
         and ((.resolved_main_sha // "") | test("^[0-9a-f]{40}$"))) | .resolved_main_sha // empty)
@@ -288,6 +304,7 @@ unpark_resolved_main_red_units() {
       and ((.parked_main_red_sha // "") | test("^[0-9a-f]{40}$")))
     | [.id,.parked_main_red_sha,(.parked_from_stage // "")] | @tsv
   ' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }
 
 supersede_resolved_main_red_units() {
@@ -323,6 +340,13 @@ supersede_resolved_main_red_units() {
       if [[ -n "$green_shas" ]]; then
         while IFS=$'\t' read -r id ci_sha; do
           [[ -n "$id" && "$ci_sha" =~ $SHA_RE ]] || continue
+          scheduler_lock_yield_between_units || return 1
+          if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+            && ! jqf -e --arg id "$id" --arg ci "$ci_sha" --slurpfile workers "$WORKERS" \
+              'any(.units[]; .id==$id and .main_red==true and .stage=="implement-pending" and .ci_sha==$ci)
+               and ([ $workers[0].workers[]? | select(.unit==$id and .harvested != true) ] | length)==0' "$UNITS" >/dev/null; then
+            continue
+          fi
           while read -r candidate; do
             [[ "$candidate" =~ $SHA_RE && "$candidate" != "$ci_sha" ]] || continue
             git -C "$ROOT" merge-base --is-ancestor "$ci_sha" "$candidate" 2>/dev/null || continue
@@ -340,6 +364,15 @@ supersede_resolved_main_red_units() {
         done <<<"$pending"
         while IFS=$'\t' read -r id ci_sha; do
           [[ -n "$id" && "$ci_sha" =~ $SHA_RE ]] || continue
+          scheduler_lock_yield_between_units || return 1
+          if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+            && ! jqf -e --arg id "$id" --arg ci "$ci_sha" \
+              'any(.units[]; .id==$id and .main_red==true and .stage=="closed"
+                and .ci_sha==$ci
+                and ((.ci_sha // "") | test("^[0-9a-f]{40}$"))
+                and ((.resolved_main_sha // "")=="" or (.resolved_main_at // "")==""))' "$UNITS" >/dev/null; then
+            continue
+          fi
           while read -r candidate; do
             [[ "$candidate" =~ $SHA_RE && "$candidate" != "$ci_sha" ]] || continue
             git -C "$ROOT" merge-base --is-ancestor "$ci_sha" "$candidate" 2>/dev/null || continue
@@ -399,7 +432,13 @@ register_new_prs() {
   local -a new_rows=()
   tick_prs_prime
   while IFS=$'\t' read -r pr sha branch draft title labels body64; do
+    scheduler_lock_yield_between_units || return 1
     tick_prs_prime
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+      && ! jqf -e --arg pr "$pr" --arg sha "$sha" --arg branch "$branch" --arg draft "$draft" \
+        'any(.[]; (.number | tostring)==$pr and .headRefOid==$sha and .headRefName==$branch and ((.isDraft // false) | tostring)==$draft)' <<<"$TICK_PRS" >/dev/null; then
+      continue
+    fi
     [[ -z "$sha" ]] && continue
     [[ "$pr" =~ ^[0-9]{1,9}$ ]] || { say "skip malformed PR number from gh pr list"; continue; }
     pr_num="$((10#$pr))"
@@ -433,10 +472,18 @@ register_new_prs() {
     fi
     new_rows+=("$pr_num"$'\t'"$branch"$'\t'"$title")
   done < <(tick_prs | jqf -r 'sort_by(-.number) | .[0:15] | .[] | "\(.number)\t\(.headRefOid)\t\(.headRefName)\t\(.isDraft)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | @json)\t\((.body // "") | @base64)"' 2>/dev/null)
+  scheduler_lock_yield_between_units || return 1
   # One intake pass sees every new unit. A pass takes minutes, and running one per PR took 531s of a tick with 3 new PRs.
   (( ${#new_rows[@]} == 0 )) || [[ -z "${HANDOFF_PR_CENSUS:-}" ]] || register_new_issues 1 reuse
   for new_row in ${new_rows[@]+"${new_rows[@]}"}; do
     IFS=$'\t' read -r pr_num branch title <<<"$new_row"
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      u="$(jqf -c --arg id "pr-$pr_num" '[.units[] | select(.id==$id and .stage=="review-pending"
+        and (.supervisor_owned // false)!=true and (.hotpatch // false)!=true)][0]' "$UNITS")"
+      [[ -n "$u" ]] || continue
+      jqf -e --arg id "pr-$pr_num" 'any(.workers[]; .unit==$id and .harvested!=true)' "$WORKERS" >/dev/null && continue
+    fi
     if [[ -n "${HANDOFF_PR_CENSUS:-}" ]]; then
       jqf -e --arg id "pr-$pr_num" 'any(.units[]; .id == $id and .hold_handoff_waiting == true)' "$UNITS" >/dev/null && continue
       [[ "$(unit_field "pr-$pr_num" '.stage')" == review-pending ]] || continue
@@ -454,6 +501,7 @@ register_new_prs() {
     dispatch_if_room "pr-$pr_num" "review" "review" "${rep%.md}.worker.log" "$rep" \
       "$PICK_MODEL" "$PICK_EFFORT" "$(review_prompt "$pr_num" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt" "$sha")" "$sha" "$wt" "$pr_head" || true
   done
+  scheduler_lock_yield_between_units || return 1
 }
 
 # 把本拍已经读到的 PR 与 run 事实发布成一份快照（pr-run-snapshot.json，见 runtime-env.sh）：bell、zombie-watch、dashboard 读它，

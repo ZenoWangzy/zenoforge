@@ -161,6 +161,21 @@ reacquire_scheduler_lock_timed() { # the seconds waiting here go to tick-phases 
   TICK_LOCK_WAIT=$((TICK_LOCK_WAIT + SECONDS - t0))
   return "$rc"
 }
+# 2026-11-17: the 00:32:06Z tick held the lock 143s; its refill hit REFILL-TIMEOUT at 00:35:43Z.
+SCHEDULER_LOCK_UNIT_BATCH_SIZE=20
+scheduler_lock_yield_between_units() { # let queued waiters run between units; a pass with no waiter keeps its existing lock
+  local resume_phase="${SCHED_LOCK_HOLDER_PHASE:-unknown}"
+  [[ "${SCHED_LOCK_HELD:-false}" == true ]] || return 0
+  scheduler_queue_clear "" && return 0
+  release_scheduler_lock
+  SCHEDULER_LOCK_YIELDED=true
+  reacquire_scheduler_lock_timed || return 1
+  phase_mark "$resume_phase"
+  tick_prs_changed
+  LIVE_WORKER_CACHE_UNTIL=0
+  TICK_ACTIVE_FOOTPRINTS_VALID=false
+  TICK_FOOTPRINT_CONFLICT_VALID=false
+}
 phase_yield_lock() { # slow operation; let the local refill controller take the same ledger lock
   local rc=0
   release_scheduler_lock

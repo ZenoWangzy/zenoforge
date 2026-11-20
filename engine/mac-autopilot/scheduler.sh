@@ -730,7 +730,7 @@ main() {
     phase retire_landed_pr_units
     phase supersede_resolved_main_red_units
     # supervisor-owned 标记必须先于任何会动手的阶段（派发、快车道、CI 准入、合并车道）落进台账。
-    phase mark_supervisor_owned_units
+    phase_yield_lock mark_supervisor_owned_units
     phase release_session_pr_units
     if supervisor_marking_deferred; then
       # 分类不可用：可能有热修车道单元本拍无法标记，派发、快车道、CI 准入、合并车道与 supervisor

@@ -172,6 +172,13 @@ dispatch_prompt_evals() {
   while IFS= read -r u; do
     [[ -n "$u" ]] || continue
     id="$(jqf -r '.id' <<<"$u")"
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id and (.eval_gate.status // "")=="pending" and (.hold_handoff_waiting // false)==false)' "$UNITS")"
+      [[ -n "$u" ]] || continue
+      active="$(jqf '[.workers[] | select(.type=="eval" and .harvested!=true)] | length' "$WORKERS")"
+      (( active == 0 )) || { scheduler_lock_yield_between_units || return 1; return 0; }
+    fi
     # 已交付（merged/landed 或带 merge/land SHA）的单元照跑报告；从未交付就关闭的单元不再测一棵没落地的树。
     if jqf -e '(.stage | IN("merged","landed")) | not' <<<"$u" >/dev/null \
        && jqf -e '(.stage | IN("closed","wontfix","duplicate")) and (.merge_sha // .land_sha // null) == null
@@ -221,7 +228,7 @@ dispatch_prompt_evals() {
       say "eval failed unit=$id: $detail"
       continue
     fi
-    (( $(live_workers) < MAX )) || { say "eval pending unit=$id: worker capacity full"; return 0; }
+    (( $(live_workers) < MAX )) || { say "eval pending unit=$id: worker capacity full"; scheduler_lock_yield_between_units || return 1; return 0; }
     confirm=""; [[ -z "$(jqf -r '.eval_gate.confirm // empty' <<<"$u")" ]] || confirm=-confirm
     label="gate-$tree$confirm"
     safe_id="$(tr -c 'A-Za-z0-9._-' '-' <<<"$id" | sed 's/-$//')"
@@ -233,10 +240,10 @@ dispatch_prompt_evals() {
     worker_command=(timeout -k 30 14400 node "${ZF_ENGINE_DIR:-$ROOT/engine}/eval/decision-gate.mjs" \
       --repo "$workdir" --sha "$sha" --tree "$tree" --stages "$stages" \
       --baseline "$baseline" --label "$label" --concurrency 3 --output "$SUP/$report")
-    pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+    pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || { scheduler_lock_yield_between_units || return 1; return 1; }
     rm -f -- "$pid_file"
     worker_scope_launch "$pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- "${worker_command[@]}" || {
-      rm -f -- "$pid_file"; return 1;
+      rm -f -- "$pid_file"; scheduler_lock_yield_between_units || return 1; return 1;
     }
     pid="$WORKER_SCOPE_PID"
     rm -f -- "$pid_file"
@@ -246,6 +253,8 @@ dispatch_prompt_evals() {
     jqf --argjson worker "$worker" '.workers += [$worker]' "$WORKERS" | write_state "$WORKERS"
     set_unit "$id" ".eval_gate.status=\"running\" | .eval_gate.label=$(js "$label") | .eval_gate.baseline=$(js "$baseline") | .eval_gate.report=$(js "$report")"
     say "eval dispatched pid=$pid unit=$id label=$label baseline=$baseline stages=$stages"
+    scheduler_lock_yield_between_units || return 1
     return 0
   done < <(jqf -c '.units[] | select((.eval_gate.status // "") == "pending" and (.hold_handoff_waiting // false) == false)' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }

@@ -17,14 +17,20 @@ reconcile_size_recuts() {
   [[ "$cursor" =~ ^[0-9]+$ ]] && (( n > 0 )) && cursor=$((cursor % n)) || cursor=0
   for ((k = 0; k < n; k++)); do
     i=$(((cursor + k) % n))
+    u="${pending[i]}"; id="$(jqf -r .id <<<"$u")"
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      u="$(jqf -c --arg id "$id" '.units[] | select(.id==$id and .size_recut_pending==true and (.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review"))' "$UNITS")"
+      [[ -n "$u" ]] || continue
+    fi
     if (( SECONDS >= deadline )); then
       # shortcut: cursor is a snapshot index; list membership changes can defer one unit a tick; store the unit id if that starves anything
       printf '%s\n' "$i" > "$A/.size-recut-cursor"
       say "size-recut reconcile stopped at ${SECONDS}s: $((n - k)) units left, resumes at unit $i next tick"
+      scheduler_lock_yield_between_units || return 1
       return 0
     fi
-    u="${pending[i]}"
-    id="$(jqf -r .id <<<"$u")"; issue="$(jqf -r '.issue // empty' <<<"$u")"
+    issue="$(jqf -r '.issue // empty' <<<"$u")"
     state="$(scheduler_issue_state "$issue")" || continue
     if jqf -e '.state == "tracker" or (.state == "released" and (has("recut_children") or .tracker_parent == true)) or (.state == "concluded" and .run.outcome == "duplicate" and .closed_by_pipeline == true)' <<<"$state" >/dev/null; then
       supervisor_close_recut_parent "$id" "issue #$issue became a tracker or a closed duplicate" \
@@ -78,4 +84,5 @@ reconcile_size_recuts() {
     fi
   done
   rm -f -- "$A/.size-recut-cursor"
+  scheduler_lock_yield_between_units || return 1
 }

@@ -534,10 +534,11 @@ ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热�
       | $pr.headRefName] | unique
   ' <<<"$prs"
 }
-hotfix_lane_label() { jqf -r '.hotfix_lane.label // "hotfix"' <<<"$CFG"; }
-hotfix_lane_branch_prefixes() { jqf -r '.hotfix_lane.branch_prefixes[]? // empty' <<<"$CFG"; }
+hotfix_lane_label() { jqf -r '.hotfix_lane.label // "hotfix"' <<<"$CFG"
+}
+hotfix_lane_branch_prefixes() { jqf -r '.hotfix_lane.branch_prefixes[]? // empty' <<<"$CFG"
+}
 hotfix_lane_supervisor_owned() { [[ "$(jqf -r '.hotfix_lane.supervisor_owned // false' <<<"$CFG")" == true ]]; }
-
 # supervisor-owned 热修车道（hotfix_lane.supervisor_owned，缺省 false）：热修 supervisor 会话自己评审、测试、
 # 落地热修 PR；调度器只把它们记进台账计数（census 与发布阻断），一切推进动作都跳过。判定复用现有热修分类：
 # 单元 .hotpatch（孤儿登记的「携带生产热修」路径）或分支命中 ci_hotfix_branches（#4615：标签/前缀/关联 issue）。
@@ -546,35 +547,7 @@ hotfix_lane_supervisor_owned() { [[ "$(jqf -r '.hotfix_lane.supervisor_owned // 
 # 分类（ci_hotfix_branches）读不到时不得放行（fail-closed，2026-11-02：标记推迟的那拍照样派了 4 个评审 worker）：
 # .hotpatch 不依赖分类，照常补标；其余可能的热修车道单元本拍无法排除，置 TICK_SUPERVISOR_MARKING_DEFERRED，
 # 慢拍与补派据此整拍跳过动手阶段，分类恢复的下一拍补标记后恢复。
-mark_supervisor_owned_units() {
-  TICK_SUPERVISOR_MARKING_DEFERRED=false
-  hotfix_lane_supervisor_owned || return 0
-  local branches ids
-  if ! branches="$(ci_hotfix_branches)"; then
-    say "supervisor-owned marking deferred: hotfix classification unavailable"
-    ids="$(jqf -r '[.units[] | select((.supervisor_owned // false) != true and (.hotpatch // false) == true) | .id] | join(" ")' "$UNITS")"
-    mark_supervisor_owned_ids $ids || :
-    TICK_SUPERVISOR_MARKING_DEFERRED=true
-    return 0
-  fi
-  ids="$(jqf -r --slurpfile hot <(printf '%s' "$branches") '[.units[] | select((.supervisor_owned // false) != true
-      and ((.hotpatch // false) == true or ((.branch // "") as $br | $hot[0] | index($br) != null))) | .id] | join(" ")' "$UNITS")"
-  mark_supervisor_owned_ids $ids || :
-}
-mark_supervisor_owned_ids() { # id…：补标 supervisor_owned（只增不减）；台账写失败下一拍重试
-  (( $# > 0 )) || return 0
-  local id ids_file
-  ids_file="$(mktemp)" || return 1
-  printf '%s\n' "$@" | jqf -Rsc 'gsub("\\s+";" ") | split(" ") | map(select(length > 0))' > "$ids_file" \
-    || { rm -f -- "$ids_file"; return 1; }
-  units_update --slurpfile ids "$ids_file" \
-    '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .supervisor_owned = true else . end)' \
-    || { rm -f -- "$ids_file"; say "supervisor-owned marking: ledger write failed; retried next tick"; return 1; }
-  rm -f -- "$ids_file"
-  for id in "$@"; do say "unit=$id supervisor-owned: counted for census only; review and merge stay with the hotfix supervisor"; done
-  return 0
-}
-supervisor_marking_deferred() { [[ "${TICK_SUPERVISOR_MARKING_DEFERRED:-false}" == true ]]; }
+source "$(dirname -- "${BASH_SOURCE[0]}")/supervisor-owned.sh"
 hotfix_issue_numbers() {
   local label rows
   if [[ "$TICK_HOTFIX_ISSUES_LOADED" != true ]]; then
@@ -606,6 +579,18 @@ release_session_pr_units() {
   prs="$(tick_prs)" || return 0
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      prs="$(tick_prs)" || continue
+      if ! jqf -e --slurpfile census <(printf '%s' "$prs") --arg gated "$GATED_LABEL" --arg owned "$SESSION_OWNED_LABEL" --arg id "$id" '
+        [$census[0][] | select(any(.labels[]?; .name == $owned)) | .number] as $claimed
+        | [$census[0][] | select(any(.labels[]?; .name == $gated) | not) | .number] as $ungated
+        | any(.units[]; .id==$id and ((.stage | test("^(parked|closed|landed|merged|done|needs-human)$") | not)
+            and (.hotpatch // false) != true
+            and (.pr as $p | ($claimed | index($p)) != null or ((.id | startswith("pr-")) and ($ungated | index($p)) != null))))' "$UNITS" >/dev/null; then
+        continue
+      fi
+    fi
     set_unit "$id" "$(hist session-owned-release "open PR is not the factory's; the session that owns it lands it") | .stage=\"parked\" | .parked_reason=\"session-owned\" | .unpark_condition=\"the owning session lands the PR\" | .approved_sha=null"
     say "session-owned release unit=$id"
   done < <(jqf -r --slurpfile census <(printf '%s' "$prs") --arg gated "$GATED_LABEL" --arg owned "$SESSION_OWNED_LABEL" '
@@ -614,6 +599,7 @@ release_session_pr_units() {
     | .units[] | select((.stage | test("^(parked|closed|landed|merged|done|needs-human)$") | not) and (.hotpatch // false) != true
         and (.pr as $p | ($claimed | index($p)) != null or ((.id | startswith("pr-")) and ($ungated | index($p)) != null)))
     | .id' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }
 retire_landed_pr_units() {
   local tmpdir open_file rows_file id pr state release_mark merge_sha n=0
@@ -630,6 +616,13 @@ retire_landed_pr_units() {
     || { rm -rf -- "$tmpdir"; return 0; }
   while IFS=$'\t' read -r id pr; do
     [[ -n "$id" ]] || continue
+    scheduler_lock_yield_between_units || { rm -rf -- "$tmpdir"; return 1; }
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+      && ! jqf -e --arg id "$id" --argjson pr "$pr" 'any(.units[]; .id==$id and .pr==$pr
+        and ((.stage | IN("closed","landed","merged","done","needs-human")) | not)
+        and (.hold_handoff_waiting // false) == false)' "$UNITS" >/dev/null; then
+      continue
+    fi
     (( n < ${RETIRE_PR_CHECK_MAX:-10} )) || break
     n=$((n + 1))
     state="$(pr_view "$pr" state)"
@@ -648,6 +641,7 @@ retire_landed_pr_units() {
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
   done < "$rows_file"
+  scheduler_lock_yield_between_units || { rm -rf -- "$tmpdir"; return 1; }
   rm -rf -- "$tmpdir"
   retry_awaiting_release
 }
@@ -659,6 +653,12 @@ retry_awaiting_release() {
   local id issue pr tries state_json issue_state n=0 clear='del(.awaiting_release_pending) | del(.awaiting_release_tries)'
   while IFS=$'\t' read -r id issue pr tries; do
     [[ -n "$id" ]] || continue
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
+      && ! jqf -e --arg id "$id" --argjson issue "$issue" --argjson pr "$pr" \
+        'any(.units[]; .id==$id and .issue==$issue and .awaiting_release_pending==$pr)' "$UNITS" >/dev/null; then
+      continue
+    fi
     (( n < ${AWAITING_RELEASE_RETRY_MAX:-5} )) || break
     n=$((n + 1))
     state_json="$(scheduler_issue_state "$issue" 2>/dev/null)" || continue # a transition is in progress: not a try
@@ -683,6 +683,7 @@ retry_awaiting_release() {
     fi
   done < <(jqf -r '.units[] | select(.awaiting_release_pending != null and (.issue | type) == "number")
     | [.id, .issue, .awaiting_release_pending, (.awaiting_release_tries // 0)] | @tsv' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }
 
 # CI 只花在会合并的 head 上（约束理论：瓶颈不做无用功）。CI 是交付瓶颈（10-21 一天批准 110、合并 17），而评审
