@@ -58,7 +58,7 @@ race_claim="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/claims/
 race_owner="$(jq -r '.owner' <<< "$race_claim")"
 [[ $race_owner == A || $race_owner == B ]] || fail "race left unexpected owner: $race_owner"
 [[ $(awk '$1 == "refs/claims/issue-7" { count++ } END { print count+0 }' "$SIM_WORLD/refs.log") -eq 1 ]] \
-  || fail 'bare remote did not log exactly one winning claim update'
+  || fail "bare remote did not log exactly one winning claim update: $(cat "$SIM_WORLD/refs.log")"
 
 # Each host publishes the existing status_record shape to its own status ref.
 sim_as A -- "$SIM_HARNESS_DIR/worker.sh" status > "$SIM_WORLD/A-status.out" 2>&1 &
