@@ -67,14 +67,24 @@ dead_park_exit_candidates() { # PR census → id<TAB>exit-class
     | [$census[0][] | .number] as $open_prs
     | .units[] | (.history // []) as $h
     | ($h | map(select(.stage != "supervisor-cap-default")) | last // {}) as $l
-    | select(.awaiting_release_pending == null and (.supervisor_owned // false) == false and (.hold_handoff_waiting // false) == false
+    | select(
+        .awaiting_release_pending == null
+        and (.supervisor_owned // false) == false
+        and (.hold_handoff_waiting // false) == false
         and ((.pr | type) != "number" or (.pr as $p | $claimed | index($p)) == null)
-        and ((.stage == "parked" and all($h[]; .stage != "dead-park-exit" or (((.at // "") | sub("\\.[0-9]+Z$"; "Z") | (fromdateiso8601? // 0)) < $since))
-              and ((.parked_reason == "repair-breaker" and $l.stage == "repair-breaker")
-                or ((.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park", "supervisor-requeue-failed")))
-                or (.parked_reason == "supervisor-budget" and any($h[]; .stage == "supervisor-cap-default")))
+        and (
+          (.stage == "parked"
+            and all($h[]; .stage != "dead-park-exit" or (((.at // "") | sub("\\.[0-9]+Z$"; "Z") | (fromdateiso8601? // 0)) < $since))
+            and (
+              (.parked_reason == "repair-breaker" and $l.stage == "repair-breaker")
+              or ((.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park", "supervisor-requeue-failed")))
+              or (.parked_reason == "supervisor-budget" and any($h[]; .stage == "supervisor-cap-default"))
+            )
+          )
           or (.stage == "supervisor-review" and .recut_reopened_at != null and (.issue | type) == "number"
-              and ([$h[] | select(.stage == "supervisor-arbiter")] | length) >= $cap))
+              and ([$h[] | select(.stage == "supervisor-arbiter")] | length) >= $cap)
+        )
+      )
     | (if .stage == "supervisor-review" then "reopened-cap-review"
        elif .parked_reason == "repair-breaker" and $l.stage == "repair-breaker" then "repair-breaker"
        elif (.parked_reason | IN("supervisor-budget", "ticket-stop-loss")) and ($l.stage | IN("supervisor-budget-park", "supervisor-cap-triage-park", "supervisor-requeue-failed")) then
