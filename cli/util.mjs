@@ -65,9 +65,9 @@ export class Actions {
     fs.symlinkSync(target, tmp);
     fs.renameSync(tmp, link);
   }
-  copyTree(src, dest) {
+  copyTree(src, dest, { force = true } = {}) {
     this.note('COPY', `${src}/ -> ${dest}/`);
-    if (!this.dryRun) fs.cpSync(src, dest, { recursive: true, verbatimSymlinks: true });
+    if (!this.dryRun) fs.cpSync(src, dest, { recursive: true, verbatimSymlinks: true, force });
   }
   rename(from, to) {
     this.note('RENAME', `${from} -> ${to}`);
