@@ -80,7 +80,9 @@ if [[ -f $S/luna/rounds.log ]] && awk -v key="$key" '
 fi
 b=${WORKER_BACKEND:-}  # 10-28: zc's 84% failure was our wrapper (json output, Built-in fatal), fixed
 inflight() { local n=0 f; for f in "$S"/luna/*/backend; do [[ $(cat "$f" 2>/dev/null) == "$1" && ! -f ${f%/backend}/rc ]] && n=$((n+1)); done; echo "$n"; }
-zc_executable=$S/zc-src/bin/zcode
+# config.sh exports ZF_CONFIG_ROOT and more; resolve in a subshell so none of it reaches the agents
+mapfile -t zc_argv < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_argv)
+zc_executable=${zc_argv[0]:-$S/zc-src/bin/zcode}
 breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna-breaker"; }
 breaker_open_for() {
   local file now touched

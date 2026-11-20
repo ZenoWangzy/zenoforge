@@ -3,6 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
 worker_source=$(realpath "${1:-$(dirname "$0")/worker}")
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 test_root=$(mktemp -d)
 cleanup() {
   local pid_file pid
@@ -18,6 +19,14 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$test_root/home" "$test_root/agent-home"
 export HOME="$test_root/home" AGENT_HOME="$test_root/agent-home"
+mkdir -p "$test_root/config-root" "$test_root/lib.d"
+cp "$script_dir/../config.sh" "$test_root/config.sh"
+cat > "$test_root/thread-budget.sh" <<'EOF'
+agent_thread_budget() { :; }
+EOF
+cat > "$test_root/lib.d/worker-output-cap.sh" <<'EOF'
+worker_output_cap_chars() { printf '30000\n'; }
+EOF
 
 worker_script=$worker_source
 if ! grep -q 'WORKER_SCRATCH_ROOT' "$worker_source"; then
@@ -38,6 +47,7 @@ scratch=${WORKER_SCRATCH_ROOT:?}
 d="$scratch/luna/$key"
 mkdir -p "$d"
 if [[ $backend == zc ]]; then mode=${FAKE_ZC_MODE:-success}; else mode=${FAKE_LUNA_MODE:-success}; fi
+if [[ $backend == zc && ${FAKE_REAL_ZC:-0} == 1 ]]; then exec "$REAL_ZC_SCRIPT" "$@"; fi
 if [[ $backend == luna ]]; then
   printf '%s\n' "${CODEX_MODEL:-gpt-6-luna}" >> "$d/models"
   cat "$prompt" >> "$d/briefs"
@@ -155,6 +165,21 @@ BACKEND
 # The worker finds its backends beside itself; the scratch root has no bin/ (10-30 rc=127 on every dispatch).
 make_fake_backends "$test_root/bin"
 cp "$worker_script" "$test_root/bin/worker"; worker_script="$test_root/bin/worker"
+cp "$script_dir/zc" "$test_root/bin/real-zc"
+cat > "$test_root/bin/luna-capacity.sh" <<'EOF'
+box_has_room() { return 0; }
+EOF
+cat > "$test_root/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$test_root/bin/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+while (($#)) && [[ $1 != -- ]]; do shift; done
+[[ ${1:-} == -- ]] && shift
+exec "$@"
+EOF
+chmod +x "$test_root/bin/systemctl" "$test_root/bin/systemd-run"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_file_contains() { grep -Fq -- "$2" "$1" || fail "expected '$2' in $1"; }
@@ -191,7 +216,9 @@ run_case() {
   [[ -z $history ]] || printf '%s\n' "$history" > "$root/luna/rounds.log"
 
   if timeout --signal=TERM --kill-after=1 "${WORKER_TEST_RUN_TIMEOUT:-$timeout_seconds}" \
-    env -u WORKER_GATE_QUEUE_SECONDS HOME="$home" AGENT_HOME="$agent_home" CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
+    env -u WORKER_GATE_QUEUE_SECONDS -u ZF_ZCODE_BIN -u ZCODE_BIN HOME="$home" AGENT_HOME="$agent_home" \
+      ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+      CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
       WORKER_STALL_SECONDS="$stall_seconds" WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
       FAKE_ZC_MODE="$zc_mode" FAKE_LUNA_MODE="$luna_mode" "${queue_override[@]}" \
       bash "$worker_script" "$key" "$wt" "$prompt" "$schema" > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
@@ -225,8 +252,12 @@ run_prompt_case() {
 
 run_auto_pick() {
   local name=$1 root=$2 wt=$3 prompt=$4 home=$5 agent_home=$6 rc
+  local path=${7:-$test_root/bin:/usr/bin:/bin} run_real_zc=${8:-0}
   if timeout --signal=TERM --kill-after=1 5 \
-    env -u WORKER_BACKEND -u WORKER_GATE_QUEUE_SECONDS HOME="$home" AGENT_HOME="$agent_home" \
+    env -u WORKER_BACKEND -u WORKER_GATE_QUEUE_SECONDS -u ZF_ZCODE_BIN -u ZCODE_BIN \
+      HOME="$home" AGENT_HOME="$agent_home" ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" \
+      PATH="$path" FAKE_REAL_ZC="$run_real_zc" REAL_ZC_SCRIPT="$test_root/bin/real-zc" \
+      ZCODE_STUB_RAN="$test_root/$name.zcode-ran" \
       WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
       FAKE_ZC_MODE=success FAKE_LUNA_MODE=success \
       bash "$worker_script" "$name" "$wt" "$prompt" \
@@ -272,6 +303,24 @@ run_auto_pick auto-stub-zc "$stub_root" "$auto_worktree" "$auto_prompt" "$auto_h
 [[ $(cat "$stub_root/luna/auto-stub-zc/backend") == zc &&
    $(cat "$stub_root/luna/auto-stub-zc/attempt-backend") == zc ]] || fail 'automatic pick did not choose executable zcode again'
 printf 'PASS automatic pick can choose zc when its executable is present\n'
+
+path_root="$test_root/auto-path-zc/.scratch"
+path_zcode_bin="$test_root/auto-path-zcode-bin"
+mkdir -p "$path_root/tmp" "$path_root/luna" "$path_zcode_bin"
+cat > "$path_zcode_bin/zcode" <<'EOF'
+#!/usr/bin/env bash
+touch "$ZCODE_STUB_RAN"
+printf '%s\n' '{"type":"result","response":"PATH zcode stub ran"}'
+EOF
+chmod +x "$path_zcode_bin/zcode"
+[[ ! -e "$path_root/zc-src" ]] || fail 'PATH zcode fixture unexpectedly has a zc-src bundle'
+run_auto_pick auto-path-zc "$path_root" "$auto_worktree" "$auto_prompt" "$auto_home" "$auto_agent_home" \
+  "$test_root/bin:$path_root/bin:$path_zcode_bin:/usr/bin:/bin" 1
+[[ $(cat "$path_root/luna/auto-path-zc/backend") == zc &&
+   $(cat "$path_root/luna/auto-path-zc/attempt-backend") == zc ]] || fail 'automatic pick did not choose PATH zcode'
+[[ -f "$test_root/auto-path-zc.zcode-ran" ]] || fail 'bin/zc did not run the PATH zcode stub'
+assert_file_contains "$path_root/luna/auto-path-zc/last.md" 'PATH zcode stub ran'
+printf 'PASS automatic pick resolves PATH zcode and bin/zc runs it without a bundle\n'
 
 run_case explicit-zc-hold 0 success success 8 4 zc gpt-6-luna '' '' active
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'explicit zc ignored the active quota hold'
