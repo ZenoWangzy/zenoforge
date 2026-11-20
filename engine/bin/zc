@@ -69,6 +69,7 @@ trap 'exit 130' INT
 trap 'exit 129' HUP
 TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)" \
   systemd-run --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo "${AGENT_WORKER_CPU_WEIGHT:-10}")" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  "$B/../worker-sandbox.py" --cwd "$cwd" --provider zcode -- \
   "${zcode_cmd[@]}" \
   --prompt "$(<"$prompt")" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &

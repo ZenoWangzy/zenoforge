@@ -102,7 +102,8 @@ case "$stage" in
       codex)
         tier=$(model_policy tier "$identity")
         tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
-        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
+        : > "$artifact/report.md"
+        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m "$ZF_ENGINE_DIR/worker-sandbox.py" --cwd "$wt" --provider codex --write-path "$artifact/report.md" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
           --skip-git-repo-check --ephemeral -m "$model" -c "model_reasoning_effort=$effort" \
           "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false \
           --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1
@@ -113,7 +114,7 @@ case "$stage" in
         # prompt asks for a verdict line, not JSON.
         mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
         (( ${#zcode_cmd[@]} > 0 )) || { echo "eval review: GLM CLI not found by the engine resolver" >&2; exit 127; }
-        NODE_USE_ENV_PROXY=1 pipeline_execution_run timeout 45m "${zcode_cmd[@]}" -p "$(cat "$prompt")" \
+        NODE_USE_ENV_PROXY=1 pipeline_execution_run timeout 45m "$ZF_ENGINE_DIR/worker-sandbox.py" --cwd "$wt" --provider zcode -- "${zcode_cmd[@]}" -p "$(cat "$prompt")" \
           --cwd "$wt" --mode yolo > "$artifact/report.md" 2> "$artifact/worker.log"
         ;;
       *) echo "eval review: unsupported review provider: $provider" >&2; exit 64 ;;
@@ -135,7 +136,8 @@ case "$stage" in
       record_identity "codex:profile:$profile"
     fi
     status=0
-    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec -p "$profile" "${CODEX_PLUGINS_OFF_ARGS[@]}" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+    : > "$artifact/report.md"
+    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m "$ZF_ENGINE_DIR/worker-sandbox.py" --cwd "$wt" --provider codex --write-path "$artifact/report.md" -- codex exec -p "$profile" "${CODEX_PLUGINS_OFF_ARGS[@]}" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
       --skip-git-repo-check --ephemeral --json \
       --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1 || status=$?
     [[ -z "$swap_log" ]] || printf '%s\n' "$swap_log" >> "$artifact/worker.log"

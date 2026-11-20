@@ -145,8 +145,26 @@ worker_scope_close_tick_step_lock() { # close the inherited step lock in the wor
   unset TICK_STEP_LOCK_FD
 }
 
+worker_scope_provider_for_command() { # command argv -> codex|zcode when it is a scoped worker
+  local -a command=("$@")
+  local i arg
+  for ((i=0; i<${#command[@]}; i++)); do
+    arg="${command[i]}"
+    case "${arg##*/}" in
+      codex|codex.js|codex.cjs) printf 'codex\n'; return 0 ;;
+    esac
+    if [[ "$arg" == bash && "${command[i+1]:-}" == -c && "${command[i+2]:-}" == *'codex exec'* ]]; then
+      printf 'codex\n'; return 0
+    fi
+    if [[ "$arg" == --mode && ( "${command[i+1]:-}" == yolo || "${command[i+1]:-}" == plan ) ]]; then
+      printf 'zcode\n'; return 0
+    fi
+  done
+  return 1
+}
+
 worker_scope_launch() { # pid-file workdir output-file launcher... -- command...; sets WORKER_SCOPE_PID, WORKER_SCOPE_PID_START (scope only) and WORKER_SCOPE_LAUNCHER_PID; returns 3 on a scope start timeout (WORKER_SCOPE_TIMEOUT_SCOPE, WORKER_SCOPE_WAITED), never an unscoped retry
-  local pid_file="$1" workdir="$2" output_file="$3" scope_client status state scope_started bound scope_name
+  local pid_file="$1" workdir="$2" output_file="$3" scope_client status state scope_started bound scope_name provider sandbox
   shift 3
   local -a launcher=() worker_command=()
   while (($#)) && [[ "$1" != -- ]]; do launcher+=("$1"); shift; done
@@ -154,6 +172,10 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
   shift
   worker_command=("$@")
   ((${#worker_command[@]})) || return 2
+  if provider="$(worker_scope_provider_for_command "${worker_command[@]}")"; then
+    sandbox="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)}/worker-sandbox.py"
+    worker_command=("$sandbox" --cwd "$workdir" --provider "$provider" -- "${worker_command[@]}")
+  fi
   worker_scope_prepare
   WORKER_SCOPE_PID_START=
 

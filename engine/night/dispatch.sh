@@ -368,7 +368,7 @@ if [ "$PROVIDER" = codex ]; then
       [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
       started="$(date +%s)"
       status=0
-      codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --cd "$worktree" -m "$model" \
+      codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && "$script_dir/../worker-sandbox.py" --cwd "$worktree" --provider codex -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --cd "$worktree" -m "$model" \
         -c "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
         -s danger-full-access \
         -c sandbox_workspace_write.network_access=true \
@@ -393,7 +393,7 @@ else
     -E "NODE_USE_ENV_PROXY=1" \
     -E "https_proxy=http://127.0.0.1:3128" -E "HTTPS_PROXY=http://127.0.0.1:3128" \
     -E "http_proxy=http://127.0.0.1:3128" -E "HTTP_PROXY=http://127.0.0.1:3128" \
-    --unit="$HAND_UNIT" -- setsid nohup env -u GH_TOKEN -u GITHUB_TOKEN "${worker_env[@]}" "${zcode_cmd[@]}" -p "$zcode_prompt" --cwd "$WT" --mode yolo \
+    --unit="$HAND_UNIT" -- setsid nohup env -u GH_TOKEN -u GITHUB_TOKEN "${worker_env[@]}" "$SCRIPT_DIR/../worker-sandbox.py" --cwd "$WT" --provider zcode -- "${zcode_cmd[@]}" -p "$zcode_prompt" --cwd "$WT" --mode yolo \
     > "$LOG" 2>&1 &
   launcher_pid=$!
 fi

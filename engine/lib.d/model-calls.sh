@@ -572,7 +572,7 @@ run_codex_json() {
   # idiom instead: self-contained, works identically whether or not the
   # caller has `set -e` active, and never mutates shared shell state.
   started_at="$(date +%s)"
-  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_seconds}s" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_seconds}s" "$ZF_ENGINE_DIR/worker-sandbox.py" --cwd "$cwd" --provider codex --read-path "$schema_file" --write-path "$out_file" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
@@ -725,7 +725,7 @@ run_zcode_json() {
   local proxy_name; local -a empty_proxies=()
   for proxy_name in http_proxy https_proxy no_proxy; do [ -n "${!proxy_name-x}" ] || empty_proxies+=(-u "$proxy_name"); done
   # Same strip as run_codex_json: zcode has no sandbox, and the prompt carries ticket text.
-  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "${empty_proxies[@]}" "${zcode_cmd[@]}" -p "$(cat "$transcript")" \
+  env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" "$ZF_ENGINE_DIR/worker-sandbox.py" --cwd "$cwd" --provider zcode -- env "${empty_proxies[@]}" "${zcode_cmd[@]}" -p "$(cat "$transcript")" \
     --cwd "$cwd" --mode yolo > "$out_file" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ "$status" -eq 124 ]; then
@@ -807,7 +807,7 @@ run_codex_text() {
   # caller's shell from this toggle regardless, but matching the sibling
   # function's idiom keeps the two functions safe to read the same way.
   started_at="$(date +%s)"
-  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_minutes}m" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_minutes}m" "$ZF_ENGINE_DIR/worker-sandbox.py" --cwd "$cwd" --provider codex --write-path "$out_file" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
@@ -919,7 +919,7 @@ run_codex_implement() {
   # Admission diagnostics are not model output. Capture them separately until
   # transcript emptiness is determined, then retain them in the same log.
   codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run bash -c 'log=$1; shift; exec "$@" > "$log" 2>&1' _ "$log_file" \
-    timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
+    timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "$ZF_ENGINE_DIR/worker-sandbox.py" --cwd "$cwd" --provider codex --write-path "$out_file" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c sandbox_workspace_write.network_access=true \
