@@ -212,7 +212,23 @@ review_escape_suite_append() { # review report unit → append the pre-review es
     printf '\n\n## escape-suite\n%s\n' "$results" >> "$report"
   fi
 }
-review_report_harvest() { # report unit → attach escape evidence, then record any decision-log flags
+review_same_provider_append() { # report unit worker-json → surface a reviewer running on the implementer's provider
+  local report="$1" unit="$2" worker="$3" author_provider reviewer_provider model line
+  [[ -s "$report" ]] || return 0
+  author_provider="$(unit_field "$unit" '(.implement_identity // .implement_provider // .implement_backend // empty) | split(":")[0]')"
+  reviewer_provider="$(jqf -r '.provider // empty' <<<"$worker")"
+  if [[ -z "$reviewer_provider" ]]; then
+    model="$(jqf -r '.model // empty' <<<"$worker")"
+    reviewer_provider="$(provider_of "$model" 2>/dev/null || true)"
+  fi
+  [[ "$author_provider" =~ ^(codex|zcode|claude)$ && "$reviewer_provider" == "$author_provider" ]] || return 0
+  line="Reviewer shares the implementer's provider: $reviewer_provider."
+  grep -Fxq -- "$line" "$report" || printf '\n%s\n' "$line" >> "$report"
+}
+review_report_harvest() { # report unit [worker-json] → attach review context and record decision-log flags
+  local worker="${3:-}"
+  [[ -n "$worker" ]] || worker='{}'
+  review_same_provider_append "$1" "$2" "$worker"
   review_escape_suite_append "$1" "$2" || say "review escape-suite results could not be appended unit=$2 report=${1##*/}"
   review_decision_log_flags_append "$1" "$2"
 }
