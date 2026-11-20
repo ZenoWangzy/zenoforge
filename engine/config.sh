@@ -292,6 +292,8 @@ zf_incident_guards_read() {
 # to another candidate -- a typo must surface as 'glm cli missing', not run something else.
 # Order: env override ZF_ZCODE_BIN (deployment prefix applies), then config.json
 # engine.zcode_bin, then the worker bundle, then a zcode found on PATH.
+# 11-20 head: no ZCode CLI on the factory hosts (the zc-src bundle came out of the Z.ai desktop app and was lost); zc exits 75
+# and the rc-75 requeue is the failover. Setting engine.zcode_bin declares one; node_health alerts when it does not resolve.
 zf_zcode_bin_path_argv() {
   local path="$1"
   [[ "$path" == /* && "$path" != *\\* ]] || return 1

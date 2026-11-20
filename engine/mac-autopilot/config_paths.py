@@ -129,3 +129,19 @@ if __name__ == "__main__":
     if merged is None:
         sys.exit(1)
     json.dump(merged, sys.stdout, ensure_ascii=False)
+
+
+def zcode_bin_missing():
+    """['zcode (engine.zcode_bin=...)'] when config.json declares a ZCode CLI that is not an executable file, else [].
+
+    11-20: the zc-src bundle was lost to a WSL cleanup and every failover ended rc 75 unseen. With no engine.zcode_bin set,
+    zcode is absent on purpose (head 2026-11-20: no rebuild; factory work stays off production's GLM quota) and nothing alerts.
+    """
+    path = zf_config_file("config.json")
+    try:
+        zbin = (json.load(open(path)).get("engine") or {}).get("zcode_bin") if path else None
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(zbin, str) or not zbin or (os.path.isfile(zbin) and os.access(zbin, os.X_OK)):
+        return []
+    return [f"zcode (engine.zcode_bin={zbin})"]

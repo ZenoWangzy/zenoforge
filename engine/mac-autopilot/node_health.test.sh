@@ -1952,3 +1952,14 @@ rows, worst = n.wip_stage_ages(units, now, home)
 assert worst > 80 and not [r for r in rows if r["stage"].endswith("(on-hold)")], rows
 print("node_health wip age on hold: PASS")
 CHECK
+# 11-20: engine.zcode_bin declared but not runnable is a host gap; undeclared means zcode is absent on purpose.
+zroot="$test_env_root/zcode-bin"; mkdir -p "$zroot/cfg"; printf '#!/bin/sh\n' > "$zroot/zcode"; chmod +x "$zroot/zcode"
+ZF_CONFIG_ROOT="$zroot/cfg" python3 - "$script_dir" "$zroot" <<'CHECK' || fail 'zcode_bin_missing did not flag a declared, missing zcode'
+import json, sys; sys.path.insert(0, sys.argv[1]); import config_paths as c
+cfg = f"{sys.argv[2]}/cfg/config.json"
+assert c.zcode_bin_missing() == [], "no config: nothing declared"
+for zbin, want in ((None, []), (f"{sys.argv[2]}/zcode", []), (f"{sys.argv[2]}/gone", [f"zcode (engine.zcode_bin={sys.argv[2]}/gone)"])):
+    json.dump({"engine": {"zcode_bin": zbin}}, open(cfg, "w"))
+    assert c.zcode_bin_missing() == want, (zbin, c.zcode_bin_missing())
+print("node_health zcode_bin declared check: PASS")
+CHECK

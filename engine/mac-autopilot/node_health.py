@@ -32,7 +32,7 @@ import health_standards
 import worker_cost
 import workorder_cost
 import usage_reader
-from config_paths import zf_config_file, zf_host_ops_file, zf_incident_guards, zf_mechanism_registry
+from config_paths import zf_config_file, zf_host_ops_file, zf_incident_guards, zf_mechanism_registry, zcode_bin_missing
 
 
 def is_test_path(path):
@@ -1398,7 +1398,7 @@ def main():
         os.path.join(agent_home, "land-queue", "requests"), repo, now - timedelta(hours=24), now, _gh_json)
     metrics["workers.local_test_db"] = local_test_db()
     metrics["advisor.last_answer_age_hours"] = advisor_answer_age_hours(agent_home, repo, now)
-    host_missing = host_prereqs_missing()
+    host_missing = host_prereqs_missing(); host_missing = None if host_missing is None else host_missing + zcode_bin_missing()
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
     metrics["host.stale_worktrees"] = stale_worktrees(now)
