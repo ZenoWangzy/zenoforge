@@ -30,7 +30,6 @@ slots="${LUNA_SLOTS:-$root/tmp/luna-slots}"; mkdir -p "$slots"
 # hotfix > opt > 普通 pipeline). Removed on start and on exit; a wrapper killed while waiting leaves a stale file
 # that whoever sees next drops (the scheduler's higher_priority_waiting does the same check).
 prio="${LUNA_PRIORITY:-normal}"; wait_f="$slots/wait-$prio-$$"
-wait_stale_drop() { local f p; for f in "$slots"/wait-*; do [[ -e "$f" ]] || continue; p="${f##*-}"; { [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; } || rm -f -- "$f"; done; }
 chain_exit_trap() {
   local cur prior
   if [[ "$BASHPID" != "$$" && "${chain_exit_trap_pid:-}" != "$BASHPID" ]]; then
@@ -45,8 +44,15 @@ chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || s
 exec {mx}>"$slots/mutex"
 while :; do
   flock "$mx"
-  if box_has_room; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
-  [[ -e "$wait_f" ]] || : >"$wait_f"; [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"; wait_stale_drop
+  [[ -e "$wait_f" ]] || : >"$wait_f"
+  [[ -e "$wait_f" ]] || { echo "zc: cannot publish capacity ticket $wait_f" >&2; exit 74; }
+  if declare -F luna_waiter_has_room >/dev/null; then
+    if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+  elif box_has_room; then
+    rm -f -- "$wait_f" "$out/gate-wait"; break
+  fi
+  [[ -e "$wait_f" ]] || { echo "zc: capacity ticket disappeared: $wait_f" >&2; exit 74; }
+  [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
   flock -u "$mx"; sleep 30
 done
 mapfile -t zcode_cmd < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_argv)

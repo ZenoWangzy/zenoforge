@@ -62,3 +62,60 @@ box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, a
   BOX_ROOM_WHY="runs $runs/$cap avail ${avail}MB full $full cpu ${cpu}/${LUNA_CPU_TARGET:-85}%"
   return 1
 }
+
+luna_wait_priority_rank() { # keep aligned with higher_priority_waiting: hotfix > opt > normal
+  case "$1" in hotfix) echo 0 ;; opt) echo 1 ;; *) echo 2 ;; esac
+}
+luna_wait_ticket_time() {
+  local time
+  time=$(cat "$1" 2>/dev/null) || time=""
+  [[ "$time" =~ ^[0-9]+$ ]] || time=$(stat -c %Y -- "$1" 2>/dev/null) || time=0
+  [[ "$time" =~ ^[0-9]+$ ]] || time=0
+  printf '%s\n' "$time"
+}
+wait_stale_drop() {
+  local slots="$1" f pid
+  for f in "$slots"/wait-*; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*-}"
+    { [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; } || rm -f -- "$f"
+  done
+}
+luna_wait_ticket_ahead() {
+  local slots="$1" wait_f="$2" priority="$3" own_pid="${2##*-}" own_rank own_time
+  local f key pid ticket_priority ticket_rank ticket_time
+  [[ "$own_pid" =~ ^[0-9]+$ ]] || return 1
+  own_rank=$(luna_wait_priority_rank "$priority")
+  own_time=$(luna_wait_ticket_time "$wait_f")
+  for f in "$slots"/wait-*; do
+    [[ -e "$f" && "$f" != "$wait_f" ]] || continue
+    key="${f##*/}"; pid="${key##*-}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || continue
+    ticket_priority="${key#wait-}"; ticket_priority="${ticket_priority%-*}"
+    ticket_rank=$(luna_wait_priority_rank "$ticket_priority")
+    ticket_time=$(luna_wait_ticket_time "$f")
+    if (( ticket_rank < own_rank || (ticket_rank == own_rank && (ticket_time < own_time || (ticket_time == own_time && pid < own_pid))) )); then
+      printf '%s\n' "$key"
+      return 0
+    fi
+  done
+  return 1
+}
+LUNA_WAIT_AHEAD=""
+luna_waiter_has_room() { # publish once, clean stale tickets, respect priority/FIFO, then check capacity
+  local slots="$1" wait_f="$2" priority="$3" age="${4:-$SECONDS}" now last ahead
+  LUNA_WAIT_AHEAD=""
+  [[ -d "$slots" ]] && { [[ -e "$wait_f" ]] || date +%s > "$wait_f"; } || return 1
+  [[ -e "$wait_f" ]] || return 1
+  wait_stale_drop "$slots"
+  if ahead=$(luna_wait_ticket_ahead "$slots" "$wait_f" "$priority"); then
+    LUNA_WAIT_AHEAD="$ahead"
+    now=$SECONDS; last="${LUNA_WAIT_LOG_AT:-}"
+    if [[ ! "$last" =~ ^[0-9]+$ ]] || (( now - last >= 60 )); then
+      printf 'capacity gate yield waiter=%s ahead=%s\n' "${wait_f##*/}" "$ahead" >&2
+      LUNA_WAIT_LOG_AT=$now
+    fi
+    return 1
+  fi
+  box_has_room "$age"
+}
