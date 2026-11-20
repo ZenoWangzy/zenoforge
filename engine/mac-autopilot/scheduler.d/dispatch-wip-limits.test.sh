@@ -10,7 +10,7 @@ export MAC_AUTOPILOT_ROOT="$fixture/repo"
 export MAC_AUTOPILOT_SUPERVISOR_DIR="$fixture/supervisor"
 export MAC_AUTOPILOT_RUNTIME_DIR="$fixture/supervisor/autopi"
 export REQUIRED_PR_CHECKS_FILE="$engine_dir/mac-autopilot/required-pr-checks.json"
-jq '.max_workers=8 | .implement_cap=1 | .repair_dispatch_cap=null | .started_wip_limit=14 | .hotfix_lane.supervisor_owned=false' \
+jq '.max_workers=8 | .implement_cap=1 | .repair_dispatch_cap=null | .started_wip_limit=11 | .hotfix_lane.supervisor_owned=false' \
   "$engine_dir/mac-autopilot/config.template.json" > "$MAC_AUTOPILOT_RUNTIME_DIR/config.json"
 printf '%s\n' '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
@@ -54,7 +54,7 @@ DISPATCH_WHY_LAST=(); DISPATCH_WHY_TOUCHED=(); DISPATCH_WHY_DIRTY=false
 room_attempt repair-unit repair '{"id":"repair-unit","stage":"repair-pending"}'
 expect_rc 'repair at implement cap' 0 "$ROOM_RC"
 
-# Active, merge-wait and parked/blocked stages count as started WIP; implement starts consume a slot immediately.
+# Active and merge-wait stages count as started WIP; parked/blocked/needs-human do not; implement starts consume a slot immediately.
 jq -n '{units:[
   {id:"implement-active",stage:"implement"},
   {id:"review-active",stage:"review"},
@@ -76,12 +76,12 @@ jq -n '{units:[
   {id:"second-implement",stage:"implement-pending"}
 ]}' > "$UNITS"
 order_with_wip="$(dispatch_order true)"
-[[ "${order_with_wip%%$'\n'*}" == WIP_COUNT=14 ]] || fail "dispatch order WIP snapshot: expected 14, got ${order_with_wip%%$'\n'*}"
+[[ "${order_with_wip%%$'\n'*}" == WIP_COUNT=11 ]] || fail "dispatch order WIP snapshot: expected 11, got ${order_with_wip%%$'\n'*}"
 # One successful implement start fills the final slot; a later candidate in the same pass must see that increment.
 jq 'del(.units[] | select(.id == "landing"))' "$UNITS" > "$MAC_AUTOPILOT_RUNTIME_DIR/units.next.json"
 mv "$MAC_AUTOPILOT_RUNTIME_DIR/units.next.json" "$UNITS"
 order_with_wip="$(dispatch_order true)"
-[[ "${order_with_wip%%$'\n'*}" == WIP_COUNT=13 ]] || fail "near-limit WIP snapshot: expected 13, got ${order_with_wip%%$'\n'*}"
+[[ "${order_with_wip%%$'\n'*}" == WIP_COUNT=10 ]] || fail "near-limit WIP snapshot: expected 10, got ${order_with_wip%%$'\n'*}"
 TICK_DISPATCH_PENDING_ACTIVE=true
 TICK_STARTED_WIP_COUNT="${order_with_wip%%$'\n'*}"
 TICK_STARTED_WIP_COUNT="${TICK_STARTED_WIP_COUNT#WIP_COUNT=}"
@@ -97,7 +97,7 @@ dispatch() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
 new_unit="$(jqf -c '.units[] | select(.id == "not-started")' "$UNITS")"
 if dispatch_if_room not-started implement implement impl.log impl.md model high prompt "" "" "" "" "$new_unit" false codex false configured codex; then :; else fail 'implement at WIP 10 did not dispatch'; fi
 [[ "$dispatch_calls" == 1 ]] || fail "expected one implement start at WIP 10, got $dispatch_calls"
-[[ "$TICK_STARTED_WIP_COUNT" == 14 ]] || fail "successful implement start did not advance WIP to 14 (got $TICK_STARTED_WIP_COUNT)"
+[[ "$TICK_STARTED_WIP_COUNT" == 11 ]] || fail "successful implement start did not advance WIP to 11 (got $TICK_STARTED_WIP_COUNT)"
 room_attempt second-implement implement '{"id":"second-implement","stage":"implement-pending"}'
 expect_rc 'implement at WIP limit' 1 "$ROOM_RC"
 grep -Fqx 'dispatch why unit=second-implement gate=wip-limit' "$LOG" || fail 'implement at WIP limit did not record reason wip-limit'

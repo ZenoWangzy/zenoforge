@@ -467,7 +467,8 @@ dispatch_walk_full() { ! dispatch_capacity_free; }
 # Walk passes that drop a pending unit without a log line are counted by reason; the refill and tick summaries name them.
 declare -gA TICK_DISPATCH_SKIPS=()
 declare -gA TICK_PRIORITY_HOLD_EXPIRED=()
-STARTED_WIP_STAGES='["implement","review","review-pending","rereview","rereview-pending","repair","repair-pending","supervise","supervisor-review","ready-to-merge","landing","parked","blocked-external","needs-human"]'
+# 11-20: parked/blocked units are stopped work, not flow; counting them (152 live at 08:40Z) would stop every new implement.
+STARTED_WIP_STAGES='["implement","review","review-pending","rereview","rereview-pending","repair","repair-pending","supervise","supervisor-review","ready-to-merge","landing"]'
 dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); dispatch_why "${why_unit:-}" "$1"; }
 dispatch_skip_summary() { # name:count,... for the reasons that fired this pass, sorted; empty when none
   local k out=""

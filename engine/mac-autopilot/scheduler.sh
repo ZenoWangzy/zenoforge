@@ -157,7 +157,7 @@ UNITS_ARCHIVE="${UNITS_ARCHIVE:-$A/units-archive.json}"
 MAX="$(jqf -r .max_workers <<<"$CFG")"
 DISPATCH_PRIORITY_ORDER="$(jqf -c '.dispatch_priority_order // ["hotfix", "opt", "normal"]' <<<"$CFG")"
 DISPATCH_FIRST_ISSUES="$(jqf -c 'if (.dispatch_first_issues | type) == "array" then .dispatch_first_issues else [] end' <<<"$CFG")"
-IFS=$'\t' read -r IMPLEMENT_CAP REPAIR_DISPATCH_CAP STARTED_WIP_LIMIT <<<"$(jqf -r '[.implement_cap // 99, .repair_dispatch_cap // .implement_cap // 99, .started_wip_limit // 134] | @tsv' <<<"$CFG")"
+IFS=$'\t' read -r IMPLEMENT_CAP REPAIR_DISPATCH_CAP STARTED_WIP_LIMIT <<<"$(jqf -r '[.implement_cap // 99, .repair_dispatch_cap // .implement_cap // 99, .started_wip_limit // 47] | @tsv' <<<"$CFG")"
 log_reliability_breach
 BUDGET="$(jqf -r .daily_token_budget <<<"$CFG")"
 [[ "$BUDGET" =~ ^[0-9]+$ ]] || BUDGET=0
