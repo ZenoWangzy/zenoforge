@@ -103,7 +103,8 @@ LUNA_WAIT_AHEAD=""
 luna_waiter_has_room() { # publish once, clean stale tickets, respect priority/FIFO, then check capacity
   local slots="$1" wait_f="$2" priority="$3" age="${4:-$SECONDS}" now last ahead
   LUNA_WAIT_AHEAD=""
-  [[ -e "$wait_f" ]] || date +%s > "$wait_f"
+  [[ -d "$slots" ]] && { [[ -e "$wait_f" ]] || date +%s > "$wait_f"; } || return 1
+  [[ -e "$wait_f" ]] || return 1
   wait_stale_drop "$slots"
   if ahead=$(luna_wait_ticket_ahead "$slots" "$wait_f" "$priority"); then
     LUNA_WAIT_AHEAD="$ahead"

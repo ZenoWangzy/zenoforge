@@ -153,8 +153,7 @@ ticket_admission_cases() {
   kill "$ticket_pid" 2>/dev/null || :; wait "$ticket_pid" 2>/dev/null || :; ticket_pid=""
 
   rm -rf -- "$slots"; mkdir -p "$slots"
-  sleep 30 & ticket_pid=$!; stale_pid=$ticket_pid
-  kill "$ticket_pid"; wait "$ticket_pid" 2>/dev/null || :; ticket_pid=""
+  stale_pid=$(($(cat /proc/sys/kernel/pid_max) + 1))
   stale_file="$slots/wait-hotfix-$stale_pid"; normal="$slots/wait-normal-$$"
   printf '%s\n' "$((now - 30))" > "$stale_file"; printf '%s\n' "$((now - 20))" > "$normal"
   box_calls=0

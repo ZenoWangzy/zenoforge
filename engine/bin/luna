@@ -41,7 +41,10 @@ chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || s
 exec {mx}>"$slots/mutex"
 while :; do
   flock "$mx"
+  [[ -e "$wait_f" ]] || : >"$wait_f"
+  [[ -e "$wait_f" ]] || { echo "luna: cannot publish capacity ticket $wait_f" >&2; exit 74; }
   if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+  [[ -e "$wait_f" ]] || { echo "luna: capacity ticket disappeared: $wait_f" >&2; exit 74; }
   [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
   flock -u "$mx"; sleep 30
 done
