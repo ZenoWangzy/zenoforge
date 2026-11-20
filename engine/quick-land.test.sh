@@ -27,6 +27,7 @@ printf 'fixture\n' > "$repo/doc.md"
 printf 'exit "${STUB_RULE_RC:-0}"\n' > "$repo/engine/rule-lane.sh"
 printf '[[ -z ${STUB_SIZE_FAIL:-} ]] || { echo "FAIL tools/big.sh grew"; exit 1; }\necho size-ratchet ok\n' > "$repo/tools/size-ratchet.sh"
 printf 'echo suite\n' > "$repo/engine/old.test.sh"
+printf 'echo ok\n' > "$repo/engine/ok.test.sh"
 git -C "$repo" add -A
 git -C "$repo" commit -qm fixture
 git init -q --bare -b main "$test_env_root/quick-land-origin.git"
@@ -170,10 +171,18 @@ land 1 --test "bash $test_env_root/move-main.sh run.sh" --prior-art "$pa" 'same 
 [[ "$(git log -1 --format=%s origin/main)" == 'move run.sh' ]] || fail 'main moved on the same file: the change landed anyway'
 git branch --list 'quick/*' | grep -q . || fail 'the refused replay did not keep its branch'
 reset_fixture
-# A suite this land ran changed on main: the green result is for the old suite, so the change is not replayed.
+# A suite this land ran changed on main: that suite runs again on the replayed tree (2026-11-20: 985 and the paused-tick
+# fix each lost 20-40 min runs to suite-only overlap); red refuses, green lands.
 printf 'echo stale suite\n' > run.sh
 land 1 --test "bash $test_env_root/move-main.sh engine/old.test.sh" --test 'bash engine/old.test.sh' --prior-art "$pa" 'ran suite moved'
-[[ "$(git log -1 --format=%s origin/main)" == 'move engine/old.test.sh' ]] || fail 'main moved on a suite this land ran: the change landed without a rerun'
+[[ "$(git log -1 --format=%s origin/main)" == 'move engine/old.test.sh' ]] || fail 'main moved a suite red: the change landed without a green rerun'
+reset_fixture
+printf 'cd "%s" && git pull -q origin main && echo "# moved" >> engine/ok.test.sh && git add -A && git commit -qm "comment engine/ok.test.sh" && git push -q origin HEAD:main\n' "$test_env_root/mover" > "$test_env_root/comment-main.sh"
+printf 'echo rerun suite\n' > run.sh
+land 0 --test "bash $test_env_root/comment-main.sh" --test 'bash engine/ok.test.sh' --prior-art "$pa" 'ran suite moved green'
+[[ "$(git log -1 --format=%s origin/main)" == 'ran suite moved green' && "$(git log -1 --format=%s origin/main~1)" == 'comment engine/ok.test.sh' ]] \
+  || fail 'main moved a suite this land ran and the rerun was green: the change did not land on top'
+[[ "$(cut -f2 "$(git rev-parse --git-common-dir)/zf-test-receipts/$(origin_main)" | tail -1)" == 'bash engine/ok.test.sh' ]] || fail 'the moved suite did not run again at the replayed head'
 reset_fixture
 
 echo 'quick-land.test.sh: PASS'
