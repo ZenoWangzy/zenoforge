@@ -165,5 +165,10 @@ land 1 --test "bash $test_env_root/move-main.sh run.sh" --prior-art "$pa" 'same 
 [[ "$(git log -1 --format=%s origin/main)" == 'move run.sh' ]] || fail 'main moved on the same file: the change landed anyway'
 git branch --list 'quick/*' | grep -q . || fail 'the refused replay did not keep its branch'
 reset_fixture
+# A suite this land ran changed on main: the green result is for the old suite, so the change is not replayed.
+printf 'echo stale suite\n' > run.sh
+land 1 --test "bash $test_env_root/move-main.sh engine/old.test.sh" --test 'bash engine/old.test.sh' --prior-art "$pa" 'ran suite moved'
+[[ "$(git log -1 --format=%s origin/main)" == 'move engine/old.test.sh' ]] || fail 'main moved on a suite this land ran: the change landed without a rerun'
+reset_fixture
 
 echo 'quick-land.test.sh: PASS'
