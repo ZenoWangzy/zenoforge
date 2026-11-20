@@ -97,5 +97,11 @@ cache = fixture / "tickets-cache.json"; cache.write_text(json.dumps(rep, default
 out = F.collect(str(fixture), [], set(), str(fixture / "versions"), str(cache), runtime=str(fixture),
                 worktree_root=str(fixture / "wt"), repo_root=str(fixture))
 assert "trend" in out, out.keys()
+# 11-20 E1: units-*.jsonl holds re-emitted rows (2,324 rows for 1,307 event_ids, 11-16..11-19); a raw row sum overstates
+# hours ~60%. Only roi_ledger reads the files; every other reader goes through roi_ledger.read_events (last row wins).
+import pathlib, re
+raw = [str(f) for f in pathlib.Path(sys.argv[1]).parent.rglob("*") if f.suffix in (".py", ".sh", ".mjs") and f.name != "roi_ledger.py"
+       and ".test." not in f.name and f.is_file() and re.search(r"units-(\*|\{|\$|%)[^\n]*jsonl", f.read_text(errors="ignore"))]
+assert not raw, f"read units-*.jsonl through roi_ledger.read_events, not directly: {raw}"
 PY
 echo "factory_trend.test.sh: PASS"
