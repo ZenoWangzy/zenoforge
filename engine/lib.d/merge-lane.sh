@@ -1,3 +1,4 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/merge-result-check.sh"
 
 main_pr_merge_failure_reason() {
   local status="$1" expected_head="$2" observed_head="${3:-}"
@@ -676,7 +677,6 @@ merge_agent_pr() {
     echo "[dry-run] PR #$pr_number is currently draft -- the gh pr ready call below is assumed to succeed; dry-run does not verify it" >&2
   fi
   guarded_write gh pr ready "$pr_number" --repo "$REPO"
-
   if ! merge_subject="$(gh pr view "$pr_number" --repo "$REPO" --json title -q .title | scrub_closing_keywords)"; then
     MERGE_GATE_FAILURE_KIND="merge"
     MERGE_GATE_FAILURE_REASON="could not read the PR title for the squash merge"
@@ -732,6 +732,12 @@ merge_agent_pr() {
         return 1
       fi
     fi
+  fi
+  if [ "$DRY_RUN" != "1" ] \
+    && ! merge_result_focused_tests "$REPO_DIR" "$pr_number" "$match_head_commit"; then
+    MERGE_GATE_FAILURE_KIND="merge-tests"
+    MERGE_GATE_FAILURE_REASON="$MERGE_RESULT_FOCUSED_FAILURE"
+    return 1
   fi
   if ! guarded_pr_merge "$pr_number" "$merge_subject" "$merge_body" "$match_head_commit"; then
     if [ "${PR_MERGE_LOCK_FAILED:-0}" = "1" ]; then

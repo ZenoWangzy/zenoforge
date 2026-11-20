@@ -9,7 +9,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 
 test_root="${test_env_root:?}"
-trap 'rm -rf -- "$test_root"' EXIT
+trap 'rm -rf -- "$test_env_root"' EXIT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -196,6 +196,146 @@ assert_eq "merge-state reads run outside the mutex" 2 "$(wc -l < "$LOCK_READS")"
 assert_eq "only the merge API observes the mutex held" 'merge API observed lock' "$(cat "$FAKE_GH_STATE/lock.log")"
 if flock -n "$MERGE_LOCK_FILE" -c true; then LOCK_RELEASED=yes; else LOCK_RELEASED=no; fi
 assert_eq "merge mutex is released after the API call" yes "$LOCK_RELEASED"
+
+# A PR head can pass its own suite while the same suite fails when the PR is
+# combined with a newer main. The merge gate must test that combined tree.
+merge_case_failures=0
+merge_case_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    printf 'ok - %s\n' "$label"
+  else
+    printf 'not ok - %s (expected [%s], got [%s])\n' "$label" "$expected" "$actual" >&2
+    merge_case_failures=$((merge_case_failures + 1))
+  fi
+}
+merge_case_contains() {
+  local label="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok - %s\n' "$label"
+  else
+    printf 'not ok - %s (expected to find [%s])\n' "$label" "$needle" >&2
+    merge_case_failures=$((merge_case_failures + 1))
+  fi
+}
+MERGE_CALLS=0
+MERGE_HEAD_SEEN=""
+READY_CALLS=0
+guarded_write() {
+  if [[ "${1:-}" == gh && "${2:-}" == pr && "${3:-}" == ready ]]; then
+    READY_CALLS=$((READY_CALLS + 1))
+  fi
+  return 0
+}
+guarded_pr_merge() {
+  MERGE_CALLS=$((MERGE_CALLS + 1))
+  MERGE_HEAD_SEEN="${4:-}"
+  return 0
+}
+
+MERGE_RESULT_FIXTURE="$test_root/merge-result"
+MERGE_RESULT_REPO="$MERGE_RESULT_FIXTURE/repo"
+MERGE_RESULT_REMOTE="$MERGE_RESULT_FIXTURE/origin.git"
+mkdir -p "$MERGE_RESULT_REPO"
+command git init -q --bare "$MERGE_RESULT_REMOTE"
+command git init -q -b main "$MERGE_RESULT_REPO"
+command git -C "$MERGE_RESULT_REPO" config user.name 'merge-result fixture'
+command git -C "$MERGE_RESULT_REPO" config user.email 'merge-result@example.invalid'
+command git -C "$REPO_DIR" archive origin/main engine | tar -x -C "$MERGE_RESULT_REPO"
+mkdir -p "$MERGE_RESULT_REPO/scripts"
+command git -C "$MERGE_RESULT_REPO" add engine
+command git -C "$MERGE_RESULT_REPO" commit -qm 'merge-result fixture base'
+MERGE_RESULT_BASE="$(command git -C "$MERGE_RESULT_REPO" rev-parse HEAD)"
+command git -C "$MERGE_RESULT_REPO" remote add origin "$MERGE_RESULT_REMOTE"
+command git -C "$MERGE_RESULT_REPO" push -q origin main
+command git -C "$MERGE_RESULT_REPO" update-ref refs/remotes/origin/main "$MERGE_RESULT_BASE"
+
+printf 'main-only change\n' > "$MERGE_RESULT_REPO/scripts/main-feature.txt"
+command git -C "$MERGE_RESULT_REPO" add scripts/main-feature.txt
+command git -C "$MERGE_RESULT_REPO" commit -qm 'merge-result fixture main change'
+MERGE_RESULT_MAIN="$(command git -C "$MERGE_RESULT_REPO" rev-parse HEAD)"
+command git -C "$MERGE_RESULT_REPO" push -q origin main
+
+command git -C "$MERGE_RESULT_REPO" checkout -q -b pr-red "$MERGE_RESULT_BASE"
+mkdir -p "$MERGE_RESULT_REPO/scripts"
+cat > "$MERGE_RESULT_REPO/scripts/merge-result-fixture.test.mjs" <<'JS'
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import test from 'node:test';
+
+test('PR behavior remains compatible with main', () => {
+  assert.equal(existsSync('scripts/main-feature.txt'), false);
+});
+JS
+command git -C "$MERGE_RESULT_REPO" add scripts/merge-result-fixture.test.mjs
+command git -C "$MERGE_RESULT_REPO" commit -qm 'merge-result fixture red PR'
+MERGE_RESULT_RED_HEAD="$(command git -C "$MERGE_RESULT_REPO" rev-parse HEAD)"
+command git -C "$MERGE_RESULT_REPO" push -q origin HEAD:refs/pull/710010/head
+if (cd "$MERGE_RESULT_REPO" && node --test scripts/merge-result-fixture.test.mjs \
+  > "$MERGE_RESULT_FIXTURE/red-head.log" 2>&1); then
+  MERGE_RESULT_RED_HEAD_RC=0
+else
+  MERGE_RESULT_RED_HEAD_RC=$?
+fi
+merge_case_eq 'PR head suite passes before combining with main' 0 "$MERGE_RESULT_RED_HEAD_RC"
+
+REPO_DIR="$MERGE_RESULT_REPO"
+MERGE_CALLS=0
+READY_CALLS=0
+if merge_agent_pr 710008 710010 "$MERGE_RESULT_RED_HEAD" 0 0 "$MERGE_RESULT_FIXTURE/red-merge.log" \
+  2> "$MERGE_RESULT_FIXTURE/red-merge.err"; then
+  MERGE_RESULT_RED_OUTCOME=ok
+else
+  MERGE_RESULT_RED_OUTCOME="refused:$MERGE_GATE_FAILURE_KIND"
+fi
+merge_case_eq 'a red merge result refuses before GitHub merge' refused:merge-tests "$MERGE_RESULT_RED_OUTCOME"
+merge_case_contains 'refusal records the failing focused suite' "$MERGE_GATE_FAILURE_REASON" \
+  'scripts/merge-result-fixture.test.mjs'
+merge_case_eq 'red merge result never reaches GitHub merge' 0 "$MERGE_CALLS"
+merge_case_eq 'red refusal preserves the existing ready transition' 1 "$READY_CALLS"
+
+command git -C "$MERGE_RESULT_REPO" checkout -q -b pr-clean "$MERGE_RESULT_MAIN"
+mkdir -p "$MERGE_RESULT_REPO/scripts"
+cat > "$MERGE_RESULT_REPO/scripts/clean-merge-result.test.mjs" <<'JS'
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import test from 'node:test';
+
+test('clean PR result includes the current main behavior', () => {
+  assert.equal(existsSync('scripts/main-feature.txt'), true);
+});
+JS
+command git -C "$MERGE_RESULT_REPO" add scripts/clean-merge-result.test.mjs
+command git -C "$MERGE_RESULT_REPO" commit -qm 'merge-result fixture clean PR'
+MERGE_RESULT_CLEAN_HEAD="$(command git -C "$MERGE_RESULT_REPO" rev-parse HEAD)"
+command git -C "$MERGE_RESULT_REPO" push -q origin HEAD:refs/pull/710011/head
+if (cd "$MERGE_RESULT_REPO" && node --test scripts/clean-merge-result.test.mjs \
+  > "$MERGE_RESULT_FIXTURE/clean-head.log" 2>&1); then
+  MERGE_RESULT_CLEAN_HEAD_RC=0
+else
+  MERGE_RESULT_CLEAN_HEAD_RC=$?
+fi
+merge_case_eq 'clean PR head suite passes' 0 "$MERGE_RESULT_CLEAN_HEAD_RC"
+
+MERGE_CALLS=0
+READY_CALLS=0
+if merge_agent_pr 710009 710011 "$MERGE_RESULT_CLEAN_HEAD" 0 0 "$MERGE_RESULT_FIXTURE/clean-merge.log" \
+  2> "$MERGE_RESULT_FIXTURE/clean-merge.err"; then
+  MERGE_RESULT_CLEAN_OUTCOME=ok
+else
+  MERGE_RESULT_CLEAN_OUTCOME="refused:$MERGE_GATE_FAILURE_KIND"
+fi
+merge_case_eq 'a clean merge result proceeds to the guarded merge' ok "$MERGE_RESULT_CLEAN_OUTCOME"
+merge_case_eq 'clean result reaches GitHub merge once' 1 "$MERGE_CALLS"
+merge_case_eq 'clean result marks the PR ready after validation' 1 "$READY_CALLS"
+merge_case_contains 'clean result records its focused validation' \
+  "$(cat "$MERGE_RESULT_FIXTURE/clean-merge.err")" 'merge-result: passed 1 focused suite(s)'
+REPO_DIR="$SCRIPT_DIR/.."
+
+if ((merge_case_failures)); then
+  printf 'merge-result cases failed: %s\n' "$merge_case_failures" >&2
+  exit 1
+fi
 
 if [ "$FAILED" -eq 1 ]; then
   printf 'FAILED\n' >&2
