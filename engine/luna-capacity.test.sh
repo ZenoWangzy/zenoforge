@@ -100,7 +100,7 @@ fi
 printf '200000 100000\n' > "$root/cgroup/zf.slice/cpu.max"
 make_scopes
 prime_cpu_sample 15000000 0 970
-LUNA_CPU_NOW=1000
+export LUNA_CPU_NOW=1000
 if box_has_room; then
   printf 'PASS four scopes using 0.5 CPU under a 2 CPU quota admit a fifth\n'
 else
@@ -111,7 +111,7 @@ unset LUNA_CPU_NOW
 
 make_n_scopes 1
 prime_cpu_sample 57000000 0 970
-LUNA_CPU_NOW=1000
+export LUNA_CPU_NOW=1000
 if box_has_room; then
   printf 'FAIL measured 1.9 of 2 CPUs refuses another run: admitted\n'
   failures=$((failures + 1))
@@ -138,7 +138,7 @@ fi
 
 make_n_scopes 13
 prime_cpu_sample 0 0 970
-LUNA_CPU_NOW=1000
+export LUNA_CPU_NOW=1000
 if box_has_room; then
   printf 'FAIL the 0.15 CPU floor caps scopes at 13 under a 2 CPU quota: admitted\n'
   failures=$((failures + 1))
