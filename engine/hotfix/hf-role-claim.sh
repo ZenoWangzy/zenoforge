@@ -11,6 +11,7 @@ while ((p > 1)); do
     jq -c '{sessionId, name, pid}' "$s/$p.json" > "$out"
     echo "hotfix role claimed: $(jq -r .name "$out") ($(jq -r .sessionId "$out"))"; exit 0
   fi
-  p=$(awk '{print $4}' "/proc/$p/stat")
+  p="$(LC_ALL=C ps -o ppid= -p "$p" 2>/dev/null || true)"
+  p="${p//[[:space:]]/}"
 done
 echo 'hf-role-claim: no session found above this shell' >&2; exit 1
