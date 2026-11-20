@@ -305,6 +305,7 @@ test('an incident-guard registry edit selects its readers suites, not every suit
   for (const suite of RELATED_TESTS.get(registry)) assert.ok(scope.testPaths.includes(suite));
   assert.deepEqual(RELATED_TESTS.get(registry).slice().sort(), [
     'engine/check-rulings.test.sh',
+    'engine/generate-lesson-enforcers.test.mjs',
     'engine/land-direct-main.test.sh',
     'engine/lesson-fragments.test.sh',
     'engine/mac-autopilot/noop-repair-rounds.test.sh',

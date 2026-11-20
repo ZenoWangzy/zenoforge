@@ -230,7 +230,7 @@ export const RELATED_TESTS = new Map([
   ]],
   // Remaining readers of the incident registry data.
   ['engine/state/incident-guards.json', [
-    'engine/mac-autopilot/noop-repair-rounds.test.sh',
+    'engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/generate-lesson-enforcers.test.mjs',
     'engine/check-rulings.test.sh',
     'engine/land-direct-main.test.sh',
     'engine/lesson-fragments.test.sh',

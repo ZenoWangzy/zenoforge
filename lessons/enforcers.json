@@ -21,6 +21,168 @@
     "existence-check": 0,
     "prose": 0
   },
+  "incidents": {
+    "advisor-and-main-ci-outcomes-missing-from-bell-intake": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/advisor-incident.test.sh"
+      ]
+    },
+    "advisor-batch-rereview-claim-isolated": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/supervisor-arbiter.test.sh",
+        "engine/tick-refuse-guard.test.sh"
+      ]
+    },
+    "advisor-provider-path-from-engine-live-symlink": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/config.test.sh",
+        "engine/mac-autopilot/advisor-provider-missing.test.sh"
+      ]
+    },
+    "ci-admission-unlabeled-draft-starvation": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh",
+        "engine/mac-autopilot/scheduler.d/ci-admission.sh",
+        "engine/mac-autopilot/scheduler.d/ci-status.sh"
+      ]
+    },
+    "findingsless-noop-repair-spends-failure-budget": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/noop-repair-rounds.test.sh"
+      ]
+    },
+    "incident-fix-without-researched-prior-art": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/incident-prior-art-gate.test.sh"
+      ]
+    },
+    "intake-cache-unbounded-rows-argv": {
+      "rule": "V1269",
+      "classification": "enforced",
+      "enforcer": [
+        "engine/jq-arg-safety.test.sh",
+        "engine/mac-autopilot/scheduler.test.sh"
+      ]
+    },
+    "jqf-epipe-from-early-exiting-consumer": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/intake-missing-state.test.sh",
+        "engine/mac-autopilot/jqf-epipe.test.sh"
+      ]
+    },
+    "maintenance-tail-step-starvation": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/hold.test.sh",
+        "engine/issue-pipeline-maintenance-budget.test.sh",
+        "engine/issue-pipeline.sh",
+        "engine/lib.d/holds.sh",
+        "engine/mac-autopilot/advisor-provider-missing.test.sh",
+        "engine/mac-autopilot/bell.sh",
+        "engine/notify.sh"
+      ]
+    },
+    "pin-landing-skips-target-build-contract": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/land-pin-preflight.test.sh"
+      ]
+    },
+    "product-pin-rollback-blocked-by-preflight": {
+      "rule": "V1272",
+      "classification": "enforced",
+      "enforcer": [
+        "engine/engine-sync.test.sh",
+        "engine/publish-preflight/run.test.sh"
+      ]
+    },
+    "refill-census-unset-under-nounset": {
+      "rule": "V1270",
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/scheduler.test.sh"
+      ]
+    },
+    "reviewer-family-matched-author": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/review-family.test.sh"
+      ]
+    },
+    "scheduler-gh-call-without-timeout": {
+      "rule": "V1271",
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/scheduler.test.sh",
+        "engine/scheduler-gh-timeout-safety.mjs",
+        "engine/scheduler-gh-timeout-safety.test.sh"
+      ]
+    },
+    "scheduler-optional-state-read": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/mac-autopilot/intake-missing-state.test.sh",
+        "engine/mac-autopilot/scheduler.d/core.sh"
+      ]
+    },
+    "supervisor-cap-triage-unbalanced-jq-regex": {
+      "rule": "V1268",
+      "classification": "enforced",
+      "enforcer": [
+        "engine/jq-regex-safety.mjs",
+        "engine/jq-regex-safety.test.sh",
+        "engine/mac-autopilot/scheduler.test.sh"
+      ]
+    },
+    "tick-refused-by-defer-status": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/tick-refuse-guard.test.sh"
+      ]
+    },
+    "unexpected-slice-failure-isolated": {
+      "rule": null,
+      "classification": "enforced",
+      "enforcer": [
+        "engine/run-tick-slice-isolation.test.sh",
+        "engine/tick-refuse-guard.test.sh"
+      ]
+    }
+  },
+  "lacking_enforcer": [
+    "advisor-and-main-ci-outcomes-missing-from-bell-intake",
+    "advisor-batch-rereview-claim-isolated",
+    "advisor-provider-path-from-engine-live-symlink",
+    "ci-admission-unlabeled-draft-starvation",
+    "findingsless-noop-repair-spends-failure-budget",
+    "incident-fix-without-researched-prior-art",
+    "jqf-epipe-from-early-exiting-consumer",
+    "maintenance-tail-step-starvation",
+    "pin-landing-skips-target-build-contract",
+    "reviewer-family-matched-author",
+    "scheduler-optional-state-read",
+    "tick-refused-by-defer-status",
+    "unexpected-slice-failure-isolated"
+  ],
   "rules": {
     "V1268": {
       "classification": "enforced",

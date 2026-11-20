@@ -91,6 +91,22 @@ function countClassifications(rules) {
   return counts;
 }
 
+function classify(item) {
+  const hasBehavioralTest = item.test_paths.size > 0;
+  const hasOnlyExistenceChecks = item.checks.length > 0
+    && item.checks.every(isExistenceOnly)
+    && item.test_paths.size === 0;
+  const hasEnforcer = item.enforcers.size > 0;
+  const hasSourceReference = item.source_refs.size > 0;
+  return hasBehavioralTest
+    ? 'enforced'
+    : hasOnlyExistenceChecks
+      ? 'existence-check'
+      : hasEnforcer || hasSourceReference || item.checks.length > 0
+        ? 'weak'
+        : 'prose';
+}
+
 export function buildLessonEnforcers(root = DEFAULT_ROOT) {
   const absoluteRoot = path.resolve(root);
   const ruleText = readFileSync(path.join(absoluteRoot, RULES_PATH), 'utf8');
@@ -111,43 +127,42 @@ export function buildLessonEnforcers(root = DEFAULT_ROOT) {
   const registryPath = zfConfigFile(REGISTRY_PATH, absoluteRoot);
   if (!registryPath) throw new Error(`incident guard registry is unavailable: ${REGISTRY_PATH}`);
   const registry = readIncidentGuards(registryPath);
+  const incidents = {};
   for (const incident of registry.incidents ?? []) {
-    const rule = state.get(incident.lesson_id);
-    if (!rule) continue;
-    rule.incident_refs.add(incident.id);
+    const own = emptyRule();
     for (const enforcer of incident.enforcement?.enforced_by ?? []) {
       const candidate = normalizeRepoPath(absoluteRoot, enforcer);
       if (!candidate || !existsSync(path.join(absoluteRoot, candidate))) continue;
-      rule.enforcers.add(candidate);
-      if (TEST_FILE.test(candidate)) rule.test_paths.add(candidate);
+      own.enforcers.add(candidate);
+      if (TEST_FILE.test(candidate)) own.test_paths.add(candidate);
     }
     for (const check of incident.machine_checks ?? []) {
-      rule.checks.push(check);
+      own.checks.push(check);
       for (const enforcer of commandPaths(absoluteRoot, check)) {
-        rule.enforcers.add(enforcer);
-        if (TEST_FILE.test(enforcer)) rule.test_paths.add(enforcer);
+        own.enforcers.add(enforcer);
+        if (TEST_FILE.test(enforcer)) own.test_paths.add(enforcer);
       }
     }
+
+    const rule = state.get(incident.lesson_id);
+    if (rule) {
+      rule.incident_refs.add(incident.id);
+      for (const enforcer of own.enforcers) rule.enforcers.add(enforcer);
+      for (const testPath of own.test_paths) rule.test_paths.add(testPath);
+      rule.checks.push(...own.checks);
+    }
+    incidents[incident.id] = {
+      rule: rule ? incident.lesson_id : null,
+      classification: classify(own),
+      enforcer: own.enforcers.size ? [...own.enforcers].sort() : 'prose',
+    };
   }
 
   const rules = Object.fromEntries(ids.map((id) => {
     const item = state.get(id);
-    const hasBehavioralTest = item.test_paths.size > 0;
-    const hasOnlyExistenceChecks = item.checks.length > 0
-      && item.checks.every(isExistenceOnly)
-      && item.test_paths.size === 0;
-    const hasEnforcer = item.enforcers.size > 0;
-    const hasSourceReference = item.source_refs.size > 0;
-    const classification = hasBehavioralTest
-      ? 'enforced'
-      : hasOnlyExistenceChecks
-        ? 'existence-check'
-        : hasEnforcer || hasSourceReference || item.checks.length > 0
-          ? 'weak'
-          : 'prose';
     return [id, {
-      classification,
-      enforcer: hasEnforcer ? [...item.enforcers].sort() : 'prose',
+      classification: classify(item),
+      enforcer: item.enforcers.size ? [...item.enforcers].sort() : 'prose',
       source_refs: [...item.source_refs].sort(),
       incident_refs: [...item.incident_refs].sort(),
     }];
@@ -158,6 +173,13 @@ export function buildLessonEnforcers(root = DEFAULT_ROOT) {
       .sort(compareRuleIds)
       .map((id) => [id, occurrences.filter((candidate) => candidate === id).length]),
   );
+
+  const sortedIncidents = Object.fromEntries(
+    Object.entries(incidents).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+  const lacking_enforcer = Object.keys(sortedIncidents).filter((id) => (
+    sortedIncidents[id].rule === null || sortedIncidents[id].classification !== 'enforced'
+  ));
 
   return {
     version: 1,
@@ -173,6 +195,8 @@ export function buildLessonEnforcers(root = DEFAULT_ROOT) {
       prose: 'No tracked code/test reference or incident guard is linked.',
     },
     counts: countClassifications(rules),
+    incidents: sortedIncidents,
+    lacking_enforcer,
     rules,
   };
 }
