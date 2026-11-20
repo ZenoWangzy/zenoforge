@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# worker-stop <key>: stop a bin/worker run for real, and say "stopped" only when it is.
+#
+# Why (2026-11-20): a worker was "stopped" by killing wrapper.pid and codex.pid. A descendant survived (the backend
+# starts commands in their own sessions, and killing a parent re-parents its children, so neither a pid kill, a
+# process-group kill nor a tree walk finds them) and worked on for 7 minutes; the supervisor had already reported
+# it stopped from `kill -0` on the two pids.
+#
+# How: bin/luna and bin/zc run every backend in its own systemd scope (luna-<key>-<pid>.scope). A scope is a cgroup,
+# and a process cannot leave its cgroup by forking or setsid, so stopping the scope stops everything the run started.
+# The wrapper's own process group is ended too, so it cannot start another attempt.
+# Proof of stop is the event log, not the pids: exit 0 only when events.jsonl did not change for QUIET seconds.
+# Exit: 0 stopped (or it was not running and the log is still); 1 still writing events; 64 usage.
+set -uo pipefail
+key="${1:-}"; [[ -n "$key" && "$key" != -* ]] || { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+dir="${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}/luna/$key"
+[[ -d "$dir" ]] || { echo "worker-stop: no worker directory $dir"; exit 64; }
+quiet="${ZF_WORKER_STOP_QUIET:-20}"
+# Only this key's scopes: a bare glob would also match a longer key that starts with this one.
+scopes_now() { systemctl --user list-units --type=scope "$@" --no-legend --plain "luna-*.scope" 2>/dev/null | awk '{print $1, $3}' | grep -E "^luna-(zc-)?${key//[^A-Za-z0-9_-]/-}-[0-9]+\.scope "; }
+own_group="$(ps -o pgid= -p $$ | tr -d ' ')"
+signal_groups() { # $1 = signal; the wrapper relaunches the backend when an attempt dies, so it goes too
+  local f p g n=0
+  for f in backend-run.pid wrapper.pid; do
+    p="$(cat "$dir/$f" 2>/dev/null || true)"; [[ "$p" =~ ^[0-9]+$ ]] || continue
+    g="$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')"; [[ "$g" =~ ^[0-9]+$ && "$g" != "$own_group" ]] || continue
+    kill "-$1" -- -"$g" 2>/dev/null && n=$((n + 1))
+  done
+  echo "$n"
+}
+groups="$(signal_groups TERM)"
+mapfile -t scopes < <(scopes_now --all | awk '{print $1}')
+for s in "${scopes[@]}"; do systemctl --user stop "$s" >/dev/null 2>&1 || systemctl --user kill --signal=KILL "$s" >/dev/null 2>&1 || true; done
+sleep 2; signal_groups KILL >/dev/null
+before="$(stat -c '%Y %s' "$dir/events.jsonl" 2>/dev/null || echo none)"
+sleep "$quiet"
+after="$(stat -c '%Y %s' "$dir/events.jsonl" 2>/dev/null || echo none)"
+left="$(scopes_now | awk '$2 == "active" {print $1}' | tr '\n' ' ')"
+if [[ "$before" != "$after" || -n "$left" ]]; then
+  echo "worker-stop: $key STILL RUNNING (event log changed in ${quiet}s: $([[ "$before" != "$after" ]] && echo yes || echo no); active scopes: ${left:-none}). Do not report it stopped."
+  exit 1
+fi
+echo "worker-stop: $key stopped at $(date -u +%FT%TZ): ${#scopes[@]} scope(s) stopped, $groups process group(s) signalled; event log still for ${quiet}s"
