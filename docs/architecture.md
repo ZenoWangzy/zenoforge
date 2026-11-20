@@ -262,7 +262,7 @@ A change enters the hotfix lane when the issue has the `hotfix` label, or the br
 
 Lessons are stored in the target repository, under `lessons/`, and not in this engine. The engine expects `lessons/RULES.md`, `lessons/CATALOG.md`, `lessons/full/` (root-cause write-ups), `lessons/pending/`, and `lessons/recurrence-ranking.json`.
 
-- `engine/generate-lesson-enforcers.mjs` reads `lessons/RULES.md` and `engine/state/incident-guards.json`, and writes `lessons/enforcers.json`.
+- `engine/generate-lesson-enforcers.mjs` reads `lessons/RULES.md` and `engine/state/incident-guards.json`, and writes `lessons/enforcers.json`. A test fails when `lessons/enforcers.json` differs from a fresh generation; `incidents` lists every registry incident and `lacking_enforcer` names those without a `RULES.md` row or test.
 - `engine/lesson-lints.mjs` adds landing-time checks for lessons that have recurred at least twice and have a structural prevention anchor.
 - `engine/lesson-recurrence-ranking.mjs` ranks lessons by recurrence.
 - `engine/lesson-fragments.sh` tracks lesson fragments and their guard registration.

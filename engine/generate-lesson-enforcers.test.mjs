@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { buildLessonEnforcers } from './generate-lesson-enforcers.mjs';
 
@@ -174,5 +175,95 @@ test('maps rules to behavioral, existence, weak, and prose enforcement from a sm
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('lists every registry incident and names one with no rules row as lacking an enforcer', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'zf-lesson-incidents-'));
+  try {
+    write(root, 'lessons/RULES.md', '**V90001** listed rule\n');
+    write(root, 'scripts/listed.test.mjs', 'import test from "node:test";\ntest("listed", () => {});\n');
+    write(root, 'scripts/unlisted.test.mjs', 'import test from "node:test";\ntest("unlisted", () => {});\n');
+    write(root, '.zenoforge/state/incident-guards.json', JSON.stringify({ incidents: [
+      {
+        id: 'listed-incident',
+        lesson_id: 'V90001',
+        machine_checks: [{
+          command: ['node', '--test', '${REPO_DIR}/scripts/listed.test.mjs'],
+          why: 'The listed fixture has a test enforcer.',
+        }],
+      },
+      {
+        id: 'unlisted-incident',
+        lesson_id: 'V90099',
+        machine_checks: [{
+          command: ['node', '--test', '${REPO_DIR}/scripts/unlisted.test.mjs'],
+          why: 'The unlisted lesson still has an incident test.',
+        }],
+      },
+      {
+        id: 'slug-incident',
+        lesson_id: 'some-slug',
+        machine_checks: [{
+          command: ['node', '--test', '${REPO_DIR}/scripts/missing.test.mjs'],
+          why: 'The missing test leaves only the check record.',
+        }],
+      },
+    ] }, null, 2));
+
+    execFileSync('git', ['init', '-q', root]);
+    execFileSync('git', ['-C', root, 'add', '.']);
+
+    const previousConfigRoot = process.env.ZF_CONFIG_ROOT;
+    process.env.ZF_CONFIG_ROOT = path.join(root, '.zenoforge');
+    try {
+      const map = buildLessonEnforcers(root);
+
+      assert.deepEqual(Object.keys(map.incidents), ['listed-incident', 'slug-incident', 'unlisted-incident']);
+      assert.deepEqual(map.incidents['listed-incident'], {
+        rule: 'V90001',
+        classification: 'enforced',
+        enforcer: ['scripts/listed.test.mjs'],
+      });
+      assert.deepEqual(map.incidents['unlisted-incident'], {
+        rule: null,
+        classification: 'enforced',
+        enforcer: ['scripts/unlisted.test.mjs'],
+      });
+      assert.deepEqual(map.incidents['slug-incident'], {
+        rule: null,
+        classification: 'weak',
+        enforcer: 'prose',
+      });
+      assert.deepEqual(map.lacking_enforcer, ['slug-incident', 'unlisted-incident']);
+    } finally {
+      if (previousConfigRoot === undefined) delete process.env.ZF_CONFIG_ROOT;
+      else process.env.ZF_CONFIG_ROOT = previousConfigRoot;
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('lessons/enforcers.json is what the generator writes from the registry and RULES.md', () => {
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const configRoot = mkdtempSync(path.join(tmpdir(), 'zf-lesson-enforcers-config-'));
+  const previous = Object.fromEntries(['ZF_CONFIG_ROOT', 'ZF_ENGINE_DIR', 'ZF_PACK_DIR']
+    .map((name) => [name, process.env[name]]));
+  process.env.ZF_CONFIG_ROOT = configRoot;
+  process.env.ZF_ENGINE_DIR = path.join(repo, 'engine');
+  process.env.ZF_PACK_DIR = '';
+  try {
+    assert.equal(
+      readFileSync(path.join(repo, 'lessons/enforcers.json'), 'utf8'),
+      `${JSON.stringify(buildLessonEnforcers(repo), null, 2)}\n`,
+      'lessons/enforcers.json is stale: run: node engine/generate-lesson-enforcers.mjs --root <repo> and commit it',
+    );
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(configRoot, { recursive: true, force: true });
   }
 });
