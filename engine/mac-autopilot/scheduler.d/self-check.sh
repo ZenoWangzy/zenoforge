@@ -3,8 +3,9 @@ self_check_run() (
   local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source runner_path
   local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
   local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
-  local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg
+  local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg test_started
   local delegate_tests=0
+  local run_main_pr_tests="${SELF_CHECK_RUN_TESTS_ON_MAIN_PR:-0}"
   local -a builds=()
   runner_path="$(dirname -- "${BASH_SOURCE[0]}")/escape-suite-runner.mjs"
   runner_source="$(<"$runner_path")" || return 1
@@ -68,7 +69,7 @@ self_check_run() (
       fi
     done < <(jq -r '.affectedPaths[]' <<<"$selection")
   fi
-  [[ "$lane" == pr && "$pr_base" == main ]] && delegate_tests=1
+  [[ "$lane" == pr && "$pr_base" == main && "$run_main_pr_tests" != 1 ]] && delegate_tests=1
   while read -r pkg; do [[ -n "$pkg" ]] || continue; builds+=(--filter "$pkg..."); done <<<"$targets"
   cached_tests=""
   while read -r pkg; do
@@ -92,6 +93,7 @@ self_check_run() (
         timeout -k 10 "$step_s" pnpm $2 --workspace-concurrency=2 --if-present run build || { srg=$?; rc=1; (( srg != 124 )) || echo "self-check: build timed out after ${step_s}s"; }
       fi
       for paths in typecheck test lint; do
+        if [[ "$paths" == test ]]; then test_started=$SECONDS; fi
         while read -r pkg; do
           [[ -n "$pkg" ]] || continue
           if [[ "$paths" == test ]] && grep -Fxq "$pkg" <<<"$4"; then
@@ -111,6 +113,7 @@ self_check_run() (
             srg=$?; rc=1; (( srg != 124 )) || echo "self-check: $paths $pkg timed out after ${step_s}s"
           fi
         done <<<"$3"
+        if [[ "$paths" == test ]]; then echo "self-check: test duration=$((SECONDS-test_started))s"; fi
       done
       if ZF_ESCAPE_SUITE_RUNNER=1 ZF_ESCAPE_SUITE_BASE="$1" ZF_ESCAPE_SUITE_HEAD="$9" ZF_ESCAPE_SUITE_TIMEOUT_S="$step_s" node --input-type=module -e "${10}"; then :
       else srg=$?; rc=1; fi
@@ -136,6 +139,7 @@ self_check_run() (
     timeout 900 pnpm install --frozen-lockfile --offline || timeout 900 pnpm install --frozen-lockfile || return 1
     timeout -k 10 "$step_s" pnpm "${builds[@]}" --workspace-concurrency=2 --if-present run build || { srg=$?; rc=1; (( srg != 124 )) || echo "self-check: build timed out after ${step_s}s"; }
     for paths in typecheck test lint; do
+      if [[ "$paths" == test ]]; then test_started=$SECONDS; fi
       while read -r pkg; do
         [[ -n "$pkg" ]] || continue
         if [[ "$paths" == test ]] && grep -Fxq "$pkg" <<<"$test_targets"; then
@@ -155,7 +159,10 @@ self_check_run() (
           srg=$?; rc=1; (( srg != 124 )) || echo "self-check: $paths $pkg timed out after ${step_s}s"
         fi
       done <<<"$targets"
+      if [[ "$paths" == test ]]; then echo "self-check: test duration=$((SECONDS-test_started))s"; fi
     done
+  else
+    echo 'self-check: test duration=0s'
   fi
   if ZF_ESCAPE_SUITE_RUNNER=1 ZF_ESCAPE_SUITE_BASE="$base" ZF_ESCAPE_SUITE_HEAD="$sha" ZF_ESCAPE_SUITE_TIMEOUT_S="$step_s" node --input-type=module -e "$runner_source"; then :
   else rc=1; fi

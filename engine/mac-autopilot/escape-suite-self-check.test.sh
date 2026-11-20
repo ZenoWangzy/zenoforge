@@ -9,6 +9,7 @@ repo_root="$MAC_AUTOPILOT_ENV_ROOT"
 HERE="$repo_root/engine/mac-autopilot"
 ROOT="$test_env_root/product"
 SUP="$test_env_root/sup"
+export PNPM_LOG="$test_env_root/pnpm.log"
 mkdir -p "$ROOT/scripts/ci" "$ROOT/scripts/checks" "$ROOT/packages/fruit/tests" "$ROOT/packages/fruit/src" "$ROOT/.zenoforge/state" "$SUP"
 source "$HERE/scheduler.d/self-check.sh"
 source "$HERE/scheduler.d/review-rules.sh"
@@ -20,6 +21,7 @@ test_evidence_record_pass() { :; }
 
 cat > "$test_env_bin/pnpm" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PNPM_LOG"
 exit 0
 EOF
 chmod +x "$test_env_bin/pnpm"
@@ -71,8 +73,24 @@ green_output=''
 green_rc=0
 if green_output="$(self_check_run "$ROOT" "$green_head" pr main 2>&1)"; then :; else green_rc=$?; fi
 [[ "$green_rc" == 0 ]] || { printf '%s\n' "$green_output" >&2; echo 'escape-suite-self-check.test.sh: green escape test made pre-review self-check red' >&2; exit 1; }
+grep -q '^self-check: test fruit delegated to Touched packages PR gate ' <<<"$green_output" \
+  || { printf '%s\n' "$green_output" >&2; echo 'escape-suite-self-check.test.sh: default PR self-check did not delegate package tests' >&2; exit 1; }
+if grep -Fxq -- '--filter fruit --if-present run test' "$PNPM_LOG"; then
+  echo 'escape-suite-self-check.test.sh: default PR self-check ran a delegated package test' >&2; exit 1
+fi
 grep -q '^escape-suite: package=packages/fruit test=packages/fruit/tests/tenant-timezone.test.sh rc=0 ' <<<"$green_output" \
   || { printf '%s\n' "$green_output" >&2; echo 'escape-suite-self-check.test.sh: pre-review self-check did not report the registered test and rc=0' >&2; exit 1; }
+
+# Opting in runs the touched package's normal test target and records the step duration.
+: > "$PNPM_LOG"
+on_output=''
+on_rc=0
+if on_output="$(SELF_CHECK_RUN_TESTS_ON_MAIN_PR=1 self_check_run "$ROOT" "$green_head" pr main 2>&1)"; then :; else on_rc=$?; fi
+[[ "$on_rc" == 0 ]] || { printf '%s\n' "$on_output" >&2; echo 'escape-suite-self-check.test.sh: opted-in package test made pre-review self-check red' >&2; exit 1; }
+grep -Fxq -- '--filter fruit --if-present run test' "$PNPM_LOG" \
+  || { printf '%s\n' "$on_output" >&2; echo 'escape-suite-self-check.test.sh: opting in did not run the touched package test target' >&2; exit 1; }
+grep -q '^self-check: test duration=[0-9][0-9]*s$' <<<"$on_output" \
+  || { printf '%s\n' "$on_output" >&2; echo 'escape-suite-self-check.test.sh: self-check did not log test duration' >&2; exit 1; }
 
 # The review prompt must carry the exact test and rc from the self-check log.
 printf '%s\n' "$green_output" > "$SUP/self-check.log"
