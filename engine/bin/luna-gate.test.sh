@@ -134,7 +134,7 @@ ticket_admission_cases() {
 
   hotfix="$slots/wait-hotfix-$$"; normal="$slots/wait-normal-$$"
   printf '%s\n' "$((now - 30))" > "$hotfix"; printf '%s\n' "$((now - 20))" > "$normal"
-  log="$root/ticket-yields.log"; : > "$log"; LUNA_WAIT_LOG_AT=0
+  log="$root/ticket-yields.log"; : > "$log"; unset LUNA_WAIT_LOG_AT
   if luna_waiter_has_room "$slots" "$normal" normal 0 2>>"$log"; then fail 'ordinary waiter passed a live hotfix ticket'; fi
   [[ "${LUNA_WAIT_AHEAD:-}" == "${hotfix##*/}" && "$box_calls" == 0 ]] || fail "hotfix ticket did not block before capacity check: ahead=${LUNA_WAIT_AHEAD:-} calls=$box_calls"
   if luna_waiter_has_room "$slots" "$normal" normal 0 2>>"$log"; then fail 'ordinary waiter passed a live hotfix ticket on a later poll'; fi
