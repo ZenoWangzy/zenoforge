@@ -52,8 +52,7 @@ epoch=$(date +%s)
 # Releases are serialized across deployments, even when this caller has no unit
 # prefix. systemctl's table rows are padded, so parse the first nonempty field.
 release_unit="${UNIT_PREFIX_TRANSIENT}-release-batch"
-release_args=(--user --unit "$release_unit" --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}"
-  -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY
+release_args=(-E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY
   -p "RuntimeMaxSec=$((7 * 60 * 60))"
   bash -c 'rc=0; "$1" "$2" "$3" || rc=$?; "$4" --report-end "$5" "$2" "$3" "$6" "$rc" || true; exit "$rc"'
   hf-release-end "$agent/run-release.sh" "$anchor" "$sha" "$here/hf-release.sh" "$pr" "$epoch")
@@ -76,7 +75,8 @@ while :; do
     wait_started=1
   else
     start_output=""
-    if start_output="$(systemd-run "${release_args[@]}" 2>&1)"; then
+    # batch-units-slice.test.sh reads this call literally: keep unit, --collect and --slice on it.
+    if start_output="$(systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}" "${release_args[@]}" 2>&1)"; then
       [[ -z "$start_output" ]] || printf '%s\n' "$start_output"
       break
     fi
