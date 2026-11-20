@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-python3 - "$script_dir" <<'PY'
+python3 -B - "$script_dir" <<'PY'
 import hashlib
 import json
 import os
