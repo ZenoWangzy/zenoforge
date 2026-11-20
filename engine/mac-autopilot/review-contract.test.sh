@@ -70,18 +70,24 @@ daily_html="$(jq -r '.html' <<<"$daily_html")"
   || fail 'the marked entry did not reach the daily report that reads the supervisor JSONL file'
 
 recur_finding='{"id":"F4","severity":"P1","file":"src/d.ts","line":3,"rule":"Defect","status":"open","summary":"[contract: out] Null guard missing on the write path."}'
-[[ "$(review_finding_class_key "$recur_finding")" == defect-null-guard-missing-on-the-write ]] || fail 'class key was not derived from the rule and summary words'
-zh_a='{"id":"Z1","severity":"P1","rule":"Defect","status":"open","summary":"空指针：写入路径缺少判空"}'
-zh_b='{"id":"Z2","severity":"P1","rule":"Defect","status":"open","summary":"并发写入没有加锁"}'
-[[ "$(review_finding_class_key "$zh_a")" == finding-* ]] || fail 'a Chinese-only summary did not get a hashed class key'
-[[ "$(review_finding_class_key "$zh_a")" != "$(review_finding_class_key "$zh_b")" ]] || fail 'two Chinese-only findings share one class key'
-[[ "$(review_finding_class_key "$zh_a")" == "$(review_finding_class_key "$zh_a")" ]] || fail 'the hashed class key is not stable'
-mixed_a='{"id":"M1","severity":"P1","rule":"Defect","status":"open","summary":"写入 null 判空"}'
-mixed_b='{"id":"M2","severity":"P1","rule":"Defect","status":"open","summary":"读取 null 判空"}'
-[[ "$(review_finding_class_key "$mixed_a")" == finding-* ]] || fail 'a mixed-language summary kept its ASCII words as the class key'
-[[ "$(review_finding_class_key "$mixed_a")" != "$(review_finding_class_key "$mixed_b")" ]] || fail 'mixed-language findings sharing ASCII words share one class key'
-empty_s='{"id":"E1","severity":"P1","rule":"Defect","status":"open","summary":""}'
-[[ -z "$(review_finding_class_key "$empty_s")" ]] || fail 'an empty summary got a shared class key'
+rewritten_a='{"id":"R1","severity":"P1","file":"src/order.ts","line":42,"rule":"Defect","status":"open","summary":"Order totals skip the fee."}'
+rewritten_b='{"id":"R2","severity":"P1","file":"src/order.ts","line":59,"rule":"Defect","status":"open","summary":"The fee is missing from the calculated total."}'
+[[ "$(review_finding_class_key "$rewritten_a")" == "$(review_finding_class_key "$rewritten_b")" ]] || fail 'reworded findings in the same rule, file and 20-line range got different keys'
+recur_key="$(review_finding_class_key "$recur_finding")"
+[[ "$recur_key" == finding-* ]] || fail 'class key was not derived from the finding location'
+rewritten_c='{"id":"R3","severity":"P1","file":"src/order.ts","line":61,"rule":"Defect","status":"open","summary":"The fee is missing from the calculated total."}'
+[[ "$(review_finding_class_key "$rewritten_a")" != "$(review_finding_class_key "$rewritten_c")" ]] || fail 'different line ranges shared a class key'
+zh_a='{"id":"Z1","severity":"P1","file":"src/a.ts","line":3,"rule":"Defect","status":"open","summary":"空指针：写入路径缺少判空"}'
+zh_b='{"id":"Z2","severity":"P1","file":"src/b.ts","line":3,"rule":"Defect","status":"open","summary":"并发写入没有加锁"}'
+[[ "$(review_finding_class_key "$zh_a")" == finding-* ]] || fail 'a finding without reviewer class did not get a derived key'
+[[ "$(review_finding_class_key "$zh_a")" != "$(review_finding_class_key "$zh_b")" ]] || fail 'findings in different files share one class key'
+[[ "$(review_finding_class_key "$zh_a")" == "$(review_finding_class_key "$zh_a")" ]] || fail 'the derived class key is not stable'
+mixed_a='{"id":"M1","severity":"P1","file":"src/mixed-a.ts","line":7,"rule":"Defect","status":"open","summary":"写入 null 判空"}'
+mixed_b='{"id":"M2","severity":"P1","file":"src/mixed-b.ts","line":7,"rule":"Defect","status":"open","summary":"读取 null 判空"}'
+[[ "$(review_finding_class_key "$mixed_a")" == finding-* ]] || fail 'a mixed-language finding did not get a derived class key'
+[[ "$(review_finding_class_key "$mixed_a")" != "$(review_finding_class_key "$mixed_b")" ]] || fail 'findings in different files share one class key'
+empty_s='{"id":"E1","severity":"P1","file":"src/empty.ts","line":1,"rule":"Defect","status":"open","summary":""}'
+[[ "$(review_finding_class_key "$empty_s")" == finding-* ]] || fail 'an empty summary prevented a location-based class key'
 [[ "$(review_finding_class_key '{"id":"E2","severity":"P1","rule":"Defect","class":"null-guard","summary":""}')" == null-guard ]] || fail 'a reviewer class was dropped for an empty summary'
 recur_findings="[$recur_finding,{\"id\":\"F5\",\"severity\":\"P2\",\"rule\":\"Defect\",\"status\":\"open\",\"summary\":\"Minor naming nit.\"}]"
 recur_state="$tmp/recur/state.json"
@@ -97,18 +103,18 @@ EOF
 chmod +x "$recur_upsert"
 review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-a || fail 'first sighting failed'
 [[ ! -s "$recur_log" ]] || fail 'a first sighting opened a rule ticket'
-[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$recur_state")" == 1 ]] || fail 'first sighting was not counted'
+[[ "$(jq -r --arg key "$recur_key" '.[$key]' "$recur_state")" == 1 ]] || fail 'first sighting was not counted'
 review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-b || fail 'second sighting failed'
 [[ "$(wc -l <"$recur_log")" == 1 ]] || fail 'second sighting did not open exactly one rule ticket'
-grep -q -- '--class review-defect-null-guard-missing-on-the-write' "$recur_log" || fail 'rule ticket class was not the repeated class'
+grep -q -- "--class review-$recur_key" "$recur_log" || fail 'rule ticket class was not the repeated class'
 review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-c || fail 'third sighting failed'
-[[ "$(grep -c -- '--class review-defect-null-guard-missing-on-the-write' "$recur_log")" == 2 ]] || fail 'a third sighting did not add to the existing ticket'
-[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$recur_state")" == 3 ]] || fail 'third sighting was not counted'
+[[ "$(grep -c -- "--class review-$recur_key" "$recur_log")" == 2 ]] || fail 'a third sighting did not add to the existing ticket'
+[[ "$(jq -r --arg key "$recur_key" '.[$key]' "$recur_state")" == 3 ]] || fail 'third sighting was not counted'
 [[ "$(jq -r 'keys|length' "$recur_state")" == 1 ]] || fail 'a non-blocking finding was counted'
 touch "$tmp/recur/fail"
 review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-d || fail 'first sighting of the fresh state failed'
 if review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-e; then fail 'a failed rule ticket write reported success'; fi
-[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$tmp/recur/fresh.json")" == 1 ]] || fail 'a failed rule ticket write was counted'
+[[ "$(jq -r --arg key "$recur_key" '.[$key]' "$tmp/recur/fresh.json")" == 1 ]] || fail 'a failed rule ticket write was counted'
 rm -f "$tmp/recur/fail"
 review_findings_record_classes "$recur_findings" "$tmp/recur/fresh.json" "$recur_upsert" unit-f || fail 'retry after a failed write did not open the ticket'
 [[ "$(wc -l <"$recur_log")" == 3 ]] || fail 'retry after a failed write did not open exactly one ticket'
@@ -117,15 +123,16 @@ grep -q unit-a "$recur_log.body" && grep -q unit-b "$recur_log.body" && grep -qi
 
 review_findings_record_classes "[$zh_a,$zh_b]" "$tmp/recur/zh.json" "$recur_upsert" unit-g || fail 'Chinese-only findings did not record'
 [[ "$(jq -r 'keys|length' "$tmp/recur/zh.json")" == 2 ]] || fail 'distinct Chinese-only findings were counted as one class'
+empty_key="$(review_finding_class_key "$empty_s")"
 review_findings_record_classes "[$empty_s,$empty_s]" "$tmp/recur/empty.json" "$recur_upsert" unit-h || fail 'empty-summary findings failed to record'
-[[ "$(jq -r 'keys|length' "$tmp/recur/empty.json")" == 0 ]] || fail 'empty-summary findings were counted'
+[[ "$(jq -r --arg key "$empty_key" '.[$key]' "$tmp/recur/empty.json")" == 1 ]] || fail 'an empty summary prevented a location-based class from being counted'
 review_findings_record_classes "[$mixed_a,$mixed_b]" "$tmp/recur/mixed.json" "$recur_upsert" unit-i || fail 'mixed-language findings failed to record'
 [[ "$(jq -r 'keys|length' "$tmp/recur/mixed.json")" == 2 ]] || fail 'distinct mixed-language findings were counted as one class'
 
 dup_state="$tmp/recur/dup.json"
 review_findings_record_classes "$recur_findings" "$dup_state" "$recur_upsert" unit-a || fail 'a unit recorded twice failed'
 review_findings_record_classes "$recur_findings" "$dup_state" "$recur_upsert" unit-a || fail 'a rereview of one unit failed'
-[[ "$(jq -r '.["defect-null-guard-missing-on-the-write"]' "$dup_state")" == 1 ]] || fail 'a rereview of one unit was counted twice'
+[[ "$(jq -r --arg key "$recur_key" '.[$key]' "$dup_state")" == 1 ]] || fail 'a rereview of one unit was counted twice'
 
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 

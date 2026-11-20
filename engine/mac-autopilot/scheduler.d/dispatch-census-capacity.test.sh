@@ -17,6 +17,7 @@ printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+ticket_budget_reason_real="$(declare -f ticket_budget_reason)"
 
 LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
 UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
@@ -332,7 +333,7 @@ main_sha=4444444444444444444444444444444444444444
 main_red_failed_checks() { printf '["Pipeline suites"]\n'; }
 tick_pr_head() { printf '%s\n' "$head_one"; }
 red_check_history() { red_history 'Pipeline suites' 'Pipeline suites'; }
-jq -n --argjson h "$(red_check_history | jq -c 'map(.stage = "ci-test-red")')" --arg sha "$main_sha" \
+jq -n --argjson h "$(red_check_history | jq -c 'map(if .stage == "self-check-red" then .stage = "ci-test-red" else . end)')" --arg sha "$main_sha" \
   '{units:[{id:"issue-4917",issue:4917,pr:517,stage:"repair-pending",branch:"agent/issue-4917",lane:"pr",title:"fixture stop-loss",review_report:"review-fixture.md",history:$h},
     {id:"main-red-444444444",main_red:true,ci_sha:$sha,stage:"supervisor-review",history:[]}]}' > "$UNITS"
 stop_loss_calls=0; : > "$LOG"; SECONDS=0
@@ -424,6 +425,35 @@ ticket_budget_reason() { printf 'wall 300min of 240min after 3 rounds\n'; }
 stop_loss_case issue-4929 "[$rework]" 529 repair-pending
 [[ "$stop_loss_calls" == 1 && "$(fresh_events issue-4929 | grep -c "$fresh_prefix")" == 0 ]] || fail "a wall-budget stop-loss was requeued by the scheduler (calls=$stop_loss_calls)"
 ticket_budget_reason() { printf 'rounds 3 of 3\n'; }
+
+# Per-class counts survive scheduler fresh-signal requeues and reset at the next real ruling.
+alternating_failure_history() { # first stage, number of alternating failure rounds
+  jq -cn --arg first "$1" --arg prefix "$STOP_LOSS_FRESH_PREFIX" --argjson rounds "$2" '
+    [range(0; $rounds) as $i
+      | (if (($i % 2 == 0) == ($first == "merge-conflict")) then "merge-conflict" else "ci-test-red" end) as $signal
+      | (["alpha","beta","gamma","delta","epsilon"][$i]) as $label
+      | {stage:"write-start",work_type:"repair"},
+        {stage:$signal,result:($signal + " " + $label)},
+        (if $i < ($rounds - 1) then {stage:"supervisor-requeue",result:($prefix + $signal)} else empty end)
+    ]'
+}
+ticket_budget_stub="$(declare -f ticket_budget_reason)"
+eval "$ticket_budget_reason_real"
+TICKET_ROUND_BUDGET=3
+history="$(alternating_failure_history merge-conflict 4)"
+unit="$(jq -cn --argjson history "$history" '{id:"issue-4951",stage:"repair-pending",history:$history}')"
+[[ -z "$(ticket_budget_reason "$unit")" ]] || fail 'two conflicts and two test-red rounds reached the three-round per-type bound'
+history="$(alternating_failure_history merge-conflict 5)"
+unit="$(jq -cn --argjson history "$history" '{id:"issue-4952",stage:"repair-pending",history:$history}')"
+[[ "$(ticket_budget_reason "$unit")" == 'merge-conflict rounds 3 of 3' ]] || fail 'alternating conflict/test-red rounds did not hit the conflict bound'
+[[ "$(stop_loss_same_failure "$unit")" == 'merge-conflict rounds 3 of 3' ]] || fail 'the conflict bound did not enter the stop-loss route'
+stop_loss_case issue-4952 "$history" '' repair-pending
+[[ "$stop_loss_calls" == 0 && "$(case_stage issue-4952)" == closed ]] || fail "the alternating failure loop was not stopped at its bound (calls=$stop_loss_calls stage=$(case_stage issue-4952))"
+history="$(alternating_failure_history ci-test-red 5)"
+unit="$(jq -cn --argjson history "$history" '{id:"issue-4953",stage:"repair-pending",history:$history}')"
+[[ "$(ticket_budget_reason "$unit")" == 'test-red rounds 3 of 3' ]] || fail 'the test-red bound was not counted separately'
+eval "$ticket_budget_stub"
+
 # Delivery rate: under 50% on the scorecard (the last 6 decided outcomes within 7 days; null below 6) sends fresh signals back to the arbiter; 50% or null requeues.
 fresh_rate() { printf '{"metrics":[{"id":"supervisor.fresh_requeue_delivery_24h","value":%s}]}\n' "$1" > "$MAC_AUTOPILOT_RUNTIME_DIR/node-health.json"; }
 fresh_rate 33.3
