@@ -37,6 +37,7 @@ N="${ARGS[0]:?usage: run-advisor.sh [--dry-run] <issue-number>}"; [[ "$N" =~ ^[0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+coord_enter "$N" advisor
 source "$SCRIPT_DIR/advisor-config.sh"
 advisor_provider_ready || exit 0
 MODEL_BACKOFF_REMAINING="$(issue_model_failure_backoff_remaining "$N")"
@@ -81,7 +82,7 @@ cleanup() {
   # mark it apply-failed for the scheduler's resume disposition (2026-11-04;
   # before this, only the batch leg's in-memory gate ever saw apply failures).
   # Exits BEFORE Apply are dispatch/reasoning failures, not apply failures.
-  local exit_rc=$?
+  local exit_rc="${1:-$?}"
   # unlock_fd() (lib.sh) is a safe no-op on an unset/never-acquired/already-
   # closed fd, so this runs identically whether this run got past lock
   # acquisition or not.
@@ -91,7 +92,7 @@ cleanup() {
   fi
   worktree_lifecycle_finish "$WT" "$REPO_DIR" || true
 }
-trap cleanup EXIT
+trap 'rc=$?; cleanup "$rc"; coord_exit "$rc"' EXIT
 
 # --- Advisor execution locking (2026-09-20) ---------------------------------
 # The old repo-wide mutex serialized unrelated tickets even though each live

@@ -221,10 +221,17 @@ triage_batch_unit_active() {
 
 
 stage_unit_active() {
-  local out
+  local out remote_status
   if [ "$1" = triage ] && [ "$2" = batch ]; then
     triage_batch_unit_active
     return $?
+  fi
+  if [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+    if coord_remote_active "$1" "$2"; then return 0; else remote_status=$?; fi
+    if [ "$remote_status" -ne 1 ]; then
+      echo "stage_unit_active: remote claim read failed for $1/$2 -- treating as ACTIVE (fail-closed)" >&2
+      return 0
+    fi
   fi
   if ! command -v systemctl >/dev/null 2>&1; then
     # A host without systemd (the cihost macOS CI runner, issue #3869 family) has no

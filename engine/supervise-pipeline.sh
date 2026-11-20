@@ -140,7 +140,7 @@ mark_cooldown() {
 # stage_unit_count(): unknown reads as "yes, a live unit exists", not as
 # "confirmed none".
 issue_has_live_unit() {
-  local out
+  local out remote_status; if coord_remote_active supervisor "$1"; then return 0; else remote_status=$?; fi; if [ "$remote_status" -ne 1 ]; then echo "issue_has_live_unit: remote claim read failed for #$1 -- treating as LIVE (fail-closed)" >&2; return 0; fi
   if ! out="$(systemctl --user list-units --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-*-$1.service" 2>&1)"; then
     echo "issue_has_live_unit: systemctl --user list-units could not be queried for #$1 -- treating as LIVE (fail-closed), not confirmed-idle: $out" >&2
     return 0

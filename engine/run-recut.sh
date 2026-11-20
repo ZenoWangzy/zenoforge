@@ -55,6 +55,7 @@ N="${ARGS[0]:?usage: run-recut.sh [--dry-run] <issue-number>}"; [[ "$N" =~ ^[0-9
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+coord_enter "$N" recut
 if state_read "$N" | jq -e '.pipeline_system.enabled == true' >/dev/null 2>&1; then
   pipeline_system_return_to_implement "$N" needs-recut || exit 1
   echo "run-recut: #$N is pipeline-system; returned to implementation without advisor or recut" >&2
@@ -98,7 +99,7 @@ cleanup() {
   [[ -z "$RECUT_JUDGE_PLAN_FILE" ]] || rm -f -- "$RECUT_JUDGE_PLAN_FILE"
   worktree_lifecycle_finish "$WT" "$REPO_DIR" || true
 }
-trap cleanup EXIT
+trap 'rc=$?; cleanup; coord_exit "$rc"' EXIT
 
 fail_attempt() {
   local reason="$1" should_pause="${2:-1}" call_output="${3:-}" status="${4:-}" call_provider="${5-codex}" model="${6:-unknown}" caller="${7:-unknown}"
