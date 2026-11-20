@@ -6,11 +6,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 engine="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 root="$(cd -- "$engine/.." && pwd -P)"
 # Known launch sites still without the flag, pinned as file:line, each with its tracking issue. Only shrinks.
-allowlist=(
-  engine/eval/stage-call.sh:72 # #1037 stage-call
-  engine/eval/stage-call.sh:100 # #1037 stage-call
-  engine/eval/stage-call.sh:133 # #1037 stage-call
-)
+allowlist=()
 # worker-command.sh adds the flag to codex_config_args once; every codex_config_args launch in that file inherits it.
 helper_line='codex_config_args+=("${CODEX_PLUGINS_OFF_ARGS[@]}")'
 fail() { printf 'codex-plugins-off-lint.test.sh: %s\n' "$*" >&2; exit 1; }

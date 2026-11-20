@@ -264,7 +264,7 @@ printf 'ACTION: requeue\\n' > "$out"
     writeFileSync(join(workerScratch, 'luna/model-not-found.cache'), `gpt-6.1-terra\t${Math.floor(Date.now() / 1000) + 86400}\n`);
     assert.match(run(cachedArtifact), /^ACTION: requeue/);
     const cachedCall = readFileSync(calls, 'utf8').split('\n').at(-2);
-    assert.match(cachedCall, /exec -p terra -m gpt-6-luna -c model_reasoning_effort=max/);
+    assert.match(cachedCall, /exec -p terra -c features.plugins=false -m gpt-6-luna -c model_reasoning_effort=max/);
     assert.equal(readFileSync(join(cachedArtifact, 'identity.txt'), 'utf8').trim(), 'codex:gpt-6-luna:max');
     assert.match(readFileSync(join(cachedArtifact, 'worker.log'), 'utf8'), /model-not-found cache swap eval-supervisor profile=terra from=gpt-6\.1-terra to=gpt-6-luna effort=max/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
