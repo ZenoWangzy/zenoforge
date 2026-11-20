@@ -1,0 +1,3 @@
+{
+  "engine/mac-autopilot/scheduler.d/intake-judge-station.sh": ["engine/mac-autopilot/intake-judge-station.test.sh"]
+}

@@ -48,6 +48,7 @@ flock -u 9
 case "$JUDGE_MODE" in
   apply) printf 'intake-priority: applied issue=#%s priority=normal route=none-fits\n' "$number" ;;
   fail) printf 'intake-priority: answer not adopted for issue #%s reason=credits-exhausted\n' "$number" ;;
+  defer) printf 'intake-priority: deferred issue=#%s reason=claude-held\n' "$number"; exit 75 ;;
   skip) echo 'intake-priority: skipped (missing-typesafe-key)' ;;
   *) exit 2 ;;
 esac
@@ -114,6 +115,19 @@ grep -Fq -- '--label ready-for-agent' "$QUERY_CALLS" || fail 'the station did no
 ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass || fail 'the cached follow-up pass failed'
 [[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2,3,4,5,6' ]] || fail "the next pass repeated a judge or skipped candidates: $(cat "$JUDGE_CALLS")"
 [[ "$(wc -l < "$QUERY_CALLS" | tr -d ' ')" == 1 ]] || fail 'the station rescanned candidates before its snapshot expired'
+
+# A held-provider deferral neither stamps nor consumes the snapshot row; the next pass retries it.
+reset; JUDGE_MODE=defer
+ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the held-provider pass failed'
+[[ "$(cat "$JUDGE_CALLS")" == 1 ]] || fail 'the held-provider pass did not judge its oldest candidate'
+[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail 'the held-provider candidate received a cooldown stamp'
+jq -e '[.rows[].number] | index(1) != null' "$A/.intake-judge-candidates.json" >/dev/null \
+  || fail 'the held-provider candidate was consumed'
+JUDGE_MODE=apply
+ZF_INTAKE_JUDGE_PER_PASS=1 ZF_INTAKE_JUDGE_PARALLEL=1 intake_judge_station_pass || fail 'the post-hold retry pass failed'
+[[ "$(cat "$JUDGE_CALLS")" == $'1\n1' ]] || fail 'the next pass did not retry the held-provider candidate'
+jq -e '[.rows[].number] | index(1) == null' "$A/.intake-judge-candidates.json" >/dev/null \
+  || fail 'the successful retry did not consume its candidate'
 
 # A live claim excludes that issue; the remaining oldest issues still run.
 reset

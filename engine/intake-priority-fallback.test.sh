@@ -46,6 +46,7 @@ cat > "$test_root/bin/claude" <<'STUB'
 printf 'called\n' >> "$FALLBACK_CLAUDE_LOG"
 printf '%s\n' "$@" > "$FALLBACK_CLAUDE_ARGS"
 cat > /dev/null
+[[ "${FALLBACK_CLAUDE_FAIL:-false}" != true ]] || exit 1
 jq -cn --arg result "$(cat "$FALLBACK_CLAUDE_REPLY")" '{type:"result",is_error:false,result:$result}'
 STUB
 cat > "$test_root/ts-judge.sh" <<'STUB'
@@ -94,13 +95,25 @@ echo 'ok (b) answered judge calls no haiku and writes no marker'
 # (c) bad haiku JSON -> no label, rc 0.
 run_judge_apply fallback 'not json at all' > "$test_root/c.out" 2>&1 || fail "(c) apply rc non-zero: $(cat "$test_root/c.out")"
 [[ ! -s "$FALLBACK_GH_WRITES" ]] || fail "(c) label written from bad haiku output: $(cat "$FALLBACK_GH_WRITES")"
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=bad-answer' "$test_root/c.out" || fail '(c) bad haiku was not logged'
 echo 'ok (c) bad haiku output writes no label and exits 0'
+
+# (c2) a failed Claude call is logged and deferred with rc 75.
+export FALLBACK_CLAUDE_FAIL=true
+rc=0
+bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$test_root/issue.json" --dry-stub > "$test_root/c2.out" 2>&1 || rc=$?
+unset FALLBACK_CLAUDE_FAIL
+[[ "$rc" == 75 ]] || fail "(c2) a failed Claude call returned rc=$rc: $(cat "$test_root/c2.out")"
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=call-failed' "$test_root/c2.out" || fail '(c2) call failure was not logged'
+grep -Fq 'intake-priority: deferred issue=#9101 reason=call-failed' "$test_root/c2.out" || fail '(c2) call failure did not defer'
+echo 'ok (c2) a failed Claude call is logged and deferred with rc 75'
 
 # (d) fallback_model null -> haiku is not called.
 jq -n '{intake_priority:{enabled:true,fallback_model:null}}' > "$ZF_CONFIG_ROOT/night.json"
 run_judge_apply fallback '{"priority":"high","route":null}' > "$test_root/d.out" 2>&1 || fail "(d) apply failed: $(cat "$test_root/d.out")"
 [[ ! -s "$FALLBACK_CLAUDE_LOG" ]] || fail "(d) haiku called with fallback_model null"
 [[ ! -s "$FALLBACK_GH_WRITES" ]] || fail "(d) label written with fallback_model null"
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=no-fallback-model' "$test_root/d.out" || fail '(d) missing fallback model was not logged'
 echo 'ok (d) fallback_model null skips haiku and writes no label'
 
 # (e) a real TypeSafe answer on an issue carrying the marker removes the marker through the same DELETE path.
@@ -195,7 +208,32 @@ grep -Fq '9501 intake priority label not applied' "$A/intake-skip-noted.tsv" || 
 ! grep -Fq 'intake skip issue' "$LOG" || fail "(j) non-applied judge was logged as a skipped issue: $(cat "$LOG")"
 echo 'ok (j) an issue without an applied label is not judged again within six hours'
 
-# (k) outcomes that did not reach a judge do not get a cooldown stamp or skip log.
+# (k) TypeSafe credits exhaustion plus a held Claude provider defers and keeps the station candidate retryable.
+jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
+jq -n --argjson reset "$(( $(date +%s) + 3600 ))" '{week_pct:95,week_reset:$reset}' > "$CLAUDE_QUOTA_SNAPSHOT_FILE"
+printf '%s\n' fallback > "$FALLBACK_JUDGE_MODE"
+: > "$FALLBACK_CLAUDE_LOG"
+rc=0
+bash "$SCRIPT_DIR/intake-priority.sh" triage 9101 ready-for-agent "$REPO" < "$test_root/issue.json" > "$test_root/k.out" 2>&1 || rc=$?
+[[ "$rc" == 75 ]] || fail "(k) a held Claude fallback returned rc=$rc: $(cat "$test_root/k.out")"
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=claude-held' "$test_root/k.out" \
+  || fail "(k) the held fallback reason was missing: $(cat "$test_root/k.out")"
+grep -Fq 'intake-priority: deferred issue=#9101 reason=claude-held' "$test_root/k.out" \
+  || fail "(k) the deferral line was missing: $(cat "$test_root/k.out")"
+[[ ! -s "$FALLBACK_CLAUDE_LOG" ]] || fail '(k) Claude ran while its provider was held'
+export ZF_INTAKE_PRIORITY_SCRIPT="$SCRIPT_DIR/intake-priority.sh"
+CONSUMED_CANDIDATES=0
+intake_judge_station_consume_candidate() { CONSUMED_CANDIDATES=$((CONSUMED_CANDIDATES + 1)); }
+rm -f "$A/intake-skip-noted.tsv"
+intake_priority_judge_issue "$(cat "$test_root/issue.json")" 9101 "$REPO" || fail '(k) the scheduler rejected a held-provider deferral'
+[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(k) the held-provider deferral was cooldown-stamped'
+[[ "$CONSUMED_CANDIDATES" == 0 ]] || fail '(k) the held-provider candidate was consumed'
+grep -Fq 'intake-priority: deferred issue=#9101 reason=claude-held' "$LOG" || fail '(k) scheduler output lost the deferral line'
+rm -f "$CLAUDE_QUOTA_SNAPSHOT_FILE"
+unset -f intake_judge_station_consume_candidate
+echo 'ok (k) a Claude hold exits 75, is not stamped, and leaves its candidate retryable'
+
+# (l) outcomes that did not reach a judge do not get a cooldown stamp or skip log.
 for skip_reason in disabled missing-typesafe-key invalid-config; do
   case "$skip_reason" in
     disabled)
@@ -220,9 +258,9 @@ for skip_reason in disabled missing-typesafe-key invalid-config; do
   [[ ! -s "$FALLBACK_JUDGE_LOG" ]] || fail "(k) $skip_reason reached the judge: $(cat "$FALLBACK_JUDGE_LOG")"
   ! grep -Fq 'intake skip issue' "$LOG" || fail "(k) $skip_reason logged an intake skip: $(cat "$LOG")"
 done
-echo 'ok (k) disabled, missing-key, and invalid-config outcomes are not stamped or logged as skipped issues'
+echo 'ok (l) disabled, missing-key, and invalid-config outcomes are not stamped or logged as skipped issues'
 
-# (l) rate-limited label writes are retried next pass, while ordinary label failures retain the cooldown.
+# (m) rate-limited label writes are retried next pass, while ordinary label failures retain the cooldown.
 export FALLBACK_PRIORITY_OUTPUT="$test_root/priority-output.txt" FALLBACK_PRIORITY_RC=0
 cat > "$test_root/failed-priority.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -233,18 +271,18 @@ chmod +x "$test_root/failed-priority.sh"
 export ZF_INTAKE_PRIORITY_SCRIPT="$test_root/failed-priority.sh"
 LOG="$test_root/priority-backoff.log"
 printf 'intake-priority: label update failed for issue #9601\ngh: rest primary rate limit exhausted; shared backoff until epoch=1794902188\n' > "$FALLBACK_PRIORITY_OUTPUT"
-intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(l) rate-limited label failure returned non-zero'
-[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(l) rate-limited label failure was stamped'
+intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(m) rate-limited label failure returned non-zero'
+[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(m) rate-limited label failure was stamped'
 printf 'intake-priority: label update failed for issue #9601\n' > "$FALLBACK_PRIORITY_OUTPUT"
-intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(l) ordinary label failure returned non-zero'
-grep -Fq '9601 intake priority label not applied' "$A/intake-skip-noted.tsv" || fail '(l) ordinary label failure was not stamped'
+intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(m) ordinary label failure returned non-zero'
+grep -Fq '9601 intake priority label not applied' "$A/intake-skip-noted.tsv" || fail '(m) ordinary label failure was not stamped'
 rm -f -- "$A/intake-skip-noted.tsv"
 FALLBACK_PRIORITY_RC=75
-intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(l) rc 75 label failure returned non-zero'
-[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(l) rc 75 label failure was stamped'
+intake_priority_judge_issue '{"number":9601}' 9601 "$REPO" || fail '(m) rc 75 label failure returned non-zero'
+[[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(m) rc 75 label failure was stamped'
 echo 'ok (l) rate-limited label failures are unstamped; ordinary label failures retain the cooldown'
 
-# (m) the triage roadmap tree read is bounded at 180 s, not the 60 s default that the live full-tree read overran.
+# (n) the triage roadmap tree read is bounded at 180 s, not the 60 s default that the live full-tree read overran.
 export FALLBACK_TIMEOUT_LOG="$test_root/timeout-calls.log" FALLBACK_REAL_TIMEOUT="$(command -v timeout)"
 cat > "$test_root/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
