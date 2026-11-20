@@ -61,6 +61,13 @@ def _worker_event(row, units_by_id, host):
         "complete": usage is not None and usage.cached is not None,
     }
     unit = {"family": "unit-loop", "stage": row["phase"], "key": row["unit"]}
+    if row["phase"] == "repair":
+        history = (units_by_id.get(row["unit"]) or {}).get("history") or []
+        repair_start = next((entry for entry in reversed(history)
+                             if entry.get("stage") == "write-start"
+                             and entry.get("work_type") == "repair"
+                             and entry.get("attempt") == row["log"]), {})
+        unit["trigger"] = repair_start.get("trigger") or "unknown"
     if row["backend"]:
         unit["backend"] = row["backend"]
     event_id = f"{host}:unit-loop:{row['log']}:unit-end"
