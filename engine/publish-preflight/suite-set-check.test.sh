@@ -33,7 +33,7 @@ cp "$t/base/engine/missing.test.sh" "$t/repo/packages/missing.test.sh" && git -C
 rc=0; out=$(run 2>&1) || rc=$?
 [[ $rc == 1 ]] && grep -q 'LOST baseline suite: missing.test.sh' <<<"$out" || { echo "FAIL: packages copy preserved baseline: $out"; exit 1; }
 git -C "$t/repo" mv packages/missing.test.sh .zenoforge/systemd/missing.test.sh && git -C "$t/repo" commit -qm systemd
-run | grep -q 'OK resolvable == moved (1 suites' || { echo "FAIL: systemd-dir suite not accepted"; exit 1; }
+run | grep -q 'OK resolvable == moved (2 suites' || { echo "FAIL: systemd-dir suite not accepted"; exit 1; }
 git -C "$t/repo" mv .zenoforge/systemd/missing.test.sh scripts/checks/missing.test.sh && git -C "$t/repo" commit -qm restore
 run | grep -q 'OK resolvable == moved (2 suites' || { echo "FAIL: suite outside configured roots not accepted"; exit 1; }
 echo "suite-set-check.test.sh: PASS"
