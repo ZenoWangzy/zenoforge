@@ -46,6 +46,7 @@ cat > "$test_root/bin/claude" <<'STUB'
 printf 'called\n' >> "$FALLBACK_CLAUDE_LOG"
 printf '%s\n' "$@" > "$FALLBACK_CLAUDE_ARGS"
 cat > /dev/null
+[[ "${FALLBACK_CLAUDE_FAIL:-false}" != true ]] || exit 1
 jq -cn --arg result "$(cat "$FALLBACK_CLAUDE_REPLY")" '{type:"result",is_error:false,result:$result}'
 STUB
 cat > "$test_root/ts-judge.sh" <<'STUB'
@@ -94,13 +95,25 @@ echo 'ok (b) answered judge calls no haiku and writes no marker'
 # (c) bad haiku JSON -> no label, rc 0.
 run_judge_apply fallback 'not json at all' > "$test_root/c.out" 2>&1 || fail "(c) apply rc non-zero: $(cat "$test_root/c.out")"
 [[ ! -s "$FALLBACK_GH_WRITES" ]] || fail "(c) label written from bad haiku output: $(cat "$FALLBACK_GH_WRITES")"
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=bad-answer' "$test_root/c.out" || fail '(c) bad haiku was not logged'
 echo 'ok (c) bad haiku output writes no label and exits 0'
+
+# (c2) a failed Claude call is logged and deferred with rc 75.
+export FALLBACK_CLAUDE_FAIL=true
+rc=0
+bash "$SCRIPT_DIR/intake-priority.sh" judge --repo fixture/repo --issue-file "$test_root/issue.json" --dry-stub > "$test_root/c2.out" 2>&1 || rc=$?
+unset FALLBACK_CLAUDE_FAIL
+[[ "$rc" == 75 ]] || fail "(c2) a failed Claude call returned rc=$rc: $(cat "$test_root/c2.out")"
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=call-failed' "$test_root/c2.out" || fail '(c2) call failure was not logged'
+grep -Fq 'intake-priority: deferred issue=#9101 reason=call-failed' "$test_root/c2.out" || fail '(c2) call failure did not defer'
+echo 'ok (c2) a failed Claude call is logged and deferred with rc 75'
 
 # (d) fallback_model null -> haiku is not called.
 jq -n '{intake_priority:{enabled:true,fallback_model:null}}' > "$ZF_CONFIG_ROOT/night.json"
 run_judge_apply fallback '{"priority":"high","route":null}' > "$test_root/d.out" 2>&1 || fail "(d) apply failed: $(cat "$test_root/d.out")"
 [[ ! -s "$FALLBACK_CLAUDE_LOG" ]] || fail "(d) haiku called with fallback_model null"
 [[ ! -s "$FALLBACK_GH_WRITES" ]] || fail "(d) label written with fallback_model null"
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=no-fallback-model' "$test_root/d.out" || fail '(d) missing fallback model was not logged'
 echo 'ok (d) fallback_model null skips haiku and writes no label'
 
 # (e) a real TypeSafe answer on an issue carrying the marker removes the marker through the same DELETE path.

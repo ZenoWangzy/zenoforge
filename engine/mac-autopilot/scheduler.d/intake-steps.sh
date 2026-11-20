@@ -119,7 +119,7 @@ intake_priority_open_unlabelled_cooldown() { # issue number -> 0 while the exist
 }
 intake_priority_judge_issue() { # issue-json number repo; preserve the tick's call and #1206 stamp rules
   local issue="$1" number="$2" repo="$3" output priority_rc=0 priority_script="${ZF_INTAKE_PRIORITY_SCRIPT:-$HERE/../intake-priority.sh}"
-  INTAKE_PRIORITY_JUDGE_OUTPUT="" INTAKE_PRIORITY_JUDGE_APPLIED=false INTAKE_PRIORITY_JUDGE_FALLBACK=false
+  INTAKE_PRIORITY_JUDGE_OUTPUT="" INTAKE_PRIORITY_JUDGE_APPLIED=false INTAKE_PRIORITY_JUDGE_FALLBACK=false INTAKE_PRIORITY_JUDGE_DEFERRED=false
   output="$(printf '%s\n' "$issue" | bash "$priority_script" triage "$number" ready-for-agent "$repo" 2>&1)" || priority_rc=$?
   INTAKE_PRIORITY_JUDGE_OUTPUT="$output"
   [[ -z "$output" ]] || printf '%s\n' "$output" >>"$LOG"
@@ -128,6 +128,10 @@ intake_priority_judge_issue() { # issue-json number repo; preserve the tick's ca
       if declare -F intake_judge_station_consume_candidate >/dev/null; then intake_judge_station_consume_candidate "$number" || return $?; fi
       return 0 ;;
   esac
+  if (( priority_rc == 75 )) || grep -Fq "intake-priority: deferred issue=#$number " <<<"$output"; then
+    INTAKE_PRIORITY_JUDGE_DEFERRED=true
+    return 0
+  fi
   if grep -Fq "intake-priority: applied issue=#$number " <<<"$output"; then
     INTAKE_PRIORITY_JUDGE_APPLIED=true
   elif ! grep -Fq 'intake-priority: label update failed' <<<"$output" \
@@ -159,6 +163,10 @@ intake_priority_open_unlabelled_candidate() {
   fi
   intake_priority_judge_issue "$issue" "$number" "$repo" || judge_rc=$?
   if declare -F intake_judge_claim_end >/dev/null; then intake_judge_claim_end; fi
+  if [[ "$INTAKE_PRIORITY_JUDGE_DEFERRED" == true ]]; then
+    intake_judges_deferred=$((intake_judges_deferred + 1))
+    return 0
+  fi
   return "$judge_rc"
 }
 intake_priority_open_unlabelled_candidates() { # intake start budget; stdin is the deduplicated issue stream
