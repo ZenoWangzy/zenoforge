@@ -1,10 +1,6 @@
-#!/usr/bin/env bash
-# PATH shim logic for pnpm, npm and corepack: each is a tiny wrapper that execs `guard <tool> args` (no symlinks: npm pack drops them).
-# Refuses an install-type command when a node_modules in the work tree is a symlink or resolves outside it.
-# 2026-11-05: two review workers linked a PR worktree's node_modules to the shared deployment checkout, then ran
-# `pnpm install` there; pnpm rewrote the checkout's modules dir (virtualStoreDir, xlsx links) to the worktree's
-# paths, the worktree was later deleted, and 143 links dangled until release acceptance held.
-# shortcut: matches the first positional word only, depth-3 node_modules only; widen if an install gets past this.
+#!/bin/bash
+# PATH shim logic for pnpm, npm, corepack and test commands. Each wrapper execs `guard <tool> args`.
+# Refuses unsafe installs and whole-suite tests in luna workers; configured tests run through the target test host.
 set -uo pipefail
 self=$1; shift
 dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
@@ -12,8 +8,288 @@ rest=() ; IFS=: read -ra parts <<<"$PATH"
 for p in "${parts[@]}"; do [[ $p == "$dir" || -z $p ]] || rest+=("$p"); done
 PATH=$(IFS=:; echo "${rest[*]}"); export PATH
 real=$(command -v "$self") || { echo "install-guard: no real $self on PATH" >&2; exit 127; }
-tool=$self args=("$@")
-if [[ $self == corepack && ${1:-} =~ ^(pnpm|npm|yarn)$ ]]; then tool=$1; args=("${@:2}"); fi
+original_args=("$@") tool=$self args=("$@")
+if [[ $self == corepack && ${1:-} =~ ^(pnpm|npm|npx)$ ]]; then tool=$1; args=("${@:2}"); fi
+
+is_test_file() {
+  local value=${1:-}
+  [[ -n $value && $value != -* && $value != *'*'* && $value != *'?'* && $value != *'['* ]] || return 1
+  case $value in
+    *.test.ts|*.test.tsx|*.spec.ts|*.test.mjs|*.test.js) return 0 ;;
+    *.test.sh) [[ -f $value ]] && return 0 ;;
+  esac
+  [[ -f $value ]]
+}
+
+has_test_file() {
+  local -a values=("$@")
+  local i=0 value
+  while (( i < ${#values[@]} )); do
+    value=${values[$i]}
+    case $value in
+      --config|-c|--root|--project|--environment|--pool|--reporter|--outputFile|--testTimeout|--hookTimeout|--setupFiles|--exclude|--include|--require|-r|--loader|--import|--test-reporter|--test-name-pattern)
+        i=$((i + 2)); continue ;;
+      --) i=$((i + 1)); continue ;;
+      -*) i=$((i + 1)); continue ;;
+    esac
+    is_test_file "$value" && return 0
+    i=$((i + 1))
+  done
+  return 1
+}
+
+vitest_has_selector() {
+  local -a values=("$@")
+  local i=0 value
+  while (( i < ${#values[@]} )); do
+    value=${values[$i]}
+    case $value in
+      --changed) return 0 ;;
+      --related)
+        i=$((i + 1))
+        while (( i < ${#values[@]} )) && [[ ${values[$i]} != -* ]]; do
+          is_test_file "${values[$i]}" && return 0
+          i=$((i + 1))
+        done
+        continue ;;
+      --related=*) is_test_file "${value#*=}" && return 0 ;;
+      --config|-c|--root|--project|--environment|--pool|--reporter|--outputFile|--testTimeout|--hookTimeout|--setupFiles|--exclude|--include|--testNamePattern|--sequence|--minWorkers|--maxWorkers|--maxConcurrency)
+        i=$((i + 2)); continue ;;
+      --*) i=$((i + 1)); continue ;;
+      -*) i=$((i + 1)); continue ;;
+      *) is_test_file "$value" && return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+test_mode='' test_args=()
+pnpm_test_command() {
+  local i=0 j arg count=${#args[@]}
+  while (( i < count )); do
+    arg=${args[$i]}
+    case $arg in
+      --filter|-F|--dir|-C|--workspace|--config|--registry|--store-dir|--virtual-store-dir|--global-dir|--global-bin-dir|--reporter|--loglevel)
+        i=$((i + 2)); continue ;;
+      --filter=*|-F?*|--dir=*|--workspace=*|--config=*|--registry=*|--store-dir=*|--virtual-store-dir=*)
+        i=$((i + 1)); continue ;;
+      -r|--recursive|-w|--workspace-root|--parallel|--stream|--silent|--aggregate-output|--no-bail)
+        i=$((i + 1)); continue ;;
+      --) i=$((i + 1)); continue ;;
+      -*) i=$((i + 1)); continue ;;
+    esac
+    case $arg in
+      test|test:*)
+        test_mode=script; test_args=("${args[@]:$((i + 1))}"); return ;;
+      run)
+        j=$((i + 1))
+        while (( j < count )) && [[ ${args[$j]} == --* || ${args[$j]} == -r ]]; do
+          case ${args[$j]} in
+            --filter|--dir|--config|--reporter) j=$((j + 2)) ;;
+            *) j=$((j + 1)) ;;
+          esac
+        done
+        if (( j < count )) && [[ ${args[$j]} == test || ${args[$j]} == test:* ]]; then
+          test_mode=script; test_args=("${args[@]:$((j + 1))}")
+        fi
+        return ;;
+      vitest)
+        j=$((i + 1)); [[ ${args[$j]:-} == run ]] && j=$((j + 1))
+        test_mode=vitest; test_args=("${args[@]:$j}"); return ;;
+      exec)
+        j=$((i + 1)); [[ ${args[$j]:-} == -- ]] && j=$((j + 1))
+        while (( j < count )) && [[ ${args[$j]} == -* ]]; do j=$((j + 1)); done
+        if [[ ${args[$j]:-} == vitest ]]; then
+          j=$((j + 1)); [[ ${args[$j]:-} == run ]] && j=$((j + 1))
+          test_mode=vitest; test_args=("${args[@]:$j}")
+        fi
+        return ;;
+      *) return ;;
+    esac
+  done
+}
+
+npm_test_command() {
+  local i=0 j arg count=${#args[@]}
+  while (( i < count )); do
+    arg=${args[$i]}
+    case $arg in
+      --prefix|--workspace|-w|--userconfig|--cache|--registry|--loglevel|--script-shell)
+        i=$((i + 2)); continue ;;
+      --prefix=*|--workspace=*|--userconfig=*|--cache=*|--registry=*|--loglevel=*)
+        i=$((i + 1)); continue ;;
+      --) i=$((i + 1)); continue ;;
+      -*) i=$((i + 1)); continue ;;
+    esac
+    case $arg in
+      test)
+        test_mode=script; test_args=("${args[@]:$((i + 1))}"); return ;;
+      run)
+        j=$((i + 1)); [[ ${args[$j]:-} == -- ]] && j=$((j + 1))
+        if [[ ${args[$j]:-} == test ]]; then
+          test_mode=script; test_args=("${args[@]:$((j + 1))}")
+        fi
+        return ;;
+      exec)
+        j=$((i + 1)); [[ ${args[$j]:-} == -- ]] && j=$((j + 1))
+        if [[ ${args[$j]:-} == vitest ]]; then
+          j=$((j + 1)); [[ ${args[$j]:-} == run ]] && j=$((j + 1))
+          test_mode=vitest; test_args=("${args[@]:$j}")
+        fi
+        return ;;
+      *) return ;;
+    esac
+  done
+}
+
+npx_test_command() {
+  local i=0 j arg count=${#args[@]}
+  while (( i < count )); do
+    arg=${args[$i]}
+    case $arg in
+      --package|-p|--call|-c|--cache|--userconfig|--registry|--node-options|--shell)
+        i=$((i + 2)); continue ;;
+      --package=*|--cache=*|--userconfig=*|--registry=*|--node-options=*|--shell=*)
+        i=$((i + 1)); continue ;;
+      --yes|-y|--no|--quiet|-q) i=$((i + 1)); continue ;;
+      --) i=$((i + 1)); break ;;
+      -*) i=$((i + 1)); continue ;;
+      *) break ;;
+    esac
+  done
+  if [[ ${args[$i]:-} == vitest ]]; then
+    j=$((i + 1)); [[ ${args[$j]:-} == run ]] && j=$((j + 1))
+    test_mode=vitest; test_args=("${args[@]:$j}")
+  fi
+}
+
+shell_script_is_test() {
+  local script=$1
+  local pnpm_test='(^|[;&|])[[:space:]]*pnpm[[:space:]]+([^;&|]*[[:space:]])?test(:[^[:space:];&|]+)?([[:space:];&|]|$)'
+  local npm_test='(^|[;&|])[[:space:]]*npm[[:space:]]+([^;&|]*[[:space:]])?test([[:space:];&|]|$)'
+  local pnpm_vitest='(^|[;&|])[[:space:]]*pnpm[[:space:]]+([^;&|]*[[:space:]])?vitest([[:space:];&|]|$)'
+  local npx_vitest='(^|[;&|])[[:space:]]*npx[[:space:]]+([^;&|]*[[:space:]])?vitest([[:space:];&|]|$)'
+  local vitest='(^|[;&|])[[:space:]]*vitest([[:space:]]|$)'
+  local node_test='(^|[;&|])[[:space:]]*node[[:space:]][^;&|]*--test([[:space:]=;|&]|$)'
+  local bash_test='(^|[;&|])[[:space:]]*(bash|sh)[[:space:]][^;&|]*\.test\.sh([[:space:];&|]|$)'
+  local standalone_test='(^|[;&|])[[:space:]]*[^[:space:];&|]*\.test\.sh([[:space:];&|]|$)'
+  [[ $script == *'*.test.sh'* ]] && return 0
+  [[ $script =~ $pnpm_test || $script =~ $npm_test || $script =~ $pnpm_vitest || \
+     $script =~ $npx_vitest || $script =~ $vitest || $script =~ $node_test || \
+     $script =~ $bash_test || $script =~ $standalone_test ]]
+}
+
+shell_script_has_selector() {
+  local script=$1 token
+  local direct_vitest='(^|[;&|])[[:space:]]*vitest[[:space:]]'
+  local wrapped_vitest='(^|[;&|])[[:space:]]*(pnpm|npm|npx)[[:space:]]+([^;&|]*[[:space:]])?vitest([[:space:];&|]|$)'
+  local -a words=()
+  if [[ $script =~ $direct_vitest || $script =~ $wrapped_vitest ]] && \
+    [[ $script =~ (^|[[:space:]])--changed([[:space:]]|$) ]]; then return 0; fi
+  read -r -a words <<<"$script"
+  for token in "${words[@]}"; do
+    token=${token%;}; token=${token%)}
+    token=${token#\"}; token=${token%\"}; token=${token#\'}; token=${token%\'}
+    is_test_file "$token" && return 0
+  done
+  return 1
+}
+
+shell_test_command() {
+  local i=0 arg cluster script_index=-1 count=${#args[@]}
+  while (( i < count )); do
+    arg=${args[$i]}
+    case $arg in
+      -c) script_index=$((i + 1)); break ;;
+      -o|-O|--init-file|--rcfile) i=$((i + 2)); continue ;;
+      --) i=$((i + 1)); break ;;
+      --*) i=$((i + 1)); continue ;;
+      -*)
+        cluster=${arg#-}
+        if [[ $cluster == *c* ]]; then script_index=$((i + 1)); break; fi
+        i=$((i + 1)); continue ;;
+      *) break ;;
+    esac
+  done
+  if (( script_index >= 0 && script_index < count )); then
+    local script=${args[$script_index]}
+    if shell_script_is_test "$script"; then test_mode=shell; test_args=("$script"); fi
+  elif (( i < count )) && [[ ${args[$i]} == *.test.sh ]]; then
+    test_mode=shell; test_args=("${args[@]:$i}")
+  fi
+}
+
+case $tool in
+  pnpm) pnpm_test_command ;;
+  npm) npm_test_command ;;
+  npx) npx_test_command ;;
+  vitest)
+    if [[ ! " ${args[*]} " =~ [[:space:]](--help|-h|--version)([[:space:]]|$) ]]; then
+      test_mode=vitest; test_args=("${args[@]}"); [[ ${test_args[0]:-} == run ]] && test_args=("${test_args[@]:1}")
+    fi ;;
+  node)
+    for i in "${!args[@]}"; do
+      if [[ ${args[$i]} == --test ]]; then test_mode=node; test_args=("${args[@]:$((i + 1))}"); break; fi
+    done ;;
+  bash) shell_test_command ;;
+esac
+if [[ $test_mode == vitest && " ${test_args[*]} " =~ [[:space:]](--help|-h|--version)([[:space:]]|$) ]]; then test_mode=''; fi
+
+has_selector=0
+case $test_mode in
+  vitest) vitest_has_selector "${test_args[@]}" && has_selector=1 ;;
+  shell) shell_script_has_selector "${test_args[0]:-}" && has_selector=1 ;;
+  node|script) has_test_file "${test_args[@]}" && has_selector=1 ;;
+esac
+
+suite_guard_log() {
+  local status=$1 scratch_root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch} logdir=${TMPDIR:-}
+  shift
+  [[ $logdir == "$scratch_root"/tmp/* ]] || logdir="$scratch_root/tmp/unknown"
+  mkdir -p -- "$logdir" 2>/dev/null || return 0
+  { printf 'suite-guard %s command=' "$status"; printf '%q' "$self"; printf ' %q' "$@"; printf '\n'; } \
+    >>"$logdir/suite-guard.log" 2>/dev/null || true
+}
+
+if [[ -n $test_mode ]]; then
+  if (( ! has_selector )); then
+    if [[ ${ZF_ALLOW_WHOLE_SUITE:-0} == 1 ]]; then
+      suite_guard_log allowed-by-override "${original_args[@]}"
+    else
+      suite_guard_log refused "${original_args[@]}"
+      echo 'zenoforge: whole-suite test run refused for luna workers (head ruling 2026-11-20): name the test files you changed and their related tests, e.g. `pnpm vitest run path/to/x.test.ts`. CI runs the full suite.' >&2
+      exit 64
+    fi
+  fi
+  test_exec=''; runner_configured=0
+  if [[ ${ZF_TEST_EXEC+x} ]]; then
+    test_exec=$ZF_TEST_EXEC; runner_configured=1
+  else
+    source "$dir/../config.sh" >/dev/null 2>&1 || true
+    if [[ -n ${ZF_CONFIG_ROOT:-} && -f "$ZF_CONFIG_ROOT/config.json" ]] && \
+      jq -e '.engine | (type == "object") and (has("test_exec") and .test_exec != null)' \
+        "$ZF_CONFIG_ROOT/config.json" >/dev/null 2>&1; then
+      runner_configured=1
+      test_exec=$(jq -r '.engine.test_exec | if type == "string" then . else empty end' \
+        "$ZF_CONFIG_ROOT/config.json" 2>/dev/null) || test_exec=''
+    fi
+  fi
+  if (( runner_configured )); then
+    if [[ -z $test_exec ]]; then
+      echo 'zenoforge: test host unavailable (runner exit 127); not running tests locally' >&2
+      exit 127
+    fi
+    [[ $test_exec != '~/'* ]] || test_exec="${HOME:-/tmp}/${test_exec:2}"
+    "$test_exec" "$PWD" -- "$self" "${original_args[@]}"
+    rc=$?
+    if [[ $rc == 75 || $rc == 125 ]]; then
+      echo "zenoforge: test host unavailable (runner exit $rc); not running tests locally" >&2
+    fi
+    exit "$rc"
+  fi
+fi
+
 verb=''
 skip=0
 for a in "${args[@]}"; do
@@ -27,7 +303,7 @@ done
 case $tool:$verb in
   pnpm:install|pnpm:i|pnpm:add|pnpm:update|pnpm:up|pnpm:upgrade|pnpm:remove|pnpm:rm|pnpm:uninstall|pnpm:un|pnpm:dedupe|pnpm:prune|pnpm:rebuild|pnpm:fetch) ;;
   npm:install|npm:i|npm:add|npm:ci|npm:update|npm:up|npm:uninstall|npm:remove|npm:rm|npm:dedupe|npm:prune|npm:rebuild) ;;
-  *) exec "$real" "$@" ;;
+  *) exec "$real" "${original_args[@]}" ;;
 esac
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$PWD
 top=$(cd -- "$top" && pwd -P)
@@ -40,4 +316,4 @@ for nm in "$PWD"/node_modules "$top"/node_modules "$top"/*/node_modules "$top"/*
     exit 1
   fi
 done
-exec "$real" "$@"
+exec "$real" "${original_args[@]}"

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Every pipeline worker start path hands systemd-run a CPUQuota and a CPUWeight (AGENT_WORKER_CPU_QUOTA / _WEIGHT,
-# defaults 200% and 10) plus MemoryHigh=2G and TasksMax=500 (AGENT_WORKER_MEM_HIGH / _TASKS_MAX), and the scheduler scope logs the worker's wall and cpu seconds when it ends.
+# Worker scopes hand systemd-run CPUQuota and CPUWeight (AGENT_WORKER_CPU_QUOTA / _WEIGHT, defaults 200% and 10).
+# Scheduler workers use MemoryHigh=2G and TasksMax=500; luna and zc use MemoryHigh=1536M and MemoryMax=2G.
 # dispatch-codex.sh's owner unit is asserted in dispatch-codex.test.sh, which already drives that script.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
+unset LUNA_CPU_QUOTA LUNA_MEM_HIGH LUNA_MEM_MAX LUNA_PRIORITY ZC_IGNORE_HOLD
 engine="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 root="$test_env_root/worker-cpu-cap"
 fake_bin="$root/bin"; calls="$root/systemd-run.calls"
@@ -55,6 +56,11 @@ assert_mem_props() { # label memoryhigh tasksmax [nomax]
   grep -Fxq "MemoryHigh=$2" "$calls" && grep -Fxq "TasksMax=$3" "$calls" || fail "$1: expected MemoryHigh=$2 TasksMax=$3, got: $(tr '\n' ' ' < "$calls")"
   if [[ "${4:-}" == nomax ]] && grep -q '^MemoryMax=' "$calls"; then fail "$1: MemoryMax must stay unset"; fi
   printf 'PASS %s: MemoryHigh=%s TasksMax=%s%s\n' "$1" "$2" "$3" "${4:+ (no MemoryMax)}"
+}
+assert_luna_mem_props() { # label memoryhigh memorymax
+  grep -Fxq "MemoryHigh=$2" "$calls" && grep -Fxq "MemoryMax=$3" "$calls" \
+    || fail "$1: expected MemoryHigh=$2 MemoryMax=$3, got: $(tr '\n' ' ' < "$calls")"
+  printf 'PASS %s: MemoryHigh=%s MemoryMax=%s\n' "$1" "$2" "$3"
 }
 assert_inline_props() { # label quota weight: the property pair as one -p each, as bin/luna and friends pass them
   grep -Fxq "CPUQuota=$2" "$calls" && grep -Fxq "CPUWeight=$3" "$calls" || fail "$1: expected CPUQuota=$2 CPUWeight=$3, got: $(tr '\n' ' ' < "$calls")"
@@ -113,14 +119,19 @@ for backend in luna zc; do
   : > "$calls"; : > "$sctl"; rm -f "$WORKER_SCRATCH_ROOT"/luna/k1/rc "$WORKER_SCRATCH_ROOT"/zc/k1/rc
   "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_inline_props "bin/$backend default" 200% 10
-  assert_mem_props "bin/$backend default" 2G 500
+  assert_mem_props "bin/$backend default" 1536M 500
+  assert_luna_mem_props "bin/$backend default" 1536M 2G
   assert_scope_stop "bin/$backend default"
   : > "$calls"; LUNA_CPU_QUOTA=300% AGENT_WORKER_CPU_WEIGHT=7 "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_inline_props "bin/$backend LUNA_CPU_QUOTA" 300% 7
   : > "$calls"; LUNA_PRIORITY=hotfix "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_inline_props "bin/$backend hotfix" 200% 1000
-  : > "$calls"; AGENT_WORKER_MEM_HIGH=3G AGENT_WORKER_TASKS_MAX=900 "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
-  assert_mem_props "bin/$backend knobs" 3G 900
+  : > "$calls"; AGENT_WORKER_TASKS_MAX=900 "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
+  assert_mem_props "bin/$backend task knob" 1536M 900
+  assert_luna_mem_props "bin/$backend task knob" 1536M 2G
+  : > "$calls"; LUNA_MEM_HIGH=3G LUNA_MEM_MAX=5G "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
+  assert_mem_props "bin/$backend memory knobs" 3G 500
+  assert_luna_mem_props "bin/$backend memory knobs" 3G 5G
 done
 
 # A wrapper terminated after its scope starts still stops that scope on exit.
@@ -147,11 +158,13 @@ done
 # --- bin/zc honours the ZCode hold marker (bin/worker reads the same file) ---
 hold_home="$root/hold-home"; mkdir -p "$hold_home"
 echo $(( $(date +%s) + 3600 )) > "$hold_home/zcode-exhausted-until"
-rc=0; : > "$calls"; AGENT_HOME="$hold_home" "$engine/bin/zc" k1 "$root" "$root/prompt.md" >/dev/null 2>"$root/zc-hold.err" || rc=$?
+held_calls="$root/zc-held-systemd-run.calls"
+rc=0; : > "$held_calls"; SYSTEMD_RUN_CALLS="$held_calls" AGENT_HOME="$hold_home" \
+  "$engine/bin/zc" k1 "$root" "$root/prompt.md" >/dev/null 2>"$root/zc-hold.err" || rc=$?
 [[ "$rc" == 75 ]] || fail "bin/zc held: rc $rc, want 75"
 grep -Eq '^zc: ZCode held until [0-9T:-]+Z \(zcode-exhausted-until\); set ZC_IGNORE_HOLD=1 to override$' "$root/zc-hold.err" \
   || fail "bin/zc held: stderr line missing: $(cat "$root/zc-hold.err")"
-! grep -q '^BEGIN$' "$calls" || fail "bin/zc held: systemd-run was called"
+! grep -q '^BEGIN$' "$held_calls" || fail "bin/zc held: systemd-run was called: $(tr '\n' ' ' < "$held_calls")"
 printf 'PASS bin/zc held marker: rc 75, no systemd-run\n'
 : > "$calls"; ZC_IGNORE_HOLD=1 AGENT_HOME="$hold_home" "$engine/bin/zc" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
 assert_inline_props 'bin/zc ZC_IGNORE_HOLD=1' 200% 10
