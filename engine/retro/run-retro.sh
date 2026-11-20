@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unattended /retro run (slice 1): writes a candidates file only. Nothing is filed, labelled or landed.
+# Unattended /retro run: writes the candidates file, then routes kept candidates.
 set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 engine="$(cd -- "$here/.." && pwd -P)"
@@ -23,4 +23,6 @@ rc=0
 "$engine/bin/luna" "$key" "$repo" "$prompt" "$engine/prompts/retro.schema.json" || rc=$?
 raw="$root/luna/$key/last.md"
 [[ -s "$raw" ]] || { echo "run-retro: $key wrote no output (luna rc=$rc)" >&2; exit 1; }
-python3 -B "$here/retro.py" filter "$root" "$keys" "$raw" "$out_dir/$stamp.candidates.json"
+candidates="$out_dir/$stamp.candidates.json"
+python3 -B "$here/retro.py" filter "$root" "$keys" "$raw" "$candidates"
+python3 -B "$here/retro.py" publish "$root" "$repo" "$candidates"
