@@ -14,6 +14,11 @@ cat > "$tmp/work/tools/pin-vecta.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "$1" >> "$PIN_CALLS"; [[ ! -e "$PIN_RC.rate" ]] || echo 'pin-vecta: GraphQL: API rate limit already exceeded' >&2; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
 STUB
+cat > "$tmp/work/tools/pin-fail-triage.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s %s\n' "$3" "$5" >> "$TRIAGE_CALLS"
+: > "$4.pin-fail-triaged"
+STUB
 commit() { echo "$1" > "$tmp/work/f"; g -C "$tmp/work" add -A; g -C "$tmp/work" commit -qm "$1"; g -C "$tmp/work" push -q origin main; g -C "$tmp/work" rev-parse HEAD; }
 c1=$(commit one)
 g clone -q "$tmp/origin.git" "$tmp/clone"
@@ -33,7 +38,7 @@ product_commit() { echo "$1" > "$tmp/product-writer/product-state"; g -C "$tmp/p
 export ZF_AUTO_PIN_HOME=$tmp/home AGENT_HOME=$tmp/agent ZF_AUTO_PIN_CLONE=$tmp/clone ZF_AUTO_PIN_IDLE_SECS=0 ZF_AUTO_PIN_RETRY_SECS=0.2 ZF_AUTO_PIN_RATE_SECS=0.1
 export ZF_AUTO_PIN_PSI_FILE=$tmp/cpu-pressure ZF_AUTO_PIN_LOAD_WAIT_SECS=900
 printf 'some avg10=0 avg60=0 avg300=0 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
-export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc
+export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc TRIAGE_CALLS=$tmp/triage-calls
 unset ZF_AUTO_PIN_PRODUCT_FETCH_SECS
 REAL_GIT=$(command -v git); export REAL_GIT PRODUCT_FETCH_CALLS=$tmp/product-fetches AUTO_PIN_MAIN_FETCH_CALLS=$tmp/main-fetches
 mkdir -p "$tmp/bin"; : > "$PRODUCT_FETCH_CALLS" "$AUTO_PIN_MAIN_FETCH_CALLS"
@@ -49,7 +54,7 @@ fi
 exec "$REAL_GIT" "$@"
 STUB
 chmod +x "$tmp/bin/git"; PATH="$tmp/bin:$PATH"; export PATH
-mkdir -p "$ZF_AUTO_PIN_HOME/auto-pin-logs"; echo "$c1" > "$ZF_AUTO_PIN_HOME/auto-pin.last"; : > "$PIN_CALLS"
+mkdir -p "$ZF_AUTO_PIN_HOME/auto-pin-logs"; echo "$c1" > "$ZF_AUTO_PIN_HOME/auto-pin.last"; : > "$PIN_CALLS"; : > "$TRIAGE_CALLS"
 source "$repo/tools/auto-pin.sh"; set +e  # the daemon runs without -e
 last() { cat "$ZF_AUTO_PIN_HOME/auto-pin.last"; }
 wait_for_pin_calls() {
@@ -100,6 +105,8 @@ grep -q PIN-FAILED "$tmp/out" || fail 'no PIN-FAILED line'
 [[ $(last) == "$c2" ]] || fail "failed commit not skipped: $(last)"
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail "second pass did not pin main's head: $(last)"
 auto_pin_pass > /dev/null; [[ $(last) == "$c4" ]] || fail 'idle pass moved state'
+[[ $(grep -Fc "$c2 1" "$TRIAGE_CALLS") == 1 ]] || fail 'failed pin did not call triage once'
+! grep -Fq "$c4 " "$TRIAGE_CALLS" || fail 'successful pin called triage'
 ! grep -qx converge "$PIN_CALLS" || fail 'a successful pin called the VectA hook directly'
 [[ $(tr '\n' ' ' < "$PIN_CALLS") == "$c2 $c4 wrapper " ]] || fail "calls: $(tr '\n' ' ' < "$PIN_CALLS")"
 # a batch of three merges since the last pin is pinned once, at the newest (ruling zenoforge-batch-land-2026-11-08)
@@ -196,6 +203,7 @@ sleep 0.5
 kill -0 "$pass" 2>/dev/null || fail 'restarted pass retried the unchanged product head'
 ! grep -q RETRY-PRODUCT-MAIN "$tmp/restart-out" || fail 'restart retried the same product head again'
 [[ $(grep -Fc "$c_product" "$PIN_CALLS") == 2 ]] || fail 'unchanged product head caused another pin'
+[[ $(grep -Fc "$c_product 1" "$TRIAGE_CALLS") == 1 ]] || fail 'same failed head called triage again'
 c_product_next=$(commit after-product-wakeup)
 wait "$pass" || fail 'same-product-head wait did not end after engine main advanced'
 [[ $(last) == "$c_product" ]] || fail 'product-wakeup failure was not skipped when engine main advanced'

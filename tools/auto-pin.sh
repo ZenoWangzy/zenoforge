@@ -225,6 +225,7 @@ auto_pin_pass() {
         sleep "${ZF_AUTO_PIN_RATE_SECS:-300}"; return 0
       fi
     fi
+    [[ -e $log.pin-fail-triaged ]] || AGENT_HOME=$AGENT_HOME bash "$C/tools/pin-fail-triage.sh" "$C" "$AGENT_HOME/checkout" "$next" "$log" "$rc" || :
     # Fix forward: a failed pin must not stop the daemon, the next main commit carries the repair.
     while [[ ! -e $stop ]]; do
       sleep "$retry"; git -C "$C" fetch -q origin main || continue
