@@ -302,3 +302,5 @@ replay: a fresh agent gets a frozen checkout and a hidden check, the same design
 triage cases above. It was chosen over onboarding or golden-path tests and over
 docs-as-tests because those check documents, while this suite must measure what a
 no-memory agent does with the checkout it is given.
+
+A hidden check may print `{"steps":[{"id":"...","ok":false,"doc_available":true,"guard_available":false}]}` to provide per-step grader facts; an exit-only check records `expected_divergence` as an `agent-error` on failure.

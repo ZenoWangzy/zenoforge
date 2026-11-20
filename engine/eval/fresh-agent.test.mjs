@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execute } from './run-eval.mjs';
 import { validateFreshCase, classifyFailedRun } from './fresh-agent.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -40,4 +45,50 @@ test('passing run has no class, and a failed run with no failing step is agent-e
 
 test('non-boolean step facts are rejected instead of guessed', () => {
   assert.throws(() => classifyFailedRun({ passed: false, steps: [{ id: 'edit', ok: false }] }), TypeError);
+});
+
+test('fresh-agent runner gives the backend only the prompt and records pass or classified failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fresh-agent-test-'));
+  const sourceRepo = join(dir, 'repo'); mkdirSync(sourceRepo);
+  const git = (...args) => execFileSync('git', args, { cwd: sourceRepo, stdio: 'ignore' });
+  try {
+    git('init', '-q'); git('config', 'user.name', 'Eval fixture'); git('config', 'user.email', 'eval@example.invalid');
+    writeFileSync(join(sourceRepo, 'base.txt'), 'frozen\n'); git('add', '.'); git('commit', '-qm', 'frozen base');
+    const base_sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRepo, encoding: 'utf8' }).trim();
+    const stageCall = join(dir, 'fake-stage-call.sh');
+    writeFileSync(stageCall, `#!/usr/bin/env bash
+set -euo pipefail
+stage=$1; wt=$3; prompt=$4; artifact=$5; input=$6
+[[ "$stage" == fresh-agent ]]
+grep -qx 'TASK_ONLY_PASS' "$prompt" || grep -qx 'TASK_ONLY_FAIL' "$prompt"
+! grep -Eq 'hidden_check|expected_divergence|memory' "$prompt"
+grep -q '"sessionId":null' "$input"
+printf 'codex:fixture:high\\n' > "$artifact/identity.txt"
+printf '{"tokens":23}\\n' > "$artifact/usage.json"
+printf 'tokens used\\n23\\n' > "$artifact/worker.log"
+grep -q PASS "$prompt" && printf 'ready\\n' > "$wt/result.txt"
+printf 'fake output\\n'
+`, { mode: 0o755 });
+    const check = join(dir, 'check.mjs');
+    writeFileSync(check, `import { existsSync } from 'node:fs';
+const ok = existsSync('result.txt');
+console.log(JSON.stringify({ steps: [{ id: 'read-doc', ok, doc_available: false, guard_available: true }] }));
+process.exitCode = ok ? 0 : 1;
+`);
+    const run = (id, prompt) => {
+      const attemptDir = join(dir, id); mkdirSync(attemptDir);
+      return execute({ id, base_sha, prompt, hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
+        'fresh-agent', attemptDir, 'unused-policy', { sourceRepo, stageCall });
+    };
+    const passing = run('pass', 'TASK_ONLY_PASS');
+    const failing = run('fail', 'TASK_ONLY_FAIL');
+    assert.equal(passing.pass, true);
+    assert.equal(passing.class, null);
+    assert.equal(passing.first_divergence, null);
+    assert.equal(failing.pass, false);
+    assert.equal(failing.class, 'missing-doc');
+    assert.equal(failing.first_divergence, 'read-doc');
+    assert.equal(failing.calls[0].tokens, 23);
+    assert.equal(failing.calls[0].identity, 'codex:fixture:high');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

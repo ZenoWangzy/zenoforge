@@ -379,13 +379,18 @@ function cliFixture() {
   writeFileSync(outputFile, JSON.stringify(output));
   writeFileSync(join(bin, 'codex'), `#!/usr/bin/env bash
 set -euo pipefail
-output=""
-while (( $# )); do if [[ "$1" == --output-last-message ]]; then output=$2; fi; shift; done
-cat > /dev/null
+output=""; worktree=""
+while (( $# )); do
+  if [[ "$1" == --output-last-message ]]; then output=$2; shift; fi
+  if [[ "$1" == --cd ]]; then worktree=$2; shift; fi
+  shift
+done
+prompt=$(cat)
 printf 'S\n' >> ${JSON.stringify(events)}
 sleep 1
 printf 'E\n' >> ${JSON.stringify(events)}
-cp ${JSON.stringify(outputFile)} "$output"
+if [[ "$prompt" == *FIXTURE_PASS* ]]; then printf 'ready\n' > "$worktree/answer.txt"; fi
+if [[ -n "$output" ]]; then cp ${JSON.stringify(outputFile)} "$output"; fi
 printf 'tokens used\n1,234\n'
 `, { mode: 0o755 });
   // The repo's first commit gives fixture cases a real object with a tiny checkout.
@@ -425,6 +430,49 @@ test('eval default model policy uses the target .zenoforge override', () => {
     assert.equal(r.status, 0, r.stderr);
     const results = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/config-policy/results.json'), 'utf8'));
     assert.equal(results.policy.switches['roadmap-order'], policy.switches['roadmap-order']);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('fresh-agent CLI records pass, grader class, divergence, usage, and artifacts', () => {
+  const f = cliFixture();
+  try {
+    const check = join(f.dir, 'fresh-check.mjs');
+    writeFileSync(check, `import { existsSync } from 'node:fs';
+const ok = existsSync('answer.txt');
+console.log(JSON.stringify({ steps: [{ id: 'read-doc', ok, doc_available: false, guard_available: true }] }));
+process.exitCode = ok ? 0 : 1;
+`);
+    const baseSha = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').at(-1);
+    const cases = join(f.dir, 'fresh-cases.json');
+    writeFileSync(cases, JSON.stringify({ stage: 'fresh-agent', cases: [
+      { id: 'pass', base_sha: baseSha, prompt: 'FIXTURE_PASS', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
+      { id: 'fail', base_sha: baseSha, prompt: 'FIXTURE_FAIL', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
+    ] }));
+    const r = f.run(['--stage', 'fresh-agent', '--cases', cases, '--runs', '1', '--label', 'fresh']);
+    assert.equal(r.status, 0, r.stderr);
+    const rows = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/fresh/results.json'), 'utf8')).results;
+    const passing = rows.find((row) => row.caseId === 'pass');
+    const failing = rows.find((row) => row.caseId === 'fail');
+    assert.equal(passing.pass, true);
+    assert.equal(passing.class, null);
+    assert.equal(passing.first_divergence, null);
+    assert.equal(failing.pass, false);
+    assert.equal(failing.class, 'missing-doc');
+    assert.equal(failing.first_divergence, 'read-doc');
+    assert.equal(passing.tokens, 1234);
+    assert.equal(failing.calls.length, 1);
+    assert.ok(existsSync(join(failing.artifacts, 'hidden-check.log')));
+    const goldCases = join(f.dir, 'gold-cases.json');
+    writeFileSync(goldCases, JSON.stringify({ stage: 'implement', cases: [{ id: 'close-gold', expected: {
+      outcome: 'close', implementationPrefixes: ['engine/changed'], gold: { closeLine: 'OBSOLETE: measured 10', implementationPath: 'engine/changed.mjs' },
+    } }] }));
+    const eventsBeforeGold = readFileSync(f.events, 'utf8').split('\n').filter(Boolean).length;
+    const gold = f.run(['--stage', 'implement', '--cases', goldCases, '--runs', '1', '--verify-gold', '--label', 'gold']);
+    assert.equal(gold.status, 0, gold.stderr);
+    const goldRow = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/gold/results.json'), 'utf8')).results[0];
+    assert.equal(goldRow.pass, true);
+    assert.deepEqual(goldRow.calls, []);
+    assert.equal(readFileSync(f.events, 'utf8').split('\n').filter(Boolean).length, eventsBeforeGold);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 

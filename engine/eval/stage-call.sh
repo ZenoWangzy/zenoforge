@@ -87,6 +87,10 @@ case "$stage" in
       run_model_text "$wt" "$identity" 120 "$prompt" "$artifact/worker.log" "$settings"
     fi
     ;;
+  fresh-agent)
+    identity=$(implement_model_for_attempt); record_identity "$identity"
+    run_model_text "$wt" "$identity" 120 "$prompt" "$artifact/worker.log" "$settings"
+    ;;
   review)
     # Same resolution as the pipeline: a different-family reviewer or defer
     # status 75. The author's family is never an availability fallback.

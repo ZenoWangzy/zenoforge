@@ -8,13 +8,14 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
 import { gradeTriage, gradeAdvisor, gradeReview, gradeSupervisor, gradeTests, gradeImplementDecision, validateStageOutput } from './graders.mjs';
+import { classifyFailedRun, validateFreshCase } from './fresh-agent.mjs';
 import { compareResults, formatComparison, compareArms, formatArmComparison, summarizeSupervisor } from './compare.mjs';
 import { zfConfigFile } from '../pack-dir.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
 const evalHome = join(process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge'), 'eval');
-const stages = ['triage', 'advisor', 'implement', 'review', 'supervisor', 'end-to-end'];
+const stages = ['triage', 'advisor', 'implement', 'review', 'supervisor', 'end-to-end', 'fresh-agent'];
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const prompt = (name) => {
   const promptFile = zfConfigFile(`prompts/${name}.md`);
@@ -124,6 +125,7 @@ function triageSizeEstimate(c, output, sourceRepo) {
 // (the live wrappers resolve the target repository first, see engine/matt-skills.sh).
 const mattNote = (...names) => `Matt skill files for this run (the Method section names the ones to read): ${names.map((n) => `${n}=${join(repo, '.agents/skills', n, 'SKILL.md')}`).join('; ')}\n`;
 export function renderPrompt(stage, c, context = {}) {
+  if (stage === 'fresh-agent') return c.prompt;
   const scope = 'Constraints: no GitHub writes/pushes, production/cihost/host actions, credential or auth files, full process argument listings, or delegation. Run focused checks only. Never access $HOME/src/target-repo, ~/.zenoforge/checkout, or ~/.zenoforge/PAUSE.\n';
   const header = scope + `Base: ${c.baseSha}. Work from this checkout; other refs are outside this input.\nAGENT_PHASE for this run: ${c.phase ?? 3}\nGitNexus repo argument for this run: ${context.worktree ?? '.'}\nGitNexus index freshness for this run: NOT confirmed; read source.\n`;
   if (stage === 'triage') return header + mattNote('ask-matt', 'triage') + prompt('triage') + issueData(triageIssue(c))
@@ -175,7 +177,7 @@ function callStage(stage, c, wt, dir, policyFile, context = {}, stageCall = join
   mkdirSync(dir, { recursive: true });
   const promptFile = join(dir, 'prompt.md');
   const caseFile = join(dir, 'input.json');
-  writeFileSync(caseFile, JSON.stringify({ issue: c.issue, priorState: context.priorState ?? c.priorState,
+  writeFileSync(caseFile, JSON.stringify({ issue: c.issue ?? { number: 0 }, priorState: context.priorState ?? c.priorState,
     failure: context.failure ?? c.repair?.failureText ?? '', recordSession: context.recordSession ?? false,
     sessionId: context.sessionId ?? null, repairIdentity: context.repairIdentity ?? null }));
   writeFileSync(promptFile, renderPrompt(stage, c, { ...context, worktree: wt }));
@@ -189,7 +191,7 @@ function callStage(stage, c, wt, dir, policyFile, context = {}, stageCall = join
     r = command(['bash', stageCall, stage === 'advisor' && c.mode === 'batch' ? 'advisor-batch' : stage, repo, wt, promptFile, dir, caseFile], repo, {
       env: { ...process.env, GH_TOKEN: '', GITHUB_TOKEN: '', EVAL_POLICY_FILE: policyFile,
         // Stage containment uses the pipeline's supported sandbox override.
-        ZF_CODEX_SANDBOX: stage === 'implement' ? 'workspace-write' : 'read-only' },
+        ZF_CODEX_SANDBOX: ['implement', 'fresh-agent'].includes(stage) ? 'workspace-write' : 'read-only' },
     });
     if (r.status !== 75) break;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.EVAL_DEFER_WAIT_MS ?? 30_000));
@@ -260,7 +262,47 @@ export function hiddenChecks(c, diff, dir, sourceRepo = repo) {
     return { ...gradeTests(checks), setup, checks };
   } finally { removeWorktree(wt); rmSync(fixtureTmp, { recursive: true, force: true }); }
 }
+function freshAgentSteps(c, check) {
+  try {
+    // Hidden checks may emit their per-step doc/guard facts as JSON; plain checks use the declared divergence.
+    const steps = JSON.parse(check.stdout).steps;
+    if (Array.isArray(steps)) return steps;
+  } catch { /* Plain hidden checks only report their exit status. */ }
+  return [{ id: c.expected_divergence, ok: check.status === 0, doc_available: true, guard_available: true }];
+}
 export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, sourceRepo = repo, stageCall } = {}) {
+  if (stage === 'fresh-agent') {
+    let wt;
+    const calls = [];
+    const grade = (passed, steps) => classifyFailedRun({ passed, steps });
+    try {
+      wt = worktree(c.base_sha, dir, 'worker', sourceRepo);
+      const freshCase = { ...c, baseSha: c.base_sha, issue: { number: 0 }, priorState: {} };
+      let call;
+      try {
+        call = callStage(stage, freshCase, wt, join(dir, '1-fresh-agent'), policyFile, {}, stageCall);
+      } catch (error) {
+        if (error.measurement) calls.push(error.measurement);
+        const failed = grade(false, freshAgentSteps(c, { stdout: '' }));
+        return { pass: false, class: failed.class, first_divergence: failed.first_divergence,
+          failures: [error.message], calls };
+      }
+      const { output, ...measurement } = call;
+      calls.push(measurement);
+      const check = command(['bash', '-c', c.hidden_check], wt, { timeout: 180_000 });
+      const status = check.status ?? (check.error?.code === 'ETIMEDOUT' ? 124 : 1);
+      writeFileSync(join(dir, 'hidden-check.log'), `${check.stdout ?? ''}\n${check.stderr ?? ''}`);
+      const passed = status === 0;
+      const classified = grade(passed, freshAgentSteps(c, { ...check, status }));
+      captureDiff(wt, c.base_sha, join(dir, 'candidate.patch'));
+      return { pass: passed, class: classified?.class ?? null, first_divergence: classified?.first_divergence ?? null,
+        failures: passed ? [] : [`hidden check failed (${status})`], calls };
+    } catch (error) {
+      const failed = grade(false, freshAgentSteps(c, { stdout: '' }));
+      return { pass: false, class: failed.class, first_divergence: failed.first_divergence,
+        failures: [error.message], calls };
+    } finally { if (wt) removeWorktree(wt); }
+  }
   if (stage === 'supervisor') {
     const contextDir = join(dir, 'historical-context');
     const stageDir = join(dir, '1-supervisor');
@@ -442,6 +484,9 @@ function selectedBackendProviders(selected, policy) {
       case 'implement':
         addProvider(dispatchProvider(policy, 'implement', c));
         break;
+      case 'fresh-agent':
+        addProvider(dispatchProvider(policy, 'implement', c));
+        break;
       case 'review':
         addProvider(reviewProvider(policy, c));
         break;
@@ -582,6 +627,12 @@ export async function main(args = process.argv.slice(2)) {
       continue;
     }
     if (set.stage !== stage) throw new Error(`case file stage ${set.stage} differs from ${stage}`);
+    if (stage === 'fresh-agent') {
+      for (const c of set.cases) {
+        const failures = validateFreshCase(c);
+        if (failures.length) throw new Error(`invalid fresh-agent case ${c.id ?? '(unknown)'}: ${failures.join('; ')}`);
+      }
+    }
     for (const c of set.cases) if (!wanted || wanted.has(c.id)) selected.push({ stage, c });
   }
   const unknown = wanted ? [...wanted].filter((id) => !selected.some(({ c }) => c.id === id)) : [];
