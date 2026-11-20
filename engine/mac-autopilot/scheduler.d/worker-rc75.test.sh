@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-source "$script_dir/test-env.sh"
 
 fixture="$test_env_root/worker-rc75"; sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts"
