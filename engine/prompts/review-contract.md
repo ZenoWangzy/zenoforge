@@ -12,9 +12,7 @@ baseline as judgement calls) and Spec (what the issue asked for). You run both
 axes yourself in this context, with no sub-agents, and keep them separate: the
 order below puts Spec at 2 and Standards at 3, and a finding's `rule` names its
 axis. Where the skill differs from this file on the verdict line or the
-findings block, this file wins. Repository rules in `AGENTS.md` / `CLAUDE.md`,
-`CONTRIBUTING`, and package-level docs come before any generic style
-preference.
+findings block, this file wins.
 
 ## Scope
 
@@ -65,6 +63,18 @@ Mark entries whose verification is weak or whose choice is risky in the optional
 If the diff adds a persisted copy of mutable data, the contract must name the
 source of truth, the invalidation trigger, and a drift test. If any is missing,
 report a finding. Immutable keys (for example, SHA pairs) are exempt.
+
+## Scale checklist
+
+Pn = section n of docs/design/AGENT-SCALE-PRINCIPLES.md.
+- Runs a day times cost a run? (P1)
+- Refetches unchanging data? (P2, P5)
+- Moves data a service could answer? (P4, P13)
+- Cost grows with system size? (P7)
+- Host-wide lock or global state? (P8)
+- Failure sends all workers upstream? (P6)
+- Leaves unreclaimed files or clones? (P9)
+A yes with unbounded cost is a finding; name the principle.
 
 ## Verdict
 
