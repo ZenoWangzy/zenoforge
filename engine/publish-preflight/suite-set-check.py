@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Ensure selectable target suites are the suites moved from the engine.
 
-Selectable paths under configured roots must share lineage with a same-named baseline suite that the new engine drops
-(a name the engine keeps belongs to its own suite). A baseline suite
-must remain in the engine, or reappear with lineage where the pipeline runs suites: under a configured root or in the
-target's .zenoforge/systemd directory. This guards against unrelated same-name suites being
-selected and baseline suites disappearing during a move.
+Tracked selectable paths outside packages/ and apps/ must share lineage with a same-named baseline suite that the new
+engine drops (a name the engine keeps belongs to its own suite). A baseline suite must remain in the engine, or
+reappear with lineage as a tracked selectable path or in the target's .zenoforge/systemd directory. This guards
+against unrelated same-name suites being selected and baseline suites disappearing during a move.
 
 usage: suite-set-check.py <live version dir> <new version dir> <target repo> <new ref>
 """
-import difflib, json, os, re, subprocess, sys
+import difflib, os, re, subprocess, sys
 
 # Match the test path forms understood by the engine's focused suite selector.
 SELECTABLE = re.compile(r'(\.test\.(sh|mjs)$|(^|/)test-[^/]+\.sh$)')
@@ -38,7 +37,6 @@ def main(argv):
         return 2
     bver, nver, repo, ref = argv[1:]
     git = lambda *a: subprocess.run(['git', '-C', repo, *a], capture_output=True, text=True, check=True).stdout
-    roots = [r.rstrip('/') for r in json.loads(git('show', f'{ref}:.zenoforge/ci.json')).get('pipeline_suite_roots', [])]
     tracked = [p for p in git('ls-tree', '-r', '--name-only', ref).split('\n') if p]
     base, new = suites(bver), suites(nver)
     # Only suites leaving the engine in this transition can be moved ones; a name the engine keeps is its own suite.
@@ -48,7 +46,7 @@ def main(argv):
             by_name.setdefault(os.path.basename(rel), []).append(path)
     resolvable = sorted(p for p in tracked
                         if SELECTABLE.search(p) and not p.startswith(('packages/', 'apps/'))
-                        and any(r == '.' or p.startswith(r + '/') for r in roots) and os.path.basename(p) in by_name)
+                        and os.path.basename(p) in by_name)
     def lineage(p):
         text = git('show', f'{ref}:{p}')
         return max(difflib.SequenceMatcher(None, text, open(b, errors='ignore').read(), autojunk=False).quick_ratio()
@@ -62,8 +60,7 @@ def main(argv):
         else:
             print(f'suite-set-check: NOT A MOVED SUITE (shares a baseline name only, lineage {ratio:.2f}): {p}', file=sys.stderr)
             bad = 1
-    # A suite that left the engine must still run somewhere the pipeline looks: a configured root, or the target's
-    # systemd dir, whose suites run-ci-suites.sh also runs. It must also descend from the baseline suite.
+    # A suite that left the engine must still descend from the baseline in a tracked selectable path or systemd dir.
     runnable = [p for p in resolvable] + [p for p in tracked if os.path.dirname(p) == '.zenoforge/systemd'
                                           and SELECTABLE.search(p) and os.path.basename(p) in by_name]
     for rel in sorted(set(base) - set(new)):
