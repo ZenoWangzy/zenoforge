@@ -65,4 +65,47 @@ intake_candidates false >/dev/null
   printf 'intake-auto-filed.test.sh: session-owned skip not logged once: %s\n' "$(cat "$LOG")" >&2
   exit 1
 }
+# The ready queue orders by ready-state age within a priority band and
+# promotes a ticket one band after the threshold.
+now_epoch="$(date -u +%s)"
+aged_at="$(date -u -d "@$((now_epoch - 76 * 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+band_old_at="$(date -u -d "@$((now_epoch - 24 * 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+fresh_band_at="$(date -u -d "@$((now_epoch - 2 * 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+priority_fresh_at="$(date -u -d "@$((now_epoch - 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+mkdir -p "$AGENT_HOME/state"
+jq -cn --arg aged "$aged_at" --arg band_old "$band_old_at" \
+  --arg fresh "$fresh_band_at" --arg priority_fresh "$priority_fresh_at" '[
+    {number:701,title:"aged normal",state:"OPEN",labels:[{name:"ready-for-agent"},{name:"auto-filed"}],createdAt:$aged,updatedAt:$aged},
+    {number:702,title:"fresh bug",state:"OPEN",labels:[{name:"ready-for-agent"},{name:"bug"}],createdAt:$priority_fresh,updatedAt:$priority_fresh},
+    {number:714,title:"older normal",state:"OPEN",labels:[{name:"ready-for-agent"}],createdAt:$band_old,updatedAt:$band_old},
+    {number:715,title:"newer normal",state:"OPEN",labels:[{name:"ready-for-agent"}],createdAt:$fresh,updatedAt:$fresh}
+  ]' > "$INTAKE_ISSUES_FILE"
+for entry in "701:$aged_at" "702:$priority_fresh_at" "714:$band_old_at" "715:$fresh_band_at"; do
+  issue="${entry%%:*}"
+  ready_at="${entry#*:}"
+  jq -cn --arg at "$ready_at" '{state:"ready-for-agent",state_changed_at:$at}' > "$AGENT_HOME/state/$issue.json"
+done
+CFG='{"issue_intake":{"labels":[],"product_labels":["ready-for-agent"],"aging_hours":75}}'
+aged_numbers="$(intake_candidates false | cut -f1)"
+position() { awk -v issue="$1" '$0 == issue { print NR; exit }' <<<"$aged_numbers"; }
+failures=0
+older_position="$(position 714)"
+newer_position="$(position 715)"
+if [[ -n "$older_position" && -n "$newer_position" ]] && (( older_position < newer_position )); then
+  echo 'ok - older ticket is picked first within its priority band'
+else
+  printf 'not ok - same-band aging order is wrong: %s\n' "$(paste -sd, <<<"$aged_numbers")" >&2
+  failures=$((failures + 1))
+fi
+aged_position="$(position 701)"
+priority_position="$(position 702)"
+if [[ -n "$aged_position" && -n "$priority_position" ]] && (( aged_position < priority_position )); then
+  echo 'ok - a ticket past AGING_HOURS outranks a fresh ticket of the next band up'
+else
+  printf 'not ok - priority aging order is wrong: %s\n' "$(paste -sd, <<<"$aged_numbers")" >&2
+  failures=$((failures + 1))
+fi
+[[ "$(jq -r '.issue_intake.aging_hours' "$script_dir/config.template.json")" == 75 ]] \
+  || { echo 'not ok - default issue_intake.aging_hours is not 75' >&2; failures=$((failures + 1)); }
+(( failures == 0 ))
 echo 'intake-auto-filed.test.sh: PASS'

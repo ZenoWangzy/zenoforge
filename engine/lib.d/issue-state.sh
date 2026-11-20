@@ -109,6 +109,7 @@ state_read() {
 
 ticket_stage_is_label() {
   local candidate="$1" label
+  [ "$candidate" != tracker ] || return 0
   for label in "${ALL_STATE_LABELS[@]}"; do
     [ "$candidate" = "$label" ] && return 0
   done

@@ -181,6 +181,9 @@ gh() {
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || timeout_seconds=120
   [[ -z "${2:-}" ]] || timeout_op+=" $2"
   gh_timeout -k 1 "${timeout_seconds}s" "$@" || rc=$?
+  if (( rc == 0 )) && declare -F ticket_stage_record_gh_write >/dev/null 2>&1; then
+    ticket_stage_record_gh_write "$@" || rc=$?
+  fi
   if (( rc == 0 )); then
     if [[ "${1:-}" == run && "${2:-}" == rerun && "${3:-}" =~ ^[0-9]+$ ]]; then
       gh_run_jobs_invalidate "$3"
