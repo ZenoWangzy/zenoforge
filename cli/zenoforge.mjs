@@ -9,7 +9,7 @@ Usage: zenoforge <command> [options]
 
 Commands
   init        Check the host, set up the engine, checkout, labels and scheduler for one repository
-  doctor      Check host requirements; prints the exact fix for each missing item
+  doctor      Check host requirements; --fleet also lists published host capabilities
   start       Switch the scheduler on
   stop        Switch the scheduler off
   status      Show scheduler, engine version and pipeline switches
@@ -42,6 +42,7 @@ const options = {
   'required-check': { type: 'string', multiple: true },
   'auto-merge': { type: 'boolean' },
   'no-scheduler': { type: 'boolean' },
+  fleet: { type: 'boolean' },
   yes: { type: 'boolean', short: 'y' },
   'dry-run': { type: 'boolean' },
   purge: { type: 'boolean' },
@@ -67,7 +68,7 @@ async function main(argv) {
   const opts = {
     repo: v.repo, checkoutDir: v['checkout-dir'], implement: v.implement, review: v.review,
     maxWorkers: v['max-workers'], requiredCheck: v['required-check'], autoMerge: v['auto-merge'],
-    noScheduler: v['no-scheduler'], yes: v.yes, dryRun: v['dry-run'], purge: v.purge, follow: v.follow, lines: v.lines,
+    noScheduler: v['no-scheduler'], fleet: v.fleet, yes: v.yes, dryRun: v['dry-run'], purge: v.purge, follow: v.follow, lines: v.lines,
   };
   const io = cmd.defaultIo();
   try {

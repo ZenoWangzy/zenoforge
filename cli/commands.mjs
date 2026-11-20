@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AGENT_CLIS, detectAgents, formatDoctor, hardFailures, runDoctor } from './doctor.mjs';
+import { AGENT_CLIS, detectAgents, formatDoctor, formatFleetStatus, hardFailures, readFleetStatus, runDoctor } from './doctor.mjs';
 import { currentVersion, installEngine, installSkills, previousVersion, pruneEngines, rollback as rollbackEngine } from './engine.mjs';
 import * as gh from './github.mjs';
 import {
@@ -440,7 +440,22 @@ export function uninstall(opts, io) {
 export function doctor(opts, io) {
   const results = runDoctor({ platform: io.platform, find: io.find, exec: io.exec });
   io.log(formatDoctor(results));
-  return hardFailures(results).length === 0;
+  let fleetOk = true;
+  if (opts.fleet) {
+    const repo = io.env.ZF_REPO ?? readEnvFile(path.join(io.home, AGENT_DIR, 'env')).ZF_REPO;
+    if (!gh.REPO_RE.test(repo ?? '')) {
+      io.log('FAIL  fleet status needs a configured repository (run `zenoforge init --repo owner/name`)');
+      fleetOk = false;
+    } else {
+      try {
+        io.log(formatFleetStatus(readFleetStatus(repo, io.exec)));
+      } catch (error) {
+        io.log(`FAIL  fleet status: ${error.message}`);
+        fleetOk = false;
+      }
+    }
+  }
+  return hardFailures(results).length === 0 && fleetOk;
 }
 
 export const defaultIo = (overrides = {}) => ({
