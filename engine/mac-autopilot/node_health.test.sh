@@ -85,7 +85,9 @@ cat > "$a/units.json" <<'JSON'
    {"stage":"supervisor-arbiter","at":"2026-10-19T08:00:00Z"},
    {"stage":"advisor-ruling","at":"2026-10-19T11:01:00Z"},{"stage":"advisor-unavailable","at":"2026-10-19T11:02:00Z"},
    {"stage":"worker-no-output","at":"2026-10-19T11:10:00Z"},
-   {"stage":"supervisor-cap-default","at":"2026-10-19T10:45:00Z"}]}
+   {"stage":"supervisor-cap-default","at":"2026-10-19T10:45:00Z"}]},
+ {"id":"pr-cap-park","stage":"parked","parked_reason":"supervisor-budget","history":[
+   {"stage":"supervisor-budget-park","result":"arbitration budget exhausted for pr-cap-park (runs=4 entries=4)","at":"2026-10-19T08:00:00Z"}]}
 ]}
 JSON
 printf '[2026-10-19T11:00:00Z] tick done units=3 live=1\n[2026-10-19T11:05:00Z] tick done units=3 live=1\n[2026-10-19T11:12:00Z] tick done units=3 live=1\n[2026-10-19T11:00:00Z] harvest-station done secs=9 gh_calls=2 lock_wait=0 lock_hold=7 workers=1 harvested=1 deferred=0 limit=240s ended=11:00:09Z phases=harvest_workers:7s/2gh\n[2026-10-19T11:02:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:02:03Z phases=none\n[2026-10-19T11:04:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:04:03Z phases=none\n[2026-10-19T11:10:00Z] harvest-station done secs=3 gh_calls=0 lock_wait=0 lock_hold=0 workers=0 harvested=0 deferred=0 limit=240s ended=11:10:03Z phases=none\n[2026-10-19T11:01:00Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:01:40Z\n[2026-10-19T11:02:30Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:02:40Z\n[2026-10-19T11:04:00Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:04:40Z\n[2026-10-19T11:09:00Z] existing-walk done secs=40 rows=38 lock_wait=0.0 lock_hold=0.3 lap_done=true walked=38 gh_calls=3 rc=0 limit=240s ended=11:09:40Z\n' > "$a/scheduler.log"
@@ -153,6 +155,11 @@ jq -e '.metrics[] | select(.id == "supervisor.arbiter_dispatches_24h")
 jq -e '.metrics[] | select(.id == "supervisor.cap_default_24h")
   | .value == 1 and .status == "OK" and .source != ""' \
   "$a/node-health.json" >/dev/null || fail 'cap-default metric lacks its value or source (measured, no bound)'
+jq -e '([.metrics[] | select(.id == "supervisor.over_cap_parked")][0]
+    | .value == 1 and .short_window == "now" and .source != "")
+  and ([.metrics[] | select(.id == "supervisor.oldest_over_cap_park_hours")][0]
+    | .value == 4 and .short_window == "now" and .source != "")' \
+  "$a/node-health.json" >/dev/null || fail 'over-cap park count or age missing from the current scorecard'
 python3 - "$script_dir" <<'CHECK' || fail 'supervisor arbitration metrics wrong at the seam'
 import datetime as dt, sys; sys.path.insert(0, sys.argv[1]); import node_health as n
 now = n.ts("2026-10-19T12:00:00Z")
@@ -188,10 +195,25 @@ parked_units = [
 ]
 assert n.ledger_metrics(parked_units, now - dt.timedelta(hours=5), now)["supervisor.stop_loss_same_failure_parked"] == 2
 assert n.ledger_metrics([], now - dt.timedelta(hours=5), now)["supervisor.stop_loss_same_failure_parked"] == 0
+cap_units = [
+  {"id":"cap-park","stage":"parked","parked_reason":"supervisor-budget","history":[{"stage":"supervisor-budget-park","result":"arbitration budget exhausted for issue-1","at":"2026-10-19T07:00:00Z"}]},
+  {"id":"not-parked","stage":"repair-pending","history":[{"stage":"supervisor-cap-default","result":"branch=park: cap","at":"2026-10-19T01:00:00Z"}]},
+  {"id":"other-park","stage":"parked","parked_reason":"supervisor-budget","history":[{"stage":"supervisor-budget-park","result":"ticket stop-loss reached","at":"2026-10-19T01:00:00Z"}]},
+  {"id":"stale-cap","stage":"parked","parked_reason":"token-hard-park","history":[{"stage":"supervisor-cap-default","result":"branch=park: cap","at":"2026-10-19T01:00:00Z"}]},
+]
+cap_metrics = n.ledger_metrics(cap_units, now - dt.timedelta(hours=5), now)
+assert cap_metrics["supervisor.over_cap_parked"] == 1 and cap_metrics["supervisor.oldest_over_cap_park_hours"] == 5.0, cap_metrics
+empty_cap_metrics = n.ledger_metrics([], now - dt.timedelta(hours=5), now)
+assert empty_cap_metrics["supervisor.over_cap_parked"] == 0 and empty_cap_metrics["supervisor.oldest_over_cap_park_hours"] == 0.0, empty_cap_metrics
+unknown_cap = n.ledger_metrics([{"stage":"parked","parked_reason":"supervisor-cap-founder","history":[{"stage":"supervisor-cap-founder"}]}], now - dt.timedelta(hours=5), now)
+assert unknown_cap["supervisor.over_cap_parked"] == 1 and unknown_cap["supervisor.oldest_over_cap_park_hours"] is None, unknown_cap
 same_failure = n.CRITERIA["supervisor.stop_loss_same_failure_parked"]
 assert all(n.status_of(v, same_failure[2], same_failure[3], same_failure[4]) == "OK" for v in (0, 1, 99))
 assert n.MEANING["supervisor.stop_loss_same_failure_parked"] and n.SOURCE["supervisor.stop_loss_same_failure_parked"]
 assert "supervisor.stop_loss_same_failure_parked" in open(sys.argv[1] + "/NODE-HEALTH.md").read()
+assert n.MEANING["supervisor.over_cap_parked"] and n.SOURCE["supervisor.over_cap_parked"]
+assert n.MEANING["supervisor.oldest_over_cap_park_hours"] and n.SOURCE["supervisor.oldest_over_cap_park_hours"]
+assert "supervisor.over_cap_parked" in open(sys.argv[1] + "/NODE-HEALTH.md").read()
 print("node_health supervisor arbitration metrics: PASS")
 CHECK
 python3 - "$script_dir" <<'CHECK' || fail 'fresh-signal requeue delivery metric wrong at the seam'

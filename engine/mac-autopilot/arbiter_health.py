@@ -1,4 +1,4 @@
-"""Supervisor arbitration scorecard definitions and fixed 24-hour ledger counts."""
+"""Supervisor arbitration scorecard definitions and ledger metrics."""
 from datetime import timedelta
 
 
@@ -6,6 +6,8 @@ CRITERIA = {
     "supervisor.arbiter_dispatches_24h": ("supervisor", "arbiter dispatches in 24 h", 48, 120, False),
     # The sentinel bounds (healthy 0, unhealthy -1, higher is better) leave any measured count OK.
     "supervisor.cap_default_24h": ("supervisor", "supervisor-cap-default decisions in 24 h (measured, no bound)", 0, -1, True),
+    "supervisor.over_cap_parked": ("supervisor", "units still parked after the arbitration cap (measured, no bound)", 0, -1, True),
+    "supervisor.oldest_over_cap_park_hours": ("supervisor", "oldest arbitration-cap park age in hours (measured, no bound)", 0, -1, True),
     # Provisional: a replay of the 24 h to 2026-11-07 put the guard at 16 firings; tune after a week of live samples.
     "supervisor.repeat_guard_24h": ("supervisor", "repeat-arbitration guard firings in 24 h", 8, 24, False),
     # Healthy 0, unhealthy 1: a token park means a unit spent past its line, and each one needs an owner.
@@ -21,6 +23,8 @@ CRITERIA = {
 MEANING = {
     "supervisor.arbiter_dispatches_24h": "24 小时内派出的 supervisor 仲裁 run 数（supervisor-arbiter 历史，固定滚动 24h）。高 = 仲裁在空转：单元反复升级而裁决不收敛；单单元总量由 supervisor_arbiter.unit_cap 终身上限约束。",
     "supervisor.cap_default_24h": "24 小时内触顶后由调度器按默认决定（obsolete/recut/park）收尾的单元数。只测量不设界：每个默认决定都省下一次模型 run，也无人被问到。",
+    "supervisor.over_cap_parked": "当前仍停在仲裁上限路径上的单元数：stage 为 parked，且 parked_reason 与最新 park history 都指向 cap default、cap triage/reask、cap exhaustion/founder 或兼容的 cap budget park。只测量不设界。",
+    "supervisor.oldest_over_cap_park_hours": "当前仲裁上限停放单元的最长停放时长，从导致当前停放的事件起算；无此类单元时为 0，缺少有效停放时间时为空。只测量不设界。",
     "supervisor.repeat_guard_24h": "24 小时内重复仲裁被拦下的次数：同一单元、同一升级原因（去掉数字和 SHA 后相同），两次仲裁之间没有交付、批准、ready-to-merge、合并或新 PR head，调度器改走触顶路线（recut 一次，否则 park），不再派第二个只会 requeue 的仲裁 run。高 = 仍有升级类别在空转，而且是还没有专门规则的类别。",
     "supervisor.token_parks_24h": "24 小时内因终身 fresh token 超线而停下的单元数（soft 线 1.2M 停下等一次仲裁，hard 线 2.4M 永久停；每个单元每条线只记一次）。0 = 健康；出现 = 有单元在烧 token 而不收敛，看事件里的 class（report-gate-loop、hot-file-churn、undersized、unclassified）找成因。",
     "supervisor.stop_loss_same_failure_parked": "当前因 stop-loss 遇到同一失败而停车的单元数（stage 为 parked 且 parked_reason 以 \"stop-loss same failure:\" 开头）。只测量不设界：每个都在等 PR head 变化，或 24 小时后 main 前进的一次定时重试；没有 PR 的停车只能等 supervisor。",
@@ -31,6 +35,8 @@ MEANING = {
 SOURCE = {
     "supervisor.arbiter_dispatches_24h": "units.json（含 units-archive.json 退休行）的 supervisor-arbiter 历史事件，固定滚动 24h（不看 --hours 窗口）",
     "supervisor.cap_default_24h": "units.json（含 units-archive.json 退休行）的 supervisor-cap-default 历史事件，固定滚动 24h",
+    "supervisor.over_cap_parked": "units.json 中 stage 为 parked，且 parked_reason 与最新 park history 都指向 supervisor-cap-default、supervisor-cap-triage-park/reask、supervisor-cap-exhausted/founder 或兼容仲裁上限 supervisor-budget-park 的单元数，当前状态",
+    "supervisor.oldest_over_cap_park_hours": "上述当前停放单元从导致当前停放的历史事件到现在的最长小时数；缺少有效时间时为空",
     "supervisor.repeat_guard_24h": "units.json（含 units-archive.json 退休行）里 result 以 \"supervisor repeat guard:\" 开头的历史事件（路线自己的 recut/park/obsolete 事件，没有新阶段），固定滚动 24h",
     "supervisor.token_parks_24h": "units.json（含 units-archive.json 退休行）的 token-park 历史事件（调度器 token spend gate 写入，终身 fresh token 来自 spend_runs，与 workorders 同口径），固定滚动 24h",
     "supervisor.stop_loss_same_failure_parked": "units.json（含 units-archive.json 退休行）里 stage 为 parked、parked_reason 以 \"stop-loss same failure:\" 开头的单元数，当前状态，不是 24h 窗口",
@@ -75,16 +81,47 @@ def fresh_requeue_outcomes(units, now, timestamp):
 
 
 def ledger_metrics(units, now, timestamp, window_hours=None):
-    """Count arbitration dispatches and defaults over a fixed rolling 24-hour window."""
+    """Count arbitration events and current parks from the unit ledger."""
     day = now - timedelta(hours=window_hours or 24)
+    over_cap_ages = []
+    over_cap_age_unknown = False
     counts = {"supervisor.arbiter_dispatches_24h": 0, "supervisor.cap_default_24h": 0, "supervisor.repeat_guard_24h": 0,
-              "supervisor.token_parks_24h": 0, "supervisor.spend_ledger_blind": 0, "supervisor.stop_loss_same_failure_parked": 0}
+              "supervisor.token_parks_24h": 0, "supervisor.spend_ledger_blind": 0, "supervisor.stop_loss_same_failure_parked": 0,
+              "supervisor.over_cap_parked": 0, "supervisor.oldest_over_cap_park_hours": 0.0}
     stages = {"supervisor-arbiter": "supervisor.arbiter_dispatches_24h",
               "supervisor-cap-default": "supervisor.cap_default_24h",
               "token-park": "supervisor.token_parks_24h"}
     for unit in units:
         if unit.get("stage") == "parked" and str(unit.get("parked_reason") or "").startswith(SAME_FAILURE_PARK_PREFIX):
             counts["supervisor.stop_loss_same_failure_parked"] += 1
+        history = unit.get("history") or []
+        reason = unit.get("parked_reason")
+        cap_events = []
+        cap_stage = {
+            "supervisor-arbitration-cap": "supervisor-cap-triage-park",
+            "supervisor-cap-triage-reask": "supervisor-cap-triage-reask",
+            "supervisor-cap-exhausted": "supervisor-cap-exhausted",
+            "supervisor-cap-founder": "supervisor-cap-founder",
+        }.get(reason)
+        if unit.get("stage") == "parked" and cap_stage:
+            cap_events = [e for e in history if e.get("stage") == cap_stage][-1:]
+        elif unit.get("stage") == "parked" and reason in ("supervisor-budget", "ticket-stop-loss"):
+            candidates = [(i, e) for i, e in enumerate(history)
+                          if e.get("stage") in ("supervisor-budget-park", "supervisor-cap-default")]
+            if candidates:
+                _, latest = candidates[-1]
+                if latest.get("stage") == "supervisor-cap-default" or str(latest.get("result") or "").startswith((
+                    "third entry into supervisor-review; arbitration cap is 2", "arbitration budget exhausted for "
+                )):
+                    cap_events = [latest]
+        if unit.get("stage") == "parked" and cap_events:
+            counts["supervisor.over_cap_parked"] += 1
+            stamps = [timestamp(e.get("at")) for e in cap_events]
+            valid_stamps = [at for at in stamps if at is not None]
+            if valid_stamps:
+                over_cap_ages.append(max(0, (now - max(valid_stamps)).total_seconds() / 3600))
+            else:
+                over_cap_age_unknown = True
         for event in unit.get("history") or []:
             metric = stages.get(event.get("stage"))
             if str(event.get("result") or "").startswith(REPEAT_GUARD_PREFIX):
@@ -92,6 +129,12 @@ def ledger_metrics(units, now, timestamp, window_hours=None):
             at = timestamp(event.get("at")) if metric else None
             if at is not None and day <= at <= now:
                 counts[metric] += 1
+    if counts["supervisor.over_cap_parked"]:
+        counts["supervisor.oldest_over_cap_park_hours"] = (
+            None if over_cap_age_unknown or not over_cap_ages else round(max(over_cap_ages), 1)
+        )
+    else:
+        counts["supervisor.oldest_over_cap_park_hours"] = 0.0
     window = now - timedelta(hours=min(window_hours or 6, 6))
     ran = recorded = False
     for unit in units:

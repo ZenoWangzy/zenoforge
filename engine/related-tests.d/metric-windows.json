@@ -1,0 +1,3 @@
+{
+  "engine/mac-autopilot/metric_windows.py": ["engine/mac-autopilot/node_health.test.sh"]
+}
