@@ -35,7 +35,6 @@ engine/mac-autopilot/bell-incident-routing.test.sh
 engine/mac-autopilot/daemon-self-check.test.sh
 engine/mac-autopilot/harvest-late-report.test.sh
 engine/mac-autopilot/pin-lag.test.sh
-engine/mac-autopilot/review-contract.test.sh
 engine/mac-autopilot/scheduler.d/jqf-argv-growth.test.sh
 engine/mac-autopilot/scheduler.d/locks-views-trap.test.sh
 engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
