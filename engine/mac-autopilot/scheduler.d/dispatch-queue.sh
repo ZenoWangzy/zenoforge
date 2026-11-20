@@ -4,13 +4,23 @@
 # dstep runs a command and marks it; dcapture does the same for `var="$(command)"`; both return the command's status, so the call sites
 # keep their `|| continue`. A row's unmarked skip, park or escalate path lands in after_<last step> at the next row's top.
 dmark() {
-  local now=${EPOCHREALTIME/[.,]/}
+  local now=${EPOCHREALTIME/[.,]/} elapsed detail step=$1 callee=${3:-$1}
   [[ -n "${dispatch_step_at:-}" ]] || return 0
-  dispatch_step_secs[$1]=$(( ${dispatch_step_secs[$1]:-0} + now - dispatch_step_at )); dispatch_step_counts[$1]=$(( ${dispatch_step_counts[$1]:-0} + 1 ))
-  dispatch_step_at=$now; dispatch_step_last=$1
+  elapsed=$(( now - dispatch_step_at ))
+  if (( elapsed >= 2000000 )); then
+    case "$callee" in after_* | advisor_harvest | stop_loss_check | stop_loss_escalate | feature_plan) ;;
+      *)
+        detail="dispatch detail $callee"
+        [[ -z "${id:-}" ]] || detail+=" unit=$id"
+        [[ "${2:-0}" == 0 ]] || detail+=" result=failed"
+        say "$detail secs=$((elapsed / 1000000))s" || : ;;
+    esac
+  fi
+  dispatch_step_secs[$step]=$(( ${dispatch_step_secs[$step]:-0} + elapsed )); dispatch_step_counts[$step]=$(( ${dispatch_step_counts[$step]:-0} + 1 ))
+  dispatch_step_at=$now; dispatch_step_last=$step
 }
-dstep() { local step=$1 rc=0; shift; "$@" || rc=$?; dmark "$step"; return $rc; }
-dcapture() { local var=$1 step=$2 rc=0 out; shift 2; out="$("$@")" || rc=$?; printf -v "$var" %s "$out"; dmark "$step"; return $rc; }
+dstep() { local step=$1 callee=$2 rc=0; shift 2; "$callee" "$@" || rc=$?; dmark "$step" "$rc" "$callee"; return $rc; }
+dcapture() { local var=$1 step=$2 callee=$3 rc=0 out; shift 3; out="$("$callee" "$@")" || rc=$?; printf -v "$var" %s "$out"; dmark "$step" "$rc" "$callee"; return $rc; }
 # Every caller reads the live-worker count as $(live_workers), and a cache refresh inside that subshell is lost: the cache stayed cold, so each
 # capacity, priority and implement-cap check re-ran the refresh (one jq and three jq per worker plus ps: 2244 of about 8000 processes in a
 # five-unit fixture pass). Refreshing here, in dispatch_pending's own shell, lets those subshells inherit it; the 10 s TTL is unchanged.
@@ -187,9 +197,8 @@ dispatch_pending_pass() {
     TICK_FOOTPRINT_CAP="$(jqf -r '.issue_intake.refill_max_footprint_candidates // 4' <<<"$CFG")"
     [[ "$TICK_FOOTPRINT_CAP" =~ ^[1-9][0-9]*$ ]] || TICK_FOOTPRINT_CAP=4
   fi
-  footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
+  dstep revalidate footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
   revalidate_secs=$((SECONDS - pending_started))
-  dmark revalidate
   local TICK_FOOTPRINT_MAIN # rows are memoised against this main; leaving the pass drops the key, so a later phase never reuses them
   local -A TICK_SIZE_RECHECK_MEMO=() # size rechecks of one unit at one head share their read within this pass only
   local TICK_SIZE_RECHECK_PASS=true
