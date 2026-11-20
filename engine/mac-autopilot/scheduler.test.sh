@@ -6675,6 +6675,11 @@ sched_case_retire_landed_lock_yield() (
     printf 'MERGED\n'
   }
   state_schema_ok() { return 0; }
+  set_unit() { # keep the replay focused on lock handoff instead of revalidating the same tiny fixture 50 times
+    local tmp="$UNITS.replay.tmp"
+    command jq -c --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" > "$tmp" \
+      && mv -f -- "$tmp" "$UNITS"
+  }
   tick_gh_calls_begin() { :; }; tick_gh_calls_count() { printf '0\n'; }
   tick_roadmap_cache_begin() { :; }; tick_roadmap_cache_end() { :; }
   harvest_station_fresh() { return 0; }; ci_station_fresh() { return 0; }; merge_station_fresh() { return 0; }
