@@ -531,7 +531,7 @@ repair_failure_prompt() { # unit-json review-report -> failure evidence plus bou
     if review_block="$(findings_block_of "$SUP/$report" 2>/dev/null)"; then
       finding_context="$(jqf -r '[.findings[] | "- \(.id): \(.summary // "(summary unavailable)")"] | join("\n")' <<<"$review_block")"
     fi
-    disposition_context="$(review_dispositions_context "$u")" || return 1
+    disposition_context="$(review_dispositions_context "$u")" || disposition_context="" # optional context never blocks a repair
     if [[ -n "$finding_context$disposition_context" ]]; then
       # Bound the supplemental carry; the full report remains available below as failure evidence.
       finding_context="${finding_context:0:4000}"
