@@ -21,6 +21,12 @@ const readLink = (p) => {
 export const currentVersion = (engineRoot) => readLink(path.join(engineRoot, 'current'));
 export const previousVersion = (engineRoot) => readLink(path.join(engineRoot, 'previous'));
 
+/** Copy the bundled Matt skills into the target checkout, leaving existing files alone. */
+export function installSkills(act, { srcSkills, checkout }) {
+  const dest = path.join(checkout, '.agents', 'skills');
+  act.copyTree(srcSkills, dest, { force: false });
+}
+
 /** Pick the version dir name: reuse an identical install, else add a +N suffix for changed settings. */
 export function pickName(engineRoot, version, settings) {
   for (let n = 1; ; n++) {

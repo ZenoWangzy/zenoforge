@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { currentVersion, flipCurrent, installEngine, pickName, previousVersion, pruneEngines, rollback, SHIM_DIR, SHIM_NAMES, SHIM_TARGET } from './engine.mjs';
+import { currentVersion, flipCurrent, installEngine, installSkills, pickName, previousVersion, pruneEngines, rollback, SHIM_DIR, SHIM_NAMES, SHIM_TARGET } from './engine.mjs';
 import { Actions } from './util.mjs';
 
 const realEngine = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'engine');
@@ -46,6 +46,26 @@ test('install stages declared runtime dependencies beside the copied engine', ()
   const installedSdk = path.join(root, '0.1.0', 'node_modules', '@typesafe-ai', 'sdk');
   assert.equal(fs.readFileSync(path.join(installedSdk, 'package.json'), 'utf8'), '{"name":"@typesafe-ai/sdk"}\n');
   assert.equal(fs.readFileSync(path.join(installedSdk, 'index.js'), 'utf8'), 'export {};\n');
+});
+
+test('installSkills fills missing files, keeps existing skills, and is idempotent', () => {
+  const srcSkills = tmp(); const checkout = tmp();
+  fs.mkdirSync(path.join(srcSkills, 'ask-matt'), { recursive: true });
+  fs.writeFileSync(path.join(srcSkills, 'ask-matt/SKILL.md'), 'bundled\n');
+  fs.mkdirSync(path.join(srcSkills, 'tdd'), { recursive: true });
+  fs.writeFileSync(path.join(srcSkills, 'tdd/SKILL.md'), 'tdd\n');
+  fs.mkdirSync(path.join(checkout, '.agents/skills/ask-matt'), { recursive: true });
+  fs.writeFileSync(path.join(checkout, '.agents/skills/ask-matt/SKILL.md'), 'repo-owned\n');
+
+  installSkills(quiet(), { srcSkills, checkout });
+  const installedTdd = path.join(checkout, '.agents/skills/tdd/SKILL.md');
+  const installedTddMtime = fs.statSync(installedTdd).mtimeMs;
+  assert.equal(fs.readFileSync(path.join(checkout, '.agents/skills/ask-matt/SKILL.md'), 'utf8'), 'repo-owned\n');
+  assert.equal(fs.readFileSync(installedTdd, 'utf8'), 'tdd\n');
+
+  installSkills(quiet(), { srcSkills, checkout });
+  assert.equal(fs.statSync(installedTdd).mtimeMs, installedTddMtime);
+  assert.equal(fs.readFileSync(installedTdd, 'utf8'), 'tdd\n');
 });
 
 test('same settings reuse the version dir; changed settings get a +N dir', () => {

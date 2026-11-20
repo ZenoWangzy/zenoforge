@@ -126,6 +126,7 @@ test('init: files, modes, checkout, engine link, labels, variables and units', a
   assert.equal(execFileSync('git', ['-C', s.checkout, 'status', '--porcelain']).toString(), '');
   execFileSync('git', ['-C', s.checkout, 'clean', '-fdq']);
   assert.ok(fs.lstatSync(path.join(s.checkout, 'engine')).isSymbolicLink());
+  assert.ok(fs.existsSync(path.join(s.checkout, '.agents/skills/ask-matt/SKILL.md')), 'installed skills survive checkout cleanup');
 
   // rendered config: required checks read from branch protection, so auto merge is on
   const cfg = JSON.parse(fs.readFileSync(path.join(s.agent, 'engine/current/mac-autopilot/config.template.json'), 'utf8'));
@@ -174,10 +175,18 @@ test('the real engine scripts work through the checkout link (write guard, runti
 test('init twice is idempotent and keeps user-owned files; another repo is refused', async () => {
   const s = sandbox();
   await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
+  const askMatt = path.join(s.checkout, '.agents/skills/ask-matt/SKILL.md');
+  assert.ok(fs.existsSync(askMatt), 'init installs Matt skills into the repository checkout');
+  assert.ok(fs.existsSync(path.join(s.checkout, '.agents/skills/tdd/SKILL.md')));
+  assert.match(fs.readFileSync(askMatt, 'utf8'), /^---\nname: ask-matt/m);
+  const installedSkill = fs.readFileSync(askMatt, 'utf8');
+  const installedSkillMtime = fs.statSync(askMatt).mtimeMs;
   fs.appendFileSync(path.join(s.agent, 'recipients.json'), '\n');
   const before = fs.readFileSync(path.join(s.agent, 'recipients.json'), 'utf8');
   await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
   assert.equal(fs.readFileSync(path.join(s.agent, 'recipients.json'), 'utf8'), before);
+  assert.equal(fs.readFileSync(askMatt, 'utf8'), installedSkill);
+  assert.equal(fs.statSync(askMatt).mtimeMs, installedSkillMtime, 'a second init does not rewrite installed skills');
   assert.deepEqual(fs.readdirSync(path.join(s.agent, 'engine')).sort(), [VERSION, 'current']);
   await assert.rejects(cmd.init({ repo: 'other/thing', yes: true, noScheduler: true }, s.io), /already set up for example-maintainer\/example-repo/);
 });
