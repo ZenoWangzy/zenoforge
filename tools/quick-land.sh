@@ -27,6 +27,21 @@ quick_land_override_hit() { # <staged engine paths>
   grep -xFf <({ awk -F'\t' '$1 != "" && $1 !~ /^#/ { print "engine/" $1 }' <<<"$table"; git -C "$target" grep -hoE '"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+"' origin/main -- '.zenoforge/build/pack/scripts/zenoforge-pack/patch-*.py' 2>/dev/null | tr -d '"' | sed 's#^#engine/#'; }) <<<"$1" | head -1 || true
 }
 
+# Main moves while the suites run (2026-11-20: four runs of about 20 min each were lost to commits on other files).
+# Commits that arrived meanwhile and share no file with this change are replayed under it, as a merge queue does;
+# a shared file or a conflict keeps the refusal. The suites ran on the earlier base: main CI covers a semantic clash.
+quick_land_push() {
+  local base left=3
+  until git push -q origin HEAD:main 2>/dev/null; do
+    (( left-- > 0 )) || return 1
+    base="$(git rev-parse HEAD~1)"
+    git fetch -q origin main || return 1
+    [[ -z "$(comm -12 <(git diff --name-only "$base" HEAD | sort) <(git diff --name-only "$base" origin/main | sort))" ]] || return 1
+    git rebase -q origin/main 2>/dev/null || { git rebase --abort 2>/dev/null; return 1; }
+    echo "quick-land: main moved on other files; replayed onto $(git rev-parse --short origin/main)" >&2
+  done
+}
+
 quick_land_refusal() { # <number of --test> <prior-art text> [test commands] → staged diff; prints why it is not quick-landable; prints nothing when it is
   local tests="$1" prior="${2:-}" paths path code=0 hit
   paths="$(git diff --cached --name-only)"
@@ -122,7 +137,7 @@ quick_land_main() {
     return 1
   fi
   quick_land_run_tests ${tests[@]+"${tests[@]}"} || { echo "quick-land: not landed, branch $branch kept at $(git rev-parse --short HEAD)" >&2; return 1; }
-  git push -q origin HEAD:main || { echo "quick-land: push to main failed (main moved?); branch $branch kept" >&2; return 1; }
+  quick_land_push || { echo "quick-land: push to main failed (main moved on a file this change touches, or kept moving); branch $branch kept" >&2; return 1; }
   git fetch -q origin main
   git switch -q --detach origin/main
   git branch -q -D "$branch"

@@ -151,4 +151,19 @@ printf 'doc\n' >> doc.md
 land 0 'doc lands'
 [[ "$(origin_main)" != "$before" ]] || fail 'a Markdown change without --test did not land'
 
+# Main moves while the suites run: a commit on another file is replayed under the change; a commit on the same file refuses.
+git clone -q "$test_env_root/quick-land-origin.git" "$test_env_root/mover"
+git -C "$test_env_root/mover" config user.name 'Mover'; git -C "$test_env_root/mover" config user.email mover@example.invalid
+printf 'cd "%s" && git pull -q origin main && echo moved >> "$1" && git add -A && git commit -qm "move $1" && git push -q origin HEAD:main\n' "$test_env_root/mover" > "$test_env_root/move-main.sh"
+printf 'echo replay\n' > run.sh
+land 0 --test "bash $test_env_root/move-main.sh elsewhere.md" --prior-art "$pa" 'lands after main moved on another file'
+[[ "$(git show origin/main:run.sh)" == 'echo replay' && "$(git show origin/main:elsewhere.md)" == 'moved' ]] || fail 'main moved on another file: the change did not land on top of it'
+[[ "$(git log -1 --format=%s origin/main)" == 'lands after main moved on another file' && "$(git log -1 --format=%s origin/main~1)" == 'move elsewhere.md' ]] || fail 'the replayed change is not one commit on top of the moved main'
+before="$(origin_main)"
+printf 'echo clash\n' > run.sh
+land 1 --test "bash $test_env_root/move-main.sh run.sh" --prior-art "$pa" 'same file moved'
+[[ "$(git log -1 --format=%s origin/main)" == 'move run.sh' ]] || fail 'main moved on the same file: the change landed anyway'
+git branch --list 'quick/*' | grep -q . || fail 'the refused replay did not keep its branch'
+reset_fixture
+
 echo 'quick-land.test.sh: PASS'
