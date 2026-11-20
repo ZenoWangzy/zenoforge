@@ -1,3 +1,4 @@
 {
-  "engine/mac-autopilot/scheduler.d/stuck-workers.sh": ["engine/mac-autopilot/stuck-worker-disposition.test.sh"]
+  "engine/mac-autopilot/scheduler.d/stuck-workers.sh": ["engine/mac-autopilot/stuck-worker-disposition.test.sh"],
+  "engine/mac-autopilot/scheduler.d/supervisor-owned.sh": ["engine/mac-autopilot/stuck-worker-disposition.test.sh"]
 }
