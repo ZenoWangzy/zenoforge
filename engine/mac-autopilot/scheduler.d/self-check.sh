@@ -628,7 +628,7 @@ pre_dispatch_skip() { # unit-json → 0 when retired (one log line), 1 to dispat
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
-  local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head \
+  local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head trigger \
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
@@ -692,6 +692,20 @@ $(tail -80 "$check_output" 2>/dev/null)"
     write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint")"
     write_start_filter+=" | .history[-1].work_type=$(js "$3") | .history[-1].provider=$(js "$provider") | .history[-1].hard_escalation=$hard_escalation"
     write_start_filter+=" | $(dispatch_attempt_fields "$4" "$6" "$unit_json")"
+    if [[ "$3" == repair ]]; then
+      trigger="$(unit_field "$1" '
+        (.history // [])[-1].stage // ""
+        | if . == "review-request-changes" or . == "review-block" or . == "review-finding" then "review-finding"
+          elif . == "ci-test-red" then "ci-test-red"
+          elif . == "merge-conflict" then "merge-conflict"
+          elif . == "self-check-red" then "self-check-red"
+          elif . == "supervisor-requeue" then "supervisor-requeue"
+          elif . == "repair-no-push" or . == "no-push" then "no-push"
+          elif . == "worker-rc75" then "worker-rc75"
+          else "unknown"
+          end')"
+      write_start_filter+=" | .history[-1].trigger=$(js "$trigger")"
+    fi
     # The PR head a repair starts from, so harvest can tell a run that pushed nothing (repair_head_class); unreadable = unclassified.
     if [[ "$3" == repair && "$report_only" != true && "$(unit_field "$1" '.lane // "pr"')" != direct-main && "$(unit_field "$1" '.pr // empty')" =~ ^[0-9]+$ ]] \
       && repair_head="$(tick_pr_head "$(unit_field "$1" .pr)" 2>/dev/null)"; then write_start_filter+=" | .history[-1].pr_head=$(js "$repair_head")"; fi
