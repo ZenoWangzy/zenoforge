@@ -688,7 +688,7 @@ issue_transition_rollback_snapshot() {
   if [ "$had_state" = 1 ]; then printf '%s\n' "$before" > "$f.tmp" && mv -f -- "$f.tmp" "$f" || status=2
   else rm -f -- "$f" "$f.tmp" || status=2
   fi
-  [ -z "$task_snapshot" ] || node "$ZF_ENGINE_DIR/task-state.mjs" rollback-transition "$AGENT_HOME/task-state" <<< "$task_snapshot" || status=2
+  [ -z "$task_snapshot" ] || node "$_AGENT_LIB_DIR/task-state.mjs" rollback-transition "$AGENT_HOME/task-state" <<< "$task_snapshot" || status=2
   return "$status"
 }
 issue_transition() (
@@ -875,7 +875,7 @@ issue_transition() (
       state_merge "$n" '.hold.durable_record = false' __issue_transition_lock_held || { echo "issue_transition: could not clear durable hold flag for #$n" >&2; return 1; }
     fi
   fi
-  task_state_snapshot="$(if [ "$DRY_RUN" = 1 ]; then :; else jq -cn --arg issue "$n" --arg stage "$to" --rawfile reason <(printf '%s' "$reason") --slurpfile before <(printf '%s' "$before") --slurpfile after <(state_read "$n") '{issue:$issue,stage:$stage,reason:$reason,before:$before[0],after:$after[0]}' | node "$ZF_ENGINE_DIR/task-state.mjs" write-issue-transition "$AGENT_HOME/task-state"; fi)" || { issue_transition_rollback_snapshot "$n" "$f" "$before" "$had_state" || restore_status=$?; echo "issue_transition: task-state write failed for #$n; state rollback status=$restore_status" >&2; return 1; }
+  task_state_snapshot="$(if [ "$DRY_RUN" = 1 ]; then :; else jq -cn --arg issue "$n" --arg stage "$to" --rawfile reason <(printf '%s' "$reason") --slurpfile before <(printf '%s' "$before") --slurpfile after <(state_read "$n") '{issue:$issue,stage:$stage,reason:$reason,before:$before[0],after:$after[0]}' | node "$_AGENT_LIB_DIR/task-state.mjs" write-issue-transition "$AGENT_HOME/task-state"; fi)" || { issue_transition_rollback_snapshot "$n" "$f" "$before" "$had_state" || restore_status=$?; echo "issue_transition: task-state write failed for #$n; state rollback status=$restore_status" >&2; return 1; }
   [ "$skip_label_write" != 1 ] || return 0
 
   edit_args=(gh issue edit "$n" --repo "$REPO")
