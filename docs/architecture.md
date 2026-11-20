@@ -75,7 +75,7 @@ The scheduler also has an old-PR lifecycle section and derived views (health sco
 
 ### 1.3 How the loops meet
 
-They share GitHub labels and the per-issue state files. The issue loop never merges. Its header says merge is "owned by the autopilot scheduler, not by this script." The unit loop's `scheduler_issue_transition` wrapper (`engine/mac-autopilot/scheduler.d/lib-bridge.sh`) runs in a subshell, sources `$SCHEDULER_AGENT_LIB`, and calls `issue_transition`.
+They share GitHub labels and the per-issue state files. The issue loop does not run the merge queue: `engine/issue-loop-merge-boundary.test.sh` fails when an issue-loop file gains a direct PR-merge call that is not allowlisted. The one exception is `pipeline_system_hand_external_pr_conclusion` (`engine/issue-pipeline.sh`), which squash-merges a green, cleanly mergeable factory-repo PR on `agent/issue-<n>` that a hand-owned issue's DONE report cites. The issue loop also reaches the merge lane's `merge_agent_pr` from `supervisor_hold_sweep` (`engine/supervisor-holds.sh`); that merge goes through the lane. Its header says merge is "owned by the autopilot scheduler, not by this script." The unit loop's `scheduler_issue_transition` wrapper (`engine/mac-autopilot/scheduler.d/lib-bridge.sh`) runs in a subshell, sources `$SCHEDULER_AGENT_LIB`, and calls `issue_transition`.
 
 ## 2. Stage chain and labels
 
