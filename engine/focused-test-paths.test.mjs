@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -1205,4 +1205,52 @@ test('a stage prompt change runs the prompt byte-budget suite', () => {
   const tracked = new Set(['engine/run-triage-batch.test.sh', 'engine/run-recut.test.sh']);
   assert.deepEqual(focusedTestPaths(['engine/prompts/implement-contract.md'], tracked), ['engine/run-triage-batch.test.sh']);
   assert.deepEqual(focusedTestPaths(['engine/prompts/recut.md'], tracked).sort(), ['engine/run-recut.test.sh', 'engine/run-triage-batch.test.sh']);
+});
+
+// 2026-11-20: rows appended to the RELATED_TESTS literal and to docs/enforced-rules.md conflicted with every parallel land.
+test('the RELATED_TESTS literal does not grow: new rows go to engine/related-tests.d', () => {
+  const source = readFileSync(new URL('./focused-test-paths.mjs', import.meta.url), 'utf8');
+  const literal = source.slice(source.indexOf('export const RELATED_TESTS = '), source.indexOf('].map(([key, tests]) => [packPath(key), tests.map(packPath)])), packPath);'));
+  const rows = literal.split('\n').filter((line) => line.startsWith("  ['")).length;
+  assert.ok(rows <= 191, `RELATED_TESTS literal has ${rows} rows (cap 191): add new rows as engine/related-tests.d/<name>.json`);
+});
+
+test('related-tests.d fragments add rows and extend existing keys', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'related-fragments-'));
+  try {
+    for (const file of ['focused-test-paths.mjs', 'pack-dir.mjs', 'related-tests-dir.mjs']) copyFileSync(new URL(`./${file}`, import.meta.url), join(dir, file));
+    mkdirSync(join(dir, 'related-tests.d'));
+    writeFileSync(join(dir, 'related-tests.d', 'a.json'), JSON.stringify({ 'engine/new-a.sh': ['engine/new-a.test.sh'], 'engine/lib.sh': ['engine/extra.test.sh'] }));
+    writeFileSync(join(dir, 'related-tests.d', 'b.json'), JSON.stringify({ 'engine/new-b.sh': ['engine/new-b.test.sh'] }));
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e',
+      `const m = await import(${JSON.stringify(join(dir, 'focused-test-paths.mjs'))}); console.log(JSON.stringify(['engine/new-a.sh', 'engine/new-b.sh', 'engine/lib.sh'].map((k) => m.RELATED_TESTS.get(k))));`],
+    { encoding: 'utf8', env: { ...process.env, ZF_PACK_REL: 'engine' } });
+    const [a, b, lib] = JSON.parse(out);
+    assert.deepEqual(a, ['engine/new-a.test.sh']);
+    assert.deepEqual(b, ['engine/new-b.test.sh']);
+    assert.ok(lib.includes('engine/extra.test.sh') && lib.includes('engine/main-release-ready-cache.test.sh'), 'a fragment replaced an existing key instead of extending it');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('two parallel row appends to docs/enforced-rules.md and two fragments merge without a conflict', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'registry-union-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@e.invalid', ...args], { encoding: 'utf8' });
+  try {
+    git('init', '-q', '-b', 'main');
+    copyFileSync(new URL('../.gitattributes', import.meta.url), join(repo, '.gitattributes'));
+    mkdirSync(join(repo, 'docs')); mkdirSync(join(repo, 'engine', 'related-tests.d'), { recursive: true });
+    writeFileSync(join(repo, 'docs', 'enforced-rules.md'), '| Rule | Enforcer |\n|---|---|\n| base | x |\n');
+    git('add', '-A'); git('commit', '-qm', 'base');
+    for (const side of ['a', 'b']) {
+      git('switch', '-q', '-c', side, 'main');
+      mkdirSync(join(repo, 'engine', 'related-tests.d'), { recursive: true });
+      writeFileSync(join(repo, 'docs', 'enforced-rules.md'), `| Rule | Enforcer |\n|---|---|\n| base | x |\n| rule ${side} | y |\n`);
+      writeFileSync(join(repo, 'engine', 'related-tests.d', `${side}.json`), `{"engine/${side}.sh": ["engine/${side}.test.sh"]}\n`);
+      git('add', '-A'); git('commit', '-qm', side);
+    }
+    git('switch', '-q', 'a');
+    git('rebase', '-q', 'b'); // quick-land replays a land onto a moved main the same way
+    const rules = readFileSync(join(repo, 'docs', 'enforced-rules.md'), 'utf8');
+    assert.ok(rules.includes('| rule a | y |') && rules.includes('| rule b | y |'), rules);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
 });

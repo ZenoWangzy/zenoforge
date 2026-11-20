@@ -32,7 +32,7 @@ const CI_TREE_TESTS = Object.freeze([
   'scripts/ci/prepare-dagger-input.test.mjs',
 ].map(packPath));
 
-export const RELATED_TESTS = new Map([
+export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() => ({ addRelatedTestFragments: (map) => map }))).addRelatedTestFragments(new Map([ // new rows: related-tests.d/*.json; a lone copy of this file has none
   ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh', 'tools/pin-fail-triage.test.sh']],
   ['tools/pin-fail-triage.sh', ['tools/pin-fail-triage.test.sh']],
   ['engine/supervisor/**', ['engine/supervisor.test.sh']],
@@ -414,7 +414,7 @@ export const RELATED_TESTS = new Map([
   ['engine/focused-test-paths.mjs', ['engine/focused-test-paths.test.mjs', 'engine/landing-fast-path.test.mjs']],
   ['engine/pack-dir.mjs', ['engine/risk-class.test.mjs', 'engine/verification-plan.test.mjs']],
   ['engine/incident-guards.mjs', ['engine/incident-guards.test.mjs', 'engine/generate-lesson-enforcers.test.mjs', 'engine/lesson-recurrence-ranking.test.mjs', 'engine/night/incident-guard-audit.test.mjs']],
-].map(([key, tests]) => [packPath(key), tests.map(packPath)]));
+].map(([key, tests]) => [packPath(key), tests.map(packPath)])), packPath);
 
 // The target config's (or, during migration, the pack's) state/focused-test-map.json adds or replaces
 // entries; its pack_root lets the same data follow a relocated pack. With neither, the generic map stands.
