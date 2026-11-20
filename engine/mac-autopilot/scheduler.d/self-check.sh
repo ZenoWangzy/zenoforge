@@ -320,8 +320,8 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       elif (( rc == 75 || rc == 125 )); then printf 'defer\n' > "$result"
       else printf 'red\n' > "$result"; fi
     fi
-    git -C "$dir" rev-parse HEAD > "$out.head" 2>/dev/null || :
     [[ -z "$config_temp" ]] || rm -f "$config_temp"
+    git -C "$dir" rev-parse HEAD > "$out.head" 2>/dev/null || :
   ) > "$out" 2>&1 < /dev/null &
   pid=$!
   set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
