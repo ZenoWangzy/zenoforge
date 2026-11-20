@@ -13,6 +13,10 @@ DRY_RUN=0
 AGENT_DRY_RUN=0
 source "$SCRIPT_DIR/lib.sh"
 
+# This suite exercises the earlier admission checks; the merge-result suites
+# have their own end-to-end fixtures in optimistic-merge.test.sh.
+merge_result_focused_tests() { MERGE_RESULT_FOCUSED_FAILURE=''; return 0; }
+
 assert_eq() {
   local label="$1" expected="$2" actual="$3"
   if [[ "$expected" != "$actual" ]]; then
