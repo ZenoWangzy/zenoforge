@@ -304,6 +304,11 @@ self_check_failure_class() { # log → short class of the first failure line
 self_check_harvest() {
   local id pid out start status fixes sid model verification_json verification_update reason_update
   while IFS=$'\t' read -r id pid out start; do
+    scheduler_lock_yield_between_units || return 1
+    [[ "${SCHEDULER_LOCK_YIELDED:-false}" != true \
+      || ( "$(unit_field "$id" '.self_check_pid // empty')" == "$pid" \
+        && "$(unit_field "$id" '.self_check_output // empty')" == "$out" \
+        && "$(unit_field "$id" '.self_check_start // empty')" == "$start" ) ]] || continue
     if [[ ! -s "$out.result" ]]; then
       if kill -0 "$pid" 2>/dev/null && { [[ -z "$start" || "$(pid_start "$pid")" == "$start" ]]; }; then continue; fi
       # Gate died (reboot, SIGKILL) before any verdict: the check never failed, so run it again.
@@ -332,6 +337,7 @@ self_check_harvest() {
       say "self-check red unit=$id: normal review with failure attached (fixes=$fixes, original session=${sid:-unavailable})"
     fi
   done < <(jqf -r '.units[] | select(.self_check_pid!=null) | [.id,.self_check_pid,.self_check_output,(.self_check_start // "")] | @tsv' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }
 self_fix_dispatch() { # unit JSON; keep its selected provider/session unless quota or hard-tier routing changes it
   local u="$1" id dir branch out rep impl_report prompt model effort provider hard_escalation route_reason route_provider deliver key failure

@@ -64,6 +64,11 @@ reconcile_orphan_prs() {
   # 生产热修的源 PR 先收（任意分支），它们挡着所有 Example 发布（release_train.sh 写 release-blockers.json）。
   for prn in $(jqf_optional_file "$A/release-blockers.json" -r '.blockers[]?' 2>/dev/null); do
     [[ "$prn" =~ ^[0-9]+$ ]] || continue
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      prs="$(tick_prs)" || continue
+      jqf_optional_file "$A/release-blockers.json" -e --argjson p "$prn" 'any(.blockers[]?; . == $p)' >/dev/null 2>&1 || continue
+    fi
     if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" == 1 ]]; then
       handoff_include_pr "$prn" || continue
       register_new_issues 1 reuse
@@ -82,6 +87,17 @@ reconcile_orphan_prs() {
   done
   while IFS=$'\t' read -r prn branch draft n title issue_state issue_labels; do
     [[ "$prn" =~ ^[0-9]+$ ]] || continue
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      prs="$(tick_prs)" || continue
+      jqf -e --argjson p "$prn" --arg branch "$branch" --arg draft "$draft" \
+        'any(.[]; .number==$p and .headRefName==$branch and ((.isDraft // false) | tostring)==$draft)' <<<"$prs" >/dev/null || continue
+      if [[ "$n" =~ ^[0-9]+$ ]]; then
+        states_by_number="$(orphan_issue_states "$n")" || continue
+        issue_state="$(jqf -r --arg n "$n" '.[$n].state // "UNKNOWN"' <<<"$states_by_number")"
+        issue_labels="$(jqf -c --arg n "$n" '.[$n].labels // []' <<<"$states_by_number")"
+      fi
+    fi
     jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' <(units_history_index) >/dev/null && continue
     if [[ ! "$n" =~ ^[0-9]+$ ]]; then foreign=$((foreign + 1)); continue; fi
     handoff_pr_waiting "$prn" "$n" && { agent_left=$((agent_left + 1)); continue; }
@@ -116,6 +132,7 @@ reconcile_orphan_prs() {
     reg=$((reg + 1))
     say "orphan PR#$prn registered for review (issue #$n)"
   done <<<"$rows"
+  scheduler_lock_yield_between_units || return 1
   echo "agent=$agent_left foreign=$foreign" > "$A/orphan-prs.count"
 }
 aged_pr_intent_issue() { # branch → issue number（agent/issue-N / agent/auto-issue-N），无则空
@@ -175,6 +192,16 @@ aged_pr_lifecycle() {
       | select(.pr != null and (.stage | IN("merged","closed") | not))
       | select(((.supervisor_owned // false) == true) or (([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut)) | .pr]' <(units_history_doc))"
   while IFS=$'\t' read -r prn branch head created; do
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+      pr_json="$(tick_prs)" || continue
+      jqf -e --argjson p "$prn" --arg branch "$branch" --arg head "$head" --arg created "$created" \
+        'any(.[]; .number==$p and .baseRefName=="main" and .headRefName==$branch and .headRefOid==$head and .createdAt==$created)' \
+        <<<"$pr_json" >/dev/null || continue
+      live_prs="$(jqf -c --argjson cut "$((NOW_EPOCH - AGED_PR_AGE_SECONDS))" '[.units[]
+          | select(.pr != null and (.stage | IN("merged","closed") | not))
+          | select(((.supervisor_owned // false) == true) or (([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut)) | .pr]' <(units_history_doc))"
+    fi
     [[ "$prn" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]] || continue
     jq -e --argjson p "$prn" 'index($p) != null' <<<"$live_prs" >/dev/null && continue
     n="$(aged_pr_intent_issue "$branch")"
@@ -246,6 +273,7 @@ aged_pr_lifecycle() {
     aged_pr_close "$prn" "$branch" "$age" "${behind:-?}" "仍需要" "原意图已按新 main 重开为 #${m_n}" "$m_n" || continue
     done_n=$((done_n + 1))
   done <<<"$rows"
+  scheduler_lock_yield_between_units || return 1
   (( done_n > 0 || left > 0 )) && say "aged PR lifecycle: classified=$done_n deferred=$left"
   echo "classified=$done_n deferred=$left" > "$A/aged-prs.count"
   return 0

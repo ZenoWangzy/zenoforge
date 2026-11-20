@@ -6643,6 +6643,81 @@ sched_case_tick_tail_order() {
 }
 sched_run_case tick_tail_order
 
+sched_case_retire_landed_lock_yield() (
+  unit_tick="$test_env_root/retire-lock-yield"
+  mkdir -p "$unit_tick/repo" "$unit_tick/supervisor/autopi/alerts"
+  ROOT="$unit_tick/repo"; SUP="$unit_tick/supervisor"; A="$unit_tick/supervisor/autopi"
+  UNITS="$A/units.json"; WORKERS="$A/workers.json"; UNITS_ARCHIVE="$A/units-archive.json"; LOG="$A/scheduler.log"
+  SCHED_LOCK="$A/.scheduler.lock"; SCHED_LOCK_HELD=false; PAUSE_FILE="$A/PAUSE"
+  CFG='{"max_workers":20,"auto_merge":false,"release_train":{"enabled":false}}'
+  STAMP=unit-loop-yield-test; NOW_EPOCH=1793577600; MAX=20; IMPLEMENT_CAP=20
+  RETIRE_PR_CHECK_MAX=50; AWAITING_RELEASE_RETRY_MAX=0
+  TICK_PRS='[]'; TICK_PHASES=''; TICK_PHASE_DETAILS=''; TICK_LOCK_WAIT=0
+  GH_TICK_CALLS_FILE=''; TICK_INTAKE_READS_FILE=''
+  TICK_PR_STATE=()
+  jq -cn '[range(1;51) as $i | {id:("pr-"+($i|tostring)),pr:$i,stage:"ready-to-merge",history:[]}] | {units:.}' > "$UNITS"
+  printf '{"workers":[]}\n' > "$WORKERS"
+  unit_batch_size="${SCHEDULER_LOCK_UNIT_BATCH_SIZE:-20}"
+  unit_batch_ms=$((unit_batch_size * 50)) # each simulated PR check takes 50ms
+  started="$A/retire-started"; queued="$A/refill-queued"; processed="$A/retire-processed"; result="$A/refill-lock-result"
+  printf '0\n' > "$processed"
+  fail() { echo "scheduler.test.sh: $*" >&2; exit 1; }
+  if ! declare -F scheduler_lock_yield_between_units >/dev/null; then
+    scheduler_lock_yield_between_units() { :; } # origin/main keeps the old uninterrupted pass so the latency assertion fails
+  fi
+  tick_prs() { printf '[]\n'; }
+  pr_view() {
+    [[ -e "$started" ]] || : > "$started"
+    until [[ -e "$queued" ]]; do sleep 0.01; done
+    sleep 0.05
+    local n; n="$(cat "$processed")"
+    printf '%s\n' "$((n + 1))" > "$processed"
+    printf 'MERGED\n'
+  }
+  state_schema_ok() { return 0; }
+  tick_gh_calls_begin() { :; }; tick_gh_calls_count() { printf '0\n'; }
+  tick_roadmap_cache_begin() { :; }; tick_roadmap_cache_end() { :; }
+  harvest_station_fresh() { return 0; }; ci_station_fresh() { return 0; }; merge_station_fresh() { return 0; }
+  existing_walk_fresh() { return 0; }; intake_census_prime() { :; }; existing_walked_load() { :; }
+  supervisor_marking_deferred() { return 1; }; paused_midrun() { return 1; }
+  phase_mark() { :; }; say() { :; }; rotate_logs() { :; }; update_budget() { return 0; }
+  budget_meter_scan() { :; }; budget_alert_if_needed() { :; }; git() { return 1; }
+  live_workers() { printf '0\n'; }; dispatch_skip_summary() { printf '\n'; }; tick_prs_changed() { :; }
+  start_detached_tick_step() { :; }
+  phase() { SCHEDULER_LOCK_YIELDED=false; if [[ "$1" == retire_landed_pr_units ]]; then retire_landed_pr_units; else :; fi; }
+  for stub in coord_reap_expired coord_reconcile_systemd_workers coord_reconcile_scheduler_workers \
+      reconcile_size_recuts self_check_harvest precheck_harvest recover_orphans recover_orphan_landing \
+      live_event_watch retire_terminal_units stuck_worker_disposition supersede_resolved_main_red_units \
+      mark_supervisor_owned_units release_session_pr_units dispatch_supervisor_arbiters dispatch_prompt_evals \
+      fast_land_lane register_new_prs reconcile_orphan_prs aged_pr_lifecycle run_release_train stage_slo_watch \
+      footprint_hog_alert flush_focus_alert publish_pr_run_snapshot launch_views cleanup_tick tick_prs_prime; do
+    eval "$stub() { :; }"
+  done
+
+  (
+    until [[ -e "$started" ]]; do sleep 0.01; done
+    : > "$queued"
+    TICK_LOCAL_REFILL=true
+    local_started="$(date +%s%N)"
+    acquire_scheduler_lock_wait 20 || exit 1
+    local_finished="$(date +%s%N)"
+    local_seen="$(cat "$processed")"
+    printf '%s\t%s\n' "$(((local_finished - local_started) / 1000000))" "$local_seen" > "$result"
+    release_scheduler_lock
+  ) & refill_probe=$!
+  main
+  wait "$refill_probe" || fail 'refill could not acquire the ledger lock during 50-unit retirement'
+  IFS=$'\t' read -r refill_wait_ms units_seen < "$result"
+  (( refill_wait_ms < unit_batch_ms )) \
+    || fail "refill waited ${refill_wait_ms}ms after $units_seen landed PR checks, longer than one ${unit_batch_ms}ms unit batch"
+  (( units_seen <= unit_batch_size )) \
+    || fail "refill waited until after $units_seen landed PRs were inspected (batch bound $unit_batch_size)"
+  [[ "$(jq -r '[.units | length, ([.units[] | select(.stage=="merged")] | length)] | @tsv' "$UNITS")" == $'50\t50' ]] \
+    || fail 'full-tick replay did not retire all 50 landed PR units'
+  printf 'unit-loop replay: units=50 refill_wait_ms=%s batch_ms=%s inspected_before_lock=%s\n' "$refill_wait_ms" "$unit_batch_ms" "$units_seen"
+)
+sched_run_case retire_landed_lock_yield
+
 sched_case_tick_unphased_marks() {
 # A kill outside a phase names what the tick was doing, not the last phase that finished (or the last tick's).
 (

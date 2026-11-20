@@ -21,7 +21,19 @@ fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-dir
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
   jqf -e 'any(.units[]; .stage=="landing")' "$UNITS" >/dev/null && return 0
   while read -r u; do
-    id="$(jqf -r .id <<<"$u")"; pr="$(jqf -r '.pr // empty' <<<"$u")"; approved="$(jqf -r '.approved_sha // empty' <<<"$u")"
+    id="$(jqf -r .id <<<"$u")"
+    scheduler_lock_yield_between_units || return 1
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
+        jqf -e 'any(.units[]; .stage=="landing")' "$UNITS" >/dev/null \
+          && { scheduler_lock_yield_between_units || return 1; return 0; }
+        u="$(jqf -c --arg id "$id" --arg policy "$(lane_policy_blob)" '.units[]
+          | select(.id==$id and .stage=="ready-to-merge" and (.hold_handoff_waiting // false)==false
+            and (.supervisor_owned // false)==false
+            and ((.pr // null)!=null or (.lane // "")=="direct-main")
+            and ((.lane // "")!="pr" or (.lane_policy // "")!=$policy))' "$UNITS")"
+        [[ -n "$u" ]] || continue
+    fi
+    pr="$(jqf -r '.pr // empty' <<<"$u")"; approved="$(jqf -r '.approved_sha // empty' <<<"$u")"
     [[ "$(ensure_lane "$id" "$pr")" == direct-main ]] || continue
     target="$(unit_review_target "$id" "$pr" direct-main "$(jqf -r '.branch // empty' <<<"$u")")" || {
       set_unit "$id" "$(hist approval-stale 'current PR head unavailable') | .approved_sha=null | .stage=\"rereview-pending\""
@@ -38,8 +50,10 @@ fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-dir
     title="$(jqf -r '.title // ""' <<<"$u")"; rep="land-${pr:-$id}-${TAG}.md"
     launch_land "$id" "$pr" "$approved" "$title" "$rep" "${rep%.md}.worker.log" "$wt" "$reviewed_pr_head" "$(jqf -r '.issue // empty' <<<"$u")"
     set_unit "$id" "$(hist land-issued "${pr:+PR#$pr }$approved") | .stage=\"landing\""
+    scheduler_lock_yield_between_units || return 1
     return 0
   done < <(fast_land_candidates)
+  scheduler_lock_yield_between_units || return 1
 }
 
 # A closed unit under an open ready-for-agent issue is skipped by intake for good, so the unit closes only after the

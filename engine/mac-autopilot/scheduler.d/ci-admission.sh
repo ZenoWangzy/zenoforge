@@ -55,6 +55,10 @@ mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记
 precheck_harvest() {
   local id pid head out first fails
   while IFS=$'\t' read -r id pid head; do
+    scheduler_lock_yield_between_units || return 1
+    [[ "${SCHEDULER_LOCK_YIELDED:-false}" != true \
+      || ( "$(unit_field "$id" '.precheck_pid // empty')" == "$pid" \
+        && "$(unit_field "$id" '.precheck_head // empty')" == "$head" ) ]] || continue
     alive "$pid" && continue
     out="$SUP/precheck-$id.out"; first="$(head -1 "$out" 2>/dev/null)"
     case "$first" in
@@ -67,6 +71,7 @@ precheck_harvest() {
         say "precheck unit=$id head=${head:0:9}: ${first:-PRECHECK: SKIP no output}" ;;
     esac
   done < <(jqf -r '.units[] | select(.precheck_pid != null) | [.id, .precheck_pid, (.precheck_head // "")] | @tsv' "$UNITS")
+  scheduler_lock_yield_between_units || return 1
 }
 precheck_launch() { # id pr head
   local dir pid pid_file
