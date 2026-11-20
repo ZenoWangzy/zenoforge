@@ -51,6 +51,8 @@ slice_cpu_used() { # latest zf.slice CPU average in cores, only after a 30-secon
       printf '%s\n' "$last_measured"
       return 0
     fi
+    # No measurement yet: keep the baseline, or callers polling under 30 s apart reset it forever.
+    return 1
   fi
   slice_cpu_store_sample "$file" "$now" "$usage" - || return 1
   return 1

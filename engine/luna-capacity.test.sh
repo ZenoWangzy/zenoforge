@@ -143,4 +143,19 @@ else
   failures=$((failures + 1))
 fi
 
+# Callers poll more often than every 30 s: a poll before the first measurement must keep the baseline.
+make_scopes
+prime_cpu_sample 0 0
+printf '80.00 0.00\n' > "$LUNA_PROC_UPTIME"
+printf 'usage_usec 5000000\n' > "$root/cgroup/zf.slice/cpu.stat"
+box_has_room || true
+printf '100.00 0.00\n' > "$LUNA_PROC_UPTIME"
+printf 'usage_usec 15000000\n' > "$root/cgroup/zf.slice/cpu.stat"
+if box_has_room; then
+  printf 'PASS a poll before the first measurement keeps the 30 s baseline\n'
+else
+  printf 'FAIL a poll before the first measurement reset the baseline: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+
 (( failures == 0 )) || exit 1
