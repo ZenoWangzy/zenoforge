@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGENT_CLIS, detectAgents, formatDoctor, hardFailures, runDoctor } from './doctor.mjs';
-import { currentVersion, installEngine, previousVersion, pruneEngines, rollback as rollbackEngine } from './engine.mjs';
+import { currentVersion, installEngine, installSkills, previousVersion, pruneEngines, rollback as rollbackEngine } from './engine.mjs';
 import * as gh from './github.mjs';
 import {
   AGENT_DIR, buildPath, labelsFromLib, renderCapacityEnv, renderConfigTemplate, renderEnvFile, renderLoopServices,
@@ -16,6 +16,7 @@ import { Actions, run, which } from './util.mjs';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PKG_ENGINE = path.join(PKG_ROOT, 'engine');
+const PKG_SKILLS = path.join(PKG_ROOT, '.agents', 'skills');
 const ENGINE_RUNTIME_DEPENDENCIES = [
   { name: '@typesafe-ai/sdk', source: path.join(PKG_ROOT, 'node_modules', '@typesafe-ai', 'sdk') },
 ];
@@ -126,7 +127,7 @@ function prepareCheckout(act, { repo, dir }) {
 }
 
 // Engine link and runtime state sit in the checkout but must survive its per-tick `git clean -fd`.
-const EXCLUDES = ['/engine', '/.scratch-supervisor', '/.scratch'];
+const EXCLUDES = ['/engine', '/.agents/skills', '/.scratch-supervisor', '/.scratch'];
 
 function excludeContent(existing) {
   const have = new Set(existing.split('\n'));
@@ -255,6 +256,7 @@ export async function init(opts, io) {
 
   // 6. execute (the checkout first: cloning is the step most likely to fail, and then nothing is left in ~/.zenoforge)
   prepareCheckout(act, { repo, dir: checkout });
+  installSkills(act, { srcSkills: PKG_SKILLS, checkout });
   act.mkdir(agentHome);
   const auth = ghReady ? io.exec('gh', ['auth', 'status']) : null;
   let ghToken = '';
