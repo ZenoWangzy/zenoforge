@@ -1,5 +1,5 @@
 stuck_worker_disposition() {
-  local scorecard="$A/node-health.json" bound offenders id w pid wtype probe fp held kills next issue hold_cli hold_ok cpu_now cpu_then
+  local scorecard="$A/node-health.json" bound offenders id w pid unit wtype probe fp held kills next issue hold_cli hold_ok cpu_now cpu_then
   local signal_active=0 named_count=0 live_count=0 killed_count=0
   local first_seen=0 progress=0 unchanged_window=0 unchanged_confirmed=0 no_live_worker=0 action
   local cap_worker cap_pid cap_unit cap_log cap_count cap_commands cap_summary cap_workdir cap_issue cap_branch cap_evidence cap_recut_ok cap_stash
@@ -91,7 +91,7 @@ stuck_worker_disposition() {
     harvest_worker_alive "$slow_worker" || continue
     wunit="$(jqf -r '.unit' <<<"$slow_worker")"; wlog="$(jqf -r '.log' <<<"$slow_worker")"
     mt="$(stat -c %Y "$SUP/$wlog" 2>/dev/null || true)"
-    if [[ "$mt" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - mt > idle_min * 60 )); then widened="${widened}${widened:+ }$wunit"; fi
+    if [[ "$mt" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - mt > idle_min * 60 )); then widened="${widened}${widened:+$'\n'}$wunit"; fi
   done < <(jqf -c '.workers[] | select(.harvested != true and (.type | test("^(implement|repair|review|rereview|land)$")))' "$WORKERS" 2>/dev/null)
   scheduler_lock_yield_between_units || return 1
   for id in $widened; do
@@ -183,13 +183,29 @@ stuck_worker_disposition() {
   done
   scheduler_lock_yield_between_units || return 1
   # 信号恢复或单元离开超龄名单：清掉旧探针，下一次卡住从新指纹起算。
+  local current_offenders current_bound current_worker current_log current_mtime
   for id in $(jqf -r '.units[] | select(.stuck_probe != null) | .id' "$UNITS"); do
     scheduler_lock_yield_between_units || return 1
     if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
       && ! jqf -e --arg id "$id" 'any(.units[]; .id==$id and .stuck_probe != null)' "$UNITS" >/dev/null; then
       continue
     fi
-    case " $offenders " in *" $id "*) ;; *) set_unit "$id" 'del(.stuck_probe)' ;; esac
+    current_offenders=""
+    if [[ -s "$scorecard" ]] \
+      && [[ "$(jqf -r '[.metrics[] | select(.id=="flow.wip_age_stage_p90_hours")][0].status // ""' "$scorecard")" == UNHEALTHY ]]; then
+      current_bound="$(jqf -r '[.metrics[] | select(.id=="flow.wip_age_stage_p90_hours")][0].unhealthy // 12' "$scorecard")"
+      if [[ "$current_bound" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        current_offenders="$(jqf -r --argjson bound "$current_bound" '[.flow.wip_age[]? | select((.p90_hours // 0) >= $bound) | .oldest[]?.id] | unique | join(" ")' "$scorecard")"
+      fi
+    fi
+    case " $current_offenders " in *" $id "*) continue ;; esac
+    current_worker="$(jqf -c --arg unit "$id" '[.workers[] | select(.unit==$unit and .harvested!=true and (.type | test("^(implement|repair|review|rereview|land)$")))] | sort_by(.started) | last // empty' "$WORKERS")"
+    if [[ -n "$current_worker" ]] && harvest_worker_alive "$current_worker"; then
+      current_log="$(jqf -r '.log' <<<"$current_worker")"
+      current_mtime="$(stat -c %Y "$SUP/$current_log" 2>/dev/null || true)"
+      if [[ "$current_mtime" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - current_mtime > idle_min * 60 )); then continue; fi
+    fi
+    set_unit "$id" 'del(.stuck_probe)'
   done
   scheduler_lock_yield_between_units || return 1
   if (( signal_active )) || [[ -n "$widened" ]]; then

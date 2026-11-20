@@ -108,6 +108,20 @@ seed_log() { mkdir -p "$fixture/notrepo"; printf 'event line 1\n' > "$sup/worker
 fail() { echo "stuck-worker-disposition.test.sh: $*" >&2; exit 1; }
 source "$script_dir/scheduler.sh"
 
+if declare -F scheduler_lock_yield_between_units >/dev/null; then
+  # A candidate selected from the old snapshot must still match the hotfix branch after a lock yield.
+  saved_scheduler_yield="$(declare -f scheduler_lock_yield_between_units)"
+  scheduler_lock_yield_between_units() {
+    jqf '.units[0].branch = "fix/plain"' "$UNITS" > "$UNITS.race"
+    mv "$UNITS.race" "$UNITS"
+  }
+  printf '%s\n' '{"units":[{"id":"pr-branch-race","branch":"hotfix/branch-race","hotpatch":false,"stage":"review","history":[]}]}' > "$UNITS"
+  SCHEDULER_LOCK_UNIT_BATCH_SIZE=1 mark_supervisor_owned_ids pr-branch-race '["hotfix/branch-race"]' false
+  eval "$saved_scheduler_yield"
+  jqf -e '.units[0].branch == "fix/plain" and .units[0].supervisor_owned != true' "$UNITS" >/dev/null \
+    || fail "a branch that changed during a lock yield must not be marked supervisor-owned"
+fi
+
 FIXTURE_RECUT_LOG="$fixture/recut.calls"
 FIXTURE_RECUT_FAIL_ISSUE=4372
 export FIXTURE_RECUT_LOG FIXTURE_RECUT_FAIL_ISSUE
@@ -237,6 +251,23 @@ write_units "$(mk_unit pr-77 "$(probe_update 90 stale)")" "$(mk_unit pr-88)" "$(
 STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
 [[ -z "$(unit_field pr-77 '.stuck_probe // empty')" ]] || fail "recovered signal must clear stale probes"
 
+if declare -F scheduler_lock_yield_between_units >/dev/null; then
+  # If a refill updates the scorecard during cleanup, retain the newly active offender's probe.
+  scorecard HEALTHY > "$A/node-health.json"
+  write_workers "[]"
+  write_units "$(mk_unit pr-77 "$(probe_update 90 stale)")" "$(mk_unit pr-88)" "$(mk_unit pr-99)"
+  saved_scheduler_yield="$(declare -f scheduler_lock_yield_between_units)"
+  yield_calls=0
+  scheduler_lock_yield_between_units() {
+    yield_calls=$((yield_calls + 1))
+    if (( yield_calls == 5 )); then scorecard UNHEALTHY > "$A/node-health.json"; fi
+  }
+  STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
+  eval "$saved_scheduler_yield"
+  [[ -n "$(unit_field pr-77 '.stuck_probe // empty')" ]] \
+    || fail "a probe for a newly current offender must survive cleanup after a lock yield"
+fi
+
 # ---- 6. 无 scorecard（f8 未跑）：不动任何东西 -------------------------------------------------
 rm -f "$A/node-health.json"
 pid6="$(spawn_worker pr-77-no-scorecard)"
@@ -280,6 +311,22 @@ process_running "$pid11" || fail "silent worker still burning >=1% CPU over its 
 jq -e '.units[] | select(.id=="pr-22") | .stuck_probe.cpu == 60000000' "$UNITS" >/dev/null || fail "busy worker must re-baseline its CPU sample"
 unset -f worker_tree_busy_usec
 kill -TERM -- "-$pid11" 2>/dev/null || true
+
+# Two silent workers with CPU progress must both match the newline-separated widened-id set.
+pid12="$(spawn_worker pr-12-busy)"; pid13="$(spawn_worker pr-13-busy)"
+seed_log pr-12-busy; seed_log pr-13-busy
+touch -d '40 minutes ago' "$sup/worker-pr-12-busy.log" "$sup/worker-pr-13-busy.log"
+worker_tree_busy_usec() { printf '60000000\n'; }
+write_workers "[$(mk_worker pr-12-busy "$pid12"), $(mk_worker pr-13-busy "$pid13")]"
+write_units \
+  "$(mk_unit pr-12-busy ".stuck_probe = {at:\"$(iso_ago 90)\", fp:\"$(fp_of pr-12-busy "$pid12")\", cpu:0}")" \
+  "$(mk_unit pr-13-busy ".stuck_probe = {at:\"$(iso_ago 90)\", fp:\"$(fp_of pr-13-busy "$pid13")\", cpu:0}")" \
+  "$(mk_unit pr-99)"
+STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
+process_running "$pid12" || fail "first silent worker with CPU progress must be kept"
+process_running "$pid13" || fail "second silent worker with CPU progress must be kept"
+unset -f worker_tree_busy_usec
+kill -TERM -- "-$pid12" "-$pid13" 2>/dev/null || true
 
 # ---- 7d. 内存回收限流（MemoryHigh）的 worker：CPU 几乎为 0，但 PSI memory 停顿计入忙碌时间 ----------
 cg="$test_env_root/cg-7d"; mkdir -p "$cg"
