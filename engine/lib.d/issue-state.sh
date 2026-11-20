@@ -109,7 +109,7 @@ state_read() {
 
 ticket_stage_is_label() {
   local candidate="$1" label
-  for label in "${ALL_STATE_LABELS[@]}"; do
+  for label in tracker "${ALL_STATE_LABELS[@]}"; do
     [ "$candidate" = "$label" ] && return 0
   done
   return 1

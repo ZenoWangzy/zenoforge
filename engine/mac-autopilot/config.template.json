@@ -38,6 +38,7 @@
     "author_routes": {"OWNER": "admit", "MEMBER": "admit", "COLLABORATOR": "admit"},
     "trusted_authors": [],
     "ready_buffer": null,
+    "aging_hours": 75,
     "refill_max": 2,
     "refill_max_footprint_candidates": 4,
     "refill_full_tick_fresh_seconds": 600,
