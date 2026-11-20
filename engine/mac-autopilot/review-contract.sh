@@ -32,29 +32,22 @@ review_findings_with_contract_relation() { # normalized findings JSON → enrich
 }
 
 # Blocking findings that repeat become mechanical rules. A reviewer-supplied `class` is exact; otherwise the
-# rule plus the first six summary words stands in for it.
-# shortcut: summary wording drifts between reviews, so near-duplicates may miss; upgrade when the review prompt emits `class`.
+# normalized rule, repository path and 20-line range identify the finding.
 review_finding_class_key() { # normalized finding JSON → stable slug, at most 50 chars
-  local finding="$1" slug text
+  local finding="$1" slug basis
   slug="$(jq -r 'if (.class|type)=="string" and (.class|test("^[a-z0-9][a-z0-9-]{0,49}$")) then .class else "" end' <<<"$finding" 2>/dev/null)" || return 0
   if [[ -z "$slug" ]]; then
-    text="$(jq -r '(.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | gsub("^\\s+|\\s+$"; "")' <<<"$finding" 2>/dev/null)" || return 0
-    # An empty summary has nothing to key on; a shared hash would merge unrelated findings into one ticket.
-    [[ -n "$text" ]] || return 0
-    # Non-ASCII text is dropped from the words, so `写入 null 判空` and `读取 null 判空` would collide: hash the whole text instead.
-    if ! LC_ALL=C grep -q '[^ -~]' <<<"$text"; then
-      slug="$(jq -r '. as $f
-        | (($f.summary // "") | sub("^\\[contract: (in|out)\\] "; "") | split(" ") | .[0:6] | join(" ")
-          | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) as $words
-        | if $words == "" then ""
-          else ((($f.rule // "finding") | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "")) + "-" + $words)
-            | gsub("^-+|-+$"; "") | .[0:50] | gsub("-+$"; "")
-          end' <<<"$finding" 2>/dev/null)" || return 0
-    fi
-    # shortcut: no ASCII words or non-ASCII text falls back to an exact-text hash, so a reworded Chinese summary misses its recurrence; upgrade when the prompt emits `class`.
-    if [[ -z "$slug" ]]; then
-      slug="finding-$(printf '%s|%s' "$(jq -r '.rule // ""' <<<"$finding" 2>/dev/null)" "$text" | sha1sum | cut -c1-12)"
-    fi
+    basis="$(jq -r '
+      . as $f
+      | ([$f.rule_id, $f.rule, $f.title] | map(select(type=="string" and length>0)) | first // ""
+          | gsub("^\\s+|\\s+$"; "") | ascii_downcase | gsub("\\s+"; " ")) as $rule
+      | ([$f.file, $f.path] | map(select(type=="string" and length>0)) | first // ""
+          | gsub("^\\s+|\\s+$"; "") | gsub("\\\\"; "/") | gsub("^\\./+"; "") | gsub("/+"; "/")) as $file
+      | if $rule != "" and $file != "" and ($f.line|type)=="number" and $f.line>0 and $f.line==($f.line|floor)
+        then (((($f.line - 1) / 20) | floor) * 20 + 1) as $start | [$rule, $file, $start, ($start + 19)] | @json
+        else "" end' <<<"$finding" 2>/dev/null)" || return 0
+    [[ -n "$basis" ]] || return 0
+    slug="finding-$(printf '%s' "$basis" | sha1sum | cut -c1-12)"
   fi
   printf '%s\n' "$slug"
 }

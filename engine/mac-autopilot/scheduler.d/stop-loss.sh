@@ -59,10 +59,17 @@ ticket_budget_reason() { # unit-json
   local round_stages='["supervisor-requeue","supervisor-approve","supervisor-cap-budget-refill","advisor-ruling","review-approve","ci-ready"]'
   rounds="$(effective_write_starts_since_ruling "$1" "$round_stages")" || return 1
   # The wall counts time a worker held the unit: 2295 read 1688min after 1 round, nearly all of it queue.
-  jqf -r --argjson rounds "$rounds" --argjson ruling_stages "$ruling_stages" --argjson round_budget "$TICKET_ROUND_BUDGET" --argjson wall_budget "$TICKET_WALL_BUDGET_SECONDS" --argjson now "$NOW_EPOCH" '
+  jqf -r --argjson rounds "$rounds" --argjson ruling_stages "$ruling_stages" --arg prefix "$STOP_LOSS_FRESH_PREFIX" --argjson round_budget "$TICKET_ROUND_BUDGET" --argjson wall_budget "$TICKET_WALL_BUDGET_SECONDS" --argjson now "$NOW_EPOCH" '
     def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
+    def sched_fresh: .stage == "supervisor-requeue" and ((.result // "") | startswith($prefix));
+    def test_red: .stage | IN("ci-test-red", "ci-red", "self-check-red");
     (.history // []) as $h
     | ([$h | to_entries[] | select(.value.stage | IN($ruling_stages[])) | .key] | max // -1) as $ruling
+    # Per-class counts ignore scheduler fresh-signal requeues, which otherwise restart the total write budget.
+    | ([$h | to_entries[] | select((.value.stage as $stage | ($ruling_stages | index($stage)) != null) and (.value | sched_fresh | not)) | .key] | max // -1) as $class_ruling
+    | $h[($class_ruling + 1):] as $class_window
+    | ([$class_window[] | select(.stage == "merge-conflict")] | length) as $conflicts
+    | ([$class_window[] | select(test_red)] | length) as $test_reds
     | (reduce ($h[($ruling + 1):][] | select(.at != null)) as $e ({open: null, next_row: null, secs: 0};
         ($e.at | epoch) as $t
         | if $e.stage == "write-start" or $e.stage == "write-end" then
@@ -75,7 +82,9 @@ ticket_budget_reason() { # unit-json
         elif (.stage // "" | IN("implement", "repair")) then [$now - $work.open, 0] | max
         elif $work.next_row != null then [$work.next_row - $work.open, 0] | max
         else 0 end)) as $worker_secs
-    | if ($rounds | length) >= $round_budget
+    | if $conflicts >= $round_budget then "merge-conflict rounds \($conflicts) of \($round_budget)"
+      elif $test_reds >= $round_budget then "test-red rounds \($test_reds) of \($round_budget)"
+      elif ($rounds | length) >= $round_budget
       then "rounds \($rounds | length) of \($round_budget)"
       else select($worker_secs > $wall_budget)
         | "wall \(($worker_secs / 60) | floor)min of \(($wall_budget / 60) | floor)min after \($rounds | length) rounds"
@@ -99,7 +108,21 @@ STOP_LOSS_WINDOW_JQ='
     | ([$w[] | select(.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes", "review-block", "review-approve", "ci-ready",
         "repair-no-push", "worker-no-output", "implement-no-push", "implement-no-changes", "size-recut"))] | last // null) as $front
     | ([$w[] | select(red) | [.stage, (.result | norm), (.result // "" | tostring | gsub("\\s+"; " "))]]) as $reds'
-stop_loss_same_failure() { # unit-json → prints the failure's check label (the red event's result) when it repeats an earlier round's; rc 1 otherwise
+stop_loss_failure_round_reason() { # unit-json → repeated conflict or test-red count at the configured round bound
+  jqf -er --arg prefix "$STOP_LOSS_FRESH_PREFIX" --argjson bound "$TICKET_ROUND_BUDGET" "$STOP_LOSS_WINDOW_JQ"'
+    | ([$w[] | select(.stage == "merge-conflict")] | length) as $conflicts
+    | ([$w[] | select(red)] | length) as $test_reds
+    | if $conflicts >= $bound then "merge-conflict rounds \($conflicts) of \($bound)"
+      elif $test_reds >= $bound then "test-red rounds \($test_reds) of \($bound)"
+      else empty end' <<<"$1" 2>/dev/null
+}
+
+stop_loss_same_failure() { # unit-json → repeated check label or conflict/test-red class at its bound; rc 1 otherwise
+  local failure_rounds
+  if failure_rounds="$(stop_loss_failure_round_reason "$1")"; then
+    printf '%s\n' "$failure_rounds"
+    return 0
+  fi
   jqf -er --arg prefix "$STOP_LOSS_FRESH_PREFIX" "$STOP_LOSS_WINDOW_JQ"'
     | select($front != null and (if $front | red then ($reds[-1]) as $c | $reds[:-1] | any(.[0] == $c[0] and .[1] == $c[1])
         else ($front.stage | IN("merge-conflict", "review-request-changes")) and any($w[] | select(sched); (.result | ltrimstr($prefix)) == $front.stage) end))

@@ -11,7 +11,6 @@
 2	engine/mac-autopilot/dashboard.html
 1	engine/mac-autopilot/live_workers.py
 1	engine/mac-autopilot/node_health.py
-2	engine/mac-autopilot/review-contract.sh
 1	engine/mac-autopilot/scheduler.d/ci-admission.sh
 1	engine/mac-autopilot/scheduler.d/ci-status.sh
 2	engine/mac-autopilot/scheduler.d/conflict-resolve.sh
