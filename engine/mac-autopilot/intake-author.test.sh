@@ -91,7 +91,8 @@ grep -Fq 'author read failed; retry next tick' "$log" || fail "read failure not 
 # A gate that takes 10 s or more logs one slow line naming the slow step; a fast gate logs none.
 author 12 NONE stranger; comments 12 '[]'
 [[ "$(SLOW_TRANSITION=11 run 12)" == 1 ]] || fail 'slow outsider admitted'
-grep -Eq 'intake author gate slow issue=#12 total=1[12]s read=0s comments=0s comment=0s transition=11s' "$log" || fail "slow gate did not name its step: $(cat "$log")"
+# Steps are whole seconds, so a fast step can read 1s when it crosses a second boundary under load (E5 land 12:35Z 11-20).
+grep -Eq 'intake author gate slow issue=#12 total=1[1-3]s read=[01]s comments=[01]s comment=[01]s transition=11s' "$log" || fail "slow gate did not name its step: $(cat "$log")"
 author 14 NONE stranger; comments 14 '[]'
 [[ "$(run 14)" == 1 ]] || fail 'fast outsider admitted'
 ! grep -Fq 'author gate slow' "$log" || fail "fast gate logged slow: $(cat "$log")"
