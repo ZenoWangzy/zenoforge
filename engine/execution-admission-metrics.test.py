@@ -123,6 +123,18 @@ class AdmissionMetrics(unittest.TestCase):
         self.assertEqual(len({r["attempt_id"] for r in rows}), 3)
         self.assertFalse(marker.exists())
 
+    def test_deferred_check_writes_one_efficiency_event_with_reason(self):
+        with self.held_slot():
+            result = self.invoke("check")
+        self.assertEqual(result.returncode, 75, result.stderr)
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event_type"], "execution-admission")
+        self.assertEqual(rows[0]["kind"], "check")
+        self.assertEqual(rows[0]["outcome"], "defer")
+        self.assertEqual(rows[0]["status"], 75)
+        self.assertEqual(rows[0]["reason"], "capacity")
+
     def test_no_readiness_events_and_actual_inherited_run_is_not_lease_release(self):
         self.assertEqual(self.invoke("check").returncode, 0)
         self.assertEqual(self.invoke("status").returncode, 0)

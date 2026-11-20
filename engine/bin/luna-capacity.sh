@@ -1,6 +1,5 @@
-# Shared total Codex/ZCode capacity used by both backend gates and the scheduler.
+# Shared worker-scope capacity used by both backend gates and the scheduler.
 LUNA_RUNS_HARD_CAP=10
-codex_runs() { local p n=0 pc; for p in $(pgrep -x codex) $(pgrep -x zcode-cli); do pc=$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')" 2>/dev/null); [[ "$pc" == codex || "$pc" == zcode-cli ]] || n=$((n+1)); done; echo "$n"; }
 luna_run_cap() { local cap="${LUNA_MAX:-$LUNA_RUNS_HARD_CAP}"; (( cap < LUNA_RUNS_HARD_CAP )) || cap=$LUNA_RUNS_HARD_CAP; printf '%s\n' "$cap"; }
 cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
   local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
@@ -16,12 +15,25 @@ slice_room_mb() { # prints MB left under the worker slice's memory.high, or noth
   [[ "$high" =~ ^[0-9]+$ && "$cur" =~ ^[0-9]+$ ]] || return 0
   echo $(( (high - cur) / 1048576 ))
 }
+worker_scope_runs() { local scope n=0; for scope in "$LUNA_WORKER_SLICE_DIR"/luna-*.scope "$LUNA_WORKER_SLICE_DIR"/zc-*.scope; do [[ -d "$scope" ]] || continue; n=$((n+1)); done; echo "$n"; }
+# Keep the old test seam name; production runs now come from worker cgroup scopes.
+codex_runs() { worker_scope_runs; }
+slice_cpu_max() { cat "${LUNA_WORKER_SLICE_DIR%/*}/cpu.max" 2>/dev/null || true; }
+slice_cpu_run_cap() { local quota period; read -r quota period <<< "${1:-}"; [[ "$quota" =~ ^[0-9]+$ && "$period" =~ ^[0-9]+$ && "$period" -gt 0 ]] || return 0; awk -v q="$quota" -v p="$period" -v per="${WORKER_CPU_PER_RUN:-0.5}" 'BEGIN { if (per > 0) printf "%d\n", int(q / p / per); else print 0 }'; }
 BOX_ROOM_WHY=""
 box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, and the priority hold
-  local age="${1:-$SECONDS}" runs avail cpu full cap slice
+  local age="${1:-$SECONDS}" runs scope_runs avail cpu full cap slice quota_line quota period cpu_cap
   BOX_ROOM_WHY=""
   [[ "$age" =~ ^[0-9]+$ ]] || age=0
   runs=$(codex_runs)
+  scope_runs=$(worker_scope_runs)
+  quota_line=$(slice_cpu_max)
+  cpu_cap=$(slice_cpu_run_cap "$quota_line")
+  read -r quota period <<< "$quota_line"
+  if [[ -n "$cpu_cap" ]] && (( scope_runs >= cpu_cap )); then
+    BOX_ROOM_WHY="worker scopes $scope_runs/$cpu_cap at zf.slice CPU quota $quota/$period (${WORKER_CPU_PER_RUN:-0.5} CPUs per run)"
+    return 1
+  fi
   cap=$(luna_run_cap)
   avail=$(awk '/^MemAvailable:/{print int($2/1024)}' "${LUNA_PROC_MEMINFO:-/proc/meminfo}")
   full=$(awk -F'avg10=' '/^full/{print int($2)}' "${LUNA_PROC_PSI_MEMORY:-/proc/pressure/memory}")

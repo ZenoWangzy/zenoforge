@@ -7,7 +7,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 engine="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 root="$test_env_root/worker-cpu-cap"
 fake_bin="$root/bin"; calls="$root/systemd-run.calls"
-mkdir -p "$fake_bin"
+worker_slice="$root/cgroup/zf.slice/zf-workers.slice"
+mkdir -p "$fake_bin" "$worker_slice"
+export LUNA_WORKER_SLICE_DIR="$worker_slice"
+export LUNA_PROC_MEMINFO="$root/meminfo" LUNA_PROC_PSI_MEMORY="$root/pressure-memory"
+printf 'MemAvailable: 8192000 kB\n' > "$LUNA_PROC_MEMINFO"
+printf 'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$LUNA_PROC_PSI_MEMORY"
 fail() { printf 'worker-cpu-cap.test.sh: %s\n' "$*" >&2; exit 1; }
 
 # Records every argument, then runs the command after `--` the way a scope does (nothing when there is none).
@@ -116,6 +121,27 @@ for backend in luna zc; do
   assert_inline_props "bin/$backend hotfix" 200% 1000
   : > "$calls"; AGENT_WORKER_MEM_HIGH=3G AGENT_WORKER_TASKS_MAX=900 "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_mem_props "bin/$backend knobs" 3G 900
+done
+
+# A wrapper terminated after its scope starts still stops that scope on exit.
+signal_bin="$root/signal-bin"; mkdir -p "$signal_bin"
+cat > "$signal_bin/sleep" <<'SH'
+#!/usr/bin/env bash
+kill -TERM "$PPID"
+exit 0
+SH
+chmod +x "$signal_bin/sleep"
+: > "$calls"; : > "$sctl"; rm -f "$WORKER_SCRATCH_ROOT/luna/k1/rc" "$WORKER_SCRATCH_ROOT/zc/k1/rc"
+for backend in luna zc; do
+  : > "$calls"; : > "$sctl"; rm -f "$WORKER_SCRATCH_ROOT/luna/k1/rc" "$WORKER_SCRATCH_ROOT/zc/k1/rc"
+  signal_rc=0
+  PATH="$signal_bin:$PATH" "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || signal_rc=$?
+  [[ "$signal_rc" == 143 ]] || fail "bin/$backend signal cleanup: rc $signal_rc, want 143"
+  [[ ! -f "$WORKER_SCRATCH_ROOT/luna/k1/rc" && ! -f "$WORKER_SCRATCH_ROOT/zc/k1/rc" ]] || fail "bin/$backend signal cleanup wrote a normal rc"
+  [[ "$backend" == luna ]] && scope_pattern='luna-k1' || scope_pattern='luna-zc-k1'
+  grep -Eq "^--user stop ${scope_pattern}-[0-9]+\\.scope rc=absent$" "$sctl" \
+    || fail "bin/$backend signal cleanup skipped the scope stop: $(cat "$sctl")"
+  printf 'PASS bin/%s TERM cleanup stops its scope before an rc is written\n' "$backend"
 done
 
 # --- bin/zc honours the ZCode hold marker (bin/worker reads the same file) ---
