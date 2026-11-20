@@ -20,6 +20,7 @@ fail() { echo "unit-transition-log.test.sh: $*" >&2; exit 1; }
 write_stage() { set_unit "$1" ".stage=$(js "$2")"; }
 batch_stage() { units_update --arg id "$1" --arg stage "$2" '.units |= map(if .id == $id then .stage = $stage else . end)'; }
 batch_stage_indirect() { units_update --arg id "$1" --arg stage "$2" '.units |= map(if .id == $id then setpath(["stage"]; $stage) else . end)'; }
+batch_mixed_stage() { units_update '.units |= map(if .id == "u" then .stage = "review-pending" elif .id == "batch" then .stage = "landing" else . end)'; }
 
 failures=()
 record_failure() { failures+=("$1"); echo "not ok - $1" >&2; }
@@ -48,6 +49,21 @@ batch_stage_indirect batch implement-pending || fail 'indirect units_update tran
 grep -F 'unit transition undeclared unit=batch from=review-pending to=implement-pending by=batch_stage_indirect' "$LOG" >/dev/null \
   || record_failure 'units_update missed a stage change written through setpath'
 [[ "$(unit_field batch '.stage')" == implement-pending ]] || fail 'indirect units_update did not write the stage'
+
+UNIT_TRANSITION_MODE=enforce
+cp "$UNITS" "$fixture/before-set-unit-refusal.json"
+if write_stage u landing; then fail 'enforce mode accepted an undeclared set_unit transition'; fi
+cmp -s "$fixture/before-set-unit-refusal.json" "$UNITS" || fail 'refused set_unit transition changed the ledger'
+grep -F 'unit-transition refused unit=u from=implement-pending to=landing caller=write_stage' "$LOG" >/dev/null \
+  || fail 'set_unit refusal did not log unit, stages and caller'
+
+cp "$UNITS" "$fixture/before-units-update-refusal.json"
+if batch_mixed_stage; then fail 'enforce mode accepted an undeclared units_update transition'; fi
+cmp -s "$fixture/before-units-update-refusal.json" "$UNITS" \
+  || fail 'refused units_update transition wrote the other legal stage change'
+grep -F 'unit-transition refused unit=batch from=implement-pending to=landing caller=batch_mixed_stage' "$LOG" >/dev/null \
+  || fail 'units_update refusal did not log unit, stages and caller'
+unset UNIT_TRANSITION_MODE
 
 transition_log="$LOG"
 mkdir "$fixture/unwritable-log"
@@ -85,4 +101,4 @@ if ((${#failures[@]})); then
   printf 'failed negative cases: %s\n' "${failures[*]}" >&2
   exit 1
 fi
-echo 'ok - unit stage writes log undeclared transitions without refusing them'
+echo 'ok - unit stage writes honor log and enforce modes at both ledger writers'
