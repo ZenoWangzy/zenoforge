@@ -364,13 +364,19 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
 # ---------- 2. 派发（焦点与并发；预算只告警） ----------
 # New worker slots apply intake's founder, hotfix, bug, fruit and market tiers before the existing urgency, stage and lane keys.
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。
+# dispatch_pending can request the WIP total from this ledger read; other callers still receive candidate rows only.
 dispatch_order() {
-  local started=$SECONDS rc=0 elapsed
-  jqf -L "$ENGINE_ROOT/engine" -c --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" \
+  local started=$SECONDS rc=0 elapsed include_wip="${1:-false}"
+  jqf -L "$ENGINE_ROOT/engine" -cr --argjson include_wip "$include_wip" --argjson wip_stages "$STARTED_WIP_STAGES" --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" \
     --argjson intake_priority "$(jqf -c '.intake_priority // {}' <<<"$CFG")" '
     import "intake-priority-policy" as intake_policy;
-    .units
-    | map(select(.stage | test("-pending$")))
+    (.units | map({unit: ., started_wip: (.stage as $stage | ($wip_stages | index($stage)) != null), pending: (.stage | test("-pending$"))})) as $dispatch_units |
+    (if $include_wip then
+      ([$dispatch_units[] | select(.started_wip)] | length) as $started_wip
+      | "WIP_COUNT=\($started_wip)"
+    else empty end),
+    ($dispatch_units
+    | map(select(.pending) | .unit)
     | sort_by([
         intake_policy::intake_dispatch_tier(.; $intake_priority),
         (.issue as $issue | if any($first_issues[] | numbers; . == $issue) then 0 else 1 end),
@@ -387,7 +393,7 @@ dispatch_order() {
         ((if .hotpatch == true then "hotfix" elif (.lane // "") == "direct-main" then "opt" else "normal" end) as $tier
           | ($priority_order | index($tier) // ($priority_order | length))),
         (.id // "")
-      ])[]
+      ])[])
   ' "$UNITS" || rc=$?
   elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( elapsed < 2 )) || say "dispatch detail candidate_order secs=${elapsed}s"

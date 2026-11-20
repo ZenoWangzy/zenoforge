@@ -474,6 +474,8 @@ dispatch_walk_full() { ! dispatch_capacity_free; }
 # Walk passes that drop a pending unit without a log line are counted by reason; the refill and tick summaries name them.
 declare -gA TICK_DISPATCH_SKIPS=()
 declare -gA TICK_PRIORITY_HOLD_EXPIRED=()
+# 11-20: parked/blocked units are stopped work, not flow; counting them (152 live at 08:40Z) would stop every new implement.
+STARTED_WIP_STAGES='["implement","review","review-pending","rereview","rereview-pending","repair","repair-pending","supervise","supervisor-review","ready-to-merge","landing"]'
 dispatch_skip() { TICK_DISPATCH_SKIPS[$1]=$(( ${TICK_DISPATCH_SKIPS[$1]:-0} + 1 )); dispatch_why "${why_unit:-}" "$1"; }
 dispatch_skip_summary() { # name:count,... for the reasons that fired this pass, sorted; empty when none
   local k out=""
@@ -483,7 +485,7 @@ dispatch_skip_summary() { # name:count,... for the reasons that fired this pass,
 }
 declare -F dmark >/dev/null || dmark() { :; } # dispatch-queue.sh defines the step timer; a unit test that loads this file alone gets a no-op
 room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=true] [report-only=false]：焦点与并发检查
-  local u="${3:-}" priority waiter impl_cap n_impl hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false why_unit="$1"
+  local u="${3:-}" priority waiter n_impl n_repair started_wip hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false why_unit="$1"
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   # A report-only continuation writes no code and starts no write-start: the repair round cap and the Dagger runtime gate do not apply to it.
   if [[ "$2" == repair && "${6:-false}" != true ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
@@ -543,14 +545,24 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
     say "skip dispatch unit=$1 priority=$priority (host capacity: ${BOX_ROOM_WHY:-unknown})"; dispatch_why "$1" host-capacity; return 1
   fi
   dmark room_host_capacity
-  impl_cap="$IMPLEMENT_CAP"
+  if [[ "$2" == implement ]]; then
+    started_wip="${TICK_STARTED_WIP_COUNT:-}"
+    if [[ ! "$started_wip" =~ ^[0-9]+$ ]]; then
+      started_wip="$(jqf -r --argjson stages "$STARTED_WIP_STAGES" '[.units[] | select(.stage as $stage | ($stages | index($stage)) != null)] | length' "$UNITS")"
+      [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || TICK_STARTED_WIP_COUNT="$started_wip"
+    fi
+    if (( started_wip >= STARTED_WIP_LIMIT )); then say "skip dispatch unit=$1 (started WIP $started_wip/$STARTED_WIP_LIMIT)"; dispatch_why "$1" wip-limit; return 1; fi
+  fi
   if [[ ( "$2" == "implement" || "$2" == "repair" ) && "$check_footprint" == true ]]; then
     footprint_room "$1" "$u" "$fresh_footprint" || { dmark room_footprint; return 1; }
     dmark room_footprint
   fi
-  if [[ "$2" == "implement" || "$2" == "repair" ]]; then
-    n_impl=$(live_by_type "implement|repair")
-    if (( n_impl >= impl_cap )); then say "skip dispatch unit=$1 (implement at cap $n_impl/$impl_cap)"; dispatch_why "$1" implement-cap; return 1; fi
+  if [[ "$2" == implement ]]; then
+    n_impl=$(live_by_type implement)
+    if (( n_impl >= IMPLEMENT_CAP )); then say "skip dispatch unit=$1 (implement at cap $n_impl/$IMPLEMENT_CAP)"; dispatch_why "$1" implement-cap; return 1; fi
+  elif [[ "$2" == repair ]]; then
+    n_repair=$(live_by_type repair)
+    if (( n_repair >= REPAIR_DISPATCH_CAP )); then say "skip dispatch unit=$1 (repair at cap $n_repair/$REPAIR_DISPATCH_CAP)"; dispatch_why "$1" repair-cap; return 1; fi
   fi
 }
 
@@ -656,6 +668,9 @@ $(tail -80 "$check_output" 2>/dev/null)"
   fi
   dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || { dmark dispatch_call; return 1; }
   dmark dispatch_call
+  if [[ "$3" == implement && "$report_only" != true && "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true && "${TICK_STARTED_WIP_COUNT:-}" =~ ^[0-9]+$ ]]; then
+    TICK_STARTED_WIP_COUNT=$((TICK_STARTED_WIP_COUNT + 1))
+  fi
   # A successful start can change whether later candidates fit; only reuse admission samples between starts.
   TICK_PRIORITY_ADMISSION_CACHE=()
   dispatch_why_clear "$1"
