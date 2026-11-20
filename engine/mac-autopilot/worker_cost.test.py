@@ -410,6 +410,13 @@ class Ledger(unittest.TestCase):
                 out.write(json.dumps(record) + "\n")
         (kept,) = roi_ledger.read_events(home)
         self.assertEqual((kept["ts"], kept["wall_s"]), ("2026-10-20T12:30:00Z", 1800.0))
+        # 11-20: a re-emit whose unit key no longer resolves carries tickets []; the ticket survives either order.
+        ledger = os.path.join(home, "metrics", "units-2026-10.jsonl")
+        for rows in ((dict(event, tickets=[4356]), dict(event, tickets=[])), (dict(event, tickets=[]), dict(harvest, tickets=[4356]))):
+            with open(ledger, "w", encoding="utf-8") as out:
+                out.writelines(json.dumps(record) + "\n" for record in rows)
+            (kept,) = roi_ledger.read_events(home)
+            self.assertEqual((kept["ts"], kept["tickets"]), ("2026-10-20T12:30:00Z", [4356]))
 
     def test_ticket_spend_closes_tickets_on_merged_history_and_bounds_from_history(self):
         self.log("impl-issue-5-20261020T120000Z.worker.log",

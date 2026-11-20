@@ -127,8 +127,14 @@ def read_events(home):
             if event.get("record_type") == "event" and event.get("schema_version") == 1:
                 validate_event(event)
                 kept = latest.get(event["event_id"])
+                # 11-20: a re-emit whose unit key no longer resolves writes tickets [] (1,307 unit-ends kept 644 with tickets,
+                # 1,291 had them in some row); a row's tickets survive a ticketless row of the same event_id.
+                if kept and not event.get("tickets") and kept.get("tickets"):
+                    event = {**event, "tickets": kept["tickets"]}
                 # Old ledgers hold a harvest-time and a log-mtime record per unit-end; the mtime is the real end and never later.
                 if kept and event["event_type"] == "unit-end" and _timestamp(event["ts"]) > _timestamp(kept["ts"]):
+                    if event.get("tickets") and not kept.get("tickets"):
+                        latest[event["event_id"]] = {**kept, "tickets": event["tickets"]}
                     continue
                 latest[event["event_id"]] = event
     return list(latest.values())
