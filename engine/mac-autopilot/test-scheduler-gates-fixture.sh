@@ -77,6 +77,8 @@ pick_review_for_unit() { PICK_MODEL="GLM-5.3"; PICK_EFFORT=max; return 0; }
 # The focused admission cases replace these probes and files with their own inputs.
 scheduler_gate_capacity_fixture() {
   LUNA_PROC_MEMINFO="$fixture/dispatch-meminfo" LUNA_PROC_PSI_MEMORY="$fixture/dispatch-psi"
+  # box_has_room also reads the worker slice's CPU quota and scopes (E9); the host's live slice refused dispatch here.
+  LUNA_WORKER_SLICE_DIR="$fixture/no-slice"
   LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85 LUNA_AGE_ADMIT_SECONDS=1200
   printf 'MemAvailable: 6291456 kB\n' > "$LUNA_PROC_MEMINFO"
   printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$LUNA_PROC_PSI_MEMORY"

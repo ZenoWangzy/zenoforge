@@ -542,7 +542,9 @@ export REVIEW_CLASS_UPSERT="$fixture/class-upsert.sh" REVIEW_CLASS_STATE="$fixtu
 findings_report rc-1-T1.md "$good_block"; harvest_rc pr-c1 rc-1-T1.md
 [[ ! -s "$class_log" ]] || fail 'a first sighting opened a rule ticket'
 findings_report rc-2-T1.md "$good_block"; harvest_rc pr-c2 rc-2-T1.md
-[[ "$(wc -l < "$class_log")" == 1 && "$(cat "$class_log")" == *'--class review-defect-x'* ]] || fail "second unit did not open exactly one rule ticket: $(cat "$class_log")"
+# F1 has no reviewer class, so review_finding_class_key hashes its rule, file and 20-line range (0d47bf3).
+class_expected="finding-$(printf '%s' '["defect","src/a.ts",41,60]' | sha1sum | cut -c1-12)"
+[[ "$(wc -l < "$class_log")" == 1 && "$(cat "$class_log")" == *"--class review-$class_expected "* ]] || fail "second unit did not open exactly one rule ticket: $(cat "$class_log")"
 export REVIEW_CLASS_UPSERT="$class_prev_upsert" REVIEW_CLASS_STATE="$class_prev_state"
 findings_report rf-3-T1.md '[]'
 harvest_rc pr-f3 rf-3-T1.md
