@@ -534,9 +534,15 @@ ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热�
       | $pr.headRefName] | unique
   ' <<<"$prs"
 }
-hotfix_lane_label() { jqf -r '.hotfix_lane.label // "hotfix"' <<<"$CFG"; }
-hotfix_lane_branch_prefixes() { jqf -r '.hotfix_lane.branch_prefixes[]? // empty' <<<"$CFG"; }
-hotfix_lane_supervisor_owned() { [[ "$(jqf -r '.hotfix_lane.supervisor_owned // false' <<<"$CFG")" == true ]]; }
+hotfix_lane_label() {
+  jqf -r '.hotfix_lane.label // "hotfix"' <<<"$CFG"
+}
+hotfix_lane_branch_prefixes() {
+  jqf -r '.hotfix_lane.branch_prefixes[]? // empty' <<<"$CFG"
+}
+hotfix_lane_supervisor_owned() {
+  [[ "$(jqf -r '.hotfix_lane.supervisor_owned // false' <<<"$CFG")" == true ]]
+}
 
 # supervisor-owned 热修车道（hotfix_lane.supervisor_owned，缺省 false）：热修 supervisor 会话自己评审、测试、
 # 落地热修 PR；调度器只把它们记进台账计数（census 与发布阻断），一切推进动作都跳过。判定复用现有热修分类：
