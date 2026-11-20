@@ -28,7 +28,7 @@ Only edit the verification skill's own directory and verified selector fields in
 
 5. **Triage.** Wrong or missing user-POV description → doc drift, fix it. Working behavior the harness can't drive → harness gap, fix it; a harness fix follows the same helpers rule as generation (scripts executable, invocation documented in the skill body). App behavior that's actually broken → product gap; record it for the user, keep it out of this PR.
 
-6. **Ship or stop.** For changed: one PR of proven corrections, re-read every changed file first. Include the exact selector preflight output under `## verification`. For clean or blocked: no PR, report the outcome and coverage honestly.
+6. **Ship or stop.** For changed: put proven corrections in a fresh worktree on a new branch, re-read every changed file, then open one PR. Include the exact selector preflight output under `## verification`. For clean or blocked: no PR, report the outcome and coverage honestly.
 
 Keep concise run notes (features covered, unreachable prerequisites, confirmed drift, outcome) in the worker scratch report; don't commit them.
 
