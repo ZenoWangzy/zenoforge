@@ -30,10 +30,6 @@ box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, a
   quota_line=$(slice_cpu_max)
   cpu_cap=$(slice_cpu_run_cap "$quota_line")
   read -r quota period <<< "$quota_line"
-  if [[ -n "$cpu_cap" ]] && (( scope_runs >= cpu_cap )); then
-    BOX_ROOM_WHY="worker scopes $scope_runs/$cpu_cap at zf.slice CPU quota $quota/$period (${WORKER_CPU_PER_RUN:-0.5} CPUs per run)"
-    return 1
-  fi
   cap=$(luna_run_cap)
   avail=$(awk '/^MemAvailable:/{print int($2/1024)}' "${LUNA_PROC_MEMINFO:-/proc/meminfo}")
   full=$(awk -F'avg10=' '/^full/{print int($2)}' "${LUNA_PROC_PSI_MEMORY:-/proc/pressure/memory}")
@@ -42,9 +38,15 @@ box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, a
     BOX_ROOM_WHY="worker slice ${slice}MB left under memory.high < ${LUNA_WORKER_PEAK_MB:-1200}MB worker peak"
     return 1
   fi
-  (( runs < ${LUNA_MIN:-2} && avail >= 2048 )) && return 0
-  # Hotfix may cross the run cap, but still requires memory headroom and no full-memory pressure.
+  # Hotfix crosses the run cap and the zf.slice CPU scope cap (ruling hand-resource-hotfix-optimization-general), but keeps
+  # the memory floor: slice room above, MemAvailable >= 3072 MB and no full-memory pressure. 11-20: the scope cap came first
+  # and held a production hotfix at "worker scopes 4/4" with 6.4 GB free.
   [[ "${LUNA_PRIORITY:-}" == hotfix ]] && (( avail >= 3072 && full < 10 )) && return 0
+  if [[ -n "$cpu_cap" ]] && (( scope_runs >= cpu_cap )); then
+    BOX_ROOM_WHY="worker scopes $scope_runs/$cpu_cap at zf.slice CPU quota $quota/$period (${WORKER_CPU_PER_RUN:-0.5} CPUs per run)"
+    return 1
+  fi
+  (( runs < ${LUNA_MIN:-2} && avail >= 2048 )) && return 0
   # Aging skips only the CPU target; memory pressure, availability, and the run cap still apply.
   (( age >= ${LUNA_AGE_ADMIT_SECONDS:-1200} && runs < cap && full < 10 && avail >= ${LUNA_ADMIT_AVAIL_MB:-3328} )) && return 0
   if ! (( runs < cap && full < 10 && avail >= ${LUNA_ADMIT_AVAIL_MB:-3328} )); then
