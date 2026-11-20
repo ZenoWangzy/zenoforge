@@ -26,7 +26,9 @@ rc=absent; [[ -f "$WORKER_SCRATCH_ROOT/luna/k1/rc" || -f "$WORKER_SCRATCH_ROOT/z
 printf '%s rc=%s\n' "$*" "$rc" >> "$SYSTEMCTL_CALLS"
 exit 0
 SH
-chmod +x "$fake_bin/systemd-run" "$fake_bin/pgrep" "$fake_bin/systemctl"
+# 11-20: bin/zc resolves zcode via config.sh (89603d5); a stub on PATH keeps the run independent of the host's zcode
+printf '#!/bin/sh\nexit 0\n' > "$fake_bin/zcode"
+chmod +x "$fake_bin/systemd-run" "$fake_bin/pgrep" "$fake_bin/systemctl" "$fake_bin/zcode"
 export SYSTEMD_RUN_CALLS="$calls" SYSTEMCTL_CALLS="$sctl" PATH="$fake_bin:$PATH"
 
 # Each recorded call must carry both properties; $2 and $3 are the expected quota and weight.

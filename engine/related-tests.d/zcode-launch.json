@@ -1,0 +1,13 @@
+{
+  "engine/bin/zc": [
+    "engine/zcode-launch-set.test.sh",
+    "engine/worker-cpu-cap.test.sh"
+  ],
+  "engine/bin/worker": [
+    "engine/zcode-launch-set.test.sh",
+    "engine/worker-cpu-cap.test.sh"
+  ],
+  "engine/config.sh": [
+    "engine/zcode-launch-set.test.sh"
+  ]
+}
