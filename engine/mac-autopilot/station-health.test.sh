@@ -7,6 +7,20 @@ here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "not ok - station-health.test.sh: $*" >&2; jq -c .stations.review "$R/station-health.json" >&2 || true; exit 1; }
 NOW=2026-11-07T06:00:00Z
 R="$test_env_root/runtime"; mkdir -p "$R/alerts" "$AGENT_HOME/state" "$AGENT_HOME/logs"
+STATION_DEPLOYMENTS="$test_env_root/empty-deployments.json"
+STATION_DEPLOYMENT_STATUSES="$test_env_root/deployment-statuses.json"
+echo '[]' > "$STATION_DEPLOYMENTS"
+echo '[{"state":"success","created_at":"2026-11-07T05:00:00Z"}]' > "$STATION_DEPLOYMENT_STATUSES"
+export STATION_DEPLOYMENTS STATION_DEPLOYMENT_STATUSES
+cat > "$test_env_bin/gh" <<'GH'
+#!/usr/bin/env bash
+case "$2" in
+  */deployments\?environment=production\&per_page=20) cat "$STATION_DEPLOYMENTS" ;;
+  */deployments/*/statuses) cat "$STATION_DEPLOYMENT_STATUSES" ;;
+  *) echo "unexpected fake gh call: $*" >&2; exit 2 ;;
+esac
+GH
+chmod +x "$test_env_bin/gh"
 
 # Shapes follow the live ledger, state files, triage logs, advisor results and scheduler.log.
 python3 - "$R" "$AGENT_HOME" <<'PY'
@@ -128,3 +142,44 @@ jq -cn --argjson at 1794024000 '{created_at: $at, schema: 4, rows: "5563\tpr\tTi
 run
 [[ "$(field intake waiting)" == 3 ]] || fail 'a stale candidates file must fall back to the full ready-for-agent count'
 echo 'ok - a stale intake candidates file falls back to every ready-for-agent state'
+
+# Release outs include verified production deployments, while a closer for that SHA remains the counted source.
+run_release_fixture() {
+  python3 "$here/station_health.py" --runtime "$R" --agent-home "$H" --pause-file "$H/PAUSE" --now "$NOW"
+}
+SHA="$(printf 'd%.0s' {1..40})"
+SHA_PREFIX="$(printf 'd%.0s' {1..7})"
+R="$test_env_root/runtime-release-deployments"; H="$test_env_root/home-release-deployments"
+mkdir -p "$R/alerts" "$H/state" "$H/logs"
+echo '{"units":[]}' > "$R/units.json"
+echo '[]' > "$STATION_DEPLOYMENTS"
+run_release_fixture
+[[ "$(jq -r '.stations.release.out_24h' "$R/station-health.json")" == 0 && "$(jq -r '.stations.release.last_out' "$R/station-health.json")" == null ]] || fail 'no deployment records must leave release outputs empty'
+jq -e '.stations.release | has("out_detail") | not' "$R/station-health.json" >/dev/null || fail 'empty release output must retain the old shape'
+echo 'ok - no deployment records leave release output unchanged'
+
+jq -n --arg sha "$SHA" --arg at "2026-11-07T05:00:00Z" '[{id:501,sha:$sha,created_at:$at,payload:{workflow_run:{name:"Release Vecta on mypc",path:".github/workflows/mypc-release.yml",status:"completed",conclusion:"success",inputs:{dry_run:false}}}}]' > "$R/deployments.json"
+STATION_DEPLOYMENTS="$R/deployments.json"
+run_release_fixture
+[[ "$(jq -r '.stations.release.out_24h' "$R/station-health.json")" == 1 && "$(jq -r '.stations.release.last_out' "$R/station-health.json")" == 2026-11-07T05:00:00Z && "$(jq -r '.stations.release.out_detail[0].source' "$R/station-health.json")" == production-deployment ]] || fail 'a successful non-dry-run release deployment without a closer must count once with its source'
+grep -Fq 'source=production-deployment' "$R/station-health.txt" || fail 'text detail must name the production deployment source'
+echo 'ok - successful production deployment without a closer counts once'
+
+printf '%s\n' "[2026-11-07T05:30:00Z] release-closer: deployed=$SHA_PREFIX closed=[202]" > "$R/alerts/events.md"
+run_release_fixture
+[[ "$(jq -r '.stations.release.out_24h' "$R/station-health.json")" == 1 && "$(jq -r '.stations.release.last_out' "$R/station-health.json")" == 2026-11-07T05:30:00Z && "$(jq -r '.stations.release.out_detail[0].source' "$R/station-health.json")" == release-closer ]] || fail 'a closer and deployment record for the same SHA must count once from the closer'
+echo 'ok - closer wins over deployment record for the same SHA'
+
+: > "$R/alerts/events.md"
+jq -n --arg sha "$SHA" --arg at "2026-11-07T05:00:00Z" '[{id:502,sha:$sha,created_at:$at,payload:{workflow_run:{name:"Release Vecta on mypc",path:".github/workflows/mypc-release.yml",status:"completed",conclusion:"failure",inputs:{dry_run:false}}}}]' > "$R/deployments.json"
+run_release_fixture
+[[ "$(jq -r '.stations.release.out_24h' "$R/station-health.json")" == 0 ]] || fail 'a successful deployment status with a failed workflow run must not count'
+jq -n --arg sha "$SHA" --arg at "2026-11-07T05:00:00Z" '[{id:503,sha:$sha,created_at:$at,payload:{workflow_run:{name:"Release Vecta on mypc",path:".github/workflows/mypc-release.yml",status:"completed",conclusion:"success",inputs:{dry_run:true}}}}]' > "$R/deployments.json"
+run_release_fixture
+[[ "$(jq -r '.stations.release.out_24h' "$R/station-health.json")" == 0 ]] || fail 'a dry-run release workflow must not count as a deployment out'
+echo 'ok - failed and dry-run workflow deployments do not count'
+
+jq -n --arg sha "$SHA" --arg at "2026-11-07T05:00:00Z" '[{id:504,sha:$sha,created_at:$at,payload:{reconciled:true,image_shas:{service:$sha},images:{service:"sha256:fixture"}}}]' > "$R/deployments.json"
+run_release_fixture
+[[ "$(jq -r '.stations.release.out_24h' "$R/station-health.json")" == 1 && "$(jq -r '.stations.release.out_detail[0].source' "$R/station-health.json")" == production-readback ]] || fail 'a production image readback must count as the stronger proof'
+echo 'ok - reconciled production readback counts as the stronger proof'

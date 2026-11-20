@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Per-station health: throughput, idle and stall time, from local files only (stateless, no gh calls).
+"""Per-station health: throughput, idle and stall time, from ledgers, logs, and production deployment records.
 
 A station is stalled when work waits in its named input buffer and nothing has left it for longer than its
 bound; a paused pipeline reports PAUSED and raises nothing. Intake that took nothing on purpose (target met, marker
 `intake-held-since`) reports HELD, not STALLED, until the hold is 2 x its bound old. See "Stations" in NODE-HEALTH.md.
 """
-import argparse, glob, json, os, re
+import argparse, glob, json, os, re, subprocess
 from datetime import datetime, timedelta, timezone
 
 import ledger_history
@@ -23,13 +23,63 @@ UNIT_OUT = {"review-approve": "review", "review-request-changes": "review", "rev
             "merged": "merge", "landed": "merge", "ci-ready": "ci", "ci-wip-start": "ci",
             "hold-handoff": "intake"}  # a handoff re-enters an existing unit: its first row was the original intake
 # `release-closer: deployed=<sha, any length> closed=[issue, ...]`, one out per closed issue; an empty list is one deploy out.
-RELEASE_RE = re.compile(r"^\[(\S+)\] release-closer: deployed=[0-9a-f]+ closed=\[([0-9,\s]*)\]")
+RELEASE_RE = re.compile(r"^\[(\S+)\] release-closer: deployed=([0-9a-f]+) closed=\[([0-9,\s]*)\]")
 # `release-retained: deployed=<sha> tracker=#<n> held=[...]`: a deploy whose acceptance failed. One deploy out, not an
 # acceptance and not one out per held ticket (the later release-closer line counts those).
-RETAINED_RE = re.compile(r"^\[(\S+)\] release-retained: deployed=[0-9a-f]+ tracker=#(?:\d+|none) held=\[")
+RETAINED_RE = re.compile(r"^\[(\S+)\] release-retained: deployed=([0-9a-f]+) tracker=#(?:\d+|none) held=\[")
+DEPLOYMENT_READER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "production-deployment-read.sh")
+RELEASE_OUT_PRIORITY = {"production-deployment": 0, "release-retained": 1,
+                        "production-readback": 2, "release-closer": 3}
 WORK_OUT = {"implement": "implement", "repair": "repair"}
 # The live line is `dispatch claim=owned issue=N mode=.. reason=.. pid=P type=T unit=U`; older logs had no claim/issue/reason.
 DISPATCH_RE = re.compile(r"^\[(\S+)\] dispatch .*?\btype=(review|rereview)\b.*?\bunit=(\S+)")
+
+
+def production_deployments():
+    repo = os.environ.get("RELEASE_TRAIN_REPO") or os.environ.get("ZF_REPO", "")
+    if not repo:
+        return []
+    try:
+        result = subprocess.run(["bash", DEPLOYMENT_READER, repo], capture_output=True, text=True, timeout=660)
+        records = json.loads(result.stdout or "[]") if result.returncode == 0 else []
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    return records if isinstance(records, list) else []
+
+
+def release_run_valid(payload):
+    run = payload.get("workflow_run")
+    if not isinstance(run, dict):
+        return False
+    inputs = run.get("inputs")
+    dry_run = inputs.get("dry_run") if isinstance(inputs, dict) else None
+    workflow = str(run.get("path") or run.get("name") or "").lower()
+    return (run.get("status") == "completed" and run.get("conclusion") == "success"
+            and "release" in workflow and (dry_run is False or isinstance(dry_run, str) and dry_run.lower() == "false"))
+
+
+def release_readback(payload):
+    image_shas = payload.get("image_shas")
+    return (payload.get("reconciled") is True and isinstance(image_shas, dict)
+            and any(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in image_shas.values()))
+
+
+def add_release_event(events, at, sha, count, source):
+    previous_sha = next((known for known in events if known.startswith(sha) or sha.startswith(known)), None)
+    event = {"at": at, "count": count, "source": source, "sha": sha}
+    if previous_sha is None:
+        events[sha] = event
+        return
+    previous = events.pop(previous_sha)
+    if RELEASE_OUT_PRIORITY[source] < RELEASE_OUT_PRIORITY[previous["source"]]:
+        event = previous
+    elif RELEASE_OUT_PRIORITY[source] == RELEASE_OUT_PRIORITY[previous["source"]]:
+        event["at"] = max(at, previous["at"])
+        event["count"] = max(count, previous["count"]) if source == "release-closer" else 1
+        if source != "release-closer":
+            event["source"] = previous["source"]
+    event["sha"] = max((sha, previous["sha"]), key=len)
+    events[event["sha"]] = event
 
 
 def minutes(a, b):
@@ -92,7 +142,7 @@ def waiting(units, states, candidates=None):
     return out
 
 
-def outs(units, runtime, agent_home, now=None, scheduler_lines=None):
+def outs(units, runtime, agent_home, now=None, scheduler_lines=None, release_detail=None):
     """station -> sorted [(time, count)] of items that left the station."""
     now = now or datetime.now(timezone.utc)
     ev = {s: [] for s in STATIONS}
@@ -124,6 +174,7 @@ def outs(units, runtime, agent_home, now=None, scheduler_lines=None):
             continue
         if isinstance(r, dict) and r.get("outcome") == "completed" and (ts(r.get("recorded_at")) and r.get("applied_count")):
             ev["advisor"].append((ts(r["recorded_at"]), int(r["applied_count"])))
+    release_events = {}
     for name in ("alerts/events.md", "scheduler.log"):
         try:
             if name == "scheduler.log":
@@ -135,11 +186,31 @@ def outs(units, runtime, agent_home, now=None, scheduler_lines=None):
             for raw in lines or []:
                 m = RELEASE_RE.match(raw)
                 if m and ts(m.group(1)):
-                    ev["release"].append((ts(m.group(1)), len(re.findall(r"\d+", m.group(2))) or 1))
+                    add_release_event(release_events, ts(m.group(1)), m.group(2),
+                                      len(re.findall(r"\d+", m.group(3))) or 1, "release-closer")
                 elif (m := RETAINED_RE.match(raw)) and ts(m.group(1)):
-                    ev["release"].append((ts(m.group(1)), 1))
+                    add_release_event(release_events, ts(m.group(1)), m.group(2), 1, "release-retained")
         except OSError:
             continue
+    for record in production_deployments():
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        sha, at = record.get("sha"), ts(record.get("success_at") or record.get("created_at"))
+        if not at or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            continue
+        if release_readback(payload):
+            source = "production-readback"
+        elif release_run_valid(payload):
+            source = "production-deployment"
+        else:
+            continue
+        add_release_event(release_events, at, sha, 1, source)
+    for event in release_events.values():
+        ev["release"].append((event["at"], event["count"]))
+        if release_detail is not None:
+            release_detail.append({"at": event["at"].strftime("%Y-%m-%dT%H:%M:%SZ"), "count": event["count"],
+                                  "source": event["source"], "sha": event["sha"][:12]})
     return {s: sorted(v, key=lambda x: x[0]) for s, v in ev.items()}
 
 
@@ -202,6 +273,10 @@ def render(doc):
         old = "-" if r["oldest_wait_min"] is None else f"{r['oldest_wait_min']:.0f}m"
         lines.append(f"{s:<10}{r['status']:<9}{r['waiting']:>5}{old:>8}{r['out_1h']:>6}{r['out_24h']:>7}"
                      f"{r['stall_min']:>7.0f}m{r['stall_bound_min']:>6}m  {r['last_out'] or '-'}")
+    release_detail = doc["stations"]["release"].get("out_detail") or []
+    if release_detail:
+        lines.append("release out detail: " + "; ".join(
+            f"{e['at']} count={e['count']} source={e['source']} sha={e['sha']}" for e in release_detail))
     if doc.get("future_stamped"):
         lines.append(f"future_stamped={doc['future_stamped']}")
     lines.append("admission gap before a worker takes the item, minutes (24h): " + "; ".join(
@@ -251,11 +326,16 @@ def main():
     except OSError:
         held_since = None
     paused = os.path.exists(args.pause_file)
+    release_detail = []
+    stations = station_rows(waiting(units, list(read_states(args.agent_home)), intake_open(args.runtime, now, bounds["intake"])),
+                            outs(units, args.runtime, args.agent_home, now, scheduler_lines, release_detail),
+                            now, bounds, paused, held_since)
+    release_detail.sort(key=lambda event: event["at"])
+    if release_detail:
+        stations["release"]["out_detail"] = release_detail
     doc = {"at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "paused": paused,
            "future_stamped": future_stamped,
-           "stations": station_rows(waiting(units, list(read_states(args.agent_home)), intake_open(args.runtime, now, bounds["intake"])),
-                                    outs(units, args.runtime, args.agent_home, now, scheduler_lines),
-                                    now, bounds, paused, held_since),
+           "stations": stations,
            "admission_gaps": admission_gaps(units, args.runtime, now - timedelta(hours=24), now, scheduler_lines)}
     for name, body in (("station-health.json", json.dumps(doc, ensure_ascii=False)), ("station-health.txt", render(doc))):
         tmp = os.path.join(args.runtime, name + ".tmp")
