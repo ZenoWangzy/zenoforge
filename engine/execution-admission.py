@@ -85,7 +85,7 @@ class Deferred(Exception):
 
 
 class AttemptMetrics:
-    """One real RUN decision; never observes check/status/inherited readiness."""
+    """One admission decision; check mode is recorded only when deferred."""
     def __init__(self, mode, home):
         self.home = home
         self.attempt_id = uuid.uuid4().hex
@@ -595,6 +595,9 @@ def admission(mode, command):
             attempt.status = status
         return status
     except (Deferred, OSError, ValueError, KeyError, StopIteration, IndexError) as error:
+        if attempt is None and mode == "check" and isinstance(error, Deferred):
+            try: attempt = AttemptMetrics(mode, home)
+            except Exception: print("execution metrics: initialization failed", file=sys.stderr)
         if attempt:
             attempt.status = 75
             attempt.error(error)
@@ -647,15 +650,7 @@ def admission_inner(mode, command, attempt=None):
         if paused(home):
             raise Deferred("operator PAUSE")
         cpu = cpu_sample(home, proc) if cpu_target is not None else None
-        try:
-            sample = resources(proc, memory, load, cpu, cpu_target, priority)
-        except Deferred as error:
-            if mode == "check":
-                fields = dict(kind=mode, ceiling=ceiling, cap=ceiling, occupied=None)
-                fields.update(error.metrics)
-                reason = "cpu-admission" if str(error).startswith("CPU admission:") else "resource-floor"
-                log_admission_decision(home, fields, "defer", reason)
-            raise
+        sample = resources(proc, memory, load, cpu, cpu_target, priority)
         if mode == "resources":
             print(json.dumps(sample))
             return 0
@@ -720,13 +715,13 @@ def admission_inner(mode, command, attempt=None):
             attempt.fields["cap"] = decision_cap
             attempt.fields["occupied"] = total
             attempt.fields["occupancy_sampled_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        if mode == "check":
+        if mode == "check" and total < decision_cap:
             log_admission_decision(
                 home,
                 dict(kind=mode, available_mb=sample.get("available_mb"), load1=sample.get("load1"),
                      memory_full_avg60=sample.get("memory_full_avg60"),
                      ceiling=ceiling, occupied=total, cap=decision_cap),
-                "defer" if total >= decision_cap else "admit", "capacity-check")
+                "admit", "capacity-check")
         if total >= decision_cap:
             raise Deferred(f"global execution cap: active={total} cap={decision_cap}")
         if mode == "check":

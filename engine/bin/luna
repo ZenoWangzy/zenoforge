@@ -19,7 +19,7 @@ rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch r
 #   - always, if fewer than LUNA_MIN (2) runs are going and at least 2 GB is available;
 #   - otherwise only below LUNA_MAX (10) runs, with sampled CPU busy under LUNA_CPU_TARGET (85%), memory pressure
 #     under 5% and at least 3 GB available (maintainer 2026-10-24: keep the box near 85% busy).
-# Runs are counted as top-level codex processes from any caller; the check and the start happen under one mutex.
+# Runs count every luna/zc scope under zf-workers.slice, including session-launched workers.
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/luna-capacity.sh"
 slots="${LUNA_SLOTS:-$root/tmp/luna-slots}"; mkdir -p "$slots"
 # A run that cannot start yet publishes wait-<prio>-<pid> (prio = LUNA_PRIORITY, pid = this wrapper): the autopilot
@@ -38,7 +38,7 @@ chain_exit_trap() {
   eval "prior=$(sed -n 's/^trap -- //; s/ EXIT$//p' <<<"$cur")"
   trap "$1${prior:+; $prior}" EXIT # lint-exempt: preserve any existing exit trap
 }
-chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"'
+chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true'
 exec {mx}>"$slots/mutex"
 while :; do
   flock "$mx"
@@ -58,13 +58,15 @@ args=(exec -C "$cwd" "${mcp_off[@]}" "${CODEX_PLUGINS_OFF_ARGS[@]}" -m "${CODEX_
 # One CPU budget across agent runs (maintainer 10-29 [...]); shared with dispatch-codex.sh.
 source "${ZF_ENGINE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/thread-budget.sh" && agent_thread_budget
 scope="luna-${key//[^A-Za-z0-9_-]/-}-$$"
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 codex_mcp_context_mode_sentinel_dir "$root/tmp/$key" && TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
   systemd-run --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo "${AGENT_WORKER_CPU_WEIGHT:-10}")" -p MemoryHigh="${AGENT_WORKER_MEM_HIGH:-2G}" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   codex ${CODEX_SEARCH:+--search} "${args[@]}" - <"$prompt" >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 cpid=$!; echo "$cpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
 wait "$cpid"; rc=$?
 echo "$rc" >"$out/rc"
-# Leftover processes (e.g. a test database) would keep the scope alive after codex exits; stop it once rc is recorded.
-systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true
+# EXIT cleanup also stops the scope if the wrapper is interrupted after launch.
 exit "$rc"
 }
