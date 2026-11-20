@@ -1,5 +1,4 @@
 # shortcut-ratchet baseline: <count><TAB><path>; lower a count when a limit is paid down.
-1	engine/bin/install-guard/guard
 1	engine/ci-runner-lanes.mjs
 1	engine/hotfix/hf-worker-stuck.sh
 1	engine/incident-guards.mjs
