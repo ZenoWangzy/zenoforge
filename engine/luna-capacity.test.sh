@@ -49,6 +49,31 @@ else
 fi
 
 make_scopes
+# 11-20: a production hotfix waited at "worker scopes 4/4" with 6.4 GB free; hotfix crosses the scope cap, not the memory floor.
+if LUNA_PRIORITY=hotfix box_has_room; then
+  printf 'PASS hotfix crosses the 4 of 4 worker scope cap\n'
+else
+  printf 'FAIL hotfix crosses the 4 of 4 worker scope cap: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=12.00 avg60=0.00 avg300=0.00 total=0\n' > "$root/proc/pressure/memory"
+if LUNA_PRIORITY=hotfix box_has_room; then
+  printf 'FAIL hotfix under full memory pressure is refused: admitted\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS hotfix under full memory pressure is refused\n'
+fi
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$root/proc/pressure/memory"
+printf '10737418240\n' > "$worker_slice/memory.current"
+if LUNA_PRIORITY=hotfix box_has_room; then
+  printf 'FAIL hotfix without worker slice room is refused: admitted\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS hotfix without worker slice room is refused: %s\n' "$BOX_ROOM_WHY"
+fi
+printf '0\n' > "$worker_slice/memory.current"
+
+make_scopes
 printf 'max 100000\n' > "$root/cgroup/zf.slice/cpu.max"
 if box_has_room; then
   printf 'PASS cpu.max max 100000 skips the CPU bound\n'
