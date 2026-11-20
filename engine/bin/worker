@@ -12,6 +12,7 @@ set -uo pipefail
 {
 key="$1" cwd="$2" prompt="$3" schema="${4:-}"
 B=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) # backends ship beside this script, not in the scratch root
+source "$B/../config.sh"
 # Quota markers live in the agent home. Read it from deploy.env in a subshell: its other exports must not reach the agents.
 hold_home=${AGENT_HOME:-${ZF_HOME:-$( [[ -f $B/../deploy.env ]] && (source "$B/../deploy.env" >/dev/null 2>&1; printf '%s' "${AGENT_HOME:-${ZF_HOME:-}}") )}}
 hold_home=${hold_home:-$HOME/.zenoforge}
@@ -80,7 +81,8 @@ if [[ -f $S/luna/rounds.log ]] && awk -v key="$key" '
 fi
 b=${WORKER_BACKEND:-}  # 10-28: zc's 84% failure was our wrapper (json output, Built-in fatal), fixed
 inflight() { local n=0 f; for f in "$S"/luna/*/backend; do [[ $(cat "$f" 2>/dev/null) == "$1" && ! -f ${f%/backend}/rc ]] && n=$((n+1)); done; echo "$n"; }
-zc_executable=$S/zc-src/bin/zcode
+mapfile -t zc_argv < <(zf_zcode_bin_argv)
+zc_executable=${zc_argv[0]:-$S/zc-src/bin/zcode}
 breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna-breaker"; }
 breaker_open_for() {
   local file now touched

@@ -18,9 +18,9 @@ if (( held_until > $(date +%s) )) && [[ "${ZC_IGNORE_HOLD:-0}" != 1 ]]; then
   echo "zc: ZCode held until $(date -u -d "@$held_until" +%FT%TZ) (zcode-exhausted-until); set ZC_IGNORE_HOLD=1 to override" >&2
   exit 75
 fi
+source "$B/../config.sh"
 root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="${ZC_OUT_ROOT:-$root/zc}/$key"   # bin/worker sets ZC_OUT_ROOT=.scratch/luna so every backend reports in one place
-zsrc="$root/zc-src"
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
 # Same capacity gate and mutex as luna. Runs = top-level codex processes + top-level zcode processes, so both lanes share LUNA_MAX.
@@ -50,6 +50,7 @@ while :; do
   [[ -e "$wait_f" ]] || : >"$wait_f"; [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"; wait_stale_drop
   flock -u "$mx"; sleep 30
 done
+mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
 # MCP, plugins, skills, hooks and memory are switched off in ~/.zcode/cli/config.json (features.* = false).
 # Node's fetch ignores HTTP(S)_PROXY unless NODE_USE_ENV_PROXY=1, and WSL reaches Z.ai only through the proxy.
 # Own memory-capped scope, named luna-* so health-watch's memory relief covers it like a codex run.
@@ -59,7 +60,7 @@ source "${ZF_ENGINE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/li
 scope="luna-zc-${key//[^A-Za-z0-9_-]/-}-$$"
 TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)" \
   systemd-run --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope" -p MemoryMax="${LUNA_MEM_MAX:-4G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo "${AGENT_WORKER_CPU_WEIGHT:-10}")" -p MemoryHigh="${AGENT_WORKER_MEM_HIGH:-2G}" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
-  "$zsrc/bin/zcode" "$zsrc/repo/apps/zcode-cli/packages/cli/dist/zcode.cjs" \
+  "${zcode_cmd[@]}" \
   --prompt "$(<"$prompt")" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 zpid=$!; echo "$zpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
