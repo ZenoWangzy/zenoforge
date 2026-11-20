@@ -33,8 +33,38 @@ handle_worker_guard_refusal() { # unit refusal-file head work-type attempt → r
   return 0
 }
 
+handle_worker_rc75() { # unit type log death-json → requeue twice, then stop-loss
+  local unit="$1" wtype="$2" lg="$3" death="$4" rc reason streak pending
+  rc="$(jqf -r '.rc // empty' <<<"$death")"
+  [[ "$rc" == 75 ]] || return 1
+  case "$wtype" in
+    implement|repair|review|rereview) pending="$wtype-pending" ;;
+    *) return 1 ;;
+  esac
+  reason="$(grep -aE '^(worker: |both backends failed:|no progress for |queued at the capacity gate)' "$lg" 2>/dev/null \
+    | tail -1 | sed 's/^worker: //' | tr -d '\r' | cut -c1-200)"
+  [[ -n "$reason" ]] || reason="$(jqf -r '.error // empty' <<<"$death")"
+  [[ -n "$reason" ]] || reason='no backend could run'
+  streak="$(jqf -r --arg id "$unit" '
+    [.units[] | select(.id==$id) | (.history // [])] | first // [] | reverse
+    | reduce .[] as $event ({n:0,done:false};
+        if .done then . elif $event.stage=="worker-rc75" then .n+=1
+        elif $event.stage=="write-start" then . else .done=true end) | .n
+  ' "$UNITS")"
+  streak=$((streak + 1))
+  if (( streak >= 3 )); then
+    set_unit "$unit" "$(hist worker-rc75 "parked after $streak consecutive rc=75 exits: $reason") | .worker_death=$death"
+    to_supervisor "$unit" "worker rc=75 stop-loss after $streak consecutive exits: $reason"
+  else
+    set_unit "$unit" "$(hist worker-rc75 "requeue after rc=75 ($streak of 3): $reason") | .worker_death=$death | .stage=$(js "$pending") | .note=null"
+    say "worker rc=75 unit=$unit requeued=$pending reason=$reason"
+  fi
+  return 0
+}
+
 handle_worker_no_output() {
   local w="$1" unit="$2" wtype="$3" lg="$4" pid="$5" head="${6:-}"
   if handle_worker_guard_refusal "$unit" "$lg.guard-refusals" "$head" "$wtype" "${lg##*/}"; then return 0; fi
+  handle_worker_rc75 "$unit" "$wtype" "$lg" "$(worker_death_of "$lg")" && return 0
   handle_worker_death "$w" "$unit" "$wtype" "$lg"
 }

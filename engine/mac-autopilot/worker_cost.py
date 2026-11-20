@@ -139,8 +139,8 @@ def _snapshot_usage(value):
                  cache_write=cache_write if type(cache_write) is int and cache_write >= 0 else None)
 
 
-def _event_usage_snapshots(text):
-    codex, zcode = None, Usage(0, 0, 0)
+def _zcode_event_usage(text):
+    zcode = Usage(0, 0, 0)
     zcode_seen = zcode_incomplete = False
     for line in text.splitlines():
         try:
@@ -152,10 +152,6 @@ def _event_usage_snapshots(text):
         payload = record.get("payload")
         if not isinstance(payload, dict):
             payload = {}
-        if record.get("type") == "turn.completed":
-            codex = _snapshot_usage(record.get("usage") or payload.get("usage")) or codex
-        if record.get("type") == "event_msg" and isinstance(payload, dict) and payload.get("type") == "token_count":
-            codex = _snapshot_usage((payload.get("info") or {}).get("total_token_usage")) or codex
         if isinstance(payload, dict) and payload.get("type") == "model_request_completed":
             snapshot = _snapshot_usage(payload.get("usage"))
             if snapshot is None:
@@ -163,7 +159,7 @@ def _event_usage_snapshots(text):
             else:
                 zcode += snapshot
                 zcode_seen = True
-    return codex, zcode if zcode_seen and not zcode_incomplete else None
+    return zcode if zcode_seen and not zcode_incomplete else None
 
 
 def measure(path, worker):
@@ -209,13 +205,13 @@ def measure(path, worker):
                 text = source.read()
         except OSError:
             text = None
-    codex_snapshot, zcode_snapshot = _event_usage_snapshots(text or "")
+    zcode_snapshot = _zcode_event_usage(text or "")
     if text and any(marker in text for marker in ('"turn.completed"', '"thread.started"', '"event_msg"', '"token_count"')):
         backend = "codex"
         json_stream = True
         marker = _marker(text)
         facts = codex_stream_facts(path)
-        last = codex_snapshot or (facts["snapshots"][-1] if facts["snapshots"] else None)
+        last = facts["snapshots"][-1] if facts["snapshots"] else None
         session = facts["session_id"]
         if last is not None:
             # A resume stream's counters carry the whole thread: only the delta past the

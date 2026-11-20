@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import worker_cost as wc  # noqa: E402
 import roi_collect  # noqa: E402
 import roi_ledger  # noqa: E402
+import usage_reader  # noqa: E402
 
 
 def write(path, lines, end="2026-10-20T12:30:00Z"):
@@ -242,6 +243,39 @@ class Ledger(unittest.TestCase):
         self.assertEqual(counts(luna_codex), (222, 22, 33))
         self.assertEqual(counts(usage_event), (100, 40, 25))
         self.assertIsNone(rows[killed]["usage"])
+
+    def test_stall_killed_partial_codex_stream_is_one_usage_row(self):
+        name = "impl-issue-12-20261020T120500Z.worker.log"
+        session = "bbbbbbbb-0000-0000-0000-000000000012"
+        log = self.log(name, [
+            json.dumps({"type": "pipeline.execution", "mode": "fresh"}),
+            json.dumps({"type": "thread.started", "thread_id": session}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {"input_tokens": 321, "cached_input_tokens": 123,
+                                      "output_tokens": 45}}}}),
+        ])
+        self.workers([{"log": name, "unit": "issue-12", "type": "implement", "model": "gpt-6-luna",
+                       "mode": "fresh", "rc": 143, "harvested": True}])
+
+        facts = usage_reader.codex_stream_facts(log)
+        self.assertEqual([(u.input, u.cached, u.output) for u in facts["snapshots"]], [(321, 123, 45)])
+        self.assertFalse(facts["complete"])
+
+        event_store = os.path.join(self.root, "budget-events.json")
+        usage_reader.main(["codex-ingest", log, session, "2026-10-20T12:05:00Z", event_store])
+        with open(event_store, encoding="utf-8") as source:
+            stored = json.load(source)["sessions"][session]
+        self.assertEqual(stored["turns"], [{"in": 321, "cached": 123, "out": 45, "ts": "2026-10-20T12:05:00Z"}])
+        self.assertTrue(stored["incomplete"])
+
+        result = roi_collect.collect(self.root, self.sup, os.path.join(self.sup, "autopi"))
+        self.assertEqual((result["source_rows"], result["appended"]), (1, 1))
+        (row,) = roi_ledger.read_events(self.root)
+        self.assertEqual((row["models"][0]["input"], row["models"][0]["cached"],
+                          row["models"][0]["output"], row["models"][0]["tokens"]), (321, 123, 45, 366))
+        result = roi_collect.collect(self.root, self.sup, os.path.join(self.sup, "autopi"))
+        self.assertEqual((result["appended"], result["unchanged"], len(roi_ledger.read_events(self.root))), (0, 1, 1))
 
     # ---------- failover: an overwritten stream is counted exactly once ----------
 
