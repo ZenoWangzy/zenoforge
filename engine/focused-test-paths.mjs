@@ -3,7 +3,6 @@ import { readFileSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigJson } from './pack-dir.mjs';
-
 // Where the pack sits in the target repository (ZF_PACK_REL, config.sh). The tables and rules below name pack paths as
 // engine/...; packPath re-roots one onto PACK_PREFIX. Same string unless the deployment moved the pack.
 const PACK_REL = process.env.ZF_PACK_REL || 'engine';
@@ -34,7 +33,8 @@ const CI_TREE_TESTS = Object.freeze([
 ].map(packPath));
 
 export const RELATED_TESTS = new Map([
-  ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh']],
+  ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh', 'tools/pin-fail-triage.test.sh']],
+  ['tools/pin-fail-triage.sh', ['tools/pin-fail-triage.test.sh']],
   ['engine/supervisor/**', ['engine/supervisor.test.sh']],
   ['engine/eval/graders.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/compare.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],

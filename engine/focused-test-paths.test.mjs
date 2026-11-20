@@ -25,6 +25,13 @@ test('maps the traffic installer to its executable owner contract', () => {
   assert.deepEqual(focusedTestPaths(['engine/install-traffic-monitor.sh'], new Set(suites)), suites);
 });
 
+test('maps pin-failure triage and its shared revert path to their regression test', () => {
+  const suite = 'tools/pin-fail-triage.test.sh';
+  for (const source of ['tools/pin-fail-triage.sh', 'tools/main-red-revert.sh']) {
+    assert.deepEqual(focusedTestPaths([source], new Set([suite])), [suite]);
+  }
+});
+
 test('maps both shared-pool provisioners to their owner suites', () => {
   const paths = [
     '.github/workflows/pipeline-suites.yml',
