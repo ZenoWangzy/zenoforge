@@ -9,6 +9,7 @@ set -euo pipefail
 ZF_ENGINE_DIR_EXTERNAL="${ZF_ENGINE_DIR:-}"
 SRC="$(cd "$(dirname "$0")" && pwd -P)"
 source "$SRC/runtime-env.sh"
+ZF_ENGINE_REPO_DIR_EXTERNAL="${ZF_ENGINE_REPO_DIR:-}"
 RUN="$MAC_AUTOPILOT_SUPERVISOR_DIR"
 A="$MAC_AUTOPILOT_RUNTIME_DIR"
 LIVE="$RUN/autopi-live"
@@ -30,13 +31,13 @@ trap 'sync_fail_on_exit' EXIT
 SYNC_ONLY=0
 [[ "${1:-}" == "--sync-only" ]] && SYNC_ONLY=1
 mkdir -p "$A/alerts" "$VERSIONS"
-# The pin is a worktree of the engine's own repository: the target checkout, unless ZF_ENGINE_DIR names an
-# engine that lives in another checkout (ENGINE_REL = where the engine sits inside that repository).
+# The pin is a worktree of the engine repository: the target checkout by default, or ZF_ENGINE_REPO_DIR when set.
+# Keep discovering the repository from an externally supplied engine directory for existing deployments.
 # An engine outside every git work tree is an immutable version directory (engine-versions/<id>/engine, Line B): there is
 # nothing to pin, the directory is the pin. Its engine-sync entry checks the version before the live pointer follows it.
 # The zenoforge CLI is the other non-git case: it links ~/.zenoforge/engine/<version> into the checkout as engine/
 # (untracked), so git has nothing to archive. CLI_LINK pins by that version's directory name and copies the linked version.
-ENGINE_REPO="$MAC_AUTOPILOT_ROOT" ENGINE_REL=engine IMMUTABLE=0 CLI_LINK=0
+ENGINE_REPO="${ZF_ENGINE_REPO_DIR_EXTERNAL:-${ZF_REPO_DIR:-$MAC_AUTOPILOT_ROOT}}" ENGINE_REL=engine IMMUTABLE=0 CLI_LINK=0
 engine_dir="${ZF_ENGINE_DIR_EXTERNAL:-$(cd "$SRC/.." && pwd -P)}"
 if [[ -L "$MAC_AUTOPILOT_ROOT/engine" && -z "$ZF_ENGINE_DIR_EXTERNAL" ]]; then
   # The installed version can itself sit below an unrelated Git checkout.
@@ -46,10 +47,12 @@ elif ! git -C "$engine_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; the
   IMMUTABLE=1 ENGINE_REL=. ZF_ENGINE_DIR="$engine_dir"
   export ZF_ENGINE_DIR
 elif [[ -n "$ZF_ENGINE_DIR_EXTERNAL" ]]; then
-  ENGINE_REPO="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-toplevel)"
+  ENGINE_REPO="${ZF_ENGINE_REPO_DIR_EXTERNAL:-$(git -C "$ZF_ENGINE_DIR" rev-parse --show-toplevel)}"
   ENGINE_REL="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-prefix)"; ENGINE_REL="${ENGINE_REL%/}"
   export ZF_ENGINE_DIR # the pin self-check runs the scheduler in child shells
 fi
+ZF_ENGINE_REPO_DIR="$ENGINE_REPO"
+export ZF_ENGINE_REPO_DIR
 if (( IMMUTABLE )); then
   head="$(basename "$(dirname "$(readlink -f "$engine_dir")")")" version="$engine_dir" # the version id
 else
