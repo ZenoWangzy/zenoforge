@@ -182,6 +182,12 @@ printf 'VERDICT: READY\n' > "$same_provider_report"
 review_report_harvest "$same_provider_report" same-provider-review '{"provider":"codex","model":"gpt-6-luna"}'
 grep -Fq "Reviewer shares the implementer's provider: codex." "$same_provider_report" \
   || fail 'same-provider review was not identified in the posted report'
+cross_provider_report="$sup/cross-provider-review.md"
+printf 'VERDICT: READY\n' > "$cross_provider_report"
+review_report_harvest "$cross_provider_report" same-provider-review '{"provider":"claude","model":"claude-sonnet-5-5"}'
+if grep -Fq "Reviewer shares the implementer's provider:" "$cross_provider_report"; then
+  fail 'cross-provider review was incorrectly identified as same-provider'
+fi
 
 PYTHONPATH="$repo_root/engine/mac-autopilot" python3 - <<'PY' || fail 'same-provider daily health counter is wrong'
 import datetime as dt
@@ -190,17 +196,18 @@ import worker_cost
 
 now = dt.datetime(2026, 11, 19, 12, tzinfo=dt.timezone.utc)
 units = [
-    {"id": "codex-author", "implement_identity": "codex:gpt-6-luna:max"},
+    {"id": "codex-author", "pr": 101, "implement_identity": "codex:gpt-6-luna:max"},
     {"id": "claude-author", "implement_identity": "claude:claude-sonnet-5-5:high"},
 ]
 rows = [
     {"unit": "codex-author", "phase": "review", "start": now - dt.timedelta(hours=1), "provider": "codex"},
     {"unit": "codex-author", "phase": "rereview", "start": now - dt.timedelta(hours=23), "provider": "codex"},
+    {"unit": "101", "phase": "review", "start": now - dt.timedelta(hours=12), "provider": "codex"},
     {"unit": "codex-author", "phase": "review", "start": now - dt.timedelta(hours=1), "provider": "claude"},
     {"unit": "codex-author", "phase": "review", "start": now - dt.timedelta(hours=25), "provider": "codex"},
     {"unit": "claude-author", "phase": "review", "start": now - dt.timedelta(hours=1), "provider": "claude"},
 ]
-assert worker_cost.same_provider_reviews_per_day(rows, units, now) == 3
+assert worker_cost.same_provider_reviews_per_day(rows, units, now) == 4
 assert "review.same_provider_per_day" in node_health.CRITERIA
 assert node_health.MEANING["review.same_provider_per_day"]
 assert node_health.SOURCE["review.same_provider_per_day"]

@@ -1351,7 +1351,7 @@ def main():
     cost_rows = worker_cost.run_rows(sup); worker_cost.attach_provider_usage(cost_rows, units)  # every row: a ticket's fresh total needs all its runs
     token_efficiency = worker_cost.token_efficiency_kpis(cost_rows, units, now)
     runs = worker_runs(cost_rows, since, now)
-    metrics = {"efficiency.fresh_tokens_per_merged_7d": token_efficiency["fresh_tokens_per_merged"], "efficiency.unmerged_waste_pct_7d": token_efficiency["waste_pct"], "efficiency.first_pass_yield_pct_7d": token_efficiency["first_pass_pct"], "efficiency.repair_phase_pct_7d": token_efficiency["repair_pct"]}
+    metrics = {"efficiency.fresh_tokens_per_merged_7d": token_efficiency["fresh_tokens_per_merged"], "efficiency.unmerged_waste_pct_7d": token_efficiency["waste_pct"], "efficiency.first_pass_yield_pct_7d": token_efficiency["first_pass_pct"], "efficiency.repair_phase_pct_7d": token_efficiency["repair_pct"], "review.same_provider_per_day": token_efficiency["same_provider_reviews_per_day"]}
     # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs
     # and swung on the model mix, so they read the 24 h window.
     day_runs = worker_runs(cost_rows, now - timedelta(hours=WALL_WINDOW_HOURS), now)

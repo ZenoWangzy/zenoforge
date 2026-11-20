@@ -252,7 +252,7 @@ def measure(path, worker):
     if model.startswith("claude-"):
         backend = "claude"
     return {"log": os.path.basename(path), "path": path, "unit": unit, "phase": phase,
-            "self_fix": self_fix, "backend": backend, "model": model,
+            "self_fix": self_fix, "backend": backend, "provider": worker.get("provider") or backend, "model": model,
             "start": start, "end": end, "minutes": max(0.0, (end - start).total_seconds() / 60),
             "finished_at": _parse_ts(worker.get("finished_at")) if worker else None,
             "usage": usage, "footer_tokens": footer, "json_stream": json_stream,
@@ -620,6 +620,7 @@ def token_efficiency_kpis(rows, units, now):
         "window_days": 7,
         "window_start": start.isoformat().replace("+00:00", "Z"),
         "window_end": stop.isoformat().replace("+00:00", "Z"),
+        "same_provider_reviews_per_day": same_provider_reviews_per_day(rows, units, stop),
         "merged_units": merged_count,
         "merged_fresh_tokens": merged_fresh_known if measured_merged else None,
         "merged_fresh_known_tokens": merged_fresh_known,
@@ -653,23 +654,46 @@ def token_efficiency_kpis(rows, units, now):
     }
 
 
+def same_provider_reviews_per_day(rows, units, now):
+    """Count review and rereview starts in the rolling 24 h window using the implementer provider."""
+    stop = now if isinstance(now, datetime) else datetime.fromtimestamp(now, timezone.utc)
+    if stop.tzinfo is None:
+        stop = stop.replace(tzinfo=timezone.utc)
+    stop = stop.astimezone(timezone.utc)
+    since, by_id, count = stop - timedelta(hours=24), units_index(units), 0
+    for row in rows:
+        at = row.get("start")
+        if row.get("phase") not in ("review", "rereview") or not isinstance(at, datetime) or not since <= at <= stop:
+            continue
+        unit_key = str(row.get("unit") or "")
+        unit = by_id.get(unit_key) or by_id.get(f"pr-{unit_key}" if unit_key.isdigit() else "")
+        identity = (unit or {}).get("implement_identity") or ""
+        author_provider = identity.split(":", 1)[0] or (unit or {}).get("implement_provider") or (unit or {}).get("implement_backend")
+        reviewer_provider = row.get("provider") or row.get("backend")
+        count += bool(author_provider and reviewer_provider == author_provider)
+    return count
+
+
 TOKEN_EFFICIENCY_CRITERIA = {
     "efficiency.fresh_tokens_per_merged_7d": ("efficiency", "fresh tokens per merged unit, rolling 7 d", 800_000, 4_800_000, False),
     "efficiency.unmerged_waste_pct_7d": ("efficiency", "tokens on unmerged terminal units / terminal cohort tokens, rolling 7 d %", 35, 50, False),
     "efficiency.first_pass_yield_pct_7d": ("efficiency", "merged units with no review changes or blocks, rolling 7 d %", 65, 50, True),
     "efficiency.repair_phase_pct_7d": ("efficiency", "repair phase share of terminal cohort tokens, rolling 7 d %", 30, 45, False),
+    "review.same_provider_per_day": ("review", "same-provider review runs in rolling 24 h", 0, -1, True),
 }
 TOKEN_EFFICIENCY_MEANING = {
     "efficiency.fresh_tokens_per_merged_7d": "近 7 天合并单元中所有 run 均测得的单元，其生命周期 fresh token（未缓存输入 + 输出）均值；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定。健康线沿用工作单 fresh token p90 的静态尺度 800k，异常线为历史 p90 的两倍 4.8M。",
     "efficiency.unmerged_waste_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，closed / parked / blocked 且从未合并的 token 占比；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定，越低越好。健康线 35% 要比已测匹配台账 43% 少 8 个百分点；50% 比基线高 7 个百分点，作为异常线。",
     "efficiency.first_pass_yield_pct_7d": "近 7 天合并单元中，历史从未出现 review-request-changes 或 review-block 的比例；高说明少返工。健康线 65% 接近最近窗口的 67% / 前一窗口的 71%；异常线 50% 低于 58% 的全时基线。",
     "efficiency.repair_phase_pct_7d": "近 7 天终态单元中所有 run 均测得的单元里，repair phase token ÷ 全部 token；run 覆盖率低于 90% 时为 NO-DATA，90% ≤ 覆盖率 < 95% 时展示并标 WARN，95% 及以上按完整数据判定，越低越好。健康线 30% 比已测全时 36.4% 少 6.4 个百分点；45% 高于基线 8.6 个百分点，作为异常线。",
+    "review.same_provider_per_day": "固定滚动 24 小时内，review / rereview worker 的 provider 与单元 implementer provider 相同的运行次数；provider 未知的运行不计。",
 }
 TOKEN_EFFICIENCY_SOURCE = {
     "efficiency.fresh_tokens_per_merged_7d": "cost_ledger.by_unit 的 lifetime fresh（缓存读取除外）按 units.json + units-archive.json 的 merged/landed 历史事件筛选近 7 天，再除以窗口合并单元数。",
     "efficiency.unmerged_waste_pct_7d": "cost_ledger.by_unit 按 units.json + units-archive.json 的终态历史筛选近 7 天；从未合并的 closed / parked / blocked token ÷ 同 cohort 全部 token。未归属 key 单列，不并入分子或分母。",
     "efficiency.first_pass_yield_pct_7d": "units.json + units-archive.json 的 merged/landed 事件筛选近 7 天；合并单元全历史中没有 review-request-changes / review-block 的比例。",
     "efficiency.repair_phase_pct_7d": "worker_cost repair phase 用量 + units.json / units-archive.json 的近 7 天终态单元 cohort；repair token ÷ 同 cohort cost_ledger token。",
+    "review.same_provider_per_day": "supervisor *.worker.log 对应的 worker provider、phase、unit 和开始时间，按 units.json + units-archive.json 的 implement_identity / implement_provider / implement_backend 对照；固定滚动 24 小时。",
 }
 
 
