@@ -146,6 +146,18 @@ done
 grep -Fq 'unbounded cost is a finding; name the principle' <<<"$scale_section" \
   || fail 'scale checklist does not require a finding to name the principle'
 
+scale_prompt="$script_dir/../prompts/review-contract.md"
+scale_section="$(awk '/^## Scale checklist$/ { inside=1 } inside && /^## / && $0 != "## Scale checklist" { exit } inside { print }' "$scale_prompt")"
+[[ -n "$scale_section" ]] || fail 'review prompt lacks the scale checklist'
+[[ "$(awk 'END { print NR }' <<<"$scale_section")" -le 12 ]] || fail 'scale checklist exceeds 12 lines'
+[[ "$(grep -cE '^- .*\? \(P[0-9]' <<<"$scale_section")" == 7 ]] || fail 'scale checklist must have seven questions naming design principles'
+grep -Fq 'docs/design/AGENT-SCALE-PRINCIPLES.md' <<<"$scale_section" || fail 'scale checklist does not link the design principles'
+for n in 1 2 4 5 6 7 8 9 13; do
+  grep -qE "[(, ]P$n[),]" <<<"$scale_section" || fail "scale checklist lacks design principle P$n"
+done
+grep -Fq 'unbounded cost is a finding; name the principle' <<<"$scale_section" \
+  || fail 'scale checklist does not require a finding to name the principle'
+
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
 echo 'review-contract.test.sh: PASS'
