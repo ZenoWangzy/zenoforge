@@ -4,7 +4,7 @@
 # at the merged SHA now, not at the next batch tick. run-release builds only the images
 # changed-images.mjs maps from the diff against the deployed SHA, deploys them with the
 # SHA tag, and runs drift capture and acceptance, so nothing is patched inside a container.
-# Exclusive with every other release: it refuses while any zf-release-* unit is active
+# Exclusive with every other release: it waits while a factory release unit is active
 # and dispatches under the same shared vecta-release-batch unit, so systemd-run also
 # refuses a concurrent batch. The head (sole release scheduler) gets one line on start
 # and one on end through the supervisor inbox, the channel run-release already uses.
@@ -46,28 +46,66 @@ until bash "$here/hf-install-gate.sh" "$pr"; do
   sleep 300
 done
 
-# Releases are serialized: head is the sole release scheduler. Refuse while any
-# other release unit is active; the shared vecta-release-batch unit name below is
-# the backstop for a race in the instant between this check and systemd-run.
-active="$(systemctl --user list-units --state=active --no-legend --no-pager "${UNIT_PREFIX_TRANSIENT}-release-*" 2>/dev/null | cut -d' ' -f1 || true)"
-if [ -n "$active" ]; then
-  units="$(printf '%s ' $active)"
-  supervisor_inbox_append hotfix-release "hotfix image-lane release refused pr=#$pr issue=#$anchor reason=release-active units=$units owner=zf-57 -- rerun engine/hotfix/hf-release.sh $pr $anchor when they finish" \
-    || echo 'hf-release: could not notify supervisor of the refused start' >&2
-  echo "hf-release: refusing to start while another release is active:" >&2
-  printf '  %s\n' $active >&2
-  exit 1
-fi
 sha=$(gh pr view "$pr" --json mergeCommit -q .mergeCommit.oid)
 [[ "$sha" =~ ^[0-9a-f]{40,64}$ ]] || { echo 'hf-release: cannot read the merged SHA' >&2; exit 1; }
 epoch=$(date +%s)
-# Same transient unit as issue-pipeline dispatch_release_batch: a running batch makes systemd-run refuse.
-# The wrapper reports the end (and any unrun acceptance) once run-release exits.
-systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-release-batch --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}" \
-  -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY \
-  -p "RuntimeMaxSec=$((7 * 60 * 60))" \
-  bash -c 'rc=0; "$1" "$2" "$3" || rc=$?; "$4" --report-end "$5" "$2" "$3" "$6" "$rc" || true; exit "$rc"' \
-  hf-release-end "$agent/run-release.sh" "$anchor" "$sha" "$here/hf-release.sh" "$pr" "$epoch" \
-  || { echo "hf-release: could not start ${UNIT_PREFIX_TRANSIENT}-release-batch (another release may have taken the unit); rerun hf-release.sh" >&2; exit 1; }
+# Releases are serialized across deployments, even when this caller has no unit
+# prefix. systemctl's table rows are padded, so parse the first nonempty field.
+release_unit="${UNIT_PREFIX_TRANSIENT}-release-batch"
+release_args=(--user --unit "$release_unit" --collect --slice="${ZF_RELEASE_SLICE:-zf-release.slice}"
+  -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY
+  -p "RuntimeMaxSec=$((7 * 60 * 60))"
+  bash -c 'rc=0; "$1" "$2" "$3" || rc=$?; "$4" --report-end "$5" "$2" "$3" "$6" "$rc" || true; exit "$rc"'
+  hf-release-end "$agent/run-release.sh" "$anchor" "$sha" "$here/hf-release.sh" "$pr" "$epoch")
+batch_wait="${HF_RELEASE_BATCH_WAIT_SECONDS:-7200}"
+batch_deadline=$(( $(date +%s) + batch_wait ))
+next_batch_log=0
+wait_started=0
+wait_expired=0
+waiting_units=
+while :; do
+  if (( wait_started )) && (( $(date +%s) >= batch_deadline )); then
+    wait_expired=1
+    break
+  fi
+
+  active="$(systemctl --user list-units --state=active --no-legend --no-pager '*-release-*' 2>/dev/null \
+    | awk '$1 !~ /-hf-release-/ { print $1 }' || true)"
+  if [[ -n "$active" ]]; then
+    waiting_units="$active"
+    wait_started=1
+  else
+    start_output=""
+    if start_output="$(systemd-run "${release_args[@]}" 2>&1)"; then
+      [[ -z "$start_output" ]] || printf '%s\n' "$start_output"
+      break
+    fi
+    printf '%s\n' "$start_output" >&2
+    if ! grep -Fqi 'already loaded' <<<"$start_output"; then
+      echo "hf-release: could not start $release_unit" >&2
+      exit 1
+    fi
+    waiting_units="${release_unit}.service"
+    wait_started=1
+  fi
+
+  now=$(date +%s)
+  if (( now >= batch_deadline )); then
+    wait_expired=1
+    break
+  fi
+  if (( now >= next_batch_log )); then
+    echo "hf-release: waiting for release unit(s): ${waiting_units//$'\n'/, }" >&2
+    next_batch_log=$((now + 300))
+  fi
+  sleep 30
+done
+if (( wait_expired )); then
+  units="${waiting_units//$'\n'/ }"
+  supervisor_inbox_append hotfix-release "hotfix image-lane release not dispatched pr=#$pr issue=#$anchor status=release-batch-wait-timeout reason=release-batch-wait-timeout units=$units owner=zf-57 -- merged but undeployed; rerun engine/hotfix/hf-release.sh $pr $anchor" \
+    || echo 'hf-release: could not notify supervisor of the busy release timeout' >&2
+  echo "hf-release: release unit(s) remained busy after $((batch_wait / 60)) min: $units; PR #$pr is merged but undeployed" >&2
+  exit 1
+fi
 supervisor_inbox_append hotfix-release "hotfix image-lane release started pr=#$pr issue=#$anchor sha=$sha unit=${UNIT_PREFIX_TRANSIENT}-release-batch" \
   || echo 'hf-release: could not notify supervisor of release start' >&2
