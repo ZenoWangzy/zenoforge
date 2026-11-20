@@ -7,7 +7,7 @@ source "$script_dir/review-contract.sh"
 source "$script_dir/scheduler.d/reports.sh"
 source "$script_dir/../night/owner-report-render.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 
 fail() { echo "review-contract.test.sh: $*" >&2; exit 1; }
 
