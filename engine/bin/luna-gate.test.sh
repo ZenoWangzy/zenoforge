@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 bin=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$bin/../mac-autopilot/scheduler.d/self-check.sh"
-root=$(mktemp -d); trap 'rm -rf "$root" "$test_env_root"' EXIT
+root=$(mktemp -d); ticket_pid=""; trap '[[ -z "${ticket_pid:-}" ]] || { kill "$ticket_pid" 2>/dev/null || :; wait "$ticket_pid" 2>/dev/null || :; }; rm -rf -- "$root" "$test_env_root"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 export LUNA_WORKER_SLICE_DIR="$root/no-slice" # cases below must not read the host's live worker slice
 
@@ -84,7 +84,8 @@ cpu_sample_reuse_case() (
   local mem="$root/reuse-meminfo" psi="$root/reuse-psi" samples="$root/reuse-samples"
   printf 'MemAvailable: 6144000 kB\n' > "$mem"
   printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
-  export LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85 LUNA_CPU_SAMPLE_TTL=10
+  export LUNA_PROC_MEMINFO="$mem" LUNA_PROC_PSI_MEMORY="$psi" LUNA_PRIORITY=normal LUNA_AGE_ADMIT_SECONDS=1200 LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85 LUNA_CPU_SAMPLE_TTL=10
+  unset LUNA_CPU_BUSY_AT LUNA_CPU_BUSY_VALUE
   source "$bin/luna-capacity.sh"
   codex_runs() { echo 0; }
   cpu_busy() { echo x >> "$samples"; echo 50; }
@@ -122,4 +123,51 @@ slice_budget_case() (
   box_has_room 0 || fail 'memory.high=max must not refuse'
 )
 slice_budget_case
-echo "ok - hotfix admits at 3 GB with full < 10; normal and aging admit at the 3328 MB floor with full < 10; full 12 refused; in luna and zc"
+
+ticket_admission_cases() {
+  local slots="$root/ticket-slots" hotfix normal now old_file new_file stale_file stale_pid log
+  mkdir -p "$slots"
+  source "$bin/luna-capacity.sh"
+  box_calls=0
+  box_has_room() { box_calls=$((box_calls + 1)); return 0; }
+  now=$(date +%s)
+
+  hotfix="$slots/wait-hotfix-$$"; normal="$slots/wait-normal-$$"
+  printf '%s\n' "$((now - 30))" > "$hotfix"; printf '%s\n' "$((now - 20))" > "$normal"
+  log="$root/ticket-yields.log"; : > "$log"; LUNA_WAIT_LOG_AT=0
+  if luna_waiter_has_room "$slots" "$normal" normal 0 2>>"$log"; then fail 'ordinary waiter passed a live hotfix ticket'; fi
+  [[ "${LUNA_WAIT_AHEAD:-}" == "${hotfix##*/}" && "$box_calls" == 0 ]] || fail "hotfix ticket did not block before capacity check: ahead=${LUNA_WAIT_AHEAD:-} calls=$box_calls"
+  if luna_waiter_has_room "$slots" "$normal" normal 0 2>>"$log"; then fail 'ordinary waiter passed a live hotfix ticket on a later poll'; fi
+  [[ "$(wc -l < "$log")" == 1 ]] || fail 'ticket yield was not logged exactly once within a minute'
+  grep -Fq "waiter=${normal##*/} ahead=${hotfix##*/}" "$log" || fail 'ticket yield log omitted waiter keys'
+
+  rm -rf -- "$slots"; mkdir -p "$slots"
+  sleep 30 & ticket_pid=$!
+  old_file="$slots/wait-normal-$ticket_pid"; new_file="$slots/wait-normal-$$"
+  printf '%s\n' "$((now - 30))" > "$old_file"; printf '%s\n' "$((now - 20))" > "$new_file"
+  box_calls=0
+  luna_waiter_has_room "$slots" "$old_file" normal 0 || fail 'older ordinary waiter did not win'
+  [[ "$box_calls" == 1 ]] || fail "older waiter did not reach capacity check: calls=$box_calls"
+  if luna_waiter_has_room "$slots" "$new_file" normal 0; then fail 'younger ordinary waiter passed an older ticket'; fi
+  [[ "${LUNA_WAIT_AHEAD:-}" == "${old_file##*/}" && "$box_calls" == 1 ]] || fail "older ticket did not block younger waiter: ahead=${LUNA_WAIT_AHEAD:-} calls=$box_calls"
+  kill "$ticket_pid" 2>/dev/null || :; wait "$ticket_pid" 2>/dev/null || :; ticket_pid=""
+
+  rm -rf -- "$slots"; mkdir -p "$slots"
+  sleep 30 & ticket_pid=$!; stale_pid=$ticket_pid
+  kill "$ticket_pid"; wait "$ticket_pid" 2>/dev/null || :; ticket_pid=""
+  stale_file="$slots/wait-hotfix-$stale_pid"; normal="$slots/wait-normal-$$"
+  printf '%s\n' "$((now - 30))" > "$stale_file"; printf '%s\n' "$((now - 20))" > "$normal"
+  box_calls=0
+  luna_waiter_has_room "$slots" "$normal" normal 0 || fail 'stale hotfix ticket blocked ordinary waiter'
+  [[ ! -e "$stale_file" && "$box_calls" == 1 ]] || fail 'stale hotfix ticket was not dropped before admission'
+
+  rm -rf -- "$slots"; mkdir -p "$slots"
+  hotfix="$slots/wait-hotfix-$$"; printf '%s\n' "$now" > "$hotfix"; box_calls=0
+  luna_waiter_has_room "$slots" "$hotfix" hotfix 0 || fail 'uncontended hotfix waiter was refused'
+  [[ "$box_calls" == 1 ]] || fail "uncontended hotfix did not reach capacity check: calls=$box_calls"
+}
+ticket_admission_cases
+for f in "$bin/luna" "$bin/zc"; do
+  grep -Fq 'if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then' "$f" || fail "$(basename "$f") does not use ticket-ordered admission"
+done
+echo "ok - ticket admission orders hotfix before normal and older waiters before newer ones; stale tickets drop; uncontended hotfix admitted"
