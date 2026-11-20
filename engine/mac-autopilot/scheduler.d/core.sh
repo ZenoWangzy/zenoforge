@@ -181,8 +181,8 @@ gh() {
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || timeout_seconds=120
   [[ -z "${2:-}" ]] || timeout_op+=" $2"
   gh_timeout -k 1 "${timeout_seconds}s" "$@" || rc=$?
-  if (( rc == 0 )) && declare -F ticket_stage_record_gh_write >/dev/null 2>&1; then
-    ticket_stage_record_gh_write "$@" || rc=$?
+  if (( rc == 0 )) && [[ "${1:-}" == issue && "${2:-}" =~ ^(edit|close)$ ]]; then # the write succeeded; a failed stage record never fails it
+    ( source "$SCHEDULER_AGENT_LIB" && ticket_stage_record_gh_write "$@" ) || :
   fi
   if (( rc == 0 )); then
     if [[ "${1:-}" == run && "${2:-}" == rerun && "${3:-}" =~ ^[0-9]+$ ]]; then
