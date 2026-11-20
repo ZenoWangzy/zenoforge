@@ -26,16 +26,27 @@ if [[ $shard == 0 ]]; then
 fi
 # tools/quarantine.txt: "<suite>\t<reason>" per line, suites known to fail for a reason outside the exported files; skipped and counted, never silently.
 # ZF_QUARANTINE_SETS="darwin wsl" (space or comma separated) also loads tools/quarantine-darwin.txt and tools/quarantine-wsl.txt, same format.
-declare -A quarantine=()
-qfiles=(tools/quarantine.txt)
+declare -A quarantine=() quarantine_set_suites=() quarantine_counts=()
 qsets=${ZF_QUARANTINE_SETS:-}
-for qset in ${qsets//,/ }; do qfiles+=("tools/quarantine-$qset.txt"); done
 while IFS=$'\t' read -r qsuite qreason; do
   [[ -n $qsuite && $qsuite != \#* ]] && quarantine[$qsuite]=$qreason
-done < <(for qf in "${qfiles[@]}"; do cat "$qf" 2>/dev/null; echo; done)
+done < <(cat tools/quarantine.txt 2>/dev/null; echo)
+for qset in ${qsets//,/ }; do
+  quarantine_counts[$qset]=0
+  while IFS=$'\t' read -r qsuite qreason; do
+    if [[ -n $qsuite && $qsuite != \#* ]]; then
+      quarantine[$qsuite]=$qreason
+      quarantine_set_suites["$qset"$'\034'"$qsuite"]=1
+    fi
+  done < <(cat "tools/quarantine-$qset.txt" 2>/dev/null; echo)
+done
 pass=0 fail=0 skipped=0 failed=()
 for t in "${suites[@]}"; do
   if [[ -n ${quarantine[$t]+x} ]]; then
+    for qset in ${qsets//,/ }; do
+      key="$qset"$'\034'"$t"
+      [[ -n ${quarantine_set_suites[$key]+x} ]] && quarantine_counts[$qset]=$((quarantine_counts[$qset] + 1))
+    done
     skipped=$((skipped + 1)); echo "QUARANTINED $t - ${quarantine[$t]}"; continue
   fi
   case $t in
@@ -51,6 +62,7 @@ for t in "${suites[@]}"; do
     rc=$?; fail=$((fail + 1)); failed+=("$t rc=$rc"); echo "FAIL $t rc=$rc"; tail -15 "$log" | sed 's/^/    /'
   fi
 done
+for qset in ${qsets//,/ }; do echo "QUARANTINE $qset: ${quarantine_counts[$qset]}"; done
 echo "shard $shard/$shards: $pass passed, $fail failed, $skipped quarantined"
 printf '%s\n' "${failed[@]}" > "engine-test-failures-$shard.txt"
 exit $(( fail > 0 ))
