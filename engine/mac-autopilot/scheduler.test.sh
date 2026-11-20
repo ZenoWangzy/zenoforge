@@ -6718,7 +6718,7 @@ sched_case_retire_landed_lock_yield() (
     || fail "refill waited ${refill_wait_ms}ms after $units_seen landed PR checks, longer than one ${unit_batch_ms}ms unit batch"
   (( units_seen <= unit_batch_size )) \
     || fail "refill waited until after $units_seen landed PRs were inspected (batch bound $unit_batch_size)"
-  [[ "$(jq -r '[.units | length, ([.units[] | select(.stage=="merged")] | length)] | @tsv' "$UNITS")" == $'50\t50' ]] \
+  [[ "$(jq -r '[(.units | length), ([.units[] | select(.stage=="merged")] | length)] | @tsv' "$UNITS")" == $'50\t50' ]] \
     || fail 'full-tick replay did not retire all 50 landed PR units'
   printf 'unit-loop replay: units=50 refill_wait_ms=%s batch_ms=%s inspected_before_lock=%s\n' "$refill_wait_ms" "$unit_batch_ms" "$units_seen"
 )
