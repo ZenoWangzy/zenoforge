@@ -3177,7 +3177,16 @@ rm -f "$A/.ci-spend.pid" "$A/ci-spend.json" "$A/ci-spend.started"
 run_node_health
 wait "$(cat "$A/.ci-spend.pid")" 2>/dev/null || :
 [[ -e "$A/ci-spend.started" ]] || fail 'CI spend sampler never started without a pid file'
-rm -f "$HERE/node_health.py" "$HERE/ci_spend.py" "$A/.ci-spend.pid" "$A/ci-spend.started"
+# 2026-11-19: a paused tick skipped health scoring, node-health.json froze 22 h and head-watch alerted on stale rows.
+printf 'import sys\nopen("%s/nh-argv", "w").write(" ".join(sys.argv[1:]))\n' "$A" > "$HERE/node_health.py"
+pause_saved="$PAUSE_FILE"; PAUSE_FILE="$fixture/PAUSE-health"; touch "$PAUSE_FILE"
+run_node_health; wait "$(cat "$A/.ci-spend.pid" 2>/dev/null)" 2>/dev/null || :
+[[ " $(cat "$A/nh-argv") " == *" --json "* && " $(cat "$A/nh-argv") " != *" --file-issues "* ]] || fail 'paused health scoring did not score without filing issues'
+rm -f "$PAUSE_FILE"; run_node_health; wait "$(cat "$A/.ci-spend.pid" 2>/dev/null)" 2>/dev/null || :
+[[ " $(cat "$A/nh-argv") " == *" --file-issues --inbox "* ]] || fail 'unpaused health scoring stopped filing issues'
+PAUSE_FILE="$pause_saved"
+grep -A3 'harvest and release train only' "$script_dir/scheduler.sh" | grep -q 'views_mode=full' || fail 'a paused tick does not run the full views (health scoring)'
+rm -f "$HERE/node_health.py" "$A/nh-argv" "$HERE/ci_spend.py" "$A/.ci-spend.pid" "$A/ci-spend.started"
 HERE="$here_saved"
 
 # A moved approved predecessor head is rebased under the dependent branch, and the dependent approval is invalidated.

@@ -718,6 +718,7 @@ main() {
     # 用户的后端 Codex 暂停开关：保留回收、验证与发布列车，不派发、不合并。
     say "paused by $PAUSE_FILE: harvest and release train only, no dispatch or merge"
     phase run_release_train
+    views_mode=full # health scoring keeps the dashboard and anomaly rows current while paused (frozen 22 h from 2026-11-19 05:31Z)
   else
     # 每慢拍一次终态退休（持锁、纯本地）：先把 600+ 终态单元移出热台账，本拍后续的 intake /
     # dispatch / CI 准入 / 合并车道就不用再为它们付每笔 2 秒的整文件读写。PAUSE 期间不动台账。

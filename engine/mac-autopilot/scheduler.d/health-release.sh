@@ -4,7 +4,8 @@
 # flow.* 流动指标越过缺陷阈值时另发一条 supervisor inbox 事件（每越限一次只发一条，#4366）；常规采样只进 dashboard。
 run_node_health() {
   [[ -f "$HERE/node_health.py" ]] || return 0
-  python3 "$HERE/node_health.py" --runtime "$A" --hours 5 --alert --file-issues --inbox --json "$A/node-health.json" > "$A/node-health.txt" 2>>"$A/autopilot.err" || say "node health scoring failed"
+  local work=(--file-issues --inbox); [[ ! -e "$PAUSE_FILE" ]] || work=() # paused: score only, open no issues or inbox events
+  python3 "$HERE/node_health.py" --runtime "$A" --hours 5 --alert "${work[@]}" --json "$A/node-health.json" > "$A/node-health.txt" 2>>"$A/autopilot.err" || say "node health scoring failed"
   # Per-station throughput, stall and admission gaps (NODE-HEALTH.md "Stations"); STALLED lines go to the same alerts/node-health.md.
   if [[ -f "$HERE/station_health.py" ]]; then
     python3 "$HERE/station_health.py" --runtime "$A" --pause-file "$PAUSE_FILE" --alert 2>>"$A/autopilot.err" || say "station health failed"
