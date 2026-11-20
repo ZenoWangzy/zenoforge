@@ -517,10 +517,24 @@ repair_runtime_admission() { # id unit-json → logs once when a container repai
   return 0 # 2026-11-08: refusing here never cleared on a host with no runtime (13 repairs held 3.5 h); the same-head breaker still stops a repair that cannot push
 }
 repair_failure_prompt() { # unit-json review-report -> only this repair's failure evidence
-  local u="$1" report="$2" hint pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0
+  local u="$1" report="$2" hint prior_report prior_sections pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0
   local -a names=() links=() step_files=() log_files=() pids=()
   hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
   [[ -z "$hint" ]] || printf '%s\n' "$hint"
+  if incident_labels_match_json "$u" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}"; then
+    prior_report="$(jqf -r '.implementation_report // empty' <<<"$u")"
+    [[ -z "$prior_report" || "$prior_report" == /* ]] || prior_report="$SUP/$prior_report"
+    if [[ -n "$prior_report" && -r "$prior_report" ]]; then
+      prior_sections="$(awk '
+        /^## (root-cause|recurrence-guard|prior-art)[[:space:]]*$/ { inside=1; print; next }
+        /^##[[:space:]]/ { inside=0 }
+        inside { print }
+      ' "$prior_report")" || return 1
+      if [[ -n "$prior_sections" ]]; then
+        printf '\nExisting incident report sections to preserve or update in the repair report; include all three required headings:\n%s\n' "$prior_sections"
+      fi
+    fi
+  fi
   # Direct-main (non-product) units get the lander failure and its log tail, never CI test logs or a test request. Same lane test as dispatch-queue.sh.
   local direct=false stage=''
   if [[ "$(jqf -r '.lane // empty' <<<"$u")" == direct-main ]]; then
