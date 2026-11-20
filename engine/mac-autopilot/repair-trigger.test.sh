@@ -72,6 +72,8 @@ run_case() {
     no-push) dispatch_case "$1" no-push '[{"stage":"repair-no-push"}]' ;;
     worker-rc75) dispatch_case "$1" worker-rc75 '[{"stage":"worker-rc75"}]' ;;
     unknown) dispatch_case "$1" unknown '[{"stage":"unclassified-signal"}]' ;;
+    later-noise) dispatch_case "$1" ci-test-red '[{"stage":"ci-test-red"},{"stage":"unblocked"},{"stage":"hold-handoff"}]' ;;
+    behind-main) dispatch_case "$1" behind-main '[{"stage":"ci-red-behind-main-update"}]' ;;
     unit-end) unit_end_case ;;
     *) fail "unknown case selector: $1" ;;
   esac
@@ -81,7 +83,7 @@ run_case() {
 if [[ -n "${REPAIR_TRIGGER_CASE:-}" ]]; then
   run_case "$REPAIR_TRIGGER_CASE"
 else
-  for case_name in review-finding ci-test-red merge-conflict self-check-red supervisor-requeue no-push worker-rc75 unknown unit-end; do
+  for case_name in review-finding ci-test-red merge-conflict self-check-red supervisor-requeue no-push worker-rc75 unknown later-noise behind-main unit-end; do
     run_case "$case_name"
   done
 fi

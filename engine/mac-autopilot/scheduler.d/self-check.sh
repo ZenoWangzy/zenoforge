@@ -694,8 +694,12 @@ $(tail -80 "$check_output" 2>/dev/null)"
     write_start_filter+=" | $(dispatch_attempt_fields "$4" "$6" "$unit_json")"
     if [[ "$3" == repair ]]; then
       trigger="$(unit_field "$1" '
-        (.history // [])[-1].stage // ""
-        | if . == "review-request-changes" or . == "review-block" or . == "review-finding" then "review-finding"
+        # newest trigger-class event, not history[-1]: unblocked/hold-handoff/approval-carried often land after it
+        ([(.history // [])[] | .stage // "" | select(IN("review-request-changes", "review-block", "review-finding", "ci-test-red",
+            "ci-red-behind-main-update", "merge-conflict", "self-check-red", "supervisor-requeue", "repair-no-push", "no-push",
+            "worker-rc75"))] | last // "")
+        | if . == "ci-red-behind-main-update" then "behind-main"
+          elif . == "review-request-changes" or . == "review-block" or . == "review-finding" then "review-finding"
           elif . == "ci-test-red" then "ci-test-red"
           elif . == "merge-conflict" then "merge-conflict"
           elif . == "self-check-red" then "self-check-red"
