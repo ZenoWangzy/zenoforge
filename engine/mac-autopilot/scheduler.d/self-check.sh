@@ -1,6 +1,12 @@
+self_check_main_fresh() { # clone head [main-sha] → whether the head contains the fetched main
+  local main="${3:-}"
+  [[ -n "$main" ]] || main="$(git -C "$1" rev-parse --verify refs/remotes/origin/main^{commit} 2>/dev/null)" || return 1
+  git -C "$1" merge-base --is-ancestor "$main" "$2" 2>/dev/null
+}
 self_check_run() (
   set -o pipefail
   local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source runner_path
+  local unit_id="${5:-}" branch="${6:-}" pr="${7:-}" main_head merge_rc
   local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
   local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
   local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg test_started
@@ -10,8 +16,37 @@ self_check_run() (
   runner_path="$(dirname -- "${BASH_SOURCE[0]}")/escape-suite-runner.mjs"
   runner_source="$(<"$runner_path")" || return 1
   cd "$dir" || return 1
+  main_head="$(git rev-parse --verify refs/remotes/origin/main^{commit})" || return 1
+  if self_check_main_fresh "$dir" "$sha" "$main_head"; then
+    echo "self-check main sync: already fresh head=$sha main=$main_head"
+  else
+    [[ -n "$branch" ]] || branch="$(git symbolic-ref --quiet --short HEAD)" || return 1
+    [[ "$(git symbolic-ref --quiet --short HEAD)" == "$branch" && "$(git rev-parse HEAD)" == "$sha" ]] || return 125
+    if git merge --no-edit "$main_head"; then
+      sha="$(git rev-parse HEAD)" || return 1
+      if [[ "$lane" == pr ]]; then
+        git push -q origin "HEAD:refs/heads/$branch" || { echo "self-check main sync: merged clean but push failed branch=$branch"; return 1; }
+      fi
+      echo "self-check main sync: merged clean head=$sha main=$main_head"
+    else
+      merge_rc=$?
+      if [[ -n "$(git ls-files -u)" ]]; then
+        git merge --abort || { echo "self-check main sync: conflict abort failed"; return 1; }
+        if [[ -n "$unit_id" && "$pr" =~ ^[1-9][0-9]*$ ]] && declare -F merge_conflict_to_repair >/dev/null; then
+          echo "self-check main sync: conflict routed unit=$unit_id pr=$pr head=$sha main=$main_head"
+          merge_conflict_to_repair "$unit_id" "$pr" "self-check: conflicts with main before builds" \
+            "PR 与最新 main 冲突，自检开始前发现。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$sha" || return 1
+          return 76
+        fi
+        echo "self-check main sync: conflict cannot route unit=$unit_id pr=$pr"
+        return 1
+      fi
+      echo "self-check main sync: merge failed rc=$merge_rc"
+      return "$merge_rc"
+    fi
+  fi
   tree="$(git rev-parse "$sha^{tree}")" || return 1
-  base="$(git merge-base origin/main "$sha")" || return 1
+  base="$(git merge-base "$main_head" "$sha")" || return 1
   # CI preserves candidate edits and backfills the remaining helpers from main.
   # Never execute a candidate helper on the controller: use the isolated cihost
   # checkout, where the full candidate module environment is available.
@@ -238,7 +273,13 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   fi
   if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
-      && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then return 0; fi
+      && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then
+    # No fetched main ref can establish staleness; self_check_run requires one before it runs.
+    if self_check_main_fresh "$dir" "$sha" \
+      || ! git -C "$dir" rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
   out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
   config_base=origin/main
   [[ "$lane" == pr ]] && config_base="$pr_base"
@@ -274,13 +315,17 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       printf 'red\n' > "$result"
     elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json" "$config_base"; then
       printf 'red\n' > "$result"
-    elif self_check_run "$dir" "$sha" "$lane" "$pr_base"; then printf 'pass\n' > "$result"
+    elif self_check_run "$dir" "$sha" "$lane" "$pr_base" "$id" "$(jqf -r '.branch // empty' <<<"$u")" "$(jqf -r '.pr // empty' <<<"$u")"; then
+      printf 'pass\n' > "$result"
     else
       rc=$?
       # 75 (cihost admission queue) and 125 (transfer/setup) are not verdicts.
-      if (( rc == 75 || rc == 125 )); then printf 'defer\n' > "$result"; else printf 'red\n' > "$result"; fi
+      if (( rc == 76 )); then printf 'conflict\n' > "$result"
+      elif (( rc == 75 || rc == 125 )); then printf 'defer\n' > "$result"
+      else printf 'red\n' > "$result"; fi
     fi
     [[ -z "$config_temp" ]] || rm -f "$config_temp"
+    git -C "$dir" rev-parse HEAD > "$out.head" 2>/dev/null || :
   ) > "$out" 2>&1 < /dev/null &
   pid=$!
   set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
@@ -302,7 +347,7 @@ self_check_failure_class() { # log → short class of the first failure line
   esac
 }
 self_check_harvest() {
-  local id pid out start status fixes sid model verification_json verification_update reason_update
+  local id pid out start status fixes sid model verification_json verification_update reason_update checked_head
   while IFS=$'\t' read -r id pid out start; do
     if [[ ! -s "$out.result" ]]; then
       if kill -0 "$pid" 2>/dev/null && { [[ -z "$start" || "$(pid_start "$pid")" == "$start" ]]; }; then continue; fi
@@ -317,12 +362,18 @@ self_check_harvest() {
       set_unit "$id" "$(hist self-check-deferred "$out") | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"
       continue
     fi
+    if [[ "$status" == conflict ]]; then
+      set_unit "$id" 'del(.self_check_pid, .self_check_start) | .self_check_status="conflict"'
+      continue
+    fi
     verification_update=""
     if [[ "$status" == pass && -s "$out.verification.json" ]] && verification_json="$(jq -c . "$out.verification.json" 2>/dev/null)"; then
       verification_update=" | .verification=$verification_json"
     fi
     reason_update=""; [[ "$status" != red ]] || reason_update=" | .history[-1].reason=$(js "$(self_check_failure_class "$out")")"
-    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_status=$(js "$status")$verification_update$reason_update"
+    checked_head="$(cat "$out.head" 2>/dev/null || true)"
+    [[ "$checked_head" =~ $SHA_RE ]] || checked_head="$(unit_field "$id" '.self_check_sha // empty')"
+    set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_sha=$(js "$checked_head") | .self_check_status=$(js "$status")$verification_update$reason_update"
     [[ "$status" == red ]] || continue
     fixes="$(unit_field "$id" '.self_check_fixes // 0')"
     sid="$(unit_field "$id" '.session_ids.repair')"; model="$(unit_field "$id" .implement_model)"

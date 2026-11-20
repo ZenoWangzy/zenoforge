@@ -3,6 +3,7 @@
 Each rule the engine enforces by code and test, beside its enforcer. `AGENTS.md` points here; add a row when you add an enforced rule.
 
 | Rule | Enforcer |
+| Before package builds and tests, pre-review self-check merges the fetched origin/main into a stale unit branch; clean PR merges are pushed and PR conflicts use merge_conflict_to_repair before any build runs. | engine/mac-autopilot/scheduler.d/self-check.sh; engine/mac-autopilot/self-check-main-sync.test.sh |
 |---|---|
 | Every engine-started Codex process receives a fresh empty `CONTEXT_MODE_MCP_SENTINEL_DIR`, so host context-mode MCP readiness cannot rewrite worker commands; the launcher lint rejects a Codex start without the shared helper. | `engine/lib.d/codex-mcp.sh`; `engine/bin/luna`; `engine/dispatch-codex.sh`; `engine/eval/stage-call.sh`; `engine/lib.d/codex-budget.sh`; `engine/lib.d/model-calls.sh`; `engine/mac-autopilot/scheduler.d/worker-command.sh`; `engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh`; `engine/night/dispatch.sh`; `engine/probe-codex-sandbox.sh`; `engine/codex-plugins-off-lint.test.sh`; `engine/luna-plugins-off.test.sh`; `engine/mac-autopilot/worker-command.test.sh` |
 | Optional scheduler JSON reads go through `jqf_optional_file`; only a truly absent path is quiet, while an existing unreadable or malformed file still goes through `jqf`. | `engine/mac-autopilot/scheduler.d/core.sh`; `engine/mac-autopilot/intake-missing-state.test.sh` |
