@@ -6697,6 +6697,7 @@ sched_case_retire_landed_lock_yield() (
   (
     until [[ -e "$started" ]]; do sleep 0.01; done
     : > "$queued"
+    SECONDS=0
     TICK_LOCAL_REFILL=true
     local_started="$(date +%s%N)"
     acquire_scheduler_lock_wait 20 || exit 1
