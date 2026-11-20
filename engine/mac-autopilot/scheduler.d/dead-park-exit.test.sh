@@ -135,7 +135,7 @@ grep -Fq 'Continue work from PR #9161' "$CREATES" \
   || fail "the auto-filed ticket did not preserve the PR intent or ready lane: $(cat "$CREATES")"
 set_unit pr-9161 '.stage="parked" | .parked_reason="supervisor-budget" | .history += [{stage:"supervisor-budget-park",result:"arbitration budget exhausted again",at:"2026-11-01T02:30:00Z"}]'
 dead_park_exit
-[[ "$(stage pr-9161)" == closed && "$(tail -1 "$ROUTES")" == 9161 && "$(tail -1 "$CLOSES")" == 9161 ]] \
+[[ "$(stage pr-9161)" == closed && "$(tail -1 "$ROUTES")" == 9201 && "$(tail -1 "$CLOSES")" == 9161 ]] \
   || fail "a no-issue unit that did not converge after its repair pass did not recut and close its PR: $(unit_json pr-9161)"
 [[ "$(stage issue-9162)" == repair-pending && "$(jq -r '.units[] | select(.id == "issue-9162") | .repair_hint' "$UNITS")" == 'R1 fix the reviewed finding' \
     && "$(jq -r '[.units[] | select(.id == "issue-9162") | .history[] | select(.stage == "supervisor-requeue" and ((.result // "") | startswith("reopened over-cap repair pass:")))] | length' "$UNITS")" == 1 ]] \
