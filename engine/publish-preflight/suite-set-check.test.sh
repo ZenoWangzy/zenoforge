@@ -12,9 +12,10 @@ body missing > "$t/base/engine/missing.test.sh"
 # The engine keeps its own suite under a name the target also uses for an unrelated suite.
 body kept > "$t/base/engine/kept.test.sh"; body kept > "$t/new/engine/kept.test.sh"
 git -C "$t" init -q repo && git -C "$t/repo" config user.email test && git -C "$t/repo" config user.name test
-mkdir -p "$t/repo/.zenoforge" "$t/repo/scripts/checks"
+mkdir -p "$t/repo/.zenoforge" "$t/repo/scripts/checks" "$t/repo/project-tests"
 echo '{"pipeline_suite_roots":["scripts/checks"]}' > "$t/repo/.zenoforge/ci.json"
-sed 's#\$tmp#$TMP_DIR#' "$t/base/engine/moved.test.sh" > "$t/repo/scripts/checks/moved.test.sh"
+# A tracked baseline suite outside the configured roots is still resolvable.
+sed 's#\$tmp#$TMP_DIR#' "$t/base/engine/moved.test.sh" > "$t/repo/project-tests/moved.test.sh"
 head -20 "$t/base/engine/split.test.sh" > "$t/repo/scripts/checks/split.test.sh"
 printf 'node --test %s\n' '"$0".mjs' > "$t/repo/scripts/checks/missing.test.sh"
 printf 'echo unrelated target suite\n' > "$t/repo/scripts/checks/kept.test.sh"
@@ -34,5 +35,5 @@ rc=0; out=$(run 2>&1) || rc=$?
 git -C "$t/repo" mv docs/missing.test.sh .zenoforge/systemd/missing.test.sh && git -C "$t/repo" commit -qm systemd
 run | grep -q 'OK resolvable == moved (1 suites' || { echo "FAIL: systemd-dir suite not accepted"; exit 1; }
 git -C "$t/repo" mv .zenoforge/systemd/missing.test.sh scripts/checks/missing.test.sh && git -C "$t/repo" commit -qm restore
-run | grep -q 'OK resolvable == moved (2 suites' || { echo "FAIL: clean tree"; exit 1; }
+run | grep -q 'OK resolvable == moved (2 suites' || { echo "FAIL: suite outside configured roots not accepted"; exit 1; }
 echo "suite-set-check.test.sh: PASS"
