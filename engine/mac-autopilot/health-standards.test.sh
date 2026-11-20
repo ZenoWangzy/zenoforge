@@ -54,6 +54,11 @@ row = next(r for r in nh.score({"rereview.wall_p50":15}, criteria, {"rereview.wa
 assert row[7] == "LOW-N" and minimums[row[1]] == 10
 row = next(r for r in nh.score({"rereview.wall_p50":27.5}, criteria, {"rereview.wall_p50":3}, minimums, invalid) if r[1] == "rereview.wall_p50")
 assert row[7] == "UNHEALTHY"
+idle = [("CI", "ci.x", "", 9, 1, 5, False, "UNHEALTHY"), ("合并", "merge.y", "", None, 1, 5, False, "NO-DATA"),
+        ("发布", "release.z", "", 9, 1, 5, False, "UNHEALTHY"), ("CI", "ci.ok", "", 0, 1, 5, False, "OK"),
+        ("CI", "ci.bad", "", 0, 1, 5, False, "STANDARD-INVALID")]
+assert hs.pause_idle(idle, None) == idle, "no PAUSE leaves every status"
+assert [r[7] for r in hs.pause_idle(idle, {"since": "2026-11-19T05:24:26Z"})] == ["PAUSED", "PAUSED", "UNHEALTHY", "OK", "STANDARD-INVALID"]
 html = open(os.path.join(os.environ["PYTHONPATH"], "dashboard.html")).read()
 assert '"STANDARD-INVALID":"bad"' in html and '"LOW-N":"warn"' in html and 'sample_n:m.sample_n' in html and 'n=${o.sample_n}' in html
 print("health-standards.test.sh: PASS")

@@ -74,3 +74,17 @@ def write_health_alerts(runtime, agent_home, rows, now, display_value, doc_refer
     if invalid:
         line = f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-STANDARD-INVALID metrics={len(invalid)} (see node-health scorecard)\n"
         _append_hourly_alert(os.path.join(agent_home, "logs", "head-watch.alerts"), hour, "NODE-STANDARD-INVALID ", line)
+
+
+# Stations PAUSE stops on purpose (11-20: 38 rows read UNHEALTHY/NO-DATA only because the line was paused).
+# Release, delivery and host rows keep their status: production and the host still run during a pause. holds.* measures
+# the PAUSE itself (an ownerless PAUSE is a violation), so it is never masked.
+PAUSE_IDLE_NODES = {"advisor", "approve", "ci", "efficiency", "flow", "implement", "intake", "loop", "mechanism",
+                    "merge", "repair", "rereview", "review", "scheduler", "supervisor", "triage", "workorders"}
+
+
+def pause_idle(rows, paused):
+    """While PAUSE stands, an idle station's off status reads PAUSED instead of UNHEALTHY, WARN, LOW-N or NO-DATA."""
+    if not paused: return rows
+    return [r[:7] + ("PAUSED",) if r[7] in ("UNHEALTHY", "WARN", "LOW-N", "NO-DATA") and r[1].split(".")[0] in PAUSE_IDLE_NODES else r
+            for r in rows]

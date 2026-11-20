@@ -1493,7 +1493,7 @@ def main():
     except OSError:
         metrics["pipeline.orphan_prs"] = None
 
-    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = score(metrics, criteria, sample_counts, minimums, invalid_standards)
+    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = health_standards.pause_idle(score(metrics, criteria, sample_counts, minimums, invalid_standards), line_holds.pause_state(agent_home))
     future_note = f" future_stamped={future_stamped}" if future_stamped else ""
     print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}{future_note}")
     print(f"  {'node':<12} {'metric':<48} {'value':>7}  healthy  unhealthy  status")

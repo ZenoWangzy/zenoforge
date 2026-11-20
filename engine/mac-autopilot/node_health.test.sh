@@ -111,12 +111,16 @@ mkdir -p "$AGENT_HOME"
 # owner + future expires_at: this PAUSE is a held line WITH hold metadata, so it must not count as a violation
 jq -n --arg timestamp "$pause_since" --arg expires "2026-10-26T00:00:00Z" \
   '{reason:"refactor",caller:"operator",issue:"none",provider:"none",model:"none",timestamp:$timestamp,owner:"founder",expires_at:$expires}' > "$AGENT_HOME/PAUSE"
-out="$(ZF_CONFIG_ROOT="$config_root" python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --alert --json "$a/node-health.json")"
+out="$(ZF_CONFIG_ROOT="$config_root" python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --json "$a/node-health.json")"
 source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 jq -e --arg sampled_at '2026-10-19T12:00:00Z' --arg source_commit "$source_commit" --arg pause_since "$pause_since" \
   '.generated == $sampled_at and .generated_at == $sampled_at and .source_commit == $source_commit
    and .paused == {since:$pause_since,reason:"refactor"}' \
   "$a/node-health.json" >/dev/null || fail 'scorecard JSON lacks its sample time, source commit or PAUSE details'
+# 11-20: while PAUSE stands an idle station reads PAUSED, not UNHEALTHY; the rest of the suite scores an unpaused line.
+grep -Eq ' 50 .*PAUSED$' <<<"$(grep -F 'implement runs with no report' <<<"$out")" || fail "paused station must read PAUSED: $out"
+mv "$AGENT_HOME/PAUSE" "$AGENT_HOME/PAUSE.suite"
+out="$(ZF_CONFIG_ROOT="$config_root" python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --alert --json "$a/node-health.json")"
 row() { grep -F "$1" <<<"$out" | head -1; }
 grep -Eq ' 20 .*OK$' <<<"$(row 'implement run minutes p50')" || fail "implement wall time status wrong: $(row 'implement run minutes')"
 grep -Eq ' 50 .*UNHEALTHY$' <<<"$(row 'implement runs with no report')" || fail "no-report rate wrong: $(row 'no report')"
@@ -1581,6 +1585,7 @@ flowrun "$fa" --inbox >/dev/null
 # （hold_issue 的 --holder/--release/--expires）欠同样的元数据。缺 owner、缺到期或已过期计入
 # holds.line_violations（健康 0，异常 ≥1）；过期不自动恢复，只每天告警一次（events.md + supervisor inbox）。 ---
 lhsup="$test_env_root/line-hold-sup"; lha="$lhsup/autopi"; mkdir -p "$lha/alerts" "$lhsup"
+mv "$AGENT_HOME/PAUSE.suite" "$AGENT_HOME/PAUSE"
 lhval() { # <config-json> → metric value and status（固定 now，PAUSE 用套件级 fixture）
   printf '%s' "$1" > "$lha/config.json"
   PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$lha" --audit "$noaudit" \
@@ -1618,6 +1623,7 @@ lhpause() { # <pause-contents|-> → metric value and status（config 不停线�
 [[ "$(lhpause '{"caller":"automation","reason":"x"}')" == "0 OK" ]] \
   || fail "JSON PAUSE without the operator contract is ignored by the pipelines and is not a hold: $(lhpause '{"caller":"automation","reason":"x"}')"
 [[ "$(lhpause -)" == "0 OK" ]] || fail "no PAUSE file is not a hold"
+rm "$AGENT_HOME/PAUSE" # the suite-level PAUSE serves only the line-hold checks above
 # 告警：违规每个 hold 每天一条 events.md + 一条 supervisor inbox（once helper，key 带天），点名 owner、reason、过期多久
 printf '%s' '{"release_train":{"enabled":false,"hold":{"owner":"ops","reason":"demo revert after 11-03","expires_at":"2026-10-19T06:00:00Z"}}}' > "$lha/config.json"
 lhpause_home="$lhsup/agent-home"
