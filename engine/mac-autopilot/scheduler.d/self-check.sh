@@ -274,7 +274,11 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
       && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then
-    self_check_main_fresh "$dir" "$sha" && return 0
+    # No fetched main ref can establish staleness; self_check_run requires one before it runs.
+    if self_check_main_fresh "$dir" "$sha" \
+      || ! git -C "$dir" rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null 2>&1; then
+      return 0
+    fi
   fi
   out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
   config_base=origin/main
