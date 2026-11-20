@@ -61,7 +61,7 @@ intake_units_view() {
 }
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
   local refill_mode="${1:-false}" intake_judge_started="${2:-}" intake_judge_budget="${3:-}"
-  local skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now now_epoch cache_rows cache_read_status AGING_HOURS
+  local skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status aging_hours
   local cache_token="$BASHPID.$RANDOM" cache_rows_tmp cache_valid_tmp cache_json_tmp
   local -a query_files=() query_lanes=() query_pids=()
   cache_rows_tmp="$cache_file.rows.$cache_token.tmp"
@@ -82,9 +82,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
     fi
   fi
   skip_labels="$(issue_skip_labels)"
-  AGING_HOURS="$(jqf -r '.issue_intake.aging_hours // 75' <<<"$CFG")"
-  [[ "$AGING_HOURS" =~ ^[0-9]+$ ]] || AGING_HOURS=75
-  now_epoch="$(date +%s)"
+  aging_hours="$(jqf -r '.issue_intake.aging_hours // 75' <<<"$CFG")"
   if [[ "$refill_mode" == true ]]; then
     candidate_labels="$(jqf -r '[((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .]), ((.issue_intake.labels // [])[] | ["direct-main", .])] | .[] | @tsv' <<<"$CFG")"
   else
@@ -117,49 +115,15 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
         jqf -c --arg lane "${query_lanes[$index]}" '.[] | . + {lane:$lane}' "${query_files[$index]}" || true
       done
     } | jqf -cs '.' \
-      | PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
-import json, os, sys, time
-from datetime import datetime, timezone
-import founder_reqs
-rows = json.load(sys.stdin)
-prefix = founder_reqs.configured_anomaly_prefix()
-state_dir = os.path.join(os.environ.get("AGENT_HOME", os.path.expanduser("~/.zenoforge")), "state")
-now = int(time.time())
-def epoch(value):
-    try:
-        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        return int(stamp.timestamp())
-    except (ValueError, TypeError, OverflowError):
-        return 0
-for row in rows:
-    row["_auto_filed"] = founder_reqs.is_auto_filed_ticket(row, prefix)
-    ready_since = 0
-    if any(label.get("name") == "ready-for-agent" for label in row.get("labels", []) if isinstance(label, dict)):
-        try:
-            issue_number = row.get("number")
-            with open(os.path.join(state_dir, str(issue_number) + ".json"), encoding="utf-8") as state_file:
-                state = json.load(state_file)
-            if state.get("state") == "ready-for-agent":
-                ready_since = epoch(state.get("state_changed_at"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            pass
-    row["_ready_since_epoch"] = ready_since or epoch(row.get("updatedAt") or row.get("updated_at") or row.get("createdAt")) or now
-json.dump(rows, sys.stdout, separators=(",", ":"))
-' | tee "$query_dir/rows.json" | jqf -c 'group_by(.number)[] | sort_by(.lane) | .[0]' | intake_priority_open_unlabelled_candidates "$intake_judge_started" "$intake_judge_budget" | jqf -sr --argjson skip "$skip_labels" --argjson now "$now_epoch" --argjson aging_hours "$AGING_HOURS" '
+      | INTAKE_AGING_HOURS="$aging_hours" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 "$HERE/intake_rows.py" | tee "$query_dir/rows.json" | jqf -c 'group_by(.number)[] | sort_by(.lane) | .[0]' | intake_priority_open_unlabelled_candidates "$intake_judge_started" "$intake_judge_budget" | jqf -sr --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
         | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
           elif ($n | index("critical-path")) then 2  # 批次 STATE 的关键路径（#4363）：排在普通功能前、遗留后
           elif ($n | index("focus")) then 3 elif ($n | index("finish-first")) then 4 elif ($n | index("bug")) then 5
           elif ($n | index("legacy")) then 7 else 6 end;
-      def is_aged($now; $aging_hours):
-        .lane == "pr" and any(.labels[]; .name == "ready-for-agent")
-        and ($now - ._ready_since_epoch) > ($aging_hours * 3600);
-      def aged_rank($now; $aging_hours):
-        rank as $value | if $value > 0 and is_aged($now; $aging_hours) then $value - 1 else $value end;
+      def aged_rank: rank as $value | if $value > 0 and ._aged then $value - 1 else $value end;  # intake_rows.py sets _aged
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
-      | sort_by([aged_rank($now; $aging_hours), ._ready_since_epoch, (if ._auto_filed then 1 else 0 end), -.number])
+      | sort_by([aged_rank, ._ready_since_epoch, (if ._auto_filed then 1 else 0 end), -.number])
       | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,createdAt,subIssuesSummary,blockedBy} | @base64)\t\(.updatedAt // .updated_at // "")"'
     intake_skip_label_report "$query_dir/rows.json" "$skip_labels"
     if (( valid_queries == expected_queries && ${#query_files[@]} == expected_queries )); then : >"$cache_valid_tmp"; fi
