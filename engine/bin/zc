@@ -18,7 +18,6 @@ if (( held_until > $(date +%s) )) && [[ "${ZC_IGNORE_HOLD:-0}" != 1 ]]; then
   echo "zc: ZCode held until $(date -u -d "@$held_until" +%FT%TZ) (zcode-exhausted-until); set ZC_IGNORE_HOLD=1 to override" >&2
   exit 75
 fi
-source "$B/../config.sh"
 root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="${ZC_OUT_ROOT:-$root/zc}/$key"   # bin/worker sets ZC_OUT_ROOT=.scratch/luna so every backend reports in one place
 mkdir -p "$out" "$root/tmp/$key"
@@ -50,7 +49,8 @@ while :; do
   [[ -e "$wait_f" ]] || : >"$wait_f"; [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"; wait_stale_drop
   flock -u "$mx"; sleep 30
 done
-mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
+mapfile -t zcode_cmd < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_argv)
+(( ${#zcode_cmd[@]} )) || { echo "zc: zcode executable missing (config engine.zcode_bin, ZCODE_BIN, zc-src, PATH)" >&2; echo 75 >"$out/rc"; exit 75; }
 # MCP, plugins, skills, hooks and memory are switched off in ~/.zcode/cli/config.json (features.* = false).
 # Node's fetch ignores HTTP(S)_PROXY unless NODE_USE_ENV_PROXY=1, and WSL reaches Z.ai only through the proxy.
 # Own memory-capped scope, named luna-* so health-watch's memory relief covers it like a codex run.
