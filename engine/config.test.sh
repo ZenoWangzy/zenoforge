@@ -16,7 +16,11 @@ resolve() {
 
 target="$test_env_root/target"; other="$test_env_root/other"
 for r in "$target" "$other"; do mkdir -p "$r/engine"; cp "$SCRIPT_DIR/config.sh" "$r/engine/"; done
+engine_checkout="$test_env_root/engine-checkout"; split_target="$test_env_root/split-target"
+mkdir -p "$engine_checkout/engine" "$split_target"
+cp "$SCRIPT_DIR/config.sh" "$engine_checkout/engine/"
 target="$(cd -- "$target" && pwd -P)"; other="$(cd -- "$other" && pwd -P)"
+engine_checkout="$(cd -- "$engine_checkout" && pwd -P)"; split_target="$(cd -- "$split_target" && pwd -P)"
 unset_all=(-u ZF_ENGINE_DIR -u ZF_REPO_DIR -u ZF_HOME -u AGENT_HOME)
 
 check "engine inside the target: both default to the file's location, home to ~/.zenoforge" \
@@ -27,6 +31,10 @@ check "an exported ZF_REPO_DIR wins" \
   "$(resolve "$target/engine" "${unset_all[@]}" ZF_REPO_DIR=/elsewhere)" "$target/engine|/elsewhere|$HOME/.zenoforge"
 check "split layout: exported engine and target directories both win" \
   "$(resolve "$target/engine" "${unset_all[@]}" ZF_ENGINE_DIR=/engine ZF_REPO_DIR=/target)" "/engine|/target|$HOME/.zenoforge"
+check "separate engine and target checkouts resolve independently" \
+  "$(resolve "$engine_checkout/engine" "${unset_all[@]}" ZF_ENGINE_DIR="$engine_checkout/engine" ZF_REPO_DIR="$split_target")" \
+  "$engine_checkout/engine|$split_target|$HOME/.zenoforge"
+check "the separate target checkout has no embedded engine" "$(test ! -e "$split_target/engine" && echo absent)" absent
 check "AGENT_HOME beats ZF_HOME" \
   "$(resolve "$target/engine" "${unset_all[@]}" AGENT_HOME=/a ZF_HOME=/b | cut -d'|' -f3)" "/a"
 check "ZF_HOME beats the default" \
@@ -123,4 +131,80 @@ check "an exported host id wins over the derived one" \
   "$(setting ZF_HOST_ID ZF_HOST_ID=caller-set)" "caller-set"
 check "coordination switch defaults to off" "$(setting ZF_COORD)" "off"
 check "an exported coordination switch wins" "$(setting ZF_COORD ZF_COORD=on)" "on"
+
+# Separate engine and target repositories: update engine/main, but only fetch target/main.
+split_engine_origin="$test_env_root/split-engine-origin"
+split_engine="$test_env_root/split-engine"
+split_engine_publisher="$test_env_root/split-engine-publisher"
+split_target_origin="$test_env_root/split-target-origin"
+split_target="$test_env_root/split-target-repo"
+split_target_publisher="$test_env_root/split-target-publisher"
+for origin in "$split_engine_origin" "$split_target_origin"; do
+  git init -q --bare "$origin"
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+done
+git init -q -b main "$split_engine"
+git -C "$split_engine" config user.email test@example.com
+git -C "$split_engine" config user.name Test
+mkdir -p "$split_engine/engine/systemd"
+cp "$SCRIPT_DIR/model-policy.default.json" "$split_engine/engine/model-policy.default.json"
+printf '# no timers\n' > "$split_engine/engine/systemd/pipeline-timers.list"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$split_engine/engine/issue-pipeline.sh"
+chmod +x "$split_engine/engine/issue-pipeline.sh"
+git -C "$split_engine" add engine
+git -C "$split_engine" commit -q -m engine-seed
+git -C "$split_engine" remote add origin "$split_engine_origin"
+git -C "$split_engine" push -q -u origin main
+git init -q -b main "$split_target"
+git -C "$split_target" config user.email test@example.com
+git -C "$split_target" config user.name Test
+printf 'target seed\n' > "$split_target/seed.txt"
+git -C "$split_target" add seed.txt
+git -C "$split_target" commit -q -m target-seed
+git -C "$split_target" remote add origin "$split_target_origin"
+git -C "$split_target" push -q -u origin main
+split_target_head="$(git -C "$split_target" rev-parse HEAD)"
+git clone -q "$split_engine_origin" "$split_engine_publisher"
+git -C "$split_engine_publisher" config user.email test@example.com
+git -C "$split_engine_publisher" config user.name Test
+printf 'engine update\n' > "$split_engine_publisher/engine-update.txt"
+git -C "$split_engine_publisher" add engine-update.txt
+git -C "$split_engine_publisher" commit -q -m engine-update
+git -C "$split_engine_publisher" push -q origin main
+split_engine_head="$(git -C "$split_engine_publisher" rev-parse HEAD)"
+git clone -q "$split_target_origin" "$split_target_publisher"
+git -C "$split_target_publisher" config user.email test@example.com
+git -C "$split_target_publisher" config user.name Test
+printf 'target update\n' > "$split_target_publisher/target-update.txt"
+git -C "$split_target_publisher" add target-update.txt
+git -C "$split_target_publisher" commit -q -m target-update
+git -C "$split_target_publisher" push -q origin main
+split_target_remote_head="$(git -C "$split_target_publisher" rev-parse HEAD)"
+split_agent_home="$test_env_root/split-agent-home"
+mkdir -p "$split_agent_home"
+split_tick_status=0
+if split_tick_output="$(AGENT_HOME="$split_agent_home" AGENT_DRY_RUN=1 \
+  ZF_ENGINE_DIR="$split_engine/engine" ZF_ENGINE_REPO_DIR="$split_engine" \
+  ZF_REPO_DIR="$split_target" ZF_PACK_DIR="$split_engine/engine" ZF_PACK_REL=engine \
+  ZF_CONFIG_ROOT="$split_target/.zenoforge" ZF_ENGINE_SYNC=/nonexistent \
+  SYSTEMD_USER_UNIT_DIR="$test_env_root/split-units" \
+  bash "$SCRIPT_DIR/run-tick.sh" 2>&1)"; then
+  :
+else
+  split_tick_status=$?
+fi
+check "a tick succeeds with separate engine and target repositories" "$split_tick_status" 0
+[[ "$split_tick_status" == 0 ]] || { printf '%s\n' "$split_tick_output" >&2; fail "split repository tick output is shown above"; }
+check "the engine checkout fast-forwards" "$(git -C "$split_engine" rev-parse HEAD)" "$split_engine_head"
+check "the target checkout is only fetched" "$(git -C "$split_target" rev-parse HEAD)" "$split_target_head"
+check "the target origin/main ref advances" "$(git -C "$split_target" rev-parse origin/main)" "$split_target_remote_head"
+
+# Keep target-relative engine paths from returning in production engine code; fixtures may name them.
+repo_root="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+if forbidden_paths="$(git -C "$repo_root" grep -nE '\$\{?ZF_REPO_DIR\}?/engine/' -- engine ':!**/*.test.*' 2>&1)"; then
+  fail "engine code hard-codes the engine under ZF_REPO_DIR: $forbidden_paths"
+else
+  lint_status=$?
+  [[ "$lint_status" == 1 ]] || fail "could not scan engine paths for the lint (git grep rc=$lint_status): $forbidden_paths"
+fi
 echo "config.test.sh: PASS"

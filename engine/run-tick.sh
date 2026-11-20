@@ -9,14 +9,13 @@
 # as fixed: the running pipeline executed stale code and missed an
 # instruction already published to main, and nothing told "main has the
 # fix" apart from "the service is running the fix". This launcher's whole
-# job is to close that gap: fast-forward a checkout DEDICATED to the
-# pipeline ($HOME/.zenoforge/checkout, never touched interactively)
-# from origin/main before every tick, and refuse to run that tick at all —
-# rather than silently execute whatever was already on disk — if the
-# fast-forward can't happen cleanly (wrong branch, divergence, fetch failure).
-# A dirty checkout is quarantined and restored to HEAD before the fetch.
+# job is to close that gap: fast-forward the engine checkout
+# (ZF_ENGINE_REPO_DIR, defaulting to the target checkout) from origin/main
+# before every tick, and refuse if the engine cannot update cleanly. When the
+# engine and target are separate, fetch target origin/main without moving its
+# working branch. A dirty engine checkout is quarantined and restored to HEAD.
 #
-# Self-update hazard: this file lives INSIDE the checkout it fast-forwards.
+# Self-update hazard: this file lives INSIDE the engine checkout it fast-forwards.
 # `git merge --ff-only` can rewrite this very file's bytes on disk while
 # bash is still reading it — bash does not slurp a running script fully
 # into memory up front, it reads it incrementally, so a rewrite mid-run can
@@ -48,7 +47,7 @@
 # 2. Every exit now explains itself, on purpose, not by accident. The
 #    known refusals already did (restore/branch/fetch/diverged); what didn't
 #    exist was a backstop for anything ELSE that fails -- e.g. the
-#    script_dir/repo_dir `cd` resolution just below, whose own failure
+#    script_dir/repo_dir/engine_repo_dir resolution just below, whose own failure
 #    mode was a genuinely silent `x=$(cd ... && pwd)` exit under `set -e`
 #    (a command substitution's exit status IS checked when it's the sole
 #    right-hand side of a bare assignment -- verified empirically, this is
@@ -89,7 +88,7 @@
 set -Eeuo pipefail
 
 run_tick() {
-  local script_dir="" repo_dir="" branch
+  local script_dir="" repo_dir="" engine_repo_dir="" branch
   local fail_count_file alerted_file fail_threshold
   local timer_list timer_repo timer_gh_timeout_sec timer timer_off_variable timer_alert_marker
   local scheduler_status=0
@@ -112,8 +111,6 @@ run_tick() {
   # without letting a single fetch hold the five-minute timer indefinitely.
   # fetch is read-only/idempotent; each attempt keeps the existing 60s cap.
   local git_fetch_timeout_sec="${GIT_FETCH_TIMEOUT_SEC:-60}"
-  local git_fetch_status=0 git_fetch_attempt=0
-  local load_1m processors
   local timer_gh_timeout_sec="${GH_CALL_TIMEOUT_SEC:-60}"
 
   append_supervisor_event() (
@@ -189,7 +186,9 @@ run_tick() {
   local UNIT_PREFIX="${ZF_UNIT_PREFIX:-zenoforge}"
   # The target checkout: ZF_REPO_DIR, else two levels up from engine (the engine lives inside it).
   repo_dir="$ZF_REPO_DIR"
-  # Load before this checkout self-updates; the shared function is then held in this shell.
+  engine_repo_dir="${ZF_ENGINE_REPO_DIR:-$repo_dir}"
+  export ZF_ENGINE_REPO_DIR="$engine_repo_dir"
+  # Load before the engine checkout self-updates; the shared function is then held in this shell.
   source "$script_dir/model-policy-fast-forward.sh"
   timer_list="$(zf_config_file systemd/pipeline-timers.list || true)"
   # The target repository, as lib.sh derives it: ZF_REPO, else the checkout's origin remote.
@@ -218,11 +217,42 @@ run_tick() {
 
   source "$script_dir/dispatch-load-guard.sh"
 
-  echo "run-tick: dedicated checkout is $repo_dir" >&2
+  fetch_origin_main() { # checkout → bounded fetch of origin/main, with the existing one-time timeout retry
+    local checkout="$1" fetch_attempt=0 fetch_status=0 fetch_load fetch_processors
+    while :; do
+      fetch_attempt=$((fetch_attempt + 1))
+      if (
+        export AGENT_HOME
+        export ZF_REPO_DIR="$checkout" GIT_FETCH_TIMEOUT_SEC="$git_fetch_timeout_sec"
+        source "$script_dir/lib.sh"
+        ZF_GIT_FETCH_TRANSIENT_RETRIES=1 git_fetch_bounded "$checkout" main
+      ); then
+        return 0
+      else
+        fetch_status=$?
+      fi
+      if [ "$fetch_status" -eq 124 ] && [ "$fetch_attempt" -eq 1 ]; then
+        echo "run-tick: git fetch timed out after ${git_fetch_timeout_sec}s; retrying once" >&2
+        sleep 2
+        continue
+      fi
+      if [ "$fetch_status" -eq 124 ]; then
+        fetch_load="$(awk 'NR == 1 { print $1 }' /proc/loadavg 2>/dev/null || true)"
+        fetch_processors="$(nproc 2>/dev/null || true)"
+        if dispatch_load_exceeded "$fetch_load" "$fetch_processors" "${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}"; then
+          refuse_checkout_integrity "fetch-starved" "git fetch timed out after ${git_fetch_timeout_sec}s while host 1m load $fetch_load exceeded ${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}x processors ($fetch_processors)"
+        fi
+        refuse_checkout_integrity "fetch-timeout" "git fetch origin main timed out after ${git_fetch_timeout_sec}s on attempt $fetch_attempt; host 1m load was $fetch_load on $fetch_processors processors"
+      fi
+      refuse_checkout_integrity "fetch-failed" "git fetch origin main failed on attempt $fetch_attempt (status $fetch_status) in $checkout"
+    done
+  }
 
-  dirty_status="$(git -C "$repo_dir" status --porcelain --untracked-files=all)"
+  echo "run-tick: engine checkout is $engine_repo_dir; target checkout is $repo_dir" >&2
+
+  dirty_status="$(git -C "$engine_repo_dir" status --porcelain --untracked-files=all)"
   if [ -n "$dirty_status" ]; then
-    # No legitimate local edit belongs in this dedicated checkout. Keep
+    # No legitimate local edit belongs in the engine checkout. Keep
     # tracked and untracked payloads outside Git before restoring it.
     quarantine_root="$AGENT_HOME/quarantine"
     snapshot_stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -231,21 +261,21 @@ run_tick() {
     if ! mkdir -p "$quarantine_root" || ! mkdir -m 700 "$quarantine_entry"; then
       refuse_checkout_integrity "checkout-restore-failed" "could not create dirty-checkout quarantine at $quarantine_entry"
     fi
-    if ! git -C "$repo_dir" diff --binary HEAD >"$quarantine_entry/tracked.patch" \
-      || ! git -C "$repo_dir" ls-files --others --exclude-standard -z >"$untracked_paths"; then
+    if ! git -C "$engine_repo_dir" diff --binary HEAD >"$quarantine_entry/tracked.patch" \
+      || ! git -C "$engine_repo_dir" ls-files --others --exclude-standard -z >"$untracked_paths"; then
       refuse_checkout_integrity "checkout-restore-failed" "could not save tracked diff and untracked path list to $quarantine_entry"
     fi
     if [ -s "$untracked_paths" ] && ! (
-      cd "$repo_dir" && tar --null --verbatim-files-from -cf "$quarantine_entry/untracked.tar" -T "$untracked_paths"
+      cd "$engine_repo_dir" && tar --null --verbatim-files-from -cf "$quarantine_entry/untracked.tar" -T "$untracked_paths"
     ); then
       refuse_checkout_integrity "checkout-restore-failed" "could not archive untracked files to $quarantine_entry"
     fi
     chmod 600 "$quarantine_entry"/* 2>/dev/null || true
-    if ! git -C "$repo_dir" reset --hard HEAD >/dev/null 2>&1 \
-      || ! git -C "$repo_dir" clean -fd -- >/dev/null 2>&1; then
+    if ! git -C "$engine_repo_dir" reset --hard HEAD >/dev/null 2>&1 \
+      || ! git -C "$engine_repo_dir" clean -fd -- >/dev/null 2>&1; then
       refuse_checkout_integrity "checkout-restore-failed" "could not restore dirty checkout to HEAD after quarantining it at $quarantine_entry"
     fi
-    dirty_status="$(git -C "$repo_dir" status --porcelain --untracked-files=all)"
+    dirty_status="$(git -C "$engine_repo_dir" status --porcelain --untracked-files=all)"
     if [ -n "$dirty_status" ]; then
       refuse_checkout_integrity "checkout-restore-failed" "checkout still has changes after restore; quarantine saved at $quarantine_entry"
     fi
@@ -256,55 +286,32 @@ run_tick() {
   # (6 .pyc files, #612) never shows in status, so the restore above misses it and a release batch polled a failing preflight
   # for 45 minutes. Move only a path with no tracked file: what is left there after the restore is ignored. Moved, not deleted.
   for refused_path in scripts/agent scripts/zenoforge-pack; do
-    [ -e "$repo_dir/$refused_path" ] || [ -L "$repo_dir/$refused_path" ] || continue
-    [ -z "$(git -C "$repo_dir" ls-files -- "$refused_path")" ] || continue
+    [ -e "$engine_repo_dir/$refused_path" ] || [ -L "$engine_repo_dir/$refused_path" ] || continue
+    [ -z "$(git -C "$engine_repo_dir" ls-files -- "$refused_path")" ] || continue
     refused_dest="$AGENT_HOME/quarantine/ignored-refused-$(date -u +%Y%m%dT%H%M%SZ)-$$/$refused_path"
-    if ! mkdir -p "${refused_dest%/*}" || ! mv -- "$repo_dir/$refused_path" "$refused_dest"; then
-      refuse_checkout_integrity "checkout-restore-failed" "could not move ignored $refused_path out of $repo_dir to $refused_dest"
+    if ! mkdir -p "${refused_dest%/*}" || ! mv -- "$engine_repo_dir/$refused_path" "$refused_dest"; then
+      refuse_checkout_integrity "checkout-restore-failed" "could not move ignored $refused_path out of $engine_repo_dir to $refused_dest"
     fi
     echo "run-tick: moved ignored $refused_path out of the checkout to $refused_dest (the release preflight refuses that path)" >&2
   done
 
-  branch="$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD || true)"
+  branch="$(git -C "$engine_repo_dir" symbolic-ref --quiet --short HEAD || true)"
   if [ "$branch" != "main" ]; then
-    refuse_checkout_integrity "wrong-branch" "$repo_dir is on '${branch:-detached HEAD}', not main"
+    refuse_checkout_integrity "wrong-branch" "$engine_repo_dir is on '${branch:-detached HEAD}', not main"
   fi
 
-  while :; do
-    git_fetch_attempt=$((git_fetch_attempt + 1))
-    if (
-      export AGENT_HOME
-      export ZF_REPO_DIR="$repo_dir" GIT_FETCH_TIMEOUT_SEC="$git_fetch_timeout_sec"
-      source "$script_dir/lib.sh"
-      ZF_GIT_FETCH_TRANSIENT_RETRIES=1 git_fetch_bounded "$repo_dir" main
-    ); then
-      break
-    else
-      git_fetch_status=$?
-    fi
-    if [ "$git_fetch_status" -eq 124 ] && [ "$git_fetch_attempt" -eq 1 ]; then
-      echo "run-tick: git fetch timed out after ${git_fetch_timeout_sec}s; retrying once" >&2
-      sleep 2
-      continue
-    fi
-    if [ "$git_fetch_status" -eq 124 ]; then
-      load_1m="$(awk 'NR == 1 { print $1 }' /proc/loadavg 2>/dev/null || true)"
-      processors="$(nproc 2>/dev/null || true)"
-      if dispatch_load_exceeded "$load_1m" "$processors" "${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}"; then
-        refuse_checkout_integrity "fetch-starved" "git fetch timed out after ${git_fetch_timeout_sec}s while host 1m load $load_1m exceeded ${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}x processors ($processors)"
-      fi
-      refuse_checkout_integrity "fetch-timeout" "git fetch origin main timed out after ${git_fetch_timeout_sec}s on attempt $git_fetch_attempt; host 1m load was $load_1m on $processors processors"
-    fi
-    refuse_checkout_integrity "fetch-failed" "git fetch origin main failed on attempt $git_fetch_attempt (status $git_fetch_status) in $repo_dir"
-  done
-
-  fast_forward_old_head="$(git -C "$repo_dir" rev-parse HEAD)"
-  if ! git -C "$repo_dir" merge --quiet --ff-only origin/main; then
-    refuse_checkout_integrity "diverged" "$repo_dir has diverged from origin/main, fast-forward not possible"
+  if [ "$repo_dir" != "$engine_repo_dir" ]; then
+    fetch_origin_main "$repo_dir"
   fi
-  fast_forward_new_head="$(git -C "$repo_dir" rev-parse HEAD)"
+  fetch_origin_main "$engine_repo_dir"
+
+  fast_forward_old_head="$(git -C "$engine_repo_dir" rev-parse HEAD)"
+  if ! git -C "$engine_repo_dir" merge --quiet --ff-only origin/main; then
+    refuse_checkout_integrity "diverged" "$engine_repo_dir has diverged from origin/main, fast-forward not possible"
+  fi
+  fast_forward_new_head="$(git -C "$engine_repo_dir" rev-parse HEAD)"
   if ! sync_model_policy_default_after_fast_forward \
-    "$repo_dir" "$AGENT_HOME" "$fast_forward_old_head" "$fast_forward_new_head"; then
+    "$engine_repo_dir" "$AGENT_HOME" "$fast_forward_old_head" "$fast_forward_new_head"; then
     refuse "policy-sync-failed" "could not synchronize live model policy after fast-forward"
   fi
 
@@ -312,17 +319,17 @@ run_tick() {
   # project's hash ban forbids reading, recording or reporting Git object
   # IDs, and a subject line is what a human reading the journal at 3am can
   # actually act on.
-  echo "run-tick: $repo_dir fast-forwarded to origin/main, now at: $(git -C "$repo_dir" log -1 --format=%s); handing off to issue-pipeline.sh" >&2
+  echo "run-tick: $engine_repo_dir fast-forwarded to origin/main, now at: $(git -C "$engine_repo_dir" log -1 --format=%s); handing off to issue-pipeline.sh" >&2
 
   # 2026-10-30 (#4728): every main advance becomes one supervisor-inbox
   # event, so the head supervisor stops discovering landings by polling git
   # fetch (114 fetches in 16.7h, retro 2026-10-30 §4). land-direct-main.sh
-  # reports its own landings and fast-forwards this checkout first, so a
+  # reports its own landings and fast-forwards this engine checkout first, so a
   # landing it already reported produces no advance here — the two writers
   # do not duplicate each other.
   if [ "$fast_forward_old_head" != "$fast_forward_new_head" ]; then
-    landing_count="$(git -C "$repo_dir" rev-list --count "$fast_forward_old_head..$fast_forward_new_head" 2>/dev/null || echo 0)"
-    landing_subjects="$(git -C "$repo_dir" log --format=%s --max-count=5 \
+    landing_count="$(git -C "$engine_repo_dir" rev-list --count "$fast_forward_old_head..$fast_forward_new_head" 2>/dev/null || echo 0)"
+    landing_subjects="$(git -C "$engine_repo_dir" log --format=%s --max-count=5 \
       "$fast_forward_old_head..$fast_forward_new_head" 2>/dev/null \
       | awk 'NR>1{printf " | "} {printf "%s", $0}')" || landing_subjects=""
     append_supervisor_event landing "count=$landing_count lane=main-advance subjects=$landing_subjects" 2>/dev/null || true
@@ -337,7 +344,7 @@ run_tick() {
     echo "run-tick: engine-sync --converge failed; see engine-sync output" >&2
   fi
 
-  # 2026-09-15 (#1299 review): the checkout above is fast-forwarded every
+  # 2026-09-15 (#1299 review): the engine checkout above is fast-forwarded every
   # tick, but nothing was ever copying engine/systemd/*.service/
   # *.timer OUT of it into ~/.config/systemd/user/ -- the directory
   # systemd --user actually reads -- or telling systemd to re-read it.
@@ -440,13 +447,13 @@ run_tick() {
   local host_daemon_check
   host_daemon_check="$(zf_host_ops_file scripts/agent/check-host-daemons.py "$ZF_ENGINE_DIR/check-host-daemons.py")"
   if [[ -f "$host_daemon_check" ]] && ! python3 -B \
-    "$host_daemon_check" "$repo_dir" --sync "$fast_forward_old_head" "$fast_forward_new_head"; then
+    "$host_daemon_check" "$engine_repo_dir" --sync "$fast_forward_old_head" "$fast_forward_new_head"; then
     refuse "host-daemon-sync-failed" "could not synchronize running host daemons after fast-forward"
   fi
 
   # 2026-09-21 (#1531, generalized by #1547): a stopped dependency timer
   # cannot observe its own silence. The still-running tick reads the
-  # unit-adjacent list after its dedicated checkout has fast-forwarded. An
+  # unit-adjacent list after its engine checkout has fast-forwarded. An
   # entry's exact `off` variable is an intentional stop; a stopped timer is
   # repaired with start, while a disabled timer needs enable --now or it will
   # never recover on this continuously running machine. Markers live outside
