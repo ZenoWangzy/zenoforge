@@ -114,11 +114,13 @@ def _codex_totals(record):
 
 
 def _codex_usage(totals):
-    values = [totals.get(name) for name in ("input_tokens", "cached_input_tokens", "output_tokens")]
+    fields = (("input_tokens", "inputTokens"), ("cached_input_tokens", "cacheReadTokens"),
+              ("output_tokens", "outputTokens"))
+    values = [totals.get(name, totals.get(alias)) for name, alias in fields]
     if any(type(value) is not int or value < 0 for value in values) or values[1] > values[0]:
         raise ValueError("invalid cumulative token counters")
-    reasoning = totals.get("reasoning_output_tokens")
-    cache_write = totals.get("cache_write_input_tokens")
+    reasoning = totals.get("reasoning_output_tokens", totals.get("reasoningTokens"))
+    cache_write = totals.get("cache_write_input_tokens", totals.get("cacheWriteTokens"))
     return Usage(*values, reasoning=reasoning if _is_count(reasoning) else None,
                  cache_write=cache_write if _is_count(cache_write) else None)
 
@@ -153,49 +155,47 @@ def codex_session_usage(path):
 # ---------- native codex exec --json events: new sessions' turns ----------
 
 def codex_stream_facts(path):
-    """What one codex exec --json worker log carries: its session, its turns' cumulative usage snapshots, the
-    last agent message, and whether every started turn completed.
-
-    turn.completed usage is the thread's cumulative counter (the same total_token_usage the rollouts carry),
-    so each event is a snapshot, not an increment. The stream has no per-event timestamps; the caller stamps the
-    whole invocation. A partial final line is skipped: a running worker's log ends mid-write.
-    """
-    session_id, snapshots, message = None, [], ""
+    """Read session, usage snapshots, message, and completeness; retain interrupted token_count events."""
+    session_id, snapshots, message, last_completed = None, [], "", None
     started = completed = 0
     complete = True
     for record in _records(path):
         kind = record.get("type")
         if kind == "thread.started":
-            if SESSION_RE.match(record.get("thread_id") or ""):
-                session_id = record["thread_id"]
-        elif kind == "turn.started":
-            started += 1
+            session_id = record["thread_id"] if SESSION_RE.match(record.get("thread_id") or "") else session_id
+        elif kind == "turn.started": started += 1
         elif kind == "turn.completed":
-            usage = record.get("usage")
-            if isinstance(usage, dict) and _is_count(usage.get("input_tokens")) and _is_count(usage.get("output_tokens")):
-                cached = usage.get("cached_input_tokens")
-                # The documented schema carries cached_input_tokens; without it fresh stays unavailable
-                # (cached=None) rather than being invented as zero.
-                if not (_is_count(cached) and cached <= usage["input_tokens"]):
-                    cached = None
-                reasoning = usage.get("reasoning_output_tokens")
-                cache_write = usage.get("cache_write_input_tokens")
-                snapshot = Usage(usage["input_tokens"], cached, usage["output_tokens"],
+            payload = record.get("payload")
+            usage = record.get("usage") or (payload.get("usage") if isinstance(payload, dict) else None)
+            if isinstance(usage, dict):
+                input_tokens, output_tokens = usage.get("input_tokens", usage.get("inputTokens")), usage.get("output_tokens", usage.get("outputTokens"))
+                if not (_is_count(input_tokens) and _is_count(output_tokens)):
+                    complete = False
+                    continue
+                cached = usage.get("cached_input_tokens", usage.get("cacheReadTokens"))
+                if not (_is_count(cached) and cached <= input_tokens): cached = None
+                reasoning = usage.get("reasoning_output_tokens", usage.get("reasoningTokens"))
+                cache_write = usage.get("cache_write_input_tokens", usage.get("cacheWriteTokens"))
+                snapshot = Usage(input_tokens, cached, output_tokens,
                                  reasoning=reasoning if _is_count(reasoning) else None,
                                  cache_write=cache_write if _is_count(cache_write) else None)
-                # A re-delivered completion repeats the same cumulative counters (a real turn always grows
-                # input): it is the same turn, not a second one.
-                if not snapshots or snapshot != snapshots[-1]:
-                    snapshots.append(snapshot)
+                if snapshot != last_completed:
                     completed += 1
+                    last_completed = snapshot
+                if not snapshots or snapshot != snapshots[-1]: snapshots.append(snapshot)
+            else: complete = False
+        elif kind == "event_msg" and (totals := _codex_totals(record)) is not None:
+            try:
+                snapshot = _codex_usage(totals)
+            except ValueError:
+                complete = False
             else:
-                complete = False  # a completion whose counters cannot be read is not a measured turn
+                if not snapshots or snapshot != snapshots[-1]: snapshots.append(snapshot)
         elif kind == "item.completed":
             item = record.get("item")
             if isinstance(item, dict) and item.get("type") == "agent_message" and item.get("text"):
                 message = item["text"]
-        elif kind in ("turn.failed", "error"):
-            complete = False
+        elif kind in ("turn.failed", "error"): complete = False
     return {"session_id": session_id, "snapshots": snapshots, "message": message,
             "complete": complete and started == completed}
 
