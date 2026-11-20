@@ -522,11 +522,25 @@ repair_runtime_admission() { # id unit-json → logs once when a container repai
   fi
   return 0 # 2026-11-08: refusing here never cleared on a host with no runtime (13 repairs held 3.5 h); the same-head breaker still stops a repair that cannot push
 }
-repair_failure_prompt() { # unit-json review-report -> only this repair's failure evidence
-  local u="$1" report="$2" hint prior_report prior_sections pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0
+repair_failure_prompt() { # unit-json review-report -> failure evidence plus bounded prior-review context
+  local u="$1" report="$2" hint prior_report prior_sections review_block='' finding_context='' disposition_context='' repair_context='' pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0
   local -a names=() links=() step_files=() log_files=() pids=()
   hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
   [[ -z "$hint" ]] || printf '%s\n' "$hint"
+  if [[ -n "$report" && -r "$SUP/$report" ]]; then
+    if review_block="$(findings_block_of "$SUP/$report" 2>/dev/null)"; then
+      finding_context="$(jqf -r '[.findings[] | "- \(.id): \(.summary // "(summary unavailable)")"] | join("\n")' <<<"$review_block")"
+    fi
+    disposition_context="$(review_dispositions_context "$u")" || return 1
+    if [[ -n "$finding_context$disposition_context" ]]; then
+      # Bound the supplemental carry; the full report remains available below as failure evidence.
+      finding_context="${finding_context:0:4000}"
+      disposition_context="${disposition_context:0:4000}"
+      repair_context="$(printf 'Previous review findings:\n%s\n%s' "$finding_context" "$disposition_context")"
+      repair_context="${repair_context:0:8000}"
+      printf '\n%s\n' "$repair_context"
+    fi
+  fi
   if incident_labels_match_json "$u" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}"; then
     prior_report="$(jqf -r '.implementation_report // empty' <<<"$u")"
     [[ -z "$prior_report" || "$prior_report" == /* ]] || prior_report="$SUP/$prior_report"
