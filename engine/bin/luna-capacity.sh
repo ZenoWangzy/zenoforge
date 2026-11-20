@@ -22,6 +22,7 @@ slice_cpu_max() { cat "${LUNA_WORKER_SLICE_DIR%/*}/cpu.max" 2>/dev/null || true;
 slice_cpu_run_cap() { local quota period; read -r quota period <<< "${1:-}"; [[ "$quota" =~ ^[0-9]+$ && "$period" =~ ^[0-9]+$ && "$period" -gt 0 ]] || return 0; awk -v q="$quota" -v p="$period" -v per="${WORKER_CPU_PER_RUN:-0.5}" 'BEGIN { if (per > 0) printf "%d\n", int(q / p / per); else print 0 }'; }
 slice_cpu_floor_run_cap() { local quota period; read -r quota period <<< "${1:-}"; [[ "$quota" =~ ^[0-9]+$ && "$period" =~ ^[0-9]+$ && "$period" -gt 0 ]] || return 0; awk -v q="$quota" -v p="$period" -v floor="${WORKER_CPU_FLOOR:-0.15}" 'BEGIN { if (floor > 0) printf "%d\n", int(q / p / floor); else print 0 }'; }
 slice_cpu_sample_file() { local root="${ZF_SCRATCH_ROOT:-${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}}"; printf '%s/zf-slice-cpu.sample\n' "${LUNA_SLOTS:-$root/tmp/luna-slots}"; }
+slice_cpu_now() { awk '{ printf "%d\n", $1 * 100 }' "${LUNA_PROC_UPTIME:-/proc/uptime}" 2>/dev/null; }
 slice_cpu_store_sample() {
   local file="$1" at="$2" usage="$3" measured="$4" tmp
   tmp=$(mktemp "${file}.XXXXXX") || return 1
@@ -31,17 +32,18 @@ slice_cpu_store_sample() {
   fi
 }
 slice_cpu_used() { # latest zf.slice CPU average in cores, only after a 30-second cpu.stat delta
-  local stat="${LUNA_WORKER_SLICE_DIR%/*}/cpu.stat" file usage now last_at="" last_usage="" last_measured="" elapsed used
+  local stat="${LUNA_WORKER_SLICE_DIR%/*}/cpu.stat" file usage now last_at="" last_usage="" last_measured="" elapsed_cs used
   usage=$(awk '$1 == "usage_usec" && $2 ~ /^[0-9]+$/ { print $2; found=1; exit } END { if (!found) exit 1 }' "$stat" 2>/dev/null) || return 1
   [[ "$usage" =~ ^[0-9]+$ ]] || return 1
   file=$(slice_cpu_sample_file)
   mkdir -p "${file%/*}" 2>/dev/null || return 1
-  now=$(date +%s) || return 1
+  now=$(slice_cpu_now) || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
   if [[ -r "$file" ]]; then read -r last_at last_usage last_measured < "$file" || true; fi
   if [[ "$last_at" =~ ^[0-9]+$ && "$last_usage" =~ ^[0-9]+$ ]] && (( now > last_at && usage >= last_usage )); then
-    elapsed=$((now - last_at))
-    if (( elapsed >= 30 )); then
-      used=$(awk -v delta="$((usage - last_usage))" -v seconds="$elapsed" 'BEGIN { printf "%.6f", delta / (seconds * 1000000) }')
+    elapsed_cs=$((now - last_at))
+    if (( elapsed_cs >= 3000 )); then
+      used=$(awk -v delta="$((usage - last_usage))" -v centiseconds="$elapsed_cs" 'BEGIN { printf "%.6f", delta / (centiseconds * 10000) }')
       slice_cpu_store_sample "$file" "$now" "$usage" "$used" || return 1
       printf '%s\n' "$used"
       return 0
