@@ -147,6 +147,11 @@ STUB_SIZE_FAIL=1 land 1 --test 'true' --prior-art "$pa" 'size'
 [[ "$(origin_main)" == "$before" ]] || fail 'a size-ratchet refusal landed'
 reset_fixture
 
+printf 'echo no bootstrap\n' > engine/new.test.sh
+land 1 --test 'true' --prior-art "$pa" 'test file without the bootstrap'
+[[ "$(origin_main)" == "$before" ]] || fail 'a test file without the bootstrap landed'
+reset_fixture
+
 printf 'doc\n' >> doc.md
 land 0 'doc lands'
 [[ "$(origin_main)" != "$before" ]] || fail 'a Markdown change without --test did not land'

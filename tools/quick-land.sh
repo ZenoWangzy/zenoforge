@@ -92,6 +92,11 @@ quick_land_commit_refusal() { # [test commands]
     ZF_LOCAL_CLONE="$PWD" bash tools/pin-vecta.sh "$(git rev-parse HEAD)" "${AGENT_HOME:-${ZF_HOME:-$HOME/.vecta-agent}}/checkout" >"$log" 2>&1 \
       || { echo "pin dry run failed for VectA override file $hit (log $log)"; return 0; }
   fi
+  # Main CI checks every engine *.test.sh for the bootstrap before any suite runs; the focused suites do not
+  # (2026-11-20: a new test file without it turned main red for 46 minutes).
+  local -a suites; mapfile -t suites < <(git diff --name-only --diff-filter=AM origin/main HEAD -- ':(glob)engine/**/*.test.sh')
+  (( ${#suites[@]} == 0 )) || bash "$QUICK_LAND_DIR/../engine/test-bootstrap-check.sh" "${suites[@]}" >/dev/null 2>&1 \
+    || { echo "a changed test file lacks the bootstrap (set -euo pipefail, then source test-env.sh): ${suites[*]}"; return 0; }
   out="$({ bash tools/size-ratchet.sh 2>&1 || true; } | awk 'NR == FNR { own[$0] = 1; next } $1 == "FAIL" && $2 in own' <(git diff --name-only origin/main HEAD) -)"
   [[ -z "$out" ]] || echo "size-ratchet: $out"
 }
