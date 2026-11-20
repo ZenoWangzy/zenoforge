@@ -48,10 +48,21 @@ unit_transition_declared() {
 }
 
 unit_transition_log_pair() {
-  local id="$1" from="$2" to="$3" caller="$4"
-  [[ "${UNIT_TRANSITION_POLICY_READY:-false}" == true ]] || return 0
+  local id="$1" from="$2" to="$3" caller="$4" mode="${UNIT_TRANSITION_MODE:-log}"
+  if [[ "${UNIT_TRANSITION_POLICY_READY:-false}" != true ]]; then
+    if [[ "$mode" == enforce ]]; then
+      say "unit-transition refused unit=$id from=$from to=$to caller=$caller policy=unavailable" || :
+      return 1
+    fi
+    return 0
+  fi
   unit_transition_declared "$from" "$to" && return 0
-  say "unit transition undeclared unit=$id from=$from to=$to by=$caller"
+  if [[ "$mode" == enforce ]]; then
+    say "unit-transition refused unit=$id from=$from to=$to caller=$caller" || :
+    return 1
+  fi
+  say "unit transition undeclared unit=$id from=$from to=$to by=$caller" || :
+  return 0
 }
 
 unit_transition_observe_ledger() { # old-ledger candidate-ledger caller [unit-id from-stage]
@@ -59,12 +70,12 @@ unit_transition_observe_ledger() { # old-ledger candidate-ledger caller [unit-id
   if [[ -n "$id" ]]; then
     to="$(jq -r --arg id "$id" '[.units[] | select(.id == $id) | .stage][0] // empty' "$candidate" 2>/dev/null)" || return 0
     [[ "$from" != "$to" ]] || return 0
-    unit_transition_log_pair "$id" "$from" "$to" "$caller"
+    unit_transition_log_pair "$id" "$from" "$to" "$caller" || return $?
     return 0
   fi
   while IFS=$'\t' read -r id from to; do
     [[ -n "$id" ]] || continue
-    unit_transition_log_pair "$id" "$from" "$to" "$caller"
+    unit_transition_log_pair "$id" "$from" "$to" "$caller" || return $?
   done < <(jq -r --slurpfile next "$candidate" '
     ($next[0].units | INDEX(.id)) as $idx
     | .units[] as $old

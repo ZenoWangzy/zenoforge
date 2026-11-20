@@ -67,20 +67,16 @@
         "meaning": "supervisor-needs-info：只有人能补的事实"
       },
       "review": {
-        "meaning": "旧命名，仅兼容读取",
-        "legacy": true
+        "meaning": "评审 worker 正在处理单元"
       },
       "rereview": {
-        "meaning": "旧命名，仅兼容读取",
-        "legacy": true
+        "meaning": "复评 worker 正在处理单元"
       },
       "repair": {
-        "meaning": "旧命名，仅兼容读取",
-        "legacy": true
+        "meaning": "返工 worker 正在处理单元"
       },
       "implement": {
-        "meaning": "旧命名，仅兼容读取",
-        "legacy": true
+        "meaning": "实现 worker 正在处理单元"
       },
       "done": {
         "meaning": "旧终态，仅兼容读取",

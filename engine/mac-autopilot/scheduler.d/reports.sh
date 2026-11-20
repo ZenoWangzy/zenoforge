@@ -39,7 +39,7 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
     if [[ "$dst" == "$UNITS" && "${UNIT_TRANSITION_STAGE_WRITE:-false}" == true ]] \
       && declare -F unit_transition_observe_ledger >/dev/null; then
       unit_transition_observe_ledger "$dst" "$_t" "${UNIT_TRANSITION_CALLER:-${FUNCNAME[1]:-top}}" \
-        "${UNIT_TRANSITION_UNIT_ID:-}" "${UNIT_TRANSITION_FROM:-}" || :
+        "${UNIT_TRANSITION_UNIT_ID:-}" "${UNIT_TRANSITION_FROM:-}" || { rm -f -- "$_t"; return 1; }
     fi
     cp "$dst" "$dst.bak" 2>/dev/null || true
     mv "$_t" "$dst"
