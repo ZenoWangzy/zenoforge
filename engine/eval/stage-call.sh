@@ -16,6 +16,7 @@ if [[ -r "$HOME/.zenoforge/capacity.env" ]]; then
   cp "$HOME/.zenoforge/capacity.env" "$AGENT_HOME/capacity.env"
 fi
 source "$repo/engine/lib.sh"
+source "$repo/engine/lib.d/codex-mcp.sh"
 source "$repo/engine/lib.d/model-not-found-cache.bash"
 N=$(jq -r '.issue.number' "$input")
 export N
@@ -69,7 +70,7 @@ case "$stage" in
       tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
       # The end-to-end implementer must persist its session; the usual text
       # seam is ephemeral. Resume uses the scheduler's exec ... resume ID shape.
-      codex_args=(exec --sandbox "$CODEX_SANDBOX_MODE")
+      codex_args=(exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE")
       if [[ -n "$session_id" ]]; then
         codex_args+=(resume "$session_id")
       else
@@ -97,7 +98,7 @@ case "$stage" in
       codex)
         tier=$(model_policy tier "$identity")
         tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
-        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
+        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
           --skip-git-repo-check --ephemeral -m "$model" -c "model_reasoning_effort=$effort" \
           "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false \
           --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1
@@ -130,7 +131,7 @@ case "$stage" in
       record_identity "codex:profile:$profile"
     fi
     status=0
-    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec -p "$profile" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec -p "$profile" "${CODEX_PLUGINS_OFF_ARGS[@]}" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
       --skip-git-repo-check --ephemeral --json \
       --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1 || status=$?
     [[ -z "$swap_log" ]] || printf '%s\n' "$swap_log" >> "$artifact/worker.log"
