@@ -462,6 +462,17 @@ process.exitCode = ok ? 0 : 1;
     assert.equal(passing.tokens, 1234);
     assert.equal(failing.calls.length, 1);
     assert.ok(existsSync(join(failing.artifacts, 'hidden-check.log')));
+    const goldCases = join(f.dir, 'gold-cases.json');
+    writeFileSync(goldCases, JSON.stringify({ stage: 'implement', cases: [{ id: 'close-gold', expected: {
+      outcome: 'close', implementationPrefixes: ['engine/changed'], gold: { closeLine: 'OBSOLETE: measured 10', implementationPath: 'engine/changed.mjs' },
+    } }] }));
+    const eventsBeforeGold = readFileSync(f.events, 'utf8').split('\n').filter(Boolean).length;
+    const gold = f.run(['--stage', 'implement', '--cases', goldCases, '--runs', '1', '--verify-gold', '--label', 'gold']);
+    assert.equal(gold.status, 0, gold.stderr);
+    const goldRow = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/gold/results.json'), 'utf8')).results[0];
+    assert.equal(goldRow.pass, true);
+    assert.deepEqual(goldRow.calls, []);
+    assert.equal(readFileSync(f.events, 'utf8').split('\n').filter(Boolean).length, eventsBeforeGold);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
