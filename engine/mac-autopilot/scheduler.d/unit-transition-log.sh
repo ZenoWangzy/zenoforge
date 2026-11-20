@@ -65,24 +65,53 @@ unit_transition_log_pair() {
   return 0
 }
 
+unit_task_state_write() {
+  local from_stage="$2" old_owner="$3" old_history="$4" unit="$5" payload
+  payload="$(jq -cn --arg from_stage "$from_stage" --arg old_owner "$old_owner" --argjson old_history "$old_history" --slurpfile unit <(printf '%s' "$unit") '{unit:$unit[0],from_stage:$from_stage,old_owner:$old_owner,old_history:$old_history}')" || return 1
+  printf '%s\n' "$payload" | node "${ZF_ENGINE_DIR:-$ENGINE_ROOT/engine}/task-state.mjs" write-unit-transition "$AGENT_HOME/task-state"
+}
+
+unit_task_state_rollback() {
+  local snapshots="${1:-}" snapshot status=0
+  [[ -n "$snapshots" ]] || return 0
+  while IFS= read -r snapshot; do
+    [[ -n "$snapshot" ]] || continue
+    node "${ZF_ENGINE_DIR:-$ENGINE_ROOT/engine}/task-state.mjs" rollback-transition "$AGENT_HOME/task-state" <<< "$snapshot" || status=1
+  done <<< "$snapshots"
+  return "$status"
+}
+
 unit_transition_observe_ledger() { # old-ledger candidate-ledger caller [unit-id from-stage]
-  local old_file="$1" candidate="$2" caller="$3" id="${4:-}" from="${5:-}" to
-  if [[ -n "$id" ]]; then
-    to="$(jq -r --arg id "$id" '[.units[] | select(.id == $id) | .stage][0] // empty' "$candidate" 2>/dev/null)" || return 0
-    [[ "$from" != "$to" ]] || return 0
-    unit_transition_log_pair "$id" "$from" "$to" "$caller" || return $?
-    return 0
-  fi
-  while IFS=$'\t' read -r id from to; do
+  local old_file="$1" candidate="$2" caller="$3" id="${4:-}" from="${5:-}" to old_owner owner64 old_history unit64 unit snapshot snapshots=""
+  while IFS=$'\t' read -r id from to owner64 old_history unit64; do
     [[ -n "$id" ]] || continue
-    unit_transition_log_pair "$id" "$from" "$to" "$caller" || return $?
-  done < <(jq -r --slurpfile next "$candidate" '
+    if [[ "$from" != "$to" ]]; then
+      unit_transition_log_pair "$id" "$from" "$to" "$caller" || { printf '%s' "$snapshots"; return 1; }
+    fi
+    old_owner="$(base64 -d <<<"$owner64")" || old_owner="$id"
+    unit="$(base64 -d <<<"$unit64")" || { say "task-state unit decode failed unit=$id"; continue; }
+    snapshot="$(unit_task_state_write "$id" "$from" "$old_owner" "$old_history" "$unit")" \
+      || { say "task-state write failed unit=$id stage=$to"; printf '%s' "$snapshots"; return 1; }
+    snapshots+="$snapshot"$'\n'
+  done < <(jq -r --slurpfile next "$candidate" --arg id "$id" --arg from "$from" '
     ($next[0].units | INDEX(.id)) as $idx
     | .units[] as $old
     | $idx[$old.id] as $new
     | select($new != null)
-    | select(($old.stage // "") != ($new.stage // ""))
-    | [$old.id, ($old.stage // ""), ($new.stage // "")] | @tsv' "$old_file" 2>/dev/null)
+    | select($id == "" or $old.id == $id)
+    | (($old.owner_id // $old.worker_id // "") as $owner
+       | if ($owner | type) == "string" and ($owner | length) > 0 then $owner else $old.id end) as $old_owner
+    | (($new.owner_id // $new.worker_id // "") as $owner
+       | if ($owner | type) == "string" and ($owner | length) > 0 then $owner else $new.id end) as $new_owner
+    | (($old.history // []) | length) as $old_history
+    | (($new.history // []) | length) as $new_history
+    | (($new.history // []) | last // {}) as $last
+    | select(($old.stage // "") != ($new.stage // "") or $old_owner != $new_owner
+      or ($new_history > $old_history and ($last.decision != null
+        or (($last.result // "") as $result | ($result | type) == "string" and ($result | test("supervisor ruling"; "i"))))))
+    | [$old.id, (if $from != "" then $from else ($old.stage // "") end), ($new.stage // ""),
+       ($old_owner | @base64), ($old_history | tostring), ($new | @base64)] | @tsv' "$old_file" 2>/dev/null)
+  printf '%s' "$snapshots"
 }
 
 unit_transition_load
