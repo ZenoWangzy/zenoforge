@@ -20,8 +20,11 @@ export LUNA_PROC_PSI_MEMORY="$root/proc/pressure/memory"
 export LUNA_RUNS_HARD_CAP=10 LUNA_MIN=1 LUNA_MAX=10
 export LUNA_ADMIT_AVAIL_MB=3328 LUNA_WORKER_PEAK_MB=1200
 export LUNA_CPU_BUSY_AT="$SECONDS" LUNA_CPU_BUSY_VALUE=0
-unset LUNA_PRIORITY WORKER_CPU_PER_RUN WORKER_CPU_PER_RUN_EST WORKER_CPU_FLOOR
+unset LUNA_PRIORITY LUNA_CPU_NOW WORKER_CPU_PER_RUN WORKER_CPU_PER_RUN_EST WORKER_CPU_FLOOR
 mkdir -p "$LUNA_SLOTS"
+date() {
+  if [[ "${1:-}" == +%s && "${LUNA_CPU_NOW:-}" =~ ^[0-9]+$ ]]; then printf '%s\n' "$LUNA_CPU_NOW"; else command date "$@"; fi
+}
 source "$engine/bin/luna-capacity.sh"
 
 failures=0
@@ -36,8 +39,7 @@ make_n_scopes() {
   for ((n=0; n<$1; n++)); do mkdir -p "$worker_slice/luna-test-$n.scope"; done
 }
 prime_cpu_sample() {
-  local current=$1 previous=$2 now
-  now=$(date +%s)
+  local current=$1 previous=$2 now=$3
   printf '%s %s -\n' "$((now - 30))" "$previous" > "$LUNA_SLOTS/zf-slice-cpu.sample"
   printf 'usage_usec %s\n' "$current" > "$root/cgroup/zf.slice/cpu.stat"
 }
@@ -97,16 +99,19 @@ fi
 
 printf '200000 100000\n' > "$root/cgroup/zf.slice/cpu.max"
 make_scopes
-prime_cpu_sample 15000000 0
+prime_cpu_sample 15000000 0 970
+LUNA_CPU_NOW=1000
 if box_has_room; then
   printf 'PASS four scopes using 0.5 CPU under a 2 CPU quota admit a fifth\n'
 else
   printf 'FAIL four scopes using 0.5 CPU under a 2 CPU quota admit a fifth: %s\n' "$BOX_ROOM_WHY"
   failures=$((failures + 1))
 fi
+unset LUNA_CPU_NOW
 
 make_n_scopes 1
-prime_cpu_sample 57000000 0
+prime_cpu_sample 57000000 0 970
+LUNA_CPU_NOW=1000
 if box_has_room; then
   printf 'FAIL measured 1.9 of 2 CPUs refuses another run: admitted\n'
   failures=$((failures + 1))
@@ -116,6 +121,7 @@ else
   printf 'FAIL measured CPU refusal names measured usage: %s\n' "$BOX_ROOM_WHY"
   failures=$((failures + 1))
 fi
+unset LUNA_CPU_NOW
 
 make_scopes
 rm -f -- "$LUNA_SLOTS/zf-slice-cpu.sample"
@@ -131,7 +137,8 @@ else
 fi
 
 make_n_scopes 13
-prime_cpu_sample 0 0
+prime_cpu_sample 0 0 970
+LUNA_CPU_NOW=1000
 if box_has_room; then
   printf 'FAIL the 0.15 CPU floor caps scopes at 13 under a 2 CPU quota: admitted\n'
   failures=$((failures + 1))
@@ -141,5 +148,6 @@ else
   printf 'FAIL CPU floor refusal names measured usage: %s\n' "$BOX_ROOM_WHY"
   failures=$((failures + 1))
 fi
+unset LUNA_CPU_NOW
 
 (( failures == 0 )) || exit 1
