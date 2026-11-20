@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${SIM_WORLD:?pre-receive requires SIM_WORLD}"
+exec 9>>"$SIM_WORLD/refs.log"
+flock -x 9
+while read -r old new ref; do
+  [[ -n $ref ]] || continue
+  printf '%s %s %s\n' "$ref" "$old" "$new" >&9
+done

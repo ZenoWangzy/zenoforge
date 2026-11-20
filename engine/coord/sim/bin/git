@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() { printf 'sim git: %s\n' "$*" >&2; exit 97; }
+: "${SIM_REAL_GIT:?sim_as must set SIM_REAL_GIT}"
+: "${SIM_WORLD:?sim_as must set SIM_WORLD}"
+: "${SIM_REMOTE:?sim_as must set SIM_REMOTE}"
+: "${SIM_HOST_ID:?sim_as must set SIM_HOST_ID}"
+
+args=("$@")
+target=''
+subcommand=''
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    -C)
+      i=$((i + 1))
+      target="${args[$i]:-}"
+      ;;
+    -c)
+      i=$((i + 1))
+      ;;
+    -*) ;;
+    *) subcommand="${args[$i]}"; break ;;
+  esac
+done
+[[ $target == */coord/repo.git ]] || die "git call is outside a simulated coordination clone"
+
+for arg in "${args[@]}"; do
+  case "$arg" in
+    *://*|git@*|ssh://*) die "network remote is forbidden: $arg" ;;
+  esac
+done
+
+case "$subcommand" in
+  push|fetch|ls-remote)
+    remote=''
+    seen_command=0
+    for arg in "${args[@]}"; do
+      if (( seen_command == 0 )); then
+        [[ $arg == "$subcommand" ]] && seen_command=1
+        continue
+      fi
+      [[ $arg == -* ]] && continue
+      remote="$arg"
+      break
+    done
+    [[ $remote == origin ]] || die "$subcommand must use the local origin remote"
+    configured_remote="$("$SIM_REAL_GIT" -C "$target" remote get-url origin)"
+    [[ $configured_remote == "$SIM_REMOTE" ]] || die "origin is not the local bare remote"
+    ;;
+esac
+
+printf '%s\t%s\t%s\n' "$SIM_HOST_ID" "$subcommand" "$*" >> "$SIM_WORLD/git.log"
+exec "$SIM_REAL_GIT" "${args[@]}"
