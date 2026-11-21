@@ -2328,6 +2328,14 @@ assert_eq 'release walk deadline logs progress and still dispatches the collecte
   $'issue-pipeline: release-walk deadline hit after 2/3 issues\ndispatch:release-batch:910103:candidate-sha' \
   "$(RELEASE_WALK_DEADLINE_SECONDS=250 run_release_selection '[{"number":910101},{"number":910102},{"number":910103}]' all 2>&1 | grep -E '^(dispatch:|issue-pipeline: release-walk)')"
 unset RELEASE_WALK_CLOCK_FILE
+# Same-failure hold: the last two finished batches failed on one line and scripts/release is unchanged (git stub
+# reports no diff), so the candidate is held before dispatch and logged once.
+printf '1700000000\tcandidate-sha\tfailed\trun-release: credential\n1700000000\tcandidate-sha\tfailed\trun-release: credential\n' > "$AGENT_HOME/release-batch-outcomes"
+assert_eq 'two same-line failures hold the release batch before dispatch' '0' \
+  "$(run_release_selection '[{"number":910101}]' 910101 | grep -c '^dispatch:' || true)"
+assert_eq 'the same-failure hold logs one decision' '1' \
+  "$(run_release_selection '[{"number":910101}]' 910101 | grep -c 'gate=same-failure' || true)"
+rm -f "$AGENT_HOME/release-batch-outcomes"
 # Merged-PR map: a cached PR answers without a pulls read; a miss falls back to one read.
 source "$SCRIPT_DIR/lib.d/release-walk.sh"
 RELEASE_WALK_LOG="$AGENT_HOME/release-walk-gh.log"
