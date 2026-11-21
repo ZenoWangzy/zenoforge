@@ -120,6 +120,71 @@ keep_window() { # from, to (exclusive), file: lines stamped in [from, to)
   awk -v lo="$1" -v hi="$2" 'substr($0,1,1)=="[" && substr($0,22,1)=="]" && substr($0,2,20) >= lo && substr($0,2,20) < hi { print }' "$3"
 }
 
+canary_host_conditions() {
+  local load_file="${ZF_CANARY_PROC_LOADAVG:-/proc/loadavg}"
+  local memory_file="${ZF_CANARY_PROC_MEMORY_PRESSURE:-/proc/pressure/memory}"
+  local cpus="${ZF_CANARY_CPU_COUNT:-}" load5='' psi='' threshold overloaded=0
+  [[ "$cpus" =~ ^[1-9][0-9]*$ ]] || cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
+  [[ "$cpus" =~ ^[1-9][0-9]*$ ]] || cpus=1
+  load5="$(awk 'NR == 1 { print $2; exit }' "$load_file" 2>/dev/null || true)"
+  psi="$(awk '$1 == "full" { for (i = 2; i <= NF; i++) if ($i ~ /^avg60=/) { sub(/^avg60=/, "", $i); print $i; exit } }' "$memory_file" 2>/dev/null || true)"
+  [[ "$load5" =~ ^[0-9]+([.][0-9]+)?$ ]] || load5=''
+  [[ "$psi" =~ ^[0-9]+([.][0-9]+)?$ ]] || psi=''
+  threshold="${ZF_CANARY_LOAD_HOLD:-$cpus}"
+  [[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]] || threshold="$cpus"
+  if [[ -n "$load5" ]] && awk -v load="$load5" -v limit="$threshold" 'BEGIN { exit !(load >= limit) }'; then
+    overloaded=1
+  fi
+  if [[ -n "$psi" ]] && awk -v pressure="$psi" 'BEGIN { exit !(pressure >= 10) }'; then
+    overloaded=1
+  fi
+  local load_json=null psi_json=null threshold_json="$threshold"
+  [[ -n "$load5" ]] && load_json="$load5"
+  [[ -n "$psi" ]] && psi_json="$psi"
+  jq -cn --arg load_display "${load5:-unknown}" --argjson load5 "$load_json" --argjson cpus "$cpus" \
+    --argjson psi "$psi_json" --argjson threshold "$threshold_json" --argjson overloaded "$overloaded" \
+    '{load5:$load5,load5_display:$load_display,cpus:$cpus,memory_psi_full_avg60:$psi,load_threshold:$threshold,overloaded:($overloaded == 1)}'
+}
+
+pack_change_for_swap() { # old id, new id: metadata-backed pack diff evidence
+  local old_id="$1" new_id="$2" old_prefix new_prefix old_value new_value old_ref old_source new_ref new_source repo changed files executable=0 path
+  old_prefix="${old_id%-*}"; new_prefix="${new_id%-*}"
+  if [[ "$old_id" != *-* || "$new_id" != *-* || "$old_prefix" != "$new_prefix" || "${old_id##*-}" == "${new_id##*-}" ]]; then
+    printf '{"classification":"not-pack-only","changed_files":[]}'
+    return 0
+  fi
+  old_value="$(sed -n 's/^pack_sha=//p' "$VERSIONS/$old_id/BUILD-INFO" 2>/dev/null | head -n1 || true)"
+  new_value="$(sed -n 's/^pack_sha=//p' "$VERSIONS/$new_id/BUILD-INFO" 2>/dev/null | head -n1 || true)"
+  if [[ "$old_value" != *:* || "$new_value" != *:* ]]; then
+    printf '{"classification":"unknown","reason":"pack source metadata unavailable","changed_files":[]}'
+    return 0
+  fi
+  old_ref="${old_value%%:*}"; old_source="${old_value#*:}"
+  new_ref="${new_value%%:*}"; new_source="${new_value#*:}"
+  if [[ ! "$old_ref" =~ ^[0-9a-f]{7,64}$ || ! "$new_ref" =~ ^[0-9a-f]{7,64}$ || -z "$old_source" || -z "$new_source" ]]; then
+    printf '{"classification":"unknown","reason":"pack source metadata unavailable","changed_files":[]}'
+    return 0
+  fi
+  repo="${ZF_REPO_DIR:-$MAC_AUTOPILOT_ROOT}"
+  changed="$(git -C "$repo" diff --name-only "$old_ref" "$new_ref" -- "$old_source" "$new_source" 2>/dev/null)" || {
+    printf '{"classification":"unknown","reason":"pack source diff unavailable","changed_files":[]}'
+    return 0
+  }
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    if [[ "$path" =~ \.(sh|py|mjs|js)$ || "$path" == bin/* || "$path" == */bin/* ]]; then
+      executable=1
+      break
+    fi
+  done <<<"$changed"
+  files="$(jq -Rn '[inputs | select(length > 0)]' <<<"$changed")"
+  local classification=data-only
+  (( executable == 0 )) || classification=executable
+  jq -cn --arg classification "$classification" --arg old_source "$old_source" --arg new_source "$new_source" \
+    --arg old_ref "$old_ref" --arg new_ref "$new_ref" --argjson changed_files "$files" \
+    '{classification:$classification,old_source:$old_source,new_source:$new_source,old_ref:$old_ref,new_ref:$new_ref,changed_files:$changed_files}'
+}
+
 append_history() { # engine id, signatures file, completed time
   local engine_id="$1" sig_file="$2" completed_at="$3" signatures row
   signatures="$(jq -Rsc 'split("\n") | map(select(length > 0))' < "$sig_file")"
@@ -133,12 +198,18 @@ record_swap() {
   (($# == 6)) || { echo 'usage: engine-canary.sh record-swap OLD NEW OLD_ENGINE_LINK NEW_ENGINE_LINK OLD_AUTOPI_LINK NEW_AUTOPI_LINK' >&2; return 2; }
   local old_id="$1" new_id="$2" old_engine_target="$3" new_engine_target="$4"
   local old_autopi_target="$5" new_autopi_target="$6" ticks baseline count time generation tmp window cutoff window_sigs
+  local min_baseline_ticks chronic_hours chronic_cutoff chronic_log_sigs chronic_history_sigs pack_change
   [[ "$old_id" != "$new_id" ]] || return 0
   ticks="$(canary_ticks)"
   window="${CANARY_BASELINE_WINDOW_SECS:-3600}"
   [[ "$window" =~ ^[0-9]+$ ]] || window=3600
   time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   cutoff="$(date -u -d "@$(( $(date +%s) - window ))" +%Y-%m-%dT%H:%M:%SZ)"
+  min_baseline_ticks="${ZF_CANARY_MIN_BASELINE_TICKS:-2}"
+  [[ "$min_baseline_ticks" =~ ^[0-9]+$ ]] || min_baseline_ticks=2
+  chronic_hours="${ZF_CANARY_CHRONIC_HOURS:-6}"
+  [[ "$chronic_hours" =~ ^[0-9]+$ ]] || chronic_hours=6
+  chronic_cutoff="$(date -u -d "@$(( $(date +%s) - chronic_hours * 3600 ))" +%Y-%m-%dT%H:%M:%SZ)"
   baseline='[]'; count=0
   if [[ -r "$HISTORY" ]] && (( ticks > 0 )); then
     # Chronic signatures (e.g. REFILL-TIMEOUT) also come from rows of any engine completed within the window, so a pin
@@ -158,6 +229,19 @@ record_swap() {
     window_sigs="$(keep_window "$cutoff" "$time" "$SCHED_LOG" | extract_signatures | jq -Rsc 'split("\n") | map(select(length > 0))')"
     baseline="$(jq -cn --argjson a "$baseline" --argjson b "$window_sigs" '$a + $b | unique')"
   fi
+  if [[ "$(jq -r 'length' <<<"$baseline")" == 0 || "$count" -lt "$min_baseline_ticks" ]]; then
+    chronic_log_sigs='[]'; chronic_history_sigs='[]'
+    if [[ -r "$SCHED_LOG" ]]; then
+      chronic_log_sigs="$(keep_window "$chronic_cutoff" "$time" "$SCHED_LOG" | extract_signatures | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    fi
+    if [[ -r "$HISTORY" ]]; then
+      chronic_history_sigs="$(jq -sc --arg from "$chronic_cutoff" --arg to "$time" \
+        '[.[] | select((.completed_at // "") >= $from and (.completed_at // "") < $to) | (.signatures // [])[]] | unique' \
+        "$HISTORY" 2>/dev/null || printf '[]')"
+    fi
+    baseline="$(jq -cn --argjson a "$baseline" --argjson b "$chronic_log_sigs" --argjson c "$chronic_history_sigs" '$a + $b + $c | unique')"
+  fi
+  pack_change="$(pack_change_for_swap "$old_id" "$new_id")"
   generation="$time-$new_id-$$-$RANDOM"
   tmp="$(mktemp "$VERSIONS/.swap-record.XXXXXX")"
   jq -cn --arg old_id "$old_id" --arg new_id "$new_id" --arg swapped_at "$time" \
@@ -165,21 +249,54 @@ record_swap() {
     --arg new_engine_target "$new_engine_target" --arg old_autopi_target "$old_autopi_target" \
     --arg new_autopi_target "$new_autopi_target" --argjson canary_ticks "$ticks" \
     --argjson baseline_signatures "$baseline" --argjson baseline_ticks "$count" \
+    --argjson pack_change "$pack_change" \
     --argjson scheduler_offset "$(file_bytes "$SCHED_LOG")" --argjson loop_offset "$(file_bytes "$LOOP_LOG")" \
     '{old_id:$old_id,new_id:$new_id,swapped_at:$swapped_at,generation:$generation,
       old_engine_target:$old_engine_target,new_engine_target:$new_engine_target,
       old_autopi_target:$old_autopi_target,new_autopi_target:$new_autopi_target,
       canary_ticks:$canary_ticks,remaining_ticks:$canary_ticks,baseline_ticks:$baseline_ticks,
       baseline_signatures:$baseline_signatures,scheduler_offset:$scheduler_offset,loop_offset:$loop_offset,
+      pack_change:$pack_change,hold_evidence:[],held_timeout_signatures:[],host_hold_logged_signatures:[],
+      rollback_evidence:null,host_load:null,
       status:(if $canary_ticks == 0 then "passed" else "pending" end)}' > "$tmp"
   mv -f -- "$tmp" "$STATE"
   printf '%s\n' "$(jq -c '{old_id,new_id,swapped_at,old_engine_target,new_engine_target,old_autopi_target,new_autopi_target}' "$STATE")" >> "$SWAPS"
 }
 
+hold_timeout() { # signature, host-condition JSON, host-load|data-only
+  local signature="$1" host="$2" reason="$3" status at load_display cpus log_once=0 tmp
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  load_display="$(jq -r '.load5_display' <<<"$host")"
+  cpus="$(jq -r '.cpus' <<<"$host")"
+  if [[ "$reason" == host-load ]] && ! jq -e --arg signature "$signature" \
+    'any(.host_hold_logged_signatures[]?; . == $signature)' "$STATE" >/dev/null; then
+    log_once=1
+  fi
+  status=held-data-only
+  [[ "$reason" == host-load ]] && status=held-host-load
+  if (( log_once )); then
+    printf '[%s] CANARY-HOLD host load %s/%s on %s\n' "$at" "$load_display" "$cpus" "$signature" >> "$SCHED_LOG"
+  fi
+  tmp="$(mktemp "$VERSIONS/.swap-record.XXXXXX")"
+  jq --arg signature "$signature" --arg at "$at" --arg reason "$reason" --arg status "$status" \
+    --argjson host "$host" --argjson scheduler_offset "$(file_bytes "$SCHED_LOG")" \
+    --argjson loop_offset "$(file_bytes "$LOOP_LOG")" \
+    '.held_timeout_signatures = ((.held_timeout_signatures // []) + [$signature] | unique)
+     | .hold_evidence = ((.hold_evidence // []) + [{action:(if $reason == "host-load" then "held-host-load" else "held-data-only" end),
+         signature:$signature,observed_at:$at,reason:$reason,load5:$host.load5,cpus:$host.cpus,
+         memory_psi_full_avg60:$host.memory_psi_full_avg60,load_threshold:$host.load_threshold}])
+     | .host_load = {load5:$host.load5,cpus:$host.cpus,memory_psi_full_avg60:$host.memory_psi_full_avg60,
+         load_threshold:$host.load_threshold}
+     | .status=$status | .scheduler_offset=$scheduler_offset | .loop_offset=$loop_offset
+     | if $reason == "host-load" then .host_hold_logged_signatures = ((.host_hold_logged_signatures // []) + [$signature] | unique) else . end' \
+    "$STATE" > "$tmp"
+  mv -f -- "$tmp" "$STATE"
+}
+
 tick_begin() {
   local state_generation='' engine_id='' autopi_target autopi_id
   if [[ -r "$STATE" ]]; then
-    state_generation="$(jq -r 'select(.status == "pending") | .generation // empty' "$STATE" 2>/dev/null || true)"
+    state_generation="$(jq -r 'select(.status == "pending" or .status == "held-host-load" or .status == "held-data-only") | .generation // empty' "$STATE" 2>/dev/null || true)"
   fi
   engine_id="$(live_engine_id)"
   autopi_target="$(log_target "$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi-live")"
@@ -197,7 +314,7 @@ tick_begin() {
 }
 
 rollback() { # first new signature
-  local signature="$1" old_id new_id old_engine_target new_engine_target old_autopi_target new_autopi_target
+  local signature="$1" evidence="$2" old_id new_id old_engine_target new_engine_target old_autopi_target new_autopi_target
   local engine_link="$AGENT_HOME/engine-live" autopi_link="$MAC_AUTOPILOT_SUPERVISOR_DIR/autopi-live"
   local log_line at old_engine_dir marker tmp
   old_id="$(jq -r '.old_id' "$STATE")"; new_id="$(jq -r '.new_id' "$STATE")"
@@ -223,8 +340,9 @@ rollback() { # first new signature
     bash -c 'source "$ZF_ENGINE_DIR/lib.sh" && supervisor_inbox_append_once "$1" "$2"' \
       engine-canary "engine-canary-rollback:$new_id:$old_id" "$log_line"
   tmp="$(mktemp "$VERSIONS/.swap-record.XXXXXX")"
-  jq --arg signature "$signature" --arg rolled_back_at "$at" \
-    '.status="rolled-back" | .first_new_signature=$signature | .rolled_back_at=$rolled_back_at' \
+  jq --arg signature "$signature" --arg rolled_back_at "$at" --argjson evidence "$evidence" \
+    '.status="rolled-back" | .first_new_signature=$signature | .rolled_back_at=$rolled_back_at
+     | .rollback_evidence=$evidence | .host_load=($evidence.host_load // .host_load)' \
     "$STATE" > "$tmp"
   mv -f -- "$tmp" "$STATE"
 }
@@ -232,7 +350,7 @@ rollback() { # first new signature
 tick_complete() {
   [[ -r "$TICK_START" ]] || return 0
   local tmpdir start_generation start_engine_id start_autopi_target start_autopi_id current_generation status new_id current_id new_autopi_target swapped_at
-  local scheduler_offset loop_offset tick_scheduler_offset tick_done=0 first_new=''
+  local scheduler_offset loop_offset tick_scheduler_offset tick_done=0 first_new='' decision_host='null' decision_evidence held=0 reason
   tmpdir="$(mktemp -d "$MAC_AUTOPILOT_RUNTIME_DIR/.engine-canary-complete.XXXXXX")"
   start_generation="$(jq -r '.generation // empty' "$TICK_START")"
   start_engine_id="$(jq -r '.engine_id // empty' "$TICK_START")"
@@ -277,7 +395,8 @@ tick_complete() {
     current_generation="$(jq -r '.generation // empty' "$STATE" 2>/dev/null || true)"
     new_id="$(jq -r '.new_id // empty' "$STATE" 2>/dev/null || true)"
     new_autopi_target="$(jq -r '.new_autopi_target // empty' "$STATE" 2>/dev/null || true)"
-    if [[ "$status" == pending && -n "$start_generation" && "$start_generation" == "$current_generation" &&
+    if [[ ( "$status" == pending || "$status" == held-host-load || "$status" == held-data-only ) &&
+      -n "$start_generation" && "$start_generation" == "$current_generation" &&
       "$start_engine_id" == "$new_id" && "$current_id" == "$new_id" &&
       "$start_autopi_target" == "$new_autopi_target" && "$start_autopi_id" == "$new_id" ]]; then
       while IFS= read -r signature; do
@@ -288,8 +407,48 @@ tick_complete() {
         fi
       done < "$tmpdir/signatures"
       if [[ -n "$first_new" ]]; then
-        rollback "$first_new"
-      else
+        if [[ "$first_new" == REFILL-TIMEOUT || "$first_new" == TICK-TIMEOUT || "$first_new" == 'no tick done within tick limit' ]]; then
+          decision_host="$(canary_host_conditions)"
+          if jq -e '.overloaded' <<<"$decision_host" >/dev/null; then
+            hold_timeout "$first_new" "$decision_host" host-load
+            held=1
+          elif jq -e '.pack_change.classification == "data-only"' "$STATE" >/dev/null; then
+            hold_timeout "$first_new" "$decision_host" data-only
+            held=1
+          elif jq -e --arg signature "$first_new" 'any(.held_timeout_signatures[]?; . == $signature)' "$STATE" >/dev/null; then
+            reason=repeated-after-host-hold
+            decision_evidence="$(jq -cn --arg signature "$first_new" --arg reason "$reason" \
+              --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson host "$decision_host" \
+              --slurpfile state "$STATE" \
+              '{signature:$signature,observed_at:$observed_at,reason:$reason,
+                baseline_signatures:$state[0].baseline_signatures,baseline_ticks:$state[0].baseline_ticks,
+                pack_change:$state[0].pack_change,
+                host_load:{load5:$host.load5,cpus:$host.cpus,memory_psi_full_avg60:$host.memory_psi_full_avg60,
+                  load_threshold:$host.load_threshold}}')"
+            rollback "$first_new" "$decision_evidence"
+          else
+            reason=new-timeout
+            decision_evidence="$(jq -cn --arg signature "$first_new" --arg reason "$reason" \
+              --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson host "$decision_host" \
+              --slurpfile state "$STATE" \
+              '{signature:$signature,observed_at:$observed_at,reason:$reason,
+                baseline_signatures:$state[0].baseline_signatures,baseline_ticks:$state[0].baseline_ticks,
+                pack_change:$state[0].pack_change,
+                host_load:{load5:$host.load5,cpus:$host.cpus,memory_psi_full_avg60:$host.memory_psi_full_avg60,
+                  load_threshold:$host.load_threshold}}')"
+            rollback "$first_new" "$decision_evidence"
+          fi
+        else
+          reason=new-signature
+          decision_evidence="$(jq -cn --arg signature "$first_new" --arg reason "$reason" \
+            --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --slurpfile state "$STATE" \
+            '{signature:$signature,observed_at:$observed_at,reason:$reason,
+              baseline_signatures:$state[0].baseline_signatures,baseline_ticks:$state[0].baseline_ticks,
+              pack_change:$state[0].pack_change,host_load:null}')"
+          rollback "$first_new" "$decision_evidence"
+        fi
+      fi
+      if [[ -z "$first_new" ]]; then
         local remaining tmp_state
         remaining="$(jq -r '.remaining_ticks - 1' "$STATE")"
         tmp_state="$(mktemp "$VERSIONS/.swap-record.XXXXXX")"
@@ -299,6 +458,8 @@ tick_complete() {
            | if $remaining <= 0 then .status="passed" else . end' \
           "$STATE" > "$tmp_state"
         mv -f -- "$tmp_state" "$STATE"
+      elif (( held )); then
+        : # A held timeout is not a successful canary tick; wait for a repeat or clean ticks.
       fi
     fi
   fi
