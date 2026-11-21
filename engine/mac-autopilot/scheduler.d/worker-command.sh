@@ -66,11 +66,13 @@ claude_session_file_for_id() { compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/p
 # 没有 OS 沙箱：这是权限规则，不是隔离；测试运行器仍会执行 worker 写的代码（Codex 实现同样是 danger-full-access，见 SECURITY.md）。
 claude_implement_tools() { # workdir unit → --allowedTools 值
   local workdir="$1" unit="$2" branch tools
-  tools="Grep,Glob,Read(/$workdir/**),Edit(/$workdir/**),Write(/$workdir/**),Bash(cd:*),Bash(pwd),Bash(echo:*),Bash(printf:*),Bash(sed:*),Bash(sort:*),Bash(uniq:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(mkdir:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(git rm:*),Bash(git mv:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(git branch --show-current),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh),Bash(node scripts/branch-delivery-preflight.mjs:*),Bash(node engine/verification-plan.mjs:*)"
+  tools="Grep,Glob,Read(/$workdir/**),Edit(/$workdir/**),Write(/$workdir/**),Bash(cd:*),Bash(pwd),Bash(echo:*),Bash(printf:*),Bash(sed:*),Bash(sort:*),Bash(uniq:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(mkdir:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(git rm:*),Bash(git mv:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(git ls-tree:*),Bash(git branch --show-current),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh),Bash(node scripts/branch-delivery-preflight.mjs:*),Bash(node engine/verification-plan.mjs:*)"
+  local g
+  for g in status diff log show add commit stash merge fetch rm mv rev-parse merge-base ls-files; do tools+=",Bash(git -C $workdir $g:*)"; done
   [[ -z "${SUP:-}" ]] || tools+=",Read(/$SUP/**)"
   branch="$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [[ "$(unit_field "$unit" '.lane // empty')" != direct-main && "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != main ]]; then
-    tools+=",Bash(git push origin $branch),Bash(git push -u origin $branch)"
+    tools+=",Bash(git push origin $branch),Bash(git push -u origin $branch),Bash(git -C $workdir push origin $branch),Bash(git -C $workdir push -u origin $branch)"
   fi
   printf '%s' "$tools"
 }
@@ -90,7 +92,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
   local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="$6" workdir="$7" report_only="${8:-false}" expected_session_id="${9:-}" prior session_id cold_prompt tools=Read,Grep,Glob allowed=Read,Grep,Glob
   local -a resume=() common=()
   local note="
-（本次运行只能写当前工作目录，无权写其他路径：把完整报告正文作为最终回答输出，调度器会原样落盘为报告。Bash 只认白名单单条命令：git status/diff/log/show/add/commit/stash/merge/fetch、git push origin 本单元分支、pnpm、npx vitest、node --test、bash <file>.test.sh、node scripts/branch-delivery-preflight.mjs、rg/grep/sed/cat/ls/head/tail/wc/jq；一条被拒就拆成白名单单条命令重试，不要换路绕过。）"
+（本次运行只能写当前工作目录，无权写其他路径：把完整报告正文作为最终回答输出，调度器会原样落盘为报告。Bash 只认白名单单条命令：git status/diff/log/show/add/commit/stash/merge/fetch、git push origin 本单元分支、pnpm、npx vitest、node --test、bash <file>.test.sh、node scripts/branch-delivery-preflight.mjs、rg/grep/sed/cat/ls/head/tail/wc/jq；一条被拒就拆成白名单单条命令重试，命令不要以 cd 或变量赋值开头，不要用子 shell 和重定向到工作目录以外；被拒也不能放弃交付，git add、git commit、git push origin 本单元分支 这三条单独命令始终可用，改完必须用它们提交并推送，不要换路绕过。）"
   prompt+="$note"; cold_prompt="$prompt"
   if [[ "$type" == repair ]]; then
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
