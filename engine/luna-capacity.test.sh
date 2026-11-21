@@ -198,13 +198,13 @@ slice_room_set() { # <mb>: leave <mb> under the 10 GiB memory.high, no scopes ru
   printf '%s\n' "$(( (10240 - $1) * 1048576 ))" > "$worker_slice/memory.current"
 }
 
-# (a) no samples: the flat 1200 stays, named as the default.
+# (a) no samples: a known backend keeps the flat 1200 default; a backend-less ask holds at the interim 800.
 rm -f -- "$store"
 printf 'max 100000\n' > "$root/cgroup/zf.slice/cpu.max"
 slice_room_set 300
 read -r estimate estimate_source <<< "$(worker_peak_mb)"
-if [[ "$estimate" == 1200 && "$estimate_source" == default ]]; then
-  printf 'PASS no samples keeps the flat 1200MB peak for a backend-less ask\n'
+if [[ "$estimate" == 800 && "$estimate_source" == interim ]]; then
+  printf 'PASS no samples keeps the interim 800MB peak for a backend-less ask\n'
 else
   printf 'FAIL backend-less estimate without samples: got %s %s\n' "$estimate" "$estimate_source"
   failures=$((failures + 1))
@@ -224,8 +224,8 @@ rm -f -- "$store"
 for mb in 600 620 640 660 680 700 720 740 760 780; do record_peak zc "luna-zc-peak-$mb" "$mb"; done
 for mb in 300 320 340; do record_peak luna "luna-peak-$mb" "$mb"; done
 read -r estimate estimate_source <<< "$(worker_peak_mb zc)"
-if [[ "$estimate" == 740 && "$estimate_source" == measured ]]; then
-  printf 'PASS zc p90 of ten samples is the ninth: 740\n'
+if [[ "$estimate" == 760 && "$estimate_source" == measured ]]; then
+  printf 'PASS zc p90 of ten samples is the ninth: 760\n'
 else
   printf 'FAIL zc estimate: got %s %s\n' "$estimate" "$estimate_source"
   failures=$((failures + 1))
@@ -238,17 +238,17 @@ else
   failures=$((failures + 1))
 fi
 read -r estimate estimate_source <<< "$(worker_peak_mb)"
-if [[ "$estimate" == 740 && "$estimate_source" == measured ]]; then
-  printf 'PASS a backend-less ask takes the higher measured p90, 740 over the floored 512\n'
+if [[ "$estimate" == 800 && "$estimate_source" == interim ]]; then
+  printf 'PASS a backend-less ask holds at the interim 800, not the higher measured p90\n'
 else
   printf 'FAIL backend-less estimate with samples: got %s %s\n' "$estimate" "$estimate_source"
   failures=$((failures + 1))
 fi
 slice_room_set 700
 if box_has_room 0 zc; then
-  printf 'FAIL 700MB left under a zc p90 of 740 was admitted\n'
+  printf 'FAIL 700MB left under a zc p90 of 760 was admitted\n'
   failures=$((failures + 1))
-elif [[ "$BOX_ROOM_WHY" == 'worker slice 700MB left under memory.high < 740MB worker peak backend=zc source=measured' ]]; then
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 700MB left under memory.high < 760MB worker peak backend=zc source=measured' ]]; then
   printf 'PASS zc refusal names its own measured p90\n'
 else
   printf 'FAIL zc measured refusal: %s\n' "$BOX_ROOM_WHY"
@@ -272,14 +272,39 @@ else
   failures=$((failures + 1))
 fi
 
-# (d) the head acceptance for this row: 971MB left, zc p90 of 400 (512 after the floor), the gate admits.
+# (d) the head acceptance for this row: 971MB left, zc p90 of 400 (512 after the floor), the gate admits; the
+# scheduler dispatch hold (no backend) starts run-p workers whose peaks are not recorded (701/1216/2049MB on 11-21),
+# so it holds at the interim 800 instead of a measured p90.
 rm -f -- "$store"
 record_peak zc luna-zc-peak-400 400
+read -r estimate estimate_source <<< "$(worker_peak_mb)"
+if [[ "$estimate" == 800 && "$estimate_source" == interim ]]; then
+  printf 'PASS a backend-less ask with zc samples of 400 keeps the interim 800MB peak\n'
+else
+  printf 'FAIL backend-less estimate with zc samples: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
 slice_room_set 971
 if box_has_room 0 zc; then
   printf 'PASS 971MB left with a zc p90 of 400 admits an implement worker\n'
 else
   printf 'FAIL 971MB left with a zc p90 of 400 refused: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+if box_has_room 0; then
+  printf 'PASS the dispatch hold admits at 971MB left under the interim 800MB peak\n'
+else
+  printf 'FAIL the dispatch hold refused at 971MB left: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+slice_room_set 700
+if box_has_room 0; then
+  printf 'FAIL the dispatch hold admits with only 700MB left under the interim 800MB peak\n'
+  failures=$((failures + 1))
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 700MB left under memory.high < 800MB worker peak backend=- source=interim' ]]; then
+  printf 'PASS the dispatch hold refusal at 700MB left names the interim peak\n'
+else
+  printf 'FAIL dispatch hold refusal did not name the interim peak: %s\n' "$BOX_ROOM_WHY"
   failures=$((failures + 1))
 fi
 

@@ -489,6 +489,38 @@ fi
   || fail "Zenoforge missing prior-art was not refused: $(cat "$fixture/check-output")"
 [[ "$(cat "$fixture/gh-calls")" != *merge:* ]] || fail 'Zenoforge PR without prior-art reached merge'
 
+# Ruling zenoforge_merge_without_tests_2026_11_21: a Zenoforge merge runs none of the three local test checks, whatever files the PR touches.
+merge_pr_scheduler_prelude() { echo scheduler >> "$fixture/local-test-calls"; return 1; }
+merge_pr_static_scans() { echo scans >> "$fixture/local-test-calls"; return 1; }
+merge_pr_review_family() { echo review-family >> "$fixture/local-test-calls"; return 1; }
+: > "$fixture/local-test-calls"
+: > "$fixture/gh-calls"
+PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
+PR_FILES='["engine/mac-autopilot/scheduler.d/x.sh","engine/mac-autopilot/scheduler.d/dispatch-queue.sh"]'
+mkdir -p "$receipt_dir"
+printf '0\ttrue\n' >"$receipt_dir/$rsha" # the other-repository case below needs a green receipt to reach the local checks
+merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 \
+  || fail "Zenoforge merge refused a PR with scheduler files: $(cat "$fixture/check-output")"
+[[ ! -s "$fixture/local-test-calls" ]] || fail "Zenoforge merge ran a local test check: $(cat "$fixture/local-test-calls")"
+[[ "$(grep -cFx 'merge-pr: local test checks skipped for PR #17 (founder ruling zenoforge_merge_without_tests_2026_11_21; fix forward)' "$fixture/check-output")" == 1 ]] \
+  || fail "Zenoforge local-test skip was not logged once: $(cat "$fixture/check-output")"
+grep -q '^merge:' "$fixture/gh-calls" || fail 'Zenoforge PR with scheduler files did not merge'
+# The same PR under another repository still runs the local checks, the prelude first, and is refused by its failure.
+PR_REPO_NAME=example-maintainer/example-repo
+: > "$fixture/local-test-calls"
+: > "$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+  fail 'another repository merged past a local test check'
+fi
+[[ "$(cat "$fixture/local-test-calls")" == scheduler ]] || fail "another repository did not run the local checks: $(cat "$fixture/local-test-calls")"
+[[ "$(cat "$fixture/check-output")" == *'refusing to merge PR #17: scheduler.test.sh prelude failed rc=1'* ]] \
+  || fail "other-repository refusal lost the prelude reason: $(cat "$fixture/check-output")"
+! grep -q '^merge:' "$fixture/gh-calls" || fail 'another repository merged past a failing local check'
+rm -f "$receipt_dir/$rsha"
+merge_pr_scheduler_prelude() { merge_pr_with_tree "$1" merge_pr_prelude_in; } # the real runner again: the no-git case below refuses through it
+merge_pr_static_scans() { return 0; }
+merge_pr_review_family() { return 0; }
+
 PR_REPO_NAME=example-maintainer/example-repo
 PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
 PR_CHECKS='[]'
