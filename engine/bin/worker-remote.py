@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ship one Luna worktree to an SSH worker and mirror its run files locally."""
+"""Ship one Luna or ZCode worktree to an SSH worker and mirror its run files locally."""
 import fnmatch
 import io
 import json
@@ -19,7 +19,10 @@ import uuid
 RUNTIME_FILES = (
     "bin/luna",
     "bin/luna-capacity.sh",
+    "bin/zc",
+    "config.sh",
     "lib.d/codex-mcp.sh",
+    "lib.d/worker-remote-handoff.sh",
     "lib.d/worker-output-cap.sh",
     "thread-budget.sh",
 )
@@ -47,6 +50,16 @@ def setting_int(name, default, minimum, maximum):
         value = int(os.environ.get(name, default))
     except ValueError:
         raise ValueError(f"{name} must be an integer") from None
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def setting_float(name, default, minimum, maximum):
+    try:
+        value = float(os.environ.get(name, default))
+    except ValueError:
+        raise ValueError(f"{name} must be a number") from None
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return value
@@ -89,6 +102,13 @@ path = root
 while not path.exists() and path != path.parent:
     path = path.parent
 load5 = float((proc / "loadavg").read_text().split()[1])
+cores = len(re.findall(r"^processor\s*:", (proc / "cpuinfo").read_text(), re.M))
+uid = os.geteuid()
+status = proc / "self" / "status"
+if status.is_file():
+    match = re.search(r"^Uid:\s+\d+\s+(\d+)", status.read_text(), re.M)
+    if match:
+        uid = int(match.group(1))
 mem = int(re.search(r"^MemAvailable:\s+(\d+)", (proc / "meminfo").read_text(), re.M).group(1)) // 1024
 psi = (proc / "pressure/cpu").read_text()
 match = re.search(r"^some\s+[^\n]*\bavg60=([0-9.]+)", psi, re.M)
@@ -96,14 +116,41 @@ if not match:
     raise RuntimeError("CPU PSI some avg60 is unavailable")
 disk = subprocess.check_output(["df", "-P", str(path)], text=True).splitlines()[-1].split()
 disk_pct = int(disk[-2].rstrip("%"))
-print(json.dumps({"load5": load5, "memavailable_mb": mem, "disk_percent": disk_pct,
-                  "cpu_psi_some_avg60": float(match.group(1))}))
+print(json.dumps({"load5": load5, "cores": cores, "uid": uid, "memavailable_mb": mem,
+                  "disk_percent": disk_pct, "cpu_psi_some_avg60": float(match.group(1))}))
 '''
     return f"python3 -c {shlex.quote(code)} {shlex.quote(root)}"
 
 
-def probe(host, root=None):
+BACKEND_CHECKS = {
+    # luna: the login check probe-codex-sandbox.sh makes locally; zc: the zcode --version probe bin/worker makes locally.
+    "luna": ("codex", "codex login status"),
+    "zc": ("zcode", "timeout 10 zcode --version"),
+}
+
+
+def validate_backend(backend):
+    if backend not in BACKEND_CHECKS:
+        raise ValueError("backend must be luna or zc")
+    return backend
+
+
+def probe_backend(host, backend):
+    name, check = BACKEND_CHECKS[validate_backend(backend)]
+    try:
+        result = remote_call(host, f"{check} >/dev/null 2>&1", timeout=connect_timeout_seconds() + 15)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"{backend} backend check unavailable ({type(error).__name__})"
+    if result.returncode == 0:
+        return None
+    if result.returncode == 127:
+        return f"{backend} backend unusable: {name} not found on the remote host"
+    return f"{backend} backend unusable: {check} returned rc={result.returncode}"
+
+
+def probe(host, root=None, backend="luna"):
     root = root or os.environ.get("ZF_WORKER_REMOTE_ROOT", "/srv/zf-workers")
+    validate_backend(backend)
     try:
         result = remote_call(host, remote_probe_command(root), capture_output=True, text=True)
     except (OSError, subprocess.SubprocessError) as error:
@@ -113,6 +160,8 @@ def probe(host, root=None):
     try:
         metrics = json.loads(result.stdout)
         metrics["load5"] = float(metrics["load5"])
+        metrics["cores"] = int(metrics["cores"])
+        metrics["uid"] = int(metrics["uid"])
         metrics["memavailable_mb"] = int(metrics["memavailable_mb"])
         metrics["disk_percent"] = int(metrics["disk_percent"])
         metrics["cpu_psi_some_avg60"] = float(metrics["cpu_psi_some_avg60"])
@@ -121,13 +170,22 @@ def probe(host, root=None):
     min_mem_mb = setting_int("ZF_WORKER_REMOTE_MIN_MEM_MB", "8192", 1, 1048576)
     max_disk_percent = setting_int("ZF_WORKER_REMOTE_MAX_DISK_PERCENT", "95", 1, 100)
     max_cpu_psi = setting_int("ZF_WORKER_REMOTE_MAX_CPU_PSI", "60", 1, 100)
+    max_load_per_core = setting_float("ZF_WORKER_REMOTE_MAX_LOAD_PER_CORE", "1.0", 0.1, 100)
     reasons = []
+    if metrics["uid"] == 0:
+        reasons.append("remote user is root")
+    if metrics["load5"] > metrics["cores"] * max_load_per_core:
+        reasons.append(f"load5 {metrics['load5']:g} is above {metrics['cores']} cores x {max_load_per_core:g}")
     if metrics["memavailable_mb"] < min_mem_mb:
         reasons.append(f"MemAvailable {metrics['memavailable_mb']} MB is below {min_mem_mb} MB")
     if metrics["disk_percent"] > max_disk_percent:
         reasons.append(f"disk use {metrics['disk_percent']}% is above {max_disk_percent}%")
     if metrics["cpu_psi_some_avg60"] > max_cpu_psi:
         reasons.append(f"CPU PSI some avg60 {metrics['cpu_psi_some_avg60']:g} is above {max_cpu_psi}")
+    if not reasons:
+        backend_reason = probe_backend(host, backend)
+        if backend_reason:
+            reasons.append(backend_reason)
     metrics["reason"] = "; ".join(reasons)
     return metrics, metrics["reason"]
 
@@ -137,8 +195,8 @@ def format_metrics(host, metrics):
             f"disk={metrics['disk_percent']}%, CPU PSI some avg60={metrics['cpu_psi_some_avg60']:g}")
 
 
-def command_probe(host):
-    metrics, reason = probe(host)
+def command_probe(host, backend="luna"):
+    metrics, reason = probe(host, backend=backend)
     if metrics is None or reason:
         print(f"worker-host: {host} refused: {reason}", file=sys.stderr)
         return 1
@@ -146,7 +204,8 @@ def command_probe(host):
     return 0
 
 
-def command_choose():
+def command_choose(backend="luna"):
+    validate_backend(backend)
     preferred = os.environ.get("ZF_WORKER_HOST", "").strip()
     if preferred == "local":
         print("local")
@@ -163,7 +222,7 @@ def command_choose():
         if not valid_ssh_alias(host):
             print(f"worker-host: skipping invalid SSH alias {host!r}", file=sys.stderr)
             continue
-        metrics, reason = probe(host)
+        metrics, reason = probe(host, backend=backend)
         if metrics is not None and not reason:
             print(f"worker-host: selected {format_metrics(host, metrics)}", file=sys.stderr)
             print(host)
@@ -261,7 +320,7 @@ def repository_info(cwd):
     return top, relative, branch, origin_url, head, base_branch, base_ref
 
 
-def make_payload(top, cwd, prompt, schema, key, target, archive_path):
+def make_payload(top, cwd, prompt, schema, key, target, archive_path, backend="luna"):
     _, relative, branch, origin, head, base_branch, base_ref = repository_info(cwd)
     engine = Path(__file__).resolve().parent.parent
     temp = archive_path.parent
@@ -287,6 +346,7 @@ def make_payload(top, cwd, prompt, schema, key, target, archive_path):
                        check=True, stdout=stream, stderr=subprocess.PIPE)
     manifest = {
         "key": key,
+        "backend": validate_backend(backend),
         "branch": branch,
         "base_branch": base_branch or branch,
         "origin": origin,
@@ -451,9 +511,13 @@ def remote_run(staging):
         env["CODEX_SEARCH"] = "1"
     else:
         env.pop("CODEX_SEARCH", None)
-    command = [str(runtime / "bin/luna"), job["key"], str(cwd), str(staging / "prompt.md")]
-    if (staging / "schema.json").is_file():
+    backend = validate_backend(job.get("backend", "luna"))
+    command = [str(runtime / "bin" / backend), job["key"], str(cwd), str(staging / "prompt.md")]
+    if backend == "luna" and (staging / "schema.json").is_file():
         command.append(str(staging / "schema.json"))
+    if backend == "zc":
+        # bin/worker points both backends at the shared luna scratch dir; keep bin/zc writing where remote-sync reads.
+        env["ZC_OUT_ROOT"] = str(scratch / "luna")
     child = subprocess.Popen(command, env=env, start_new_session=True)
 
     def stop_child(signum, _frame):
@@ -572,12 +636,15 @@ def cleanup_remote_staging(host, staging):
         pass
 
 
-def command_run(host, key, cwd, prompt, schema):
+def command_run(host, key, cwd, prompt, schema, backend="luna"):
     validate_key(key)
+    validate_backend(backend)
     root = os.environ.get("ZF_WORKER_REMOTE_ROOT", "/srv/zf-workers")
     if not root.startswith("/") or ".." in PurePosixPath(root).parts:
         raise ValueError("ZF_WORKER_REMOTE_ROOT must be an absolute remote path")
-    local_out = Path(os.environ.get("WORKER_SCRATCH_ROOT", str(Path.home() / ".zenoforge/scratch"))) / "luna" / key
+    # bin/worker sets ZC_OUT_ROOT so the zc backend reports in the shared luna dir; standalone callers keep it.
+    scratch_root = Path(os.environ.get("WORKER_SCRATCH_ROOT", str(Path.home() / ".zenoforge/scratch")))
+    local_out = Path(os.environ.get("ZC_OUT_ROOT") or scratch_root / "luna") / key
     local_out.mkdir(parents=True, exist_ok=True)
     for name in ("events.jsonl", "last.md", "rc", "codex.pid", "stderr.log",
                  "remote-refused", "remote.host", "remote.scope"):
@@ -585,7 +652,7 @@ def command_run(host, key, cwd, prompt, schema):
             (local_out / name).unlink()
         except FileNotFoundError:
             pass
-    metrics, reason = probe(host, root)
+    metrics, reason = probe(host, root, backend)
     if metrics is None or reason:
         detail = reason or "remote capacity probe failed"
         (local_out / "remote-refused").write_text(detail + "\n")
@@ -599,7 +666,7 @@ def command_run(host, key, cwd, prompt, schema):
     with tempfile.TemporaryDirectory(prefix="zf-worker-remote-") as temp:
         archive_path = Path(temp) / "payload.tar"
         top = Path(git_output(cwd, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
-        manifest = make_payload(top, cwd, prompt, schema, key, target, archive_path)
+        manifest = make_payload(top, cwd, prompt, schema, key, target, archive_path, backend)
         transfer = (f"umask 077; mkdir -p -- {shlex.quote(staging)}; "
                     f"tar -xf - --no-same-owner --no-same-permissions -C {shlex.quote(staging)}")
         try:
@@ -657,10 +724,10 @@ def request_stop(_signum, _frame):
 
 
 def main(argv):
-    if len(argv) == 2 and argv[1] == "choose":
-        return command_choose()
-    if len(argv) == 3 and argv[1] == "probe":
-        return command_probe(argv[2])
+    if len(argv) in (2, 3) and argv[1] == "choose":
+        return command_choose(argv[2] if len(argv) == 3 else "luna")
+    if len(argv) in (3, 4) and argv[1] == "probe":
+        return command_probe(argv[2], argv[3] if len(argv) == 4 else "luna")
     if len(argv) == 4 and argv[1] == "stop":
         return stop_remote(argv[2], argv[3])
     if len(argv) == 4 and argv[1] == "remote-prepare":
@@ -669,11 +736,12 @@ def main(argv):
         return remote_run(argv[2])
     if len(argv) == 5 and argv[1] == "remote-sync":
         return remote_sync(argv[2], int(argv[3]), int(argv[4]))
-    if len(argv) == 7 and argv[1] == "run":
+    if len(argv) in (7, 8) and argv[1] == "run":
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, request_stop)
-        return command_run(argv[2], argv[3], argv[4], argv[5], argv[6])
-    print("usage: worker-remote.py choose | probe <host> | run <host> <key> <cwd> <prompt> <schema>", file=sys.stderr)
+        return command_run(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7] if len(argv) == 8 else "luna")
+    print("usage: worker-remote.py choose [luna|zc] | probe <host> [luna|zc] |"
+          " run <host> <key> <cwd> <prompt> <schema> [luna|zc]", file=sys.stderr)
     return 64
 
 
