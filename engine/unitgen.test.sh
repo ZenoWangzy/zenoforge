@@ -46,4 +46,24 @@ stamp="$plist_out/zenoforge.zenoforge-supervisor.plist"
 touch -d '2001-01-01 00:00:00 UTC' "$stamp"
 render_plists "$plist_out"
 [[ "$(stat -c %Y "$stamp")" == 978307200 ]] || { echo "FAIL: unchanged plist was rewritten" >&2; exit 1; }
+
+# A service without ExecStart is one clear error through the plist path: rc 2, no plist for it.
+cat > "$tmp/no-exec.timer" <<'UNIT'
+[Timer]
+OnCalendar=*-*-* 01:00:00 UTC
+UNIT
+cat > "$tmp/no-exec.service" <<'UNIT'
+[Service]
+Environment=PATH=/usr/bin:/bin
+UNIT
+plist_bad="$tmp/plist-bad"
+if output="$(HOME=/home/zf-golden TZ=CST-8 python3 "$dir/unitgen.py" plist --dir "$plist_bad" "$tmp/no-exec.timer" 2>&1)"; then
+  echo "FAIL: missing ExecStart passed plist" >&2
+  exit 1
+else
+  rc=$?
+fi
+[[ $rc == 2 ]] || { echo "FAIL: expected rc 2, got $rc: $output" >&2; exit 1; }
+grep -Fq "no ExecStart in $tmp/no-exec.service" <<< "$output"
+[[ ! -e "$plist_bad/zenoforge.no-exec.plist" ]] || { echo "FAIL: plist written for unit without ExecStart" >&2; exit 1; }
 echo "PASS unitgen"

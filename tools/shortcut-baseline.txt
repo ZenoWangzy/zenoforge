@@ -33,7 +33,6 @@
 1	engine/run-triage-batch.sh
 1	engine/supervisor/hooks/policy-inject.mjs
 1	engine/ts-judge.sh
-2	engine/unitgen.py
 1	tools/auto-pin.sh
 3	tools/merge-pr.sh
 2	tools/quick-land.sh

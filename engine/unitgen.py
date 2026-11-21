@@ -79,7 +79,7 @@ def seconds(value):
 
 
 def calendar_entries(value, offset_minutes):
-    # shortcut: only "*-*-* HH[/step]:MM:00 UTC" (the shipped form), no seconds or dates, upgrade in zenoforge#1010 (PT-7c)
+    # only "*-*-* HH[/step]:MM:00 UTC" (the shipped form); wider OnCalendar shapes come with zenoforge#1010 (PT-7c)
     match = CALENDAR.fullmatch(value)
     if not match:
         raise ValueError(f"unsupported OnCalendar {value!r}")
@@ -98,7 +98,7 @@ def read_env_file(path):
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        # shortcut: no escapes or multi-line values, upgrade in zenoforge#1011 (PT-7d)
+        # no escapes or multi-line values; systemd env-file quoting comes with zenoforge#1011 (PT-7d)
         env[key.strip()] = value.strip().strip("\"'")
     return env
 
@@ -110,7 +110,8 @@ def timer_plist(timer, home, offset_minutes):
     def values(sections, key):
         return [expand(d["value"]) for ds in sections.values() for d in ds if d["key"] == key]
 
-    service = parse(timer.with_suffix(".service"))
+    service_path = timer.with_suffix(".service")
+    service = parse(service_path)
     schedule = parse(timer)
     env = {}
     for item in values(service, "Environment"):
@@ -123,7 +124,10 @@ def timer_plist(timer, home, offset_minutes):
         elif not item.startswith("-"):
             raise FileNotFoundError(f"EnvironmentFile {path} is missing")
     # systemd ExecStart prefixes: - @ : + ! (":" turns off $ expansion, which launchd never does)
-    args = shlex.split(values(service, "ExecStart")[-1].lstrip("-@:+!"))
+    exec_starts = values(service, "ExecStart")
+    if not exec_starts:
+        raise ValueError(f"no ExecStart in {service_path}")
+    args = shlex.split(exec_starts[-1].lstrip("-@:+!"))
     if values(service, "TimeoutStartSec"):
         timeout = seconds(values(service, "TimeoutStartSec")[-1])
         args = ["timeout", "-k", "30", str(timeout), *args]
