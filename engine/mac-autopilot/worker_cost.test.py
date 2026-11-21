@@ -591,6 +591,21 @@ class RunRowsMemo(unittest.TestCase):
         self.assertEqual(opened, [])
         self.assertIn("files=2 hit=2 read=0 read_mb=0.0 rebuilt=0", stderr)
 
+    def test_a_row_whose_usage_is_none_is_a_hit_on_the_second_call(self):
+        # Round-2 defect 1: usage/last None round-tripped as null but _row_in(None) raised
+        # "usage shape", so footer logs (no codex/zcode usage) were remeasured on every run.
+        name = "impl-issue-7-20261020T120000Z.worker.log"
+        self.workers([])
+        self.log(name, ["codex", "tokens used", "12,345", "done"])
+        first, _, _ = self.measured()
+        self.assertIsNone(first[0]["usage"])
+        self.assertIsNone(first[0]["last"])
+        second, stderr, opened = self.measured()
+        self.assertEqual(second, first)  # None stays None on the way in, for both fields
+        self.assertEqual(opened, [])
+        self.assertIn("files=1 hit=1 read=0 read_mb=0.0 rebuilt=0", stderr)
+        self.assertNotIn("remeasured", stderr)  # a stored None is a value, not a malformed entry
+
     def test_a_log_that_grew_is_measured_again(self):
         name = "impl-issue-6-20261020T120000Z.worker.log"
         self.workers([])
@@ -683,6 +698,22 @@ class RunRowsMemo(unittest.TestCase):
         self.assertEqual([r["footer_tokens"] for r in rows], [10_000, 20_000, 30_000])
         self.assertEqual(opened, [seen[2]])  # only the log the kill caught mid-scan is read again
         self.assertIn("hit=2 read=1", stderr)
+
+    def test_a_deleted_logs_entry_is_dropped_after_a_full_run(self):
+        # Round-2 defect 3: without an end-of-scan prune, a deleted log's entry stayed forever
+        # and the memo file grew without bound.
+        name = "impl-issue-5-20261020T120000Z.worker.log"
+        gone = "impl-issue-6-20261020T120500Z.worker.log"
+        self.workers([])
+        self.log(name, ["codex", "tokens used", "10,000", "done"])
+        self.log(gone, ["codex", "tokens used", "20,000", "done"], end="2026-10-20T12:40:00Z")
+        self.measured()
+        os.unlink(os.path.join(self.sup, gone))
+        rows, stderr = self.run_rows()
+        self.assertEqual([r["log"] for r in rows], [name])
+        self.assertIn("hit=1 read=0", stderr)  # the surviving log keeps its entry
+        with open(self.memo_path, encoding="utf-8") as source:
+            self.assertEqual(list(json.load(source)["entries"]), [name])
 
 
 class Eval(unittest.TestCase):

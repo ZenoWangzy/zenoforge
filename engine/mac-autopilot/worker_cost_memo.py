@@ -20,7 +20,9 @@ One memo file per supervisor dir (.worker_cost_memo.json, beside gen_dashboard's
 and gen_dashboard.py may scan concurrently, so a write goes to a pid-suffixed temp file in the
 same directory and then os.replace: a lost update is acceptable, a torn file is not. The scan
 flushes after every 500 newly measured logs or 60 s, whichever comes first, so a run killed by
-the 900 s timeout keeps what it flushed and the next run goes on from there. Rows are the
+the 900 s timeout keeps what it flushed and the next run goes on from there; a scan that
+finishes also drops entries whose log it did not see, so deleted logs cannot grow the file.
+Rows are the
 direct measure() output -- _chain_baselines and the sort still run over the returned rows on
 every call -- and every row handed out is a fresh object, so a caller's in-place edits cannot
 leak into the file. An unreadable memo or an entry of the wrong shape is measured again and
@@ -91,7 +93,8 @@ def _row_in(entry, path):
     row = dict(entry)
     row["start"], row["end"] = _stamp_in(row["start"]), _stamp_in(row["end"])
     row["finished_at"] = None if row["finished_at"] is None else _stamp_in(row["finished_at"])
-    row["usage"], row["last"] = _usage_in(row["usage"]), _usage_in(row["last"])
+    row["usage"], row["last"] = (None if row["usage"] is None else _usage_in(row["usage"]),
+                                 None if row["last"] is None else _usage_in(row["last"]))
     row["path"] = path  # the caller's own spelling, not the one that filled the memo
     return row
 
@@ -127,6 +130,7 @@ class Memo:
         self.path = os.path.join(sup, MEMO_NAME)
         self.entries, self.unreadable, self.bad = _load(self.path)
         self.files = self.hit = self.read = self.read_bytes = 0
+        self.seen = set()
         self.dirty = False
         self.read_since_flush = 0
         self.last_flush = self.started = time.monotonic()
@@ -136,6 +140,7 @@ class Memo:
         """The log's row: the memo's copy when the key matches, measure()'s when it does not."""
         self.files += 1
         name = os.path.basename(path)
+        self.seen.add(name)
         stat = os.stat(path)
         digest = _digest(worker)
         entry = self.entries.get(name)
@@ -181,8 +186,15 @@ class Memo:
         self.dirty = False
 
     def done(self):
-        """End of the scan: the remeasure line when something was unusable, the final flush,
-        then the per-call report that counts the read volume on the live host."""
+        """End of the scan: entries whose log this scan did not see are dropped, so deleted logs
+        cannot grow the file without bound (a killed scan never gets here, so what it flushed
+        survives for the next run); then the remeasure line when something was unusable, the
+        final flush, and the per-call report that counts the read volume on the live host."""
+        stale = [name for name in self.entries if name not in self.seen]
+        for name in stale:
+            del self.entries[name]
+        if stale:
+            self.dirty = True
         rebuilt = self.bad + (self.files if self.unreadable else 0)
         if rebuilt:
             count, reason = (self.files, "unreadable memo file") if self.unreadable \
