@@ -2560,7 +2560,7 @@ r898_lock_probe() { if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$"
 units '{"units":[{"id":"issue-90","issue":90,"stage":"implement","history":[]}]}'
 gh() { case "$1 $2" in
   "pr list") echo '[{"number":510,"headRefName":"agent/issue-81","isDraft":true,"title":"gated draft"},{"number":511,"headRefName":"agent/issue-82","isDraft":false,"title":"plain"},{"number":512,"headRefName":"agent/issue-83","isDraft":false,"title":"closed issue"}]' ;;
-  "api graphql") r898_lock_probe; jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}}' ;;
+  "api graphql") r898_lock_probe; jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}' ;;
   "pr close") r898_lock_probe; echo "$1 $2 $3" >> "$fixture/pr-ops2" ;;
   "pr edit") r898_lock_probe; echo "$*" >> "$fixture/pr-ops2" ;;
   "label list") echo '[]' ;;
@@ -2577,7 +2577,7 @@ r898_free="$(grep -c '^free$' "$r898_orphan_counts" || true)"; r898_held="$(grep
 units '{"units":[{"id":"issue-90","issue":90,"stage":"implement","history":[]}]}'
 gh() { case "$1 $2" in
   "pr list") echo '[{"number":510,"headRefName":"agent/issue-81","isDraft":true,"title":"gated draft"},{"number":511,"headRefName":"agent/issue-82","isDraft":false,"title":"plain"},{"number":512,"headRefName":"agent/issue-83","isDraft":false,"title":"closed issue"}]' ;;
-  "api graphql") jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}}' ;;
+  "api graphql") jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}' ;;
   "pr close") echo "$1 $2 $3" >> "$fixture/pr-ops2" ;;
   "pr edit") echo "$*" >> "$fixture/pr-ops2"; jq '.units += [{id:"pr-510",pr:510,stage:"review-pending",history:[]}]' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS" ;;
   "label list") echo '[]' ;;
