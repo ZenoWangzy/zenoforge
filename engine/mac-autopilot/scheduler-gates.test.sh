@@ -2024,6 +2024,7 @@ acquire_scheduler_lock || fail 'row-898 supersede probe could not take the sched
 # must live in a file: a shell variable bumped inside the command substitution dies with the subshell.
 r898s_counts="$fixture/r898-supersede-counts"
 r898s_write_free=0
+eval "gh_run_list_cached_s898() $(declare -f gh_run_list_cached | sed '1d')" # the engine's loader, restored below
 eval "git_r898() $(declare -f git | sed '1d')"
 git() {
   if [[ "${1:-}" == -C && "${3:-}" == merge-base && "${4:-}" == --is-ancestor ]]; then
@@ -2065,6 +2066,8 @@ supersede_resolved_main_red_units || :
 jq -e --arg id mr-1 'any(.units[]; .id==$id and ((.history // []) | any(.stage == "superseded")) | not)' "$UNITS" >/dev/null || fail 'a stale supersede decision was written'
 grep -q 'supersede re-read candidates after the ledger lock was released' "$A/scheduler.log" || fail 'the candidate re-read did not log its one line'
 unset -f gh_run_list_cached
+eval "gh_run_list_cached() $(declare -f gh_run_list_cached_s898 | sed '1d')"; unset -f gh_run_list_cached_s898
+MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS="" # later cases load runs afresh, as they did before the probe
 unset -f git
 eval "git() $(declare -f git_r898 | sed '1d')"; unset -f git_r898
 unset -f set_unit
