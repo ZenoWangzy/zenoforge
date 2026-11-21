@@ -37,6 +37,7 @@ import sqlite3
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import worker_cost_memo
 from usage_reader import Usage, claude_unit_responses, codex_stream_facts, zcode_stream_usage, Unavailable
 
 LOG_RE = re.compile(r"^(impl|review|land|triage|supervise)-(.+?)-(\d{8}T\d{6})Z\.worker\.log$")
@@ -261,16 +262,20 @@ def run_rows(sup, finished_only=False):
     """Cost rows of every worker log in the supervisor dir, oldest first. Stateless: reading
     the same files again yields the same rows, so a re-scan cannot double-count. In finished-only
     mode, a present unharvested worker row is still running; an absent row has been trimmed from
-    the harvested tail and the durable worker log remains the source."""
+    the harvested tail and the durable worker log remains the source. The memo (worker_cost_memo)
+    keeps each log's row under its name, size, mtime and worker-record digest, so an unchanged
+    finished log is not opened again; the chain and the sort still run over all rows."""
     by_log = _read_workers(sup)
+    memo = worker_cost_memo.Memo(sup)
     rows = []
     for path in glob.glob(os.path.join(sup, "*.worker.log")):
         worker = by_log.get(os.path.basename(path))
         if finished_only and worker is not None and worker.get("harvested") is not True:
             continue
-        row = measure(path, worker)
+        row = memo.row(path, worker, measure)
         if row is not None:
             rows.append(row)
+    memo.done()
     rows.sort(key=lambda r: r["start"])
     _chain_baselines(rows)
     return rows
