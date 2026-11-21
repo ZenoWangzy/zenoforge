@@ -29,6 +29,12 @@ If the repository has `lessons/CATALOG.md`, search it for the subsystem you are
 changing before you edit, then read only the rules and write-ups it points to.
 Do not read the whole lessons tree.
 
+## Handle flaky tests
+
+Do not skip a flaky test, add a sleep, retry it, or rerun it until it passes.
+Find and fix the root cause. If you cannot find it, delete the test and state in
+the report and commit message why, and what the deleted assertions covered.
+
 ## Verify an optimization premise before implementing
 
 When the ticket claims waste, latency or a race with quantified numbers, the
