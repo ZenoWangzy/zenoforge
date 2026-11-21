@@ -177,7 +177,9 @@ case "$1 ${2:-}" in
     fi
     ;;
   "label list")
-    printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded bug enhancement founder-test
+    # --json name (intake-priority) gets a JSON array as gh prints it; -q '.[].name' gets plain names.
+    if [[ " $* " == *" -q "* ]]; then printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded bug enhancement founder-test
+    else printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded bug enhancement founder-test | jq -Rsc 'split("\n") | map(select(length > 0) | {name: .})'; fi
     ;;
   "variable get") echo 3 ;;
   "pr list") echo '[]' ;;
@@ -859,7 +861,8 @@ assert_eq "the batch's other two issues log the fixed skip line" 2 \
 assert_eq "the stop file leaves the triage-size judge alone" 3 \
   "$(grep -Fc 'triage-size' "$FAKE_TS_JUDGE_LOG" || true)"
 assert_eq "every issue still reaches the haiku fallback" 3 "$(wc -l < "$FAKE_CLAUDE_JUDGE_LOG" | tr -d ' ')"
-assert_eq "every issue writes its fallback priority label" 3 "$(grep -Fc 'labels[]=priority:low' "$FAKE_GH_LOG" || true)"
+# Fixture issues carry the enhancement label, so the fruit-feature overlay (intake-priority-policy.jq) sets normal over the haiku low.
+assert_eq "every issue writes its fallback priority label" 3 "$(grep -Fc 'labels[]=priority:normal' "$FAKE_GH_LOG" || true)"
 assert_eq "every issue is marked as a judge fallback" 3 "$(grep -Fc 'labels[]=judge:fallback' "$FAKE_GH_LOG" || true)"
 assert_contains "credits-exhausted batch still applies every verdict" "$JUDGE_STOP_OUTPUT" \
   'applied 3 valid result(s); apply_failed=0; failed_or_missing=0'
