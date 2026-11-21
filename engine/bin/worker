@@ -84,10 +84,45 @@ inflight() { local n=0 f; for f in "$S"/luna/*/backend; do [[ $(cat "$f" 2>/dev/
 # config.sh exports ZF_CONFIG_ROOT and more; resolve in a subshell so none of it reaches the agents
 mapfile -t zc_argv < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_argv)
 zc_executable=${zc_argv[0]:-$S/zc-src/bin/zcode}
+zc_configured=0; ((${#zc_argv[@]})) && zc_configured=1
+zc_probe_rc=0
+zc_runnable() {
+  local boot_id argv_key cache="$S/tmp/zc-runnable" alerts lock_fd
+  local -a probe_argv=() cached=()
+  probe_argv=("${zc_argv[@]}")
+  boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null) || boot_id=unknown
+  if ((${#probe_argv[@]})); then printf -v argv_key '%q ' "${probe_argv[@]}"; else argv_key='<unresolved>'; fi
+  # Workers share this cache; serialize the probe and its once-per-boot alert.
+  exec {lock_fd}>>"$cache"
+  flock "$lock_fd"
+  mapfile -t cached < "$cache"
+  if ((${#cached[@]} == 3)) && [[ ${cached[0]} == "$boot_id" && ${cached[1]} == "$argv_key" && ${cached[2]} =~ ^[0-9]+$ ]]; then
+    zc_probe_rc=${cached[2]}
+  else
+    if ((${#probe_argv[@]})); then
+      if timeout 10 "${probe_argv[@]}" --version >/dev/null 2>&1; then zc_probe_rc=0; else zc_probe_rc=$?; fi
+    else
+      zc_probe_rc=127
+    fi
+    printf '%s\n%s\n%s\n' "$boot_id" "$argv_key" "$zc_probe_rc" > "$cache"
+  fi
+  if (( zc_probe_rc != 0 && zc_configured )); then
+    alerts="$hold_home/logs/head-watch.alerts"
+    mkdir -p "${alerts%/*}" 2>/dev/null || true
+    if ! grep -Fq "WORKER-ZCODE-UNRUNNABLE boot_id=$boot_id " "$alerts" 2>/dev/null; then
+      printf '%s WORKER-ZCODE-UNRUNNABLE boot_id=%s command=%s probe_rc=%s\n' \
+        "$(date -u +%FT%TZ)" "$boot_id" "$argv_key" "$zc_probe_rc" >> "$alerts" 2>/dev/null || true
+    fi
+  fi
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+  (( zc_probe_rc == 0 ))
+}
+zc_unavailable_reason() { printf 'zcode executable not runnable: %s (probe rc=%s)' "$zc_executable" "$zc_probe_rc"; }
 breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna-breaker"; }
 breaker_open_for() {
   local file now touched
-  [[ $1 == zc && ! -x $zc_executable ]] && return 0
+  if [[ $1 == zc ]] && ! zc_runnable; then return 0; fi
   # 10-30 maintainer: bin/zc-quota holds ZCode before the 5h window runs out; same marker lib.sh's provider_quota_exhausted reads.
   [[ $1 == zc ]] && (( $(cat "$hold_home/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
   [[ $1 == luna ]] && (( $(cat "$hold_home/codex-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
@@ -102,8 +137,8 @@ if [[ -z $b ]]; then
   breaker_open_for luna && luna_open=1
   if (( zc_open && !luna_open )); then
     b=luna
-    if [[ ! -x $zc_executable ]]; then
-      printf 'worker: zcode executable missing: %s; using luna instead of zc\n' "$zc_executable" >&2
+    if ! zc_runnable; then
+      printf 'worker: %s; using luna instead of zc\n' "$(zc_unavailable_reason)" >&2
     fi
   elif (( luna_open && !zc_open )); then b=zc
   else
@@ -118,8 +153,8 @@ if [[ -z $b ]]; then
 fi
 if [[ $b == zc ]] && breaker_open_for zc; then
   b=luna
-  if [[ ! -x $zc_executable ]]; then
-    printf 'worker: zcode executable missing: %s; using luna instead of zc\n' "$zc_executable" >&2
+  if ! zc_runnable; then
+    printf 'worker: %s; using luna instead of zc\n' "$(zc_unavailable_reason)" >&2
   else
     printf 'worker: zcode quota hold active; using luna instead of zc\n' >&2
   fi
@@ -331,8 +366,8 @@ if [[ -n $run_reason ]]; then
   { cat "$prompt"; printf '\n## Resume after backend failover\nAnother agent already worked in this worktree and stopped (%s). Before doing anything else, read `git status`, `git log origin/main..HEAD` and `gh pr list --head "$(git branch --show-current)" --state open`. Continue from that state: reuse the existing commits and PR, and push to the same branch.\n' "$first_reason"; } > "$resume"
   prompt=$resume
   if [[ $next_backend == zc ]] && breaker_open_for zc; then
-    if [[ ! -x $zc_executable ]]; then
-      second_reason="zcode executable missing: $zc_executable"
+    if ! zc_runnable; then
+      second_reason="$(zc_unavailable_reason)"
     else
       second_reason='zcode quota hold active'
     fi

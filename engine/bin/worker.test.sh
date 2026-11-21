@@ -19,9 +19,9 @@ cleanup() {
     pid=$(cat "$pid_file" 2>/dev/null || true)
     [[ $pid =~ ^[0-9]+$ ]] && kill -TERM "$pid" 2>/dev/null || true
   done
-  rm -rf "$test_root" "$test_env_root"
+  rm -rf -- "$test_root" "$test_env_root"
 }
-trap cleanup EXIT
+trap 'cleanup; rm -rf -- "$test_env_root"' EXIT
 mkdir -p "$test_root/home" "$test_root/agent-home"
 export HOME="$test_root/home" AGENT_HOME="$test_root/agent-home"
 export ZF_WORKER_HOST=local
@@ -204,7 +204,7 @@ run_case() {
   local initial_model=${8:-gpt-6-luna} history=${10:-}
   local gate_queue_seconds=${12:-}
   local zc_available=${13:-yes}
-  local -a queue_override=()
+  local -a queue_override=() zcode_override=()
   [[ -z $gate_queue_seconds ]] || queue_override=(WORKER_GATE_QUEUE_SECONDS="$gate_queue_seconds")
   local root="$test_root/$name/.scratch" wt="$test_root/$name/worktree" prompt="$test_root/$name/brief.md"
   local agent_home="$test_root/$name/agent-home" home="$test_root/$name/home" hold=${11:-}
@@ -214,6 +214,7 @@ run_case() {
     mkdir -p "$root/zc-src/bin"
     printf '#!/bin/sh\nexit 0\n' > "$root/zc-src/bin/zcode"
     chmod +x "$root/zc-src/bin/zcode"
+    zcode_override=(ZF_ZCODE_BIN="$root/zc-src/bin/zcode")
   fi
   if [[ $hold == active ]]; then
     printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$agent_home/zcode-exhausted-until"
@@ -233,7 +234,7 @@ run_case() {
     env -u WORKER_GATE_QUEUE_SECONDS -u ZF_ZCODE_BIN -u ZCODE_BIN HOME="$home" AGENT_HOME="$agent_home" \
       ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
       CODEX_MODEL="$initial_model" WORKER_SCRATCH_ROOT="$root" WORKER_BACKEND="$initial_backend" \
-      WORKER_STALL_SECONDS="$stall_seconds" WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+      WORKER_STALL_SECONDS="$stall_seconds" WORKER_HEALTH_INTERVAL_SECONDS=0.05 "${zcode_override[@]}" \
       FAKE_ZC_MODE="$zc_mode" FAKE_LUNA_MODE="$luna_mode" "${queue_override[@]}" \
       bash "$worker_script" "$key" "$wt" "$prompt" "$schema" > "$test_root/$name.stdout" 2> "$test_root/$name.stderr"; then
     rc=0
@@ -266,12 +267,15 @@ run_prompt_case() {
 
 run_auto_pick() {
   local name=$1 root=$2 wt=$3 prompt=$4 home=$5 agent_home=$6 rc
-  local path=${7:-$test_root/bin:/usr/bin:/bin} run_real_zc=${8:-0}
+  local path=${7:-$test_root/bin:/usr/bin:/bin} run_real_zc=${8:-0} zcode_bin=${9:-}
+  local -a zcode_override=()
+  [[ -z $zcode_bin ]] || zcode_override=(ZF_ZCODE_BIN="$zcode_bin")
   if timeout --signal=TERM --kill-after=1 5 \
     env -u WORKER_BACKEND -u WORKER_GATE_QUEUE_SECONDS -u ZF_ZCODE_BIN -u ZCODE_BIN \
       HOME="$home" AGENT_HOME="$agent_home" ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" \
       PATH="$path" FAKE_REAL_ZC="$run_real_zc" REAL_ZC_SCRIPT="$test_root/bin/real-zc" \
       ZCODE_STUB_RAN="$test_root/$name.zcode-ran" \
+      ZCODE_PROBE_LOG="$test_root/$name.probe-log" "${zcode_override[@]}" \
       WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
       FAKE_ZC_MODE=success FAKE_LUNA_MODE=success \
       bash "$worker_script" "$name" "$wt" "$prompt" \
@@ -305,24 +309,56 @@ done
 for pick in 1 2 3 4; do
   name="auto-missing-zc-$pick"
   [[ $(wc -l < "$test_root/$name.stderr") == 1 ]] || fail "$name did not print exactly one missing-zcode reroute line"
-  assert_file_contains "$test_root/$name.stderr" "worker: zcode executable missing: $auto_root/zc-src/bin/zcode; using luna instead of zc"
+  assert_file_contains "$test_root/$name.stderr" "worker: zcode executable not runnable: $auto_root/zc-src/bin/zcode (probe rc=127); using luna instead of zc"
 done
-printf 'PASS automatic picks avoid missing zcode and name the missing executable\n'
+printf 'PASS automatic picks avoid non-runnable zcode and print the probe rc\n'
 
 stub_root="$test_root/auto-stub-zc/.scratch"
 mkdir -p "$stub_root/zc-src/bin" "$stub_root/tmp" "$stub_root/luna"
-printf '#!/bin/sh\nexit 0\n' > "$stub_root/zc-src/bin/zcode"
+cat > "$stub_root/zc-src/bin/zcode" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${1:-} == --version ]]; then printf 'probe\n' >> "$ZCODE_PROBE_LOG"; exit 0; fi
+exit 0
+EOF
 chmod +x "$stub_root/zc-src/bin/zcode"
-run_auto_pick auto-stub-zc "$stub_root" "$auto_worktree" "$auto_prompt" "$auto_home" "$auto_agent_home"
+run_auto_pick auto-stub-zc "$stub_root" "$auto_worktree" "$auto_prompt" "$auto_home" "$auto_agent_home" \
+  "$test_root/bin:/usr/bin:/bin" 0 "$stub_root/zc-src/bin/zcode"
 [[ $(cat "$stub_root/luna/auto-stub-zc/backend") == zc &&
    $(cat "$stub_root/luna/auto-stub-zc/attempt-backend") == zc ]] || fail 'automatic pick did not choose executable zcode again'
-printf 'PASS automatic pick can choose zc when its executable is present\n'
+run_auto_pick auto-stub-zc "$stub_root" "$auto_worktree" "$auto_prompt" "$auto_home" "$auto_agent_home" \
+  "$test_root/bin:/usr/bin:/bin" 0 "$stub_root/zc-src/bin/zcode"
+[[ $(wc -l < "$test_root/auto-stub-zc.probe-log") == 1 ]] || fail 'same-boot worker call ran the zcode probe more than once'
+printf 'PASS automatic pick chooses runnable zcode and reuses its same-boot probe\n'
+
+shim_root="$test_root/auto-shim-missing-target"
+shim_worker_root="$shim_root/.scratch"
+shim_home="$shim_root/home"
+shim_agent_home="$shim_root/agent-home"
+mkdir -p "$shim_worker_root/tmp" "$shim_worker_root/luna" "$shim_home" "$shim_agent_home" "$shim_root/bin"
+cat > "$shim_root/bin/zcode" <<EOF
+#!/bin/sh
+printf 'probe\\n' >> "\$ZCODE_PROBE_LOG"
+exec "$shim_root/missing-target" "\$@"
+EOF
+chmod +x "$shim_root/bin/zcode"
+run_auto_pick auto-shim-missing-target "$shim_worker_root" "$auto_worktree" "$auto_prompt" "$shim_home" "$shim_agent_home" \
+  "$test_root/bin:/usr/bin:/bin" 0 "$shim_root/bin/zcode"
+[[ $(cat "$shim_worker_root/luna/auto-shim-missing-target/backend") == luna &&
+   $(cat "$shim_worker_root/luna/auto-shim-missing-target/rc") == 0 ]] || fail 'missing-target shim did not fall back to luna successfully'
+assert_file_contains "$test_root/auto-shim-missing-target.stderr" \
+  "worker: zcode executable not runnable: $shim_root/bin/zcode (probe rc=127); using luna instead of zc"
+run_auto_pick auto-shim-missing-target "$shim_worker_root" "$auto_worktree" "$auto_prompt" "$shim_home" "$shim_agent_home" \
+  "$test_root/bin:/usr/bin:/bin" 0 "$shim_root/bin/zcode"
+[[ $(wc -l < "$test_root/auto-shim-missing-target.probe-log") == 1 ]] || fail 'cached failed probe ran the shim more than once'
+[[ $(grep -c 'WORKER-ZCODE-UNRUNNABLE' "$shim_agent_home/logs/head-watch.alerts") == 1 ]] || fail 'unrunnable configured zcode did not alert exactly once per boot'
+printf 'PASS missing-target shim routes to luna, caches rc=127, and alerts once per boot\n'
 
 path_root="$test_root/auto-path-zc/.scratch"
 path_zcode_bin="$test_root/auto-path-zcode-bin"
 mkdir -p "$path_root/tmp" "$path_root/luna" "$path_zcode_bin"
 cat > "$path_zcode_bin/zcode" <<'EOF'
 #!/usr/bin/env bash
+if [[ ${1:-} == --version ]]; then printf 'probe\n' >> "$ZCODE_PROBE_LOG"; exit 0; fi
 touch "$ZCODE_STUB_RAN"
 printf '%s\n' '{"type":"result","response":"PATH zcode stub ran"}'
 EOF
@@ -356,14 +392,14 @@ printf 'PASS explicit zc stays on zc without a quota hold\n'
 run_case explicit-zc-missing 0 success success 8 4 zc gpt-6-luna '' '' '' '' no
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'explicit zc started without its executable'
 [[ $(wc -l < "$test_root/explicit-zc-missing.stderr") == 1 ]] || fail 'explicit missing zc did not print exactly one reroute line'
-[[ $(cat "$test_root/explicit-zc-missing.stderr") == "worker: zcode executable missing: $test_root/explicit-zc-missing/.scratch/zc-src/bin/zcode; using luna instead of zc" ]] || fail 'explicit missing zc wrote the wrong reroute line'
+[[ $(cat "$test_root/explicit-zc-missing.stderr") == "worker: zcode executable not runnable: $test_root/explicit-zc-missing/.scratch/zc-src/bin/zcode (probe rc=127); using luna instead of zc" ]] || fail 'explicit missing zc wrote the wrong reroute line'
 printf 'PASS explicit zc reroutes to luna when its executable is missing\n'
 
 run_case luna-failover-missing-zc 75 success fatal 8 4 luna gpt-6-luna '' '' '' '' no
 [[ $(cat "$CASE_DIR/backend") == luna && $(cat "$CASE_DIR/attempt-backend") == luna ]] || fail 'luna failover started missing zc'
-assert_file_contains "$CASE_DIR/failover" "backend=zc skipped; reason=zcode executable missing: $test_root/luna-failover-missing-zc/.scratch/zc-src/bin/zcode"
+assert_file_contains "$CASE_DIR/failover" "backend=zc skipped; reason=zcode executable not runnable: $test_root/luna-failover-missing-zc/.scratch/zc-src/bin/zcode (probe rc=127)"
 [[ $(wc -l < "$test_root/luna-failover-missing-zc.stderr") == 1 ]] || fail 'missing-zc failover did not print exactly one reason line'
-assert_file_contains "$test_root/luna-failover-missing-zc.stderr" "zcode executable missing: $test_root/luna-failover-missing-zc/.scratch/zc-src/bin/zcode"
+assert_file_contains "$test_root/luna-failover-missing-zc.stderr" "zcode executable not runnable: $test_root/luna-failover-missing-zc/.scratch/zc-src/bin/zcode (probe rc=127)"
 printf 'PASS luna failover skips missing zcode\n'
 
 run_case agent-home-marker 0 success success 8 4 '' gpt-6-luna '' '' active
@@ -464,7 +500,8 @@ root="$test_root/hang/.scratch"
 wt="$test_root/hang/worktree"
 prompt="$test_root/hang/brief.md"
 key=test-after-zc-breaker
-timeout 4 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+timeout 4 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCRATCH_ROOT="$root" \
+  WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
   FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" \
   > "$test_root/after-zc-breaker.stdout" 2> "$test_root/after-zc-breaker.stderr"
 [[ $(cat "$root/luna/$key/backend") == luna ]] || fail 'new automatic job ignored the open zc breaker'
@@ -581,7 +618,8 @@ root="$test_root/luna-fatal/.scratch"
 wt="$test_root/luna-fatal/worktree"
 prompt="$test_root/luna-fatal/brief.md"
 key=test-after-luna-breaker
-timeout 4 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+timeout 4 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCRATCH_ROOT="$root" \
+  WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
   FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" \
   > "$test_root/after-breaker.stdout" 2> "$test_root/after-breaker.stderr"
 [[ $(cat "$root/luna/$key/backend") == zc ]] || fail 'unset WORKER_BACKEND did not route around the open luna breaker'
