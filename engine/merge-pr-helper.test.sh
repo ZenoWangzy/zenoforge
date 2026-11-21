@@ -236,8 +236,11 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+actual_calls="$(grep -v '^api:' "$fixture/gh-calls")"
+[[ "$actual_calls" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
+grep -Fq 'api:api --paginate repos/{owner}/{repo}/pulls/17/files -q .[].filename' "$fixture/gh-calls" \
+  || fail 'gate-file lookup did not use the paginated REST file list'
 
 # GraphQL refuses the head and `gh pr checks` (shared-account rate limit): the head, the checks and the squash merge all come from REST.
 PR_GRAPHQL_DOWN=1
@@ -635,6 +638,8 @@ PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '[.[] | select(.name != "select")]')"
 expect_receipt_refusal 'selected focused path without select' "no test receipt exists for $selector_sha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_ROLLUP="$(focused_ci_rollup | jq -c 'map(if .name == "suites (0)" then .workflowName="cli-tests" else . end) + [{__typename:"CheckRun",name:"cli",workflowName:"cli-tests",status:"COMPLETED",conclusion:"SUCCESS"}]')"
 expect_receipt_refusal 'selected suite from the wrong workflow' "no test receipt exists for $selector_sha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '. + [{__typename:"CheckRun",name:"suites (9)",workflowName:"other.yml",status:"COMPLETED",conclusion:"SKIPPED"}]')"
+expect_receipt_refusal 'non-engine suite check must also be successful' "no test receipt exists for $selector_sha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '. + [{__typename:"CheckRun",name:"cli",workflowName:"cli-tests",status:"COMPLETED",conclusion:"SUCCESS"}]')"
 ci_set 'suites (1)' IN_PROGRESS ''
 expect_receipt_refusal 'gate file with pending focused CI' "PR CI pending at ${selector_sha:0:12} (1 checks not finished); the merge waits for PR CI"

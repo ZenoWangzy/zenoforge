@@ -71,8 +71,8 @@ merge_pr_expected_ci_suite_count() {
   # The PR cannot shrink its required receipt set by changing the selector at its head.
   local pr="$1" root="$2" sha="$3" base merge_base temp count
   GIT_TERMINAL_PROMPT=0 git -C "$root" fetch -q origin '+refs/heads/main:refs/remotes/origin/main' 2>/dev/null || return 1
-  base="$(git -C "$root" rev-parse --verify 'origin/main^{commit}' 2>/dev/null)" && merge_base="$(git -C "$root" merge-base "$base" "$sha" 2>/dev/null)" || return 1
   git -C "$root" cat-file -e "$sha^{commit}" 2>/dev/null || GIT_TERMINAL_PROMPT=0 git -C "$root" fetch -q origin "+refs/pull/$pr/head:refs/zf-merge-pr/$pr" 2>/dev/null || return 1
+  base="$(git -C "$root" rev-parse --verify 'origin/main^{commit}' 2>/dev/null)" && merge_base="$(git -C "$root" merge-base "$base" "$sha" 2>/dev/null)" || return 1
   temp="$(mktemp -d)" || return 1; git -C "$root" worktree add -q --detach "$temp/base" "$base" 2>/dev/null || { rm -rf -- "$temp"; return 1; }
   if ! (cd -- "$temp/base" && env -u ZF_PACK_DIR -u ZF_REPO_DIR -u ZF_CONFIG_ROOT -u ZF_ENGINE_DIR -u ZF_PACK_REL node engine/focused-test-paths.mjs --range "$merge_base" "$sha") >"$temp/suites" 2>/dev/null; then git -C "$root" worktree remove --force "$temp/base" >/dev/null 2>&1 || :; rm -rf -- "$temp"; return 1; fi
   count="$(awk 'NF { n++ } END { print n + 0 }' "$temp/suites")"; git -C "$root" worktree remove --force "$temp/base" >/dev/null 2>&1 || { rm -rf -- "$temp"; return 1; }
@@ -131,28 +131,27 @@ merge_pr_ci_green_check_count() {
   files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)" || return 1
   [[ -n "$files" ]] || return 1; while IFS= read -r path; do case "$path" in .github/*|tools/run-engine-tests.sh|.zenoforge/ci.json|'') return 1 ;; esac; done <<<"$files"
   if [[ "$receipt_mode" == true ]]; then suite_count="$(merge_pr_expected_ci_suite_count "$pr" "$root" "$head_sha" 2>/dev/null)" || suite_count=null; [[ "$suite_count" =~ ^[0-9]+$ ]] || suite_count=null; fi
-  count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --arg details "$with_url" --arg receipt "$receipt_mode" --argjson suites "$suite_count" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
-    def check_run_time: .startedAt // .completedAt; def is_suite: .__typename == "CheckRun" and (.name | type == "string" and test("^suites \\([0-9]+\\)$")); def is_pending: if .__typename == "CheckRun" then .status != "COMPLETED" else .__typename == "StatusContext" and .state == "PENDING" end;
-    def completed_success: if .__typename == "CheckRun" then .status == "COMPLETED" and (if $strict == "true" or is_suite then .conclusion == "SUCCESS" else (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL") end) elif .__typename == "StatusContext" then .state == "SUCCESS" and $strict == "false" else false end;
-    def required_check($need): .__typename == "CheckRun" and (.workflowName | type == "string" and length > 0) and .workflowName == (if $need == "cli" then "cli-tests" else "engine-tests" end) and .name == $need and .status == "COMPLETED" and .conclusion == "SUCCESS";
-    . as $view | ($view.statusCheckRollup // null) as $checks | select($view.headRefOid == $sha) | select($checks | type == "array" and length > 0)
-    | ([$checks[] | select(.__typename == "CheckRun" and check_run_time != null)] | group_by([.workflowName, .name]) | map(max_by(check_run_time))) as $newest
-    | ([$checks[] | select(.__typename != "CheckRun" or check_run_time == null)]) as $single | ($newest + $single) as $current
-    | ([$current[] | select(is_pending)] | length) as $pending
-    | if $pending > 0 then if all($current[]; if is_pending then true else completed_success end) then "pending\t\($pending)" else empty end
-      elif all($current[]; completed_success) then
-        if $receipt == "true" then
-          (any($current[]; required_check("select"))) as $selected | (any($current[]; .__typename == "CheckRun" and .workflowName == "cli-tests")) as $needs_cli
-          | ([$current[] | select(.__typename == "CheckRun" and .workflowName == "engine-tests" and is_suite)] | length) as $suite_checks
-          | (if $suites == 0 then 0 else ([(($suites + 11) / 12 | floor), $shards] | min) end) as $required_shards
-          | if $suites != null and $selected and (not $needs_cli or any($current[]; required_check("cli"))) and all(range(0;$required_shards); . as $i | any($current[]; required_check("suites (\($i))")))
-            then if (not $needs_cli or any($current[]; required_check("cli"))) and all(range(0;$shards); . as $i | any($current[]; required_check("suites (\($i))"))) then "green\t\($checks|length)" else "focused\t\($suite_checks)" end else empty end
-        else
-          (["cli"] + [range(0;$shards) | "suites (\(.))"]) as $required
-          | if all($required[]; . as $need | any($current[]; required_check($need))) then if $details == "true" then [$checks|length, ([$current[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks|length end else empty end
-        end
-      else empty end
+  if [[ "$receipt_mode" == true ]]; then count="$(jq -er --arg sha "$head_sha" --argjson suites "$suite_count" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+    def t: .startedAt // .completedAt; def suite: .__typename == "CheckRun" and (.name | type == "string" and test("^suites \\([0-9]+\\)$")); def pending: if .__typename == "CheckRun" then .status != "COMPLETED" else .__typename == "StatusContext" and .state == "PENDING" end;
+    def good: if .__typename == "CheckRun" then .status == "COMPLETED" and (if suite then .conclusion == "SUCCESS" else (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL") end) else .__typename == "StatusContext" and .state == "SUCCESS" end;
+    def req($name): .__typename == "CheckRun" and (.workflowName | type == "string" and length > 0) and .workflowName == (if $name == "cli" then "cli-tests" else "engine-tests" end) and .name == $name and .status == "COMPLETED" and .conclusion == "SUCCESS";
+    . as $v | ($v.statusCheckRollup // null) as $checks | select($v.headRefOid == $sha) | select($checks | type == "array" and length > 0)
+    | ([$checks[] | select(.__typename == "CheckRun" and t != null)] | group_by([.workflowName, .name]) | map(max_by(t))) as $newest | ([$checks[] | select(.__typename != "CheckRun" or t == null)]) as $single | ($newest + $single) as $current
+    | ([$current[] | select(pending)] | length) as $pending | if $pending > 0 then if all($current[]; if pending then true else good end) then "pending\t\($pending)" else empty end
+      elif all($current[]; good) then (any($current[]; req("select"))) as $selected | any($current[]; .__typename == "CheckRun" and .workflowName == "cli-tests") as $needs_cli
+      | ([$current[] | select(.workflowName == "engine-tests" and suite)] | length) as $n | (if $suites == null then null elif $suites == 0 then 0 else [((($suites + 11) / 12) | floor), $shards] | min end) as $required
+      | if $suites != null and $selected and (not $needs_cli or any($current[]; req("cli"))) and all(range(0;$required); . as $i | any($current[]; req("suites (\($i))")))
+        then if (not $needs_cli or any($current[]; req("cli"))) and all(range(0;$shards); . as $i | any($current[]; req("suites (\($i))"))) then "green\t\($checks|length)" else "focused\t\($n)" end else empty end else empty end
   ' <<<"$view" 2>/dev/null)" || return 1
+  else count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --arg details "$with_url" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+    def t: .startedAt // .completedAt; def suite: .__typename == "CheckRun" and (.name | type == "string" and test("^suites \\([0-9]+\\)$")); def good: if .__typename == "CheckRun" then .status == "COMPLETED" and (if $strict == "true" or suite then .conclusion == "SUCCESS" else (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL") end) elif .__typename == "StatusContext" then .state == "SUCCESS" and $strict == "false" else false end;
+    def req($name): .__typename == "CheckRun" and (.workflowName | type == "string" and length > 0) and .workflowName == (if $name == "cli" then "cli-tests" else "engine-tests" end) and .name == $name and .status == "COMPLETED" and .conclusion == "SUCCESS";
+    . as $v | ($v.statusCheckRollup // null) as $checks | select($v.headRefOid == $sha) | select($checks | type == "array" and length > 0)
+    | ([$checks[] | select(.__typename == "CheckRun" and t != null)] | group_by([.workflowName, .name]) | map(max_by(t))) as $newest | ([$checks[] | select(.__typename != "CheckRun" or t == null)]) as $single | ($newest + $single) as $current
+    | ([$current[] | select(.__typename == "CheckRun" and .status != "COMPLETED" or .__typename == "StatusContext" and .state == "PENDING")] | length) as $pending
+    | select(all($current[]; if .__typename == "CheckRun" and .status != "COMPLETED" then true else good end))
+    | if $pending > 0 then "pending\t\($pending)" elif all($current[]; good) and all((["cli"] + [range(0;$shards) | "suites (\(.))"])[]; . as $name | any($current[]; req($name))) then if $details == "true" then [$checks|length, ([$current[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks|length end else empty end
+  ' <<<"$view" 2>/dev/null)" || return 1; fi
   [[ "$count" != pending$'\t'* ]] || { [[ "$receipt_mode" == true ]] || return 1; printf '%s\n' "${count#*$'\t'}"; return 2; }
   printf '%s\n' "$count"
 }
@@ -461,9 +460,9 @@ MERGE_PR_GATE_RE='^(tools/(merge-pr|merge-pr-bootstrap|pin-vecta|auto-pin)\.sh|e
 # Code that deletes clones and refs is held the same way: #485 reached main 95s into a CI run that then failed.
 # A PR whose focused selection is empty skips the suites job (bucket "skipping"): that is a pass, not a wait (11-17).
 merge_pr_gate_ci_ok() {
-  local pr="$1" checks_json="$2" gate waiting
+  local pr="$1" checks_json="$2" gate waiting files
   [[ ",${ZF_MERGE_OVERRIDE:-}," != *,gate-ci,* ]] || return 0
-  gate="$(merge_pr_view "$pr" body,files,commits 2>/dev/null | jq -r --arg re "$MERGE_PR_GATE_RE" '[.files[].path | select(test($re))] | .[0] // ""')" || gate=unreadable
+  if files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)"; then gate="$(grep -m1 -E "$MERGE_PR_GATE_RE" <<<"$files" || true)"; else gate=unreadable; fi
   [[ -n "$gate" ]] || return 0
   waiting="$(jq -r '[.[] | select(.bucket == "pending" or ((.name | startswith("suites")) and (.bucket | IN("pass", "skipping") | not))) | .name] + (if any(.[]; .name | startswith("suites")) then [] else ["suites not started"] end) | join(", ")' <<<"$checks_json")"
   [[ -n "$waiting" ]] || return 0
