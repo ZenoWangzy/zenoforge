@@ -132,13 +132,22 @@ zc_runnable() {
 }
 zc_unavailable_reason() { printf 'zcode executable not runnable: %s (probe rc=%s)' "$zc_executable" "$zc_probe_rc"; }
 breaker_path() { [[ $1 == zc ]] && echo "$S/tmp/zc-breaker" || echo "$S/tmp/luna-breaker"; }
+# 11-21 queue 899: a quota or availability hold with its reason, or nothing. Head owns the marker files; the breaker
+# file below is any worker's verdict on a transient failure, so it never appears here. One helper, both backends.
+hold_reason() {
+  if [[ $1 == zc ]]; then
+    zc_runnable || { zc_unavailable_reason; return 0; }
+    # 10-30 maintainer: bin/zc-quota holds ZCode before the 5h window runs out; same marker lib.sh's provider_quota_exhausted reads.
+    (( $(cat "$hold_home/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && { echo 'zcode quota hold active'; return 0; }
+  else
+    (( $(cat "$hold_home/codex-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && { echo 'codex quota hold active'; return 0; }
+    (( $(cat "$hold_home/codex-unavailable-until" 2>/dev/null || echo 0) > $(date +%s) )) && { echo 'codex unavailable hold active'; return 0; }
+  fi
+  return 1
+}
 breaker_open_for() {
   local file now touched
-  if [[ $1 == zc ]] && ! zc_runnable; then return 0; fi
-  # 10-30 maintainer: bin/zc-quota holds ZCode before the 5h window runs out; same marker lib.sh's provider_quota_exhausted reads.
-  [[ $1 == zc ]] && (( $(cat "$hold_home/zcode-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
-  [[ $1 == luna ]] && (( $(cat "$hold_home/codex-exhausted-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
-  [[ $1 == luna ]] && (( $(cat "$hold_home/codex-unavailable-until" 2>/dev/null || echo 0) > $(date +%s) )) && return 0
+  hold_reason "$1" >/dev/null && return 0
   file=$(breaker_path "$1"); [[ -f $file ]] || return 1
   now=$(date +%s); touched=$(stat -c %Y "$file" 2>/dev/null) || return 1
   (( now - touched < ${WORKER_BREAKER_SECONDS:-1800} ))
@@ -164,13 +173,23 @@ if [[ -z $b ]]; then
   fi
 fi
 if [[ $b == zc ]] && breaker_open_for zc; then
-  b=luna
-  if ! zc_runnable; then
-    # 11-21 queue 884: <run>/backend says luna; the run directory must also say why the requested zc run never started.
-    printf '[%s] backend=zc rerouted to luna; reason=%s\n' "$(date -u +%FT%TZ)" "$(zc_unavailable_reason)" >> "$d/placement.log"
-    printf 'worker: %s; using luna instead of zc\n' "$(zc_unavailable_reason)" >&2
+  zc_hold=$(hold_reason zc || true)
+  if [[ -z $zc_hold ]]; then
+    # 11-21 queue 899: an open breaker file alone is another task's verdict on a transient failure; the requested backend runs.
+    printf '[%s] backend=zc kept; reason=zc breaker file only, no quota or availability hold\n' "$(date -u +%FT%TZ)" >> "$d/placement.log"
+  elif luna_hold=$(hold_reason luna); then
+    rm -f "$d/failover"
+    printf '[%s] backend=zc skipped; reason=%s\n' "$(date -u +%FT%TZ)" "$zc_hold" >> "$d/failover"
+    printf '[%s] backend=luna skipped; reason=%s\n' "$(date -u +%FT%TZ)" "$luna_hold" >> "$d/failover"
+    final_reason="both backends held: zc: $zc_hold; luna: $luna_hold"
+    printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+    printf 'worker: %s\n' "$final_reason" >&2
+    echo 75 > "$d/rc"; exit 75
   else
-    printf 'worker: zcode quota hold active; using luna instead of zc\n' >&2
+    b=luna
+    # 11-21 queue 884: <run>/backend says luna; the run directory must also say why the requested zc run never started.
+    printf '[%s] backend=zc rerouted to luna; reason=%s\n' "$(date -u +%FT%TZ)" "$zc_hold" >> "$d/placement.log"
+    printf 'worker: %s; using luna instead of zc\n' "$zc_hold" >&2
   fi
 fi
 if [[ $b != luna && $b != zc ]]; then
@@ -212,21 +231,32 @@ file_state() {
   (( size > 0 )) || { printf 'empty'; return; }
   stat -c '%s:%y' "$1" 2>/dev/null || printf 'missing'
 }
+# 11-21 queue 899: the next attempt overwrites the logs, so the line behind a fatal verdict is kept on disk for the
+# failover file to quote: first 300 characters, with the log file's name.
+record_fatal_evidence() { printf '[%s] evidence=%s: %.300s\n' "$(date -u +%FT%TZ)" "${1##*/}" "$2" > "$d/fatal-evidence"; }
+quote_fatal_evidence() { [[ -s $d/fatal-evidence ]] && cat "$d/fatal-evidence" >> "$d/failover"; return 0; }
 fatal_reason() {
-  local log count
+  local log match count
   for log in "$d/stderr.log" "$d/backend-run.stderr.log"; do
     [[ -f $log ]] || continue
-    if fatal_stderr_without_model_refresh "$log" | grep -qiE 'authentication failed|authentication[_ -]error|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]api[_ -]key|incorrect.{0,20}api key|api key.{0,40}(invalid|not valid|expired|incorrect)|invalid[_ -]token|token.{0,30}(invalid|expired)|insufficient[_ -]quota|quota.{0,20}(exceeded|exhausted|limit)|exceeded.{0,20}quota|billing.{0,30}(disabled|limit|exceeded)|payment required|resource[_ -]exhausted|rate[_ -]limit|(^|[^0-9])(401|403|429)([^0-9]|$)|too many requests'; then
+    # -m1 (not -q) so the matching line survives the pipefail-SIGPIPE race: the captured text decides, not the status.
+    match=$(fatal_stderr_without_model_refresh "$log" | grep -iEm1 'authentication failed|authentication[_ -]error|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]api[_ -]key|incorrect.{0,20}api key|api key.{0,40}(invalid|not valid|expired|incorrect)|invalid[_ -]token|token.{0,30}(invalid|expired)|insufficient[_ -]quota|quota.{0,20}(exceeded|exhausted|limit)|exceeded.{0,20}quota|billing.{0,30}(disabled|limit|exceeded)|payment required|resource[_ -]exhausted|rate[_ -]limit|(^|[^0-9])(401|403|429)([^0-9]|$)|too many requests' || true)
+    if [[ -n $match ]]; then
+      record_fatal_evidence "$log" "$match"
       echo 'fatal stderr pattern: authentication or quota error'; return 0
     fi
     # 10-28 factory-mainfix r1: zc's terminal `Error: Turn execution failed` (events.jsonl closes with turn.failed)
     # exits rc=1 with no last.md; fail over to the other backend on the same dirty worktree instead of ending the round.
-    if fatal_stderr_without_model_refresh "$log" | grep -qiF 'Turn execution failed'; then
+    match=$(fatal_stderr_without_model_refresh "$log" | grep -iFm1 'Turn execution failed' || true)
+    if [[ -n $match ]]; then
+      record_fatal_evidence "$log" "$match"
       echo 'fatal stderr pattern: Turn execution failed'; return 0
     fi
   done
-  if [[ -f $d/events.jsonl ]] && grep -Eiq '"type"[[:space:]]*:[[:space:]]*"turn\.failed"' "$d/events.jsonl" &&
-    grep -Eiq 'authentication[_ -]error|authentication failed|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]token|token.{0,30}(invalid|expired)|(^|[^0-9])(401|403|429)([^0-9]|$)' "$d/events.jsonl"; then
+  match=''
+  [[ -f $d/events.jsonl ]] && match=$(grep -Eim1 '"type"[[:space:]]*:[[:space:]]*"turn\.failed"' "$d/events.jsonl" || true)
+  if [[ -n $match ]] && grep -Eiq 'authentication[_ -]error|authentication failed|auth[_ -]error|unauthorized|not[[:space:]]+authorized|invalid[_ -]token|token.{0,30}(invalid|expired)|(^|[^0-9])(401|403|429)([^0-9]|$)' "$d/events.jsonl"; then
+    record_fatal_evidence "$d/events.jsonl" "$match"
     echo 'fatal event pattern: turn.failed'; return 0
   fi
   count=$(
@@ -235,8 +265,24 @@ fatal_reason() {
       fatal_stderr_without_model_refresh "$log" | grep -ic 'AI_APICallError' || true
     done | awk '{ n += $1 } END { print n+0 }'
   )
-  if (( count >= 2 )); then echo "fatal stderr pattern: repeated AI_APICallError ($count occurrences)"; return 0; fi
+  if (( count >= 2 )); then
+    match=$(fatal_stderr_without_model_refresh "$d/stderr.log" | grep -im1 'AI_APICallError' || true)
+    [[ -n $match ]] && record_fatal_evidence "$d/stderr.log" "$match"
+    echo "fatal stderr pattern: repeated AI_APICallError ($count occurrences)"; return 0
+  fi
   return 1
+}
+# 11-21 queue 899: all zcode processes on a host share one sqlite database; ERR_SQLITE_ERROR "database is locked" is
+# transient contention between them, not a provider failure. The code is read from the turn.failed event itself,
+# never from a text grep of the whole log.
+locked_db_failure() {
+  local failed
+  [[ -f $d/events.jsonl ]] || return 1
+  failed=$(grep -E '"type"[[:space:]]*:[[:space:]]*"turn\.failed"' "$d/events.jsonl" 2>/dev/null || true)
+  [[ -n $failed ]] || return 1
+  # No -q: grep reads all of $failed, so printf can never die on SIGPIPE under pipefail.
+  printf '%s' "$failed" | grep -E '"code"[[:space:]]*:[[:space:]]*"ERR_SQLITE_ERROR"' >/dev/null &&
+    printf '%s' "$failed" | grep -E '"message"[[:space:]]*:[[:space:]]*"database is locked"' >/dev/null
 }
 stderr_has_meaningful_delta() {
   local file=$1 previous=$2 current delta
@@ -264,13 +310,18 @@ run_backend() {
   local backend=$1 pid backend_pid last_activity now progress run_started current_worktree previous_worktree
   local events_state last_state previous_events previous_last stderr_offset=0 stdout_offset=0 wrapper_stderr_offset=0
   local monitor_reason='' should_stop=0 group_pid zc_prompt="$S/tmp/$key.zc-prompt.md"
+  local attempt_prev attempt_stamp
   local -a backend_cmd
   run_reason=''; run_rc=0; run_queued=0; run_started=$(date +%s)
   echo "$backend" > "$d/backend"
-  # Keep the previous attempt's log: 10-29 a failover wiped the zc-stage events that held the only record of who edited live state.
-  [[ -s $d/events.jsonl ]] && mv "$d/events.jsonl" "$d/events.$(cat "$d/attempt-backend" 2>/dev/null || echo prev).$(date -u +%H%M%S).jsonl"
+  # Keep the previous attempt's logs: 10-29 a failover wiped the zc-stage events that held the only record of who edited
+  # live state; 11-21 queue 899 keeps its stderr too, because the line behind the verdict must survive the next attempt.
+  attempt_prev=$(cat "$d/attempt-backend" 2>/dev/null || echo prev); attempt_stamp=$(date -u +%H%M%S)
+  [[ -s $d/events.jsonl ]] && mv "$d/events.jsonl" "$d/events.$attempt_prev.$attempt_stamp.jsonl"
+  [[ -s $d/stderr.log ]] && mv "$d/stderr.log" "$d/stderr.$attempt_prev.$attempt_stamp.log"
+  [[ -s $d/backend-run.stderr.log ]] && mv "$d/backend-run.stderr.log" "$d/backend-run.stderr.$attempt_prev.$attempt_stamp.log"
   echo "$backend" > "$d/attempt-backend"
-  rm -f "$d/rc" "$d/codex.pid" "$d/backend-run.pid" "$d/last.md" "$d/gate-wait" \
+  rm -f "$d/rc" "$d/codex.pid" "$d/backend-run.pid" "$d/last.md" "$d/gate-wait" "$d/fatal-evidence" \
     "$d/stderr.log" "$d/backend-run.stdout.log" "$d/backend-run.stderr.log"
   previous_worktree=$(worktree_state)
   previous_events=$(file_state "$d/events.jsonl")
@@ -360,6 +411,13 @@ run_with_model_fallback() {
   fi
 }
 
+# The next attempt starts with no memory of this one: 10-29 #4486 opened a second PR for the same ticket after failover.
+resume_prompt_for() { # reason -> prompt becomes the resume prompt for the next attempt
+  local resume="$S/tmp/$key.resume.md"
+  { cat "$prompt"; printf '\n## Resume after backend failover\nAnother agent already worked in this worktree and stopped (%s). Before doing anything else, read `git status`, `git log origin/main..HEAD` and `gh pr list --head "$(git branch --show-current)" --state open`. Continue from that state: reuse the existing commits and PR, and push to the same branch.\n' "$1"; } > "$resume"
+  prompt=$resume
+}
+
 # A queue timeout is the gate's state, not the provider's: no breaker, no failover (the other backend waits at the same gate).
 queue_fail() {
   printf '[%s] backend=%s not started; reason=%s\n' "$(date -u +%FT%TZ)" "$1" "$run_reason" >> "$d/failover"
@@ -372,43 +430,68 @@ run_with_model_fallback "$b"
 final_backend=$b
 if [[ -n $run_reason ]]; then
   failed_backend=$b; first_reason=$run_reason
-  touch "$(breaker_path "$failed_backend")"
-  next_backend=luna; [[ $failed_backend == luna ]] && next_backend=zc
-  printf '[%s] backend=%s failed; next=%s; reason=%s\n' "$(date -u +%FT%TZ)" "$failed_backend" "$next_backend" "$first_reason" >> "$d/failover"
-  # The next backend starts with no memory of the first: 10-29 #4486 opened a second PR for the same ticket after failover.
-  resume="$S/tmp/$key.resume.md"
-  { cat "$prompt"; printf '\n## Resume after backend failover\nAnother agent already worked in this worktree and stopped (%s). Before doing anything else, read `git status`, `git log origin/main..HEAD` and `gh pr list --head "$(git branch --show-current)" --state open`. Continue from that state: reuse the existing commits and PR, and push to the same branch.\n' "$first_reason"; } > "$resume"
-  prompt=$resume
-  if [[ $next_backend == zc ]] && breaker_open_for zc; then
-    if ! zc_runnable; then
-      second_reason="$(zc_unavailable_reason)"
-    else
-      second_reason='zcode quota hold active'
+  if [[ $failed_backend == zc ]] && locked_db_failure; then
+    # No breaker, no luna: wait out the lock (5 s for the lock holder, then 15 s more for the queue behind it) and
+    # retry zc once in the same clone with the resume prompt; a second locked failure ends rc=75.
+    printf '[%s] backend=zc failed; reason=%s; locked database: waiting to retry zc\n' "$(date -u +%FT%TZ)" "$first_reason" >> "$d/failover"
+    quote_fatal_evidence
+    resume_prompt_for "$first_reason"
+    sleep 5; sleep 15
+    run_with_model_fallback zc
+    (( run_queued )) && queue_fail zc
+    final_backend=zc
+    if [[ -n $run_reason ]]; then
+      printf '[%s] backend=zc failed; reason=%s; locked database twice: giving up\n' "$(date -u +%FT%TZ)" "$run_reason" >> "$d/failover"
+      quote_fatal_evidence
+      final_reason="both backends failed: zc: $first_reason; zc retry after locked database: $run_reason"
+      printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+      printf '%s\n' "$final_reason" >&2
+      echo 75 > "$d/rc"; exit 75
     fi
-    printf '[%s] backend=zc skipped; reason=%s\n' "$(date -u +%FT%TZ)" "$second_reason" >> "$d/failover"
-    final_reason="both backends failed: $failed_backend: $first_reason; zc: $second_reason"
-    printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
-    printf '%s\n' "$final_reason" >&2
-    echo 75 > "$d/rc"; exit 75
+    if (( run_rc != 0 )); then
+      final_reason="both backends failed: zc: $first_reason; zc retry after locked database exited rc=$run_rc"
+      printf '[%s] backend=zc failed; rc=%s\n' "$(date -u +%FT%TZ)" "$run_rc" >> "$d/failover"
+      printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+      printf '%s\n' "$final_reason" >&2
+      echo 75 > "$d/rc"; exit 75
+    fi
   fi
-  run_with_model_fallback "$next_backend"
-  (( run_queued )) && queue_fail "$next_backend"
-  final_backend=$next_backend
   if [[ -n $run_reason ]]; then
-    second_reason=$run_reason
-    touch "$(breaker_path "$next_backend")"
-    printf '[%s] backend=%s failed; reason=%s\n' "$(date -u +%FT%TZ)" "$next_backend" "$second_reason" >> "$d/failover"
-    final_reason="both backends failed: $failed_backend: $first_reason; $next_backend: $second_reason"
-    printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
-    printf '%s\n' "$final_reason" >&2
-    echo 75 > "$d/rc"; exit 75
-  fi
-  if (( run_rc != 0 )); then
-    final_reason="both backends failed: $failed_backend: $first_reason; $next_backend exited rc=$run_rc"
-    printf '[%s] backend=%s failed; rc=%s\n' "$(date -u +%FT%TZ)" "$next_backend" "$run_rc" >> "$d/failover"
-    printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
-    printf '%s\n' "$final_reason" >&2
-    echo 75 > "$d/rc"; exit 75
+    touch "$(breaker_path "$failed_backend")"
+    next_backend=luna; [[ $failed_backend == luna ]] && next_backend=zc
+    printf '[%s] backend=%s failed; next=%s; reason=%s\n' "$(date -u +%FT%TZ)" "$failed_backend" "$next_backend" "$first_reason" >> "$d/failover"
+    quote_fatal_evidence
+    resume_prompt_for "$first_reason"
+    # 11-21 queue 899: a quota or availability hold stops the move in either direction; the next backend's short
+    # breaker file alone does not (it is another task's verdict, not a hold on this provider).
+    next_hold=$(hold_reason "$next_backend" || true)
+    if [[ -n $next_hold ]]; then
+      printf '[%s] backend=%s skipped; reason=%s\n' "$(date -u +%FT%TZ)" "$next_backend" "$next_hold" >> "$d/failover"
+      final_reason="both backends failed: $failed_backend: $first_reason; $next_backend: $next_hold"
+      printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+      printf '%s\n' "$final_reason" >&2
+      echo 75 > "$d/rc"; exit 75
+    fi
+    run_with_model_fallback "$next_backend"
+    (( run_queued )) && queue_fail "$next_backend"
+    final_backend=$next_backend
+    if [[ -n $run_reason ]]; then
+      second_reason=$run_reason
+      touch "$(breaker_path "$next_backend")"
+      printf '[%s] backend=%s failed; reason=%s\n' "$(date -u +%FT%TZ)" "$next_backend" "$second_reason" >> "$d/failover"
+      quote_fatal_evidence
+      final_reason="both backends failed: $failed_backend: $first_reason; $next_backend: $second_reason"
+      printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+      printf '%s\n' "$final_reason" >&2
+      echo 75 > "$d/rc"; exit 75
+    fi
+    if (( run_rc != 0 )); then
+      final_reason="both backends failed: $failed_backend: $first_reason; $next_backend exited rc=$run_rc"
+      printf '[%s] backend=%s failed; rc=%s\n' "$(date -u +%FT%TZ)" "$next_backend" "$run_rc" >> "$d/failover"
+      printf '[%s] rc=75 reason=%s\n' "$(date -u +%FT%TZ)" "$final_reason" >> "$d/failover"
+      printf '%s\n' "$final_reason" >&2
+      echo 75 > "$d/rc"; exit 75
+    fi
   fi
 fi
 final_rc=$run_rc
