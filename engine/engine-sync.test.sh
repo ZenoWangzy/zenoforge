@@ -205,16 +205,16 @@ slow_tick 'REFILL-TIMEOUT stop: ledger lock wait stopped at 285s'
 [[ "$(jq -r '.status' "$CF_AGENT/engine-versions/.swap-record.json")" == passed ]] \
   || { echo 'FAIL: chronic-window canary did not complete its configured ticks' >&2; exit 1; }
 
-# The same signature only 2 h before the swap is outside the window: it still rolls the new pin back.
+# The same signature 7 h before the swap is outside the chronic window (ZF_CANARY_CHRONIC_HOURS, default 6): it still rolls the new pin back.
 make_swap_fixture canary-window-expired
-seed_history engine-a "$(( $(date +%s) - 7200 ))" REFILL-TIMEOUT
+seed_history engine-a "$(( $(date +%s) - 25200 ))" REFILL-TIMEOUT
 slow_tick
 slow_tick
 ZF_REPO_DIR="$CF_TARGET" AGENT_HOME="$CF_AGENT" MAC_AUTOPILOT_SUPERVISOR_DIR="$CF_SUP" \
   "$here/engine-sync.sh" --converge >/dev/null
 slow_tick 'REFILL-TIMEOUT stop: ledger lock wait stopped at 285s'
 [[ "$(readlink -e "$CF_AGENT/engine-live")" == "$CF_AGENT/engine-versions/old/engine" ]] \
-  || { echo 'FAIL: REFILL-TIMEOUT seen 2 h before the swap was treated as pre-existing' >&2; exit 1; }
+  || { echo 'FAIL: REFILL-TIMEOUT seen 7 h before the swap was treated as pre-existing' >&2; exit 1; }
 
 # Tick rows of the old engine carry no signatures, yet a chronic REFILL-TIMEOUT logged 20 min before the swap is baseline:
 # a post-swap REFILL-TIMEOUT must not roll back, while a signature first seen after the swap still does.
