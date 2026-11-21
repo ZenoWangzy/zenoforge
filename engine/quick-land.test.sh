@@ -41,6 +41,10 @@ git fetch -q origin main
 git switch -q --detach origin/main
 
 reset_fixture() { git switch -q --detach origin/main; git reset -q --hard; git clean -qfd; }
+drop_quick_branches() {
+  local branch
+  while IFS= read -r branch; do git branch -q -D "$branch"; done < <(git for-each-ref --format='%(refname:short)' refs/heads/quick/)
+}
 
 # quick_land_refusal reads the staged diff, the number of --test given and the --prior-art text.
 pa='no external prior art: fixture'
@@ -155,9 +159,8 @@ printf '# shortcut: another fixture limit\n' >> engine/ratcheted.sh
 land 1 --test 'true' --prior-art "$pa" 'shortcut growth'
 [[ "$(origin_main)" == "$before" ]] || fail 'a shortcut-ratchet FAIL landed'
 [[ "$(cat land.out)" == *'shortcut-ratchet: FAIL engine/ratcheted.sh has 2 shortcut comments'* ]] || fail "a shortcut-ratchet FAIL was not named: $(cat land.out)"
-failed_branch="$(git branch --show-current)"
 reset_fixture
-git branch -q -D "$failed_branch"
+drop_quick_branches
 
 printf '# no shortcut remains\n' > engine/ratcheted.sh
 land 1 --test 'true' --prior-art "$pa" 'shortcut paid down'
@@ -166,9 +169,9 @@ land 1 --test 'true' --prior-art "$pa" 'shortcut paid down'
 git reset -q --soft origin/main
 bash tools/shortcut-ratchet.sh --tighten >/dev/null
 git add -A
-git branch -m quick/shortcut-tightened
+git switch -q --detach origin/main
+drop_quick_branches
 quick_land_main --test 'true' --prior-art "$pa" 'shortcut tightened' >land.out 2>&1 || fail "quick_land_main did not land after tightening: $(cat land.out)"
-git branch -q -D quick/shortcut-tightened
 git fetch -q origin main
 [[ "$(origin_main)" != "$before" && "$(git show origin/main:engine/ratcheted.sh)" == '# no shortcut remains' ]] || fail 'tightening and recommitting did not land the shortcut removal'
 ! git show origin/main:tools/shortcut-baseline.txt | grep -q $'\tengine/ratcheted.sh$' || fail 'the tightened baseline kept the empty row'
