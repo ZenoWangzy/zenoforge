@@ -1,11 +1,17 @@
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/feature-map-maintain.sh"
 lock_us_now() { LOCK_US="${EPOCHREALTIME:-0}"; LOCK_US="${LOCK_US//[.,]/}"; } # microseconds since the epoch; 0 where bash has no EPOCHREALTIME
+# The lock poll runs these per try, so they read files and start ticks with builtins only (no fork per poll).
+# lock_poll_pause: 50 ms with no fork. A read on a pipe that never gets data times out; <> keeps its write end open, so it never sees EOF.
+lock_poll_pause() {
+  [[ -n "${LOCK_POLL_FD:-}" ]] || { exec {LOCK_POLL_FD}<> <(:); } 2>/dev/null || LOCK_POLL_FD=""
+  if [[ -n "${LOCK_POLL_FD:-}" ]]; then read -r -t 0.05 -u "$LOCK_POLL_FD" || :; else sleep 0.05; fi
+}
 scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's start ticks name another process (PID reuse)
-  local want now
-  want="$(cat "$SCHED_LOCK/start" 2>/dev/null || true)"
+  local want=""
+  { IFS= read -r want < "$SCHED_LOCK/start"; } 2>/dev/null || :
   [[ "$want" =~ ^[0-9]+$ ]] || return 1 # no start recorded (older lock): the pid test alone decides
-  now="$(coord_process_start_ticks "$1" 2>/dev/null)" || return 1 # unreadable: keep the pid test
-  [[ "$now" != "$want" ]]
+  coord_process_start_ticks_into "$1" 2>/dev/null || return 1 # unreadable: keep the pid test
+  [[ "$COORD_START_TICKS" != "$want" ]]
 }
 # TERM from loop.sh's `timeout --foreground` (or a kill): stop this holder's own children, bounded, before the EXIT trap frees the lock.
 # A foreground ledger write finishes first (bash runs a trap only after its foreground command), so a stale write cannot land after the release.
@@ -36,12 +42,12 @@ scheduler_term_stop() {
 # Waiters queue on tickets in $SCHED_LOCK.q, one file per waiter named <class>-<epoch_us>-<pid> with its start ticks inside: the oldest live ticket takes the lock.
 # class 0 = refill waiter, 1 = any other: the sorted glob puts a refill ahead of a full tick's queued waiters. The pid stays the last field.
 scheduler_ticket_live() { # $1 ticket: 0 while its waiter is alive; a pid whose start ticks differ is reused, so the ticket is dead
-  local pid="${1##*-}" want now
+  local pid="${1##*-}" want=""
   kill -0 "$pid" 2>/dev/null || return 1
-  want="$(cat "$1" 2>/dev/null || true)"
+  { IFS= read -r want < "$1"; } 2>/dev/null || :
   [[ "$want" =~ ^[0-9]+$ ]] || return 0
-  now="$(coord_process_start_ticks "$pid" 2>/dev/null)" || return 0
-  [[ "$now" == "$want" ]]
+  coord_process_start_ticks_into "$pid" 2>/dev/null || return 0
+  [[ "$COORD_START_TICKS" == "$want" ]]
 }
 scheduler_queue_clear() { # $1: this waiter's ticket, or "" for a direct call; 0 when no live ticket is older. Dead tickets passed are removed.
   local f
@@ -59,9 +65,9 @@ acquire_scheduler_lock() { # no wait: a live queued waiter goes first, so this f
   scheduler_lock_try
 }
 scheduler_lock_try() {
-  local old start age owner="$BASHPID" holder_phase="${SCHED_LOCK_HOLDER_PHASE:-unknown}"
-  if ! mkdir "$SCHED_LOCK" 2>/dev/null; then
-    old="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
+  local old="" start age owner="$BASHPID" holder_phase="${SCHED_LOCK_HOLDER_PHASE:-unknown}"
+  if [[ -d "$SCHED_LOCK" ]] || ! mkdir "$SCHED_LOCK" 2>/dev/null; then # an existing dir is a busy lock: skip the mkdir fork
+    { IFS= read -r old < "$SCHED_LOCK/pid"; } 2>/dev/null || :
     if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then
       scheduler_lock_pid_reused "$old" || return 1
       say "scheduler lock: reclaimed from pid $old, its start time does not match the lock (pid reused)"
@@ -110,17 +116,18 @@ refill_lock_wait_spent() {
 refill_stopped() {
   [[ "${TICK_LOCAL_REFILL:-false}" == true && -e "$A/.refill-stop" ]]
 }
-ledger_lock_holder_phase() { # the current holder phase is recorded beside its pid
-  local holder recorded_pid phase
-  holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"
+ledger_lock_holder_phase_into() { # sets LEDGER_HOLDER_PHASE to phase/pid, the holder phase recorded beside its pid (no subshell)
+  local holder="" recorded_pid phase
+  { IFS= read -r holder < "$SCHED_LOCK/pid"; } 2>/dev/null || :
   [[ "$holder" =~ ^[0-9]+$ ]] || holder=none
   if [[ "$holder" != none ]] && IFS=$'\t' read -r recorded_pid phase 2>/dev/null < "$SCHED_LOCK/holder-phase" \
     && [[ "$recorded_pid" == "$holder" && -n "$phase" && "$phase" != *[[:space:]]* ]]; then
-    printf '%s/%s' "$phase" "$holder"
+    LEDGER_HOLDER_PHASE="$phase/$holder"
   else
-    printf 'unknown/%s' "$holder"
+    LEDGER_HOLDER_PHASE="unknown/$holder"
   fi
 }
+ledger_lock_holder_phase() { ledger_lock_holder_phase_into; printf '%s' "$LEDGER_HOLDER_PHASE"; }
 acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it the wait returns 1 and the caller decides
   local t0=$SECONDS rc=0 w_start holders="" nholders=0 h
   refill_stopped && return 1
@@ -133,7 +140,7 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
   chain_exit_trap scheduler_ticket_drop # the EXIT trap drops the ticket of a wait that ends early
   until scheduler_queue_clear "$SCHED_LOCK_TICKET" && scheduler_lock_try; do
     lock_us_now; LOCK_WAIT_US=$((${LOCK_WAIT_US:-0} + LOCK_US - w0)); w0=$LOCK_US # waited so far, to the last refused try
-    h="$(ledger_lock_holder_phase)" # phase/pid: the wait line names each holder as pid/phase, at most 8 distinct
+    ledger_lock_holder_phase_into; h="$LEDGER_HOLDER_PHASE" # phase/pid: the wait line names each holder as pid/phase, at most 8 distinct
     if [[ "${h##*/}" =~ ^[0-9]+$ ]] && (( nholders < 8 )) && [[ ",$holders," != *",${h##*/}/${h%/*},"* ]]; then
       holders="${holders:+$holders,}${h##*/}/${h%/*}"; nholders=$((nholders + 1))
     fi
@@ -146,7 +153,7 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
       rc=1; break
     fi
     if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then rc=1; break; fi
-    sleep 0.05
+    lock_poll_pause
   done
   scheduler_ticket_drop # acquired, refused by the bound, or stopped by REFILL-TIMEOUT: the queue never keeps a ticket of a finished wait
   lock_us_now

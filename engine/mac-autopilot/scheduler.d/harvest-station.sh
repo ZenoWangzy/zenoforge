@@ -15,7 +15,7 @@ hs_lock() { # take the ledger lock, waiting only until the pass deadline; the wa
   local t0=$SECONDS
   until acquire_scheduler_lock; do
     if (( SECONDS >= HARVEST_STATION_DEADLINE )); then HS_LOCK_WAIT=$((HS_LOCK_WAIT + SECONDS - t0)); return 1; fi
-    sleep 0.05
+    lock_poll_pause
   done
   HS_LOCK_WAIT=$((HS_LOCK_WAIT + SECONDS - t0)); HS_HOLD_FROM=$SECONDS
 }

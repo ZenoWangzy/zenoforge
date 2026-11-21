@@ -89,7 +89,7 @@ source "$SCHED_DIR/core.sh"
 source "$SCHED_DIR/../../coord.sh"
 source "$SCHED_DIR/locks-views.sh"
 polls=0
-sleep() { # stands in for the poll wait: holder A, then holder B, then the lock is released
+lock_poll_pause() { # stands in for the poll pause: holder A, then holder B, then the lock is released
   polls=$((polls + 1))
   case "$polls" in
     1) printf '%s\t%s\n' "$HOLDER_B" phase_b > "$SCHED_LOCK/holder-phase"; echo "$HOLDER_B" > "$SCHED_LOCK/pid" ;;
@@ -186,5 +186,48 @@ kill "$stop_holder" 2>/dev/null || :; wait "$stop_holder" 2>/dev/null || :
 grep -q 'REFILL-TIMEOUT stop: ledger lock wait stopped' "$stop_lock.log" || fail 'the refill past its deadline did not stop the wait'
 grep -q 'tickets_at_stop=1' "$stop_lock.log" || fail 'the waiter held no ticket while it waited in the queue'
 grep -q 'rc=1 tickets_after=0' "$stop_lock.log" || fail 'a REFILL-TIMEOUT stop left a ticket in the queue'
+
+# A blocked ledger wait forks nothing per poll. A 0 s bound makes one try and no poll; a 2 s bound makes about 40 polls. Subshells are counted by a DEBUG trap (set -T),
+# external commands by shims on PATH. Equal counts mean the polls add no fork. Not seen: the lazy pause pipe (opened once, before the count) and bash builtins.
+fork_lock="$fixture/fork-held.lock"
+command sleep 60 & fork_holder=$!
+fork_start="$(source "$script_dir/../../coord.sh"; coord_process_start_ticks "$fork_holder")"
+mkdir "$fork_lock"
+printf '%s\n' "$fork_holder" > "$fork_lock/pid"
+printf '%s\n' "$fork_start" > "$fork_lock/start"
+shim_dir="$fixture/wait-shims"
+mkdir -p "$shim_dir"
+for c in cat sleep mkdir rm stat date ps; do
+  real="$(command -v "$c")"
+  printf '#!/bin/sh\necho %s >> "$SHIM_LOG"\nexec %s "$@"\n' "$c" "$real" > "$shim_dir/$c"
+  chmod +x "$shim_dir/$c"
+done
+wait_probe="$fixture/wait-forks.sh"
+cat > "$wait_probe" <<'WAIT_PROBE'
+set -euo pipefail
+source "$SCHED_DIR/core.sh"
+source "$SCHED_DIR/../../coord.sh"
+source "$SCHED_DIR/locks-views.sh"
+lock_poll_pause # the first pause opens the pause pipe once; that one-time cost is not part of the polls
+set -T
+trap 'if (( BASH_SUBSHELL > 0 )); then echo subshell >> "$COUNT_LOG"; fi' DEBUG
+rc=0; acquire_scheduler_lock_wait "$BOUND" || rc=$?
+trap - DEBUG
+set +T
+echo "rc=$rc"
+WAIT_PROBE
+run_wait() { # $1: bound in seconds -> prints rc; the shim and subshell counts go to their logs
+  : > "$fixture/wait.shim.log"; : > "$fixture/wait.count.log"
+  env PATH="$shim_dir:$PATH" AGENT_HOME="$fixture" SCHED_DIR="$script_dir" SCHED_LOCK="$fork_lock" LOG="$fork_lock.log" STAMP=test \
+    SHIM_LOG="$fixture/wait.shim.log" COUNT_LOG="$fixture/wait.count.log" BOUND="$1" bash "$wait_probe"
+}
+zero_rc="$(run_wait 0)"; zero_shims="$(wc -l < "$fixture/wait.shim.log")"; zero_subs="$(wc -l < "$fixture/wait.count.log")"
+fork_t0=$SECONDS
+two_rc="$(run_wait 2)"; two_elapsed=$((SECONDS - fork_t0)); two_shims="$(wc -l < "$fixture/wait.shim.log")"; two_subs="$(wc -l < "$fixture/wait.count.log")"
+kill -KILL "$fork_holder" 2>/dev/null || :; wait "$fork_holder" 2>/dev/null || :
+[[ "$zero_rc" == rc=1 && "$two_rc" == rc=1 ]] || fail "a bounded ledger wait did not return 1: $zero_rc / $two_rc"
+(( two_elapsed >= 2 )) || fail 'the 2 s ledger wait returned early, so no polls were counted'
+(( two_shims == zero_shims )) || fail "a blocked ledger wait ran $((two_shims - zero_shims)) external commands over its polls"
+(( two_subs == zero_subs )) || fail "a blocked ledger wait ran $((two_subs - zero_subs)) subshells over its polls"
 
 echo 'locks-views-empty-pid.test.sh: all assertions passed'
