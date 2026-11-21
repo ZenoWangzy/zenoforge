@@ -39,7 +39,7 @@ make_n_scopes() {
 prime_cpu_sample() {
   local current=$1 previous=$2
   printf '7000 %s -\n' "$previous" > "$LUNA_SLOTS/zf-slice-cpu.sample"
-  printf 'usage_usec %s\n' "$current" > "$root/cgroup/zf.slice/cpu.stat"
+  printf 'usage_usec %s\n' "$current" > "$worker_slice/cpu.stat"
   printf '100.00 0.00\n' > "$LUNA_PROC_UPTIME"
 }
 
@@ -111,7 +111,7 @@ prime_cpu_sample 57000000 0
 if box_has_room; then
   printf 'FAIL measured 1.9 of 2 CPUs refuses another run: admitted\n'
   failures=$((failures + 1))
-elif [[ "$BOX_ROOM_WHY" == 'zf.slice cpu used 1.90/2 CPUs, est +0.25 per run' ]]; then
+elif [[ "$BOX_ROOM_WHY" == 'zf-workers.slice cpu used 1.90/2 CPUs, est +0.25 per run' ]]; then
   printf 'PASS measured 1.9 of 2 CPUs refuses another run: %s\n' "$BOX_ROOM_WHY"
 else
   printf 'FAIL measured CPU refusal names measured usage: %s\n' "$BOX_ROOM_WHY"
@@ -120,7 +120,7 @@ fi
 
 make_scopes
 rm -f -- "$LUNA_SLOTS/zf-slice-cpu.sample"
-printf 'usage_usec 0\n' > "$root/cgroup/zf.slice/cpu.stat"
+printf 'usage_usec 0\n' > "$worker_slice/cpu.stat"
 if box_has_room; then
   printf 'FAIL no previous CPU sample falls back to the flat four-scope rule: admitted\n'
   failures=$((failures + 1))
@@ -136,7 +136,7 @@ prime_cpu_sample 0 0
 if box_has_room; then
   printf 'FAIL the 0.15 CPU floor caps scopes at 13 under a 2 CPU quota: admitted\n'
   failures=$((failures + 1))
-elif [[ "$BOX_ROOM_WHY" == 'zf.slice cpu used 0.00/2 CPUs, est +0.25 per run' ]]; then
+elif [[ "$BOX_ROOM_WHY" == 'zf-workers.slice cpu used 0.00/2 CPUs, est +0.25 per run' ]]; then
   printf 'PASS the 0.15 CPU floor caps scopes at 13 under a 2 CPU quota\n'
 else
   printf 'FAIL CPU floor refusal names measured usage: %s\n' "$BOX_ROOM_WHY"
@@ -147,14 +147,39 @@ fi
 make_scopes
 prime_cpu_sample 0 0
 printf '80.00 0.00\n' > "$LUNA_PROC_UPTIME"
-printf 'usage_usec 5000000\n' > "$root/cgroup/zf.slice/cpu.stat"
+printf 'usage_usec 5000000\n' > "$worker_slice/cpu.stat"
 box_has_room || true
 printf '100.00 0.00\n' > "$LUNA_PROC_UPTIME"
-printf 'usage_usec 15000000\n' > "$root/cgroup/zf.slice/cpu.stat"
+printf 'usage_usec 15000000\n' > "$worker_slice/cpu.stat"
 if box_has_room; then
   printf 'PASS a poll before the first measurement keeps the 30 s baseline\n'
 else
   printf 'FAIL a poll before the first measurement reset the baseline: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+
+# The scheduler, batch, release and bell load in zf.slice (1.30 of 1.5 CPUs) must not close the gate: only worker use counts.
+make_n_scopes 0
+printf '150000 100000\n' > "$root/cgroup/zf.slice/cpu.max"
+prime_cpu_sample 0 0
+printf 'usage_usec 39000000\n' > "$root/cgroup/zf.slice/cpu.stat"
+if box_has_room; then
+  printf 'PASS zf.slice 1.30 of 1.5 CPUs of non-worker load with no worker admits a run\n'
+else
+  printf 'FAIL zf.slice 1.30 of 1.5 CPUs of non-worker load with no worker admits a run: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+
+# Workers using the whole 1.5 CPU budget are refused.
+make_n_scopes 3
+prime_cpu_sample 45000000 0
+if box_has_room; then
+  printf 'FAIL workers using 1.50 of 1.5 CPUs refuse another run: admitted\n'
+  failures=$((failures + 1))
+elif [[ "$BOX_ROOM_WHY" == 'zf-workers.slice cpu used 1.50/1.5 CPUs, est +0.25 per run' ]]; then
+  printf 'PASS workers using 1.50 of 1.5 CPUs refuse another run: %s\n' "$BOX_ROOM_WHY"
+else
+  printf 'FAIL workers using 1.50 of 1.5 CPUs refusal names worker usage: %s\n' "$BOX_ROOM_WHY"
   failures=$((failures + 1))
 fi
 
