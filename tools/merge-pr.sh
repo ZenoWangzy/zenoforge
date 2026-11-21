@@ -140,7 +140,7 @@ merge_pr_ci_green_check_count() {
     | ([$current[] | select(pending)] | length) as $pending | if $pending > 0 then if all($current[]; if pending then true else good end) then "pending\t\($pending)" else empty end
       elif all($current[]; good) then (any($current[]; req("select"))) as $selected | any($current[]; .__typename == "CheckRun" and .workflowName == "cli-tests") as $needs_cli
       | ([$current[] | select(.workflowName == "engine-tests" and suite)] | length) as $n | (if $suites == null then null elif $suites == 0 then 0 else [((($suites + 11) / 12) | floor), $shards] | min end) as $required
-      | if $suites != null and $selected and (not $needs_cli or any($current[]; req("cli"))) and all(range(0;$required); . as $i | any($current[]; req("suites (\($i))")))
+      | if $suites != null and $selected and (not $needs_cli or any($current[]; req("cli"))) and ($required == 0 or all(range(0;$required); . as $i | any($current[]; req("suites (\($i))"))))
         then if (not $needs_cli or any($current[]; req("cli"))) and all(range(0;$shards); . as $i | any($current[]; req("suites (\($i))"))) then "green\t\($checks|length)" else "focused\t\($n)" end else empty end else empty end
   ' <<<"$view" 2>/dev/null)" || return 1
   else count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --arg details "$with_url" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '

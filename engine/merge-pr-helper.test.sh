@@ -495,6 +495,8 @@ focused_ci_rollup() {
   ci_rollup | jq -c '[.[] | select(.name == "cla" or .name == "suites (0)" or .name == "suites (1)" or .name == "suites (2)")] + [{__typename:"CheckRun",name:"select",workflowName:"engine-tests",status:"COMPLETED",conclusion:"SUCCESS"}]'
 }
 PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '[.[] | select(.name == "cla" or .name == "select")]')"
+empty_selection_count="$(merge_pr_expected_ci_suite_count 17 "$repo" "$rsha")" || fail 'base selector failed for an empty selection'
+[[ "$empty_selection_count" == 0 ]] || fail "base selector count for an empty selection was $empty_selection_count"
 expect_receipt_merge 'focused CI with an empty suite selection'
 [[ "$(cat "$fixture/check-output")" == *'receipt: ci-focused 0 suites'* ]] || fail "empty focused CI receipt was not logged: $(cat "$fixture/check-output")"
 PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '. + [{__typename:"CheckRun",name:"cli",workflowName:"cli-tests",status:"COMPLETED",conclusion:"SUCCESS"}]')"
