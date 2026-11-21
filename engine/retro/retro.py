@@ -3,6 +3,7 @@
 # Usage: retro.py select <scratch-root> <n>            prints the chosen session keys, sorted
 #        retro.py filter <scratch-root> <keys> <raw.json> <out.json>   writes kept candidates and drop counts
 #        retro.py publish <scratch-root> <repo-root> <candidates.json> routes kept candidates
+import datetime
 import glob
 import json
 import os
@@ -123,10 +124,37 @@ def write_verify_state(out_dir, state):
             os.unlink(temp_path)
 
 
+def retro_out_dir():
+    return os.environ.get(
+        "RETRO_OUT_DIR", os.path.join(os.environ.get("HOME", "/tmp"), ".zenoforge", "retro")
+    )
+
+
 def record_candidate_issue(out_dir, issue, category, key):
     state = read_verify_state(out_dir)
     if not any(change.get("issue") == issue for change in state["changes"]):
-        state["changes"].append({"issue": issue, "category": category, "class": key})
+        state["changes"].append({
+            "issue": issue,
+            "category": category,
+            "class": key,
+            "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        write_verify_state(out_dir, state)
+
+
+def record_lesson_change(out_dir, category, key):
+    state = read_verify_state(out_dir)
+    if not any(change.get("lesson") == key for change in state["changes"]):
+        # A lesson fragment lands with no issue and no merged PR, so no merge time can
+        # date a before/after count; verify skips it by verifiable, not by absence.
+        state["changes"].append({
+            "lesson": key,
+            "category": category,
+            "class": key,
+            "verifiable": False,
+            "reason": "lesson fragment has no issue or merged PR to date a before/after window",
+            "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
         write_verify_state(out_dir, state)
 
 
@@ -192,10 +220,7 @@ def file_intake_candidate(repo, engine, candidate, key):
         match = re.search(r"(?:created \S+/issues/|commented issue #)([1-9][0-9]*)", result.stdout)
         if not match:
             raise ValueError("pipeline issue upsert returned no issue number")
-        out_dir = os.environ.get(
-            "RETRO_OUT_DIR", os.path.join(os.environ.get("HOME", "/tmp"), ".zenoforge", "retro")
-        )
-        record_candidate_issue(out_dir, int(match.group(1)), candidate["category"], key)
+        record_candidate_issue(retro_out_dir(), int(match.group(1)), candidate["category"], key)
     finally:
         os.unlink(body_path)
 
@@ -218,6 +243,7 @@ def publish_candidates(root, repo, candidates_path):
         key = candidate_class(engine, candidate["category"], event)
         if candidate["category"] == "automated-checks":
             write_lesson_fragment(repo, candidate, key)
+            record_lesson_change(retro_out_dir(), candidate["category"], key)
         else:
             file_intake_candidate(repo, engine, candidate, key)
 

@@ -11,6 +11,8 @@ import tempfile
 import retro
 
 WINDOW = 10
+# A change whose merged PR cannot be found after this long is surfaced every run, not silently skipped.
+STALE_BOUND = datetime.timedelta(days=14)
 
 
 def finished_sessions(root):
@@ -76,7 +78,35 @@ def merged_at(repo, issue):
     document = json.loads(result.stdout)
     references = document.get("closedByPullRequestsReferences", [])
     times = [reference["mergedAt"] for reference in references if reference.get("mergedAt")]
+    if times:
+        return max(times)
+    # Retro implementation PRs say "Refs #N" and do not close the issue, so they never
+    # appear in closedByPullRequestsReferences. Search merged PR bodies the same way
+    # engine/factory/feeder.sh and issue-pipeline.sh search open ones.
+    result = subprocess.run(
+        ["gh", "pr", "list", "--repo", repo, "--state", "merged",
+         "--search", f'"Refs #{issue}" in:body', "--json", "mergedAt"],
+        check=True, capture_output=True, text=True,
+    )
+    pulls = json.loads(result.stdout)
+    times = [pull["mergedAt"] for pull in pulls if pull.get("mergedAt")]
     return max(times) if times else None
+
+
+def warn_stale_change(change):
+    filed_at = change.get("filed_at")
+    if not filed_at:
+        return
+    try:
+        filed = datetime.datetime.fromisoformat(filed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    if filed.tzinfo is None:
+        filed = filed.replace(tzinfo=datetime.timezone.utc)
+    if datetime.datetime.now(datetime.timezone.utc) - filed > STALE_BOUND:
+        print(f"retro-verify: issue #{change.get('issue')} ({change.get('category')}, "
+              f"class {change.get('class')}) filed {filed_at} still has no merged PR "
+              f"after {STALE_BOUND.days} days")
 
 
 def issue_comment(repo, issue, body):
@@ -120,56 +150,69 @@ def file_retract_issue(engine, change):
         os.unlink(body_path)
 
 
+def verify_change(root, out_dir, repo, engine, state, change):
+    if not change.get("merged_at"):
+        merge_time = merged_at(repo, change["issue"])
+        if not merge_time:
+            warn_stale_change(change)
+            return
+        change["merged_at"] = merge_time
+        retro.write_verify_state(out_dir, state)
+
+    windows = session_windows(root, change["merged_at"])
+    if windows is None:
+        print(f"retro-verify: waiting for {WINDOW} retained sessions around issue #{change['issue']}")
+        return
+    before_sessions, after_sessions = windows
+    if "before_count" not in change:
+        count = count_category(root, out_dir, change["category"], before_sessions,
+                               change["merged_at"], before=True)
+        if count is None:
+            print(f"retro-verify: waiting for before-window candidates for issue #{change['issue']}")
+            return
+        change["before_sessions"] = before_sessions
+        change["before_count"] = count
+        retro.write_verify_state(out_dir, state)
+    if "after_count" not in change:
+        count = count_category(root, out_dir, change["category"], after_sessions,
+                               change["merged_at"], before=False)
+        if count is None:
+            print(f"retro-verify: waiting for after-window candidates for issue #{change['issue']}")
+            return
+        change["after_sessions"] = after_sessions
+        change["after_count"] = count
+        retro.write_verify_state(out_dir, state)
+
+    if not change.get("reported_at"):
+        body = (
+            "## Retro verification\n\n"
+            f"Target category: {change['category']}\n\n"
+            f"Merged at: {change['merged_at']}\n\n"
+            f"Before: {change['before_count']} candidate events in {len(change['before_sessions'])} sessions.\n\n"
+            f"After: {change['after_count']} candidate events in {len(change['after_sessions'])} sessions.\n"
+        )
+        issue_comment(repo, change["issue"], body)
+        change["reported_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        retro.write_verify_state(out_dir, state)
+    if change["after_count"] >= change["before_count"] and not change.get("retraction_filed_at"):
+        file_retract_issue(engine, change)
+        change["retraction_filed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        retro.write_verify_state(out_dir, state)
+
+
 def verify(root, out_dir, repo):
     engine = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    # A bad state file fails the run loudly (main returns 1); past this point a gh or
+    # read error only ends this follow-up, so the run's other results stand.
     state = retro.read_verify_state(out_dir)
     for change in state["changes"]:
-        if not change.get("merged_at"):
-            merge_time = merged_at(repo, change["issue"])
-            if not merge_time:
-                continue
-            change["merged_at"] = merge_time
-            retro.write_verify_state(out_dir, state)
-
-        windows = session_windows(root, change["merged_at"])
-        if windows is None:
-            print(f"retro-verify: waiting for {WINDOW} retained sessions around issue #{change['issue']}")
+        if change.get("verifiable") is False:
             continue
-        before_sessions, after_sessions = windows
-        if "before_count" not in change:
-            count = count_category(root, out_dir, change["category"], before_sessions,
-                                   change["merged_at"], before=True)
-            if count is None:
-                print(f"retro-verify: waiting for before-window candidates for issue #{change['issue']}")
-                continue
-            change["before_sessions"] = before_sessions
-            change["before_count"] = count
-            retro.write_verify_state(out_dir, state)
-        if "after_count" not in change:
-            count = count_category(root, out_dir, change["category"], after_sessions,
-                                   change["merged_at"], before=False)
-            if count is None:
-                print(f"retro-verify: waiting for after-window candidates for issue #{change['issue']}")
-                continue
-            change["after_sessions"] = after_sessions
-            change["after_count"] = count
-            retro.write_verify_state(out_dir, state)
-
-        if not change.get("reported_at"):
-            body = (
-                "## Retro verification\n\n"
-                f"Target category: {change['category']}\n\n"
-                f"Merged at: {change['merged_at']}\n\n"
-                f"Before: {change['before_count']} candidate events in {len(change['before_sessions'])} sessions.\n\n"
-                f"After: {change['after_count']} candidate events in {len(change['after_sessions'])} sessions.\n"
-            )
-            issue_comment(repo, change["issue"], body)
-            change["reported_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            retro.write_verify_state(out_dir, state)
-        if change["after_count"] >= change["before_count"] and not change.get("retraction_filed_at"):
-            file_retract_issue(engine, change)
-            change["retraction_filed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            retro.write_verify_state(out_dir, state)
+        try:
+            verify_change(root, out_dir, repo, engine, state, change)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"retro-verify: issue #{change.get('issue')}: {exc}; retrying next run")
+            return
 
 
 def main(argv):
