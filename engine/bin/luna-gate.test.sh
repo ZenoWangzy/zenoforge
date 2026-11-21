@@ -116,7 +116,7 @@ slice_budget_case() (
   cpu_busy() { echo 0; }
   echo $(( 2400 * 1048576 )) > "$sl/memory.current"
   if LUNA_PRIORITY=hotfix box_has_room 0; then fail 'a start with 672 MB left under the slice high was admitted'; fi
-  [[ "$BOX_ROOM_WHY" == 'worker slice 672MB left under memory.high < 1200MB worker peak backend=- source=default' ]] || fail "slice reason: $BOX_ROOM_WHY"
+  [[ "$BOX_ROOM_WHY" == 'worker slice 672MB left under memory.high < 800MB worker peak backend=- source=interim' ]] || fail "slice reason: $BOX_ROOM_WHY"
   echo $(( 1000 * 1048576 )) > "$sl/memory.current"
   box_has_room 0 || fail "a start with 2072 MB left under the slice high was refused: $BOX_ROOM_WHY"
   echo max > "$sl/memory.high"
