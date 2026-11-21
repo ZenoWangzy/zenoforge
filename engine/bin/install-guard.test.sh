@@ -45,12 +45,15 @@ refused() { # install: rc 1, message on stderr, real tool not run
   [[ ! -s $FAKE_LOG ]] || fail "$*: real tool ran"
 }
 passed() { : > "$FAKE_LOG"; "$@" || fail "$* failed"; grep -q '^REAL ' "$FAKE_LOG" || fail "$*: real tool did not run"; }
-routed() { # selected test: the configured runner gets the worktree and original argv
-  : > "$FAKE_LOG"; : > "$RUNNER_LOG"
+routed() { # selected test: the configured runner gets the worktree and original argv, one forwarded line logged
+  : > "$FAKE_LOG"; : > "$RUNNER_LOG"; local before after
+  before=$(grep -Ec '^suite-guard forwarded rc=0 secs=[0-9]+ command=' "$suite_log" 2>/dev/null || true)
   ZF_TEST_EXEC="$root/test-exec" "$@" || fail "$* did not route successfully"
   grep -Fxq "WORKTREE=$PWD" "$RUNNER_LOG" || fail "$*: runner got the wrong worktree"
   local arg; for arg in "$@"; do grep -Fxq "ARG=$arg" "$RUNNER_LOG" || fail "$*: runner missed argv $arg"; done
   ! grep -q '^REAL ' "$FAKE_LOG" || fail "$*: command ran locally"
+  after=$(grep -Ec '^suite-guard forwarded rc=0 secs=[0-9]+ command=' "$suite_log" 2>/dev/null || true)
+  [[ $after == $((before + 1)) ]] || fail "$*: did not append one forwarded line to $suite_log"
 }
 whole_suite_refused() { # suite command: rc 64, ruling printed and one refusal logged
   : > "$FAKE_LOG"; local before after rc=0
@@ -132,20 +135,49 @@ mkdir -p "$root/config"; printf '{"engine":{"test_exec":"%s"}}\n' "$root/test-ex
 (cd "$t" && : > "$RUNNER_LOG" && ZF_CONFIG_ROOT="$root/config" pnpm vitest run packages/a/x.test.ts \
   && grep -Fxq "WORKTREE=$t" "$RUNNER_LOG") || fail 'engine.test_exec config did not route the test'
 for runner_rc in 75 125; do
-  rc=0
+  rc=0 before=0 after=0
+  before=$(grep -Ec "^suite-guard forwarded rc=$runner_rc secs=[0-9]+ command=" "$suite_log" 2>/dev/null || true)
   (cd "$t" && RUNNER_RC="$runner_rc" ZF_TEST_EXEC="$root/test-exec" pnpm vitest run packages/a/x.test.ts) \
     >"$root/stdout" 2>"$root/stderr" || rc=$?
   [[ $rc == "$runner_rc" ]] || fail "runner exit $runner_rc became $rc"
   grep -Fxq "zenoforge: test host unavailable (runner exit $runner_rc); not running tests locally" "$root/stderr" \
     || fail "runner exit $runner_rc did not explain why local tests were skipped"
   [[ ! -s $FAKE_LOG ]] || fail "runner exit $runner_rc fell back to a local command"
+  after=$(grep -Ec "^suite-guard forwarded rc=$runner_rc secs=[0-9]+ command=" "$suite_log" 2>/dev/null || true)
+  [[ $after == $((before + 1)) ]] || fail "runner exit $runner_rc did not append one forwarded line to $suite_log"
 done
+rc=0 before=0 after=0
+before=$(grep -Ec '^suite-guard unavailable rc=127 command=' "$suite_log" 2>/dev/null || true)
+(cd "$t" && ZF_TEST_EXEC= pnpm vitest run packages/a/x.test.ts) >"$root/stdout" 2>"$root/stderr" || rc=$?
+[[ $rc == 127 ]] || fail "empty runner exit became $rc, want 127"
+grep -Fxq 'zenoforge: test host unavailable (runner exit 127); not running tests locally' "$root/stderr" \
+  || fail 'empty runner did not explain why local tests were skipped'
+[[ ! -s $FAKE_LOG ]] || fail 'empty runner fell back to a local command'
+after=$(grep -Ec '^suite-guard unavailable rc=127 command=' "$suite_log" 2>/dev/null || true)
+[[ $after == $((before + 1)) ]] || fail "empty runner did not append one unavailable rc=127 line to $suite_log"
 (cd "$t" && ZF_ALLOW_WHOLE_SUITE=1 ZF_TEST_EXEC="$root/test-exec" pnpm test)
 grep -q '^suite-guard allowed-by-override ' "$suite_log" || fail 'whole-suite override was not logged as allowed-by-override'
 echo "ok - configured and override test runners are honored without local fallback"
 
 (cd "$t" && whole_suite_refused pnpm test && passed pnpm build)
 echo "ok - non-test commands remain available"
+
+# 2026-11-21: a scheduler worker had the shim dir on PATH through a symlink; the guard kept that
+# spelling, found its own shim again and looped for ever (queue row 934). Same dir, any name: drop it.
+linked="$root/guard-link"; ln -s "$guard" "$linked"
+sys_path=${PATH#"$guard":}; sys_path=${sys_path#"$root/real":}
+linked_out=$(PATH="$linked:$sys_path" timeout 5 bash -c 'echo ok' 2>"$root/stderr") || fail "shim dir through a symlink: bash rc=$?, want 0"
+[[ "$linked_out" == ok ]] || fail "shim dir through a symlink: bash printed '$linked_out', want ok"
+linked_out=$(PATH="$linked:$sys_path" timeout 5 node -e 'console.log("ok")' 2>"$root/stderr") || fail "shim dir through a symlink: node rc=$?, want 0"
+[[ "$linked_out" == ok ]] || fail "shim dir through a symlink: node printed '$linked_out', want ok"
+echo "ok - a PATH entry that is the shim dir through a symlink is dropped"
+
+xdir="$root/x"; mkdir -p "$xdir"; ln -s "$guard/bash" "$xdir/bash"
+rc=0
+PATH="$guard:$xdir:$sys_path" timeout 5 bash -c 'echo ok' >"$root/stdout" 2>"$root/stderr" || rc=$?
+[[ "$rc" == 126 ]] || fail "PATH entry pointing back at this shim: rc=$rc, want 126"
+grep -q 'refusing to loop' "$root/stderr" || fail "PATH entry pointing back at this shim: no refusing-to-loop message"
+echo "ok - a lookup that still resolves to this shim stops with 126 instead of looping"
 
 for f in luna zc; do
   grep -q 'install-guard:' "$guard/../$f" || fail "bin/$f does not put install-guard first on the worker PATH"

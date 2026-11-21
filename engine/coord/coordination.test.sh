@@ -95,7 +95,17 @@ if ! sim_wait_for "$hold_ready"; then
   sim_wait_worker "$dead_worker" || :
   fail 'host A did not establish the claim before death'
 fi
-kill -KILL "$dead_worker"
+# $! is only sim_as's wrapper shell; the ready file carries the pid of the process really looping in the hold.
+hold_pid="$(<"$hold_ready")"
+[[ $hold_pid =~ ^[0-9]+$ ]] || fail "hold ready file held no pid: $hold_pid"
+sim_worker_pids+=("$hold_pid")
+kill -KILL "$dead_worker" "$hold_pid" 2>/dev/null || :
+hold_gone=0
+for ((hold_poll = 0; hold_poll < 200; hold_poll++)); do
+  kill -0 "$hold_pid" 2>/dev/null || { hold_gone=1; break; }
+  sleep 0.01
+done
+(( hold_gone == 1 )) || fail 'killing the hold worker left its real process alive past the wrapper'
 if sim_wait_worker "$dead_worker"; then fail 'plain-death worker exited before it was killed'; fi
 sim_world_advance "$((SIM_LEASE_S + 1))"
 sim_as B -- "$SIM_HARNESS_DIR/worker.sh" takeover issue-8 implement > "$SIM_WORLD/B-takeover.out" 2>&1 \
@@ -107,6 +117,31 @@ jq -e '.owner == "B" and .generation == 2 and .ticket == "issue-8"' <<< "$takeov
   || fail 'takeover did not dispatch exactly once'
 [[ $(awk '$1 == "refs/claims/issue-8" { count++ } END { print count+0 }' "$SIM_WORLD/refs.log") -eq 2 ]] \
   || fail 'bare remote did not log the initial claim and takeover update'
+
+# A hold whose release directory disappears ends by itself instead of looping for ever (11-21: an orphaned
+# hold looped at 50 wakes/s for 18 h after its test directory was deleted).
+gone_release_dir="$SIM_WORLD/vanished"
+mkdir -p "$gone_release_dir"
+gone_ready="$SIM_WORLD/held-gone"
+SIM_HOLD_READY="$gone_ready" SIM_HOLD_RELEASE="$gone_release_dir/release" \
+  sim_as A -- "$SIM_HARNESS_DIR/worker.sh" hold issue-9 implement > "$SIM_WORLD/A-hold-gone.out" 2>&1 &
+gone_worker=$!
+sim_worker_pids+=("$gone_worker")
+if ! sim_wait_for "$gone_ready"; then
+  sim_wait_worker "$gone_worker" || :
+  fail 'host A did not reach the hold loop before its release directory vanished'
+fi
+gone_pid="$(<"$gone_ready")"
+sim_worker_pids+=("$gone_pid")
+rm -rf -- "$gone_release_dir"
+gone_ended=0
+for ((gone_poll = 0; gone_poll < 200; gone_poll++)); do
+  kill -0 "$gone_pid" 2>/dev/null || { gone_ended=1; break; }
+  sleep 0.01
+done
+(( gone_ended == 1 )) || fail 'hold did not end within 2 s of losing its release directory'
+if sim_wait_worker "$gone_worker"; then fail 'hold ended with rc=0 after losing its release directory'; fi
+
 [[ ! -s $SIM_WORLD/gh.log ]] || fail "first-version cases unexpectedly called gh: $(cat "$SIM_WORLD/gh.log")"
 
-printf 'coordination.test.sh: PASS (race, status, plain death with takeover)\n'
+printf 'coordination.test.sh: PASS (race, status, plain death with takeover, hold ends when its release path vanishes)\n'

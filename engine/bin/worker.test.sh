@@ -6,20 +6,41 @@ worker_source=$(realpath "${1:-$(dirname "$0")/worker}")
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 test_root=$(mktemp -d)
 cleanup() {
-  local pid_file pid
+  local pid_file pid waited
+  local -a watched=() alive
   while IFS= read -r pid_file; do
     pid=$(cat "$pid_file" 2>/dev/null || true)
     [[ $pid =~ ^[0-9]+$ ]] || continue
     kill -TERM -- "-$pid" 2>/dev/null || true
     sleep 0.1
     kill -KILL -- "-$pid" 2>/dev/null || true
+    watched+=("$pid")
   done < <(find "$test_root" -name backend-run.pid -type f 2>/dev/null)
   for pid_file in "$test_root"/fake-remote-*/scopes/*.pid; do
     [[ -f $pid_file ]] || continue
     pid=$(cat "$pid_file" 2>/dev/null || true)
-    [[ $pid =~ ^[0-9]+$ ]] && kill -TERM "$pid" 2>/dev/null || true
+    if [[ $pid =~ ^[0-9]+$ ]] && kill -TERM "$pid" 2>/dev/null; then watched+=("$pid"); fi
   done
-  rm -rf -- "$test_root" "$test_env_root"
+  mapfile -t -O "${#watched[@]}" watched < <(jobs -p)
+  # rm once raced a process still writing under test_root (main runs 44932375273 and 44941210617: every case
+  # green, exit 1, "Directory not empty"). Wait for what was signalled and the test's own jobs first; if the
+  # retry still loses, name what is left so the next red run names the writer.
+  waited=0
+  while (( waited < 5 )); do
+    alive=()
+    for pid in "${watched[@]}"; do kill -0 "$pid" 2>/dev/null && alive+=("$pid"); done
+    ((${#alive[@]})) || break
+    watched=("${alive[@]}")
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if ! rm -rf -- "$test_root" "$test_env_root"; then
+    sleep 0.2
+    if ! rm -rf -- "$test_root" "$test_env_root"; then
+      find "$test_root" | head || true
+      exit 1
+    fi
+  fi
 }
 trap 'cleanup; rm -rf -- "$test_env_root"' EXIT
 mkdir -p "$test_root/home" "$test_root/agent-home"
@@ -27,6 +48,7 @@ export HOME="$test_root/home" AGENT_HOME="$test_root/agent-home"
 export ZF_WORKER_HOST=local
 mkdir -p "$test_root/config-root" "$test_root/lib.d"
 cp "$script_dir/../config.sh" "$test_root/config.sh"
+cp "$script_dir/../lib.d/worker-remote-handoff.sh" "$test_root/lib.d/worker-remote-handoff.sh"
 cat > "$test_root/thread-budget.sh" <<'EOF'
 agent_thread_budget() { :; }
 EOF
@@ -53,6 +75,7 @@ scratch=${WORKER_SCRATCH_ROOT:?}
 d="$scratch/luna/$key"
 mkdir -p "$d"
 if [[ $backend == luna && ${FAKE_REMOTE_LUNA:-0} == 1 ]]; then exec "$REAL_LUNA_SCRIPT" "$@"; fi
+if [[ $backend == zc && ${FAKE_REMOTE_ZC:-0} == 1 ]]; then exec "$REAL_ZC_SCRIPT" "$@"; fi
 if [[ $backend == zc ]]; then mode=${FAKE_ZC_MODE:-success}; else mode=${FAKE_LUNA_MODE:-success}; fi
 if [[ $backend == zc && ${FAKE_REAL_ZC:-0} == 1 ]]; then exec "$REAL_ZC_SCRIPT" "$@"; fi
 if [[ $backend == luna ]]; then
@@ -807,6 +830,7 @@ make_fake_remote() {
   local remote=$1
   mkdir -p "$remote/proc/pressure" "$remote/bin" "$remote/home" "$remote/scopes" "$remote/roots"
   printf '0.1 0.1 0.1 1/1 1\n' > "$remote/proc/loadavg"
+  printf 'processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3\n' > "$remote/proc/cpuinfo"
   printf 'MemAvailable: 16777216 kB\n' > "$remote/proc/meminfo"
   printf 'some avg10=10 avg60=20 avg300=20 total=1\n' > "$remote/proc/pressure/cpu"
   cat > "$test_root/bin/ssh" <<'EOF'
@@ -824,6 +848,7 @@ cd "$remote"
 export HOME="$remote/home" PATH="$remote/bin:/usr/bin:/bin"
 export ZF_WORKER_REMOTE_PROC_ROOT="$remote/proc" ZF_TEST_REMOTE_ROOT="$remote"
 export FAKE_REMOTE_CODEX_MODE="${ZF_TEST_REMOTE_CODEX_MODE:-success}"
+unset ZCODE_BIN ZF_ZCODE_BIN   # a real ssh sends no caller env: the remote side resolves its own zcode
 exec bash -c "$*"
 EOF
   chmod +x "$test_root/bin/ssh"
@@ -843,8 +868,9 @@ EOF
   cat > "$remote/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ ${1:-} != --user ]] || exit 0
 printf '%s\n' "$*" >> "$ZF_TEST_REMOTE_ROOT/systemctl.log"
+# The remote side always calls --user (its account is never root: the probe refuses uid 0).
+[[ ${1:-} != --user ]] || shift
 action=${1:-}; unit=${3:-${2:-}}; unit=${unit%.scope}
 pidfile="$ZF_TEST_REMOTE_ROOT/scopes/$unit.pid"
 case "$action" in
@@ -856,6 +882,9 @@ EOF
   cat > "$remote/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
+# The probe's backend check runs `codex login status` (worker-remote.py BACKEND_CHECKS); answer it before the
+# run-shaped parsing, or a hang-mode stub would touch the run markers and hang the check itself.
+if [[ ${1:-} == login && ${2:-} == status ]]; then exit 0; fi
 output=
 while (($#)); do
   if [[ $1 == -o && $# -gt 1 ]]; then output=$2; shift 2; else shift; fi
@@ -869,6 +898,24 @@ if [[ ${FAKE_REMOTE_CODEX_MODE:-success} == hang ]]; then
 fi
 EOF
   chmod +x "$remote/bin/systemd-run" "$remote/bin/systemctl" "$remote/bin/codex"
+  cat > "$remote/bin/zcode" <<'EOF'
+#!/usr/bin/env bash
+# The probe's cheap check runs `zcode --version` and its login check sends one tiny prompt (worker-remote.py
+# run_login_probe; a real `zcode --version` returns 0 with no login, so only a turn.completed stream proves it);
+# a real run emits the stream-json close line bin/zc turns into last.md.
+if [[ ${1:-} == --version ]]; then exit 0; fi
+prompt=
+while (($#)); do
+  if [[ $1 == --prompt && $# -gt 1 ]]; then prompt=$2; shift 2; else shift; fi
+done
+if [[ $prompt == 'Reply with exactly: ok' ]]; then
+  printf '%s\n' "$prompt" >> "$ZF_TEST_REMOTE_ROOT/zcode-probe.log"
+  printf '%s\n' '{"type":"turn.completed"}'
+  exit 0
+fi
+printf '%s\n' '{"type":"result","response":"remote zc stub ran"}'
+EOF
+  chmod +x "$remote/bin/zcode"
   cat > "$test_root/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -957,5 +1004,158 @@ env WORKER_SCRATCH_ROOT="$stop_scratch" ZF_WORKER_STOP_QUIET=0.1 ZF_TEST_WORKER_
   ZF_TEST_REMOTE_ROOT="$stop_root" PATH="$test_root/bin:/usr/bin:/bin" zf-stop remote-stop \
   > "$stop_case.stop.stdout" 2> "$stop_case.stop.stderr" || stop_rc=$?
 [[ $stop_rc == 0 && -e "$stop_root/remote-codex-stopped" ]] || fail 'zf-stop did not stop the remote run'
+assert_file_contains "$stop_root/systemctl.log" '--user stop zf-remote-'
 wait "$stop_worker_pid" 2>/dev/null || :
 printf 'PASS zf-stop stops the remote scope\n'
+
+# The probe refuses a host whose backend is unusable, whose load5 is over its core count, or whose ssh
+# user is root; choose then falls back to local (the host probe owns backend + load + root checks).
+refuse_case="$test_root/remote-probe-refuse"; refuse_root="$test_root/fake-remote-refuse"
+mkdir -p "$refuse_case"
+make_fake_remote "$refuse_root"
+refuse_choose() {
+  local name=$1 backend=$2
+  env PATH="$test_root/bin:/usr/bin:/bin" ZF_WORKER_REMOTE_ROOT="$refuse_root/roots" \
+    ZF_TEST_REMOTE_ROOT="$refuse_root" ZF_WORKER_HOST=host-a \
+    python3 "$test_root/bin/worker-remote.py" choose "$backend" > "$refuse_case/$name.out" 2> "$refuse_case/$name.err" || true
+}
+rm -f "$refuse_root/bin/zcode"
+refuse_choose missing-backend zc
+[[ $(cat "$refuse_case/missing-backend.out") == local ]] || fail 'choose did not fall back to local without zcode'
+assert_file_contains "$refuse_case/missing-backend.err" 'skipping host-a: zc backend unusable: zcode not found on the remote host'
+printf '#!/bin/sh\nexit 3\n' > "$refuse_root/bin/zcode"
+chmod +x "$refuse_root/bin/zcode"
+refuse_choose version-fails zc
+[[ $(cat "$refuse_case/version-fails.out") == local ]] || fail 'choose did not fall back to local when zcode --version fails'
+assert_file_contains "$refuse_case/version-fails.err" 'skipping host-a: zc backend unusable: timeout 10 zcode --version returned rc=3'
+make_fake_remote "$refuse_root"
+printf '9.5 9.5 9.5 1/1 1\n' > "$refuse_root/proc/loadavg"
+refuse_choose high-load zc
+[[ $(cat "$refuse_case/high-load.out") == local ]] || fail 'choose did not fall back to local above the load bound'
+assert_file_contains "$refuse_case/high-load.err" 'skipping host-a: load5 9.5 is above 4 cores x 1'
+printf '0.1 0.1 0.1 1/1 1\n' > "$refuse_root/proc/loadavg"
+mkdir -p "$refuse_root/proc/self"
+printf 'Uid:\t0\t0\t0\t0\n' > "$refuse_root/proc/self/status"
+refuse_choose root-user zc
+[[ $(cat "$refuse_case/root-user.out") == local ]] || fail 'choose did not fall back to local for a root remote user'
+assert_file_contains "$refuse_case/root-user.err" 'skipping host-a: remote user is root'
+rm -rf "$refuse_root/proc/self"
+refuse_choose admitted zc
+[[ $(cat "$refuse_case/admitted.out") == host-a ]] || fail 'choose did not select a usable host with a runnable zcode'
+assert_file_contains "$refuse_case/admitted.err" 'worker-host: selected'
+# The run-side probe (command_run, the second probe) writes its refusal to the run's placement.log too.
+printf '9.5 9.5 9.5 1/1 1\n' > "$refuse_root/proc/loadavg"
+refuse_run_rc=0
+env PATH="$test_root/bin:/usr/bin:/bin" ZF_WORKER_REMOTE_ROOT="$refuse_root/roots" \
+  ZF_TEST_REMOTE_ROOT="$refuse_root" ZF_WORKER_HOST=host-a WORKER_SCRATCH_ROOT="$refuse_case/scratch" \
+  python3 "$test_root/bin/worker-remote.py" run host-a refuse-load "$refuse_case" /dev/null '' zc \
+  >/dev/null 2>"$refuse_case/load-run.err" || refuse_run_rc=$?
+[[ $refuse_run_rc == 75 ]] || fail "load-refused run returned rc=$refuse_run_rc instead of 75"
+assert_file_contains "$refuse_case/scratch/luna/refuse-load/placement.log" \
+  'worker-host: skipping host-a: load5 9.5 is above 4 cores x 1'
+printf '0.1 0.1 0.1 1/1 1\n' > "$refuse_root/proc/loadavg"
+printf 'PASS probe refuses a missing backend, load5 over cores and a root user; choose falls back to local, and a refused run logs the reason to placement.log\n'
+
+# WORKER_BACKEND=zc with an admitted host hands off to the helper: the remote side starts bin/zc, whose
+# zcode stub result syncs back as last.md/events/rc/codex.pid beside the placement record.
+zc_remote_case="$test_root/remote-zc"; zc_remote_root="$test_root/fake-remote-zc"
+zc_scratch="$zc_remote_case/.scratch"; zc_worktree="$zc_remote_case/worktree"; zc_prompt_file="$zc_remote_case/brief.md"
+zc_home="$zc_remote_case/home"; zc_agent_home="$zc_remote_case/agent-home"
+mkdir -p "$zc_scratch/tmp" "$zc_scratch/luna" "$zc_scratch/zc-src/bin" "$zc_worktree" "$zc_home" "$zc_agent_home"
+make_fake_remote "$zc_remote_root"
+printf '#!/bin/sh\nexit 0\n' > "$zc_scratch/zc-src/bin/zcode"
+chmod +x "$zc_scratch/zc-src/bin/zcode"
+git -C "$zc_worktree" init -q
+git -C "$zc_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'remote zc brief\n' > "$zc_prompt_file"
+zc_remote_rc=0
+timeout --signal=TERM --kill-after=1 15 env ZF_WORKER_HOST=remote-one HOME="$zc_home" AGENT_HOME="$zc_agent_home" \
+  ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+  ZF_ZCODE_BIN="$zc_scratch/zc-src/bin/zcode" \
+  ZF_WORKER_REMOTE_ROOT="$zc_remote_root/roots" ZF_TEST_REMOTE_ROOT="$zc_remote_root" \
+  ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=zc \
+  WORKER_SCRATCH_ROOT="$zc_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  FAKE_REMOTE_ZC=1 REAL_ZC_SCRIPT="$script_dir/zc" \
+  bash "$worker_script" remote-zc "$zc_worktree" "$zc_prompt_file" \
+  > "$zc_remote_case.stdout" 2> "$zc_remote_case.stderr" || zc_remote_rc=$?
+[[ $zc_remote_rc == 0 ]] || fail "remote zc run returned rc=$zc_remote_rc (details: $zc_remote_case.stderr)"
+zc_dir="$zc_scratch/luna/remote-zc"
+assert_file_contains "$zc_dir/last.md" 'remote zc stub ran'
+assert_file_contains "$zc_dir/events.jsonl" '"type":"result"'
+[[ $(cat "$zc_dir/rc") == 0 && -s "$zc_dir/codex.pid" ]] || fail 'remote zc run did not sync rc and codex.pid'
+[[ $(cat "$zc_dir/remote.host") == remote-one ]] || fail 'remote zc run did not record the chosen host'
+assert_file_contains "$zc_dir/placement.log" 'worker-host: selected'
+assert_file_contains "$zc_remote_root/systemctl.log" 'set-property --runtime zf-remote.slice CPUWeight=20'
+printf 'PASS WORKER_BACKEND=zc with an admitted host hands off and starts bin/zc on the remote side\n'
+
+# `zcode --version` returns 0 on a host where zcode is installed but not logged in, so the zc probe proves the login
+# with one prompt. A stub whose prompt answers turn.failed refuses the host: the skipping line names the probe, the
+# run falls back to the local zc lane, and no zc breaker file appears (a refused probe is not a zc failure).
+login_refused_case="$test_root/zc-login-refused"; login_refused_root="$test_root/fake-remote-zc-login-refused"
+login_refused_scratch="$login_refused_case/.scratch"; login_refused_worktree="$login_refused_case/worktree"
+login_refused_prompt="$login_refused_case/brief.md"; login_refused_home="$login_refused_case/home"
+login_refused_agent_home="$login_refused_case/agent-home"
+mkdir -p "$login_refused_scratch/tmp" "$login_refused_scratch/luna" "$login_refused_scratch/zc-src/bin" \
+  "$login_refused_worktree" "$login_refused_home" "$login_refused_agent_home"
+make_fake_remote "$login_refused_root"
+cat > "$login_refused_root/bin/zcode" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${1:-} == --version ]]; then exit 0; fi
+printf '%s\n' '{"type":"turn.failed","error":{"code":"authentication_error","message":"Authentication failed (401)"}}'
+EOF
+chmod +x "$login_refused_root/bin/zcode"
+printf '#!/bin/sh\nexit 0\n' > "$login_refused_scratch/zc-src/bin/zcode"
+chmod +x "$login_refused_scratch/zc-src/bin/zcode"
+git -C "$login_refused_worktree" init -q
+git -C "$login_refused_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'refused login brief\n' > "$login_refused_prompt"
+login_refused_rc=0
+timeout --signal=TERM --kill-after=1 15 env ZF_WORKER_HOST=zc-login-refused HOME="$login_refused_home" \
+  AGENT_HOME="$login_refused_agent_home" ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" \
+  PATH="$test_root/bin:/usr/bin:/bin" ZF_ZCODE_BIN="$login_refused_scratch/zc-src/bin/zcode" \
+  ZF_WORKER_REMOTE_ROOT="$login_refused_root/roots" ZF_TEST_REMOTE_ROOT="$login_refused_root" \
+  ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=zc \
+  WORKER_SCRATCH_ROOT="$login_refused_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  FAKE_ZC_MODE=success \
+  bash "$worker_script" zc-login-refused "$login_refused_worktree" "$login_refused_prompt" \
+  > "$login_refused_case.stdout" 2> "$login_refused_case.stderr" || login_refused_rc=$?
+[[ $login_refused_rc == 0 ]] || fail "login-refused run returned rc=$login_refused_rc (details: $login_refused_case.stderr)"
+login_refused_dir="$login_refused_scratch/luna/zc-login-refused"
+[[ $(cat "$login_refused_dir/backend") == zc ]] || fail 'a refused login probe did not keep the run on the zc lane'
+assert_file_contains "$login_refused_dir/placement.log" \
+  'worker-host: skipping zc-login-refused: zcode login probe failed (turn.failed)'
+assert_file_contains "$login_refused_dir/last.md" 'success from zc'
+[[ ! -e "$login_refused_scratch/tmp/zc-breaker" ]] || fail 'a refused login probe wrote the zc breaker file'
+printf 'PASS a login probe that answers turn.failed refuses the host, runs locally and writes no breaker\n'
+
+# A passed login probe is cached per host (15 minutes): the choose probe and the run-side probe of one launch, plus
+# a whole second launch inside the window, send exactly one prompt (the stub counts every prompt it answers).
+login_ok_case="$test_root/zc-login-cache"; login_ok_root="$test_root/fake-remote-zc-login-cache"
+login_ok_scratch="$login_ok_case/.scratch"; login_ok_worktree="$login_ok_case/worktree"
+login_ok_prompt="$login_ok_case/brief.md"; login_ok_home="$login_ok_case/home"; login_ok_agent_home="$login_ok_case/agent-home"
+mkdir -p "$login_ok_scratch/tmp" "$login_ok_scratch/luna" "$login_ok_scratch/zc-src/bin" \
+  "$login_ok_worktree" "$login_ok_home" "$login_ok_agent_home"
+make_fake_remote "$login_ok_root"
+printf '#!/bin/sh\nexit 0\n' > "$login_ok_scratch/zc-src/bin/zcode"
+chmod +x "$login_ok_scratch/zc-src/bin/zcode"
+git -C "$login_ok_worktree" init -q
+git -C "$login_ok_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'cached login brief\n' > "$login_ok_prompt"
+for key in zc-login-cache-a zc-login-cache-b; do
+  login_ok_rc=0
+  timeout --signal=TERM --kill-after=1 15 env ZF_WORKER_HOST=zc-login-ok HOME="$login_ok_home" \
+    AGENT_HOME="$login_ok_agent_home" ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" \
+    PATH="$test_root/bin:/usr/bin:/bin" ZF_ZCODE_BIN="$login_ok_scratch/zc-src/bin/zcode" \
+    ZF_WORKER_REMOTE_ROOT="$login_ok_root/roots" ZF_TEST_REMOTE_ROOT="$login_ok_root" \
+    ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=zc \
+    WORKER_SCRATCH_ROOT="$login_ok_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+    FAKE_REMOTE_ZC=1 REAL_ZC_SCRIPT="$script_dir/zc" \
+    bash "$worker_script" "$key" "$login_ok_worktree" "$login_ok_prompt" \
+    > "$login_ok_case.$key.stdout" 2> "$login_ok_case.$key.stderr" || login_ok_rc=$?
+  [[ $login_ok_rc == 0 ]] || fail "cached-login run $key returned rc=$login_ok_rc (details: $login_ok_case.$key.stderr)"
+done
+[[ $(wc -l < "$login_ok_root/zcode-probe.log") == 1 ]] || fail 'the login prompt was not sent exactly once inside the cache window'
+[[ $(awk '{print $2}' "$login_ok_scratch/tmp/zc-login/zc-login-ok") == ok ]] || fail 'the passed login probe was not cached'
+assert_file_contains "$login_ok_scratch/luna/zc-login-cache-b/last.md" 'remote zc stub ran'
+assert_file_contains "$login_ok_scratch/luna/zc-login-cache-b/placement.log" 'worker-host: selected'
+printf 'PASS a passed login probe is cached: two launches, choose plus run-side probes, one prompt\n'

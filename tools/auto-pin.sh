@@ -188,6 +188,36 @@ and must be idempotent on both: row 869 needed three landing rounds for exactly 
   return 0
 }
 
+# The pin is when main's tools become the live ones, so the same moment moves the shared tool clone that sessions run tools
+# from (quick-land, test-receipt: row 887). Bounded, and log-only on error: the sync never fails, delays or undoes the pin.
+# A clone someone made dirty or committed in is left untouched and named in the alerts file, once per clone HEAD and reason.
+sync_tool_clone() { # next -> 0 always
+  local next=$1 clone head reason marker alerts
+  clone=${ZF_AUTO_PIN_TOOL_CLONE:-$HOME/.zenoforge/clones/zf-perf-rules}
+  [[ -d $clone ]] || { echo "tool-clone: $clone missing, not synced"; return 0; }
+  timeout 60 git -C "$clone" fetch -q origin main >/dev/null 2>&1 || { echo "tool-clone: fetch failed in $clone, not synced"; return 0; }
+  head=$(timeout 30 git -C "$clone" rev-parse HEAD 2>/dev/null) || { echo "tool-clone: no HEAD in $clone, not synced"; return 0; }
+  if [[ -n $(timeout 30 git -C "$clone" status --porcelain 2>/dev/null) ]]; then
+    reason=dirty
+  elif ! timeout 30 git -C "$clone" merge-base --is-ancestor "$head" "$next" >/dev/null 2>&1; then
+    reason=local-commit
+  elif timeout 60 git -C "$clone" checkout -q --detach "$next" >/dev/null 2>&1; then
+    echo "$(date -u +%H:%M:%S) TOOL-CLONE-SYNCED ${head:0:12} -> ${next:0:12} in $clone"
+    return 0
+  else
+    echo "tool-clone: checkout ${next:0:12} failed in $clone, not synced"
+    return 0
+  fi
+  echo "tool-clone: $clone stays at ${head:0:12}, $reason"
+  marker=$ZF_AUTO_PIN_HOME/auto-pin-tool-clone.alerted
+  grep -qxF "$head $reason" "$marker" 2>/dev/null && return 0
+  printf '%s %s\n' "$head" "$reason" >>"$marker" 2>/dev/null || return 0
+  alerts=${ZF_ALERTS_FILE:-$AGENT_HOME/logs/head-watch.alerts}
+  mkdir -p "$(dirname -- "$alerts")" 2>/dev/null || return 0
+  printf '%s TOOL-CLONE-STALE %s head=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$clone" "$head" "$reason" >>"$alerts"
+  return 0
+}
+
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
   local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head product_fetch_secs product_fetch_now product_fetch_last product_fetch_rc product_tries
@@ -235,10 +265,12 @@ auto_pin_pass() {
     # The PR route does not fast-forward the live checkout; the agent tick does, then converges.
     systemctl --user start --no-block vecta-agent.service 2>/dev/null || :
     echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} via-pr committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
+    sync_tool_clone "$next" || :
   elif ((rc == 0)); then
     # The live wrapper, not the VectA hook: only the wrapper records the swap that the engine canary watches.
     AGENT_HOME=$AGENT_HOME timeout 280 "$AGENT_HOME/engine-live/engine-sync.sh" --converge "$AGENT_HOME/checkout" "$AGENT_HOME" >>"$log" 2>&1 || echo "$(date -u +%H:%M:%S) CONVERGE-FAILED ${next:0:12}"  # live now, not at the next timer run
     echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
+    sync_tool_clone "$next" || :
   else
     vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
     product_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)

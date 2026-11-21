@@ -347,7 +347,7 @@ supervisor_requeue_park_failure() { supervisor_budget_park "$1" "$2" "$3" "super
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
   local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_stage issue_reason issue_repo="${REPO:-${ZF_REPO:-}}" transition_error failure
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
-  if jqf -e 'any((.history // [])[]?; (.stage | test("^review")) or .stage == "repair-delivered" or .stage == "delivered")' <<<"$u" >/dev/null \
+  if jqf -e 'any((.history // [])[]?; (.stage | test("^review")) or .stage == "repair-delivered" or .stage == "delivered" or .stage == "verdict-missing" or .stage == "review-findings-missing")' <<<"$u" >/dev/null \
      && { [[ "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]] \
        || { [[ "$(jqf -r '.lane // empty' <<<"$u")" == direct-main ]] && [[ -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; } }; then
     if supervisor_requeue_rereview "$u"; then

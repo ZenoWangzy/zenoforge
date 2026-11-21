@@ -308,6 +308,61 @@ else
   failures=$((failures + 1))
 fi
 
+# Row 894: the scheduler's run-p worker scopes record their peaks as backend sched; the dispatch hold (no backend)
+# keeps the interim 800 until 5 sched samples exist, then uses their p90 with the 512MB floor; luna/zc rows do not
+# move it and an explicit LUNA_WORKER_PEAK_MB still wins.
+rm -f -- "$store"
+for mb in 600 700 800 900; do record_peak sched "sched-peak-$mb" "$mb"; done
+read -r estimate estimate_source <<< "$(worker_peak_mb)"
+if [[ "$estimate" == 800 && "$estimate_source" == interim ]]; then
+  printf 'PASS four sched samples still hold the dispatch hold at the interim 800MB peak\n'
+else
+  printf 'FAIL dispatch hold with four sched samples: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+record_peak sched sched-peak-1000 1000
+read -r estimate estimate_source <<< "$(worker_peak_mb)"
+if [[ "$estimate" == 1000 && "$estimate_source" == measured ]]; then
+  printf 'PASS five sched samples give their own p90: the fifth of five sorted is the largest, 1000\n'
+else
+  printf 'FAIL dispatch hold with five sched samples: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+for mb in 1100 1200 1300 1400 1500; do record_peak sched "sched-peak-$mb" "$mb"; done
+record_peak zc zc-noise-peak 100
+read -r estimate estimate_source <<< "$(worker_peak_mb)"
+if [[ "$estimate" == 1400 && "$estimate_source" == measured ]]; then
+  printf 'PASS the sched p90 of ten samples is the ninth: 1400, and a zc row does not move it\n'
+else
+  printf 'FAIL dispatch hold with ten sched samples plus a zc row: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+slice_room_set 1000
+if box_has_room 0; then
+  printf 'FAIL the dispatch hold admitted at 1000MB left under a measured sched p90 of 1400\n'
+  failures=$((failures + 1))
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 1000MB left under memory.high < 1400MB worker peak backend=- source=measured' ]]; then
+  printf 'PASS the dispatch hold refusal names the measured sched p90\n'
+else
+  printf 'FAIL dispatch hold measured refusal: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+if LUNA_WORKER_PEAK_MB=700 box_has_room 0; then
+  printf 'PASS an explicit LUNA_WORKER_PEAK_MB=700 admits at 1000MB left over ten sched samples\n'
+else
+  printf 'FAIL explicit override over sched samples: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+rm -f -- "$store"
+for mb in 300 310 320 330 340; do record_peak sched "sched-peak-$mb" "$mb"; done
+read -r estimate estimate_source <<< "$(worker_peak_mb)"
+if [[ "$estimate" == 512 && "$estimate_source" == measured ]]; then
+  printf 'PASS the 340MB sched p90 of five small samples rises to the 512MB floor\n'
+else
+  printf 'FAIL floored sched estimate: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+
 # (e) a missing memory.peak at scope end records nothing and changes no exit status.
 rm -f -- "$store"
 mkdir -p "$worker_slice/luna-ended.scope" # the cgroup dir may be reaped already, or lack memory.peak
@@ -320,5 +375,56 @@ else
   printf 'FAIL missing memory.peak: rc=%s store=%s\n' "$record_rc" "$([[ -e "$store" ]] && echo present || echo absent)"
   failures=$((failures + 1))
 fi
+
+# (f) row 894: systemd reaps the cgroup the moment the run ends, so the wrapper samples memory.peak while the scoped
+# pid lives; the last sample still records after the cgroup directory is gone. No readable memory.peak at any time
+# records nothing and changes no exit status.
+rm -f -- "$store" "$root/peak-sample" "$root/peak-none"
+mkdir -p "$worker_slice/luna-live.scope"
+printf '734003200\n' > "$worker_slice/luna-live.scope/memory.peak" # 700 MB
+sleep 60 & live_pid=$!
+luna_watch_scope_peak luna-live "$live_pid" "$root/peak-sample" &
+sampler_pid=$!
+sampled=''
+for _ in {1..50}; do
+  if [[ -s "$root/peak-sample" ]]; then read -r sampled < "$root/peak-sample"; break; fi
+  sleep 0.1
+done
+if [[ "$sampled" == 734003200 ]]; then
+  printf 'PASS the sampler reads memory.peak while the scope lives\n'
+else
+  printf 'FAIL the sampler read no peak while the scope lived: %s\n' "${sampled:-none}"
+  failures=$((failures + 1))
+fi
+live_rc=0
+kill "$live_pid" 2>/dev/null || :
+wait "$live_pid" 2>/dev/null || live_rc=$?
+rm -rf -- "$worker_slice/luna-live.scope" # the cgroup dies with the run
+read -r sampled < "$root/peak-sample"
+luna_record_scope_peak luna luna-live "$sampled"
+if [[ "$live_rc" == 143 && "$(jq -s 'length == 1 and .[0].backend == "luna" and .[0].memory_peak_mb == 700' "$store" 2>/dev/null)" == true ]]; then
+  printf 'PASS a sample read while the scope lived records after the cgroup went away, run rc %s untouched\n' "$live_rc"
+else
+  printf 'FAIL the alive-read sample did not survive the cgroup: rc=%s rows=%s\n' "$live_rc" "$(jq -s length "$store" 2>/dev/null || echo none)"
+  failures=$((failures + 1))
+fi
+kill "$sampler_pid" 2>/dev/null || :
+wait "$sampler_pid" 2>/dev/null || :
+mkdir -p "$worker_slice/luna-empty.scope" # never has a readable memory.peak
+sleep 1 & live_pid=$!
+luna_watch_scope_peak luna-empty "$live_pid" "$root/peak-none" &
+sampler_pid=$!
+wait "$live_pid" # rc 0: nothing below may disturb it
+read -r unsampled < "$root/peak-none" 2>/dev/null || unsampled=''
+luna_record_scope_peak luna luna-empty "$unsampled"
+record_rc=$?
+if [[ "$record_rc" == 0 && "$(jq -s length "$store" 2>/dev/null || echo 0)" == 1 ]]; then
+  printf 'PASS no readable memory.peak at any time appends nothing and keeps exit status 0\n'
+else
+  printf 'FAIL no-peak scope: recorder rc=%s store rows=%s\n' "$record_rc" "$(jq -s length "$store" 2>/dev/null || echo '?')"
+  failures=$((failures + 1))
+fi
+kill "$sampler_pid" 2>/dev/null || :
+wait "$sampler_pid" 2>/dev/null || :
 
 (( failures == 0 )) || exit 1
