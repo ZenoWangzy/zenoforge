@@ -132,7 +132,7 @@ canary_host_conditions() {
   [[ "$psi" =~ ^[0-9]+([.][0-9]+)?$ ]] || psi=''
   threshold="${ZF_CANARY_LOAD_HOLD:-$cpus}"
   [[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]] || threshold="$cpus"
-  if [[ -n "$load5" ]] && awk -v load="$load5" -v limit="$threshold" 'BEGIN { exit !(load >= limit) }'; then
+  if [[ -n "$load5" ]] && awk -v l5="$load5" -v limit="$threshold" 'BEGIN { exit !(l5 >= limit) }'; then
     overloaded=1
   fi
   if [[ -n "$psi" ]] && awk -v pressure="$psi" 'BEGIN { exit !(pressure >= 10) }'; then
@@ -264,31 +264,31 @@ record_swap() {
 }
 
 hold_timeout() { # signature, host-condition JSON, host-load|data-only
-  local signature="$1" host="$2" reason="$3" status at load_display cpus log_once=0 tmp
+  local signature="$1" host="$2" hold_kind="$3" status at load_display cpus log_once=0 tmp
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   load_display="$(jq -r '.load5_display' <<<"$host")"
   cpus="$(jq -r '.cpus' <<<"$host")"
-  if [[ "$reason" == host-load ]] && ! jq -e --arg signature "$signature" \
+  if [[ "$hold_kind" == host-load ]] && ! jq -e --arg signature "$signature" \
     'any(.host_hold_logged_signatures[]?; . == $signature)' "$STATE" >/dev/null; then
     log_once=1
   fi
   status=held-data-only
-  [[ "$reason" == host-load ]] && status=held-host-load
+  [[ "$hold_kind" == host-load ]] && status=held-host-load
   if (( log_once )); then
     printf '[%s] CANARY-HOLD host load %s/%s on %s\n' "$at" "$load_display" "$cpus" "$signature" >> "$SCHED_LOG"
   fi
   tmp="$(mktemp "$VERSIONS/.swap-record.XXXXXX")"
-  jq --arg signature "$signature" --arg at "$at" --arg reason "$reason" --arg status "$status" \
+  jq --arg signature "$signature" --arg at "$at" --arg kind "$hold_kind" --arg status "$status" \
     --argjson host "$host" --argjson scheduler_offset "$(file_bytes "$SCHED_LOG")" \
     --argjson loop_offset "$(file_bytes "$LOOP_LOG")" \
     '.held_timeout_signatures = ((.held_timeout_signatures // []) + [$signature] | unique)
-     | .hold_evidence = ((.hold_evidence // []) + [{action:(if $reason == "host-load" then "held-host-load" else "held-data-only" end),
-         signature:$signature,observed_at:$at,reason:$reason,load5:$host.load5,cpus:$host.cpus,
+     | .hold_evidence = ((.hold_evidence // []) + [{action:(if $kind == "host-load" then "held-host-load" else "held-data-only" end),
+         signature:$signature,observed_at:$at,reason:$kind,load5:$host.load5,cpus:$host.cpus,
          memory_psi_full_avg60:$host.memory_psi_full_avg60,load_threshold:$host.load_threshold}])
      | .host_load = {load5:$host.load5,cpus:$host.cpus,memory_psi_full_avg60:$host.memory_psi_full_avg60,
          load_threshold:$host.load_threshold}
      | .status=$status | .scheduler_offset=$scheduler_offset | .loop_offset=$loop_offset
-     | if $reason == "host-load" then .host_hold_logged_signatures = ((.host_hold_logged_signatures // []) + [$signature] | unique) else . end' \
+     | if $kind == "host-load" then .host_hold_logged_signatures = ((.host_hold_logged_signatures // []) + [$signature] | unique) else . end' \
     "$STATE" > "$tmp"
   mv -f -- "$tmp" "$STATE"
 }
@@ -350,7 +350,7 @@ rollback() { # first new signature
 tick_complete() {
   [[ -r "$TICK_START" ]] || return 0
   local tmpdir start_generation start_engine_id start_autopi_target start_autopi_id current_generation status new_id current_id new_autopi_target swapped_at
-  local scheduler_offset loop_offset tick_scheduler_offset tick_done=0 first_new='' decision_host='null' decision_evidence held=0 reason
+  local scheduler_offset loop_offset tick_scheduler_offset tick_done=0 first_new='' decision_host='null' decision_evidence held=0 decision_kind
   tmpdir="$(mktemp -d "$MAC_AUTOPILOT_RUNTIME_DIR/.engine-canary-complete.XXXXXX")"
   start_generation="$(jq -r '.generation // empty' "$TICK_START")"
   start_engine_id="$(jq -r '.engine_id // empty' "$TICK_START")"
@@ -416,22 +416,22 @@ tick_complete() {
             hold_timeout "$first_new" "$decision_host" data-only
             held=1
           elif jq -e --arg signature "$first_new" 'any(.held_timeout_signatures[]?; . == $signature)' "$STATE" >/dev/null; then
-            reason=repeated-after-host-hold
-            decision_evidence="$(jq -cn --arg signature "$first_new" --arg reason "$reason" \
+            decision_kind=repeated-after-host-hold
+            decision_evidence="$(jq -cn --arg signature "$first_new" --arg kind "$decision_kind" \
               --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson host "$decision_host" \
               --slurpfile state "$STATE" \
-              '{signature:$signature,observed_at:$observed_at,reason:$reason,
+              '{signature:$signature,observed_at:$observed_at,reason:$kind,
                 baseline_signatures:$state[0].baseline_signatures,baseline_ticks:$state[0].baseline_ticks,
                 pack_change:$state[0].pack_change,
                 host_load:{load5:$host.load5,cpus:$host.cpus,memory_psi_full_avg60:$host.memory_psi_full_avg60,
                   load_threshold:$host.load_threshold}}')"
             rollback "$first_new" "$decision_evidence"
           else
-            reason=new-timeout
-            decision_evidence="$(jq -cn --arg signature "$first_new" --arg reason "$reason" \
+            decision_kind=new-timeout
+            decision_evidence="$(jq -cn --arg signature "$first_new" --arg kind "$decision_kind" \
               --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson host "$decision_host" \
               --slurpfile state "$STATE" \
-              '{signature:$signature,observed_at:$observed_at,reason:$reason,
+              '{signature:$signature,observed_at:$observed_at,reason:$kind,
                 baseline_signatures:$state[0].baseline_signatures,baseline_ticks:$state[0].baseline_ticks,
                 pack_change:$state[0].pack_change,
                 host_load:{load5:$host.load5,cpus:$host.cpus,memory_psi_full_avg60:$host.memory_psi_full_avg60,
@@ -439,10 +439,10 @@ tick_complete() {
             rollback "$first_new" "$decision_evidence"
           fi
         else
-          reason=new-signature
-          decision_evidence="$(jq -cn --arg signature "$first_new" --arg reason "$reason" \
+          decision_kind=new-signature
+          decision_evidence="$(jq -cn --arg signature "$first_new" --arg kind "$decision_kind" \
             --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --slurpfile state "$STATE" \
-            '{signature:$signature,observed_at:$observed_at,reason:$reason,
+            '{signature:$signature,observed_at:$observed_at,reason:$kind,
               baseline_signatures:$state[0].baseline_signatures,baseline_ticks:$state[0].baseline_ticks,
               pack_change:$state[0].pack_change,host_load:null}')"
           rollback "$first_new" "$decision_evidence"
