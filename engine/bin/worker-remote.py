@@ -55,12 +55,7 @@ def setting_int(name, default, minimum, maximum):
 def ssh_args(host):
     if not valid_ssh_alias(host):
         raise ValueError("worker host must be an SSH alias")
-    try:
-        connect_timeout = int(os.environ.get("ZF_WORKER_SSH_CONNECT_TIMEOUT", "15"))
-    except ValueError:
-        raise ValueError("ZF_WORKER_SSH_CONNECT_TIMEOUT must be an integer") from None
-    if not 1 <= connect_timeout <= 120:
-        raise ValueError("ZF_WORKER_SSH_CONNECT_TIMEOUT must be between 1 and 120")
+    connect_timeout = connect_timeout_seconds()
     return ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}", host]
 
 
@@ -78,9 +73,12 @@ def remote_call(host, command, timeout=None, **kwargs):
 
 def connect_timeout_seconds():
     try:
-        return int(os.environ.get("ZF_WORKER_SSH_CONNECT_TIMEOUT", "15"))
+        value = int(os.environ.get("ZF_WORKER_SSH_CONNECT_TIMEOUT", "15"))
     except ValueError:
-        return 15
+        raise ValueError("ZF_WORKER_SSH_CONNECT_TIMEOUT must be an integer") from None
+    if not 1 <= value <= 120:
+        raise ValueError("ZF_WORKER_SSH_CONNECT_TIMEOUT must be between 1 and 120")
+    return value
 
 
 def remote_probe_command(root):
