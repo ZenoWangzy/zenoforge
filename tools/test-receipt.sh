@@ -34,8 +34,9 @@ test_receipt_main() {
   fi
   "$@"
   rc=$?
+  # One record per line; readers take the last line per command, so a newline in the command text is written as \n (#1339).
   if ! mkdir -p "$git_dir/zf-test-receipts" 2>/dev/null \
-    || ! printf '%s\t%s\n' "$rc" "$*" >>"$git_dir/zf-test-receipts/$sha"; then
+    || ! printf '%s\t%s\n' "$rc" "${*//$'\n'/\\n}" >>"$git_dir/zf-test-receipts/$sha"; then
     printf 'test-receipt: cannot record a receipt under %s/zf-test-receipts\n' "$git_dir" >&2
     return 2
   fi
