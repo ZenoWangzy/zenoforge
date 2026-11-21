@@ -107,6 +107,27 @@ echo "$(jq -c . "$UNITS_ARCHIVE")" | jq -e 'any(.units[]; .id == "issue-16")' >/
 jq --argjson u "$(closed_unit 17 supervisor-cap-triage-recut 2026-01-02T00:00:00Z | jq -c '.history += [{stage:"supervisor-cap-default",at:"2026-01-02T00:00:00Z"}]')" '.units += [$u]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
 state_file 17 ready-for-agent 2026-01-02T00:10:00Z
 intake_reopen_refused_recut 17 "$AGENT_HOME/state/17.json" || fail "a cap-default recut must reopen when recut refuses"
+# 7037 shape: the existing-only pass reaches intake_recut_refused before its no-episode skip. It must restore the
+# archived stop-loss unit there, then spend that one restore if a later stop-loss is refused again.
+ix_sig=''; ix_ok=0
+declare -A ix_issue=() ix_branch=() ix_pr=() ix_ref=()
+declare -a ix_id=() ix_stage=() ix_prn=() ix_ep=() ix_prnum=() ix_iany=()
+closed_unit 7037 supervisor-budget-recut 2026-11-18T16:59:28Z | jq -s '{units:.}' > "$UNITS_ARCHIVE"
+state_file 7037 ready-for-agent 2026-11-18T17:16:21Z
+rm -f -- "$UNITS.view"
+[[ -z "$(unit_json issue-7037)" ]] || fail "fixture: issue-7037 must start archived only"
+if intake_recut_refused issue-7037; then fail "the first refused recut must restore the archived unit"; fi
+[[ "$(jq -r '.units[] | select(.id == "issue-7037") | .stage' "$UNITS")" == implement-pending ]] \
+  || fail "the existing-only recut precheck must restore issue-7037 as a new unit"
+[[ "$(jq -r '[.units[] | select(.id == "issue-7037") | .history[] | select(.stage == "supervisor-requeue")] | length' "$UNITS")" == 1 ]] \
+  || fail "the recut restore must refill the budget exactly once"
+set_unit issue-7037 '.stage = "closed" | .history += [{stage:"supervisor-budget-recut",at:"2026-11-19T04:00:00Z"}]'
+state_file 7037 ready-for-agent 2026-11-19T04:10:00Z
+intake_recut_refused issue-7037 || fail "a second refused recut must be marked spent"
+[[ "$(jq -r '.units[] | select(.id == "issue-7037") | .stage' "$UNITS")" == closed ]] \
+  || fail "the second refused recut must keep issue-7037 closed"
+[[ "$(jq -r '.units[] | select(.id == "issue-7037") | .recut_reopen_refused' "$UNITS")" == true ]] \
+  || fail "the second refused recut must persist the one-time marker"
 grep -qF '(( existing_only )) || ! intake_reopen_refused_recut' "$engine_dir/mac-autopilot/scheduler.d/intake.sh" || fail "intake call site missing"
 # Closed units under an open issue act by themselves (closed-units-auto). The exclusion is the hold, not a list of issue numbers.
 cu_unit() { # issue stage last-history-stage [extra jq]

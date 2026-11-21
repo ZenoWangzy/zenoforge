@@ -429,6 +429,32 @@ write_failure_calls_after="$(count "$blocked_by_calls")"
 [[ ! -s "$A/dep-check.cache.lock" ]] || fail 'cache lock file contains fallback records'
 unset DEP_CHECK_SECONDS
 
+# An open issue delivered by a merged implementation PR must leave the ready queue, while a session-owned state stays put.
+declare -A ISSUE_STATES=([991]=ready-for-agent [992]=on-hold [993]=ready-for-agent)
+issue_transition_calls="$fixture/merged-issue-transitions"; : > "$issue_transition_calls"
+scheduler_issue_state() { printf '{"state":"%s"}\n' "${ISSUE_STATES[$1]}"; }
+scheduler_conclude_merged_pr() {
+  printf '%s %s\n' "$1" "$2" >> "$issue_transition_calls"
+  [[ "${ISSUE_STATES[$1]}" == ready-for-agent ]] || return 1
+  ISSUE_STATES[$1]=awaiting-release
+}
+CACHE_ROWS=([991]=$'MERGED\t\tOPEN\t\t\t\t8001' [992]=$'MERGED\t\tOPEN\t\t\t\t8002' [993]=$'CLOSED\t\tCLOSED\t\t\t\t')
+printf '%s\n' "$(unit issue-991 991 parked)" "$(unit issue-992 992 supervisor-review)" "$(unit issue-993 993 blocked-external)" \
+  | jq -cs '{units:.}' > "$UNITS"
+printf '{"workers":[]}\n' > "$A/workers.json"
+reset_run; PRS='[]'; run_counted
+[[ "${ISSUE_STATES[991]}" == awaiting-release ]] || fail 'a MERGED+OPEN ready-for-agent issue must reach awaiting-release'
+[[ "${ISSUE_STATES[992]}" == on-hold ]] || fail 'a MERGED+OPEN on-hold issue must keep its state'
+[[ "$(cat "$issue_transition_calls")" == '991 8001' ]] || fail 'only the ready-for-agent issue may use the merged-PR transition'
+jqf -e '.units[] | select(.id == "issue-991") | .stage == "merged" and .history[-1].stage == "issue-merged" and .history[-1].result == "issue #991 delivered by merged PR; awaiting release"' "$UNITS" >/dev/null \
+  || fail 'the merged issue history must use the awaiting-release wording'
+grep -Fq 'unit=issue-991 issue #991 delivered by merged PR; awaiting release' "$LOG" || fail 'the merged issue log must use the awaiting-release wording'
+jqf -e '.units[] | select(.id == "issue-992") | .stage == "merged" and .awaiting_release_pending == null' "$UNITS" >/dev/null \
+  || fail 'an on-hold issue must retire its unit without a deferred state transition'
+jqf -e '.units[] | select(.id == "issue-993") | .stage == "closed" and .history[-1].stage == "issue-closed" and .history[-1].result == "issue #993 already closed on GitHub"' "$UNITS" >/dev/null \
+  || fail 'a CLOSED issue must keep the existing retirement path'
+grep -Fq 'unit=issue-993 issue #993 already closed on GitHub; retired' "$LOG" || fail 'a CLOSED issue must keep the existing log wording'
+
 # lib.sh callers have no scheduler-local A; use the repo runtime cache if no
 # scheduler runtime directory was forwarded either.
 reset_run
