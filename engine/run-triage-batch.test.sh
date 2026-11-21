@@ -590,7 +590,7 @@ assert_eq "a failing notice does not fail the conclusion" 2 "$(jq -r '.triage_so
 # issue snapshot it was made from (one pair per issue under $AGENT_HOME); a
 # later run applies an unchanged issue's pair without a model call, and drops
 # the pair when the issue changed or the pair is older than 24 hours.
-jq -n '[911001 911002 911003 911004 911005] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+jq -n '[911001, 911002, 911003, 911004, 911005] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
 echo '[]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 jq -nc --argjson issue 911001 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
@@ -661,7 +661,7 @@ assert_eq "kept pair is consumed" 0 "$(find "$AGENT_HOME/triage-kept" -name '911
 # a multi-issue batch has no valid result, the failure follows the batch, not
 # each issue: scoped backoff only, no solo retry flags.
 : > "$FAKE_GH_LOG"
-jq -n '[911101 911102 911103 911104] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+jq -n '[911101, 911102, 911103, 911104] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 jq -nc --argjson result "$VALID" --argjson invalid "$INVALID" \
   '{issue:911101,result:$result},{issue:911102,result:$invalid},{issue:911103,result:$invalid},{issue:911104,result:$invalid}' > "$FAKE_CODEX_OUTPUT"
@@ -679,14 +679,14 @@ for n in 911102 911103 911104; do
 done
 assert_eq "the one valid result still applies" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911101.json")"
 
-jq -n '[911111 911112 911113 911114] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+jq -n '[911111, 911112, 911113, 911114] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 jq -nc --argjson result "$VALID" --argjson invalid "$INVALID" \
   '{issue:911111,result:$result},{issue:911112,result:$invalid},{issue:911113,result:$result},{issue:911114,result:$result}' > "$FAKE_CODEX_OUTPUT"
 ZF_TRIAGE_TICK_ID=batch-onebad-9111 AGENT_TRIAGE_CAP=4 bash "$BATCH_SRC" --scheduled 911111 911112 911113 911114 >/dev/null 2>&1
 assert_eq "one invalid of four still gets the solo flag" true "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/911112.json")"
 
-jq -n '[911121 911122] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+jq -n '[911121, 911122] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 jq -nc --argjson result "$VALID" --argjson invalid "$INVALID" \
   '{issue:911121,result:$result},{issue:911122,result:$invalid}' > "$FAKE_CODEX_OUTPUT"
@@ -698,7 +698,7 @@ assert_eq "half failed is not more than half: the solo flag stays" true "$(jq -r
 # instead of deleted. All three records fail, so this is also a batch-level
 # failure: nobody is flagged for a solo run.
 : > "$FAKE_GH_LOG"
-jq -n '[911131 911132 911133] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+jq -n '[911131, 911132, 911133] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 ENUM_OUT="$(jq -c '.entry_surface = "Carrier Pigeon"' <<< "$VALID")"
 jq -nc --argjson enum "$ENUM_OUT" --argjson missing "$INVALID" --argjson extra "$(jq -c '. + {foo: 1}' <<< "$VALID")" \
