@@ -5,7 +5,7 @@
 set -uo pipefail
 
 test_receipt_main() {
-  local repo git_dir sha rc
+  local repo git_dir sha rc record_text
   if [[ $# -eq 0 ]]; then
     printf 'usage: tools/test-receipt.sh <command...>\n' >&2
     return 2
@@ -34,9 +34,13 @@ test_receipt_main() {
   fi
   "$@"
   rc=$?
-  # One record per line; readers take the last line per command, so a newline in the command text is written as \n (#1339).
+  # One record per line, exactly one TAB; the backslash is escaped first so different commands never share a text (#1339).
+  record_text="${*//\\/\\\\}"
+  record_text="${record_text//$'\n'/\\n}"
+  record_text="${record_text//$'\r'/\\r}"
+  record_text="${record_text//$'\t'/\\t}"
   if ! mkdir -p "$git_dir/zf-test-receipts" 2>/dev/null \
-    || ! printf '%s\t%s\n' "$rc" "${*//$'\n'/\\n}" >>"$git_dir/zf-test-receipts/$sha"; then
+    || ! printf '%s\t%s\n' "$rc" "$record_text" >>"$git_dir/zf-test-receipts/$sha"; then
     printf 'test-receipt: cannot record a receipt under %s/zf-test-receipts\n' "$git_dir" >&2
     return 2
   fi
