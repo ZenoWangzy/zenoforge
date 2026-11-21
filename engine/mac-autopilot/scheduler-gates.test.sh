@@ -1539,8 +1539,9 @@ GH_CHECKS='[{"name":"Pipeline suites","bucket":"pass"}]'; GH_MERGES=(); run_merg
 # Pipeline PRs merge independently on their own checks: no batch, no merging state, no interim-run cancel.
 gh_int_saved="$(declare -f gh)"
 gh() {
-  if [[ "$1 $2 $3 $5" == "pr view 11 mergeCommit" ]]; then echo "$M1"
-  elif [[ "$1 $2 $3 $5" == "pr view 12 mergeCommit" ]]; then echo "$M2"
+  # ${n:-}：按 head 读 check-runs 的 api 调用只有 4 个参数，set -u 下裸 $5 会炸掉整个包装
+  if [[ "${1:-} ${2:-} ${3:-} ${5:-}" == "pr view 11 mergeCommit" ]]; then echo "$M1"
+  elif [[ "${1:-} ${2:-} ${3:-} ${5:-}" == "pr view 12 mergeCommit" ]]; then echo "$M2"
   else eval "${gh_int_saved/gh ()/gh_i ()}"; gh_i "$@"; fi
 }
 units "{\"units\":[{\"id\":\"pr-11\",\"pr\":11,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]},{\"id\":\"pr-12\",\"pr\":12,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
