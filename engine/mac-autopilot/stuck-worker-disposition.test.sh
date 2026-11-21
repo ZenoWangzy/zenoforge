@@ -434,6 +434,9 @@ workers_update() {
   workers_update_orig "$@"
 }
 : > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"; : > "$A/scheduler.log"
+scorecard UNHEALTHY > "$A/node-health.json"  # section 8 removed it; the disposition is a no-op without a scorecard
+release_scheduler_lock
+acquire_scheduler_lock || fail 'probe run could not take the scheduler lock' # the phase runs under the lock in production
 pid9="$(spawn_worker pr-99-second-stuck)"
 seed_log pr-99
 write_workers "[$(mk_worker pr-99 "$pid9" "$fixture/notrepo")]"
@@ -448,6 +451,9 @@ grep -Fq -- '--hold 4371 --holder scheduler-stop-loss' "$FIXTURE_HOLD_LOG" || fa
 grep -Fq 'gh issue comment 4371' "$FIXTURE_GH_LOG" || fail "probe run: the stop-loss comment never ran lock-free"
 # 窗口里单元被别的写动过：stuck_probe 在锁外被清掉，止损的台账写跳过并记一行
 : > "$A/scheduler.log"; : > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"
+scorecard UNHEALTHY > "$A/node-health.json"
+release_scheduler_lock
+acquire_scheduler_lock || fail 'stale run could not take the scheduler lock'
 pid10="$(spawn_worker pr-88-third-stuck)"
 seed_log pr-88
 write_workers "[$(mk_worker pr-88 "$pid10" "$fixture/notrepo")]"
@@ -466,4 +472,5 @@ jq -e '.units[] | select(.id=="pr-88") | .stage == "review" and ((.history // []
   || fail "a stale stop-loss decision was written: $(jq -c '.units[] | select(.id=="pr-88")' "$UNITS")"
 grep -q 'stuck skip unit=pr-88: the unit changed while the ledger lock was released' "$A/scheduler.log" \
   || fail "the stale stop-loss skip did not log its one line"
+release_scheduler_lock
 echo "stuck-worker-disposition.test.sh: row-898 lock discipline ok"

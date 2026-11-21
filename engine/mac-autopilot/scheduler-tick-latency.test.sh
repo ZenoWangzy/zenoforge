@@ -303,9 +303,9 @@ gh_under_lock_case() (
   gh issue view 5 --json state >/dev/null 2>&1 || :
   gh issue view 6 --json state >/dev/null 2>&1 || :
   gh pr close 7 >/dev/null 2>&1 || :
-  [[ "$(grep -c '^gh-under-lock phase=' "$LOG")" == 1 ]] \
-    || { echo "one caller should log one gh-under-lock line per tick, got $(grep -c '^gh-under-lock phase=' "$LOG")" >&2; exit 1; }
-  grep -q '^gh-under-lock phase=harvest_workers caller=gh_under_lock_case args=issue view$' "$LOG" \
+  [[ "$(grep -Ec '^\[[^]]+\] gh-under-lock phase=' "$LOG")" == 1 ]] \
+    || { echo "one caller should log one gh-under-lock line per tick, got $(grep -c 'gh-under-lock phase=' "$LOG" || true)" >&2; exit 1; }
+  grep -Eq '^\[[^]]+\] gh-under-lock phase=harvest_workers caller=gh_under_lock_case args=issue view$' "$LOG" \
     || { echo "the logged line names phase, caller and the first two args: $(grep gh-under-lock "$LOG")" >&2; exit 1; }
   [[ "$(wc -l < "$gh_stub" | tr -d ' ')" == 3 ]] || { echo "default mode must still run every gh call: $(cat "$gh_stub")" >&2; exit 1; }
   tick_gh_calls_summary | grep -q '^gh_calls=3 gql=[0-9]* rest=[0-9]* gh_locked=3$' \
