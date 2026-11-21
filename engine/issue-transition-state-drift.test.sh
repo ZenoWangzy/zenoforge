@@ -64,6 +64,42 @@ LIVE_LABELS[5310]="enhancement,ready-for-human,focus"
 }
 echo 'ok - reconciled transition leaves cache and live label equal'
 
+# A failed task-state write must not stop the transition (queue row 926): the
+# record is a second copy of what the state file and the stage labels already
+# say, so the write logs one fixed line and the transition goes on to the label
+# write. The writer stub fails only the issue-transition write.
+node() {
+  case "${1:-}" in *task-state.mjs) [ "${2:-}" = write-issue-transition ] && { echo 'task-state: fixture writer failure' >&2; return 1; } ;; esac
+  command node "$@"
+}
+LIVE_LABELS[5315]="ready-for-agent"
+state_merge 5315 '{"state":"needs-advisor"}'
+ts_err="$(mktemp)"
+if ! issue_transition 5315 ready-for-human supervisor-reconcile 2>"$ts_err"; then
+  echo 'not ok - a failed task-state write stopped the transition' >&2
+  cat "$ts_err" >&2
+  exit 1
+fi
+[ "$(grep -cF 'issue_transition: task-state write failed for #5315; transition continues' "$ts_err")" -eq 1 ] || {
+  echo 'not ok - the task-state failure line is missing or not exactly once' >&2
+  cat "$ts_err" >&2
+  exit 1
+}
+[[ "$(state_read 5315 | jq -r .state)" == ready-for-human ]] || {
+  echo 'not ok - the state file does not hold the new stage after a failed task-state write' >&2
+  exit 1
+}
+grep -Fq -- '--add-label ready-for-human' "$GH_WRITES" || {
+  echo 'not ok - the label write was skipped after a failed task-state write' >&2
+  exit 1
+}
+[ ! -e "$AGENT_HOME/task-state/issue-5315/task.json" ] || {
+  echo 'not ok - the failed writer still left a task record behind' >&2
+  exit 1
+}
+unset -f node
+echo 'ok - a failed task-state write logs one line and the transition continues'
+
 # No drift -> no escape hatch: with the live label agreeing with the cache,
 # needs-advisor -> ready-for-human stays refused by ISSUE_TRANSITION_TABLE.
 LIVE_LABELS[5311]="needs-advisor"

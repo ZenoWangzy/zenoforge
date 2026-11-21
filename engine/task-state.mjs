@@ -32,7 +32,10 @@ export const taskStateRoot = (agentHome = process.env.AGENT_HOME) => {
 const recordFile = (root, id, type) => join(root, id, `${type}.json`);
 const eventsFile = (root, id) => join(root, id, 'events.jsonl');
 
-export function issueTransitionRecords({ issue, stage, reason, before = {}, after = {} }) {
+export function issueTransitionRecords({ issue, stage, reason, before, after }) {
+  // An empty state snapshot arrives from jq's --slurpfile as null, which a destructuring default does not catch.
+  before ??= {};
+  after ??= {};
   const id = `issue-${issue}`;
   const owner = textOr(after.owner_id ?? after.worker_id, id);
   const previousOwner = textOr(before.owner_id ?? before.worker_id, id);

@@ -147,3 +147,12 @@ test('duplicate conclusion records its stored advisor run decision', () => {
     record_type: 'decision', id: 'issue-993', decision: 'duplicate', by: 'advisor', why: 'duplicate of #17',
   }]);
 });
+
+test('an empty state snapshot still writes its transition records', async () => {
+  const { writeTransitionRecords } = await import('./task-state.mjs');
+  const root = join(fresh(), 'task-state');
+  const result = issueTransitionRecords({ issue: 994, stage: 'concluded', reason: 'conclude:deployed', before: null, after: null });
+  assert.equal(result.task.stage, 'concluded');
+  writeTransitionRecords(root, result);
+  assert.equal(getTask(root, 'issue-994').stage, 'concluded');
+});
