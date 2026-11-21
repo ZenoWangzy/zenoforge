@@ -111,6 +111,40 @@ dispatch_pending false >/dev/null
 [[ "$captured_type" == repair && "$captured_prompt" == *"$direct_rule"* && "$captured_head" == "$(git -C "$ROOT" rev-parse --verify HEAD)" ]] \
   || { echo 'not ok - actual direct-main repair dispatch lacks the no-tests line or source head' >&2; exit 1; }
 
+# 测试跑在哪：未配 runner 时 PR 实现 prompt 带本机测试库措辞；配了 .engine.test_exec 就改说经 runner，本机只跑 agent。
+feature_verification_prompt() { :; }
+priority_admission_has_room() { return 0; } # 本机负载不决定这个提示词测试的派发
+git -C "$ROOT" branch -f agent/issue-prompt-pr-implement HEAD
+git -C "$ROOT" branch -f agent/issue-prompt-pr-runner HEAD
+jq -n '{units:[{id:"issue-prompt-pr-implement",issue:905,task:"pr implementation",branch:"agent/issue-prompt-pr-implement",stage:"implement-pending",lane:"pr",title:"prompt fixture",history:[]}]}' > "$UNITS"
+dispatch_pending false >/dev/null
+[[ "$captured_type" == implement && "$captured_prompt" == *"本地定向验证全绿；$INTEGRATION_RULE"* ]] \
+  || { echo 'not ok - unconfigured pr implement prompt lost the local verification lead and integration rule' >&2; exit 1; }
+(
+  runner_root="$fixture/runner-config"; mkdir -p "$runner_root"
+  printf '%s\n' '{"engine":{"test_exec":"/stub/test-runner"}}' > "$runner_root/config.json"
+  export ZF_CONFIG_ROOT="$runner_root"
+  apply_test_host_rules
+  jq -n '{units:[{id:"issue-prompt-pr-runner",issue:906,task:"pr implementation",branch:"agent/issue-prompt-pr-runner",stage:"implement-pending",lane:"pr",title:"prompt fixture",history:[]}]}' > "$UNITS"
+  dispatch_pending false >/dev/null
+  [[ "$captured_type" == implement && "$captured_prompt" == *'/stub/test-runner "$(git rev-parse --show-toplevel)" -- <命令>'* ]] \
+    || { echo 'not ok - runner-configured pr implement prompt lacks the configured runner call shape' >&2; exit 1; }
+  [[ "$captured_prompt" == *'本机只跑 agent'* && "$captured_prompt" == *'test host unavailable'* && "$INTEGRATION_RULE" == *'交给 PR 的 CI 验证'* ]] \
+    || { echo 'not ok - runner-configured pr implement prompt lacks the agents-only or CI-verifies sentences' >&2; exit 1; }
+  [[ "$captured_prompt" != *'RUN_INTEGRATION=1 npx vitest run'* && "$captured_prompt" != *'本机测试库'* && "$captured_prompt" != *'本地定向验证'* ]] \
+    || { echo 'not ok - runner-configured pr implement prompt still runs tests on this host' >&2; exit 1; }
+  [[ "$CI_REPRO_RULE" == *'不在本机复现'* && "$CI_REPRO_RULE" != *'RUN_INTEGRATION=1 npx vitest run'* && "$CI_REPRO_RULE" != *'本机测试库'* ]] \
+    || { echo 'not ok - runner-configured repair hint still reproduces on this host' >&2; exit 1; }
+)
+(
+  export ZF_TEST_EXEC=/env-wins/test-runner
+  apply_test_host_rules
+  [[ "$VERIFY_LEAD_RULE" == *'/env-wins/test-runner'* ]] \
+    || { echo 'not ok - ZF_TEST_EXEC did not win over the configured runner' >&2; exit 1; }
+)
+grep -q '${CI_REPRO_RULE}' "$HERE/scheduler.d/ci-status.sh" && grep -q '${CI_REPRO_RULE}' "$HERE/scheduler.d/merge-lane.sh" \
+  || { echo 'not ok - ci repair hints no longer interpolate the shared reproduction rule' >&2; exit 1; }
+
 # A direct-main unit still dispatches if its mocked worktree has no readable HEAD.
 missing_head_root="$fixture/no-head-worktree"
 mkdir -p "$missing_head_root"
