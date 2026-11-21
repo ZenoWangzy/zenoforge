@@ -1194,8 +1194,8 @@ SO_FIXTURE='[
 so_roadmap_line="$(grep -F -A1 'ROADMAP_TRIAGE_CANDIDATES="$(jq' "$PIPELINE_SRC" | tail -n 1)"
 so_roadmap="${so_roadmap_line#*\'}"; so_roadmap="${so_roadmap%\' <<<*}"
 so_legacy="$(awk '/^elif ! NEEDS_TRIAGE_IDS=/{f=1;next} f && /^  . <<< /{exit} f' "$PIPELINE_SRC")"
-so_advisor_line="$(grep -F -A1 -- '--label needs-advisor --state open \' "$PIPELINE_SRC" | tail -n 1)"
-so_advisor="${so_advisor_line#*\'}"; so_advisor="${so_advisor%\'\)\"; then}"
+so_advisor_line="$(grep -F -- '|| ! NEEDS_ADVISOR_IDS="$(jq -r' "$PIPELINE_SRC")"
+so_advisor="${so_advisor_line#*\'}"; so_advisor="${so_advisor%\' <<<*}"
 assert_eq "roadmap needs-triage selector skips session-owned tickets" $'1\n3' \
   "$(jq -r --argjson lane_labels "$SO_LANES" "$so_roadmap | .[].number" <<< "$SO_FIXTURE")"
 assert_eq "legacy needs-triage selector skips session-owned tickets" $'1\n3' \
