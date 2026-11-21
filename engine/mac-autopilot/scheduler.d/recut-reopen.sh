@@ -24,7 +24,7 @@ intake_reopen_refused_recut() { # issue state-file → 0 when the issue's single
 # intake.sh's existing-only walk checks this before its no-episode skip. Let that path run the same one-time restore;
 # otherwise an archived recut unit is skipped before the full candidate walk can see or note it.
 intake_recut_refused() { # unit id → true only when this unit's refused recut restore is spent
-  local id="$1" i issue state_file
+  local id="$1" i issue issue_state_path
   if intake_index_load; then
     [[ -n "${ix_ref[$id]:-}" ]] && return 0
     for i in "${!ix_id[@]}"; do
@@ -37,8 +37,8 @@ intake_recut_refused() { # unit id → true only when this unit's refused recut 
   fi
   [[ "$id" =~ ^issue-([1-9][0-9]*)$ ]] || return 1
   issue="${BASH_REMATCH[1]}"
-  state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$issue.json"
-  intake_reopen_refused_recut "$issue" "$state_file" && return 1
+  issue_state_path="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$issue.json"
+  intake_reopen_refused_recut "$issue" "$issue_state_path" && return 1
   if intake_index_load; then [[ -n "${ix_ref[$id]:-}" ]]; return; fi
   jqf -e --arg id "$id" 'any(.units[]; .id == $id and .stage == "closed" and .recut_reopen_refused == true)' "$(intake_units_view)" >/dev/null
 }
