@@ -172,9 +172,75 @@ aged_pr_close() { # prn branch age behind class reason [new-issue] → 0 关闭�
   say "aged PR#$prn ($branch): ${class} — ${reason}${m:+; reopened as #${m}}"
   return 0
 }
+aged_pr_row_revalidate() { # 锁释放过之后（yield 或分类让锁）重取：PR 行未变、live_prs 重读；1 = 这一行跳过
+  pr_json="$(tick_prs)" || return 1
+  jqf -e --argjson p "$prn" --arg branch "$branch" --arg head "$head" --arg created "$created" \
+    'any(.[]; .number==$p and .baseRefName=="main" and .headRefName==$branch and .headRefOid==$head and .createdAt==$created)' \
+    <<<"$pr_json" >/dev/null || return 1
+  live_prs="$(jqf -c --argjson cut "$((NOW_EPOCH - AGED_PR_AGE_SECONDS))" '[.units[]
+      | select(.pr != null and (.stage | IN("merged","closed") | not))
+      | select(((.supervisor_owned // false) == true) or (([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut)) | .pr]' <(units_history_doc))"
+  return 0
+}
+aged_pr_classify() { # 一个超龄候选的只读慢分类（gh issue view / git cherry / merge-tree / diff / cat-file / gh pr view），
+  # 由 phase_yield_lock_batch 放到台账锁外跑（#541：这串 git/gh 曾在锁内占 770s，补派 15 分钟拿不到锁）；
+  # 结论写 action/close_class/close_reason（与意图摘要），动作由调用方重取锁并重校验后在锁内执行。
+  # 中间层 phase_yield_lock_batch 自带 local rc，这里的草稿变量必须 local，别把它的 rc 写花。
+  local rc mt plus total files f missing file_total issue_json pr_json_meta
+  action="" close_class="" close_reason=""
+  # 原 ticket 已关闭：意图已有结局，这个 PR 不再承载活的东西。
+  if [[ -n "$n" ]]; then
+    issue_json="$(gh issue view "$n" --json state,title,body 2>/dev/null)" || { say "aged PR#$prn: issue #$n unreadable; retry next round"; return 0; }
+    if [[ "$(jqf -r .state <<<"$issue_json")" == CLOSED ]]; then
+      action=close close_class="已在 main" close_reason="原 ticket #$n 已关闭，此 PR 不再承载活的意图"
+      return 0
+    fi
+  fi
+  if ! git -C "$ROOT" rev-parse -q --verify "$head^{commit}" >/dev/null 2>&1; then
+    say "aged PR#$prn: head $head not fetchable; retry next round"; return 0
+  fi
+  plus="$(git -C "$ROOT" cherry "$main_ref" "$head" 2>/dev/null | grep -c '^+' || true)"
+  total="$(git -C "$ROOT" cherry "$main_ref" "$head" 2>/dev/null | grep -c '^[-+]' || true)"
+  if [[ "$plus" == 0 && "$total" -gt 0 ]]; then
+    action=close close_class="已在 main" close_reason="$total 个提交的 patch-id 全部与 main 等价"
+    return 0
+  fi
+  rc=0
+  mt="$(git -C "$ROOT" merge-tree --write-tree "$main_ref" "$head" 2>/dev/null)" || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    if [[ "$(head -1 <<<"$mt")" == "$(git -C "$ROOT" rev-parse -q --verify "$main_ref^{tree}" 2>/dev/null)" ]]; then
+      action=close close_class="已在 main" close_reason="改动与 main 合并后的树与 main 完全一致，改动已经存在"
+      return 0
+    fi
+  else
+    files="$(git -C "$ROOT" diff --name-only "$(git -C "$ROOT" merge-base "$main_ref" "$head" 2>/dev/null)" "$head" 2>/dev/null)"
+    file_total="$(grep -c . <<<"$files" || true)"
+    missing=0
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      git -C "$ROOT" cat-file -e "$main_ref:$f" 2>/dev/null || missing=$((missing + 1))
+    done <<<"$files"
+    if (( file_total > 0 && missing == file_total )); then
+      action=close close_class="已过时" close_reason="改动的 $file_total 个文件在 main 上已全部删除"
+      return 0
+    fi
+    # 冲突只说明 main 动了，不说明意图过时：落到下方「仍需要」按原意图重开。
+  fi
+  # 仍需要：按原意图在新 main 上开新 ticket，旧 PR 关闭。
+  if [[ -n "$n" ]]; then
+    intent_title="$(jqf -r .title <<<"$issue_json")"; intent_body="$(jqf -r .body <<<"$issue_json")"
+  else
+    pr_json_meta="$(jqf -c --argjson pr "$prn" '[.[] | select(.number == $pr) | {title,body}][0] // empty' <<<"$pr_json")"
+    [[ -n "$pr_json_meta" ]] || pr_json_meta="$(gh pr view "$prn" --json title,body 2>/dev/null)" || { say "aged PR#$prn: pr view failed; retry next round"; return 0; }
+    intent_title="$(jqf -r .title <<<"$pr_json_meta")"; intent_body="$(jqf -r .body <<<"$pr_json_meta")"
+  fi
+  action=reopen
+  return 0
+}
 aged_pr_lifecycle() {
-  local last pr_json rows prn branch head created created_epoch age behind n issue_json intent_title intent_body pr_json_meta
-  local live_prs mt rc plus total files f missing file_total done_n=0 left=0 max="${AGED_PR_MAX:-6}" main_ref="refs/remotes/origin/main" m_url m_n
+  local last pr_json rows prn branch head created created_epoch age behind n intent_title intent_body
+  local action close_class close_reason
+  local live_prs done_n=0 left=0 max="${AGED_PR_MAX:-6}" main_ref="refs/remotes/origin/main" m_url m_n
   [[ "${HANDOFF_CENSUS_PARTIAL:-0}" != 1 ]] || { say "aged PR lifecycle deferred: handoff PR census unavailable"; return 0; }
   last="$(cat "$A/aged-pr-check.epoch" 2>/dev/null || true)"
   [[ "$last" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last < ${AGED_PR_CHECK_SECONDS:-3600} )) && return 0
@@ -194,13 +260,7 @@ aged_pr_lifecycle() {
   while IFS=$'\t' read -r prn branch head created; do
     scheduler_lock_yield_between_units || return 1
     if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
-      pr_json="$(tick_prs)" || continue
-      jqf -e --argjson p "$prn" --arg branch "$branch" --arg head "$head" --arg created "$created" \
-        'any(.[]; .number==$p and .baseRefName=="main" and .headRefName==$branch and .headRefOid==$head and .createdAt==$created)' \
-        <<<"$pr_json" >/dev/null || continue
-      live_prs="$(jqf -c --argjson cut "$((NOW_EPOCH - AGED_PR_AGE_SECONDS))" '[.units[]
-          | select(.pr != null and (.stage | IN("merged","closed") | not))
-          | select(((.supervisor_owned // false) == true) or (([.history[]?.at // empty | try fromdateiso8601 catch 0] | max // 0) > $cut)) | .pr]' <(units_history_doc))"
+      aged_pr_row_revalidate || continue
     fi
     [[ "$prn" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]] || continue
     jq -e --argjson p "$prn" 'index($p) != null' <<<"$live_prs" >/dev/null && continue
@@ -215,52 +275,17 @@ aged_pr_lifecycle() {
     fi
     if (( age <= AGED_PR_AGE_SECONDS )) && [[ "${behind:-0}" -le $AGED_PR_BEHIND_COMMITS ]]; then continue; fi
     if (( done_n >= max )); then left=$((left + 1)); continue; fi
-    # 原 ticket 已关闭：意图已有结局，这个 PR 不再承载活的东西。
-    if [[ -n "$n" ]]; then
-      issue_json="$(gh issue view "$n" --json state,title,body 2>/dev/null)" || { say "aged PR#$prn: issue #$n unreadable; retry next round"; continue; }
-      if [[ "$(jqf -r .state <<<"$issue_json")" == CLOSED ]]; then
-        aged_pr_close "$prn" "$branch" "$age" "${behind:-?}" "已在 main" "原 ticket #$n 已关闭，此 PR 不再承载活的意图" "" || continue
-        done_n=$((done_n + 1)); continue
-      fi
-    fi
-    if ! git -C "$ROOT" rev-parse -q --verify "$head^{commit}" >/dev/null 2>&1; then
-      say "aged PR#$prn: head $head not fetchable; retry next round"; continue
-    fi
-    plus="$(git -C "$ROOT" cherry "$main_ref" "$head" 2>/dev/null | grep -c '^+' || true)"
-    total="$(git -C "$ROOT" cherry "$main_ref" "$head" 2>/dev/null | grep -c '^[-+]' || true)"
-    if [[ "$plus" == 0 && "$total" -gt 0 ]]; then
-      aged_pr_close "$prn" "$branch" "$age" "${behind:-?}" "已在 main" "$total 个提交的 patch-id 全部与 main 等价" "" || continue
+    # 只读慢分类让开台账锁（phase_yield_lock_batch，与 mark_supervisor_owned_units 同一个让锁窗口），重取后先按
+    # yielded 分支同款重校验，动作（开新票/关旧票/关 PR/台账写）全部回到锁内。
+    phase_yield_lock_batch aged_pr_classify || return 1
+    phase_mark aged_pr_lifecycle
+    aged_pr_row_revalidate || continue
+    jq -e --argjson p "$prn" 'index($p) != null' <<<"$live_prs" >/dev/null && continue
+    if [[ "$action" == close ]]; then
+      aged_pr_close "$prn" "$branch" "$age" "${behind:-?}" "$close_class" "$close_reason" "" || continue
       done_n=$((done_n + 1)); continue
     fi
-    rc=0
-    mt="$(git -C "$ROOT" merge-tree --write-tree "$main_ref" "$head" 2>/dev/null)" || rc=$?
-    if [[ $rc -eq 0 ]]; then
-      if [[ "$(head -1 <<<"$mt")" == "$(git -C "$ROOT" rev-parse -q --verify "$main_ref^{tree}" 2>/dev/null)" ]]; then
-        aged_pr_close "$prn" "$branch" "$age" "${behind:-?}" "已在 main" "改动与 main 合并后的树与 main 完全一致，改动已经存在" "" || continue
-        done_n=$((done_n + 1)); continue
-      fi
-    else
-      files="$(git -C "$ROOT" diff --name-only "$(git -C "$ROOT" merge-base "$main_ref" "$head" 2>/dev/null)" "$head" 2>/dev/null)"
-      file_total="$(grep -c . <<<"$files" || true)"
-      missing=0
-      while IFS= read -r f; do
-        [[ -n "$f" ]] || continue
-        git -C "$ROOT" cat-file -e "$main_ref:$f" 2>/dev/null || missing=$((missing + 1))
-      done <<<"$files"
-      if (( file_total > 0 && missing == file_total )); then
-        aged_pr_close "$prn" "$branch" "$age" "${behind:-?}" "已过时" "改动的 $file_total 个文件在 main 上已全部删除" "" || continue
-        done_n=$((done_n + 1)); continue
-      fi
-      # 冲突只说明 main 动了，不说明意图过时：落到下方「仍需要」按原意图重开。
-    fi
-    # 仍需要：按原意图在新 main 上开新 ticket，旧 PR 关闭。
-    if [[ -n "$n" ]]; then
-      intent_title="$(jqf -r .title <<<"$issue_json")"; intent_body="$(jqf -r .body <<<"$issue_json")"
-    else
-      pr_json_meta="$(jqf -c --argjson pr "$prn" '[.[] | select(.number == $pr) | {title,body}][0] // empty' <<<"$pr_json")"
-      [[ -n "$pr_json_meta" ]] || pr_json_meta="$(gh pr view "$prn" --json title,body 2>/dev/null)" || { say "aged PR#$prn: pr view failed; retry next round"; continue; }
-      intent_title="$(jqf -r .title <<<"$pr_json_meta")"; intent_body="$(jqf -r .body <<<"$pr_json_meta")"
-    fi
+    [[ "$action" == reopen ]] || continue
     m_url="$(scheduler_auto_filed_issue_create --title "重做（旧 PR #${prn}）：${intent_title}" \
       --body "$(aged_pr_ticket_body "$prn" "$branch" "$age" "${behind:-?}" "$n" "$intent_title" "$intent_body")" \
       --label ready-for-agent 2>/dev/null)" || { say "aged PR#$prn: new ticket create failed; retry next round"; continue; }
