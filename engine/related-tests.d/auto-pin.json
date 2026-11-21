@@ -1,0 +1,3 @@
+{
+  "tools/auto-pin.sh": ["engine/auto-pin.test.sh"]
+}
