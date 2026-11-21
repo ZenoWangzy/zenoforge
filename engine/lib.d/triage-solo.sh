@@ -88,6 +88,12 @@ triage_solo_count_result_failure() {
   fi
   [ "$solo_result_failures" -ge 2 ] || return 1
   conclude_run "$n" not-completed "two solo triage result failures; the last one: $reason" || true
+  # Row 897 round 2: the conclusion is pipeline state, but the supervisor
+  # learns the issue left the queue through the engine's existing notice
+  # path (quarantine.sh's quarantine_supervisor_notice). A failed notice
+  # never undoes or fails the conclusion.
+  quarantine_supervisor_notice triage solo-concluded "issue=#$n reason=$reason" \
+    || echo "run-triage-batch: #$n conclusion notice failed; the conclusion stands" >&2
   echo "run-triage-batch: #$n hit the solo retry cap of two result failures; it does not return to a queue" >&2
   return 0
 }
