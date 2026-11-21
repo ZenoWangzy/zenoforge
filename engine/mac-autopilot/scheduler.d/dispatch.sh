@@ -1,4 +1,10 @@
 
+# Start-silent breaker (queue row 935): a worker counts once it is this many minutes old, the newest TRIP silent ones open it,
+# and while open one start per PROBE_MINUTES is let through.
+WORKER_START_SILENT_MINUTES="${WORKER_START_SILENT_MINUTES:-5}"
+WORKER_START_SILENT_TRIP="${WORKER_START_SILENT_TRIP:-3}"
+WORKER_START_SILENT_PROBE_MINUTES="${WORKER_START_SILENT_PROBE_MINUTES:-15}"
+
 capture_worker_stdout_report() { # report-path command...
   local report="$1" partial="${1}.partial" status=0
   shift
@@ -33,6 +39,68 @@ scheduler_clear_canary_after_failed_start() (
   state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)'
 )
 
+# Start-silent breaker: when the TRIP newest implement/repair/supervise workers (started at least MINUTES ago, after the floor)
+# all wrote 0 bytes, starts are broken. Hold every start except one probe per PROBE_MINUTES (only a probe shows a fixed build a
+# first byte). A new engine build sets a floor, so the old build's workers stop counting. Returns 1 = hold. The signal is read
+# once per scheduler process; the state file $A/start-silent-breaker.json carries engine, floor, open time, alert and probe.
+start_silent_breaker() { # worker-type
+  local type="$1" file="$A/start-silent-breaker.json" now now_iso build stored floor opened alerted last_probe next tmp cutoff row log started bytes probe_epoch line closed_log="" decide=0
+  local -a rows=()
+  now="$(date +%s)"; now_iso="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
+  build="$(readlink -f -- "${ZF_ENGINE_DIR:-$ROOT/engine}" 2>/dev/null)" || build=""
+  build="${build:+$(basename -- "$(dirname -- "$build")")}"; build="${build:-unknown}"
+  stored="$(jqf -r '.engine // empty' "$file" 2>/dev/null)" || stored=""
+  floor="$(jqf -r '.floor // empty' "$file" 2>/dev/null)" || floor=""
+  opened="$(jqf -r '.opened_at // empty' "$file" 2>/dev/null)" || opened=""
+  alerted="$(jqf -r '.alerted // false' "$file" 2>/dev/null)" || alerted=false
+  last_probe="$(jqf -r '.last_probe // empty' "$file" 2>/dev/null)" || last_probe=""
+  if [[ -n "$stored" && "$stored" != "$build" ]]; then floor="$now_iso"; opened=""; alerted=false; last_probe=""; fi
+  if [[ -z "${START_SILENT_DONE:-}" ]]; then
+    START_SILENT_DONE=1; START_SILENT_OPEN=false
+    cutoff="$(date -u -d "@$((now - WORKER_START_SILENT_MINUTES * 60))" +%Y-%m-%dT%H:%M:%SZ)"
+    mapfile -t rows < <(jqf -r --arg cutoff "$cutoff" --arg floor "$floor" --argjson trip "$WORKER_START_SILENT_TRIP" '
+      [(.workers // [])[] | select(.type == "implement" or .type == "repair" or .type == "supervise")
+        | select((.started // "") <= $cutoff and (.started // "") >= $floor)]
+      | sort_by(.started // "") | reverse | .[0:$trip][] | "\(.log // "-")\t\(.started // "-")"' "$WORKERS" 2>/dev/null || true)
+    if (( WORKER_START_SILENT_TRIP > 0 && ${#rows[@]} >= WORKER_START_SILENT_TRIP )); then
+      START_SILENT_OPEN=true
+      for row in "${rows[@]}"; do
+        log="${row%%$'\t'*}"
+        if ! bytes="$(stat -c %s -- "$SUP/$log" 2>/dev/null)"; then START_SILENT_OPEN=false; break; fi
+        if [[ "$bytes" != 0 ]]; then START_SILENT_OPEN=false; closed_log="$log"; break; fi
+      done
+    fi
+    if [[ "$START_SILENT_OPEN" == true ]]; then
+      START_SILENT_N=${#rows[@]}; START_SILENT_FIRST="${rows[-1]%%$'\t'*}"; START_SILENT_SINCE="${rows[-1]#*$'\t'}"
+    fi
+  fi
+  if [[ "${START_SILENT_OPEN:-false}" == true ]]; then
+    [[ -n "$opened" ]] || opened="$now_iso"
+    if [[ "$alerted" != true ]]; then
+      line="[$STAMP] WORKER-START-SILENT engine=$build silent=$START_SILENT_N first_log=$START_SILENT_FIRST since=$START_SILENT_SINCE dispatch held, probe every $WORKER_START_SILENT_PROBE_MINUTES min"
+      mkdir -p -- "$A/alerts"; printf '%s\n' "$line" >> "$A/alerts/slo.md"; say "$line"; alerted=true
+    fi
+    decide=1
+    if [[ "$type" == implement || "$type" == repair || "$type" == supervise ]]; then
+      probe_epoch="$(date -u -d "$last_probe" +%s 2>/dev/null)" || probe_epoch=0
+      if [[ -z "$last_probe" ]] || (( now - probe_epoch >= WORKER_START_SILENT_PROBE_MINUTES * 60 )); then decide=0; last_probe="$now_iso"; fi
+    fi
+  elif [[ -n "$opened" ]]; then
+    if [[ -n "$closed_log" ]]; then say "start-silent-breaker closed: $closed_log has output"; else say "start-silent-breaker closed"; fi
+    opened=""; alerted=false; last_probe=""
+  fi
+  if [[ "${START_SILENT_OPEN:-false}" == true || -n "$floor" ]]; then
+    next="$(jqf -cn --arg engine "$build" --arg floor "$floor" --arg opened "$opened" --argjson alerted "$alerted" --arg last_probe "$last_probe" \
+      '{engine:$engine,floor:$floor,opened_at:$opened,alerted:$alerted,last_probe:$last_probe}')"
+    if [[ "$next" != "$(jqf -c . "$file" 2>/dev/null)" ]]; then
+      tmp="$(mktemp "$A/.start-silent.XXXXXX")" && printf '%s\n' "$next" > "$tmp" && mv -f -- "$tmp" "$file"
+    fi
+  else
+    rm -f -- "$file"
+  fi
+  return "$decide"
+}
+
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word install_guard_path worker_exit_file
   local -a launcher=() worker_env=() launch_command=()
@@ -41,6 +109,8 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     expected_session_id="$(jqf -r '.incident_report_resume_session_id // empty' <<<"$worker_context")"
   fi
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
+  # Start-silent breaker (queue row 935): before any claim, guard-file or other state write.
+  start_silent_breaker "$type" || { say "dispatch held unit=$unit reason=start-silent-breaker"; return 1; }
   # Same install-guard PATH shim the session workers run behind (bin/zc, bin/luna): every dispatched model
   # worker gets it (queue row 906), whatever the provider, so an unsafe install or a whole-suite test run is
   # refused and a configured test goes to the test host instead of this host. Review workers share it: git has
