@@ -421,6 +421,7 @@ harvest_probe_case() (
   printf '{"units":[{"id":"issue-9","stage":"review","history":[]}]}' > "$UNITS"
   jq -n '{workers:[{pid:999999998,unit:"issue-9",type:"review",provider:"codex",log:"worker9.log",report:"report9.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
   harvest_worker_collect() {
+    if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then collect_held=$((collect_held + 1)); else collect_free=$((collect_free + 1)); fi
     harvest_worker_collect_orig "$@"
     # a concurrent harvest station marked the row while the ledger lock was released
     jq '(.workers[] | select(.unit=="issue-9") | .harvested) = true' "$WORKERS" > "$WORKERS.p" && mv "$WORKERS.p" "$WORKERS"
