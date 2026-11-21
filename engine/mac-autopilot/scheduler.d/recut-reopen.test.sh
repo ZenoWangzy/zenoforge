@@ -109,6 +109,9 @@ state_file 17 ready-for-agent 2026-01-02T00:10:00Z
 intake_reopen_refused_recut 17 "$AGENT_HOME/state/17.json" || fail "a cap-default recut must reopen when recut refuses"
 # 7037 shape: the existing-only pass reaches intake_recut_refused before its no-episode skip. It must restore the
 # archived stop-loss unit there, then spend that one restore if a later stop-loss is refused again.
+ix_sig=''; ix_ok=0
+declare -A ix_issue=() ix_branch=() ix_pr=() ix_ref=()
+declare -a ix_id=() ix_stage=() ix_prn=() ix_ep=() ix_prnum=() ix_iany=()
 closed_unit 7037 supervisor-budget-recut 2026-11-18T16:59:28Z | jq -s '{units:.}' > "$UNITS_ARCHIVE"
 state_file 7037 ready-for-agent 2026-11-18T17:16:21Z
 rm -f -- "$UNITS.view"

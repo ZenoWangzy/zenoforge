@@ -2382,7 +2382,7 @@ rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
 units '{"units":[{"id":"issue-98","issue":98,"stage":"blocked-external","blocked_on":3122,"history":[]},{"id":"issue-99","issue":99,"stage":"blocked-external","blocked_on":3123,"history":[]}]}'
 : > "$fixture/dep-query"
 gh() { case "$1 $2" in "api graphql") printf '%s' "$*" > "$fixture/dep-query"
-    jq -r "${@: -1}" <<<'{"data":{"repository":{"i3122":{"state":"OPEN","labels":{"nodes":[{"name":"bug"}]}},"p3122":{"totalCount":1},"i3123":{"state":"OPEN","labels":{"nodes":[]}},"p3123":{"totalCount":0}}}}' ;;
+    jq -r "${@: -1}" <<<'{"data":{"repository":{"i3122":{"state":"OPEN","labels":{"nodes":[{"name":"bug"}]}},"p3122":{"nodes":[{"number":31220}]},"i3123":{"state":"OPEN","labels":{"nodes":[]}},"p3123":{"nodes":[]}}}}' ;;
   *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
 rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
 grep -q 'headRefName: \"agent/issue-3122\", states: MERGED' "$fixture/dep-query" || grep -q 'headRefName: "agent/issue-3122", states: MERGED' "$fixture/dep-query" || fail "dependency query does not ask for the predecessor's merged PR: $(cat "$fixture/dep-query")"
@@ -2390,7 +2390,7 @@ grep -q 'headRefName: \"agent/issue-3122\", states: MERGED' "$fixture/dep-query"
 # awaiting-release means the blocker's PR merged and only the release is pending: it counts as delivered, whatever the PR branch is called
 units '{"units":[{"id":"issue-1915","issue":1915,"stage":"blocked-external","blocked_on":5491,"history":[]},{"id":"issue-1916","issue":1916,"stage":"blocked-external","blocked_on":5492,"history":[]}]}'
 gh() { case "$1 $2" in "api graphql")
-    jq -r "${@: -1}" <<<'{"data":{"repository":{"i5491":{"state":"OPEN","labels":{"nodes":[{"name":"awaiting-release"}]}},"p5491":{"totalCount":0},"i5492":{"state":"OPEN","labels":{"nodes":[{"name":"bug"}]}},"p5492":{"totalCount":0}}}}' ;;
+    jq -r "${@: -1}" <<<'{"data":{"repository":{"i5491":{"state":"OPEN","labels":{"nodes":[{"name":"awaiting-release"}]}},"p5491":{"nodes":[]},"i5492":{"state":"OPEN","labels":{"nodes":[{"name":"bug"}]}},"p5492":{"nodes":[]}}}}' ;;
   *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;; esac; }
 rm -f "$A/dep-check.epoch"; release_dependency_blocks || :
 [[ "$(field issue-1915 .stage):$(field issue-1916 .stage)" == "implement-pending:blocked-external" ]] || fail "awaiting-release blocker did not release its dependent, or a plain open one did ($(field issue-1915 .stage) $(field issue-1916 .stage))"
