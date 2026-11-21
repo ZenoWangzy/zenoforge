@@ -20,7 +20,9 @@ export REPO="test/repo"
 export ZF_REPO="$REPO"
 mkdir -p "$HOME/wt" "$AGENT_HOME/state" "$AGENT_HOME/night"
 jq -n '{founder_login:"maintainer"}' > "$AGENT_HOME/recipients.json"
-for n in 910301 910302 910303 910401 910504 910505 910506 910507 910508 910509 910703 910901 910903 910904; do
+for n in 910301 910302 910303 910401 910504 910505 910506 910507 910508 910509 910703 910901 910903 910904 \
+  911001 911002 911003 911004 911005 911101 911102 911103 911104 911111 911112 911113 911114 911121 911122 \
+  911131 911132 911133 911141 911501 911502 911503 911511 911512 911531; do
   if [ -e "$HOME/wt/triage-$n" ]; then
     echo "run-triage-batch.test: refusing to overwrite existing worktree $HOME/wt/triage-$n" >&2
     exit 2
@@ -32,7 +34,7 @@ cleanup() {
   if [ -e "$ZF_REPO_DIR/.git" ]; then
     while IFS= read -r worktree; do
       case "$worktree" in
-        "$HOME/wt/triage-batch-run-"*|"$HOME/wt/triage-910301"|"$HOME/wt/triage-910302"|"$HOME/wt/triage-910303"|"$HOME/wt/triage-910401"|"$HOME/wt/triage-910504"|"$HOME/wt/triage-910505"|"$HOME/wt/triage-910506"|"$HOME/wt/triage-910507"|"$HOME/wt/triage-910508"|"$HOME/wt/triage-910509"|"$HOME/wt/triage-910703"|"$HOME/wt/triage-910901"|"$HOME/wt/triage-910903"|"$HOME/wt/triage-910904")
+        "$HOME/wt/triage-batch-run-"*|"$HOME/wt/triage-911"*|"$HOME/wt/triage-910301"|"$HOME/wt/triage-910302"|"$HOME/wt/triage-910303"|"$HOME/wt/triage-910401"|"$HOME/wt/triage-910504"|"$HOME/wt/triage-910505"|"$HOME/wt/triage-910506"|"$HOME/wt/triage-910507"|"$HOME/wt/triage-910508"|"$HOME/wt/triage-910509"|"$HOME/wt/triage-910703"|"$HOME/wt/triage-910901"|"$HOME/wt/triage-910903"|"$HOME/wt/triage-910904")
           git -C "$ZF_REPO_DIR" worktree remove --force "$worktree" >/dev/null 2>&1 || true
           ;;
       esac
@@ -118,6 +120,24 @@ case "$1 ${2:-}" in
     view_count="$(cat "$view_count_file" 2>/dev/null || echo 0)"
     view_count=$((view_count + 1))
     printf '%s\n' "$view_count" > "$view_count_file"
+    fail_from="$(cat "${FAKE_GH_LOG}.view-fail-from.$n" 2>/dev/null || echo 0)"
+    case "$fail_from" in ''|*[!0-9]*) fail_from=0 ;; esac
+    if [ "$fail_from" -gt 0 ] && [ "$view_count" -ge "$fail_from" ]; then
+      echo "run-triage-batch.test: fake gh issue view #$n fails (view $view_count >= $fail_from)" >&2
+      exit 1
+    fi
+    # Queue row 919 fixture: hold one issue's apply-time reread (view >= 2)
+    # while the gate file exists; the marker tells the test the batch is
+    # inside that view, mid-apply. The cap keeps a lost test from hanging.
+    if [ "$view_count" -ge 2 ] && [ "${FAKE_GH_VIEW_HANG_ISSUE:-}" = "$n" ] \
+      && [ -n "${FAKE_GH_VIEW_HANG_MARKER:-}" ] && [ -e "${FAKE_GH_VIEW_HANG_GATE:-}" ]; then
+      printf 'view hang\n' > "$FAKE_GH_VIEW_HANG_MARKER"
+      hang_waits=0
+      while [ -e "$FAKE_GH_VIEW_HANG_GATE" ] && [ "$hang_waits" -lt 600 ]; do
+        sleep 0.1
+        hang_waits=$((hang_waits + 1))
+      done
+    fi
     if [ "${FAKE_ON_HOLD_ISSUE:-}" = "$n" ]; then
       labels='[{"name":"needs-triage"},{"name":"enhancement"},{"name":"on-hold"}]'
     fi
@@ -387,6 +407,45 @@ assert_eq "deferred issue receives no GitHub mutation" 0 "$(wc -l < "$FAKE_GH_LO
 assert_eq "legacy freshness deferral initializes bounded start time" true \
   "$(jq -e '.triage_freshness_deferred_since_epoch > 0' "$AGENT_HOME/state/910504.json" >/dev/null && echo true || echo false)"
 
+# Queue row 897 (2026-11-21): the batch reads the index and leaves refreshing
+# to the per-tick refresh unit. gitnexus_refresh_index_once opens
+# $AGENT_HOME/gitnexus-analyze.lock on every call, fresh index or not, so the
+# lock staying absent is the proof that the batch never called it.
+: > "$FAKE_CODEX_ARGS"
+rm -f "$AGENT_HOME/gitnexus-analyze.lock"
+jq -n --arg sha "$(git -C "$ZF_REPO_DIR" rev-parse origin/main)" \
+  --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{lastCommit:$sha,indexedAt:$at}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
+jq -nc --argjson issue 910510 --argjson result "$VALID" '{issue:$issue,result:$result}' \
+  > "$FAKE_CODEX_OUTPUT"
+FRESH_NO_REFRESH_OUTPUT="$(bash "$BATCH_SRC" --scheduled 910510 2>&1)"
+assert_eq "fresh index reaches the model call" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_not_contains "fresh index run never reports unconfirmed freshness" "$FRESH_NO_REFRESH_OUTPUT" \
+  'freshness not confirmed'
+assert_eq "fresh index opens no GitNexus refresh lock" false \
+  "$(test -e "$AGENT_HOME/gitnexus-analyze.lock" && echo true || echo false)"
+assert_contains "prompt states what the freshness check verified" "$(cat "$FAKE_PROMPT_CAPTURE")" \
+  'at most 60 minutes old and at most 20 commits behind origin/main'
+assert_not_contains "prompt no longer claims a batch inline refresh" "$(cat "$FAKE_PROMPT_CAPTURE")" \
+  'refreshed once for the batch'
+
+# A stale index keeps the not-confirmed branch exactly as before, and also
+# never calls the refresh helper itself.
+: > "$FAKE_CODEX_ARGS"
+rm -f "$AGENT_HOME/gitnexus-analyze.lock"
+printf '%s\n' '{"lastCommit":"stale"}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
+jq -n --arg updated_at "$TEST_UPDATED_AT" \
+  '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at}' \
+  > "$AGENT_HOME/state/910511.json"
+STALE_NO_REFRESH_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910511 2>&1)"
+assert_contains "stale index still takes the not-confirmed branch" "$STALE_NO_REFRESH_OUTPUT" \
+  'all candidates still require the same unconfirmed L2 freshness'
+assert_eq "stale index defers the issue without a model call" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_eq "stale index opens no GitNexus refresh lock either" false \
+  "$(test -e "$AGENT_HOME/gitnexus-analyze.lock" && echo true || echo false)"
+assert_eq "stale index still advances the freshness retry deadline" true \
+  "$(jq -e --argjson now "$(date +%s)" '.triage_retry_after_epoch > $now' "$AGENT_HOME/state/910511.json" >/dev/null && echo true || echo false)"
+
 # Three failed analyze runs clear the dead wait. Batch re-admits the unchanged
 # issue, while the per-issue apply path keeps its L2 gate closed and records why.
 : > "$FAKE_CODEX_ARGS"
@@ -537,12 +596,15 @@ assert_eq "solo valid record clears the solo failure counter" 0 "$(jq -r '.triag
 # The second solo result failure goes through the terminal path, not back to
 # a queue: conclude_run is stubbed so the call itself is the assertion. The
 # helper is sourced from its module, never extracted by text range
-# (source-extract ratchet).
+# (source-extract ratchet). Round 2 also sends one supervisor notice beside
+# the conclusion; a failing notice must not undo or fail it.
 SOLO_CONCLUDE_LOG="$TEST_ROOT/solo-conclude.log"
+SOLO_NOTICE_LOG="$TEST_ROOT/solo-notice.log"
 SOLO_FAIL_STATE="$TEST_ROOT/solo-fail-state.json"
 jq -n '{triage_solo_result_failures:1}' > "$SOLO_FAIL_STATE"
 (
   conclude_run() { printf 'conclude_run %s %s %s\n' "$1" "$2" "$3" >> "$SOLO_CONCLUDE_LOG"; }
+  quarantine_supervisor_notice() { printf 'notice %s %s %s\n' "$1" "$2" "$3" >> "$SOLO_NOTICE_LOG"; }
   state_read() { cat "$SOLO_FAIL_STATE"; }
   state_merge() { local merged; merged="$(jq "$2" "$SOLO_FAIL_STATE")" && printf '%s\n' "$merged" > "$SOLO_FAIL_STATE"; }
   INCLUDED_IDS=(910902)
@@ -552,8 +614,273 @@ jq -n '{triage_solo_result_failures:1}' > "$SOLO_FAIL_STATE"
 )
 assert_contains "second solo result failure calls conclude_run" "$(cat "$SOLO_CONCLUDE_LOG")" \
   'conclude_run 910902 not-completed two solo triage result failures'
+assert_contains "second solo result failure sends one supervisor notice" "$(cat "$SOLO_NOTICE_LOG")" \
+  'notice triage solo-concluded issue=#910902'
+assert_contains "the notice names the last failure reason" "$(cat "$SOLO_NOTICE_LOG")" \
+  'reason=invalid triage.schema.json record (Codex exit 0)'
 assert_eq "second solo failure leaves no retry-alone flag" false "$(jq -r '.triage_batch_retry_alone // false' "$SOLO_FAIL_STATE")"
 assert_eq "second solo failure records the solo result failure cap" 2 "$(jq -r '.triage_solo_result_failures // 0' "$SOLO_FAIL_STATE")"
+
+jq -n '{triage_solo_result_failures:1}' > "$SOLO_FAIL_STATE"
+: > "$SOLO_CONCLUDE_LOG"
+(
+  conclude_run() { printf 'conclude_run %s %s %s\n' "$1" "$2" "$3" >> "$SOLO_CONCLUDE_LOG"; }
+  quarantine_supervisor_notice() { echo "notice delivery failed" >&2; return 1; }
+  state_read() { cat "$SOLO_FAIL_STATE"; }
+  state_merge() { local merged; merged="$(jq "$2" "$SOLO_FAIL_STATE")" && printf '%s\n' "$merged" > "$SOLO_FAIL_STATE"; }
+  INCLUDED_IDS=(910905)
+  declare -A SOLO_RETRY_AT_START=([910905]=1)
+  STATUS=0
+  triage_solo_count_result_failure 910905 "invalid triage.schema.json record (Codex exit 0)"
+)
+assert_contains "a failing notice still concludes the issue" "$(cat "$SOLO_CONCLUDE_LOG")" \
+  'conclude_run 910905 not-completed two solo triage result failures'
+assert_eq "a failing notice does not fail the conclusion" 2 "$(jq -r '.triage_solo_result_failures // 0' "$SOLO_FAIL_STATE")"
+
+# Queue row 897, round 2: a valid result whose apply failed is kept with the
+# issue snapshot it was made from (one pair per issue under $AGENT_HOME); a
+# later run applies an unchanged issue's pair without a model call, and drops
+# the pair when the issue changed or the pair is older than 24 hours.
+jq -n '[911001, 911002, 911003, 911004, 911005] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+echo '[]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson issue 911001 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
+printf '2\n' > "${FAKE_GH_LOG}.view-fail-from.911001"
+set +e
+KEPT_FAIL_OUTPUT="$(ZF_TRIAGE_TICK_ID=kept-fail-911001 bash "$BATCH_SRC" --scheduled 911001 2>&1)"
+KEPT_FAIL_STATUS=$?
+set -e
+assert_eq "apply failure does not fail the batch" 0 "$KEPT_FAIL_STATUS"
+assert_contains "apply failure is reported" "$KEPT_FAIL_OUTPUT" 'Apply failed'
+assert_eq "apply failure keeps one result file" 1 "$(find "$AGENT_HOME/triage-kept" -name '911001-*.result.json' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "apply failure keeps the snapshot beside it" 1 "$(find "$AGENT_HOME/triage-kept" -name '911001-*.snapshot.json' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "kept pair name carries the issue number and a UTC stamp" 1 \
+  "$(ls "$AGENT_HOME/triage-kept" 2>/dev/null | grep -cE '^911001-[0-9]{8}T[0-9]{6}Z[.]result[.]json$')"
+assert_eq "apply failure sets no retry-alone flag" false "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/911001.json")"
+assert_eq "apply failure adds no solo result counter" 0 "$(jq -r '.triage_solo_result_failures // 0' "$AGENT_HOME/state/911001.json")"
+
+rm -f "${FAKE_GH_LOG}.view-fail-from.911001"
+: > "$FAKE_CODEX_ARGS"
+KEPT_APPLY_OUTPUT="$(ZF_TRIAGE_TICK_ID=kept-apply-911001 bash "$BATCH_SRC" --scheduled 911001 2>&1)"
+assert_contains "unchanged issue applies its kept result" "$KEPT_APPLY_OUTPUT" 'applied its kept result without a model call'
+assert_contains "run with only kept results ends without a model call" "$KEPT_APPLY_OUTPUT" 'no model call'
+assert_eq "kept-result apply makes no model call" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_eq "kept result applies the verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911001.json")"
+assert_eq "successful kept apply deletes the pair" 0 "$(find "$AGENT_HOME/triage-kept" -name '911001-*' 2>/dev/null | wc -l | tr -d ' ')"
+
+jq -nc --argjson issue 911002 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
+printf '2\n' > "${FAKE_GH_LOG}.view-fail-from.911002"
+ZF_TRIAGE_TICK_ID=kept-fail-911002 bash "$BATCH_SRC" --scheduled 911002 >/dev/null 2>&1
+assert_eq "changed-issue case first keeps its pair" 1 "$(find "$AGENT_HOME/triage-kept" -name '911002-*.result.json' | wc -l | tr -d ' ')"
+rm -f "${FAKE_GH_LOG}.view-fail-from.911002"
+jq -n '{number:911002,title:"batch fixture",body:"fixture body",author:{login:"testuser"},comments:[],createdAt:"2026-01-01T00:00:00Z",updatedAt:"2026-01-02T00:00:00Z",state:"OPEN",labels:[{name:"needs-triage"},{name:"priority:high"}]}' \
+  > "$TEST_ROOT/changed-issue.json"
+: > "$FAKE_CODEX_ARGS"
+KEPT_CHANGED_OUTPUT="$(FAKE_ISSUE_JSON_FILE="$TEST_ROOT/changed-issue.json" FAKE_ISSUE_JSON_NUMBER=911002 \
+  ZF_TRIAGE_TICK_ID=kept-changed-911002 bash "$BATCH_SRC" --scheduled 911002 2>&1)"
+assert_contains "changed issue discards the kept pair" "$KEPT_CHANGED_OUTPUT" 'no longer matches the issue'
+assert_eq "changed issue deletes the pair" 0 "$(find "$AGENT_HOME/triage-kept" -name '911002-*' | wc -l | tr -d ' ')"
+assert_eq "changed issue is triaged by the model" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+
+jq -nc --argjson issue 911003 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
+printf '2\n' > "${FAKE_GH_LOG}.view-fail-from.911003"
+ZF_TRIAGE_TICK_ID=kept-fail-911003 bash "$BATCH_SRC" --scheduled 911003 >/dev/null 2>&1
+touch -d '25 hours ago' "$AGENT_HOME/triage-kept"/911003-*.result.json "$AGENT_HOME/triage-kept"/911003-*.snapshot.json
+rm -f "${FAKE_GH_LOG}.view-fail-from.911003"
+: > "$FAKE_CODEX_ARGS"
+KEPT_EXPIRED_OUTPUT="$(ZF_TRIAGE_TICK_ID=kept-expired-911003 bash "$BATCH_SRC" --scheduled 911003 2>&1)"
+assert_contains "expired pair is discarded" "$KEPT_EXPIRED_OUTPUT" 'older than 24 hours'
+assert_eq "expired pair is deleted" 0 "$(find "$AGENT_HOME/triage-kept" -name '911003-*' | wc -l | tr -d ' ')"
+assert_eq "expired pair sends the issue back to the model" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+
+jq -nc --argjson result "$VALID" '{issue:911004,result:$result},{issue:911005,result:$result}' > "$FAKE_CODEX_OUTPUT"
+printf '2\n' > "${FAKE_GH_LOG}.view-fail-from.911004"
+ZF_TRIAGE_TICK_ID=kept-fail-911004 bash "$BATCH_SRC" --scheduled 911004 911005 >/dev/null 2>&1
+assert_eq "only the failing issue keeps a pair" 1 "$(find "$AGENT_HOME/triage-kept" -name '911004-*.result.json' | wc -l | tr -d ' ')"
+assert_eq "the other issue applied normally" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911005.json")"
+rm -f "${FAKE_GH_LOG}.view-fail-from.911004"
+jq -nc --argjson issue 911005 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
+: > "$FAKE_CODEX_ARGS"
+KEPT_MIXED_OUTPUT="$(ZF_TRIAGE_TICK_ID=kept-mixed bash "$BATCH_SRC" --scheduled 911004 911005 2>&1)"
+assert_contains "mixed batch applies the kept pair" "$KEPT_MIXED_OUTPUT" '#911004 applied its kept result without a model call'
+assert_contains "the model batch holds only the other issue" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #911005'
+assert_not_contains "kept-pair issue leaves the model batch" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #911004'
+assert_eq "mixed batch still calls the model once" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_eq "kept pair is consumed" 0 "$(find "$AGENT_HOME/triage-kept" -name '911004-*' | wc -l | tr -d ' ')"
+
+# Queue row 919: a valid result is kept the moment it passes the schema
+# check, before the first apply starts, and is deleted only after its own
+# issue applies. The fake gh holds the first issue's apply-time reread on a
+# gate file; the batch runs in its own session, so one TERM to the process
+# group ends the wrapper, its apply and the fake gh together, the way the
+# unit timeout's TERM reached the whole unit on 2026-11-21 17:42Z.
+HANG_MARKER="$TEST_ROOT/view-hang.marker"
+HANG_GATE="$TEST_ROOT/view-hang.gate"
+jq -n '[911501, 911502, 911503] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+echo '[]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" '{issue:911501,result:$result},{issue:911502,result:$result},{issue:911503,result:$result}' > "$FAKE_CODEX_OUTPUT"
+rm -f "$HANG_MARKER"
+: > "$HANG_GATE"
+set +e
+FAKE_GH_VIEW_HANG_ISSUE=911501 FAKE_GH_VIEW_HANG_MARKER="$HANG_MARKER" FAKE_GH_VIEW_HANG_GATE="$HANG_GATE" \
+  setsid bash "$BATCH_SRC" --scheduled 911501 911502 911503 >"$TEST_ROOT/killed-run.out" 2>&1 &
+KILLED_PID=$!
+hang_waits=0
+while [ ! -s "$HANG_MARKER" ] && [ "$hang_waits" -lt 600 ]; do
+  sleep 0.1
+  hang_waits=$((hang_waits + 1))
+done
+kill -TERM -- "-$KILLED_PID"
+wait "$KILLED_PID"
+KILLED_STATUS=$?
+set -e
+hang_waits=0
+while kill -0 -- "-$KILLED_PID" 2>/dev/null && [ "$hang_waits" -lt 100 ]; do
+  sleep 0.1
+  hang_waits=$((hang_waits + 1))
+done
+assert_eq "a killed batch leaves no process behind" false \
+  "$(kill -0 -- "-$KILLED_PID" 2>/dev/null && echo true || echo false)"
+for n in 911501 911502 911503; do
+  assert_eq "killed batch kept #$n's valid result before its apply finished" 1 \
+    "$(find "$AGENT_HOME/triage-kept" -name "$n-*.result.json" 2>/dev/null | wc -l | tr -d ' ')"
+  assert_eq "killed batch kept #$n's snapshot beside the result" 1 \
+    "$(find "$AGENT_HOME/triage-kept" -name "$n-*.snapshot.json" 2>/dev/null | wc -l | tr -d ' ')"
+done
+rm -f "$HANG_GATE"
+: > "$FAKE_CODEX_ARGS"
+set +e
+KEPT_RESUME_OUTPUT="$(ZF_TRIAGE_TICK_ID=kept-resume-9115 bash "$BATCH_SRC" --scheduled 911501 911502 911503 2>&1)"
+KEPT_RESUME_STATUS=$?
+set -e
+assert_eq "resumed run exits cleanly" 0 "$KEPT_RESUME_STATUS"
+assert_contains "resumed run names how many issues it served from kept pairs" "$KEPT_RESUME_OUTPUT" \
+  '3 issue(s) served from kept pairs left by an earlier run that did not finish'
+assert_contains "resumed run applies every kept pair without a model call" "$KEPT_RESUME_OUTPUT" 'no model call'
+assert_eq "resumed run never invokes the model" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_eq "resumed run consumes every kept pair" 0 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911501-*' -o -name '911502-*' -o -name '911503-*' \) 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "resumed run applies the interrupted issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911501.json")"
+assert_eq "resumed run applies an unreached issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911502.json")"
+
+# Before the first apply finishes, every valid result of the batch is
+# already on disk; a run whose applies all succeed leaves no pair behind.
+jq -n '[911511, 911512] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" '{issue:911511,result:$result},{issue:911512,result:$result}' > "$FAKE_CODEX_OUTPUT"
+rm -f "$HANG_MARKER"
+: > "$HANG_GATE"
+set +e
+FAKE_GH_VIEW_HANG_ISSUE=911511 FAKE_GH_VIEW_HANG_MARKER="$HANG_MARKER" FAKE_GH_VIEW_HANG_GATE="$HANG_GATE" \
+  setsid bash "$BATCH_SRC" --scheduled 911511 911512 >"$TEST_ROOT/held-run.out" 2>&1 &
+HELD_PID=$!
+hang_waits=0
+while [ ! -s "$HANG_MARKER" ] && [ "$hang_waits" -lt 600 ]; do
+  sleep 0.1
+  hang_waits=$((hang_waits + 1))
+done
+set -e
+assert_eq "every valid result is kept before the first apply finishes" 2 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911511-*.result.json' -o -name '911512-*.result.json' \) 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "both snapshots sit beside the kept results" 2 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911511-*.snapshot.json' -o -name '911512-*.snapshot.json' \) 2>/dev/null | wc -l | tr -d ' ')"
+rm -f "$HANG_GATE"
+set +e
+wait "$HELD_PID"
+HELD_STATUS=$?
+set -e
+assert_eq "held batch finishes cleanly once the gate opens" 0 "$HELD_STATUS"
+assert_contains "held batch applied both records" "$(cat "$TEST_ROOT/held-run.out")" 'applied 2 valid result(s)'
+assert_eq "a run where every apply succeeds leaves no pair" 0 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911511-*' -o -name '911512-*' \) 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "held batch applied the hung issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911511.json")"
+assert_eq "held batch applied the queued issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911512.json")"
+
+# An invalid record never becomes a kept pair; it still goes to triage-invalid.
+jq -n '[911531] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson issue 911531 --argjson invalid "$INVALID" '{issue:$issue,result:$invalid}' > "$FAKE_CODEX_OUTPUT"
+ZF_TRIAGE_TICK_ID=kept-invalid-911531 bash "$BATCH_SRC" --scheduled 911531 >/dev/null 2>&1
+assert_eq "invalid record is kept for diagnosis, not as a pair" 1 \
+  "$(find "$AGENT_HOME/triage-invalid" -name '911531-*.json' | wc -l | tr -d ' ')"
+assert_eq "invalid record leaves no kept pair" 0 \
+  "$(find "$AGENT_HOME/triage-kept" -name '911531-*' 2>/dev/null | wc -l | tr -d ' ')"
+
+# Queue row 897, round 2: when the model call exited 0 and more than half of
+# a multi-issue batch has no valid result, the failure follows the batch, not
+# each issue: scoped backoff only, no solo retry flags.
+: > "$FAKE_GH_LOG"
+jq -n '[911101, 911102, 911103, 911104] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" --argjson invalid "$INVALID" \
+  '{issue:911101,result:$result},{issue:911102,result:$invalid},{issue:911103,result:$invalid},{issue:911104,result:$invalid}' > "$FAKE_CODEX_OUTPUT"
+set +e
+BATCH_LEVEL_OUTPUT="$(AGENT_TRIAGE_CAP=4 ZF_TRIAGE_TICK_ID=batch-level-9111 bash "$BATCH_SRC" --scheduled 911101 911102 911103 911104 2>&1)"
+BATCH_LEVEL_STATUS=$?
+set -e
+assert_eq "mostly-failed batch exits cleanly" 0 "$BATCH_LEVEL_STATUS"
+assert_contains "mostly-failed batch logs the batch-level line with both numbers" "$BATCH_LEVEL_OUTPUT" \
+  'batch-level failure: 3 of 4 included issues have no valid result'
+for n in 911102 911103 911104; do
+  assert_eq "batch-level failure flags #$n for no solo retry" false "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/$n.json")"
+  assert_eq "batch-level failure still backs off #$n" true "$(jq -e --argjson now "$(date +%s)" '.model_failure_backoff.until_epoch > $now' "$AGENT_HOME/state/$n.json" >/dev/null && echo true || echo false)"
+  assert_eq "batch-level backoff names the batch result caller" run-triage-batch:triage-result "$(jq -r '.model_failure_backoff.caller' "$AGENT_HOME/state/$n.json")"
+done
+assert_eq "the one valid result still applies" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911101.json")"
+
+jq -n '[911111, 911112, 911113, 911114] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" --argjson invalid "$INVALID" \
+  '{issue:911111,result:$result},{issue:911112,result:$invalid},{issue:911113,result:$result},{issue:911114,result:$result}' > "$FAKE_CODEX_OUTPUT"
+ZF_TRIAGE_TICK_ID=batch-onebad-9111 AGENT_TRIAGE_CAP=4 bash "$BATCH_SRC" --scheduled 911111 911112 911113 911114 >/dev/null 2>&1
+assert_eq "one invalid of four still gets the solo flag" true "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/911112.json")"
+
+jq -n '[911121, 911122] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" --argjson invalid "$INVALID" \
+  '{issue:911121,result:$result},{issue:911122,result:$invalid}' > "$FAKE_CODEX_OUTPUT"
+ZF_TRIAGE_TICK_ID=batch-half-9111 bash "$BATCH_SRC" --scheduled 911121 911122 >/dev/null 2>&1
+assert_eq "half failed is not more than half: the solo flag stays" true "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/911122.json")"
+
+# Queue row 897, round 2: a schema failure names the first failing path and
+# why, and the invalid record is kept under $AGENT_HOME/triage-invalid
+# instead of deleted. All three records fail, so this is also a batch-level
+# failure: nobody is flagged for a solo run.
+: > "$FAKE_GH_LOG"
+jq -n '[911131, 911132, 911133] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+ENUM_OUT="$(jq -c '.entry_surface = "Carrier Pigeon"' <<< "$VALID")"
+jq -nc --argjson enum "$ENUM_OUT" --argjson missing "$INVALID" --argjson extra "$(jq -c '. + {foo: 1}' <<< "$VALID")" \
+  '{issue:911131,result:$enum},{issue:911132,result:$missing},{issue:911133,result:$extra}' > "$FAKE_CODEX_OUTPUT"
+set +e
+NAMING_OUTPUT="$(ZF_TRIAGE_TICK_ID=naming-91113 bash "$BATCH_SRC" --scheduled 911131 911132 911133 2>&1)"
+NAMING_STATUS=$?
+set -e
+assert_eq "schema-failed batch exits cleanly" 0 "$NAMING_STATUS"
+assert_contains "enum failure names the field path" "$NAMING_OUTPUT" 'record failed triage.schema.json: entry_surface: value not in enum'
+assert_contains "missing field names the path" "$NAMING_OUTPUT" 'record failed triage.schema.json: notes_md: missing'
+assert_contains "extra property names the path" "$NAMING_OUTPUT" 'record failed triage.schema.json: foo: property not allowed'
+assert_not_contains "invalid records are not applied" "$(cat "$FAKE_GH_LOG")" 'issue edit 911131'
+for n in 911131 911132 911133; do
+  assert_eq "invalid record #$n is kept for diagnosis" 1 "$(find "$AGENT_HOME/triage-invalid" -name "$n-*.json" | wc -l | tr -d ' ')"
+done
+assert_contains "kept invalid record holds the offending record" "$(cat "$AGENT_HOME/triage-invalid"/911131-*.json)" 'Carrier Pigeon'
+
+rm -rf "$AGENT_HOME/triage-invalid"
+mkdir -p "$AGENT_HOME/triage-invalid"
+retention_base="$(( $(date +%s) - 3600 ))"
+for i in $(seq 1 50); do
+  : > "$AGENT_HOME/triage-invalid/9100$i-legacy.json"
+  touch -d "@$((retention_base - i))" "$AGENT_HOME/triage-invalid/9100$i-legacy.json"
+done
+jq -nc --argjson invalid "$INVALID" '{issue:911141,result:$invalid}' > "$FAKE_CODEX_OUTPUT"
+jq -n '[911141] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+ZF_TRIAGE_TICK_ID=retention-911141 bash "$BATCH_SRC" --scheduled 911141 >/dev/null 2>&1
+assert_eq "invalid-record retention keeps only the newest 50" 50 "$(find "$AGENT_HOME/triage-invalid" -type f | wc -l | tr -d ' ')"
+assert_eq "the oldest kept record is dropped" 0 "$(find "$AGENT_HOME/triage-invalid" -name '910050-legacy.json' | wc -l | tr -d ' ')"
+assert_eq "the newest record is kept" 1 "$(find "$AGENT_HOME/triage-invalid" -name '911141-*.json' | wc -l | tr -d ' ')"
 
 # A batch process timeout is transient for every admitted issue: preserve the
 # model-policy rung and refund the attempt charged when recording the result.

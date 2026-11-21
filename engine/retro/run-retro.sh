@@ -25,4 +25,5 @@ raw="$root/luna/$key/last.md"
 [[ -s "$raw" ]] || { echo "run-retro: $key wrote no output (luna rc=$rc)" >&2; exit 1; }
 candidates="$out_dir/$stamp.candidates.json"
 python3 -B "$here/retro.py" filter "$root" "$keys" "$raw" "$candidates"
-python3 -B "$here/retro.py" publish "$root" "$repo" "$candidates"
+RETRO_OUT_DIR="$out_dir" python3 -B "$here/retro.py" publish "$root" "$repo" "$candidates"
+python3 -B "$here/retro-verify.py" "$root" "$out_dir"

@@ -3,9 +3,11 @@
 # Usage: retro.py select <scratch-root> <n>            prints the chosen session keys, sorted
 #        retro.py filter <scratch-root> <keys> <raw.json> <out.json>   writes kept candidates and drop counts
 #        retro.py publish <scratch-root> <repo-root> <candidates.json> routes kept candidates
+import datetime
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -94,6 +96,68 @@ def candidate_class(engine, category, event):
     return result.stdout.strip()
 
 
+def verify_state_path(out_dir):
+    return os.path.join(out_dir, "retro-verify.json")
+
+
+def read_verify_state(out_dir):
+    path = verify_state_path(out_dir)
+    if not os.path.isfile(path):
+        return {"changes": []}
+    with open(path, encoding="utf-8") as state_file:
+        state = json.load(state_file)
+    if not isinstance(state, dict) or not isinstance(state.get("changes"), list):
+        raise ValueError(f"invalid retro verification state: {path}")
+    return state
+
+
+def write_verify_state(out_dir, state):
+    os.makedirs(out_dir, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix="retro-verify-", dir=out_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as state_file:
+            json.dump(state, state_file, ensure_ascii=False, indent=2)
+            state_file.write("\n")
+        os.replace(temp_path, verify_state_path(out_dir))
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+def retro_out_dir():
+    return os.environ.get(
+        "RETRO_OUT_DIR", os.path.join(os.environ.get("HOME", "/tmp"), ".zenoforge", "retro")
+    )
+
+
+def record_candidate_issue(out_dir, issue, category, key):
+    state = read_verify_state(out_dir)
+    if not any(change.get("issue") == issue for change in state["changes"]):
+        state["changes"].append({
+            "issue": issue,
+            "category": category,
+            "class": key,
+            "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        write_verify_state(out_dir, state)
+
+
+def record_lesson_change(out_dir, category, key):
+    state = read_verify_state(out_dir)
+    if not any(change.get("lesson") == key for change in state["changes"]):
+        # A lesson fragment lands with no issue and no merged PR, so no merge time can
+        # date a before/after count; verify skips it by verifiable, not by absence.
+        state["changes"].append({
+            "lesson": key,
+            "category": category,
+            "class": key,
+            "verifiable": False,
+            "reason": "lesson fragment has no issue or merged PR to date a before/after window",
+            "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        write_verify_state(out_dir, state)
+
+
 def write_lesson_fragment(repo, candidate, key):
     lesson_id = key
     pending_dir = os.path.join(repo, "lessons", "pending")
@@ -147,11 +211,16 @@ def file_intake_candidate(repo, engine, candidate, key):
         env = os.environ.copy()
         env["ZF_REPO_DIR"] = repo
         env["ZF_ENGINE_DIR"] = engine
-        subprocess.run(
+        result = subprocess.run(
             ["bash", os.path.join(engine, "pipeline-issue-upsert.sh"),
              "--lane", "product", "--class", key, "--title", title, "--body-file", body_path],
-            check=True, env=env,
+            check=True, stdout=subprocess.PIPE, text=True, env=env,
         )
+        print(result.stdout, end="")
+        match = re.search(r"(?:created \S+/issues/|commented issue #)([1-9][0-9]*)", result.stdout)
+        if not match:
+            raise ValueError("pipeline issue upsert returned no issue number")
+        record_candidate_issue(retro_out_dir(), int(match.group(1)), candidate["category"], key)
     finally:
         os.unlink(body_path)
 
@@ -174,6 +243,7 @@ def publish_candidates(root, repo, candidates_path):
         key = candidate_class(engine, candidate["category"], event)
         if candidate["category"] == "automated-checks":
             write_lesson_fragment(repo, candidate, key)
+            record_lesson_change(retro_out_dir(), candidate["category"], key)
         else:
             file_intake_candidate(repo, engine, candidate, key)
 

@@ -154,6 +154,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     # never a bare `zcode` on PATH: the host may only carry the worker bundle.
     mapfile -t zcode_cmd < <(zf_zcode_bin_argv 2>/dev/null)
     (( ${#zcode_cmd[@]} > 0 )) || return 1
+    # 11-21: six zcode reviews in plan mode put the report into the plan-exit call; stdout held a 1-line stub with no VERDICT.
+    [[ "$type" != review && "$type" != rereview ]] || prompt_arg+=$'\n（把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。当前是 plan 模式，只为保证目录只读：不要调用 ExitPlanMode，不要尝试写报告文件，不要等待批准；最终回答本身就是报告全文，含唯一一行 VERDICT。）'
     CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 "BASH_MAX_OUTPUT_LENGTH=$(worker_output_cap_chars)" "${zcode_cmd[@]}" -p "$prompt_arg" --cwd "$workdir" --mode "$zcode_mode")
     return 0
   fi
