@@ -33,7 +33,10 @@ for name, delta, expected, want in (("high", 1800, 60.0, "UNHEALTHY"), ("low", 3
     write_proc(proc, 10000 + delta, [manager, root, (300, "stat", 200, root[3])])
     value, detail = fork_rate.sample(state, now=1030.0)
     assert value == expected and status(value) == want, (value, status(value))
-    assert detail == f"factory-watch.service (bash, 200): {expected:.1f}/s", detail
+    if expected > 20:
+        assert detail == f"factory-watch.service (bash, 200): {expected:.1f}/s", detail
+    else:
+        assert detail == "", detail
 
 multi = base / "multi"; proc = multi / "proc"; state = multi / "node-health.json"
 os.environ["NODE_HEALTH_PROC_ROOT"] = str(proc)
