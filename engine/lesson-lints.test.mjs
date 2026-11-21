@@ -27,10 +27,13 @@ function lintRepoFixture() {
   });
   mkdirSync(path.join(repo, 'engine/lib.d'), { recursive: true });
   mkdirSync(path.join(repo, 'lessons'), { recursive: true });
-  writeFileSync(path.join(repo, 'engine/lib.d/issue-state.sh'), 'old state writer\n');
+  writeFileSync(path.join(repo, 'engine/lib.d/issue-state.sh'), 'old state writer\njq_arg_file() { :; }\n');
   writeFileSync(path.join(repo, 'engine/lesson-lints.mjs'), "classTag: 'exact-second-elapsed-grep'\n");
+  mkdirSync(path.join(repo, 'engine'), { recursive: true });
+  writeFileSync(path.join(repo, 'engine/jq-arg-safety.test.sh'), 'scan_files() { :; }\njq --slurpfile data file\n');
   writeFileSync(path.join(repo, 'lessons/recurrence-ranking.json'), JSON.stringify({ ranking: [
     { lesson_id: 'V936', incident_class_tag: 'state-single-writer', recurrence_count: 2 },
+    { lesson_id: 'V975', incident_class_tag: 'large-json-never-on-argv', recurrence_count: 2 },
   ] }));
   git('init', '-q');
   git('config', 'user.name', 'Lesson lint test');
@@ -41,7 +44,7 @@ function lintRepoFixture() {
   git('add', '.');
   commitAt(daysAgo(10), 'young lint');
   const base = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  writeFileSync(path.join(repo, 'engine/lib.d/issue-state.sh'), 'unguarded state writer\nstamp=$(date +%Y-%m-%dT%H:%M:%SZ)\n');
+  writeFileSync(path.join(repo, 'engine/lib.d/issue-state.sh'), 'unguarded state writer\njq_arg_file() { :; }\nstamp=$(date +%Y-%m-%dT%H:%M:%SZ)\n');
   git('add', '.');
   commitAt(new Date(now).toISOString(), 'head');
   return { repo, base, head: 'HEAD', cleanup: () => rmSync(repo, { recursive: true, force: true }) };
@@ -128,6 +131,7 @@ test('the ledger appends one row for each triggered lesson and standalone lint',
     const rows = readFileSync(ledger, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.deepEqual(rows.map(({ lesson, classTag, verdict }) => ({ lesson, classTag, verdict })), [
       { lesson: 'V936', classTag: 'state-single-writer', verdict: 'fail' },
+      { lesson: 'V975', classTag: 'large-json-never-on-argv', verdict: 'pass' },
       { lesson: 'none', classTag: 'local-tz-z-stamp', verdict: 'fail' },
     ]);
     assert(rows.every((row) => /^[0-9a-f]{40}$/.test(row.head_sha) && Number.isFinite(Date.parse(row.utc_time))));
