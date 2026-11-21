@@ -922,23 +922,17 @@ assert_eq "failed triage stage edit restores the prior state" needs-triage "$(jq
 assert_contains "failed triage stage edit logs rollback" "$RUN_OUTPUT" 'issue_transition: label write failed'
 
 # Issue read failures: the stub fails the first FAKE_GH_VIEW_FAILS reads with FAKE_GH_VIEW_ERR;
-# a secondary rate limit is a wait (no fault), any other text is recorded as GitHub said it.
+# a secondary rate limit is a wait (no fault, no retry: gh() sets the shared back-off on the first
+# refused read), any other text is recorded as GitHub said it.
 export ZF_GH_RETRY_BACKOFF_SECONDS=0
 export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1)"
 SECONDARY_ERR='HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (https://api.github.com/graphql)'
-export FAKE_GH_VIEW_ERR="$SECONDARY_ERR" FAKE_GH_VIEW_FAILS=2
+export FAKE_GH_VIEW_ERR="$SECONDARY_ERR" FAKE_GH_VIEW_FAILS=99
 run_once "$RAW_BODY"
 unset FAKE_GH_VIEW_FAILS
-assert_eq "secondary limit on two reads then an answer: triage goes on" 0 "$RUN_STATUS"
-assert_eq "secondary limit on two reads then an answer: no env-fault record" "" "$(cat "$AGENT_HOME/env-faults/env:gh-api.log" 2>/dev/null || true)"
-assert_eq "secondary limit on two reads then an answer: stage advances" ready-for-agent "$(jq -r '.state' <<< "$STATE_CONTENT")"
-
-export FAKE_GH_VIEW_FAILS=99
-run_once "$RAW_BODY"
-unset FAKE_GH_VIEW_FAILS
-assert_eq "secondary limit on every read: exits 1 as for a back-off" 1 "$RUN_STATUS"
-assert_eq "secondary limit on every read: no env-fault record" "" "$(cat "$AGENT_HOME/env-faults/env:gh-api.log" 2>/dev/null || true)"
-assert_eq "secondary limit on every read: one held line" 1 "$(grep -c "triage: issue #$N read held by GitHub secondary rate limit; retried next tick" <<< "$RUN_STDERR_CONTENT" || true)"
+assert_eq "secondary limit on the first read: exits 1 as for a back-off" 1 "$RUN_STATUS"
+assert_eq "secondary limit on the first read: no env-fault record" "" "$(cat "$AGENT_HOME/env-faults/env:gh-api.log" 2>/dev/null || true)"
+assert_eq "secondary limit on the first read: shared back-off holds 60 s" 60 "$(sed -n 2p "$AGENT_HOME/gh-rate-limit-until.graphql")"
 
 export FAKE_GH_VIEW_FAILS=99 FAKE_GH_VIEW_ERR='HTTP 502: Bad Gateway'
 run_once "$RAW_BODY"

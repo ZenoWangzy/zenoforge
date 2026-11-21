@@ -17,11 +17,9 @@ cat > "$test_env_bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_CALL_LOG"
+if [[ "$1 ${2:-}" == 'api rate_limit' ]]; then printf '%s\n' "$GH_QUOTA_LINE"; exit 0; fi
+if [[ "$GH_MODE" == gh-err ]]; then printf '%s\n' "$GH_STUB_ERR" >&2; exit 1; fi
 if [[ "$GH_MODE" == gql-quota ]]; then
-  if [[ "$1 ${2:-}" == 'api graphql' && "$*" == *rateLimit* ]]; then
-    printf '%s\n' "$GH_RATE_LIMIT_RESET_AT"
-    exit 0
-  fi
   if [[ "$1 ${2:-}" == 'issue view' ]]; then
     echo 'GraphQL: API rate limit already exceeded for user ID 1.' >&2
     exit 1
@@ -304,6 +302,7 @@ echo 'ok - non-GraphQL write failure never touches the REST fallback'
 export GH_MODE=gql-quota
 export GH_RATE_LIMIT_RESET_AT="$(date -u -d '+45 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
 export GH_RATE_LIMIT_RESET_EPOCH="$(date -u -d '+45 minutes' +%s)"
+export GH_QUOTA_LINE="0 $GH_RATE_LIMIT_RESET_EPOCH"
 gql_marker="$AGENT_HOME/gh-rate-limit-until.graphql"
 rest_marker="$AGENT_HOME/gh-rate-limit-until.rest"
 rm -f -- "$gql_marker" "$rest_marker"
@@ -418,3 +417,76 @@ echo 'ok - quota lookups reach gh during backoff while ordinary calls stay block
   [[ "$(tick_gh_calls_summary)" == 'gh_calls=6 gql=4 rest=2' ]]
 )
 echo 'ok - scheduler tick metrics split GraphQL and REST calls'
+
+# Secondary limit through gh_timeout (the incident path): the first 403 holds the class 60 s, a call
+# during the hold makes none, and a repeat hold doubles up to 600 s; a non-limit 403 writes no marker.
+export GH_MODE=gh-err
+sec_marker="$AGENT_HOME/gh-rate-limit-until.graphql"
+export GH_STUB_ERR='HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. For more on scraping GitHub and how it may affect your rights, please review our Terms of Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)'
+sec_call() { rc=0; gh_timeout 10 issue view 8124 --repo "$REPO" > /dev/null 2> "$AGENT_HOME/sec.err" || rc=$?; }
+rm -f -- "$sec_marker"; : > "$GH_CALL_LOG"
+sec_call
+[[ "$rc" == 75 ]] || { echo "not ok - first secondary 403 returned rc=$rc, expected 75" >&2; exit 1; }
+now="$(date +%s)"
+first="$(sed -n 1p "$sec_marker")"
+(( first - now >= 58 && first - now <= 62 )) || { echo "not ok - hold ends at $first, expected now+60" >&2; exit 1; }
+[[ "$(sed -n 2p "$sec_marker")" == 60 ]] || { echo "not ok - hold length line is not 60" >&2; exit 1; }
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == 1 ]] || { echo "not ok - first secondary 403 did not run the stub once" >&2; exit 1; }
+echo 'ok - first secondary 403 through gh_timeout holds the class 60 s'
+
+before="$(cat "$sec_marker")"
+sec_call
+[[ "$rc" == 75 ]] || { echo "not ok - call during the hold returned rc=$rc, expected 75" >&2; exit 1; }
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == 1 ]] || { echo "not ok - call during the hold reached gh" >&2; exit 1; }
+[[ "$(cat "$sec_marker")" == "$before" ]] || { echo "not ok - call during the hold changed the marker" >&2; exit 1; }
+echo 'ok - a call during the hold makes no GitHub call and leaves the marker alone'
+
+printf '%s\n%s\n' "$(( $(date +%s) - 10 ))" 60 > "$sec_marker"
+sec_call
+[[ "$rc" == 75 && "$(sed -n 2p "$sec_marker")" == 120 ]] || { echo "not ok - 60 s hold ended 10 s ago: rc=$rc, length=$(sed -n 2p "$sec_marker"), expected 75 and 120" >&2; exit 1; }
+printf '%s\n%s\n' "$(( $(date +%s) - 10 ))" 600 > "$sec_marker"
+sec_call
+[[ "$rc" == 75 && "$(sed -n 2p "$sec_marker")" == 600 ]] || { echo "not ok - 600 s hold ended 10 s ago: length=$(sed -n 2p "$sec_marker"), expected 600" >&2; exit 1; }
+printf '%s\n%s\n' "$(( $(date +%s) - 700 ))" 600 > "$sec_marker"
+sec_call
+[[ "$rc" == 75 && "$(sed -n 2p "$sec_marker")" == 60 ]] || { echo "not ok - hold ended 700 s ago: length=$(sed -n 2p "$sec_marker"), expected 60" >&2; exit 1; }
+echo 'ok - repeat secondary holds double to 600 s and reset to 60 s after 600 s'
+
+rm -f -- "$sec_marker"
+export GH_STUB_ERR='HTTP 403: Resource not accessible by integration'
+sec_call
+[[ "$rc" == 1 && ! -e "$sec_marker" ]] || { echo "not ok - non-limit 403: rc=$rc, expected 1 and no marker" >&2; exit 1; }
+echo 'ok - a non-limit 403 writes no marker and keeps its rc'
+
+rm -f -- "$sec_marker"; : > "$GH_CALL_LOG"
+export GH_STUB_ERR='HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
+rc=0; out="$(gh_issue_view_or_wait triage 8124 "$REPO" number)" || rc=$?
+[[ "$rc" == 75 && -z "$out" && "$(sed -n 2p "$sec_marker")" == 60 ]] || { echo "not ok - gh_issue_view_or_wait on a secondary limit: rc=$rc out=$out, expected 75, empty, hold 60" >&2; exit 1; }
+[[ "$(wc -l < "$GH_CALL_LOG" | tr -d ' ')" == 1 ]] || { echo "not ok - gh_issue_view_or_wait retried after the secondary limit" >&2; exit 1; }
+echo 'ok - gh_issue_view_or_wait on a secondary limit returns 75 with no retry and no detail'
+rm -f -- "$sec_marker"
+
+# Primary wording (GitHub also words a secondary limit this way): quota left gives the 60 s hold,
+# quota at 0 holds until the reset. A label call is a GraphQL call.
+export GH_STUB_ERR='GraphQL: API rate limit already exceeded for user ID 1.'
+: > "$GH_CALL_LOG"
+export GH_QUOTA_LINE="3902 $(( $(date +%s) + 1800 ))"
+sec_call
+[[ "$rc" == 75 ]] || { echo "not ok - primary wording with quota left returned rc=$rc, expected 75" >&2; exit 1; }
+now="$(date +%s)"
+first="$(sed -n 1p "$sec_marker")"
+(( first - now >= 58 && first - now <= 62 )) || { echo "not ok - primary wording with quota left: hold ends at $first, expected now+60" >&2; exit 1; }
+[[ "$(sed -n 2p "$sec_marker")" == 60 && "$(wc -l < "$sec_marker" | tr -d ' ')" == 2 ]] || { echo "not ok - primary wording with quota left: marker is not the 60 s two-line form" >&2; exit 1; }
+grep -q 'remaining=3902' "$AGENT_HOME/sec.err" || { echo "not ok - primary wording with quota left: stderr lacks remaining=3902" >&2; exit 1; }
+echo 'ok - primary wording with quota left takes the 60 s secondary hold, not the reset'
+
+rm -f -- "$sec_marker"
+reset_epoch="$(( $(date +%s) + 1800 ))"
+export GH_QUOTA_LINE="0 $reset_epoch"
+sec_call
+[[ "$rc" == 75 && "$(cat "$sec_marker")" == "$reset_epoch" ]] || { echo "not ok - primary wording with quota 0: marker is not the reset $reset_epoch (rc=$rc)" >&2; exit 1; }
+echo 'ok - primary wording with quota 0 holds until the quota reset'
+
+[[ "$(gh_rate_limit_api_class label list)" == graphql ]] || { echo "not ok - gh label is not classed graphql" >&2; exit 1; }
+echo 'ok - gh label is classed graphql'
+rm -f -- "$sec_marker"
