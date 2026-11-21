@@ -60,11 +60,23 @@ def main(argv):
         else:
             print(f'suite-set-check: NOT A MOVED SUITE (shares a baseline name only, lineage {ratio:.2f}): {p}', file=sys.stderr)
             bad = 1
+    retired = {}
+    try:
+        with open(os.path.join(nver, 'engine', 'publish-preflight', 'retired-suites.txt')) as f:
+            for line in f:
+                fields = line.split(None, 1)
+                if len(fields) == 2:
+                    retired[fields[0]] = fields[1].strip()
+    except FileNotFoundError:
+        pass
     # A suite that left the engine must still descend from the baseline in a tracked selectable path or systemd dir.
     runnable = [p for p in resolvable] + [p for p in tracked if os.path.dirname(p) == '.zenoforge/systemd'
                                           and SELECTABLE.search(p) and os.path.basename(p) in by_name]
     for rel in sorted(set(base) - set(new)):
         if not any(os.path.basename(p) == os.path.basename(rel) and lineage(p) >= LINEAGE for p in runnable):
+            if rel in retired:
+                print(f'suite-set-check: retired baseline suite: {rel} ({retired[rel]})')
+                continue
             print(f'suite-set-check: LOST baseline suite: {rel}', file=sys.stderr)
             bad = 1
     if bad:

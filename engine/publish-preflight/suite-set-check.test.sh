@@ -36,4 +36,23 @@ git -C "$t/repo" mv packages/missing.test.sh .zenoforge/systemd/missing.test.sh 
 run | grep -q 'OK resolvable == moved (2 suites' || { echo "FAIL: systemd-dir suite not accepted"; exit 1; }
 git -C "$t/repo" mv .zenoforge/systemd/missing.test.sh scripts/checks/missing.test.sh && git -C "$t/repo" commit -qm restore
 run | grep -q 'OK resolvable == moved (2 suites' || { echo "FAIL: suite outside configured roots not accepted"; exit 1; }
+
+# A retirement declaration ships in the candidate engine version and applies only while the suite is absent.
+r="$t/retired"
+mkdir -p "$r/base/engine" "$r/new/engine/publish-preflight" "$r/repo"
+body retired > "$r/base/engine/x.test.sh"
+git -C "$r/repo" init -q && git -C "$r/repo" config user.email test && git -C "$r/repo" config user.name test
+git -C "$r/repo" commit --allow-empty -qm initial
+run_retired() { python3 -I "$here/suite-set-check.py" "$r/base" "$r/new" "$r/repo" HEAD; }
+echo 'x.test.sh reverted for this fixture' > "$r/new/engine/publish-preflight/retired-suites.txt"
+run_retired | grep -q 'retired baseline suite: x.test.sh (reverted for this fixture)' \
+  || { echo "FAIL: listed lost suite was not retired"; exit 1; }
+: > "$r/new/engine/publish-preflight/retired-suites.txt"
+rc=0; out=$(run_retired 2>&1) || rc=$?
+[[ $rc == 1 ]] && grep -q 'LOST baseline suite: x.test.sh' <<<"$out" \
+  || { echo "FAIL: unlisted lost suite was not rejected: $out"; exit 1; }
+body retired > "$r/new/engine/x.test.sh"
+echo 'x.test.sh listed while present' > "$r/new/engine/publish-preflight/retired-suites.txt"
+out=$(run_retired 2>&1) || { echo "FAIL: listed present suite failed: $out"; exit 1; }
+! grep -q 'retired baseline suite' <<<"$out" || { echo "FAIL: present suite was treated as retired: $out"; exit 1; }
 echo "suite-set-check.test.sh: PASS"
