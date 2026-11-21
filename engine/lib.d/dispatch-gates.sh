@@ -314,46 +314,67 @@ scheduler_issue_unit_inflight() { # issue [units.json] -> 0 in-flight unit / 1 n
 # judgment is normalized to false on the validation copy, so it cannot strand
 # an otherwise valid ticket outside the implement lane. jq remains the only
 # runtime dependency.
-triage_result_matches_schema() {
+#
+# Row 897 round 2: triage_result_schema_failure is the single source of the
+# rules -- it prints the first failing path and why (for example
+# "entry_surface: value not in enum", "notes_md: missing",
+# "foo: property not allowed") and prints nothing when the record matches.
+# triage_result_matches_schema is its yes/no view, so the check and the
+# naming cannot drift apart.
+triage_result_schema_failure() {
   local result_file="$1" schema_file="${2:-$(zf_config_file prompts/triage.schema.json)}"
-  jq -e --slurpfile schema "$schema_file" '
+  jq -r --slurpfile schema "$schema_file" '
     def has_external_judgment:
       (.external_deliverable | type) == "object"
       and (.external_deliverable.required | type) == "boolean"
       and (.external_deliverable.location | type) == "string"
       and (.external_deliverable.reason | type) == "string"
       and (.external_deliverable | keys | sort) == ["location", "reason", "required"];
-    def matches($s):
+    def join_path($base; $key):
+      if $base == "" then $key else "\($base).\($key)" end;
+    def failure($s; $p):
       . as $v
-      | ((($s.type // null) == null) or
+      | (if ($s.type // null) != null then
           (if $s.type == "integer" then
-             ($v | type) == "number" and $v == ($v | floor)
+             (if ($v | type) == "number" and $v == ($v | floor) then empty else "\($p): not an integer" end)
+           elif ($s.type | type) == "array" then
+             (if any($s.type[]; . == ($v | type)) then empty else "\($p): type must be one of \($s.type | tostring)" end)
            else
-             (if ($s.type | type) == "array" then any($s.type[]; . == ($v | type)) else ($v | type) == $s.type end)
-           end))
-      and ((($s.enum // null) == null) or any($s.enum[]; . == $v))
-      and (if $s.minimum == null then true
-           else ($v | type) == "number" and $v >= $s.minimum end)
-      and (if ($v | type) == "object" then
-             all(($s.required // [])[]; . as $key | ($v | has($key)))
-             and (if $s.additionalProperties == false then
-                    all(($v | keys[]); . as $key | (($s.properties // {}) | has($key)))
-                  else true end)
-             and all((($s.properties // {}) | to_entries[]);
-                     . as $property |
-                     if ($v | has($property.key)) then
-                       $v[$property.key] | matches($property.value)
-                     else true end)
-           elif ($v | type) == "array" then
-             if $s.items == null then true
-             else all($v[]; matches($s.items)) end
-           else true end);
+             (if ($v | type) == $s.type then empty else "\($p): type must be \($s.type)" end)
+           end)
+         else empty end),
+        (if ($s.enum // null) != null then
+           (if any($s.enum[]; . == $v) then empty else "\($p): value not in enum" end)
+         else empty end),
+        (if $s.minimum == null then empty
+         elif ($v | type) == "number" and $v >= $s.minimum then empty
+         else "\($p): below minimum \($s.minimum)" end),
+        (if ($v | type) == "object" then
+           (($s.required // [])[] | . as $key |
+              (if ($v | has($key)) then empty else "\(join_path($p; $key)): missing" end)),
+           (if $s.additionalProperties == false then
+              ($v | keys[] | . as $key |
+                 (if (($s.properties // {}) | has($key)) then empty else "\(join_path($p; $key)): property not allowed" end))
+            else empty end),
+           (($s.properties // {}) | to_entries[] | . as $property |
+              (if ($v | has($property.key)) then
+                 $v[$property.key] | failure($property.value; join_path($p; $property.key))
+               else empty end))
+         elif ($v | type) == "array" then
+           (if $s.items == null then empty
+            else (range(0; ($v | length)) as $i | ($v[$i] | failure($s.items; "\($p)[\($i)]")))
+            end)
+         else empty end);
     . as $input
     | (if has_external_judgment then $input
        else $input + {external_deliverable:{required:false,location:"",reason:""}}
        end) as $result
-    | ($schema[0] as $contract | $result | matches($contract))
-  ' "$result_file" >/dev/null 2>&1
+    | [($result | failure($schema[0]; ""))] | .[0] // empty
+  ' "$result_file" 2>/dev/null || echo "result record is not a readable JSON object"
+}
+
+triage_result_matches_schema() {
+  [ -z "$(triage_result_schema_failure "$@")" ]
 }
 
 
