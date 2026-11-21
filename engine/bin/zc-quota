@@ -6,12 +6,14 @@
 // Outputs: ~/.zenoforge/zc-quota.json (last reading), ~/.zenoforge/zcode-exhausted-until (epoch seconds; lib.sh's
 // provider_quota_exhausted and bin/worker's zc breaker both read it), log lines on stdout (journal).
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 const HOME = process.env.HOME;
 const STATE = `${HOME}/.zenoforge/zc-quota.json`;
 const MARKER = `${HOME}/.zenoforge/zcode-exhausted-until`;
 const QUOTA_MAX_AGE_SECONDS = Number(process.env.ZC_QUOTA_MAX_AGE_SECONDS || 900);
 const CAP_5H = Number(process.env.ZC_5H_CAP || 85);              // stop starting ZCode at this 5h percentage
-const CAP_WEEK = Number(process.env.ZC_WEEK_CAP || 100);          // stop starting ZCode here; a weekly reset normally comes first
+const DEFAULT_CAP_WEEK = 100;
 const RESET_GAP_SECONDS = Number(process.env.ZC_WEEK_RESET_GAP_SECONDS || 21600); // one reset at a time: a slow page must not burn a second
 const ALERT_FILE = process.env.ZC_ALERT_FILE;                     // each spent reset is appended here
 // Founder 2026-11-08 (glm_factory_cap_2026_11_08): no weekly resets remain, so the default never spends one.
@@ -21,6 +23,38 @@ const WEEK_ALERT_AT = Number(process.env.ZC_WEEK_ALERT_AT || 98); // below the s
 // line from 0% at the week start to WEEK_PACE% at the week reset, leaving the rest for production.
 const WEEK_PACE = Number(process.env.ZC_WEEK_PACE_PCT || 90);
 const WEEK_SECONDS = 7 * 86400;
+const log = (...a) => console.log(new Date().toISOString(), ...a);
+const resolveWeekCap = (env, now, emit = () => {}) => {
+  const value = env.ZC_WEEK_CAP;
+  if (value == null || value === '') return { value: DEFAULT_CAP_WEEK, until: 0, source: 'none' };
+  const rawUntil = env.ZC_WEEK_CAP_UNTIL;
+  if (rawUntil == null || rawUntil === '') {
+    emit(`ZC_WEEK_CAP=${value} ignored: no ZC_WEEK_CAP_UNTIL`);
+    return { value: DEFAULT_CAP_WEEK, until: 0, source: 'env-ignored-no-until' };
+  }
+  const until = Number(rawUntil);
+  if (!Number.isSafeInteger(until) || !Number.isFinite(new Date(until * 1000).getTime())) {
+    emit(`ZC_WEEK_CAP=${value} ignored: invalid ZC_WEEK_CAP_UNTIL`);
+    return { value: DEFAULT_CAP_WEEK, until: 0, source: 'env-ignored-no-until' };
+  }
+  if (now >= until) {
+    emit(`ZC_WEEK_CAP=${value} expired at ${new Date(until * 1000).toISOString()}`);
+    return { value: DEFAULT_CAP_WEEK, until: 0, source: 'env-expired' };
+  }
+  return { value: Number(value), until, source: 'env-active' };
+};
+let weekCapNoticeLogged = false;
+const weekCapAt = now => resolveWeekCap(process.env, now, message => {
+  if (!weekCapNoticeLogged) { log(message); weekCapNoticeLogged = true; }
+});
+const weekCapHolds = (weekPct, cap) => weekPct >= (cap.source === 'env-active' ? cap.value : DEFAULT_CAP_WEEK);
+const snapshotCapWeek = cap => cap.source === 'env-active' ? Math.max(DEFAULT_CAP_WEEK, cap.value) : DEFAULT_CAP_WEEK;
+function appendHeldUnderPaceAlert(provider, held, weekPct, pacePct, reason, state, now, alertFile) {
+  if (!held || !alertFile || !Number.isFinite(pacePct) || weekPct >= pacePct - 30
+      || now - Number(state.held_under_pace_alert_at || 0) < 3600) return;
+  fs.appendFileSync(alertFile, `[${new Date(now * 1000).toISOString()}] ${provider}-HELD-UNDER-PACE week=${weekPct}% pace=${pacePct}% reason=${reason}\n`);
+  state.held_under_pace_alert_at = now;
+}
 // week percentage, week reset epoch, now epoch -> epoch until which ZCode holds, or 0 when under the line (or the window has not started)
 const weekPaceUntil = (pct, reset, now) => {
   if (!reset || !(WEEK_PACE > 0)) return 0;
@@ -34,6 +68,31 @@ if (process.argv[2] === '--self-test') {
   assert(weekPaceUntil(10, r, s + 3 * 86400) === 0, 'under the line does not hold');
   assert(weekPaceUntil(95, r, r - 60) === r, 'over the pace at week end holds to the reset, never past it');
   assert(weekPaceUntil(30, null, s) === 0, 'a window that has not started never holds');
+  const noUntilLogs = [];
+  const noUntil = resolveWeekCap({ ZC_WEEK_CAP: '1' }, r, message => noUntilLogs.push(message));
+  assert(noUntil.source === 'env-ignored-no-until' && !weekCapHolds(19, noUntil), 'a cap without UNTIL is ignored');
+  assert(noUntilLogs.length === 1 && noUntilLogs[0] === 'ZC_WEEK_CAP=1 ignored: no ZC_WEEK_CAP_UNTIL', 'missing UNTIL is logged');
+  const active = resolveWeekCap({ ZC_WEEK_CAP: '1', ZC_WEEK_CAP_UNTIL: String(r + 1) }, r);
+  assert(active.source === 'env-active' && weekCapHolds(19, active), 'a cap before UNTIL holds');
+  const expiredLogs = [];
+  const expired = resolveWeekCap({ ZC_WEEK_CAP: '1', ZC_WEEK_CAP_UNTIL: String(r - 1) }, r, message => expiredLogs.push(message));
+  assert(expired.source === 'env-expired' && !weekCapHolds(19, expired), 'a cap after UNTIL is ignored');
+  assert(expiredLogs.length === 1 && expiredLogs[0] === `ZC_WEEK_CAP=1 expired at ${new Date((r - 1) * 1000).toISOString()}`, 'expired cap is logged');
+  const alertDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zc-quota-self-test-'));
+  try {
+    const alerts = path.join(alertDir, 'alerts'), state = {};
+    const heldAt19 = weekCapHolds(19, active);
+    appendHeldUnderPaceAlert('ZCODE', heldAt19, 19, 60, 'cap', state, r, alerts);
+    const first = fs.readFileSync(alerts, 'utf8');
+    assert(first === `[${new Date(r * 1000).toISOString()}] ZCODE-HELD-UNDER-PACE week=19% pace=60% reason=cap\n`, 'held far under pace writes the alert');
+    appendHeldUnderPaceAlert('ZCODE', heldAt19, 19, 60, 'cap', state, r + 1800, alerts);
+    assert(fs.readFileSync(alerts, 'utf8') === first, 'same-hour run does not repeat the alert');
+    const notHeld = path.join(alertDir, 'not-held');
+    appendHeldUnderPaceAlert('ZCODE', false, 19, 60, 'cap', {}, r, notHeld);
+    assert(!fs.existsSync(notHeld), 'not held writes no alert');
+  } finally {
+    fs.rmSync(alertDir, { recursive: true, force: true });
+  }
   console.log('zc-quota self-test ok'); process.exit(0);
 }
 const PAGE = 'https://bigmodel.cn/coding-plan/personal/usage';
@@ -42,13 +101,13 @@ const CALL_TIMEOUT_MS = Number(process.env.QUOTA_CDP_CALL_TIMEOUT_MS || 30000);
 const RESPONSE_WAIT_MS = Number(process.env.QUOTA_RESPONSE_WAIT_MS || 40000); // the page's quota call after a navigate
 const TAB_BOOK = `${STATE}.tab`;                                  // target id of the tab this script opened
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 function markSnapshotUnknown() {
   try {
     let previous = {};
     try { previous = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
-    fs.writeFileSync(STATE, JSON.stringify({ ...previous, freshness: 'unknown' }) + '\n');
+    const cap = weekCapAt(Math.floor(Date.now() / 1000));
+    fs.writeFileSync(STATE, JSON.stringify({ ...previous, cap_week: snapshotCapWeek(cap), cap_week_source: cap.source, freshness: 'unknown' }) + '\n');
   } catch (stateError) {
     log('could not mark quota snapshot unknown:', stateError.message);
   }
@@ -156,12 +215,15 @@ try {
   q.reset_at = prev.reset_at || 0;
   q.week_resets_spent = prev.week_resets_spent || 0;
   q.week_alert_for = prev.week_alert_for;
+  q.held_under_pace_alert_at = prev.held_under_pace_alert_at;
   if (q.week_pct >= RESET_WEEK_AT && Date.now() / 1000 - q.reset_at < RESET_GAP_SECONDS) {
     log(`weekly ${q.week_pct}% but the last reset was under ${RESET_GAP_SECONDS}s ago: not spending another`);
   } else if (q.week_pct >= RESET_WEEK_AT) {
     log(`weekly ${q.week_pct}% >= ${RESET_WEEK_AT}%: spending one weekly reset`);
     // Persist before the click: a failed re-read after it must not allow a second reset.
-    fs.writeFileSync(STATE, JSON.stringify({ ...prev, reset_at: Math.floor(Date.now() / 1000) }) + '\n');
+    const cap = weekCapAt(Math.floor(Date.now() / 1000));
+    fs.writeFileSync(STATE, JSON.stringify({ ...prev, reset_at: Math.floor(Date.now() / 1000),
+      cap_week: snapshotCapWeek(cap), cap_week_source: cap.source }) + '\n');
     const result = await spendWeeklyReset();
     log(result);
     for (const h of hits.filter(x => x.done && /reset/i.test(x.url))) log('reset response', h.url, (await body(h) || '').slice(0, 300));
@@ -180,21 +242,30 @@ try {
     if (ALERT_FILE) fs.appendFileSync(ALERT_FILE, `[${new Date().toISOString()}] ZCODE-WEEK-RESET-HELD weekly ${q.week_pct}%, automatic reset off at ${RESET_WEEK_AT}%: the last reset waits for the head\n`);
   }
   const now = Math.floor(Date.now() / 1000);
+  const weekCap = weekCapAt(now);
   const marker = (() => { try { return Number(fs.readFileSync(MARKER, 'utf8').trim()); } catch { return 0; } })();
   const paceUntil = weekPaceUntil(q.week_pct, q.week_reset, now);
   q.week_pace_line = q.week_reset ? Math.round(WEEK_PACE * (now - (q.week_reset - WEEK_SECONDS)) / WEEK_SECONDS * 10) / 10 : null;
-  if (q.five_h_pct >= CAP_5H || q.week_pct >= CAP_WEEK || paceUntil) {
-    const until = Math.max(q.week_pct >= CAP_WEEK ? q.week_reset : 0, q.five_h_pct >= CAP_5H ? q.five_h_reset : 0, paceUntil);
+  const weekCapHold = weekCapHolds(q.week_pct, weekCap);
+  const held = q.five_h_pct >= CAP_5H || weekCapHold || paceUntil;
+  if (held) {
+    const capUntil = weekCapHold
+      ? (weekCap.source === 'env-active' ? Math.min(q.week_reset || weekCap.until, weekCap.until) : q.week_reset)
+      : 0;
+    const until = Math.max(capUntil || 0, q.five_h_pct >= CAP_5H ? q.five_h_reset : 0, paceUntil);
     if (until > marker) fs.writeFileSync(MARKER, `${until}\n`);
     q.marker_written = Math.max(until, marker);
     const why = paceUntil ? `week pace line ${q.week_pace_line}% of ${WEEK_PACE}%` : 'cap';
     log(`hold ZCode until ${new Date(until * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}% (${why})`);
+    appendHeldUnderPaceAlert('ZCODE', true, q.week_pct, q.week_pace_line, why, q, now, ALERT_FILE);
   } else if (prev.marker_written && marker === prev.marker_written && marker > now) {
     // Only clear a hold this script wrote; a provider refusal's marker stays. MARKER may be a symlink: readers see its target.
     fs.rmSync(fs.realpathSync(MARKER), { force: true });
     log(`release ZCode hold: 5h ${q.five_h_pct}% weekly ${q.week_pct}%`);
   }
-  fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H, cap_week: CAP_WEEK, max_age_seconds: QUOTA_MAX_AGE_SECONDS, freshness: 'fresh' }) + '\n');
+  // Snapshot readers also apply cap_week; the marker carries lower temporary caps only until their expiry.
+  fs.writeFileSync(STATE, JSON.stringify({ ...q, read_at: now, cap_5h: CAP_5H, cap_week: snapshotCapWeek,
+    cap_week_source: weekCap.source, max_age_seconds: QUOTA_MAX_AGE_SECONDS, freshness: 'fresh' }) + '\n');
   const iso = t => t ? new Date(t * 1000).toISOString() : 'not started';
   log(`5h ${q.five_h_pct}% (reset ${iso(q.five_h_reset)}) weekly ${q.week_pct}% (reset ${iso(q.week_reset)})`);
 } catch (e) {
