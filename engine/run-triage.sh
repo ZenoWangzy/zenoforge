@@ -146,8 +146,7 @@ fi
 # `set -e` with nothing recorded anywhere. Recorded as an environment
 # fault, not charged, retried next tick; systemic -> the scheduler
 # quarantines triage rather than letting every ticket die the same way.
-ISSUE_JSON="$(gh issue view "$N" --repo "$REPO" \
-  --json number,title,body,author,comments,createdAt,updatedAt,labels,state)" || { gh_backoff_refusal "$?" || record_env_fault env:gh-api triage "$N" "gh issue view failed (api.github.com unreachable or timed out)"; exit 1; } # rc 75 = gh's own backoff, not an outage
+ISSUE_JSON="$(gh_issue_view_or_wait triage "$N" "$REPO" number,title,body,author,comments,createdAt,updatedAt,labels,state)" || { gh_backoff_refusal "$?" || record_env_fault env:gh-api triage "$N" "$ISSUE_JSON"; exit 1; } # rc 75 = gh's own backoff, not an outage
 VERDICT_SNAPSHOT_JSON="$ISSUE_JSON"
 if [ -n "$BATCH_SNAPSHOT_FILE" ]; then
   if ! VERDICT_SNAPSHOT_JSON="$(cat "$BATCH_SNAPSHOT_FILE")"; then
