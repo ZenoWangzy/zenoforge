@@ -224,8 +224,8 @@ rm -f -- "$store"
 for mb in 600 620 640 660 680 700 720 740 760 780; do record_peak zc "luna-zc-peak-$mb" "$mb"; done
 for mb in 300 320 340; do record_peak luna "luna-peak-$mb" "$mb"; done
 read -r estimate estimate_source <<< "$(worker_peak_mb zc)"
-if [[ "$estimate" == 740 && "$estimate_source" == measured ]]; then
-  printf 'PASS zc p90 of ten samples is the ninth: 740\n'
+if [[ "$estimate" == 760 && "$estimate_source" == measured ]]; then
+  printf 'PASS zc p90 of ten samples is the ninth: 760\n'
 else
   printf 'FAIL zc estimate: got %s %s\n' "$estimate" "$estimate_source"
   failures=$((failures + 1))
@@ -246,9 +246,9 @@ else
 fi
 slice_room_set 700
 if box_has_room 0 zc; then
-  printf 'FAIL 700MB left under a zc p90 of 740 was admitted\n'
+  printf 'FAIL 700MB left under a zc p90 of 760 was admitted\n'
   failures=$((failures + 1))
-elif [[ "$BOX_ROOM_WHY" == 'worker slice 700MB left under memory.high < 740MB worker peak backend=zc source=measured' ]]; then
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 700MB left under memory.high < 760MB worker peak backend=zc source=measured' ]]; then
   printf 'PASS zc refusal names its own measured p90\n'
 else
   printf 'FAIL zc measured refusal: %s\n' "$BOX_ROOM_WHY"
