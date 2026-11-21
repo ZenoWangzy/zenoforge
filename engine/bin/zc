@@ -46,6 +46,7 @@ while :; do
   flock "$mx"
   [[ -e "$wait_f" ]] || : >"$wait_f"
   [[ -e "$wait_f" ]] || { echo "zc: cannot publish capacity ticket $wait_f" >&2; exit 74; }
+  luna_reload_live_gate
   if declare -F luna_waiter_has_room >/dev/null; then
     if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
   elif box_has_room; then
@@ -53,7 +54,7 @@ while :; do
   fi
   [[ -e "$wait_f" ]] || { echo "zc: capacity ticket disappeared: $wait_f" >&2; exit 74; }
   [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
-  flock -u "$mx"; sleep 30
+  flock -u "$mx"; sleep "${LUNA_WAIT_SECONDS:-30}"
 done
 mapfile -t zcode_cmd < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_argv)
 (( ${#zcode_cmd[@]} )) || { echo "zc: zcode executable missing (config engine.zcode_bin, ZCODE_BIN, zc-src, PATH)" >&2; echo 75 >"$out/rc"; exit 75; }
