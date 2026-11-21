@@ -4,7 +4,7 @@ source "$(dirname "$0")/test-env.sh"
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 source "$script_dir/hand-completion-refill.sh"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 mkdir -p "$tmp/bin" "$tmp/repo/engine"
 export REFILL_TRACE="$tmp/trace" REFILL_HELPER="$script_dir/hand-completion-refill.sh"
 {

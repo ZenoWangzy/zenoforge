@@ -736,7 +736,7 @@ MODEL_POLICY_TOKEN_TEST="$(printf 'node\tnode $HOME/wt/x/packages/example-admin/
           }
           { print prohibited($0) }')"
 assert_eq "live scan matches forbidden names as whole tokens, not substrings" 0 "$MODEL_POLICY_TOKEN_TEST"
-MODEL_POLICY_TEST_PROCESSES="00:00 bash bash -c rg claude -- $HOME/wt/issue-42 --glob '*.sh'"
+MODEL_POLICY_TEST_PROCESSES="00:00 bash bash -c grep claude -- $HOME/wt/issue-42 --glob '*.sh'"
 assert_eq "live scan ignores forbidden model text in a worktree shell command" clean "$(model_policy live)"
 MODEL_POLICY_TEST_PROCESSES="00:00 claude claude --model custom --settings $AGENT_HOME/checkout/engine/prompts/agent-settings.json --add-dir $HOME/wt/issue-42"
 set +e
