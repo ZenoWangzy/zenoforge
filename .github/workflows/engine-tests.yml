@@ -46,7 +46,9 @@ on:
 
 # main: one run plus the newest waiting, so a merge burst still gets a verdict. PRs: the latest push wins.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A pull_request run that starts after its PR merged resolves github.ref to the base branch; keyed by ref alone it
+  # joined the main group with cancel-in-progress and cancelled main runs (8 in a row on 2026-11-21, row 875).
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
