@@ -28,7 +28,7 @@ command git -C "$gr" update-ref refs/remotes/origin/main "$g3"
 [[ "$(ROOT="$gr" gate_eval_sha | tr '\n' ' ')" == "$g3 $g2 $g1 " ]] || fail "gate chain did not walk past product commits: $(ROOT="$gr" gate_eval_sha | tr '\n' ' ')"
 
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { tick_prs_changed; local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 command_arg() { local flag="$1" i; for ((i=0; i<${#CODEX_COMMAND[@]}; i++)); do [[ "${CODEX_COMMAND[i]}" == "$flag" ]] && { printf '%s' "${CODEX_COMMAND[i + 1]:-}"; return 0; }; done; return 1; }
 
@@ -1507,6 +1507,8 @@ dispatch_pending || :
 [[ "$DISPATCH_PROMPT" == *"同一函数的兄弟出口也要枚举"*"各补一条回归测试"* ]] || fail 'repair prompt lacks the sibling-exit rule'
 
 # ---------- 合并门：批准必须等于当前 head，merge 带 --match-head-commit ----------
+# 每个用例重写 units 后先作废 census（进程内 + 60 s 共享文件）：前一个用例留下的文件会让
+# 新出现的 PR 在本窗口里查不到 head（同用例内 lane 自己的 invalidation 仍照旧）。
 MAIN_HEAD="$M1"
 gate_eval_sha() { printf '%s' "$M1"; }
 git() {

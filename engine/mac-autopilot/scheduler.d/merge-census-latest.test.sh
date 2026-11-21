@@ -10,7 +10,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/test-env.sh
 d=$(cd "$(dirname "$0")" && pwd)
 source "$d/tick-census.sh"
 HERE=$(cd "$d/.." && pwd); jqf() { jq "$@"; }; SHA_RE='^[0-9a-f]{40}$'
-GH_CHECK_RUNS='{check_runs: []}'
+GH_CHECK_RUNS='{"check_runs":[]}'
 gh() {
   case "${1:-} ${2:-}" in
     'api repos/{owner}/{repo}/commits/'*'/check-runs?per_page=100') jq -c '.check_runs // []' <<<"$GH_CHECK_RUNS" ;;
@@ -73,7 +73,7 @@ c=$(census "$(run 'Postsubmit validate' completed skipped 2026-11-08T09:57:05Z 1
 GH_CHECK_RUNS='not-json'
 c="$(jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' | pr_census_by_number | pr_census_checks_fill)"
 [[ "$(jq -r '.["7"].checks' <<<"$c")" == null && "$(jq -r '.["7"].ci' <<<"$c")" == null ]] || fail "unreadable check-runs" "$c"
-GH_CHECK_RUNS='{check_runs: []}'
+GH_CHECK_RUNS='{"check_runs":[]}'
 c="$(jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' | pr_census_by_number | pr_census_checks_fill)"
 [[ "$(jq -c '.["7"].checks' <<<"$c")" == '[]' && "$(jq -r '.["7"].ci' <<<"$c")" == 0 ]] || fail "row-less success" "$c"
 lane_skips "$(jq -c '.["7"].checks' <<<"$c")" || fail "row-less success" "lane must skip"
