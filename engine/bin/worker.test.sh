@@ -353,6 +353,72 @@ run_auto_pick auto-shim-missing-target "$shim_worker_root" "$auto_worktree" "$au
 [[ $(grep -c 'WORKER-ZCODE-UNRUNNABLE' "$shim_agent_home/logs/head-watch.alerts") == 1 ]] || fail 'unrunnable configured zcode did not alert exactly once per boot'
 printf 'PASS missing-target shim routes to luna, caches rc=127, and alerts once per boot\n'
 
+# 11-21 queue 884: a cached failed probe must not stand for the whole boot after zcode is reinstalled.
+stale_case="$test_root/zc-stale-cache"
+stale_root="$stale_case/.scratch"; stale_wt="$stale_case/worktree"; stale_prompt="$stale_case/brief.md"
+stale_home="$stale_case/home"; stale_agent_home="$stale_case/agent-home"
+stale_zcode="$stale_root/zc-src/bin/zcode"; stale_probe_log="$test_root/zc-stale-cache.probe-log"
+stale_cache="$stale_root/tmp/zc-runnable"; stale_alerts="$stale_agent_home/logs/head-watch.alerts"
+mkdir -p "$stale_root/tmp" "$stale_root/luna" "$stale_root/zc-src/bin" "$stale_home" "$stale_agent_home" "$stale_wt"
+git -C "$stale_wt" init -q
+git -C "$stale_wt" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'stale cache brief\n' > "$stale_prompt"
+write_stale_zcode() {  # $1 = the --version probe's exit code; rewriting the stub also refreshes its mtime
+  cat > "$stale_zcode" <<EOF
+#!/usr/bin/env bash
+if [[ \${1:-} == --version ]]; then printf 'probe\n' >> "\$ZCODE_PROBE_LOG"; exit $1; fi
+exit 0
+EOF
+  chmod +x "$stale_zcode"
+}
+run_explicit_zc() {
+  local name=$1
+  timeout --signal=TERM --kill-after=1 8 \
+    env -u WORKER_GATE_QUEUE_SECONDS -u ZCODE_BIN HOME="$stale_home" AGENT_HOME="$stale_agent_home" \
+      ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+      CODEX_MODEL=gpt-6-luna WORKER_SCRATCH_ROOT="$stale_root" WORKER_BACKEND=zc \
+      ZF_ZCODE_BIN="$stale_zcode" ZCODE_PROBE_LOG="$stale_probe_log" \
+      WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+      FAKE_ZC_MODE=success FAKE_LUNA_MODE=success \
+      bash "$worker_script" "$name" "$stale_wt" "$stale_prompt" \
+      > "$test_root/$name.stdout" 2> "$test_root/$name.stderr" || fail "$name returned nonzero (details: $test_root/$name.stderr)"
+}
+write_stale_zcode 127
+run_explicit_zc zc-stale-reroute
+stale_d="$stale_root/luna/zc-stale-reroute"
+[[ $(cat "$stale_d/backend") == luna ]] || fail 'broken zcode did not reroute an explicit zc run to luna'
+[[ $(wc -l < "$stale_probe_log") == 1 ]] || fail 'the first failing run did not probe exactly once'
+[[ $(wc -l < "$test_root/zc-stale-reroute.stderr") == 1 ]] || fail 'explicit reroute printed more than one stderr line'
+assert_file_contains "$test_root/zc-stale-reroute.stderr" "worker: zcode executable not runnable: $stale_zcode (probe rc=127); using luna instead of zc"
+assert_file_contains "$stale_d/placement.log" "backend=zc rerouted to luna; reason=zcode executable not runnable: $stale_zcode (probe rc=127)"
+[[ $(grep -c 'WORKER-ZCODE-UNRUNNABLE' "$stale_alerts") == 1 ]] || fail 'the first failing probe did not alert exactly once'
+printf 'PASS explicit zc reroute records the reason in the run directory and alerts once\n'
+
+run_explicit_zc zc-stale-fresh
+[[ $(cat "$stale_root/luna/zc-stale-fresh/backend") == luna ]] || fail 'a young cached failure did not keep routing to luna'
+[[ $(wc -l < "$stale_probe_log") == 1 ]] || fail 'a young cached failure was probed again'
+[[ $(grep -c 'WORKER-ZCODE-UNRUNNABLE' "$stale_alerts") == 1 ]] || fail 'a young cached failure wrote another alert'
+printf 'PASS a fresh cached failure stands while the executable is unchanged\n'
+
+touch -d '1 hour ago' "$stale_cache"; touch "$stale_zcode"  # the failure predates a change to the executable
+run_explicit_zc zc-stale-refail
+[[ $(cat "$stale_root/luna/zc-stale-refail/backend") == luna ]] || fail 'a still-broken changed executable did not reroute to luna'
+[[ $(wc -l < "$stale_probe_log") == 2 ]] || fail 'an expired cached failure was not probed exactly once more'
+[[ $(grep -c 'WORKER-ZCODE-UNRUNNABLE' "$stale_alerts") == 1 ]] || fail 'a failing probe twice in one boot wrote a second alert'
+printf 'PASS an expired failure is probed again and still alerts only once per boot\n'
+
+write_stale_zcode 0; touch -d '1 hour ago' "$stale_cache"  # reinstalled and working: the failure predates it
+run_explicit_zc zc-stale-reinstalled
+[[ $(cat "$stale_root/luna/zc-stale-reinstalled/backend") == zc &&
+   $(cat "$stale_root/luna/zc-stale-reinstalled/attempt-backend") == zc ]] || fail 'a reinstalled working zcode was not probed again after the cached failure'
+[[ $(wc -l < "$stale_probe_log") == 3 ]] || fail 'the reinstalled executable was not probed exactly once more'
+printf 'PASS a cached failure expires when the executable is newer than the probe\n'
+
+run_explicit_zc zc-stale-success-cached
+[[ $(cat "$stale_root/luna/zc-stale-success-cached/backend") == zc ]] || fail 'a cached successful probe did not keep zc'
+[[ $(wc -l < "$stale_probe_log") == 3 ]] || fail 'a cached successful probe was repeated in the same boot'
+printf 'PASS a cached successful probe is not repeated in the same boot\n'
+
 path_root="$test_root/auto-path-zc/.scratch"
 path_zcode_bin="$test_root/auto-path-zcode-bin"
 mkdir -p "$path_root/tmp" "$path_root/luna" "$path_zcode_bin"
