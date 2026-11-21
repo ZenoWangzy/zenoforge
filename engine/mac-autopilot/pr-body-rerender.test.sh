@@ -110,3 +110,43 @@ GH_BODY=$'## root-cause\nx\n## recurrence-guard\ny\n## prior-art\nz\n## decision
 pr_body_refresh "$(jq -c '.units[0]' "$UNITS")"
 [[ "$(edits)" == 3 && "$(field body-1 .pr_body_hash)" =~ ^[0-9a-f]{64}$ ]] || fail 'a complete legacy body was edited or left without a hash'
 echo 'pr-body-rerender.test.sh: ok'
+
+# Row 898: pr_body_refresh 的 gh pr edit 在台账锁外跑；hash 写回在锁内；
+# 编辑窗口里单元丢了 PR 就跳过 hash 写并记一行（未持锁的调用路径保持就地调用，不替调用方拿锁）。
+release_scheduler_lock
+acquire_scheduler_lock || fail 'row-898 probe could not take the scheduler lock'
+r898_free=0 r898_held=0 r898_write_free=0
+eval "gh_r898() $(declare -f gh | sed '1d')"
+gh() {
+  case "$1 $2" in
+    'pr view'|'pr edit') if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi ;;
+  esac
+  gh_r898 "$@"
+}
+eval "set_unit_r898() $(declare -f set_unit | sed '1d')"
+set_unit() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
+  set_unit_r898 "$@"
+}
+: > "$GH_CALLS"
+printf '%s\n' '## root-cause' 'a' '## prior-art' 'https://example.com/r898' > "$sup/impl-body-1.md"
+set_unit body-1 '.pr_body_hash="stale-hash-value-that-is-not-the-current-render"'
+pr_body_refresh "$(jq -c '.units[0]' "$UNITS")"
+[[ "$r898_free" -ge 1 && "$r898_held" == 0 ]] || fail "pr body edit ran under the ledger lock (free=$r898_free held=$r898_held)"
+[[ "$r898_write_free" == 0 ]] || fail "$r898_write_free pr-body hash writes ran with the lock released"
+[[ "$(field body-1 .pr_body_hash)" != stale-hash-value-that-is-not-the-current-render ]] || fail 'the lock-free refresh did not store the new hash'
+: > "$A/scheduler.log"
+set_unit body-1 '.pr_body_hash="stale-hash-value-that-is-not-the-current-render"'
+gh() {
+  case "$1 $2" in
+    'pr edit') jq '(.units[] | select(.id=="body-1") | .pr) = 4501' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS" ;;
+  esac
+  gh_r898 "$@"
+}
+printf '%s\n' '## root-cause' 'a' '## prior-art' 'https://example.com/r898b' > "$sup/impl-body-1.md"
+pr_body_refresh "$(jq -c '.units[0]' "$UNITS")"
+[[ "$(field body-1 .pr_body_hash)" == stale-hash-value-that-is-not-the-current-render ]] || fail 'a stale body hash was written'
+grep -q 'body refresh skipped: the unit changed while the ledger lock was released' "$A/scheduler.log" \
+  || fail "the stale refresh skip did not log its one line: $(cat "$A/scheduler.log")"
+release_scheduler_lock
+echo 'pr-body-rerender.test.sh: row-898 lock discipline ok'
