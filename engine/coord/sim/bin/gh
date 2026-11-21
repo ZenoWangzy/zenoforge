@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${SIM_WORLD:?sim_as must set SIM_WORLD}"
+exec 9>>"$SIM_WORLD/gh.log"
+flock -x 9
+printf '%s\t' "${SIM_HOST_ID:-unknown}" >&9
+printf '%q ' "$@" >&9
+printf '\n' >&9
+printf 'sim gh: API calls are outside the first-version cases: %s\n' "$*" >&2
+exit 97
