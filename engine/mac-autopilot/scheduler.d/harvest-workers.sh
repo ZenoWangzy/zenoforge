@@ -58,42 +58,22 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
-  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" worker_snapshot="${3:-}" w pid unit wtype report rep lg session_id tk token_start v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid pid_start harvested limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled worker_row_filter row_index worker_model worker_provider worker_mode worker_started worker_usage_start
-  local -a worker_rows=() refreshed_worker=()
-  worker_row_filter='[ (.pid|tostring|rtrimstr("\n")), (.unit|tostring|rtrimstr("\n")), (.type|tostring|rtrimstr("\n")), (.report|tostring|rtrimstr("\n")), (.log|tostring|rtrimstr("\n")), ((.harvested // false)|tostring|rtrimstr("\n")), ((.process_group // "")|tostring|rtrimstr("\n")), ((.pid_start // "")|tostring|rtrimstr("\n")), ((.model // "")|tostring|rtrimstr("\n")), ((.provider // "")|tostring|rtrimstr("\n")), ((.mode // "fresh")|tostring|rtrimstr("\n")), ((.started // "")|tostring|rtrimstr("\n")), ((.token_usage_start // null)|tojson), tojson ] | map(. + "\u0000") | .[]'
-  if [[ -n "$worker_snapshot" ]]; then
-    mapfile -d '' -t worker_rows < <(jqf -j "$worker_row_filter" <<<"$worker_snapshot")
-  else
-    mapfile -d '' -t worker_rows < <(jqf -j ".workers[] | $worker_row_filter" "$WORKERS")
-  fi
-  for ((row_index = 0; row_index + 13 < ${#worker_rows[@]}; row_index += 14)); do
-    pid="${worker_rows[row_index]}"; unit="${worker_rows[row_index + 1]}"; wtype="${worker_rows[row_index + 2]}"
-    report="${worker_rows[row_index + 3]}"; lg="$SUP/${worker_rows[row_index + 4]}"; harvested="${worker_rows[row_index + 5]}"
-    pgid="${worker_rows[row_index + 6]}"; pid_start="${worker_rows[row_index + 7]}"; worker_model="${worker_rows[row_index + 8]}"
-    worker_provider="${worker_rows[row_index + 9]}"; worker_mode="${worker_rows[row_index + 10]}"; worker_started="${worker_rows[row_index + 11]}"
-    worker_usage_start="${worker_rows[row_index + 12]}"; w="${worker_rows[row_index + 13]}"
+  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" worker_snapshot="${3:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled
+  while read -r w; do
     scheduler_lock_yield_between_units || return 1
     if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
-      mapfile -d '' -t refreshed_worker < <(jqf -j --argjson pid "$pid" --arg unit "$unit" "([.workers[] | select(.pid==\$pid and .unit==\$unit and .harvested!=true)][0] // empty) | $worker_row_filter" "$WORKERS")
-      (( ${#refreshed_worker[@]} == 14 )) || continue
-      pid="${refreshed_worker[0]}"; unit="${refreshed_worker[1]}"; wtype="${refreshed_worker[2]}"
-      report="${refreshed_worker[3]}"; lg="$SUP/${refreshed_worker[4]}"; harvested="${refreshed_worker[5]}"
-      pgid="${refreshed_worker[6]}"; pid_start="${refreshed_worker[7]}"; worker_model="${refreshed_worker[8]}"
-      worker_provider="${refreshed_worker[9]}"; worker_mode="${refreshed_worker[10]}"; worker_started="${refreshed_worker[11]}"
-      worker_usage_start="${refreshed_worker[12]}"; w="${refreshed_worker[13]}"
+      pid="$(jqf -r '.pid' <<<"$w")"; unit="$(jqf -r '.unit' <<<"$w")"
+      w="$(jqf -c --argjson pid "$pid" --arg unit "$unit" '[.workers[] | select(.pid==$pid and .unit==$unit and .harvested!=true)][0] // empty' "$WORKERS")"
+      [[ -n "$w" ]] || continue
     fi
-    [[ "$harvested" == "true" ]] && continue
-    [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
-    rep="$SUP/$report"
-    case "$wtype" in
-      implement|repair) model_not_found_cache_observe_log "$worker_model" "$lg" || true ;;
-      supervise) worker_model="$(codex_model_for_profile "${worker_model#profile:}" 2>/dev/null || true)"; [[ -n "$worker_model" ]] && model_not_found_cache_observe_log "$worker_model" "$lg" || true ;;
-    esac
+    [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
+    pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
+    report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"; model_not_found_cache_observe_worker "$w" "$lg" || true
     if [[ "$local_only" == true ]]; then
       if [[ "$wtype" =~ ^(review|rereview|repair)$ || ( "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ) ]]; then
         # Finished worker with a report: harvest now so its slot frees and the next stage dispatches in this refill. Land, eval, supervise and report-less deaths stay on the slow tick.
         # At most 2 per refill: these harvests make GitHub calls (census, approval status, run cancel) and the REST quota is shared with releases.
-        [[ -s "$rep" ]] && ! harvest_worker_alive "$w" "$pid" "$pgid" "$pid_start" && (( pr_harvested < 2 )) || continue
+        [[ -s "$rep" ]] && ! harvest_worker_alive "$w" && (( pr_harvested < 2 )) || continue
         pr_harvested=$((pr_harvested + 1))
       else
         [[ "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == direct-main ]] || continue
@@ -115,21 +95,19 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     fi
     # --json 日志：末次累计 turn.completed 的新鲜 token 减去派发时的 token_usage_start（续会话累计计数器）；legacy 日志退回页脚
     claude_impl=false
-    [[ "$worker_provider" == claude && "$wtype" =~ ^(implement|repair)$ ]] && claude_impl=true
+    [[ "$(jqf -r '.provider // empty' <<<"$w")" == claude && "$wtype" =~ ^(implement|repair)$ ]] && claude_impl=true
     # Claude implement logs are stream-json: the result line carries the session, the final answer, usage and any provider fault.
     stream="$(python3 "$USAGE_READER" "$([[ "$claude_impl" == true ]] && echo claude-stream || echo codex-stream)" "$lg" 2>/dev/null || true)"
-    token_start="$worker_usage_start"
-    [[ "$claude_impl" != true ]] || token_start=null
-    tk="$(jqf -r --argjson s "$token_start" --arg m "$worker_mode" 'if .fresh == null then empty elif $s == null then (if $m == "resume" then empty else .fresh end) else .fresh - ($s | if (.cached_input_tokens|type)=="number" then .input_tokens - .cached_input_tokens + .output_tokens else empty end) | select(. >= 0) end' <<<"$stream")"
+    tk="$(jqf -r --argjson s "$([[ "$claude_impl" == true ]] && echo null || jqf -c '.token_usage_start // null' <<<"$w")" --arg m "$(jqf -r '.mode // "fresh"' <<<"$w")" 'if .fresh == null then empty elif $s == null then (if $m == "resume" then empty else .fresh end) else .fresh - ($s | if (.cached_input_tokens|type)=="number" then .input_tokens - .cached_input_tokens + .output_tokens else empty end) | select(. >= 0) end' <<<"$stream")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk="$(tokens_of "$lg")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk=""  # 读不出来就是 unavailable，不当 0
     # ZCode prints its turn error and then idles with the process alive: stop it so the zero-output path below records the death.
-    if harvest_worker_alive "$w" "$pid" "$pgid" "$pid_start" && zcode_turn_failed_hung "$lg"; then
+    if harvest_worker_alive "$w" && zcode_turn_failed_hung "$lg"; then
       say "stopping hung worker unit=$unit pid=$pid reason=zcode-turn-failed"
-      stuck_worker_stop "$pid" "$pgid"
+      stuck_worker_stop "$pid" "$(jqf -r '.process_group // empty' <<<"$w")"
     fi
-    if harvest_worker_alive "$w" "$pid" "$pgid" "$pid_start"; then
-      started="$worker_started"
+    if harvest_worker_alive "$w"; then
+      started="$(jqf -r .started <<<"$w")"
       s="$(ap_iso_epoch "$started")"; [[ "$s" =~ ^[0-9]+$ ]] || s="$NOW_EPOCH"
       mins=$(( (NOW_EPOCH - s) / 60 ))
       if (( mins > $(jqf -r '.waste.slow_worker_minutes // 60' <<<"$CFG") )); then
@@ -146,7 +124,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     # Older stdout-report workers launched their backend in a separate session,
     # whose group was not recorded. Recheck after a grace period, even if a
     # report has appeared: it might still be in the middle of being written.
-    if [[ -z "$pgid" && "$worker_provider" =~ ^(zcode|claude)$ ]]; then
+    if [[ "$(jqf -r '.process_group // empty' <<<"$w")" == "" && "$(jqf -r '.provider // empty' <<<"$w")" =~ ^(zcode|claude)$ ]]; then
       s="$(jqf -r '.no_output_check_after // 0' <<<"$w")"
       if [[ ! "$s" =~ ^[0-9]+$ ]] || (( s == 0 )); then
         workers_update --argjson pid "$pid" --arg unit "$unit" --argjson after "$((NOW_EPOCH + 300))" \
@@ -165,7 +143,6 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     execution="$(jq -Rsc '[split("\n")[] | fromjson? | select(.type=="pipeline.execution")] | last // {}' "$lg" 2>/dev/null)"
     if [[ "$(jqf -r '.reason // empty' <<<"$execution")" == resume-startup-failed ]]; then
       w="$(jqf '.mode="fresh" | .session_id="" | .token_usage_start={input_tokens:0,cached_input_tokens:0,output_tokens:0}' <<<"$w")"
-      worker_mode=fresh; worker_usage_start='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'
       say "repair fallback unit=$unit mode=fresh reason=resume-startup-failed"
     fi
     session_id="$(jqf -r '.session_id // empty' <<<"$stream")"
@@ -176,14 +153,14 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     if [[ -n "$session_id" && "$wtype" =~ ^(implement|repair|review|rereview)$ ]]; then
       role="$(session_role "$wtype")"
       local session_model session_provider session_record
-      session_model="$worker_model"
-      session_provider="$worker_provider"
+      session_model="$(jqf -r '.model // empty' <<<"$w")"
+      session_provider="$(jqf -r '.provider // empty' <<<"$w")"
       [[ -n "$session_provider" ]] || session_provider="$(provider_of "$session_model")"
       session_record="$(jqf -cn --arg id "$session_id" --arg provider "$session_provider" --arg model "$session_model" '{id:$id,provider:$provider,model:$model}')"
       set_unit "$unit" ".session_id=$(js "$session_id") | .session_ids[\"$role\"]=$(js "$session_id") | .sessions[\"$role\"]=$session_record"
     fi
     # 原生 turn 事件入库（provider/session/turn 幂等键，重复交付/重扫不重复计数）；legacy 日志无事件，no-op
-    python3 "$USAGE_READER" codex-ingest "$lg" "$session_id" "$worker_started" "$BUDGET_EVENTS" >/dev/null 2>&1 || true
+    python3 "$USAGE_READER" codex-ingest "$lg" "$session_id" "$(jqf -r '.started // empty' <<<"$w")" "$BUDGET_EVENTS" >/dev/null 2>&1 || true
     if [[ ! -s "$rep" && "$rep" == *-r-* && -s "${rep/-r-/-}" ]]; then
       # 复审 worker 偶尔把报告写成 review-N-<TAG>.md（丢了 -r-）：pr-3972 两次 APPROVE 因此被当成无产出死亡。
       mv -f -- "${rep/-r-/-}" "$rep" && say "report for unit=$unit was written as $(basename "${rep/-r-/-}"); moved to $report"
@@ -199,9 +176,9 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       fi
     fi
     if [[ "$claude_impl" == true ]]; then usage_end="$(jqf -c '.usage' <<<"$stream")"; else usage_end="$(session_usage_for_id "$session_id")"; fi
-    usage_start="$worker_usage_start"
+    usage_start="$(jqf -c '.token_usage_start // null' <<<"$w")"
     accounting="$(jqf -cn --argjson start "$usage_start" --argjson end "$usage_end" \
-      --arg mode "$worker_mode" --arg before "$(jqf -r '.session_id // empty' <<<"$w")" --arg after "$session_id" '
+      --arg mode "$(jqf -r '.mode // "fresh"' <<<"$w")" --arg before "$(jqf -r '.session_id // empty' <<<"$w")" --arg after "$session_id" '
       def valid: type=="object" and all(.input_tokens,.cached_input_tokens,.output_tokens; type=="number" and .>=0);
       (if ($start|valid|not) then "missing-baseline"
        elif $mode=="resume" and $before!=$after then "session-changed"
@@ -211,7 +188,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       {token_accounting:$status,token_usage_end:$end,dispatch_tokens:
         (if $status=="measured" then ($end.input_tokens - $start.input_tokens + $end.output_tokens - $start.output_tokens) else null end)}
     ')"
-    accounting="$(jqf --arg sid "$session_id" --arg mode "$worker_mode" \
+    accounting="$(jqf --arg sid "$session_id" --arg mode "$(jqf -r '.mode // "fresh"' <<<"$w")" \
       --arg reason "$(jqf -r '.reason // empty' <<<"$execution")" '. + {session_id:$sid,mode:$mode,execution_reason:$reason}' <<<"$accounting")"
     if [[ "$(jqf -r '.reason // empty' <<<"$execution")" == resume-startup-failed ]]; then
       accounting="$(jqf --arg sid "$(jqf -r '.resume_session_id // empty' <<<"$execution")" '.resume_session_id=$sid' <<<"$accounting")"
@@ -480,7 +457,9 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       [[ -n "$limit_hit" ]] || limit_hit="$(jqf -r '.limit // empty' <<<"$stream")"
       if [[ -n "$limit_hit" ]]; then
         # 提供方上限：冷却该提供方，不计入无产出、不算失败回合；单元留在原 stage 由孤儿自愈回到 pending。
-        [[ -n "$worker_provider" ]] || worker_provider="$(provider_of "$worker_model")"
+        local worker_provider
+        worker_provider="$(jqf -r '.provider // empty' <<<"$w")"
+        [[ -n "$worker_provider" ]] || worker_provider="$(provider_of "$(jqf -r '.model // ""' <<<"$w")")"
         start_cooldown "$worker_provider" "$limit_hit (unit=$unit)"
         # The scheduler does not load lib.sh, so note_provider_quota_exhausted (locks, env faults) is unavailable here: write the hold directly.
         [[ "$worker_provider" != claude ]] || provider_quota_write_until claude "$((NOW_EPOCH + 1800))" || :
@@ -493,15 +472,15 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     fi
     harvest_scope_stop "$w"
     workers_update --argjson accounting "$accounting" --arg finished "$STAMP" --argjson pid "$pid" --arg unit "$unit" '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))'
-  done
+  done < <(if [[ -n "$worker_snapshot" ]]; then printf '%s\n' "$worker_snapshot"; else jqf -c '.workers[]' "$WORKERS"; fi)
   scheduler_lock_yield_between_units || return 1
 }
 
-harvest_worker_alive() { # worker JSON [pid process-group pid-start]; group survives its leader, and zombies cannot write reports
-  local w="$1" pid="${2:-}" pgid="${3:-}" expected="${4:-}" current state processes
-  (( $# >= 2 )) || pid="$(jqf -r '.pid // empty' <<<"$w")"
-  (( $# >= 3 )) || pgid="$(jqf -r '.process_group // empty' <<<"$w")"
-  (( $# >= 4 )) || expected="$(jqf -r '.pid_start // empty' <<<"$w")"
+harvest_worker_alive() { # worker JSON; group survives its leader, and zombies cannot write reports
+  local w="$1" pid pgid expected current state processes
+  pid="$(jqf -r '.pid // empty' <<<"$w")"
+  pgid="$(jqf -r '.process_group // empty' <<<"$w")"
+  expected="$(jqf -r '.pid_start // empty' <<<"$w")"
   if [[ "$expected" =~ ^[0-9]+$ ]]; then
     current="$(coord_process_start_ticks "$pid" 2>/dev/null || true)"
     state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
