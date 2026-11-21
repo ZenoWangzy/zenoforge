@@ -75,7 +75,7 @@ quick_land_refusal() { # <number of --test> <prior-art text> [test commands] →
   fi
 }
 
-# Checks that need the new commit: the rule lane and the size ratchet, on this change's own files only.
+# Checks that need the new commit: the rule lane, size ratchet and shortcut ratchet.
 # 11-19: 47bc387 landed with only intake-refill-flush.test.sh while the focused selection also named intake-existing-walk and
 # intake-missing-state; both went red on main. Every focused test must be a --test, except the whole scheduler suites that take
 # about 25 min each (scheduler.test.sh, scheduler-gates.test.sh, scheduler-part-N.test.sh): main CI runs those.
@@ -110,6 +110,20 @@ quick_land_commit_refusal() { # [test commands]
     || { echo "a changed test file lacks the bootstrap (set -euo pipefail, then source test-env.sh): ${suites[*]}"; return 0; }
   out="$({ bash tools/size-ratchet.sh 2>&1 || true; } | awk 'NR == FNR { own[$0] = 1; next } $1 == "FAIL" && $2 in own' <(git diff --name-only origin/main HEAD) -)"
   [[ -z "$out" ]] || echo "size-ratchet: $out"
+  out="$({ bash tools/shortcut-ratchet.sh 2>&1 || true; } | awk '
+    NR == FNR { own[$0] = 1; next }
+    /^FAIL / { print; next }
+    /^NOTE / {
+      note = substr($0, 6)
+      marker = " has no shortcut comments left "
+      at = index(note, marker)
+      if (at) {
+        path = substr(note, 1, at - 1)
+        if (path in own) print
+      }
+    }
+  ' <(git diff --name-only origin/main HEAD) -)"
+  [[ -z "$out" ]] || echo "shortcut-ratchet: $out"
 }
 
 quick_land_run_tests() { # test commands...; stops at the first red, the receipt keeps every rc
