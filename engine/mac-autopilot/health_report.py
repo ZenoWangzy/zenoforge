@@ -31,6 +31,20 @@ def pct(values, q):
     return values[min(len(values) - 1, int(round(q * (len(values) - 1))))]
 
 
+def report_lesson_lint_lifecycle():
+    engine_dir = os.environ.get("ZF_ENGINE_DIR") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    script = os.path.join(engine_dir, "lesson-lints.mjs")
+    if not os.path.isfile(script):
+        return
+    repo = os.environ.get("ZF_REPO_DIR") or os.path.dirname(engine_dir)
+    agent_home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.join(os.path.expanduser("~"), ".zenoforge")
+    ledger = os.path.join(agent_home, "state", "lesson-lint-lifecycle.jsonl")
+    try:
+        subprocess.run(["node", script, "--lifecycle", "--repo", repo, "--ledger", ledger], check=False)
+    except OSError:
+        print("lesson-lifecycle: report unavailable", file=sys.stderr)
+
+
 def main():
     here = os.path.dirname(os.path.realpath(__file__))
     default_runtime = os.environ.get("MAC_AUTOPILOT_RUNTIME_DIR") or (
@@ -164,6 +178,7 @@ def main():
         if os.path.exists(env_sh):
             cmd = ["bash", "-c", 'source "$0" >/dev/null 2>&1; exec "$@"', env_sh] + cmd
         subprocess.run(cmd, check=False)
+    report_lesson_lint_lifecycle()
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@
 // is the one recurrence >= 2 lesson without a locatable structural anchor
 // today and stays test-enforced instead.
 
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync, existsSync, appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -451,19 +451,27 @@ export function buildLessonLintVerdict({ lint, paths, readSource, ranking }) {
 }
 
 function parseArgs(args) {
-  const options = { repo: defaultRepo, base: '', head: 'HEAD' };
+  const options = { repo: defaultRepo, base: '', head: 'HEAD', ledger: '', lifecycle: false, days: 30 };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--repo' || arg === '--base' || arg === '--head') {
+    if (arg === '--lifecycle') {
+      options.lifecycle = true;
+    } else if (arg === '--repo' || arg === '--base' || arg === '--head' || arg === '--ledger' || arg === '--days') {
       const value = args[index + 1];
       if (!value) throw new Error(`${arg} requires a value`);
-      options[arg.slice(2)] = value;
+      const key = arg.slice(2);
+      options[key] = key === 'days' ? Number(value) : value;
       index += 1;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
-  if (!options.base) throw new Error('--base is required');
+  if (options.lifecycle) {
+    if (!options.ledger) throw new Error('--ledger is required with --lifecycle');
+    if (!Number.isInteger(options.days) || options.days < 1) throw new Error('--days must be a positive integer');
+  } else if (!options.base) {
+    throw new Error('--base is required');
+  }
   return options;
 }
 
@@ -471,41 +479,169 @@ function git(repo, args) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 }
 
-export function runLessonLints({ repo, base, head, log = (line) => console.log(line) }) {
+function appendLifecycleRow(ledger, row, log) {
+  if (!ledger) return true;
+  try {
+    mkdirSync(path.dirname(ledger), { recursive: true });
+    appendFileSync(ledger, `${JSON.stringify(row)}\n`);
+    return true;
+  } catch (error) {
+    log(`lesson-lint: ledger-write-failed${error?.code ? ` code=${error.code}` : ''}`);
+    return false;
+  }
+}
+
+function effectiveMode(lint) {
+  const mode = lint.mode ?? 'enforce';
+  if (mode !== 'observe' && mode !== 'enforce') throw new Error(`invalid lesson lint mode: ${mode}`);
+  return mode;
+}
+
+const allLints = [...lessonLints, exactSecondLint, entryCheckLint, utcStampLint];
+
+function lifecycleKey(lint) {
+  return `${lint.lesson ?? 'none'}\u0000${lint.classTag}`;
+}
+
+export function runLessonLints({ repo, base, head = 'HEAD', ledger = '', log = (line) => console.log(line) }) {
   const paths = git(repo, ['diff', '--name-only', `${base}...${head}`, '--']).split(/\r?\n/).filter(Boolean);
   const ranking = JSON.parse(git(repo, ['show', `${head}:${rankingPath}`]));
   const readSource = (file) => git(repo, ['show', `${head}:${file}`]);
+  const headSha = ledger ? git(repo, ['rev-parse', '--verify', `${head}^{commit}`]).trim() : '';
+  let ledgerWritable = true;
   let failed = 0;
   for (const lint of lessonLints) {
     const result = buildLessonLintVerdict({ lint, paths, readSource, ranking });
     if (result.verdict === 'skip') continue;
-    const line = `lesson-lint: lesson=${lint.lesson} incident_class=${lint.classTag} recurrence_count=${result.recurrence_count ?? 0} verdict=${result.verdict}`;
+    const mode = effectiveMode(lint);
+    const verdict = result.verdict === 'fail' && mode === 'observe' ? 'would-fail' : result.verdict;
+    const line = `lesson-lint: lesson=${lint.lesson} incident_class=${lint.classTag} recurrence_count=${result.recurrence_count ?? 0} verdict=${verdict}`;
     log(result.missing?.length ? `${line} missing=${result.missing.join('; ')}` : line);
     if (result.verdict === 'fail') {
       log(`lesson-lint: fix: ${lint.guidance}`);
-      failed += 1;
+      if (mode === 'enforce') failed += 1;
     }
+    if (ledgerWritable) ledgerWritable = appendLifecycleRow(ledger, {
+      lesson: lint.lesson,
+      classTag: lint.classTag,
+      mode,
+      verdict,
+      head_sha: headSha,
+      utc_time: new Date().toISOString(),
+    }, log);
   }
-  const exactSecond = exactSecondFailures(paths, readSource);
-  for (const hit of exactSecond) log(`lesson-lint: lesson=none incident_class=${exactSecondLint.classTag} verdict=fail at=${hit}`);
-  if (exactSecond.length) log(`lesson-lint: fix: ${exactSecondLint.guidance}`);
-  failed += exactSecond.length;
-  const entryChecks = entryCheckFailures(paths, readSource);
-  for (const hit of entryChecks) log(`lesson-lint: lesson=none incident_class=${entryCheckLint.classTag} verdict=fail at=${hit}`);
-  if (entryChecks.length) log(`lesson-lint: fix: ${entryCheckLint.guidance}`);
-  failed += entryChecks.length;
-  const utcStamps = utcStampFailures(paths, readSource);
-  for (const hit of utcStamps) log(`lesson-lint: lesson=none incident_class=${utcStampLint.classTag} verdict=fail at=${hit}`);
-  if (utcStamps.length) log(`lesson-lint: fix: ${utcStampLint.guidance}`);
-  failed += utcStamps.length;
+  for (const [lint, matches, findFailures] of [
+    [exactSecondLint, (file) => file.endsWith('.test.sh'), exactSecondFailures],
+    [entryCheckLint, (file) => /\.m?js$/.test(file) && !/\.test\.m?js$/.test(file), entryCheckFailures],
+    [utcStampLint, (file) => file.endsWith('.sh'), utcStampFailures],
+  ]) {
+    if (!paths.some(matches)) continue;
+    const hits = findFailures(paths, readSource);
+    const mode = effectiveMode(lint);
+    const verdict = hits.length ? (mode === 'observe' ? 'would-fail' : 'fail') : 'pass';
+    for (const hit of hits) log(`lesson-lint: lesson=none incident_class=${lint.classTag} verdict=${verdict} at=${hit}`);
+    if (hits.length) log(`lesson-lint: fix: ${lint.guidance}`);
+    if (mode === 'enforce') failed += hits.length;
+    if (ledgerWritable) ledgerWritable = appendLifecycleRow(ledger, {
+      lesson: 'none',
+      classTag: lint.classTag,
+      mode,
+      verdict,
+      head_sha: headSha,
+      utc_time: new Date().toISOString(),
+    }, log);
+  }
   return failed;
+}
+
+function lintAddedAt(repo, lint) {
+  const anchor = lint.lesson ? `lesson: '${lint.lesson}'` : lint.classTag;
+  try {
+    const entries = git(repo, ['log', '--reverse', '--format=%cI', '-S', anchor, '--', lintPath]).trim();
+    return entries ? new Date(entries.split(/\r?\n/)[0]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function runLessonLintLifecycle({ repo, ledger, days = 30, now = Date.now(), log = (line) => console.log(line) }) {
+  const rows = [];
+  try {
+    for (const line of readFileSync(ledger, 'utf8').split(/\r?\n/).filter(Boolean)) {
+      try {
+        rows.push(JSON.parse(line));
+      } catch {
+        // Ignore a partial ledger write without losing earlier rows.
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  const current = new Map(allLints.map((lint) => [lifecycleKey(lint), lint]));
+  const events = new Map();
+  for (const row of rows) {
+    if (typeof row?.classTag !== 'string' || typeof row?.utc_time !== 'string') continue;
+    const key = lifecycleKey(row);
+    if (!current.has(key)) continue;
+    const at = new Date(row.utc_time);
+    if (!Number.isFinite(at.getTime())) continue;
+    const list = events.get(key) ?? [];
+    list.push({ ...row, at });
+    events.set(key, list);
+  }
+
+  const cutoff = now - days * 24 * 60 * 60 * 1000;
+  const summaries = allLints.map((lint) => {
+    const lintEvents = events.get(lifecycleKey(lint)) ?? [];
+    const window = lintEvents.filter((event) => event.at.getTime() >= cutoff && event.at.getTime() <= now);
+    const first = lintEvents[0];
+    const introduced = first ? first.at : lintAddedAt(repo, lint);
+    const ageDays = introduced && Number.isFinite(introduced.getTime())
+      ? Math.floor((now - introduced.getTime()) / (24 * 60 * 60 * 1000))
+      : null;
+    return {
+      lint,
+      mode: effectiveMode(lint),
+      triggers: window.length,
+      fails: window.filter((event) => event.verdict === 'fail').length,
+      wouldFails: window.filter((event) => event.verdict === 'would-fail').length,
+      ageDays,
+      ageSource: first ? 'ledger' : introduced ? (lint.lesson ? 'git-log-lesson' : 'git-log-class') : 'unknown',
+    };
+  });
+
+  log(`lesson-lifecycle: window=${days}d`);
+  for (const item of summaries) {
+    log(`lesson-lifecycle: lesson=${item.lint.lesson ?? 'none'} classTag=${item.lint.classTag} mode=${item.mode} `
+      + `triggers=${item.triggers} fails=${item.fails} would-fails=${item.wouldFails} `
+      + `age_days=${item.ageDays ?? 'unknown'} age_source=${item.ageSource}`);
+  }
+  log('candidates-to-enforce:');
+  for (const item of summaries.filter((row) => row.mode === 'observe')) {
+    log(`  lesson=${item.lint.lesson ?? 'none'} classTag=${item.lint.classTag} would-fails=${item.wouldFails}`);
+  }
+  log('candidates-to-retire:');
+  for (const item of summaries.filter((row) => row.triggers === 0 && row.ageDays !== null && row.ageDays >= days)) {
+    log(`  lesson=${item.lint.lesson ?? 'none'} classTag=${item.lint.classTag} age_days=${item.ageDays} age_source=${item.ageSource}`);
+  }
 }
 
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const options = parseArgs(process.argv.slice(2));
-    const failed = runLessonLints({ repo: path.resolve(options.repo), base: options.base, head: options.head });
-    if (failed > 0) process.exitCode = 1;
+    const repo = path.resolve(options.repo);
+    if (options.lifecycle) {
+      runLessonLintLifecycle({ repo, ledger: path.resolve(options.ledger), days: options.days });
+    } else {
+      const failed = runLessonLints({
+        repo,
+        base: options.base,
+        head: options.head,
+        ledger: options.ledger && path.resolve(options.ledger),
+      });
+      if (failed > 0) process.exitCode = 1;
+    }
   } catch (error) {
     console.error(`lesson-lint: verdict=fail error=${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
