@@ -1730,11 +1730,11 @@ H31="${H2:0:36}0031"; H32="${H2:0:36}0032"; H33="${H2:0:36}0033" # checks are pe
 gh() { if [[ "$1 $2" == "pr list" ]]; then
   jq -n --arg h31 "$H31" --arg h32 "$H32" --arg h33 "$H33" '[{number:31,headRefOid:$h31,isDraft:false},{number:32,headRefOid:$h32,isDraft:false},{number:33,headRefOid:$h33,isDraft:false}]'
   elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H31/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{check_runs:[{name:"gate",status:"in_progress",conclusion:null}]}'
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"in_progress","conclusion":null}]}'
   elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H32/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{check_runs:[{name:"gate",status:"completed",conclusion:"success"}]}'
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
   elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H33/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{check_runs:[{name:"gate",status:"completed",conclusion:"failure"}]}'
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"failure"}]}'
   else eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; fi; }
 units "{\"units\":[{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T01:00:00Z\"},{\"id\":\"pr-34\",\"pr\":34,\"stage\":\"ready-to-merge\",\"critical\":true,\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T00:00:00Z\"},{\"id\":\"pr-32\",\"pr\":32,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T03:00:00Z\"},{\"id\":\"pr-33\",\"pr\":33,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T02:00:00Z\"}]}"
 [[ "$(merge_candidates 3 | jq -r .id | tr '\n' ' ')" == "pr-34 pr-32 pr-33 " ]] || fail "merge window still blocked at the head of the line ($(merge_candidates 3 | jq -r .id | tr '\n' ' '))"
@@ -1745,7 +1745,7 @@ units "{\"units\":[{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"ap
   gh() { if [[ "$1 $2" == "pr list" ]]; then
     jq -n --arg h "$H1" '[31,32,33] | map({number:., headRefOid:$h, isDraft:false})'
     elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H1/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{check_runs:[{name:"gate",status:"completed",conclusion:"success"}]}'
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
     else eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; fi; }
   units '{"units":[
     {"id":"pr-31","pr":31,"stage":"ready-to-merge","merge_checked_epoch":100,"ready_since":"2026-10-20T01:00:00Z"},
