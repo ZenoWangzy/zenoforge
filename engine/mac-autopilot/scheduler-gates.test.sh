@@ -2636,7 +2636,7 @@ GH_MERGES=(); run_merge_lane || :
   eval "$(declare -f gh | sed '1s/^gh /gh_before_kill /')"
   gh() { [[ "$1 $2" != "pr merge" ]] || { touch "$A/killed-at-merge"; kill -KILL "$BASHPID"; }; gh_before_kill "$@"; }
   units "{\"units\":[{\"id\":\"issue-86\",\"issue\":86,\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
-  rm -f "$A/killed-at-merge"; ( :; run_merge_lane ) || :
+  rm -f "$A/killed-at-merge"; ( run_merge_lane ) & merge_pid=$!; wait "$merge_pid" || :
   [[ -e "$A/killed-at-merge" && "$(field issue-86 .stage)" == ready-to-merge ]] || fail 'the kill did not land between gh pr merge and set_unit merged'
   gh() { if [[ "$1 $2" == "pr view" ]]; then echo "$M2"; else gh_before_kill "$@"; fi; }
   tick_prs() { printf '[]'; }; pr_view() { echo MERGED; }
