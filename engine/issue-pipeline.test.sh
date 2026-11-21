@@ -1194,8 +1194,8 @@ SO_FIXTURE='[
 so_roadmap_line="$(grep -F -A1 'ROADMAP_TRIAGE_CANDIDATES="$(jq' "$PIPELINE_SRC" | tail -n 1)"
 so_roadmap="${so_roadmap_line#*\'}"; so_roadmap="${so_roadmap%\' <<<*}"
 so_legacy="$(awk '/^elif ! NEEDS_TRIAGE_IDS=/{f=1;next} f && /^  . <<< /{exit} f' "$PIPELINE_SRC")"
-so_advisor_line="$(grep -F -A1 -- '--label needs-advisor --state open \' "$PIPELINE_SRC" | tail -n 1)"
-so_advisor="${so_advisor_line#*\'}"; so_advisor="${so_advisor%\'\)\"; then}"
+so_advisor_line="$(grep -F -- '|| ! NEEDS_ADVISOR_IDS="$(jq -r' "$PIPELINE_SRC")"
+so_advisor="${so_advisor_line#*\'}"; so_advisor="${so_advisor%\' <<<*}"
 assert_eq "roadmap needs-triage selector skips session-owned tickets" $'1\n3' \
   "$(jq -r --argjson lane_labels "$SO_LANES" "$so_roadmap | .[].number" <<< "$SO_FIXTURE")"
 assert_eq "legacy needs-triage selector skips session-owned tickets" $'1\n3' \
@@ -1577,7 +1577,7 @@ fi
 
 # Failed GitHub reads stay unknown; they must not look like an empty queue.
 ADVISOR_QUEUE_READ_BODY="$(sed -n '/^ADVISOR_QUEUE_READ_FAILED=0$/,/^advisor_slots=/p' "$PIPELINE_SRC")"
-if grep -qF 'if ! NEEDS_ADVISOR_IDS=' <<< "$ADVISOR_QUEUE_READ_BODY" \
+if grep -qF 'if ! ADVISOR_QUEUE_SNAPSHOT=' <<< "$ADVISOR_QUEUE_READ_BODY" \
   && grep -qF 'ADVISOR_QUEUE_READ_FAILED=1' <<< "$ADVISOR_QUEUE_READ_BODY" \
   && grep -qF 'queue is unknown' <<< "$ADVISOR_QUEUE_READ_BODY"; then
   echo 'ok - an unreadable needs-advisor snapshot is recorded as unknown'
@@ -1594,6 +1594,108 @@ else
     "$(grep -qF 'elif [ "$ADVISOR_BATCH_UNIT_ACTIVE" = "1" ]; then' <<< "$SELECTION_BODY" && echo yes || echo no)"
   FAILED=1
 fi
+
+run_advisor_snapshot_selection() (
+  local mode="$1" issue_json="$2" held_id="${3:-}" gh_calls="$AGENT_HOME/advisor-snapshot-gh.log"
+  local clock_calls="$AGENT_HOME/advisor-fake-clock-calls" hold_status=skip list_calls view_calls queue_status dispatch_status
+  : > "$gh_calls"
+  printf '0\n' > "$clock_calls"
+  REPO=test/repo
+  PIPELINE_SYSTEM_LABELS_JSON='[]'
+  NEEDS_ADVISOR_IDS=""
+  gh() {
+    printf '%s\n' "$*" >> "$gh_calls"
+    if [[ "$1 ${2:-}" == 'issue list' ]]; then
+      printf '%s\n' "$issue_json"
+    else
+      return 1
+    fi
+  }
+  is_on_hold() { gh issue view "$1" --repo "$REPO" --json labels; }
+  prioritize_advisor_blockers() { printf '%s\n' "$1"; }
+  issue_is_tracker_parent() { return 1; }
+  hand_agent_issue_is_live_owned() { return 1; }
+  roadmap_issue_is_container() { return 1; }
+  advisor_stored_verdict_disposition() { echo none; }
+  state_read() { echo '{}'; }
+  issue_model_failure_backoff_remaining() { echo 0; }
+  record_hand_owned_decision() { :; }
+  advisor_discard_stored_verdict() { :; }
+  record_advisor_decision() { :; }
+  ADVISOR_SELECT_MAX=12
+  ADVISOR_CAP=1
+  triage_slice_seconds_left() {
+    local calls
+    calls="$(cat "$clock_calls")"
+    calls=$((calls + 1))
+    printf '%s\n' "$calls" > "$clock_calls"
+    if [ "$mode" = reserve ] && [ "$calls" -ge 2 ]; then echo 59; else echo 61; fi
+  }
+  cap_slots_remaining() { echo 1; }
+  stage_unit_count() { echo 0; }
+  if eval "$ADVISOR_QUEUE_READ_BODY"; then queue_status=0; else queue_status=$?; fi
+  if [ -n "$held_id" ]; then
+    hold_status=0
+    advisor_issue_on_hold "$held_id" || hold_status=$?
+    printf 'snapshot-hold-status=%s\n' "$hold_status"
+  fi
+  ADVISOR_QUEUE_COUNT="$(awk 'NF { n += 1 } END { print n + 0 }' <<< "$NEEDS_ADVISOR_IDS")"
+  ADVISOR_BATCH_MIN=1
+  ADVISOR_PENDING_JOB_IDS=""
+  ADVISOR_STALE_PENDING_JOB_IDS=""
+  ADVISOR_BATCH_UNIT_ACTIVE=0
+  advisor_slots=1
+  STAGE_DISPATCH_BLOCKING_SCOPES=""
+  advisor_batch_job_active() { return 1; }
+  advisor_hold_clock() { :; }
+  advisor_stored_verdict_stuck_sweep() { :; }
+  advisor_held_codex_unavailable() { return 1; }
+  advisor_dispatch_stored_verdict_pool() { :; }
+  advisor_dispatch_pending_job_pool() { :; }
+  web_advisor_provider_dispatch_allowed() { return 0; }
+  quarantine_canary_scope_list_for_stage() { echo ''; }
+  dispatch_advisor_batch() {
+    printf 'batch-dispatch-count=%s ids=%s\n' \
+      "$(awk 'NF { n += 1 } END { print n + 0 }' <<< "$NEEDS_ADVISOR_IDS")" \
+      "${NEEDS_ADVISOR_IDS//$'\n'/,}"
+  }
+  if eval "$SELECTION_BODY"; then dispatch_status=0; else dispatch_status=$?; fi
+  list_calls="$(grep -c '^issue list ' "$gh_calls" || true)"
+  view_calls="$(grep -c '^issue view ' "$gh_calls" || true)"
+  printf 'snapshot-body-status=%s\ndispatch-body-status=%s\ngh-issue-list-calls=%s\ngh-issue-view-calls=%s\n' \
+    "$queue_status" "$dispatch_status" "$list_calls" "$view_calls"
+)
+
+ADVISOR_TWELVE_ISSUES="$(jq -cn '[range(0; 12) as $i | {number:(7101 + $i), createdAt:$i, labels:[]}]')"
+if ADVISOR_RESERVE_SELECTION="$(run_advisor_snapshot_selection reserve "$ADVISOR_TWELVE_ISSUES" 2>&1)"; then :; else ADVISOR_RESERVE_SELECTION+=$'\nrunner-status='$?; fi
+if [[ "$ADVISOR_RESERVE_SELECTION" != *'batch-dispatch-count=2 ids=7101,7102'* ]]; then
+  printf 'advisor reserve fixture output:\n%s\n' "$ADVISOR_RESERVE_SELECTION" >&2
+fi
+assert_contains 'advisor snapshot and dispatch fixture completes' \
+  "$ADVISOR_RESERVE_SELECTION" 'snapshot-body-status=0'
+assert_contains 'advisor batch decision completes' \
+  "$ADVISOR_RESERVE_SELECTION" 'dispatch-body-status=0'
+assert_contains 'advisor selection reserves the dispatch minute after two tickets' \
+  "$ADVISOR_RESERVE_SELECTION" 'advisor selection stopped at 2 tickets: dispatch reserve'
+assert_contains 'advisor batch still dispatches the two tickets already selected' \
+  "$ADVISOR_RESERVE_SELECTION" 'batch-dispatch-count=2 ids=7101,7102'
+
+if ADVISOR_SPARE_SELECTION="$(run_advisor_snapshot_selection spare "$ADVISOR_TWELVE_ISSUES" 2>&1)"; then :; else ADVISOR_SPARE_SELECTION+=$'\nrunner-status='$?; fi
+assert_contains 'advisor selection still reaches the 12-ticket cap with time to spare' \
+  "$ADVISOR_SPARE_SELECTION" 'advisor selection stopped at 12 tickets;'
+assert_contains 'advisor batch dispatches all 12 tickets with time to spare' \
+  "$ADVISOR_SPARE_SELECTION" 'batch-dispatch-count=12 ids=7101,7102,7103,7104,7105,7106,7107,7108,7109,7110,7111,7112'
+
+ADVISOR_HOLD_ISSUES="$(jq -cn '[{number:7201,createdAt:0,labels:[]},{number:7202,createdAt:1,labels:[{name:"on-hold"}]},{number:7203,createdAt:2,labels:[]}]')"
+if ADVISOR_HOLD_SELECTION="$(run_advisor_snapshot_selection spare "$ADVISOR_HOLD_ISSUES" 7202 2>&1)"; then :; else ADVISOR_HOLD_SELECTION+=$'\nrunner-status='$?; fi
+assert_contains 'advisor hold state comes from snapshot labels' \
+  "$ADVISOR_HOLD_SELECTION" 'snapshot-hold-status=0'
+assert_contains 'advisor snapshot skips the on-hold ticket without a per-issue GitHub view' \
+  "$ADVISOR_HOLD_SELECTION" 'batch-dispatch-count=2 ids=7201,7203'
+assert_contains 'advisor snapshot reads GitHub once and makes no issue views' \
+  "$ADVISOR_HOLD_SELECTION" 'gh-issue-list-calls=1'
+assert_contains 'advisor snapshot avoids all per-issue gh issue view calls' \
+  "$ADVISOR_HOLD_SELECTION" 'gh-issue-view-calls=0'
 
 ADVISOR_LEDGER_HOME="$(mktemp -d)"
 run_advisor_selection() (

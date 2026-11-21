@@ -2640,16 +2640,18 @@ profile_mark advisor
 # left the batch, so a non-container verdict was skipped by every path; see
 # the ownership comment further down).
 ADVISOR_QUEUE_READ_FAILED=0
-if ! NEEDS_ADVISOR_IDS="$(gh issue list --repo "$REPO" --limit 1000 --label needs-advisor --state open \
-    --json number,createdAt,labels | jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | (($lane_labels + ["session-owned"]) | index($label_name)) != null)) | not)) | .[].number')"; then
+if ! ADVISOR_QUEUE_SNAPSHOT="$(gh issue list --repo "$REPO" --limit 1000 --label needs-advisor --state open --json number,createdAt,labels)" \
+  || ! NEEDS_ADVISOR_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | (($lane_labels + ["session-owned", "on-hold"]) | index($label_name)) != null)) | not)) | .[].number' <<< "$ADVISOR_QUEUE_SNAPSHOT")"; then
   ADVISOR_QUEUE_READ_FAILED=1
   NEEDS_ADVISOR_IDS=""
   echo "issue-pipeline: needs-advisor queue could not be read; queue is unknown, so only advisor dispatch is skipped this tick and retried next tick" >&2
 fi
+advisor_issue_on_hold() { local held; [ "$ADVISOR_QUEUE_READ_FAILED" = 0 ] || return 0; held="$(jq -r --argjson n "$1" '[.[] | select(.number == $n) | any(.labels[]?; .name == "on-hold")] | if length == 0 then "unknown" else .[0] | tostring end' <<< "$ADVISOR_QUEUE_SNAPSHOT")" || return 0; case "$held" in true) return 0 ;; false) return 1 ;; *) is_on_hold "$1" ;; esac; }
 NEEDS_ADVISOR_IDS="$(prioritize_advisor_blockers "$NEEDS_ADVISOR_IDS")"
 advisor_selected=0
 NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do
   [ -n "$advisor_id" ] || continue
+  if [ "$advisor_selected" -gt 0 ] && [ "$(triage_slice_seconds_left)" -lt 60 ]; then echo "issue-pipeline: advisor selection stopped at $advisor_selected tickets: dispatch reserve" >&2; break; fi
   if issue_is_tracker_parent "$advisor_id"; then continue; fi
   if hand_agent_issue_is_live_owned "$advisor_id"; then
     record_hand_owned_decision advisor "$advisor_id"
@@ -2691,8 +2693,7 @@ NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do
         "Roadmap parent state could not be verified; preserving advisor state" "$advisor_id"
       continue
     fi
-    if is_on_hold "$advisor_id" \
-      || jq -e '.state == "on-hold" or (.hold | type == "object")' <<< "$issue_state" >/dev/null 2>&1; then
+    if jq -e '.state == "on-hold" or (.hold | type == "object")' <<< "$issue_state" >/dev/null 2>&1; then
       continue
     fi
     if retire_tracker_parent "$advisor_id"; then
@@ -2745,7 +2746,6 @@ advisor_dispatch_pending_job_pool() {
     [ "$advisor_slots" -le 0 ] && break
     grep -qx "$next_poll" <<< "$NEEDS_ADVISOR_IDS" || continue
     [ "$(issue_model_failure_backoff_remaining "$next_poll")" -gt 0 ] && continue
-    is_on_hold "$next_poll" && continue
     state_read "$next_poll" | jq -e 'has("advisor_ruled_at")' >/dev/null 2>&1 && continue
     stage_unit_active advisor "$next_poll" && continue
     ensure_issue_roadmap_parent_for_dispatch "$next_poll" needs-advisor || continue
@@ -2836,7 +2836,7 @@ advisor_dispatch_stored_verdict_pool() {
     fi
     [ "$advisor_slots" -gt 0 ] || break
     [ "$(issue_model_failure_backoff_remaining "$next_verdict")" -gt 0 ] && continue
-    is_on_hold "$next_verdict" && continue
+    advisor_issue_on_hold "$next_verdict" && continue
     stage_unit_active advisor "$next_verdict" && continue
     if ! stage_dispatch_allowed advisor; then
       record_advisor_decision skipped quarantine \

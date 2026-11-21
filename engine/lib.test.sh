@@ -4252,7 +4252,7 @@ assert_contains "...dedups against the SAME needs-advisor id list the ordinary l
   "$STORED_VERDICT_LOOP_BODY" 'grep -qx "$next_verdict" <<< "$NEEDS_ADVISOR_IDS" && continue'
 assert_contains "...refuses to resume a verdict past its age bound or after a failed apply, and discards it instead" \
   "$STORED_VERDICT_LOOP_BODY" 'advisor_discard_stored_verdict "$next_verdict" "$verdict_disposition"'
-assert_contains "...still respects is_on_hold" "$STORED_VERDICT_LOOP_BODY" 'is_on_hold "$next_verdict" && continue'
+assert_contains "...uses snapshot labels before falling back to is_on_hold" "$STORED_VERDICT_LOOP_BODY" 'advisor_issue_on_hold "$next_verdict" && continue'
 assert_contains "...still respects stage_unit_active(advisor)" "$STORED_VERDICT_LOOP_BODY" 'stage_unit_active advisor "$next_verdict" && continue'
 assert_contains "...still respects stage_dispatch_allowed(advisor) and records quarantined wait" \
   "$STORED_VERDICT_LOOP_BODY" 'if ! stage_dispatch_allowed advisor; then'
@@ -4271,7 +4271,9 @@ assert_true "issue-pipeline.sh: the pending-web-advisor-provider poll loop is pr
   test -n "$POLL_LOOP_BODY"
 assert_contains "...takes only local web-advisor-provider job markers already owned by advisor candidates" \
   "$POLL_LOOP_BODY" 'for next_poll in $ADVISOR_PENDING_JOB_IDS'
-assert_contains "...still honors the maintainer on-hold kill switch" \
+assert_contains "...polls only candidates retained by the on-hold-filtered snapshot" \
+  "$POLL_LOOP_BODY" 'grep -qx "$next_poll" <<< "$NEEDS_ADVISOR_IDS" || continue'
+assert_not_contains "...does not issue a per-ticket hold view for snapshot candidates" \
   "$POLL_LOOP_BODY" 'is_on_hold "$next_poll" && continue'
 assert_contains "...still honors an already-active per-ticket advisor unit" \
   "$POLL_LOOP_BODY" 'stage_unit_active advisor "$next_poll" && continue'
