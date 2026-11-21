@@ -135,7 +135,7 @@ mkdir -p "$root/config"; printf '{"engine":{"test_exec":"%s"}}\n' "$root/test-ex
 (cd "$t" && : > "$RUNNER_LOG" && ZF_CONFIG_ROOT="$root/config" pnpm vitest run packages/a/x.test.ts \
   && grep -Fxq "WORKTREE=$t" "$RUNNER_LOG") || fail 'engine.test_exec config did not route the test'
 for runner_rc in 75 125; do
-  rc=0 before after
+  rc=0 before=0 after=0
   before=$(grep -Ec "^suite-guard forwarded rc=$runner_rc secs=[0-9]+ command=" "$suite_log" 2>/dev/null || true)
   (cd "$t" && RUNNER_RC="$runner_rc" ZF_TEST_EXEC="$root/test-exec" pnpm vitest run packages/a/x.test.ts) \
     >"$root/stdout" 2>"$root/stderr" || rc=$?
