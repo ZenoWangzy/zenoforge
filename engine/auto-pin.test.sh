@@ -544,7 +544,7 @@ printf 'pin-vecta: refusing publication\n%s\n' "$anchor_line" > "$anchor/fail-a.
 printf 'pin-vecta: refusing publication\nother failure\n' > "$anchor/fail-c.log"
 run_anchor() { ( C=$anchor/zf; pin_anchor_finding "$1" "$base" "$new" ); }
 run_anchor "$anchor/fail-a.log"
-[[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail 'anchor pin did not file exactly one issue'
+[[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail "anchor pin did not file exactly one issue: calls=[$(cat "$ANCHOR_CREATE_CALLS")] anchor-log=[$(cat "$anchor/fail-a.log.anchor" 2>/dev/null)]"
 grep -q 'supervisor-created' "$ANCHOR_CREATE_CALLS" || fail 'anchor issue lacks the supervisor-created label'
 grep -q 'pin anchor: re-anchor patch-native-blocker-dispatch.py for engine/mac-autopilot/scheduler.d/dispatch-queue.sh' "$ANCHOR_TITLES" || fail 'anchor issue title lacks patch or engine file'
 grep -q 'culprit: add dispatch block' "$ANCHOR_BODIES" || fail 'anchor issue body lacks the culprit commit'
