@@ -75,6 +75,7 @@ case "$1:$2" in
   label:create)
     grep -qx -- "$3" "$FAKE_LABELS" || printf '%s\n' "$3" >> "$FAKE_LABELS"
     ;;
+  issue:view) cat "$FAKE_ISSUE_VIEW" ;;
   issue:create)
     title=""; body_file=""; labels='[]'
     while (($#)); do
@@ -109,7 +110,7 @@ printf '[]\n' > "$test_env_root/issues.json"
 : > "$test_env_root/comments.jsonl"
 printf '7001\n' > "$test_env_root/next-number"
 ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
-  ZF_ISSUE_LOCK_DIR="$test_env_root/locks" \
+  ZF_ISSUE_LOCK_DIR="$test_env_root/locks" RETRO_OUT_DIR="$test_env_root/publish-out" \
   PATH="$fake_bin:$PATH" FAKE_ISSUES="$test_env_root/issues.json" FAKE_COMMENTS="$test_env_root/comments.jsonl" \
   FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
   python3 -B "$retro" publish "$publish_root" "$publish_repo" "$test_env_root/candidates.json"
@@ -121,10 +122,77 @@ jq -e 'length == 1 and (.[0].body | contains("first event evidence"))
 jq -e '.body | contains("second event evidence")' "$test_env_root/comments.jsonl" >/dev/null \
   || { echo 'retro.test.sh: duplicate candidate comment omitted its evidence' >&2; cat "$test_env_root/comments.jsonl" >&2; exit 1; }
 echo "publish dedupe rc=0"
+jq -e '.changes | length == 1 and .[0].issue == 7001 and .[0].category == "navigation"' \
+  "$test_env_root/publish-out/retro-verify.json" >/dev/null \
+  || { echo "retro.test.sh: candidate issue was not recorded for verification:" >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 fragment="$(printf '%s\n' "$publish_repo"/lessons/pending/*.json)"
 [[ -f "$fragment" ]] || { echo 'retro.test.sh: mechanical candidate created no lesson fragment' >&2; exit 1; }
 printf '%s\n' '{"incidents":[]}' > "$publish_repo/registry.json"
 ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" ZF_CONFIG_ROOT="$publish_repo/.zenoforge" \
   bash "$engine/lesson-fragments.sh" --check "$publish_repo" "$publish_repo/registry.json" --files "$fragment"
 echo "publish fragment accepted rc=0"
+
+# The verifier uses filtered retro candidates from equal ten-session windows.
+verify_root="$test_env_root/verify-scratch"
+verify_out="$test_env_root/verify-out"
+mkdir -p "$verify_root/luna" "$verify_out"
+merge_epoch="$(date -u -d '2026-01-01 00:00:00 UTC' +%s)"
+merge_at="$(date -u -d "@$merge_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+for i in $(seq 0 9); do
+  id="$(printf '%02d' "$i")"
+  d="$verify_root/luna/b$id"
+  mkdir -p "$d"
+  printf '0\n' > "$d/rc"
+  seq 1 4 | sed 's/.*/{"type":"item.completed"}/' > "$d/events.jsonl"
+  touch -d "@$((merge_epoch - 10 + i))" "$d/rc"
+done
+for i in $(seq 0 9); do
+  id="$(printf '%02d' "$i")"
+  d="$verify_root/luna/a$id"
+  mkdir -p "$d"
+  printf '0\n' > "$d/rc"
+  seq 1 4 | sed 's/.*/{"type":"item.completed"}/' > "$d/events.jsonl"
+  touch -d "@$((merge_epoch + 1 + i))" "$d/rc"
+done
+for i in $(seq 0 9); do printf 'b%02d\n' "$i"; done > "$verify_out/before.keys"
+for i in $(seq 0 9); do printf 'a%02d\n' "$i"; done > "$verify_out/after.keys"
+cat > "$verify_out/before.candidates.json" <<'JSON'
+{"candidates":[
+ {"category":"navigation","severity":"high","session_key":"b00","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"navigation","severity":"high","session_key":"b01","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"navigation","severity":"high","session_key":"b02","event_line":1,"evidence":"e","proposal":"p"}
+]}
+JSON
+cat > "$verify_out/after.candidates.json" <<'JSON'
+{"candidates":[
+ {"category":"navigation","severity":"high","session_key":"a00","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"navigation","severity":"high","session_key":"a01","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"navigation","severity":"high","session_key":"a02","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"navigation","severity":"high","session_key":"a03","event_line":1,"evidence":"e","proposal":"p"}
+]}
+JSON
+touch -d "@$((merge_epoch - 20))" "$verify_out/before.keys"
+touch -d "@$((merge_epoch + 20))" "$verify_out/after.keys"
+jq -n --arg merged "$merge_at" '{closedByPullRequestsReferences:[{mergedAt:$merged}]}' > "$test_env_root/closed-issue.json"
+cat > "$verify_out/retro-verify.json" <<'JSON'
+{"changes":[{"issue":9001,"category":"navigation","class":"navigation-retract-fixture"}]}
+JSON
+ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
+  ZF_ISSUE_LOCK_DIR="$test_env_root/locks" PATH="$fake_bin:$PATH" \
+  FAKE_ISSUES="$test_env_root/issues.json" FAKE_COMMENTS="$test_env_root/comments.jsonl" \
+  FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
+  FAKE_ISSUE_VIEW="$test_env_root/closed-issue.json" \
+  python3 -B "$dir/retro-verify.py" "$verify_root" "$verify_out"
+jq -e --arg merged "$merge_at" '.changes[0] | .merged_at == $merged and .before_count == 3 and .after_count == 4
+  and (.reported_at | type == "string") and (.retraction_filed_at | type == "string")' \
+  "$verify_out/retro-verify.json" >/dev/null \
+  || { echo "retro.test.sh: verifier did not record the before/after counts:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+jq -es 'any(.[]; .number == 9001 and (.body | contains("Before: 3 candidate events in 10 sessions.")
+  and contains("After: 4 candidate events in 10 sessions.")))' "$test_env_root/comments.jsonl" >/dev/null \
+  || { echo "retro.test.sh: merged issue comment omitted the equal-window counts:" >&2; cat "$test_env_root/comments.jsonl" >&2; exit 1; }
+jq -e 'any(.[]; .title == "Retro: retract or rewrite navigation change"
+  and (.body | contains("3 events in 10 sessions") and contains("4 events in 10 sessions")))' \
+  "$test_env_root/issues.json" >/dev/null \
+  || { echo "retro.test.sh: no retract-or-rewrite issue included both counts:" >&2; cat "$test_env_root/issues.json" >&2; exit 1; }
+echo "verification before/after rc=0"
 echo 'retro.test.sh: all assertions passed'

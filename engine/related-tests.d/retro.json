@@ -1,4 +1,5 @@
 {
   "engine/retro/retro.py": ["engine/retro/retro.test.sh"],
+  "engine/retro/retro-verify.py": ["engine/retro/retro.test.sh"],
   "engine/retro/run-retro.sh": ["engine/retro/retro.test.sh"]
 }
