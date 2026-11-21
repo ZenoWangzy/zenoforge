@@ -2053,10 +2053,11 @@ grep -q "main-red unit mr-1 superseded by green Pipeline suites at $R898_MAIN" "
 # 窗口里 refill 派出了 worker：候选重算掉该单元，不写 superseded，并记一行
 : > "$A/scheduler.log"
 units "{\"units\":[{\"id\":\"mr-1\",\"main_red\":true,\"ci_sha\":\"$R898_BASE\",\"stage\":\"implement-pending\",\"history\":[]}]}"
-jq '{workers:[{pid:991,unit:"mr-1",type:"implement",log:"w.log",report:"r.md"}]}' > "$WORKERS"
 MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS=""
 gh_run_list_cached() {
   if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898s_counts"; else echo free >>"$r898s_counts"; fi
+  # a refill dispatched the worker while the ledger lock was released (the window is this very call)
+  jq '{workers:[{pid:991,unit:"mr-1",type:"implement",log:"w.log",report:"r.md"}]}' > "$WORKERS"
   printf '[{"headSha":"%s","conclusion":"success","status":"completed","createdAt":"t","databaseId":9}]' "$R898_MAIN"
 }
 supersede_resolved_main_red_units || :

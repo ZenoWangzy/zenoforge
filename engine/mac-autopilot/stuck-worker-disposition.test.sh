@@ -435,6 +435,7 @@ workers_update() {
 }
 : > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"; : > "$A/scheduler.log"
 scorecard UNHEALTHY > "$A/node-health.json"  # section 8 removed it; the disposition is a no-op without a scorecard
+worker_tree_busy_usec() { :; } # cases 7c/7d unset the engine definition; these probe workers sit in no scope, so the real one would answer empty too
 release_scheduler_lock
 acquire_scheduler_lock || fail 'probe run could not take the scheduler lock' # the phase runs under the lock in production
 pid9="$(spawn_worker pr-99-second-stuck)"

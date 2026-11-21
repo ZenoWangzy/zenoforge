@@ -417,6 +417,7 @@ harvest_probe_case() (
   jq -e '.units[0].stage == "blocked-external"' "$UNITS" >/dev/null || { echo 'the INPUT_INCOMPLETE harvest did not land: '"$(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
   # the row changes while the lock is released: the stale decision is not written
   collect_free=0 collect_held=0 write_free=0
+  unset HARVEST_COLLECT; declare -A HARVEST_COLLECT=() # a fresh pass collects again: the same worker row is cached per pass
   printf '{"units":[{"id":"issue-9","stage":"review","history":[]}]}' > "$UNITS"
   jq -n '{workers:[{pid:999999998,unit:"issue-9",type:"review",provider:"codex",log:"worker9.log",report:"report9.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
   harvest_worker_collect() {
