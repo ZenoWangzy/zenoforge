@@ -14,8 +14,13 @@ timeout_bin="$(command -v timeout || true)"
 fail() { echo "fork-churn.test.sh: $*" >&2; exit 1; }
 [[ -x "$strace_bin" ]] || fail 'strace is required for the fork-count regression'
 [[ -x "$timeout_bin" ]] || fail 'GNU timeout is required for the fork-count regression'
+if ! git cat-file -e "$base_ref:engine/mac-autopilot/scheduler.d/harvest-workers.sh" 2>/dev/null; then
+  base_branch="${GITHUB_BASE_REF:-main}"
+  git fetch --no-tags origin "$base_branch" || fail "cannot fetch the baseline branch $base_branch"
+  base_ref=FETCH_HEAD
+fi
 git cat-file -e "$base_ref:engine/mac-autopilot/scheduler.d/harvest-workers.sh" \
-  || fail "cannot read the origin/main baseline at $base_ref"
+  || fail "cannot read the fork-count baseline at $base_ref"
 mkdir -p "$work"
 mkdir -p "$baseline_root"
 git archive "$base_ref" engine | tar -x -C "$baseline_root"
