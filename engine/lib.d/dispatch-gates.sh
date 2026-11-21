@@ -38,6 +38,41 @@ read_agent_phase() {
 }
 
 
+# 2026-11-21 queue row 897: AGENT_PIPELINE is the kill switch — `off`
+# stops the issue loop — and both readers (issue-pipeline.sh's MODE,
+# issue-pipeline-slices.sh's mode) fetched it with `gh variable get ...
+# || echo off`, so a FAILED read (rate limit, timeout, or gh refusing
+# because the owner-admission deadline cannot fit one bounded attempt;
+# that day the journal held 133 `triage` reads and one `off`) was
+# indistinguishable from the maintainer switching the factory off, and
+# stopped the tick the same way. Only a value that was really READ as
+# off may stop the loop: a successful read is stripped, remembered in
+# $AGENT_HOME/agent-pipeline-last (the same single-value marker style
+# as gitnexus-analyze-last-start; a failed write warns, never fails the
+# read) and printed; a failed read reuses that last value and says so
+# on stderr, falling back to off only when no earlier value exists.
+# The call sites keep their own allowlist case, so an unknown value
+# that WAS successfully read still maps to off there, unchanged.
+read_agent_pipeline() {
+  local value
+  if value="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>/dev/null)"; then
+    value="${value//[[:space:]]/}"
+    printf '%s\n' "$value" > "$AGENT_HOME/agent-pipeline-last" 2>/dev/null \
+      || echo "read_agent_pipeline: could not persist the last AGENT_PIPELINE value" >&2
+    printf '%s\n' "$value"
+    return 0
+  fi
+  value="$(cat "$AGENT_HOME/agent-pipeline-last" 2>/dev/null || true)"
+  if [ -n "$value" ]; then
+    echo "read_agent_pipeline: AGENT_PIPELINE read failed; using the last value read: $value" >&2
+  else
+    value=off
+    echo "read_agent_pipeline: AGENT_PIPELINE read failed; no earlier value read; using off" >&2
+  fi
+  printf '%s\n' "$value"
+}
+
+
 enforce_autonomy_gate() {
   local state="$1" risk_class="$2" level="$3" phase="$4"
   if [ "$state" != "ready-for-agent" ]; then

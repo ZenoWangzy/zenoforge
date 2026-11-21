@@ -166,8 +166,7 @@ run_pipeline_slices() {
     export ZF_CALL_PROFILE_TICK_ID ZF_CALL_PROFILE_STAGE ZF_CALL_PROFILE_SECTION
   fi
   check_gmail_credential
-  mode="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>/dev/null || echo off)"
-  mode="${mode//[[:space:]]/}"
+  mode="$(read_agent_pipeline)"
   case "$mode" in triage|implement|release) mode=triage ;; *) return 0 ;; esac
   manual_pause_is_valid && return 0
   [ -n "$tick" ] || tick="$(date -u +%Y%m%dT%H%M%SZ)"

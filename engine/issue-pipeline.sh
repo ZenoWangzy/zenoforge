@@ -1702,7 +1702,7 @@ if [ -e "$PAUSE_FILE" ]; then
 fi
 
 # Kill switch: gh variable AGENT_PIPELINE. off|triage|implement|release, each
-# mode enabling the previous ones. Unset/unreadable defaults to off.
+# mode enabling the previous ones. A failed read reuses the last value really read (read_agent_pipeline); only a value read as off stops the loop.
 #
 # 2026-09-12 bug: only "off" and "triage" (and "!= release") were ever
 # checked against MODE, so a typo, trailing whitespace from `gh variable
@@ -1711,8 +1711,7 @@ fi
 # maintainer reaches for from a phone under pressure — it must fail closed on
 # anything it doesn't recognize, validated the same explicit-allowlist way
 # AGENT_PHASE already is in run-triage.sh.
-MODE="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>/dev/null || echo off)"
-MODE="$(echo "$MODE" | tr -d '[:space:]')"
+MODE="$(read_agent_pipeline)"
 case "$MODE" in
   off|triage) ;;
   # The scheduler owns implement and release; the retired values behave as triage.

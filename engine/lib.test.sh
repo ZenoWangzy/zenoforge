@@ -1459,6 +1459,80 @@ assert_eq "a hand-labeled ready-for-agent candidate whose stored fields are legi
 assert_eq "an unreadable/missing gh falls back to phase 2" \
   "2" "$(PATH=/nonexistent read_agent_phase)"
 
+# --- read_agent_pipeline: the AGENT_PIPELINE kill-switch read shared by
+# issue-pipeline.sh (MODE) and issue-pipeline-slices.sh (mode). Queue row
+# 897, 2026-11-21: one four-hour window held 133 journal reads of `triage`
+# and one `off`, minutes after gh refused a read because the
+# owner-admission deadline could not fit one bounded attempt — both
+# sites' `|| echo off` fallback turned that refusal into the kill switch
+# stopping the tick. A failed read must reuse the last value really read
+# and say so on stderr; only a value really read as off may stop the
+# loop. gh is stubbed the same subshell-function way has_open_blocker's
+# tests below use; the failed reads run in a NEW process so the
+# remembered value must come from AGENT_HOME, not this shell.
+RAP_ROOT="$(mktemp -d)"
+LIB_TEST_TMP_DIRS+=("$RAP_ROOT")
+mkdir -p "$RAP_ROOT/remembered" "$RAP_ROOT/empty" "$RAP_ROOT/off" "$RAP_ROOT/ws"
+
+RAP_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/remembered" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "triage\n"; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/remembered-ok.err" || true)"
+assert_eq "a successful triage read prints triage" "triage" "$RAP_READ"
+assert_eq "a successful read writes nothing to stderr" "" "$(cat "$RAP_ROOT/remembered-ok.err" 2>/dev/null || true)"
+
+RAP_FAIL_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/remembered" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: refusing read because the owner-admission deadline cannot fit one bounded attempt\n" >&2; return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/remembered-fail.err" || true)"
+assert_eq "a failed read in a new process reuses the remembered triage, not off" "triage" "$RAP_FAIL_READ"
+assert_eq "the failed read writes exactly one stderr line" "1" "$(grep -c '' "$RAP_ROOT/remembered-fail.err" 2>/dev/null || true)"
+assert_contains "the stderr line says the read failed" \
+  "$(cat "$RAP_ROOT/remembered-fail.err" 2>/dev/null || true)" "read failed"
+assert_contains "the stderr line names the earlier value used" \
+  "$(cat "$RAP_ROOT/remembered-fail.err" 2>/dev/null || true)" "triage"
+
+RAP_NONE_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/empty" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/empty-fail.err" || true)"
+assert_eq "a failed read with nothing remembered prints off" "off" "$RAP_NONE_READ"
+assert_contains "its stderr line says no earlier value exists" \
+  "$(cat "$RAP_ROOT/empty-fail.err" 2>/dev/null || true)" "no earlier"
+
+RAP_OFF_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/off" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "off\n"; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/off-ok.err" || true)"
+assert_eq "a successful off read prints off" "off" "$RAP_OFF_READ"
+assert_eq "a successful off read writes nothing to stderr" "" "$(cat "$RAP_ROOT/off-ok.err" 2>/dev/null || true)"
+
+RAP_OFF_FAIL_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/off" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/off-fail.err" || true)"
+assert_eq "a really-read off replaces the remembered value, so a later failed read stays off" "off" "$RAP_OFF_FAIL_READ"
+
+RAP_WS_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/ws" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "  triage \n"; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/ws-ok.err" || true)"
+assert_eq "a successful read with trailing whitespace prints the bare value" "triage" "$RAP_WS_READ"
+
+rm -rf "$RAP_ROOT"
+
 # --- triage_classification_status: the #1130-#1137 unmeasured-vs-corrupt
 # gate. issue-pipeline.sh's section (c) calls this BEFORE ever calling
 # enforce_autonomy_gate — see its comment in lib.sh for the full incident
