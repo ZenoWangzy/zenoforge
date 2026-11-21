@@ -38,6 +38,66 @@ read_agent_phase() {
 }
 
 
+# 2026-11-21 queue row 897: AGENT_PIPELINE is the kill switch — `off`
+# stops the issue loop — and gh exits nonzero both when the read fails
+# and when the variable does not exist, so a failed read is retried
+# through gh api, whose error text carries the HTTP status. Three cases:
+# a value really read is stripped, remembered in
+# $AGENT_HOME/agent-pipeline-last and printed; the variable missing
+# (HTTP 404) is off, remembered like a value that was read — deleting
+# the variable must stop the factory; a failed read reuses the last
+# value read for 30 minutes at most (the remember file's mtime), then
+# answers off, writes one stderr line and one supervisor notice an
+# hour. An answer that fits neither case clearly is treated as a failed
+# read and quotes the error's first line; a failed notice or
+# remember-write never fails the read. The call sites keep their own
+# allowlist case, so an unknown value that WAS successfully read still
+# maps to off there, unchanged.
+read_agent_pipeline() {
+  local value err err_file age note last="$AGENT_HOME/agent-pipeline-last"
+  err_file="$(mktemp "${TMPDIR:-/tmp}/agent-pipeline-read.XXXXXX")" || err_file="$last.read-err"
+  # The gh api retry runs only once the first read has failed; its error
+  # text carries the HTTP status a bare exit code cannot show.
+  if value="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>"$err_file")" \
+    || value="$(gh api "repos/$REPO/actions/variables/AGENT_PIPELINE" --jq .value 2>"$err_file")"; then
+    rm -f -- "$err_file"
+    value="${value//[[:space:]]/}"
+    printf '%s\n' "$value" > "$last" 2>/dev/null \
+      || echo "read_agent_pipeline: could not persist the last AGENT_PIPELINE value" >&2
+    printf '%s\n' "$value"
+    return 0
+  fi
+  err="$(head -n 1 -- "$err_file" 2>/dev/null || true)"
+  rm -f -- "$err_file"
+  if grep -qF '(HTTP 404)' <<<"$err"; then
+    printf 'off\n' > "$last" 2>/dev/null \
+      || echo "read_agent_pipeline: could not persist the last AGENT_PIPELINE value" >&2
+    printf 'off\n'
+    return 0
+  fi
+  note=""
+  if [ -n "$err" ] && ! grep -qiE 'rate limit|timeout|timed out|deadline|connection|refus|resolv|resolution|network|EOF|\(HTTP [0-9]{3}\)' <<<"$err"; then
+    note=" (unrecognized answer: $err)"
+  fi
+  value="$(cat "$last" 2>/dev/null || true)"
+  if [ -z "$value" ]; then
+    echo "read_agent_pipeline: AGENT_PIPELINE read failed; no earlier value read; using off$note" >&2
+    printf 'off\n'
+    return 0
+  fi
+  age="$(( $(date +%s) - $(stat -c %Y -- "$last" 2>/dev/null || date +%s) ))"
+  if [ "$age" -gt 1800 ]; then
+    echo "read_agent_pipeline: AGENT_PIPELINE read failed; the remembered value $value is too old (${age}s, past the 30-minute reuse limit); using off$note" >&2
+    supervisor_inbox_append_once "agent-pipeline-stale:$(date -u +%Y-%m-%dT%H)" \
+      "agent-pipeline-stale AGENT_PIPELINE read failed; the last value read is ${age}s old, past the 30-minute reuse limit; answering off" || :
+    printf 'off\n'
+    return 0
+  fi
+  echo "read_agent_pipeline: AGENT_PIPELINE read failed; using the last value read: $value$note" >&2
+  printf '%s\n' "$value"
+}
+
+
 enforce_autonomy_gate() {
   local state="$1" risk_class="$2" level="$3" phase="$4"
   if [ "$state" != "ready-for-agent" ]; then
@@ -314,46 +374,67 @@ scheduler_issue_unit_inflight() { # issue [units.json] -> 0 in-flight unit / 1 n
 # judgment is normalized to false on the validation copy, so it cannot strand
 # an otherwise valid ticket outside the implement lane. jq remains the only
 # runtime dependency.
-triage_result_matches_schema() {
+#
+# Row 897 round 2: triage_result_schema_failure is the single source of the
+# rules -- it prints the first failing path and why (for example
+# "entry_surface: value not in enum", "notes_md: missing",
+# "foo: property not allowed") and prints nothing when the record matches.
+# triage_result_matches_schema is its yes/no view, so the check and the
+# naming cannot drift apart.
+triage_result_schema_failure() {
   local result_file="$1" schema_file="${2:-$(zf_config_file prompts/triage.schema.json)}"
-  jq -e --slurpfile schema "$schema_file" '
+  jq -r --slurpfile schema "$schema_file" '
     def has_external_judgment:
       (.external_deliverable | type) == "object"
       and (.external_deliverable.required | type) == "boolean"
       and (.external_deliverable.location | type) == "string"
       and (.external_deliverable.reason | type) == "string"
       and (.external_deliverable | keys | sort) == ["location", "reason", "required"];
-    def matches($s):
+    def join_path($base; $key):
+      if $base == "" then $key else "\($base).\($key)" end;
+    def failure($s; $p):
       . as $v
-      | ((($s.type // null) == null) or
+      | (if ($s.type // null) != null then
           (if $s.type == "integer" then
-             ($v | type) == "number" and $v == ($v | floor)
+             (if ($v | type) == "number" and $v == ($v | floor) then empty else "\($p): not an integer" end)
+           elif ($s.type | type) == "array" then
+             (if any($s.type[]; . == ($v | type)) then empty else "\($p): type must be one of \($s.type | tostring)" end)
            else
-             (if ($s.type | type) == "array" then any($s.type[]; . == ($v | type)) else ($v | type) == $s.type end)
-           end))
-      and ((($s.enum // null) == null) or any($s.enum[]; . == $v))
-      and (if $s.minimum == null then true
-           else ($v | type) == "number" and $v >= $s.minimum end)
-      and (if ($v | type) == "object" then
-             all(($s.required // [])[]; . as $key | ($v | has($key)))
-             and (if $s.additionalProperties == false then
-                    all(($v | keys[]); . as $key | (($s.properties // {}) | has($key)))
-                  else true end)
-             and all((($s.properties // {}) | to_entries[]);
-                     . as $property |
-                     if ($v | has($property.key)) then
-                       $v[$property.key] | matches($property.value)
-                     else true end)
-           elif ($v | type) == "array" then
-             if $s.items == null then true
-             else all($v[]; matches($s.items)) end
-           else true end);
+             (if ($v | type) == $s.type then empty else "\($p): type must be \($s.type)" end)
+           end)
+         else empty end),
+        (if ($s.enum // null) != null then
+           (if any($s.enum[]; . == $v) then empty else "\($p): value not in enum" end)
+         else empty end),
+        (if $s.minimum == null then empty
+         elif ($v | type) == "number" and $v >= $s.minimum then empty
+         else "\($p): below minimum \($s.minimum)" end),
+        (if ($v | type) == "object" then
+           (($s.required // [])[] | . as $key |
+              (if ($v | has($key)) then empty else "\(join_path($p; $key)): missing" end)),
+           (if $s.additionalProperties == false then
+              ($v | keys[] | . as $key |
+                 (if (($s.properties // {}) | has($key)) then empty else "\(join_path($p; $key)): property not allowed" end))
+            else empty end),
+           (($s.properties // {}) | to_entries[] | . as $property |
+              (if ($v | has($property.key)) then
+                 $v[$property.key] | failure($property.value; join_path($p; $property.key))
+               else empty end))
+         elif ($v | type) == "array" then
+           (if $s.items == null then empty
+            else (range(0; ($v | length)) as $i | ($v[$i] | failure($s.items; "\($p)[\($i)]")))
+            end)
+         else empty end);
     . as $input
     | (if has_external_judgment then $input
        else $input + {external_deliverable:{required:false,location:"",reason:""}}
        end) as $result
-    | ($schema[0] as $contract | $result | matches($contract))
-  ' "$result_file" >/dev/null 2>&1
+    | [($result | failure($schema[0]; ""))] | .[0] // empty
+  ' "$result_file" 2>/dev/null || echo "result record is not a readable JSON object"
+}
+
+triage_result_matches_schema() {
+  [ -z "$(triage_result_schema_failure "$@")" ]
 }
 
 

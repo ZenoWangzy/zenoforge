@@ -86,6 +86,17 @@ mapfile -t zc_argv < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_
 zc_executable=${zc_argv[0]:-$S/zc-src/bin/zcode}
 zc_configured=0; ((${#zc_argv[@]})) && zc_configured=1
 zc_probe_rc=0
+# 11-21 queue 884: a cached failed probe expires when the executable changed after the probe was written (a reinstall
+# must not misroute until the next boot) or when the probe is older than 300 s (a package unpack can keep the archive's
+# mtimes, so a reinstall can leave the executable older than the cache); a cached success stands for the whole boot.
+# argv[0] is absolute in every resolution mode, so its mtime is the reinstall signal.
+zc_probe_expired() {
+  local exe_mtime cache_mtime
+  cache_mtime=$(stat -c %Y "$1" 2>/dev/null) || return 1
+  (( $(date +%s) - cache_mtime > 300 )) && return 0
+  exe_mtime=$(stat -c %Y "$zc_executable" 2>/dev/null) || return 1
+  (( exe_mtime > cache_mtime ))
+}
 zc_runnable() {
   local boot_id argv_key cache="$S/tmp/zc-runnable" alerts lock_fd
   local -a probe_argv=() cached=()
@@ -96,7 +107,8 @@ zc_runnable() {
   exec {lock_fd}>>"$cache"
   flock "$lock_fd"
   mapfile -t cached < "$cache"
-  if ((${#cached[@]} == 3)) && [[ ${cached[0]} == "$boot_id" && ${cached[1]} == "$argv_key" && ${cached[2]} =~ ^[0-9]+$ ]]; then
+  if ((${#cached[@]} == 3)) && [[ ${cached[0]} == "$boot_id" && ${cached[1]} == "$argv_key" && ${cached[2]} =~ ^[0-9]+$ ]] &&
+    { (( ${cached[2]} == 0 )) || ! zc_probe_expired "$cache"; }; then
     zc_probe_rc=${cached[2]}
   else
     if ((${#probe_argv[@]})); then
@@ -154,6 +166,8 @@ fi
 if [[ $b == zc ]] && breaker_open_for zc; then
   b=luna
   if ! zc_runnable; then
+    # 11-21 queue 884: <run>/backend says luna; the run directory must also say why the requested zc run never started.
+    printf '[%s] backend=zc rerouted to luna; reason=%s\n' "$(date -u +%FT%TZ)" "$(zc_unavailable_reason)" >> "$d/placement.log"
     printf 'worker: %s; using luna instead of zc\n' "$(zc_unavailable_reason)" >&2
   else
     printf 'worker: zcode quota hold active; using luna instead of zc\n' >&2
