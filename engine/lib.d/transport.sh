@@ -104,7 +104,7 @@ gh_tick_retry_fits() {
 gh_rate_limit_api_class() {
   local arg api_graphql=0 rate_limit_lookup=0
   case "${1:-}" in
-    pr|issue|search) printf 'graphql\n' ;;
+    pr|issue|search|label) printf 'graphql\n' ;;
     api)
       shift
       for arg in "$@"; do
@@ -155,37 +155,66 @@ gh_rate_limit_write() {
   fi
 }
 
-gh_rate_limit_reset_epoch() {
-  local reset
+# gh_rate_limit_quota <graphql|rest> -- prints "<remaining> <reset epoch>" for that class. The
+# rate_limit endpoint is not counted against the quota.
+gh_rate_limit_quota() {
+  local key quota
   case "$1" in
-    graphql)
-      reset="$(command timeout --kill-after=1s 10s gh api graphql \
-        -f 'query={rateLimit{remaining resetAt used}}' --jq '.data.rateLimit.resetAt' 2>/dev/null)" || return 1
-      jq -Rer 'fromdateiso8601' <<< "$reset"
-      ;;
-    rest)
-      reset="$(command timeout --kill-after=1s 10s gh api rate_limit --jq '.resources.core.reset' 2>/dev/null)" || return 1
-      [[ "$reset" =~ ^[0-9]+$ ]] || return 1
-      printf '%s\n' "$reset"
-      ;;
+    graphql) key=graphql ;;
+    rest) key=core ;;
+    *) return 1 ;;
   esac
+  quota="$(command timeout --kill-after=1s 10s gh api rate_limit \
+    --jq ".resources.$key | \"\(.remaining) \(.reset)\"" 2>/dev/null)" || return 1
+  [[ "$quota" =~ ^[0-9]+[[:space:]][0-9]+$ ]] || return 1
+  printf '%s\n' "$quota"
+}
+
+# A secondary limit holds the class 60 s, doubling to 600 s while holds repeat. The length is the
+# marker's second line; readers take line 1 (the epoch) only.
+gh_rate_limit_secondary_hold() {
+  local api="$1" remaining="${2:-}" now until_epoch hold=60 marker old_until old_hold
+  now="$(date +%s)" || return 0
+  marker="$(gh_rate_limit_marker "$api")" || marker=""
+  old_until="$(sed -n 1p "$marker" 2>/dev/null)"
+  old_hold="$(sed -n 2p "$marker" 2>/dev/null)"
+  [[ "$old_until" =~ ^[0-9]+$ ]] || old_until=0
+  [[ "$old_hold" =~ ^[0-9]+$ ]] || old_hold=0
+  (( old_until > now )) && return 0
+  if (( old_hold > 0 && now - old_until < 600 )); then
+    hold=$((old_hold * 2))
+    (( hold > 600 )) && hold=600
+  fi
+  until_epoch=$((now + hold))
+  if gh_rate_limit_write "$api" "$until_epoch"$'\n'"$hold"; then
+    echo "gh: $api secondary rate limit${remaining:+; remaining=$remaining}; shared backoff ${hold}s until epoch=$until_epoch" >&2
+  else
+    echo "gh: could not write $api rate-limit backoff marker under AGENT_HOME" >&2
+  fi
+  return 0
 }
 
 gh_rate_limit_handle_failure() {
-  local api="$1" error="$2" now reset_epoch
+  local api="$1" error="$2" now reset_epoch quota remaining
   [[ "$api" == graphql || "$api" == rest ]] || return 1
+  if grep -qi 'secondary rate limit' <<< "$error"; then
+    gh_rate_limit_secondary_hold "$api"
+    return 0
+  fi
   grep -qiE 'API rate limit (already )?exceeded|primary rate limit' <<< "$error" || return 1
   now="$(date +%s)" || return 1
-  reset_epoch=$((now + 900))
+  # GitHub also words a secondary limit as primary: the quota decides, not the text.
+  quota="$(gh_rate_limit_quota "$api")" || { gh_rate_limit_secondary_hold "$api" unknown; return 0; }
+  read -r remaining reset_epoch <<< "$quota"
+  if (( remaining > 0 )); then
+    gh_rate_limit_secondary_hold "$api" "$remaining"
+    return 0
+  fi
+  (( reset_epoch > now )) || reset_epoch=$((now + 900))
   gh_rate_limit_write "$api" "$reset_epoch" || {
     echo "gh: could not write $api rate-limit backoff marker under AGENT_HOME" >&2
     return 0
   }
-  if reset_epoch="$(gh_rate_limit_reset_epoch "$api")" && [[ "$reset_epoch" =~ ^[0-9]+$ ]] && (( reset_epoch > now )); then
-    gh_rate_limit_write "$api" "$reset_epoch" || :
-  else
-    reset_epoch=$((now + 900))
-  fi
   echo "gh: $api primary rate limit exhausted; shared backoff until epoch=$reset_epoch" >&2
   return 0
 }
