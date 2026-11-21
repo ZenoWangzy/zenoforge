@@ -32,7 +32,6 @@
 1	engine/run-ci-suites.sh
 1	engine/run-triage-batch.sh
 1	engine/supervisor/hooks/policy-inject.mjs
-1	engine/task-state.mjs
 1	engine/ts-judge.sh
 1	tools/auto-pin.sh
 3	tools/merge-pr.sh
