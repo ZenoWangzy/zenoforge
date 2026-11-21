@@ -540,9 +540,9 @@ MECH_REGISTRY_FILE="$(sched_mechanism_registry)" || { MECH_REGISTRY_FILE=""; say
 # 它的 issue 也永远不会重做（每日早报的两个前置 #2699/#3740 就卡在这里）。每 ORPHAN_CHECK_SECONDS（默认 1800）：
 # agent/issue-N 分支的 PR，issue 已关或台账里已有同 issue 的另一单元 → 关 PR（已被取代）；否则收进台账评审，
 # 每次最多 ORPHAN_REGISTER_MAX（默认 3）个，挡着别的单元的前置优先。非 agent 分支只计数（orphan-prs.count）。
-# 集成测试左移：worker clone 经 runtime-env.sh 的 PGTEST_URL 连本机测试库，push 前能跑集成测试。以前它们第一次跑
-# 是在批准后的 CI 上（批准后 CI 红会触发大量返工）。测试库不可用时照样 push，绝不卡交付。
+# 集成测试左移（本机测试库措辞；配了测试 runner 时由下一行改写，见 scheduler.d/worker-command.sh）：测试库不可用时照样 push，绝不卡交付。
 INTEGRATION_RULE="改动涉及集成测试（*.integration.test.*、tests/integration/、迁移）时，push 前用本机测试库定向跑：RUN_INTEGRATION=1 npx vitest run <受影响的集成测试文件> --no-file-parallelism --maxWorkers=1（PGTEST_URL 已指向本机 Postgres，每个文件自建临时库；只跑受影响文件，不跑整包）。测试库连不上或 MemAvailable 低于 3 GiB 就跳过，在报告里写明，照常 push 交给 PR CI。"
+apply_test_host_rules # .engine.test_exec / ZF_TEST_EXEC 非空时改写本条与派发、修复提示的本机跑测措辞
 # 优化类 ticket 先核实前提（#4370）：曾有几张先实现后才发现前提不成立，白耗数小时，
 # 且其测量窗口跨过了已上线的机制。eval 侧同一条规则在 prompts/implement-contract.md。
 OPT_PREMISE_RULE='
