@@ -391,16 +391,16 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
           # The report check runs before the breaker: a continuation fixing the report is part of this round, so the breaker waits for the next one.
           incident_report_pre_review "$w" "$report" "$rep" "$session_id" && { repair_breaker "$unit" "$rep" || :; } ;;
         land)
-          local land_result; land_result="$(head -1 "$rep")"
+          local land_result land_verified_by land_head; land_result="$(head -1 "$rep")"
+          land_head="$(jqf -r '.sha // empty' <<<"$w")"
+          land_verified_by="$(unit_verification_stamp "$(harvest_unit_snapshot "$unit")" "$land_head" '[]')"
           case "$land_result" in
             LANDED-HEAD-MOVED*)
                      local landed_sha moved_head
                      read -r _ landed_sha moved_head <<<"$land_result"
-                     set_unit "$unit" "$(hist land-head-moved "$land_result") | .land_sha=$(js "$landed_sha") | .approved_sha=null | .land_pr_head=$(js "$moved_head") | .stage=\"rereview-pending\""
+                     set_unit "$unit" "$(hist land-head-moved "verified_by=$land_verified_by; $land_result") | .verified_by=$(js "$land_verified_by") | .land_sha=$(js "$landed_sha") | .approved_sha=null | .land_pr_head=$(js "$moved_head") | .stage=\"rereview-pending\""
                      echo "[$STAMP] fast-landed-with-new-head unit=$unit $land_result" >> "$A/alerts/events.md" ;;
-            LANDED*) local land_verified_by land_head
-                     land_head="$(jqf -r '.sha // empty' <<<"$w")"
-                     land_verified_by="$(unit_verification_stamp "$(harvest_unit_snapshot "$unit")" "$land_head" '[]')"
+            LANDED*)
                      set_unit "$unit" "$(hist landed "verified_by=$land_verified_by; $land_result") | .stage=\"landed\" | .verified_by=$(js "$land_verified_by") | .land_sha=$(js "${land_result#LANDED }")"
                      local land_issue; land_issue="$(unit_field "$unit" .issue)"
                      # M5（#4501）：验收块带 live-event 项的票不立即关票，转等待生产事件（live_event_watch）
@@ -416,7 +416,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             FAILED\ POST-LAND*)
               local landed_sha="${land_result##* }"
               if [[ "$landed_sha" =~ $SHA_RE ]]; then
-                set_unit "$unit" "$(hist land-post-step-failed "$land_result") | .land_sha=$(js "$landed_sha") | .approved_sha=null"
+                set_unit "$unit" "$(hist land-post-step-failed "verified_by=$land_verified_by; $land_result") | .verified_by=$(js "$land_verified_by") | .land_sha=$(js "$landed_sha") | .approved_sha=null"
               fi
               to_supervisor "$unit" "直落 main 已完成但 PR 后续处理失败：${land_result}。详情见 $SUP/${report}.land.log。"
               echo "[$STAMP] post-land follow-up failed unit=$unit $land_result" >> "$A/alerts/events.md"
