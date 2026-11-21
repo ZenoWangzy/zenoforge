@@ -138,7 +138,7 @@ merge_pr_ci_green_check_count() {
     . as $v | ($v.statusCheckRollup // null) as $checks | select($v.headRefOid == $sha) | select($checks | type == "array" and length > 0)
     | ([$checks[] | select(.__typename == "CheckRun" and t != null)] | group_by([.workflowName, .name]) | map(max_by(t))) as $newest | ([$checks[] | select(.__typename != "CheckRun" or t == null)]) as $single | ($newest + $single) as $current
     | ([$current[] | select(pending)] | length) as $pending | if $pending > 0 then if all($current[]; if pending then true else good end) then "pending\t\($pending)" else empty end
-      elif all($current[]; good) then any($current[]; .__typename == "CheckRun" and .workflowName == "cli-tests") as $needs_cli
+      elif all($current[]; good) then (any($current[]; .__typename == "CheckRun" and .workflowName == "cli-tests")) as $needs_cli
       | if $suites == 0 and any($current[]; .__typename == "CheckRun" and .workflowName == "engine-tests" and .name == "select" and .status == "COMPLETED" and .conclusion == "SUCCESS") and (not $needs_cli or any($current[]; req("cli"))) then "focused\t0"
         else (([$current[] | select(.workflowName == "engine-tests" and suite)] | length) as $n | (if $suites == null then null else [((($suites + 11) / 12) | floor), $shards] | min end) as $required
         | if $suites != null and any($current[]; req("select")) and (not $needs_cli or any($current[]; req("cli"))) and all(range(0;$required); . as $i | any($current[]; req("suites (\($i))")))
