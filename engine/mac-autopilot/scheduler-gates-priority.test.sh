@@ -62,6 +62,8 @@ gh() { case "$1 $2" in
     return 0 ;;
   "pr list") cat "$GH_PR_TABLE" ;;
   "pr ready") if [[ "${4:-}" == "--undo" ]]; then gh_pr_ready "$3" --undo; else gh_pr_ready "$3"; fi ;;
+  # 轻量 census 后热修分类按 PR 单读正文：表里的 PR 都没有 Refs 正文，空正文即真实回答
+  "pr view") [[ "$*" == *'--json body'* ]] || { echo "unexpected gh in admission fixture: $*" >&2; return 97; } ;;
   "api repos/{owner}/{repo}/commits/"*"/status"*) echo 0 ;;
   "api repos/{owner}/{repo}/statuses/"*) echo "$*" >> "$GH_PR_CALLS" ;;
   "run list"*) echo '[]' ;;

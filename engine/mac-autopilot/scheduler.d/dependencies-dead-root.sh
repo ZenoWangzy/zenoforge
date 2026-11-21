@@ -1,6 +1,6 @@
 # Fail closed: any fact that cannot be read means not dead. Prints the arbiter's evidence.
 dep_predecessor_dead() { # waiter-unit-json predecessor
-  local dep="$2" waiter rows st prs subs c b sha branches="" labels active_labels dpr dpr_body
+  local dep="$2" waiter rows st prs subs c b sha branches="" labels active_labels
   dep_delivered_in_ledger "$dep" && return 1
   # The sweep and the blocked-external loop must agree: a tracker the loop clears is not dead, and that loop wakes the waiter on the next pass.
   tracker_dep_cleared "$dep" "$(jqf -r '.issue // empty' <<<"$1")" && return 1
@@ -20,12 +20,8 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
       end' <<<"$rows" >/dev/null || return 1
   jqf -e --slurpfile w "$A/workers.json" 'map(.id) as $ids | all($w[0].workers[]; .harvested == true or (.unit as $u | ($ids | index($u)) == null))' <<<"$rows" >/dev/null || return 1
   prs="$(tick_prs)" || return 1
-  # 正文按 PR 单取（列表不再携带 body）：判死要确认没有 open PR 提到 #<dep>，一条读不到就不判死
-  while IFS= read -r dpr; do
-    [[ "$dpr" =~ ^[0-9]+$ ]] || continue
-    dpr_body="$(tick_pr_body "$dpr")" || return 1
-    prs="$(prs_attach_body "$dpr" "$dpr_body" <<<"$prs")" || return 1
-  done < <(jqf -r '[.[].number] | .[]' <<<"$prs")
+  # 判死要确认没有 open PR 提到 #<dep>。轻量列表不带 body：该子句对无 body 的行为空（同旧列表对无 body 行），
+  # 编号/分支两道排除与 sub-issue、活 worker 检查照旧；不按 PR 单读正文——那会让一次判死随 open PR 数放大。
   jqf -e --slurpfile rows <(printf '%s' "$rows") --arg d "$dep" '
     ($rows[0] | map(.pr)) as $own | ($rows[0] | map(.branch) + ["agent/issue-" + $d]) as $heads
     | all(.[]; (.number as $n | $own | index($n)) == null and (.headRefName as $h | $heads | index($h)) == null

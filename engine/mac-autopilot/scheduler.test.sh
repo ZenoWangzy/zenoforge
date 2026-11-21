@@ -621,17 +621,25 @@ tick_gh() {
         '{number:$n,merged:true,base:{ref:"main"},merge_commit_sha:$oid,merged_at:"2026-10-29T00:00:00Z"}'
       ;;
     # 轻量 census 后的检查行：按 head SHA 读 check-runs。优先用 pr-census.json 里该 head 的 statusCheckRollup
-    # （fixture 原样保留），否则把 head（%040x 的 PR 号）还原成 PR 号读 per-PR pr checks 夹具。
+    # （fixture 原样保留）；真实 head（夹具仓库的 git SHA，记录在 pr-head-<n>）按文件反查 PR 号；%040x 的
+    # head 本身就是 PR 号；main 的两个 run head 由 main-check-runs.json 回答（原 api * 分支的行为）。
     'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
-      local cr_sha="$2" cr_jq="" cr_prev="" cr_rows cr_n
+      local cr_sha="$2" cr_jq="" cr_prev="" cr_rows cr_n cr_f
       cr_sha="${cr_sha#*commits/}"; cr_sha="${cr_sha%%\?*}"
       for arg in "$@"; do [[ "$cr_prev" == --jq ]] && cr_jq="$arg"; cr_prev="$arg"; done
       if [[ -f "$TF/pr-census.json" ]] && command jq -e --arg sha "$cr_sha" 'any(.[]; .headRefOid == $sha and ((.statusCheckRollup // []) | length > 0))' "$TF/pr-census.json" >/dev/null 2>&1; then
         cr_rows="$(command jq -c --arg sha "$cr_sha" '[.[] | select(.headRefOid == $sha)][0].statusCheckRollup' "$TF/pr-census.json")"
         command jq -c '{total_count: length, check_runs: map({name: (.name // ""), details_url: (.detailsUrl // ""), started_at: (.startedAt // null),
             status: ((.status // "completed") | ascii_downcase), conclusion: (if (.conclusion // null) == null then null else (.conclusion | ascii_downcase) end)})}' <<<"$cr_rows" | command jq -r "${cr_jq:-.}"
+      elif [[ -f "$TF/main-check-runs.json" ]]; then
+        command jq -r "${cr_jq:-.}" < "$TF/main-check-runs.json"
       else
-        cr_n="$(printf '%d' "0x$cr_sha" 2>/dev/null)" || cr_n=""
+        cr_n=""
+        for cr_f in "$TF"/pr-head-*; do
+          [[ -f "$cr_f" && "$(cat "$cr_f" 2>/dev/null)" == "$cr_sha" ]] || continue
+          cr_n="${cr_f##*-}"; break
+        done
+        [[ "$cr_n" =~ ^[0-9]+$ ]] || cr_n="$(printf '%d' "0x$cr_sha" 2>/dev/null)" || cr_n=""
         cr_rows='[]'
         [[ "$cr_n" =~ ^[0-9]+$ ]] && cr_rows="$(tick_gh pr checks "$cr_n" --json name,bucket,link 2>/dev/null || printf '[]')"
         command jq -c '{total_count: length, check_runs: map({name: .name, details_url: (.link // ""), started_at: (.started_at // null),

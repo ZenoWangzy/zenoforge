@@ -248,10 +248,12 @@ test_light_census() { # 轻量列表：字段不带 body/statusCheckRollup；60s
   unset TEST_GH_LIST_FAIL
   [[ -z "$TICK_PRS" ]] || fail 'a failed list still filled the census'
   [[ ! -e "$A/.tick-prs-census.json" ]] || fail 'a failed list wrote the cross-process cache file'
-  # a body reader still gets the body: one gh pr view per PR per process
+  # a body reader still gets the body: one gh pr view per PR per process (the second
+  # read in the same process hits the cache; $(...) would hide that in a subshell)
   : > "$TEST_GH_CALLS"
-  [[ "$(tick_pr_body 7)" == "$(cat "$TEST_PR_BODY")" ]] || fail 'the body reader did not get the PR body'
+  tick_pr_body 7 > "$test_env_root/pr-body.out"
   tick_pr_body 7 > /dev/null
+  [[ "$(cat "$test_env_root/pr-body.out")" == "$(cat "$TEST_PR_BODY")" ]] || fail 'the body reader did not get the PR body'
   [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 1 ]] || fail "the body was fetched $(grep -c '^pr view$' "$TEST_GH_CALLS") times for one PR"
 }
 

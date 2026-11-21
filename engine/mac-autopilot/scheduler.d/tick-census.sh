@@ -63,10 +63,12 @@ tick_pr_check_runs() { # head SHA → 归一化检查行 [{name,link,started_at,
   [[ "$sha" =~ $SHA_RE ]] || return 1
   if [[ -n "${TICK_PR_CHECK_RUNS[$sha]:-}" ]]; then printf '%s' "${TICK_PR_CHECK_RUNS[$sha]}"; return 0; fi
   raw="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" --jq '.check_runs // []' 2>/dev/null)" || return 1
-  # REST 的 check-run：未完成时 conclusion 是 ""（或 null），不是绿；同名多行先经 node 去重（丢 SKIPPED 副本、留最新 run）
+  # REST 的 check-run：未完成时 conclusion 是 ""（或 null），不是绿；skipped 映射成 skipping，让同管线的
+  # pr-required-aggregate.mjs --latest-checks 照旧在选行前丢弃 SKIPPED 副本（#4687，列表带 statusCheckRollup
+  # 时的原语义：raw 结论先过 mjs 再分档）；同名多行由 node 留最新 run。
   raw="$(jqf -c 'map({name: (.name // ""), link: (.details_url // .html_url // ""), started_at: (.started_at // null),
     bucket: (if ((.status // "") | ascii_downcase) != "completed" then "pending"
-      else ((.conclusion // "" | ascii_downcase) as $c | if $c == "success" then "pass" elif $c == "neutral" then "skipping"
+      else ((.conclusion // "" | ascii_downcase) as $c | if $c == "success" then "pass" elif ($c | IN("neutral", "skipped")) then "skipping"
         elif $c == "cancelled" then "cancel" elif ($c | IN("failure", "timed_out", "action_required", "startup_failure")) then "fail" else "pending" end) end)})' <<<"$raw")" || return 1
   raw="$(node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks <<<"$raw" 2>/dev/null)" || return 1
   jqf -e 'type == "array"' <<<"$raw" >/dev/null 2>&1 || return 1
@@ -85,7 +87,9 @@ pr_census_checks_fill() { # stdin: pr_census_by_number 的对象 → stdout: 每
     [[ "$pr" =~ ^[0-9]+$ ]] || continue
     if rows="$(tick_pr_check_runs "$head")"; then
       ci="$(jqf -r 'if any(.[]; .bucket == "pending") then 2 elif any(.[]; .bucket == "fail" or .bucket == "cancel") then 1 else 0 end' <<<"$rows")"
-      obj="$(jqf --arg pr "$pr" --argjson checks "$rows" --argjson ci "$ci" '.[$pr].checks=$checks | .[$pr].ci=$ci' <<<"$obj")" || obj="$(jqf --arg pr "$pr" '.[$pr].checks=null | .[$pr].ci=null' <<<"$obj")"
+      # 检查行是整份 census 量级的载荷，走文件而不是 argv（--argjson checks "$rows" 这一形态会被
+      # jq-arg-safety 按无界变量拦下）；--slurpfile 后 $checks 是 [rows]，取 [0]。
+      obj="$(jqf --arg pr "$pr" --slurpfile checks <(printf '%s' "$rows") --argjson ci "$ci" '.[$pr].checks=$checks[0] | .[$pr].ci=$ci' <<<"$obj")" || obj="$(jqf --arg pr "$pr" '.[$pr].checks=null | .[$pr].ci=null' <<<"$obj")"
     else # 取不到检查行不是绿：留 null，排序按 ci // 2 落到 pending 档，合并车道按 check census unavailable 跳过
       obj="$(jqf --arg pr "$pr" '.[$pr].checks=null | .[$pr].ci=null' <<<"$obj")"
     fi

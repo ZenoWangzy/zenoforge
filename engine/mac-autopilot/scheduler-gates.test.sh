@@ -784,7 +784,6 @@ DISPATCHED=()
 stack_gh_real="$(declare -f gh)"; stack_pr_changed_real="$(declare -f tick_prs_changed)"
 stack_gated_label_real="$(declare -f ensure_gated_label)"
 ensure_gated_label() { :; }
-tick_prs_changed() { :; }
 gh() {
   case "$1 $2" in
     'pr list') if [[ "${STACK_PR_EXISTING:-0}" == 1 ]]; then echo '102 true'; else echo ''; fi ;;
@@ -792,7 +791,7 @@ gh() {
     'pr edit') printf '%s\n' "$*" >> "$fixture/stack-pr-edit.args" ;;
   esac
 }
-stack_tick_prs="$TICK_PRS"; tick_prs_changed # the stub answers the live per-head lookup; a census left by an earlier case would answer instead
+stack_tick_prs="$TICK_PRS"; tick_prs_changed; tick_prs_changed() { :; } # the stub answers the live per-head lookup; a census (or the 60 s shared file) left by an earlier case would answer instead
 scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
 [[ "$SCHED_PR_NUM" == 102 && "$(cat "$fixture/stack-pr-create.args")" == *'--draft --label agent/ci-gated --base agent/issue-1'* ]] \
   || fail 'stacked unit PR did not target its predecessor branch'

@@ -50,6 +50,7 @@ engine/mac-autopilot/scheduler.d/stop-loss.sh 0
 engine/mac-autopilot/scheduler.d/stuck-workers.sh 0
 engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh 6
 engine/mac-autopilot/scheduler.d/supervisor-owned.sh 0
+engine/mac-autopilot/scheduler.d/tick-census.sh 0
 engine/mac-autopilot/scheduler.d/tick-steps.sh 0
 engine/mac-autopilot/scheduler.d/units.sh 1
 engine/mac-autopilot/scheduler.d/unit-transition-log.sh 0

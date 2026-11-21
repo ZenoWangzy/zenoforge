@@ -25,7 +25,7 @@ run() { # name status conclusion started run_id (REST check-run shape; conclusio
 }
 census() { # rows... → normalized checks array of PR 7 (light census row + per-head check-runs fetch)
   GH_CHECK_RUNS="$(printf '%s\n' "$@" | jq -sc '{check_runs: .}')"
-  jq -cn '{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}' \
+  jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' \
     | pr_census_by_number | pr_census_checks_fill | jq -c '{checks: (.["7"].checks | map({name, bucket})), ci: .["7"].ci}'
 }
 fail() { echo "FAIL: $1: $2"; exit 1; }
@@ -71,10 +71,10 @@ c=$(census "$(run 'Postsubmit validate' completed skipped 2026-11-08T09:57:05Z 1
 # An unreadable check-runs read is checks null (never green): the lane skips the candidate as census-unavailable,
 # and a row-less success (empty array) is pending, not green.
 GH_CHECK_RUNS='not-json'
-c="$(jq -cn '{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}' | pr_census_by_number | pr_census_checks_fill)"
+c="$(jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' | pr_census_by_number | pr_census_checks_fill)"
 [[ "$(jq -r '.["7"].checks' <<<"$c")" == null && "$(jq -r '.["7"].ci' <<<"$c")" == null ]] || fail "unreadable check-runs" "$c"
 GH_CHECK_RUNS='{check_runs: []}'
-c="$(jq -cn '{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}' | pr_census_by_number | pr_census_checks_fill)"
+c="$(jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' | pr_census_by_number | pr_census_checks_fill)"
 [[ "$(jq -c '.["7"].checks' <<<"$c")" == '[]' && "$(jq -r '.["7"].ci' <<<"$c")" == 0 ]] || fail "row-less success" "$c"
 lane_skips "$(jq -c '.["7"].checks' <<<"$c")" || fail "row-less success" "lane must skip"
 echo ok
