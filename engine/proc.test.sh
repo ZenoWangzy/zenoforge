@@ -11,7 +11,7 @@ mkdir -p "$t/fakebin" "$t/ps"
 source "$engine/platform-env.sh" # macOS: GNU date for pid_start_id; a no-op on Linux
 source "$engine/proc.sh"
 pids=()
-trap 'kill "${pids[@]}" 2>/dev/null || true' EXIT
+trap 'kill "${pids[@]}" 2>/dev/null || true; rm -rf -- "$test_env_root"' EXIT
 spawn() { "$@" & pids+=("$!"); }
 
 # What the engine did inline before proc.sh (scheduler pid_start, unit loop pid_running); Linux only.
