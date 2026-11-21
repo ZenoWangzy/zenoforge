@@ -41,6 +41,8 @@ source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 source "$SCRIPT_DIR/hand-completion-refill.sh"
 source "$SCRIPT_DIR/lib.d/release-walk.sh"
+# shellcheck source=./lib.d/triage-solo.sh
+source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 PIPELINE_CLAIM_KEY=""
 PIPELINE_CLAIM_OWNER=""
 PIPELINE_CLAIM_UNIT=""
@@ -2429,14 +2431,11 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" 
     if pipeline_triage_skip_inflight "$next_triage"; then triage_skip scheduler_inflight; continue; fi
     stage_dispatch_allowed triage || { triage_skip quarantine; break; }
     # The roadmap placement is a GitHub call per issue; a candidate that will
-    # only be deferred past the cap does not pay for it.
+    # only be deferred past the cap does not pay for it. A flagged issue is
+    # remembered as the solo candidate instead of replacing the batch (row 897).
     if [ "$(state_read "$next_triage" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
-      ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || { triage_skip roadmap_parent; continue; }
-      TRIAGE_BATCH_IDS=("$next_triage")
-      TRIAGE_RETRY_ALONE=1
-      break
+      triage_flagged_selection "$next_triage" needs-triage <<< "$NEEDS_TRIAGE_JSON" && break || continue
     fi
-    [ "$TRIAGE_RETRY_ALONE" = "1" ] && continue
     if [ "$triage_slots" -le 0 ]; then
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
       continue
@@ -2514,7 +2513,7 @@ if [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
     fi
   done <<< "$READY_MEASURE_IDS")"
 fi
-if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
+if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
   for next_measure in $READY_MEASURE_IDS; do
     if [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
       TRIAGE_SELECT_CUT=1
@@ -2538,10 +2537,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
     if pipeline_triage_skip_inflight "$next_measure"; then triage_skip scheduler_inflight; continue; fi
     stage_dispatch_allowed triage || { triage_skip quarantine; break; }
     if [ "$(state_read "$next_measure" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
-      ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || { triage_skip roadmap_parent; continue; }
-      TRIAGE_BATCH_IDS=("$next_measure")
-      TRIAGE_RETRY_ALONE=1
-      break
+      triage_flagged_selection "$next_measure" ready-for-agent <<< "$READY_MEASURE_JSON" && break || continue
     fi
     if [ "$triage_slots" -le 0 ]; then
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
@@ -2552,6 +2548,9 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
     triage_slots=$((triage_slots - 1))
   done
 fi
+# Row 897: with both loops done, a remembered flagged candidate runs alone
+# only when no unflagged issue was selected and no batch unit is active.
+triage_solo_candidate_dispatch
 if [ "$TRIAGE_DEFERRED_COUNT" -gt 0 ]; then
   echo "issue-pipeline: triage batch cap deferred $TRIAGE_DEFERRED_COUNT selectable issue(s); they remain queued for a later tick" >&2
 fi
