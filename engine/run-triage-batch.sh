@@ -211,14 +211,86 @@ for n in "${BATCH_IDS[@]}"; do
 done
 [ "${#INCLUDED_IDS[@]}" -gt 0 ] || exit 0
 
+# Row 897 round 2: a valid result whose apply failed (2026-11-21 16:17Z lost
+# a 211,268-token result to an HTTP 403 secondary rate limit inside
+# run-triage.sh) used to be discarded with the scratch directory, and the
+# next run paid the model again. The result and the snapshot it was made from
+# are kept as one pair per issue under $AGENT_HOME; a newer pair replaces an
+# older one. A later batch run applies an unchanged issue's pair through the
+# same run-triage.sh batch-result path, with no model call for that issue.
+triage_kept_pair_save() { # <issue> <result-file> <snapshot-file>
+  local n="$1" result_file="$2" snapshot_file="$3" dir="$AGENT_HOME/triage-kept" stamp
+  mkdir -p "$dir" || return 1
+  rm -f -- "$dir/$n"-*.result.json "$dir/$n"-*.snapshot.json
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  mv -f -- "$result_file" "$dir/$n-$stamp.result.json" || return 1
+  mv -f -- "$snapshot_file" "$dir/$n-$stamp.snapshot.json" || { rm -f -- "$dir/$n-$stamp.result.json"; return 1; }
+}
+
+triage_kept_pair_delete() { # <issue>
+  rm -f -- "$AGENT_HOME/triage-kept/$1"-*.result.json "$AGENT_HOME/triage-kept/$1"-*.snapshot.json
+}
+
+triage_kept_pair_result_file() { # <issue>: newest kept result, empty when none
+  local f
+  for f in "$AGENT_HOME/triage-kept/$1"-*.result.json; do
+    [ -f "$f" ] && printf '%s\n' "$f" && return 0
+  done
+  return 1
+}
+
+# Returns 0 when the issue was served from a kept pair (applied, or the apply
+# failed again and the pair stays): it leaves the model batch either way.
+# Returns 1 when this run must triage the issue with its own model call.
+triage_kept_pair_apply() {
+  local n="$1" result_file snapshot_file snapshot_json guard_status=0
+  result_file="$(triage_kept_pair_result_file "$n")" || return 1
+  snapshot_file="${result_file%.result.json}.snapshot.json"
+  [ -f "$snapshot_file" ] || { triage_kept_pair_delete "$n"; return 1; }
+  if [ -n "$(find "$result_file" -mmin +1440 -print -quit 2>/dev/null)" ]; then
+    triage_kept_pair_delete "$n"
+    echo "run-triage-batch: #$n kept result is older than 24 hours; discarded and triaged normally" >&2
+    return 1
+  fi
+  if ! snapshot_json="$(cat "$snapshot_file")"; then
+    triage_kept_pair_delete "$n"
+    echo "run-triage-batch: #$n kept snapshot is unreadable; pair discarded and triaged normally" >&2
+    return 1
+  fi
+  issue_verdict_snapshot_guard "$n" "$snapshot_json" || guard_status=$?
+  if [ "$guard_status" -eq 1 ]; then
+    triage_kept_pair_delete "$n"
+    echo "run-triage-batch: #$n kept result no longer matches the issue ($ISSUE_VERDICT_GUARD_REASON); discarded and triaged normally" >&2
+    return 1
+  fi
+  if [ "$guard_status" -ne 0 ]; then
+    echo "run-triage-batch: #$n kept result could not be verified ($ISSUE_VERDICT_GUARD_REASON); triaging normally this run" >&2
+    return 1
+  fi
+  if bash "$SCRIPT_DIR/run-triage.sh" --batch-result "$result_file" --batch-snapshot "$snapshot_file" "$n"; then
+    triage_kept_pair_delete "$n"
+    echo "run-triage-batch: #$n applied its kept result without a model call" >&2
+    return 0
+  fi
+  echo "run-triage-batch: #$n Apply failed for the kept result; pair stays for the next run" >&2
+  return 0
+}
+
+MODEL_BATCH_IDS=()
+for n in "${INCLUDED_IDS[@]}"; do
+  triage_kept_pair_apply "$n" || MODEL_BATCH_IDS+=("$n")
+done
+INCLUDED_IDS=("${MODEL_BATCH_IDS[@]}")
+[ "${#INCLUDED_IDS[@]}" -gt 0 ] || { echo "run-triage-batch: every included issue was served from a kept result; no model call" >&2; exit 0; }
+
 PROMPT_FILE="$SCRATCH_DIR/prompt.txt"
 TRANSCRIPT_FILE="$SCRATCH_DIR/codex-transcript.txt"
 RESULT_DIR="$SCRATCH_DIR/results"
 mkdir -p "$RESULT_DIR"
 
 ORIGIN_MAIN_SHA="$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || echo unknown)"
-INDEX_FRESHNESS_NOTE="refreshed once for the batch immediately before this prompt; treat it as up to date"
-if ! gitnexus_refresh_index_once "$REPO_DIR" "$ORIGIN_MAIN_SHA" gitnexus_index_matches_origin_main; then
+INDEX_FRESHNESS_NOTE="checked fresh for this batch immediately before this prompt -- index at most 60 minutes old and at most 20 commits behind origin/main; treat it as up to date"
+if ! gitnexus_index_matches_origin_main "$REPO_DIR"; then
   ORIGIN_MAIN_SHA="$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || echo unknown)"
   INDEX_FRESHNESS_NOTE="NOT confirmed fresh this batch -- refresh was deferred or failed; do not use a LOW/non-HIGH/CRITICAL impact reading to justify phase-3 L2 admission"
   echo "run-triage-batch: GitNexus freshness not confirmed for origin/main ($ORIGIN_MAIN_SHA); L2 gate will fail closed" >&2
@@ -420,6 +492,21 @@ if [ "$STATUS" -ne 0 ]; then
   BATCH_FAILURE_KIND="$(model_call_failure_kind "$(tail -c 4000 "$TRANSCRIPT_FILE")" "$STATUS")"
 fi
 
+# Row 897 round 2: an invalid record used to be deleted with rm -f, so the
+# failing field of 2026-11-21's eleven schema failures could never be found
+# afterwards. Keep the newest 50 invalid records under $AGENT_HOME for
+# diagnosis; a kept record is still never applied.
+triage_keep_invalid_record() { # <issue> <result-file>
+  local n="$1" src="$2" dir="$AGENT_HOME/triage-invalid" stamp f
+  mkdir -p "$dir" || return 1
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  mv -f -- "$src" "$dir/$n-$stamp.json" || return 1
+  ls -1t -- "$dir" 2>/dev/null | tail -n +51 | while IFS= read -r f; do
+    rm -f -- "$dir/$f"
+  done
+  return 0
+}
+
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   if ! jq -e 'type == "object"' <<< "$line" >/dev/null 2>&1; then
@@ -437,11 +524,17 @@ while IFS= read -r line; do
   fi
   SEEN_ISSUES["$n"]=1
   RESULT_FILE="$RESULT_DIR/$n.json"
-  if ! jq -ce '.result | select(type == "object")' <<< "$line" > "$RESULT_FILE" \
-    || ! triage_result_matches_schema "$RESULT_FILE" "$(zf_config_file prompts/triage.schema.json)"; then
+  if ! jq -ce '.result | select(type == "object")' <<< "$line" > "$RESULT_FILE"; then
     BAD_ISSUES["$n"]="invalid triage.schema.json record"
-    rm -f "$RESULT_FILE"
-    echo "run-triage-batch: #$n record failed triage.schema.json; other issues continue" >&2
+    echo "run-triage-batch: #$n record failed triage.schema.json: result is not an object; other issues continue" >&2
+    continue
+  fi
+  SCHEMA_FAILURE="$(triage_result_schema_failure "$RESULT_FILE" "$(zf_config_file prompts/triage.schema.json)" || true)"
+  if [ -n "$SCHEMA_FAILURE" ]; then
+    BAD_ISSUES["$n"]="invalid triage.schema.json record"
+    triage_keep_invalid_record "$n" "$RESULT_FILE" \
+      || echo "run-triage-batch: #$n invalid record could not be kept for diagnosis" >&2
+    echo "run-triage-batch: #$n record failed triage.schema.json: $SCHEMA_FAILURE; other issues continue" >&2
     continue
   fi
   RESULT_FILES["$n"]="$RESULT_FILE"
@@ -478,6 +571,11 @@ triage_batch_fail_issue() {
       record_env_fault env:triage-result-backoff triage-batch "$n" \
         "could not record scoped backoff for invalid or missing batch result" || true
     fi
+    # Row 897 round 2: a batch-level failure flags nobody for a solo run.
+    if [ "$BATCH_LEVEL_FAILURE" -eq 1 ]; then
+      echo "run-triage-batch: #$n invalid or missing result; scoped backoff recorded (batch-level failure; no solo retry)" >&2
+      return 0
+    fi
     if ! state_merge "$n" '.triage_batch_retry_alone = true | del(.model_policy.active)'; then
       record_env_fault env:triage-result-state triage-batch "$n" \
         "could not mark invalid or missing batch result for solo retry" || true
@@ -494,6 +592,24 @@ triage_batch_fail_issue() {
   return 0
 }
 
+# Row 897 round 2: failures follow the batch, not the issue -- every flag of
+# 2026-11-21 came from a batch that failed for most of its members. When the
+# model call exited 0, the batch held more than one issue and more than half
+# of them have no valid result, treat it as one batch-level failure: scoped
+# backoff as today, but no triage_batch_retry_alone flag on any member.
+BATCH_NO_RESULT_COUNT=0
+for n in "${INCLUDED_IDS[@]}"; do
+  if [ -z "${RESULT_FILES[$n]:-}" ] || [ -n "${BAD_ISSUES[$n]:-}" ]; then
+    BATCH_NO_RESULT_COUNT=$((BATCH_NO_RESULT_COUNT + 1))
+  fi
+done
+BATCH_LEVEL_FAILURE=0
+if [ "$STATUS" -eq 0 ] && [ "${#INCLUDED_IDS[@]}" -gt 1 ] \
+  && [ "$BATCH_NO_RESULT_COUNT" -gt $(( ${#INCLUDED_IDS[@]} / 2 )) ]; then
+  BATCH_LEVEL_FAILURE=1
+  echo "run-triage-batch: batch-level failure: $BATCH_NO_RESULT_COUNT of ${#INCLUDED_IDS[@]} included issues have no valid result; scoped backoff only, no solo retry flags" >&2
+fi
+
 APPLIED_COUNT=0
 FAILED_RECORD_COUNT=0
 for n in "${INCLUDED_IDS[@]}"; do
@@ -503,7 +619,9 @@ for n in "${INCLUDED_IDS[@]}"; do
         --batch-snapshot "${ISSUE_FILES[$n]}" "$n"; then
       APPLIED_COUNT=$((APPLIED_COUNT + 1))
     else
-      echo "run-triage-batch: #$n Apply failed; other records continue" >&2
+      triage_kept_pair_save "$n" "${RESULT_FILES[$n]}" "${ISSUE_FILES[$n]}" \
+        || echo "run-triage-batch: #$n valid result could not be kept for a retry without a new model call" >&2
+      echo "run-triage-batch: #$n Apply failed; valid result and snapshot kept for the next run; other records continue" >&2
     fi
   else
     reason="${BAD_ISSUES[$n]:-missing batch record} (Codex exit $STATUS)"

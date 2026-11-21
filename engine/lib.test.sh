@@ -7543,4 +7543,32 @@ else
 fi
 assert_eq "triage schema validation reads target config override" rejected "$TRIAGE_CONFIG_OVERRIDE_STATUS"
 
+# Row 897 round 2: triage_result_schema_failure names the first failing path
+# and why; triage_result_matches_schema is its yes/no view, so the two must
+# agree on every failure kind (one set of rules, dispatch-gates.sh).
+SCHEMA_NAMING_DIR="$(mktemp -d)"
+LIB_TEST_TMP_DIRS+=("$SCHEMA_NAMING_DIR")
+SCHEMA_NAMING_SCHEMA="$SCRIPT_DIR/prompts/triage.schema.json"
+SCHEMA_NAMING_BASE="$(jq -c '. + {related: [], suspected_shared_cause: null, advisor_reason: "none"}' "$TRIAGE_CONFIG_OVERRIDE_RESULT")"
+schema_naming_case() {
+  local desc="$1" filter="$2" want="$3" file="$SCHEMA_NAMING_DIR/case.json" verdict named
+  jq "$filter" <<< "$SCHEMA_NAMING_BASE" > "$file"
+  if triage_result_matches_schema "$file" "$SCHEMA_NAMING_SCHEMA"; then verdict=valid; else verdict=invalid; fi
+  named="$(triage_result_schema_failure "$file" "$SCHEMA_NAMING_SCHEMA")"
+  assert_eq "$desc: yes/no check says invalid" invalid "$verdict"
+  assert_contains "$desc: namer says the path and why" "$named" "$want"
+}
+schema_naming_case "enum outside the schema" '.entry_surface = "Carrier Pigeon"' 'entry_surface: value not in enum'
+schema_naming_case "missing required field" 'del(.notes_md)' 'notes_md: missing'
+schema_naming_case "extra property" '. + {foo: 1}' 'foo: property not allowed'
+jq '.' <<< "$SCHEMA_NAMING_BASE" > "$SCHEMA_NAMING_DIR/valid.json"
+if triage_result_matches_schema "$SCHEMA_NAMING_DIR/valid.json" "$SCHEMA_NAMING_SCHEMA"; then
+  SCHEMA_NAMING_VALID_VERDICT=valid
+else
+  SCHEMA_NAMING_VALID_VERDICT=invalid
+fi
+assert_eq "valid record agrees both ways: check says valid" valid "$SCHEMA_NAMING_VALID_VERDICT"
+assert_eq "valid record agrees both ways: namer stays empty" "" \
+  "$(triage_result_schema_failure "$SCHEMA_NAMING_DIR/valid.json" "$SCHEMA_NAMING_SCHEMA")"
+
 lib_case_exit
