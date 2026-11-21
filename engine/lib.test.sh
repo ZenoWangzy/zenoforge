@@ -1591,7 +1591,7 @@ RAP_STALE_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_STALE_
   set -euo pipefail
   source "$1/lib.sh" 2>/dev/null
   gh() { printf "gh: API rate limit exceeded for installation 123 (HTTP 403)\n" >&2; return 1; }
-  supervisor_inbox_append_once() { printf "%s|%s\n" "$1" "$2" >> "$3"; }
+  notices="$3"; supervisor_inbox_append_once() { printf "%s|%s\n" "$1" "$2" >> "$notices"; }
   read_agent_pipeline 2>"$2"
 ' _ "$SCRIPT_DIR" "$RAP_ROOT/stale.err" "$RAP_ROOT/stale-notices" || true)"
 assert_eq "a failed read with a remembered value older than 30 minutes prints off" "off" "$RAP_STALE_READ"
