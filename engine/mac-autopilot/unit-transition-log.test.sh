@@ -74,7 +74,7 @@ UNIT_TRANSITION_MODE=enforce
 cp "$UNITS" "$fixture/before-set-unit-refusal.json"
 if write_stage u landing; then fail 'enforce mode accepted an undeclared set_unit transition'; fi
 cmp -s "$fixture/before-set-unit-refusal.json" "$UNITS" || fail 'refused set_unit transition changed the ledger'
-grep -F 'unit-transition refused unit=u from=implement-pending to=landing caller=write_stage' "$LOG" >/dev/null \
+grep -F 'unit-transition refused unit=u from=supervisor-review to=landing caller=write_stage' "$LOG" >/dev/null \
   || fail 'set_unit refusal did not log unit, stages and caller'
 
 cp "$UNITS" "$fixture/before-units-update-refusal.json"

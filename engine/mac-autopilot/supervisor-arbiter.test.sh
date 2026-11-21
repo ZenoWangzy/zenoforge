@@ -857,6 +857,7 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 
 # Row 150 (issue-4879): after its default, a capped unit that re-enters supervisor-review closes with a durable hold.
 cap_hold_stub="$fixture/cap-hold-stub"; cap_hold_calls="$fixture/cap-hold-calls"; mkdir -p "$cap_hold_stub"; : > "$cap_hold_calls"
 printf '#!/usr/bin/env bash\nprintf "hold %%s\\n" "$*" >> %q\n' "$cap_hold_calls" > "$cap_hold_stub/hold.sh"
+cp "$script_dir/../task-state.mjs" "$cap_hold_stub/task-state.mjs"
 jq '(.units[0] |= (.stage = "supervisor-review" | .history += [{stage:"supervisor-escalated",result:"ci cancelled again",at:"2026-10-27T05:00:00Z"}]))' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
 ZF_ENGINE_DIR="$cap_hold_stub" SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
 [[ "$(cap_default_stage pr-633)" == closed && "$(cap_default_history pr-633 supervisor-cap-default)" == 1 \
@@ -1309,6 +1310,7 @@ jq -cn '{units:[{id:"issue-4865",issue:4865,stage:"parked",parked_reason:"repair
 # ---- 行 172b：仲裁裁决的停车没有无限期的人工等待（每条路径一行可 grep 的日志，单元与原因都在行内）----
 hold_stub="$fixture/hold-stub"; hold_calls="$fixture/hold-calls"; mkdir -p "$hold_stub"; : > "$hold_calls"
 printf '#!/usr/bin/env bash\nprintf "hold %%s\\n" "$*" >> %q\n' "$hold_calls" > "$hold_stub/hold.sh"
+cp "$script_dir/../task-state.mjs" "$hold_stub/task-state.mjs"
 export ZF_ENGINE_DIR="$hold_stub"
 ci_runs_at() { jq -cn --arg at "$1" --arg sha "$2" '{workflow_runs:[{status:"completed",conclusion:"success",created_at:$at,id:9,run_attempt:1,head_sha:$sha,event:"push"}]}'; }
 # The real main-CI verdict reads one Actions list through gh api: answer that read from CI_RUNS, everything else from the earlier gh double.
