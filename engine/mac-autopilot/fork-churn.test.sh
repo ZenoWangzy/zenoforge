@@ -93,7 +93,8 @@ fork_count() {
   ' "$1"
 }
 profile_tick() {
-  local label="$1" engine="$2" run="$3" summary="$work/$label.tick.strace"
+  local label="$1" engine="$2" run="$3" summary
+  summary="$work/$label.tick.strace"
   export HOME="$run/home" AGENT_HOME="$run/agent" TMPDIR="$run/tmp"
   export MAC_AUTOPILOT_ROOT="$run/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$run/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$run/runtime"
   export ZF_ENGINE_DIR="$engine_dir" ZF_REPO_DIR="$run/repo" ZF_GH_REPO=example-maintainer/example-repo
@@ -156,7 +157,8 @@ prepare_bell() {
   for ((i = 0; i < 800; i++)); do printf '[%s] routine pass completed item=%s\n' "$now" "$i"; done > "$run/runtime/scheduler.log"
 }
 profile_bell() {
-  local label="$1" engine="$2" run="$3" summary="$work/$label.bell.strace"
+  local label="$1" engine="$2" run="$3" summary
+  summary="$work/$label.bell.strace"
   export HOME="$run/home" AGENT_HOME="$run/agent" TMPDIR="$run/tmp" PATH="$mock_bin:$PATH"
   export MAC_AUTOPILOT_ROOT="$run/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$run/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$run/runtime"
   export ZF_ENGINE_DIR="$engine_dir" ZF_REPO_DIR="$run/repo" ZF_GH_REPO=example-maintainer/example-repo
