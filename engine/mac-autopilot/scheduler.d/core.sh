@@ -57,7 +57,7 @@ advisor_dispatch_or_route() { # unit-json total-review-rejections
 # STAMP 前缀查日志同款行，命令替换子 shell 也能共享一份去重。
 jqf() {
   local LC_ALL=C
-  local _err _rc _first _who _i _name _value _bytes
+  local _err _err_dir _rc _first _who _i _name _value _bytes
   local -a _jqf_args=("$@")
   for ((_i = 0; _i < ${#_jqf_args[@]}; _i++)); do
     case "${_jqf_args[_i]}" in
@@ -78,11 +78,15 @@ jqf() {
         ;;
     esac
   done
-  _err="$(mktemp)" || { jq "$@" 2>/dev/null; return $?; }
+  [[ -n "${LOG:-}" ]] || { jq "$@" 2>/dev/null; return $?; }
+  _err_dir="${A:-${LOG%/*}}"
+  [[ -n "${A:-}" || "$_err_dir" != "$LOG" ]] || _err_dir=.
+  _err="$_err_dir/.jqf-stderr.$_JQF_ERR_SCOPE.$BASHPID"
+  if ! : >"$_err"; then jq "$@" 2>/dev/null; return $?; fi
   jq "$@" 2>"$_err"
   _rc=$?
   if (( _rc != 0 )) && [[ -s "$_err" && -n "${LOG:-}" ]]; then
-    _first="$(head -n1 "$_err")"
+    IFS= read -r _first <"$_err" || :
     # 11-03 Broken pipe 误报：调用方提前停止读流（收单收满 want 后 break、`jqf | head -n` 截断、
     # 循环内 return）时 jq 写 stdout 得 EPIPE；SIGPIPE 被忽略的上下文（systemd 服务、命令替换）里
     # jq 以 rc=2 + "writing output failed: Broken pipe" 报出来。EPIPE 只能是下游读者关闭，不是 jq
@@ -95,9 +99,16 @@ jqf() {
       fi
     fi
   fi
-  rm -f "$_err"
   return "$_rc"
 }
+_JQF_ERR_SCOPE="$BASHPID"
+_jqf_stderr_cleanup() {
+  [[ -n "${LOG:-}" ]] || return 0
+  local _err_dir="${A:-${LOG%/*}}"
+  [[ -n "${A:-}" || "$_err_dir" != "$LOG" ]] || _err_dir=.
+  rm -f -- "$_err_dir"/.jqf-stderr."$_JQF_ERR_SCOPE".* 2>/dev/null || :
+}
+chain_exit_trap _jqf_stderr_cleanup
 # Optional file reads return 64 without logging only when the path is truly
 # absent. Existing unreadable, malformed, or non-file paths still pass through
 # jqf so scheduler.log keeps the diagnostic even when callers redirect stderr.

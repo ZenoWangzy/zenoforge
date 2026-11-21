@@ -1,0 +1,5 @@
+{
+  "engine/mac-autopilot/scheduler.d/core.sh": [
+    "engine/mac-autopilot/jqf-forks.test.sh"
+  ]
+}
