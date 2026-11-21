@@ -482,6 +482,7 @@ PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
 PR_FILES='["tools/quick-land.sh"]'
 PR_HEAD="$rsha" # no full-suite result exists for this head, so receipt or CI checks must prove it
 PR_CI_HEAD="$rsha"
+rm -f "$result_file"
 rm -rf "$receipt_dir"
 expect_receipt_refusal 'no test receipt' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 ci_rollup() {
