@@ -701,8 +701,9 @@ EOF
   cat > "$remote/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ ${1:-} != --user ]] || exit 0
 printf '%s\n' "$*" >> "$ZF_TEST_REMOTE_ROOT/systemctl.log"
+# The remote side always calls --user (its account is never root: the probe refuses uid 0).
+[[ ${1:-} != --user ]] || shift
 action=${1:-}; unit=${3:-${2:-}}; unit=${unit%.scope}
 pidfile="$ZF_TEST_REMOTE_ROOT/scopes/$unit.pid"
 case "$action" in
@@ -714,6 +715,9 @@ EOF
   cat > "$remote/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
+# The probe's backend check runs `codex login status` (worker-remote.py BACKEND_CHECKS); answer it before the
+# run-shaped parsing, or a hang-mode stub would touch the run markers and hang the check itself.
+if [[ ${1:-} == login && ${2:-} == status ]]; then exit 0; fi
 output=
 while (($#)); do
   if [[ $1 == -o && $# -gt 1 ]]; then output=$2; shift 2; else shift; fi
@@ -822,6 +826,7 @@ env WORKER_SCRATCH_ROOT="$stop_scratch" ZF_WORKER_STOP_QUIET=0.1 ZF_TEST_WORKER_
   ZF_TEST_REMOTE_ROOT="$stop_root" PATH="$test_root/bin:/usr/bin:/bin" zf-stop remote-stop \
   > "$stop_case.stop.stdout" 2> "$stop_case.stop.stderr" || stop_rc=$?
 [[ $stop_rc == 0 && -e "$stop_root/remote-codex-stopped" ]] || fail 'zf-stop did not stop the remote run'
+assert_file_contains "$stop_root/systemctl.log" '--user stop zf-remote-'
 wait "$stop_worker_pid" 2>/dev/null || :
 printf 'PASS zf-stop stops the remote scope\n'
 
@@ -860,7 +865,18 @@ rm -rf "$refuse_root/proc/self"
 refuse_choose admitted zc
 [[ $(cat "$refuse_case/admitted.out") == host-a ]] || fail 'choose did not select a usable host with a runnable zcode'
 assert_file_contains "$refuse_case/admitted.err" 'worker-host: selected'
-printf 'PASS probe refuses a missing backend, load5 over cores and a root user; choose falls back to local\n'
+# The run-side probe (command_run, the second probe) writes its refusal to the run's placement.log too.
+printf '9.5 9.5 9.5 1/1 1\n' > "$refuse_root/proc/loadavg"
+refuse_run_rc=0
+env PATH="$test_root/bin:/usr/bin:/bin" ZF_WORKER_REMOTE_ROOT="$refuse_root/roots" \
+  ZF_TEST_REMOTE_ROOT="$refuse_root" ZF_WORKER_HOST=host-a WORKER_SCRATCH_ROOT="$refuse_case/scratch" \
+  python3 "$test_root/bin/worker-remote.py" run host-a refuse-load "$refuse_case" /dev/null '' zc \
+  >/dev/null 2>"$refuse_case/load-run.err" || refuse_run_rc=$?
+[[ $refuse_run_rc == 75 ]] || fail "load-refused run returned rc=$refuse_run_rc instead of 75"
+assert_file_contains "$refuse_case/scratch/luna/refuse-load/placement.log" \
+  'worker-host: skipping host-a: load5 9.5 is above 4 cores x 1'
+printf '0.1 0.1 0.1 1/1 1\n' > "$refuse_root/proc/loadavg"
+printf 'PASS probe refuses a missing backend, load5 over cores and a root user; choose falls back to local, and a refused run logs the reason to placement.log\n'
 
 # WORKER_BACKEND=zc with an admitted host hands off to the helper: the remote side starts bin/zc, whose
 # zcode stub result syncs back as last.md/events/rc/codex.pid beside the placement record.

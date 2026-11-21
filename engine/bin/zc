@@ -64,13 +64,14 @@ if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
   done
 else
   # Remote zc joins luna's inner shape: no local capacity gate, a validated zf-remote scope under
-  # zf-remote.slice with its own CPU weight; the system-level stop is chained so the next same-key run can recreate the scope.
+  # zf-remote.slice with its own CPU weight; the user-manager stop is chained so the next same-key run can recreate
+  # the scope (the remote account is never root -- the placement probe refuses uid 0 -- and has linger on).
   scope="${ZF_WORKER_REMOTE_SCOPE_NAME:-}"
   [[ "$scope" =~ ^zf-remote-[A-Za-z0-9_-]+-[0-9a-f]{8}$ ]] || { echo 'zc: invalid remote scope name' >&2; exit 2; }
-  systemctl set-property --runtime zf-remote.slice "CPUWeight=${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}" >/dev/null 2>&1 || {
-    echo 'zc: could not set zf-remote.slice CPUWeight' >&2; exit 74;
-  }
-  chain_exit_trap 'systemctl stop "$scope.scope" >/dev/null 2>&1 || true'
+  # A user manager without a delegated cpu controller refuses CPUWeight: log one line and run without the weight.
+  systemctl --user set-property --runtime zf-remote.slice "CPUWeight=${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}" >/dev/null 2>&1 \
+    || echo 'zc: could not set zf-remote.slice CPUWeight (running without it)' >&2
+  chain_exit_trap 'systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true'
   printf '%s\n' "$scope" >"$out/remote.scope"
 fi
 mapfile -t zcode_cmd < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_argv)
@@ -88,8 +89,7 @@ trap 'exit 129' HUP
 cpu_weight="${AGENT_WORKER_CPU_WEIGHT:-10}"
 if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight="${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}"
 elif [[ "${LUNA_PRIORITY:-}" == hotfix ]]; then cpu_weight=1000; fi
-systemd_args=(--scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
-[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || systemd_args=(--user "${systemd_args[@]}")
+systemd_args=(--user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
 TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)" \
   systemd-run "${systemd_args[@]}" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   "${zcode_cmd[@]}" \

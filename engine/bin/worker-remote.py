@@ -521,7 +521,7 @@ def remote_run(staging):
     child = subprocess.Popen(command, env=env, start_new_session=True)
 
     def stop_child(signum, _frame):
-        subprocess.run(["systemctl", "stop", job["scope"] + ".scope"],
+        subprocess.run(["systemctl", "--user", "stop", job["scope"] + ".scope"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             child.send_signal(signum)
@@ -615,9 +615,11 @@ def sync_remote(host, sync_script, remote_out, local_out, offsets):
 def stop_remote(host, scope):
     if not re.fullmatch(r"zf-remote-[A-Za-z0-9_-]+-[0-9a-f]{8}", scope):
         raise ValueError("remote scope name is invalid")
+    # The remote ssh user is never root (the probe refuses uid 0) and its account has linger on, so the
+    # scope lives in its user manager.
     unit = scope + ".scope"
-    command = (f"systemctl stop {shlex.quote(unit)} >/dev/null 2>&1 || true; "
-               f"for i in $(seq 1 100); do systemctl is-active --quiet {shlex.quote(unit)} || exit 0; "
+    command = (f"systemctl --user stop {shlex.quote(unit)} >/dev/null 2>&1 || true; "
+               f"for i in $(seq 1 100); do systemctl --user is-active --quiet {shlex.quote(unit)} || exit 0; "
                "sleep 0.1; done; exit 1")
     try:
         result = remote_call(host, command, timeout=connect_timeout_seconds() + 15,
@@ -656,6 +658,9 @@ def command_run(host, key, cwd, prompt, schema, backend="luna"):
     if metrics is None or reason:
         detail = reason or "remote capacity probe failed"
         (local_out / "remote-refused").write_text(detail + "\n")
+        # The choose-side refusals land here through bin/worker's redirect; this run-side probe writes its own line.
+        with (local_out / "placement.log").open("a") as placement_log:
+            print(f"worker-host: skipping {host}: {detail}", file=placement_log)
         print(f"worker-remote: refusing {host}: {detail}", file=sys.stderr)
         return 75
     print(f"worker-remote: admitted {format_metrics(host, metrics)}", flush=True)
