@@ -22,7 +22,7 @@ mkdir -p "$HOME/wt" "$AGENT_HOME/state" "$AGENT_HOME/night"
 jq -n '{founder_login:"maintainer"}' > "$AGENT_HOME/recipients.json"
 for n in 910301 910302 910303 910401 910504 910505 910506 910507 910508 910509 910703 910901 910903 910904 \
   911001 911002 911003 911004 911005 911101 911102 911103 911104 911111 911112 911113 911114 911121 911122 \
-  911131 911132 911133 911141; do
+  911131 911132 911133 911141 911501 911502 911503 911511 911512 911531; do
   if [ -e "$HOME/wt/triage-$n" ]; then
     echo "run-triage-batch.test: refusing to overwrite existing worktree $HOME/wt/triage-$n" >&2
     exit 2
@@ -125,6 +125,18 @@ case "$1 ${2:-}" in
     if [ "$fail_from" -gt 0 ] && [ "$view_count" -ge "$fail_from" ]; then
       echo "run-triage-batch.test: fake gh issue view #$n fails (view $view_count >= $fail_from)" >&2
       exit 1
+    fi
+    # Queue row 919 fixture: hold one issue's apply-time reread (view >= 2)
+    # while the gate file exists; the marker tells the test the batch is
+    # inside that view, mid-apply. The cap keeps a lost test from hanging.
+    if [ "$view_count" -ge 2 ] && [ "${FAKE_GH_VIEW_HANG_ISSUE:-}" = "$n" ] \
+      && [ -n "${FAKE_GH_VIEW_HANG_MARKER:-}" ] && [ -e "${FAKE_GH_VIEW_HANG_GATE:-}" ]; then
+      printf 'view hang\n' > "$FAKE_GH_VIEW_HANG_MARKER"
+      hang_waits=0
+      while [ -e "$FAKE_GH_VIEW_HANG_GATE" ] && [ "$hang_waits" -lt 600 ]; do
+        sleep 0.1
+        hang_waits=$((hang_waits + 1))
+      done
     fi
     if [ "${FAKE_ON_HOLD_ISSUE:-}" = "$n" ]; then
       labels='[{"name":"needs-triage"},{"name":"enhancement"},{"name":"on-hold"}]'
@@ -695,6 +707,105 @@ assert_contains "the model batch holds only the other issue" "$(cat "$FAKE_PROMP
 assert_not_contains "kept-pair issue leaves the model batch" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #911004'
 assert_eq "mixed batch still calls the model once" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
 assert_eq "kept pair is consumed" 0 "$(find "$AGENT_HOME/triage-kept" -name '911004-*' | wc -l | tr -d ' ')"
+
+# Queue row 919: a valid result is kept the moment it passes the schema
+# check, before the first apply starts, and is deleted only after its own
+# issue applies. The fake gh holds the first issue's apply-time reread on a
+# gate file; the batch runs in its own session, so one TERM to the process
+# group ends the wrapper, its apply and the fake gh together, the way the
+# unit timeout's TERM reached the whole unit on 2026-11-21 17:42Z.
+HANG_MARKER="$TEST_ROOT/view-hang.marker"
+HANG_GATE="$TEST_ROOT/view-hang.gate"
+jq -n '[911501, 911502, 911503] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+echo '[]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" '{issue:911501,result:$result},{issue:911502,result:$result},{issue:911503,result:$result}' > "$FAKE_CODEX_OUTPUT"
+rm -f "$HANG_MARKER"
+: > "$HANG_GATE"
+set +e
+FAKE_GH_VIEW_HANG_ISSUE=911501 FAKE_GH_VIEW_HANG_MARKER="$HANG_MARKER" FAKE_GH_VIEW_HANG_GATE="$HANG_GATE" \
+  setsid bash "$BATCH_SRC" --scheduled 911501 911502 911503 >"$TEST_ROOT/killed-run.out" 2>&1 &
+KILLED_PID=$!
+hang_waits=0
+while [ ! -s "$HANG_MARKER" ] && [ "$hang_waits" -lt 600 ]; do
+  sleep 0.1
+  hang_waits=$((hang_waits + 1))
+done
+kill -TERM -- "-$KILLED_PID"
+wait "$KILLED_PID"
+KILLED_STATUS=$?
+set -e
+hang_waits=0
+while kill -0 -- "-$KILLED_PID" 2>/dev/null && [ "$hang_waits" -lt 100 ]; do
+  sleep 0.1
+  hang_waits=$((hang_waits + 1))
+done
+assert_eq "a killed batch leaves no process behind" false \
+  "$(kill -0 -- "-$KILLED_PID" 2>/dev/null && echo true || echo false)"
+for n in 911501 911502 911503; do
+  assert_eq "killed batch kept #$n's valid result before its apply finished" 1 \
+    "$(find "$AGENT_HOME/triage-kept" -name "$n-*.result.json" 2>/dev/null | wc -l | tr -d ' ')"
+  assert_eq "killed batch kept #$n's snapshot beside the result" 1 \
+    "$(find "$AGENT_HOME/triage-kept" -name "$n-*.snapshot.json" 2>/dev/null | wc -l | tr -d ' ')"
+done
+rm -f "$HANG_GATE"
+: > "$FAKE_CODEX_ARGS"
+set +e
+KEPT_RESUME_OUTPUT="$(ZF_TRIAGE_TICK_ID=kept-resume-9115 bash "$BATCH_SRC" --scheduled 911501 911502 911503 2>&1)"
+KEPT_RESUME_STATUS=$?
+set -e
+assert_eq "resumed run exits cleanly" 0 "$KEPT_RESUME_STATUS"
+assert_contains "resumed run names how many issues it served from kept pairs" "$KEPT_RESUME_OUTPUT" \
+  '3 issue(s) served from kept pairs left by an earlier run that did not finish'
+assert_contains "resumed run applies every kept pair without a model call" "$KEPT_RESUME_OUTPUT" 'no model call'
+assert_eq "resumed run never invokes the model" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_eq "resumed run consumes every kept pair" 0 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911501-*' -o -name '911502-*' -o -name '911503-*' \) 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "resumed run applies the interrupted issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911501.json")"
+assert_eq "resumed run applies an unreached issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911502.json")"
+
+# Before the first apply finishes, every valid result of the batch is
+# already on disk; a run whose applies all succeed leaves no pair behind.
+jq -n '[911511, 911512] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" '{issue:911511,result:$result},{issue:911512,result:$result}' > "$FAKE_CODEX_OUTPUT"
+rm -f "$HANG_MARKER"
+: > "$HANG_GATE"
+set +e
+FAKE_GH_VIEW_HANG_ISSUE=911511 FAKE_GH_VIEW_HANG_MARKER="$HANG_MARKER" FAKE_GH_VIEW_HANG_GATE="$HANG_GATE" \
+  setsid bash "$BATCH_SRC" --scheduled 911511 911512 >"$TEST_ROOT/held-run.out" 2>&1 &
+HELD_PID=$!
+hang_waits=0
+while [ ! -s "$HANG_MARKER" ] && [ "$hang_waits" -lt 600 ]; do
+  sleep 0.1
+  hang_waits=$((hang_waits + 1))
+done
+set -e
+assert_eq "every valid result is kept before the first apply finishes" 2 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911511-*.result.json' -o -name '911512-*.result.json' \) 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "both snapshots sit beside the kept results" 2 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911511-*.snapshot.json' -o -name '911512-*.snapshot.json' \) 2>/dev/null | wc -l | tr -d ' ')"
+rm -f "$HANG_GATE"
+set +e
+wait "$HELD_PID"
+HELD_STATUS=$?
+set -e
+assert_eq "held batch finishes cleanly once the gate opens" 0 "$HELD_STATUS"
+assert_contains "held batch applied both records" "$(cat "$TEST_ROOT/held-run.out")" 'applied 2 valid result(s)'
+assert_eq "a run where every apply succeeds leaves no pair" 0 \
+  "$(find "$AGENT_HOME/triage-kept" \( -name '911511-*' -o -name '911512-*' \) 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "held batch applied the hung issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911511.json")"
+assert_eq "held batch applied the queued issue's verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/911512.json")"
+
+# An invalid record never becomes a kept pair; it still goes to triage-invalid.
+jq -n '[911531] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson issue 911531 --argjson invalid "$INVALID" '{issue:$issue,result:$invalid}' > "$FAKE_CODEX_OUTPUT"
+ZF_TRIAGE_TICK_ID=kept-invalid-911531 bash "$BATCH_SRC" --scheduled 911531 >/dev/null 2>&1
+assert_eq "invalid record is kept for diagnosis, not as a pair" 1 \
+  "$(find "$AGENT_HOME/triage-invalid" -name '911531-*.json' | wc -l | tr -d ' ')"
+assert_eq "invalid record leaves no kept pair" 0 \
+  "$(find "$AGENT_HOME/triage-kept" -name '911531-*' 2>/dev/null | wc -l | tr -d ' ')"
 
 # Queue row 897, round 2: when the model call exited 0 and more than half of
 # a multi-issue batch has no valid result, the failure follows the batch, not
