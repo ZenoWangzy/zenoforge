@@ -248,6 +248,29 @@ lock_retry_case() { # subshell: the loop's own functions with the tick command a
 }
 if ! lock_retry_case; then failures+=('a full tick that finds the scheduler lock held must retry in the retry window, not wait a tick window (loop.sh loop_cycle)'); fi
 
+# loop.sh: a refill the scheduler lock refused (rc 75) logs one countable line, at most one per 60 s (zenoforge#541).
+rr="$test_env_root/loop-refill-refused"
+rm -rf "$rr"; mkdir -p "$rr/sup/autopi" "$rr/home"; echo '{"tick_seconds":120}' > "$rr/sup/autopi/config.json"
+refill_refused_case() { # subshell: run_refill with the refill command stubbed to the lock-refused exit
+  export MAC_AUTOPILOT_SUPERVISOR_DIR="$rr/sup" MAC_AUTOPILOT_RUNTIME_DIR="$rr/sup/autopi" AGENT_HOME="$rr/home" ZF_ENGINE_DIR="$rr/sup" ZF_PACK_DIR="$rr/sup"
+  AUTOPI_LOOP_LIBRARY_ONLY=true source "$script_dir/loop.sh"
+  local log="$rr/sup/autopi/scheduler.log" rc=0
+  timeout() { return 75; } # the refill's scheduler.sh: the ledger lock is busy
+  run_refill || rc=$?
+  [[ "$rc" == 75 ]] || { echo "a refused refill should surface rc 75, got $rc" >&2; exit 1; }
+  run_refill || rc=$?
+  [[ "$(grep -c 'refill refused: scheduler lock busy' "$log")" == 1 ]] \
+    || { echo "two refusals within 60 s wrote $(grep -c 'refill refused: scheduler lock busy' "$log" || true) lines" >&2; exit 1; }
+  grep -Eq '^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z\] refill refused: scheduler lock busy holder=' "$log" \
+    || { echo "the refused line needs a timestamp and a holder field: $(cat "$log")" >&2; exit 1; }
+  # the throttle state is the last line's own age: a refusal older than 60 s no longer suppresses a fresh one
+  printf '[%s] refill refused: scheduler lock busy holder=aged_pr_lifecycle\n' "$(date -u -d '-90 seconds' +%FT%TZ)" > "$log"
+  run_refill || rc=$?
+  [[ "$(grep -c 'refill refused: scheduler lock busy' "$log")" == 2 ]] \
+    || { echo "a refusal older than 60 s must not throttle the next line: $(cat "$log")" >&2; exit 1; }
+}
+if ! refill_refused_case; then failures+=('a refill refused by the scheduler lock must log one countable line per 60 s (loop.sh run_refill)'); fi
+
 # main(): footprint_hog_alert reads snapshots and appends one line, so it runs after the scheduler lock is released, not under it.
 main_src="$script_dir/scheduler.sh"
 rel_line="$(awk '/^main\(\) \{/{m=1} m && /^  release_scheduler_lock$/{print NR; exit}' "$main_src")"

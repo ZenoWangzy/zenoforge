@@ -25,7 +25,10 @@ export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"
 printf '{"required":[],"current_regression":"","legacy_regression":[]}' > "$REQUIRED_PR_CHECKS_FILE"
 
 # ---- 真 git fixture：origin 裸库 + 工作克隆，分支按场景铺 ----------------------------------
-git() { command git -c user.name=t -c user.email=t@example.invalid "$@"; }
+git() { # AGED_LOCK_PROBE=1 时只探分类用的只读子命令（$3：调用形如 git -C <root> <sub>）
+  if [[ "${AGED_LOCK_PROBE:-0}" == 1 ]]; then aged_lock_probe "git: $3"; fi
+  command git -c user.name=t -c user.email=t@example.invalid "$@"
+}
 git init -q --bare -b main "$origin"
 git clone -q "$origin" "$root"
 cd "$root"
@@ -92,6 +95,7 @@ A="$MAC_AUTOPILOT_RUNTIME_DIR"
 # around `command gh`) would otherwise shadow it and every census would hit real gh.
 gh() {
   local n c num t b
+  if [[ "${AGED_LOCK_PROBE:-0}" == 1 ]]; then aged_lock_probe "gh: $1 $2"; fi
   case "$1 $2" in
     'label list') cat "$DB/labels" ;;
     'label create')
@@ -196,5 +200,40 @@ jq -e '.units[] | select(.id == "pr-199") | .stage == "review-pending"' "$UNITS"
 
 # 未预期到的 gh 调用不该出现
 ! grep -q 'unexpected-gh' "$ACTIONS" || fail "unexpected gh calls: $(grep unexpected-gh "$ACTIONS")"
+
+# #541：超龄 PR 的只读慢分类必须在台账锁外、动作必须在锁内。探针 gh/git 读 $SCHED_LOCK/pid 判断本进程
+# 是否持锁（与 run_refill 同一视角）：分类读看到持锁、关 PR 看到锁空，都记 violation。
+aged_lock_probe() { # "gh: <sub> <arg>" | "git: <sub>"
+  local op="$1" kind state
+  case "$op" in
+    'gh: issue view'|'gh: pr view'|'git: cherry'|'git: merge-tree'|'git: diff'|'git: cat-file'|'git: merge-base') kind=read ;;
+    'gh: pr close') kind=act ;;
+    *) return 0 ;;
+  esac
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then state=held; else state=free; fi
+  printf '%s\t%s\t%s\n' "$op" "$kind" "$state" >> "$LOCK_PROBE"
+  if [[ "$kind" == read && "$state" == held || "$kind" == act && "$state" == free ]]; then
+    printf '%s\t%s\n' "$op" "$state" >> "$LOCK_VIOLATIONS"
+  fi
+}
+rm -f "$A/aged-pr-check.epoch"
+LOCK_PROBE="$fixture/lock-probe"; LOCK_VIOLATIONS="$fixture/lock-violations"; : > "$LOCK_PROBE"; : > "$LOCK_VIOLATIONS"
+# 108：原 ticket 已关（gh 分类路）；109：改动文件在 main 全删（git 分类路：cherry/merge-tree/diff/cat-file）。
+jq --argjson add "[$(mk_pr 108 agent/issue-905 "$head_901" 9 main "fix(#905): stale again" ""),$(mk_pr 109 agent/issue-902 "$head_902" 9 main "fix(#902): stale again" "")]" \
+  '. + $add' "$DB/prs.json" > "$DB/prs.json.tmp" && mv "$DB/prs.json.tmp" "$DB/prs.json"
+# 前面的轮次已经让本 shell 持锁（分类重取后不再释放）：先放掉再干净地拿，探针只认自己的持有。
+release_scheduler_lock
+acquire_scheduler_lock || fail "probe run could not take the scheduler lock"
+AGED_LOCK_PROBE=1
+aged_pr_lifecycle
+AGED_LOCK_PROBE=0
+release_scheduler_lock
+[[ ! -s "$LOCK_VIOLATIONS" ]] || fail "classification/act lock discipline violated: $(paste -sd';' "$LOCK_VIOLATIONS")"
+grep -q $'gh: issue view\tread\tfree' "$LOCK_PROBE" || fail "issue view classification never ran lock-free"
+grep -q $'git: cherry\tread\tfree' "$LOCK_PROBE" || fail "cherry classification never ran lock-free"
+grep -q $'git: cat-file\tread\tfree' "$LOCK_PROBE" || fail "cat-file classification never ran lock-free"
+grep -q $'gh: pr close\tact\theld' "$LOCK_PROBE" || fail "aged_pr_close never ran under the lock"
+actions_of pr-close | grep -q $'^pr-close\t108\t' || fail "probe run should close PR 108 (closed ticket)"
+actions_of pr-close | grep -q $'^pr-close\t109\t' || fail "probe run should close PR 109 (deleted targets)"
 
 echo "aged-pr-lifecycle.test.sh: all assertions passed"
