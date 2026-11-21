@@ -2439,6 +2439,52 @@ rm -f "$A/orphan-check.epoch"; ORPHAN_REGISTER_MAX=2 reconcile_orphan_prs || :
 [[ ! -s "$fixture/pr-ops" ]] || fail 'reconcile ran again inside ORPHAN_CHECK_SECONDS'
 eval "$gh_issue_stub"
 
+# Row 898: orphan reconcile 的 GitHub 调用（issue 普查、pr close、gated 加标签）在台账锁外跑；
+# 收编的台账写回在锁内；窗口里被别的写收编的 PR 跳过登记并记一行。
+release_scheduler_lock
+acquire_scheduler_lock || fail 'row-898 probe could not take the scheduler lock'
+r898_free=0 r898_held=0 r898_write_free=0
+: > "$fixture/pr-ops2"
+eval "write_state_orig() $(declare -f write_state | sed '1d')"
+write_state() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
+  write_state_orig "$@"
+}
+r898_lock_probe() { if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi; }
+units '{"units":[{"id":"issue-90","issue":90,"stage":"implement","history":[]}]}'
+gh() { case "$1 $2" in
+  "pr list") echo '[{"number":510,"headRefName":"agent/issue-81","isDraft":true,"title":"gated draft"},{"number":511,"headRefName":"agent/issue-82","isDraft":false,"title":"plain"},{"number":512,"headRefName":"agent/issue-83","isDraft":false,"title":"closed issue"}]' ;;
+  "api graphql") r898_lock_probe; jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}}' ;;
+  "pr close") r898_lock_probe; echo "$1 $2 $3" >> "$fixture/pr-ops2" ;;
+  "pr edit") r898_lock_probe; echo "$*" >> "$fixture/pr-ops2" ;;
+  "label list") echo '[]' ;;
+  "label create") : ;;
+  esac; }
+rm -f "$A/orphan-check.epoch"; reconcile_orphan_prs || :
+[[ "$r898_free" -ge 3 && "$r898_held" == 0 ]] || fail "orphan census/close/edit ran under the ledger lock (free=$r898_free held=$r898_held)"
+[[ "$r898_write_free" == 0 ]] || fail "$r898_write_free orphan ledger writes ran with the lock released"
+[[ "$(sort "$fixture/pr-ops2" | tr '\n' ' ')" == "pr close 512 pr edit 510 --add-label agent/ci-gated " ]] || fail "wrong lock-free orphan ops: $(tr '\n' ' ' < "$fixture/pr-ops2")"
+[[ "$(field pr-511 .stage)" == review-pending ]] || fail "the open-issue orphan was not registered ($(field pr-511 .stage))"
+# 窗口里被收编的 PR：加标签窗口内另一个写把 PR-510 收进台账，登记前重查后跳过并记一行
+: > "$fixture/pr-ops2"; : > "$LOG"
+units '{"units":[{"id":"issue-90","issue":90,"stage":"implement","history":[]}]}'
+gh() { case "$1 $2" in
+  "pr list") echo '[{"number":510,"headRefName":"agent/issue-81","isDraft":true,"title":"gated draft"},{"number":511,"headRefName":"agent/issue-82","isDraft":false,"title":"plain"},{"number":512,"headRefName":"agent/issue-83","isDraft":false,"title":"closed issue"}]' ;;
+  "api graphql") jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}}' ;;
+  "pr close") echo "$1 $2 $3" >> "$fixture/pr-ops2" ;;
+  "pr edit") echo "$*" >> "$fixture/pr-ops2"; jq '.units += [{id:"pr-510",pr:510,stage:"review-pending",history:[]}]' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS" ;;
+  "label list") echo '[]' ;;
+  "label create") : ;;
+  esac; }
+rm -f "$A/orphan-check.epoch"; reconcile_orphan_prs || :
+[[ "$(jq --argjson p 510 '[.units[] | select(.pr==$p)] | length' "$UNITS")" == 1 ]] || fail 'the PR adopted inside the window was registered twice'
+jq -e --argjson p 510 'any(.units[]; .pr == $p and .issue == 81)' "$UNITS" >/dev/null && fail 'a stale orphan registration was written'
+grep -q 'orphan skip PR#510: a ledger unit took the PR' "$LOG" || fail 'the stale orphan skip did not log its one line'
+release_scheduler_lock
+eval "$gh_issue_stub"
+unset -f write_state
+eval "write_state() $(declare -f write_state_orig | sed '1d')"; unset -f write_state_orig
+
 # 生产热修回迁：评审写 BLOCKED-ON 也不停在前置上，先按热修规则重评，第二次交 supervisor；评审提示带热修规则
 units '{"units":[{"id":"pr-596","pr":596,"hotpatch":true,"stage":"review","history":[]}]}'
 park_blocked pr-596 145
