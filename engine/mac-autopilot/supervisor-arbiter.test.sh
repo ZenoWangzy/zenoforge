@@ -326,6 +326,27 @@ REASON: 真实评审发现待修
 GUIDANCE: 按 F1 修复后重推'
 [[ "$(field pr-655 .stage)" == repair-pending && "$(field pr-655 .repair_hint)" == *'按 F1 修复'* ]] || fail "real review findings must still go to repair, got $(field pr-655 .stage)"
 
+# Queue row 917: a report with no single VERDICT line is the reviewer's failure — the code was never judged, so the
+# return stage is another review: from supervisor-review, and again after an earlier ruling had moved the unit on
+# while the PR head stood still. The escalation spends the verdict-missing re-ask, so the ruling restarts that budget.
+vm_unit="$(jq -cn --argjson sha "$SHA1" '{id:"pr-7160",pr:7160,lane:"pr",branch:"agent/issue-7160",stage:"supervisor-review",reviewed_sha:$sha,reviewed_pr_head:$sha,
+  history:[{stage:"pr-opened",result:"PR#7160",at:"2026-11-21T17:20:00Z"},{stage:"verdict-missing",result:"review-7160-1.md",at:"2026-11-21T17:26:00Z"},
+           {stage:"supervisor-escalated",result:"review report review-7160-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"}]}')"
+[[ "$(supervisor_return_stage "$vm_unit")" == review-pending ]] || fail "a no-verdict escalation must return review-pending, got $(supervisor_return_stage "$vm_unit")"
+[[ "$(supervisor_return_stage "$(jq -c '.history += [{stage:"review-request-changes",result:"F1",at:"2026-11-21T19:00:00Z"}]' <<<"$vm_unit")")" == repair-pending ]] \
+  || fail "a review verdict after the no-verdict escalation keeps repair-pending"
+[[ "$(supervisor_return_stage "$(jq -c '.history = [{stage:"supervisor-escalated",result:"repair breaker: three repairs without a new head",at:"2026-11-21T18:22:00Z"}]' <<<"$vm_unit")")" == repair-pending ]] \
+  || fail "an escalation for another reason keeps repair-pending"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-7160",pr:7160,stage:"review-pending",reviewed_pr_head:$sha,
+  history:[{stage:"verdict-missing",result:"review-7160-1.md",at:"2026-11-21T17:26:00Z"},{stage:"supervisor-escalated",result:"review report review-7160-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"},{stage:"supervisor-requeue",result:"rerun the review on the current head",at:"2026-11-21T18:43:00Z"}]},
+  {id:"pr-7161",pr:7161,stage:"review-pending",history:[{stage:"verdict-missing",result:"review-7161-1.md",at:"2026-11-21T17:26:00Z"}]}]}')"
+[[ "$(unit_retries pr-7160 verdict-missing)" == 0 ]] || fail "the escalation spends its verdict-missing re-ask: after the ruling the counter must read 0, got $(unit_retries pr-7160 verdict-missing)"
+[[ "$(unit_retries pr-7161 verdict-missing)" == 1 ]] || fail "a first miss with no escalation yet must still count 1 and keep the one re-ask"
+[[ "$(supervisor_return_stage "$(jq -c '.stage="implement-pending"' <<<"$vm_unit")")" == review-pending ]] \
+  || fail "a ruling that moved a no-verdict unit to implement-pending returns it to review while the PR head is unchanged"
+[[ "$(supervisor_return_stage "$(jq -c --argjson sha "$SHA2" '.stage="implement-pending" | .history += [{stage:"write-start",work_type:"implement",pr_head:$sha,at:"2026-11-21T19:05:00Z"}]' <<<"$vm_unit")")" == implement-pending ]] \
+  || fail "a PR head that moved past reviewed_pr_head keeps implement-pending"
+
 units "$(jq -cn --argjson sha "$SHA1" --argjson head "$SHA2" '{units:[{id:"pr-613",issue:613,pr:613,lane:"pr",branch:"agent/issue-613",stage:"supervisor-review",
   reviewed_sha:$sha,reviewed_pr_head:$head,approved_sha:null,
   history:[{stage:"review-approve",result:"ok",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-review",result:"runner environment failure persists",at:"2026-10-27T00:01:00Z"}]}]}')"
