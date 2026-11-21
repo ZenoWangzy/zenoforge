@@ -152,11 +152,12 @@ merge_pr_ci_green_check_count() {
       | map(max_by(check_run_time))) as $newest_check_runs
     | ([$checks[] | select(.__typename != "CheckRun" or check_run_time == null)]) as $single_checks
     | ($newest_check_runs + $single_checks) as $current_checks
-    | select(all($current_checks[]; completed_success))
     | (["cli"] + [range(0;$shards) | "suites (\(.))"]) as $required
-    | select(all($required[]; . as $need | any($current_checks[]; required_check($need))))
-    | if $details == "true" then [$checks | length, ([$current_checks[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks | length end
+    | ([$current_checks[] | select(.__typename == "CheckRun" and .status != "COMPLETED")] | length) as $pending
+    | select(all($current_checks[]; if .__typename == "CheckRun" and .status != "COMPLETED" then true else completed_success end))
+    | if $pending > 0 then "pending\t\($pending)" elif all($required[]; . as $need | any($current_checks[]; required_check($need))) then if $details == "true" then [$checks | length, ([$current_checks[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks | length end else empty end
   ' <<<"$view" 2>/dev/null)" || return 1
+  [[ "$count" != pending$'\t'* ]] || { printf '%s\n' "${count#*$'\t'}"; return 2; }
   printf '%s\n' "$count"
 }
 
@@ -181,7 +182,7 @@ merge_pr_view() {
 }
 
 merge_pr_test_receipt_ok() {
-  local pr="$1" view head_sha root result_file='' receipt bad
+  local pr="$1" view head_sha root result_file='' receipt bad ci_rc
   if ! view="$(merge_pr_view "$pr" body,files,commits 2>/dev/null)" \
     || ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
     merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
@@ -220,9 +221,8 @@ merge_pr_test_receipt_ok() {
     return 1
   }
   if [[ ! -s "$receipt" ]]; then
-    if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then
-      printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
-      return 0
+    if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2; return 0
+    else ci_rc=$?; [[ "$ci_rc" != 2 ]] || { merge_pr_refuse "$pr" "PR CI pending at ${head_sha:0:12} ($count checks not finished); the merge waits for PR CI"; return 1; }
     fi
     merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"
     return 1

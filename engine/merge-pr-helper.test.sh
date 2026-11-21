@@ -526,9 +526,8 @@ PR_CI_ROLLUP="$(ci_rollup)"
 ci_set 'suites (3)' COMPLETED FAILURE
 rm -f "$receipt_dir/$rsha"
 expect_receipt_refusal 'failed CI suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
-PR_CI_ROLLUP="$(ci_rollup)"
-ci_set 'suites (3)' IN_PROGRESS ''
-expect_receipt_refusal 'pending CI suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(ci_rollup)"; ci_set 'suites (3)' IN_PROGRESS ''; expect_receipt_refusal 'pending CI suite' "PR CI pending at ${rsha:0:12} (1 checks not finished); the merge waits for PR CI"
+PR_CI_ROLLUP="$(ci_rollup)"; ci_set 'suites (3)' IN_PROGRESS ''; ci_set 'suites (4)' COMPLETED FAILURE; expect_receipt_refusal 'failed check with a pending required suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_HEAD=ffffffffffffffffffffffffffffffffffffffff
 PR_CI_ROLLUP="$(ci_rollup)"
 expect_receipt_refusal 'rollup for another head' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
