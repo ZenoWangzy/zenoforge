@@ -8,9 +8,9 @@
 // Every file carries schema_version 1. A reader refuses any other version.
 // Writes go to a temp file in the same directory, fsync, rename, fsync dir: a crash before rename keeps the old file.
 // task.json is current; handoffs and decisions append to events.jsonl.
-import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const SCHEMA_VERSION = 1;
@@ -224,7 +224,7 @@ export function listActiveTasks(root) {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const [operation, root] = process.argv.slice(2);
     const input = JSON.parse(readFileSync(0, 'utf8'));
