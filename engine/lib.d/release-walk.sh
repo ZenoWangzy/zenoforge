@@ -81,7 +81,7 @@ release_batch_hold_active() {
 
 # Same-failure hold (queue 938). Why: 2026-11-21 the production release failed three times on one run-release line,
 # and a fourth batch started 2.5 min after the third, on the commit before its fix. Rows of
-# $AGENT_HOME/release-batch-outcomes: <start epoch> TAB <batch sha> TAB <pending|failed|ok|unknown> TAB <run-release line>.
+# $AGENT_HOME/release-batch-outcomes: <start epoch> TAB <batch sha> TAB <pending|failed|ok> TAB <run-release line>.
 # release_batch_outcome_replace <file>: stdin becomes <file> through a temp file and mv; a failed write keeps the old file.
 release_batch_outcome_replace() {
   local tmp
@@ -103,7 +103,8 @@ release_batch_outcome_start() {
 }
 
 # release_batch_outcome_settle: a pending last row is final once its batch unit has ended, so its run is read from the
-# user journal since its start epoch. No end line gives "unknown", which never holds. Always returns 0.
+# user journal since its start epoch. With no end line the batch is still running or the journal is unreadable: the
+# row stays pending and is read again next time. Always returns 0.
 release_batch_outcome_settle() {
   local file="${AGENT_HOME:-}/release-batch-outcomes" start sha result line journal body
   [ -n "${AGENT_HOME:-}" ] && [ -f "$file" ] || return 0
@@ -116,7 +117,7 @@ release_batch_outcome_settle() {
   line="${line//$'\t'/ }"
   if grep -q 'Failed with result' <<< "$journal"; then result=failed
   elif grep -q 'Deactivated successfully' <<< "$journal"; then result=ok
-  else result=unknown; fi
+  else return 0; fi
   body="$(sed '$d' "$file" 2>/dev/null)" || return 0
   { [ -z "$body" ] || printf '%s\n' "$body"; printf '%s\t%s\t%s\t%s\n' "$start" "$sha" "$result" "$line"; } \
     | release_batch_outcome_replace "$file" || true
@@ -130,7 +131,9 @@ release_batch_outcome_settle() {
 release_batch_same_failure_hold() {
   (
     candidate="${1:-}"; anchor="${2:-}"
-    re=$'^[0-9]+\t[^\t]+\t(pending|failed|ok|unknown)\t'
+    # Probe: a failure may be fixed outside the repository (2026-11-21 network failures), so after 6 h one batch runs again.
+    probe_after=21600
+    re=$'^[0-9]+\t[^\t]+\t(pending|failed|ok)\t'
     [ -n "${AGENT_HOME:-}" ] && [ -n "$candidate" ] || exit 1
     file="$AGENT_HOME/release-batch-outcomes"
     release_batch_outcome_settle || true
@@ -140,8 +143,9 @@ release_batch_same_failure_hold() {
     [ "${#rows[@]}" -eq 2 ] || exit 1
     [[ "${rows[0]}" =~ $re ]] && [[ "${rows[1]}" =~ $re ]] || exit 1
     IFS=$'\t' read -r _ a_sha a_res a_line <<< "${rows[0]}"
-    IFS=$'\t' read -r _ b_sha b_res b_line <<< "${rows[1]}"
+    IFS=$'\t' read -r b_start b_sha b_res b_line <<< "${rows[1]}"
     [ "$a_res" = failed ] && [ "$b_res" = failed ] && [ -n "$b_line" ] && [ "$a_line" = "$b_line" ] || exit 1
+    [ $(( $(date +%s) - b_start )) -lt "$probe_after" ] || exit 1
     git -C "${REPO_DIR:-}" diff --quiet "$b_sha" "$candidate" -- scripts/release 2>/dev/null || exit 1
     record_release_decision "$anchor" skipped same-failure "${UNIT_PREFIX_TRANSIENT:-}-release-batch" "error=\"$b_line\" failed=$a_sha,$b_sha candidate=$candidate" || true
     supervisor_inbox_append_once "release-same-failure:$candidate:$b_line" \
