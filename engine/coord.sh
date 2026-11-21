@@ -28,12 +28,16 @@ coord_new_owner() {
   printf 'owner-%s-%s-%s-%s\n' "${BASHPID:-$$}" "$COORD_OWNER_SEQ" "$RANDOM" "$(date +%s)"
 }
 
-coord_process_start_ticks() { # pid -> /proc start ticks, distinguishing a reused PID
-  local pid="${1:-}" ticks
+coord_process_start_ticks_into() { # pid -> COORD_START_TICKS with no subshell: the ledger lock poll calls it per try
+  local pid="${1:-}"
+  COORD_START_TICKS=""
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  ticks="$(pid_start_id "$pid" 2>/dev/null)" || return 1
-  [[ "$ticks" =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "$ticks"
+  pid_start_id_into "$pid" 2>/dev/null || return 1
+  [[ "$PID_START_ID" =~ ^[0-9]+$ ]] || return 1
+  COORD_START_TICKS="$PID_START_ID"
+}
+coord_process_start_ticks() { # pid -> /proc start ticks, distinguishing a reused PID
+  coord_process_start_ticks_into "${1:-}" && printf '%s\n' "$COORD_START_TICKS"
 }
 
 coord_issue_live_worker() { # issue runtime-dir -> 0 live scheduler worker / 1 none / 3 unknown

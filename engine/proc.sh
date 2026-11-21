@@ -2,6 +2,7 @@
 # Process and host identity helpers: source this (never execute it); it runs nothing on load.
 #   pid_live PID               success when PID exists and is not a zombie
 #   pid_start_id PID           opaque number that changes when a pid is reused: callers only compare it for equality
+#   pid_start_id_into PID      the same value in PID_START_ID with no subshell: the ledger lock poll calls it per try
 #   host_boot_id               string that changes on reboot
 #   process_cwds               one NUL-terminated "PID<TAB>CWD" record per process with a known working directory
 #   pids_with_cwd_under DIR    pids (one per line) whose working directory is DIR or below it (filters process_cwds)
@@ -25,6 +26,7 @@ if [[ ${OSTYPE:-} == darwin* ]]; then
     started="$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null)" && [[ -n "$started" ]] || return 1
     LC_ALL=C date -d "$started" +%s
   }
+  pid_start_id_into() { PID_START_ID="$(pid_start_id "$1" 2>/dev/null)"; } # macOS keeps ps: a fork per call here
 
   host_boot_id() { sysctl -n kern.bootsessionuuid; }
 
@@ -51,13 +53,14 @@ else
   }
 
   # /proc/PID/stat field 22 (clock ticks since boot), fields counted after the "(comm) " that may itself contain spaces and parentheses.
-  pid_start_id() {
+  pid_start_id_into() {
     local stat_line rest fields
     { IFS= read -r stat_line < "/proc/$1/stat"; } 2>/dev/null || return 1
     rest="${stat_line##*) }"
     read -r -a fields <<< "$rest"
-    printf '%s\n' "${fields[19]}"
+    PID_START_ID="${fields[19]}"
   }
+  pid_start_id() { pid_start_id_into "$1" && printf '%s\n' "$PID_START_ID"; }
 
   host_boot_id() {
     local id
