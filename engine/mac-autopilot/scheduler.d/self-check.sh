@@ -491,21 +491,21 @@ higher_priority_waiting() { # priority → sets waiter and age; always drops sta
 }
 
 declare -gA TICK_PRIORITY_ADMISSION_CACHE=()
-priority_admission_has_room() { # priority age; dispatch_pending caches one resource sample per priority and waiter age between starts
-  local priority="$1" age="$2" result cache_key
+priority_admission_has_room() { # priority age [backend]; dispatch_pending caches one resource sample per priority, waiter age and backend between starts
+  local priority="$1" age="$2" backend="${3:-}" result cache_key
   if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]]; then
-    LUNA_PRIORITY="$priority" box_has_room "$age"
+    LUNA_PRIORITY="$priority" box_has_room "$age" "$backend"
     return $?
   fi
-  cache_key="$priority:$age:${LUNA_CPU_TARGET:-85}" # the host-capacity start and the priority-wait check use different CPU targets
+  cache_key="$priority:$age:$backend:${LUNA_CPU_TARGET:-85}" # the host-capacity start and the priority-wait check use different CPU targets
   result="${TICK_PRIORITY_ADMISSION_CACHE[$cache_key]:-}"
-  # An admit at a stricter CPU target this pass implies an admit at a looser one: one host sample per start (#1129).
+  # An admit at a stricter CPU target implies an admit at a looser one: one host sample per start (#1129); the backend is part of the match (row 905): each backend's ask is its own peak.
   local k
   for k in "${!TICK_PRIORITY_ADMISSION_CACHE[@]}"; do
-    [[ -z "$result" && "$k" == "$priority:$age:"* && "${TICK_PRIORITY_ADMISSION_CACHE[$k]%%|*}" == admit && "${k##*:}" -le "${LUNA_CPU_TARGET:-85}" ]] && result=admit
+    [[ -z "$result" && "$k" == "$priority:$age:$backend:"* && "${TICK_PRIORITY_ADMISSION_CACHE[$k]%%|*}" == admit && "${k##*:}" -le "${LUNA_CPU_TARGET:-85}" ]] && result=admit
   done
   if [[ -z "$result" ]]; then
-    if LUNA_PRIORITY="$priority" box_has_room "$age"; then result=admit; else result="hold|$BOX_ROOM_WHY"; fi
+    if LUNA_PRIORITY="$priority" box_has_room "$age" "$backend"; then result=admit; else result="hold|$BOX_ROOM_WHY"; fi
     TICK_PRIORITY_ADMISSION_CACHE[$cache_key]="$result"
   fi
   if [[ "$result" == admit ]]; then BOX_ROOM_WHY=""; return 0; fi
@@ -542,7 +542,7 @@ dispatch_skip_summary() { # name:count,... for the reasons that fired this pass,
 }
 declare -F dmark >/dev/null || dmark() { :; } # dispatch-queue.sh defines the step timer; a unit test that loads this file alone gets a no-op
 room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=true] [report-only=false]：焦点与并发检查
-  local u="${3:-}" priority waiter n_impl n_repair started_wip hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false why_unit="$1"
+  local u="${3:-}" priority backend="" waiter n_impl n_repair started_wip hold_now hold_since hold_elapsed hold_alerted hold_line hold_max fresh_footprint="${4:-true}" check_footprint="${5:-true}" gate_started gate_elapsed gate_waiting=false why_unit="$1"
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$1" '.units[] | select(.id==$id)' "$UNITS")"
   # A report-only continuation writes no code and starts no write-start: the repair round cap and the Dagger runtime gate do not apply to it.
   if [[ "$2" == repair && "${6:-false}" != true ]]; then repair_cap_admission "$1" "$u" || { dispatch_skip repair-cap; return 1; }; fi
@@ -558,6 +558,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
     return 1
   fi
   priority="$(unit_dispatch_priority "$u")"
+  if [[ "$2" == implement || "$2" == repair ]] && dispatch_known_zcode_start "$u"; then backend=zc; fi # row 905: a known-zcode start asks with the zc backend
   dmark room_pre
   gate_started=$SECONDS
   if [[ "$2" != review && "$2" != rereview ]] && higher_priority_waiting "$priority" \
@@ -598,7 +599,7 @@ room_for() { # unit-id type [unit-json] [fresh-footprint=true] [check-footprint=
   # The priority-wait check above keeps the CPU target, because a waiter at bin/luna is still held by it.
   # Review and report-only resumes are exempt: a refused report resume would fall through to review with the stale report.
   # shortcut: no /proc/meminfo means no gate (box_has_room would refuse every start, issue #9), upgrade when the portable readers land
-  if [[ "$2" != review && "$2" != rereview && "${6:-false}" != true && -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] && ! LUNA_CPU_TARGET="${AUTOPI_DISPATCH_CPU_TARGET:-101}" priority_admission_has_room "$priority" "${PRIORITY_WAITING_AGE_SECONDS:-0}"; then
+  if [[ "$2" != review && "$2" != rereview && "${6:-false}" != true && -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] && ! LUNA_CPU_TARGET="${AUTOPI_DISPATCH_CPU_TARGET:-101}" priority_admission_has_room "$priority" "${PRIORITY_WAITING_AGE_SECONDS:-0}" "$backend"; then
     say "skip dispatch unit=$1 priority=$priority (host capacity: ${BOX_ROOM_WHY:-unknown})"; dispatch_why "$1" host-capacity; return 1
   fi
   dmark room_host_capacity
