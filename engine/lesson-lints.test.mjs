@@ -95,3 +95,36 @@ test('an observe lint prints would-fail and does not fail the run', () => {
     fixture.cleanup();
   }
 });
+
+test('the ledger appends one row for each triggered lesson and standalone lint', () => {
+  const fixture = lintRepoFixture();
+  const ledger = path.join(fixture.repo, 'state/lesson-lints.jsonl');
+  try {
+    assert.equal(runLessonLints({ ...fixture, ledger, log: () => {} }), 1);
+    const rows = readFileSync(ledger, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(rows.map(({ lesson, classTag, verdict }) => ({ lesson, classTag, verdict })), [
+      { lesson: 'V936', classTag: 'state-single-writer', verdict: 'fail' },
+      { lesson: 'none', classTag: 'local-tz-z-stamp', verdict: 'pass' },
+    ]);
+    assert(rows.every((row) => /^[0-9a-f]{40}$/.test(row.head_sha) && Number.isFinite(Date.parse(row.utc_time))));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a ledger write failure is logged once and does not change the lint verdict', () => {
+  const fixture = lintRepoFixture();
+  const blocker = path.join(fixture.repo, 'not-a-directory');
+  const lines = [];
+  try {
+    writeFileSync(blocker, 'file blocks ledger directory creation');
+    assert.equal(runLessonLints({
+      ...fixture,
+      ledger: path.join(blocker, 'lesson-lints.jsonl'),
+      log: (line) => lines.push(line),
+    }), 1);
+    assert.equal(lines.filter((line) => line.includes('ledger-write-failed')).length, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});

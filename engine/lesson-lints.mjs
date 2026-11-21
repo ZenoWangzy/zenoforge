@@ -9,7 +9,7 @@
 // is the one recurrence >= 2 lesson without a locatable structural anchor
 // today and stays test-enforced instead.
 
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -451,10 +451,10 @@ export function buildLessonLintVerdict({ lint, paths, readSource, ranking }) {
 }
 
 function parseArgs(args) {
-  const options = { repo: defaultRepo, base: '', head: 'HEAD' };
+  const options = { repo: defaultRepo, base: '', head: 'HEAD', ledger: '' };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--repo' || arg === '--base' || arg === '--head') {
+    if (arg === '--repo' || arg === '--base' || arg === '--head' || arg === '--ledger') {
       const value = args[index + 1];
       if (!value) throw new Error(`${arg} requires a value`);
       options[arg.slice(2)] = value;
@@ -471,16 +471,30 @@ function git(repo, args) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 }
 
+function appendLifecycleRow(ledger, row, log) {
+  if (!ledger) return true;
+  try {
+    mkdirSync(path.dirname(ledger), { recursive: true });
+    appendFileSync(ledger, `${JSON.stringify(row)}\n`);
+    return true;
+  } catch (error) {
+    log(`lesson-lint: ledger-write-failed${error?.code ? ` code=${error.code}` : ''}`);
+    return false;
+  }
+}
+
 function effectiveMode(lint) {
   const mode = lint.mode ?? 'enforce';
   if (mode !== 'observe' && mode !== 'enforce') throw new Error(`invalid lesson lint mode: ${mode}`);
   return mode;
 }
 
-export function runLessonLints({ repo, base, head = 'HEAD', log = (line) => console.log(line) }) {
+export function runLessonLints({ repo, base, head = 'HEAD', ledger = '', log = (line) => console.log(line) }) {
   const paths = git(repo, ['diff', '--name-only', `${base}...${head}`, '--']).split(/\r?\n/).filter(Boolean);
   const ranking = JSON.parse(git(repo, ['show', `${head}:${rankingPath}`]));
   const readSource = (file) => git(repo, ['show', `${head}:${file}`]);
+  const headSha = ledger ? git(repo, ['rev-parse', '--verify', `${head}^{commit}`]).trim() : '';
+  let ledgerWritable = true;
   let failed = 0;
   for (const lint of lessonLints) {
     const result = buildLessonLintVerdict({ lint, paths, readSource, ranking });
@@ -493,17 +507,35 @@ export function runLessonLints({ repo, base, head = 'HEAD', log = (line) => cons
       log(`lesson-lint: fix: ${lint.guidance}`);
       if (mode === 'enforce') failed += 1;
     }
+    if (ledgerWritable) ledgerWritable = appendLifecycleRow(ledger, {
+      lesson: lint.lesson,
+      classTag: lint.classTag,
+      mode,
+      verdict,
+      head_sha: headSha,
+      utc_time: new Date().toISOString(),
+    }, log);
   }
-  for (const [lint, hits] of [
-    [exactSecondLint, exactSecondFailures(paths, readSource)],
-    [entryCheckLint, entryCheckFailures(paths, readSource)],
-    [utcStampLint, utcStampFailures(paths, readSource)],
+  for (const [lint, matches, findFailures] of [
+    [exactSecondLint, (file) => file.endsWith('.test.sh'), exactSecondFailures],
+    [entryCheckLint, (file) => /\.m?js$/.test(file) && !/\.test\.m?js$/.test(file), entryCheckFailures],
+    [utcStampLint, (file) => file.endsWith('.sh'), utcStampFailures],
   ]) {
+    if (!paths.some(matches)) continue;
+    const hits = findFailures(paths, readSource);
     const mode = effectiveMode(lint);
-    const verdict = hits.length && mode === 'observe' ? 'would-fail' : 'fail';
+    const verdict = hits.length ? (mode === 'observe' ? 'would-fail' : 'fail') : 'pass';
     for (const hit of hits) log(`lesson-lint: lesson=none incident_class=${lint.classTag} verdict=${verdict} at=${hit}`);
     if (hits.length) log(`lesson-lint: fix: ${lint.guidance}`);
     if (mode === 'enforce') failed += hits.length;
+    if (ledgerWritable) ledgerWritable = appendLifecycleRow(ledger, {
+      lesson: 'none',
+      classTag: lint.classTag,
+      mode,
+      verdict,
+      head_sha: headSha,
+      utc_time: new Date().toISOString(),
+    }, log);
   }
   return failed;
 }
@@ -511,7 +543,12 @@ export function runLessonLints({ repo, base, head = 'HEAD', log = (line) => cons
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const options = parseArgs(process.argv.slice(2));
-    const failed = runLessonLints({ repo: path.resolve(options.repo), base: options.base, head: options.head });
+    const failed = runLessonLints({
+      repo: path.resolve(options.repo),
+      base: options.base,
+      head: options.head,
+      ledger: options.ledger && path.resolve(options.ledger),
+    });
     if (failed > 0) process.exitCode = 1;
   } catch (error) {
     console.error(`lesson-lint: verdict=fail error=${error instanceof Error ? error.message : String(error)}`);
