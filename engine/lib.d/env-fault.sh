@@ -23,6 +23,35 @@ gh_backoff_refusal() {
   [ "$1" = 75 ] || grep -q 'rate-limit backoff active' <<< "${2:-}"
 }
 
+# gh_issue_view_or_wait <stage> <issue> <repo> <json-fields> -- prints the issue JSON. A GitHub
+# secondary rate limit is a wait: read again twice (pause = the gh() read backoff), then return 75
+# with one stderr line and no fault. gh's own backoff returns 75 silently. Any other failure
+# prints the detail on STDOUT (first line of gh's stderr, skipping gh()'s retry notes) and returns 1,
+# so the caller passes "$ISSUE_JSON" to record_env_fault after gh_backoff_refusal.
+gh_issue_view_or_wait() {
+  local stage="$1" n="$2" repo="$3" fields="$4" out rc try=0 err detail
+  err="$(mktemp)" || return 1
+  until out="$(gh issue view "$n" --repo "$repo" --json "$fields" 2>"$err")"; do
+    rc=$?
+    if gh_backoff_refusal "$rc" "$(cat "$err")"; then rm -f "$err"; return 75; fi
+    if grep -qi 'secondary rate limit' "$err"; then
+      if (( try < 2 )); then
+        try=$((try + 1)); sleep "${ZF_GH_RETRY_BACKOFF_SECONDS:-2}"; continue
+      fi
+      rm -f "$err"
+      echo "$stage: issue #$n read held by GitHub secondary rate limit; retried next tick" >&2
+      return 75
+    fi
+    cat "$err" >&2
+    detail="$(grep -v '^gh: \(transient read\|skipping read\)' "$err" | head -n 1 | cut -c1-200)"
+    rm -f "$err"
+    printf '%s\n' "${detail:-gh issue view failed (no error text)}"
+    return 1
+  done
+  cat "$err" >&2; rm -f "$err"
+  printf '%s\n' "$out"
+}
+
 # record_env_fault <signature> <stage> <issue> <detail> [package_dir] [now] [refund_attempt]
 record_env_fault() {
   agent_pipeline_write_guard record_env_fault "$AGENT_HOME" "$ENV_FAULT_DIR" || return 1
