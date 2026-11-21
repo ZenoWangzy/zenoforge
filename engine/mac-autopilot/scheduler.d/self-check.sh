@@ -730,6 +730,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
   fi
   # A successful start can change whether later candidates fit; only reuse admission samples between starts.
   TICK_PRIORITY_ADMISSION_CACHE=()
+  [[ "${TICK_DISPATCH_HOST_CAPACITY_BLOCKED:-false}" != true ]] || TICK_DISPATCH_HOST_CAPACITY_BLOCKED=false
   dispatch_why_clear "$1"
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     if [[ "$3" == repair ]]; then

@@ -17,6 +17,7 @@ printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+priority_admission_has_room() { return 0; }
 ticket_budget_reason_real="$(declare -f ticket_budget_reason)"
 
 LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
@@ -106,6 +107,57 @@ steps_line="$(grep -F 'dispatch detail steps refill=true' "$LOG")" || fail "no d
 for step in order row_head room_for review_target reviewer_pick clone checkout prompt dispatch; do
   [[ "$steps_line" =~ \ $step=[0-9]+\.[0-9]{3}s/1(\ |$) ]] || fail "steps line lacks $step/1: $steps_line"
 done
+
+# A failed pass-level host sample skips normal implement body reads, while review still reaches its PR target.
+jq -n '{units:[
+  {id:"issue-4910",stage:"implement-pending",task:"fixture task",branch:"agent/issue-4910",lane:"pr",history:[]},
+  {id:"issue-4911",stage:"implement-pending",task:"fixture task",branch:"agent/issue-4911",lane:"pr",history:[]},
+  {id:"issue-4912",stage:"implement-pending",task:"fixture task",branch:"agent/issue-4912",lane:"pr",history:[]},
+  {id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issue-4903",lane:"pr",title:"fixture review",history:[]}
+]}' > "$UNITS"
+write_workers 7
+host_admission_saved="$(declare -f priority_admission_has_room)"
+review_target_saved="$(declare -f unit_review_target)"
+review_conflict_saved="$(declare -f review_conflict_to_repair)"
+body_saved="$(declare -f park_if_body_blocked)"
+gh_saved="$(declare -f gh)"
+dispatch_if_room_saved="$(declare -f dispatch_if_room)"
+REVIEW_TARGET_CALLS="$fixture/review-target-calls"
+REVIEW_FIXTURE_SHA="$sha"
+host_admission_calls=0
+priority_admission_has_room() {
+  host_admission_calls=$((host_admission_calls + 1))
+  [[ "${LUNA_CPU_TARGET:-}" == "${AUTOPI_DISPATCH_CPU_TARGET:-101}" ]] || fail "pass host probe changed CPU target to ${LUNA_CPU_TARGET:-unset}"
+  [[ "$2" == 0 ]] || fail "pass host probe used waiter age $2 instead of the fresh-waiter age"
+  local cache_key="$1:$2:${LUNA_CPU_TARGET:-85}"
+  TICK_PRIORITY_ADMISSION_CACHE[$cache_key]='hold|fixture host full'
+  BOX_ROOM_WHY='fixture host full'; return 1
+}
+unit_review_target() { printf '%s\n' "$1" >> "$REVIEW_TARGET_CALLS"; printf '%s %s' "$REVIEW_FIXTURE_SHA" "$REVIEW_FIXTURE_SHA"; }
+review_conflict_to_repair() { return 1; }
+body_calls=(); park_if_body_blocked() { local body_id; body_id="$(jqf -r .id <<<"$1")"; body_calls+=("$body_id"); gh issue view "$body_id" >/dev/null; return 1; }
+gh() {
+  printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
+  case "${1:-} ${2:-}" in
+    'pr list') cat "$FIXTURE_PRS" ;;
+    'issue view') printf '%s\n' '{"state":"OPEN"}' ;;
+    *) printf 'unexpected gh query during host-capacity dispatch: %s\n' "$*" >&2; return 97 ;;
+  esac
+}
+: > "$REVIEW_TARGET_CALLS"; dispatch_calls=0; : > "$GH_CALLS"; : > "$LOG"; : > "$A/.dispatch-why"
+TICK_PRS=''; dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); return 1; }
+dispatch_pending true
+[[ "${#body_calls[@]}" == 0 ]] || fail "host-blocked implement rows read issue bodies: ${body_calls[*]}"
+! grep -q '^issue view issue-491' "$GH_CALLS" || fail "host-blocked implement rows made per-issue GitHub reads: $(tr '\n' ';' < "$GH_CALLS")"
+[[ "$(wc -l < "$REVIEW_TARGET_CALLS")" == 1 && "$dispatch_calls" == 1 ]] || fail "review was not evaluated alongside host-blocked implementations (targets=$(wc -l < "$REVIEW_TARGET_CALLS") dispatches=$dispatch_calls)"
+[[ "$host_admission_calls" == 1 ]] || fail "dispatch pass sampled host admission $host_admission_calls times"
+[[ "$(grep -Fc 'dispatch skip-all reason=host-capacity units=3 why=fixture host full' "$LOG")" == 1 ]] || fail "host-capacity skip-all summary was not emitted once: $(cat "$LOG")"
+for unit in issue-4910 issue-4911 issue-4912; do
+  grep -Fqx "$unit"$'\thost-capacity' "$A/.dispatch-why" || fail "$unit has no host-capacity dispatch_why record"
+done
+! grep -Fqx $'issue-4903\thost-capacity' "$A/.dispatch-why" || fail 'the review unit was recorded as host-capacity skipped'
+[[ -z "$(dispatch_skip_summary)" ]] || fail "host-capacity skips changed dispatch skip counts: $(dispatch_skip_summary)"
+eval "$host_admission_saved"; eval "$review_target_saved"; eval "$review_conflict_saved"; eval "$body_saved"; eval "$gh_saved"; eval "$dispatch_if_room_saved"
 
 # A CONFLICTING census row sends a review-pending and a rereview-pending unit to conflict repair, not review: no worker is
 # dispatched, and the only extra gh call is the one `pr view` re-check per unit (the clean census above made none).
