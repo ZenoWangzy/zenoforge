@@ -6,20 +6,41 @@ worker_source=$(realpath "${1:-$(dirname "$0")/worker}")
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 test_root=$(mktemp -d)
 cleanup() {
-  local pid_file pid
+  local pid_file pid waited
+  local -a watched=() alive
   while IFS= read -r pid_file; do
     pid=$(cat "$pid_file" 2>/dev/null || true)
     [[ $pid =~ ^[0-9]+$ ]] || continue
     kill -TERM -- "-$pid" 2>/dev/null || true
     sleep 0.1
     kill -KILL -- "-$pid" 2>/dev/null || true
+    watched+=("$pid")
   done < <(find "$test_root" -name backend-run.pid -type f 2>/dev/null)
   for pid_file in "$test_root"/fake-remote-*/scopes/*.pid; do
     [[ -f $pid_file ]] || continue
     pid=$(cat "$pid_file" 2>/dev/null || true)
-    [[ $pid =~ ^[0-9]+$ ]] && kill -TERM "$pid" 2>/dev/null || true
+    if [[ $pid =~ ^[0-9]+$ ]] && kill -TERM "$pid" 2>/dev/null; then watched+=("$pid"); fi
   done
-  rm -rf -- "$test_root" "$test_env_root"
+  mapfile -t -O "${#watched[@]}" watched < <(jobs -p)
+  # rm once raced a process still writing under test_root (main runs 44932375273 and 44941210617: every case
+  # green, exit 1, "Directory not empty"). Wait for what was signalled and the test's own jobs first; if the
+  # retry still loses, name what is left so the next red run names the writer.
+  waited=0
+  while (( waited < 5 )); do
+    alive=()
+    for pid in "${watched[@]}"; do kill -0 "$pid" 2>/dev/null && alive+=("$pid"); done
+    ((${#alive[@]})) || break
+    watched=("${alive[@]}")
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if ! rm -rf -- "$test_root" "$test_env_root"; then
+    sleep 0.2
+    if ! rm -rf -- "$test_root" "$test_env_root"; then
+      find "$test_root" | head || true
+      exit 1
+    fi
+  fi
 }
 trap 'cleanup; rm -rf -- "$test_env_root"' EXIT
 mkdir -p "$test_root/home" "$test_root/agent-home"

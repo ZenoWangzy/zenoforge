@@ -220,6 +220,38 @@ stop_worker "$TEST_WORKER_PID" "$TEST_LAUNCHER_PID" "$TEST_CHILD_PID"
 unset WORKER_SCOPE_EVENTS_FILE
 printf '%s\n' 'PASS a refused fork is reported once as a worker failure in the worker and scheduler logs'
 
+# Queue row 894: when the worker ends, worker-scope-watch (still inside the scope, so the cgroup lives) reads the
+# scope's memory.peak and appends one sched row to the backend peak store the dispatch hold sizes itself from; a
+# scope with no readable memory.peak records nothing. The stub events file makes the watcher treat the stub dir as
+# this worker's cgroup.
+export WORKER_SCOPE_EVENTS_FILE="$task_root/scopes/run-p894-i1.scope/pids.events"
+mkdir -p "${WORKER_SCOPE_EVENTS_FILE%/*}"
+printf 'max 0\n' > "$WORKER_SCOPE_EVENTS_FILE"
+printf '838860800\n' > "${WORKER_SCOPE_EVENTS_FILE%/*}/memory.peak" # 800 MB
+store="$AGENT_HOME/locks/execution-memory-peaks-backend.jsonl"
+rm -f -- "$store"
+CFG='{"engine":{"worker_tasks_max":2000}}'
+reset_tick
+start_worker scopepeak setsid
+stop_worker "$TEST_WORKER_PID" "$TEST_LAUNCHER_PID" "$TEST_CHILD_PID"
+wait_for_line "$LOG" 'worker cost log=scopepeak.log' || fail 'the end-of-worker path did not reach its cost line'
+for _ in {1..50}; do [[ -s "$store" ]] && break; sleep 0.1; done
+[[ "$(jq -r 'select(.backend == "sched") | .memory_peak_mb' "$store" 2>/dev/null)" == 800 ]] \
+  || fail "the ended worker's scope peak was not recorded as one sched row: $(cat "$store" 2>/dev/null)"
+[[ "$(wc -l < "$store" | tr -d ' ')" == 1 ]] || fail 'more than one row was recorded for one ended worker'
+printf '%s\n' 'PASS the end-of-worker path records that worker scope peak as one sched row'
+
+rm -f -- "${WORKER_SCOPE_EVENTS_FILE%/*}/memory.peak"
+rm -f -- "$store"
+reset_tick
+start_worker scopepeak-none setsid
+stop_worker "$TEST_WORKER_PID" "$TEST_LAUNCHER_PID" "$TEST_CHILD_PID"
+wait_for_line "$LOG" 'worker cost log=scopepeak-none.log' || fail 'the second worker did not reach its cost line'
+for _ in {1..30}; do [[ -e "$store" ]] && break; sleep 0.1; done
+[[ ! -e "$store" ]] || fail "a scope with no readable memory.peak recorded: $(cat "$store")"
+printf '%s\n' 'PASS a scope with no readable memory.peak records nothing at the end of a worker'
+unset WORKER_SCOPE_EVENTS_FILE
+
 # Real systemd scope, real kernel limit: a fork loop stops at TasksMax, the worker ends, the log says why.
 PATH="${PATH#"$fake_bin:"}"
 worker_scope_systemd_run_path() { type -P systemd-run; }

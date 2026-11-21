@@ -137,7 +137,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     infra_rc=$?
     (( infra_rc != 2 )) || { say "CI red unit=$1: could not classify failed runs for head $3"; return 1; }
   fi
-  set_unit "$1" "$(hist ci-red "$4") | .approved_sha=null | .repair_hint=$(js "PR head $3 的必需检查重跑后仍失败：$4。用 gh pr checks $2 与 gh run view <run-id> --log-failed 定位；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$3" "$(ci_unit_facts "$1" "$3")")") | .stage=\"repair-pending\""
+  set_unit "$1" "$(hist ci-red "$4") | .approved_sha=null | .repair_hint=$(js "PR head $3 的必需检查重跑后仍失败：$4。用 gh pr checks $2 与 gh run view <run-id> --log-failed 定位；${CI_REPRO_RULE}；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$3" "$(ci_unit_facts "$1" "$3")")") | .stage=\"repair-pending\""
   say "merge skipped PR#$2 (checks still red after rerun: $4) -> repair-pending"
 }
 ci_cancelled_upstream() { # checks_json

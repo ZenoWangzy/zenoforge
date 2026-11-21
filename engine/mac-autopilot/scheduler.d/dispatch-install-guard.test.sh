@@ -48,6 +48,8 @@ coord_scheduler_live_worker() { return 1; }
 coord_renew() { return 0; }
 captured_launch=()
 worker_scope_launch() { captured_launch=("$@"); WORKER_SCOPE_PID=$$; WORKER_SCOPE_PID_START=1; WORKER_SCOPE_LAUNCHER_PID=$$; }
+# dispatch() reads WORKER_SCOPE_MODE after the launch; only the live tick's worker_scope_prepare sets it.
+WORKER_SCOPE_MODE=''
 
 dispatch_path_word() { # -> the PATH=<...> word of the last worker environment; rc 1 when absent
   local arg

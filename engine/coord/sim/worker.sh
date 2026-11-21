@@ -79,8 +79,16 @@ sim_hold_claim() {
   sim_write_ref "$ref" '' "$payload"
   : "${SIM_HOLD_READY:?hold requires SIM_HOLD_READY}"
   : "${SIM_HOLD_RELEASE:?hold requires SIM_HOLD_RELEASE}"
-  : > "$SIM_HOLD_READY"
-  while [[ ! -e $SIM_HOLD_RELEASE ]]; do sleep 0.02; done
+  # The ready file carries this worker's pid: sim_as runs the command as `( exec ... )`, so the caller's $!
+  # is only a wrapper shell and killing it leaves this process looping (11-21: one held a batch slot 18 h).
+  printf '%s\n' "$$" > "$SIM_HOLD_READY"
+  while [[ ! -e $SIM_HOLD_RELEASE ]]; do
+    if [[ ! -d ${SIM_HOLD_RELEASE%/*} ]] || (( SECONDS > 60 )); then
+      echo "hold for $ticket gave up waiting for $SIM_HOLD_RELEASE" >&2
+      return 1
+    fi
+    sleep 0.02
+  done
 }
 
 sim_takeover() {

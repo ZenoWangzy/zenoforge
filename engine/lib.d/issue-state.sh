@@ -682,6 +682,7 @@ issue_transition_rest_label_write() {
 
 # issue_transition <issue> <state-label> <reason> [state-merge-filter] [skip-label-write] [issue-json] [source-issue] [open-issue]
 # Snapshot and task records roll back together when the GitHub write fails.
+# A failed task-state write only logs one line: the records copy what state and labels already say (queue row 926).
 # skip-label-write is for callers that already know the destination label is set.
 issue_transition_rollback_snapshot() {
   local n="$1" f="$2" before="$3" had_state="$4" task_snapshot="${5:-}" status=0
@@ -875,7 +876,7 @@ issue_transition() (
       state_merge "$n" '.hold.durable_record = false' __issue_transition_lock_held || { echo "issue_transition: could not clear durable hold flag for #$n" >&2; return 1; }
     fi
   fi
-  task_state_snapshot="$(if [ "$DRY_RUN" = 1 ]; then :; else jq -cn --arg issue "$n" --arg stage "$to" --rawfile reason <(printf '%s' "$reason") --slurpfile before <(printf '%s' "$before") --slurpfile after <(state_read "$n") '{issue:$issue,stage:$stage,reason:$reason,before:$before[0],after:$after[0]}' | node "$_AGENT_LIB_DIR/task-state.mjs" write-issue-transition "$AGENT_HOME/task-state"; fi)" || { issue_transition_rollback_snapshot "$n" "$f" "$before" "$had_state" || restore_status=$?; echo "issue_transition: task-state write failed for #$n; state rollback status=$restore_status" >&2; return 1; }
+  task_state_snapshot="$(if [ "$DRY_RUN" = 1 ]; then :; else jq -cn --arg issue "$n" --arg stage "$to" --rawfile reason <(printf '%s' "$reason") --slurpfile before <(printf '%s' "$before") --slurpfile after <(state_read "$n") '{issue:$issue,stage:$stage,reason:$reason,before:$before[0],after:$after[0]}' | node "$_AGENT_LIB_DIR/task-state.mjs" write-issue-transition "$AGENT_HOME/task-state"; fi)" || { task_state_snapshot=""; echo "issue_transition: task-state write failed for #$n; transition continues" >&2; }
   [ "$skip_label_write" != 1 ] || return 0
 
   edit_args=(gh issue edit "$n" --repo "$REPO")

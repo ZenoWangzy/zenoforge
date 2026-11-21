@@ -277,12 +277,16 @@ if [[ -n $test_mode ]]; then
   fi
   if (( runner_configured )); then
     if [[ -z $test_exec ]]; then
+      suite_guard_log 'unavailable rc=127' "${original_args[@]}"
       echo 'zenoforge: test host unavailable (runner exit 127); not running tests locally' >&2
       exit 127
     fi
     [[ $test_exec != '~/'* ]] || test_exec="${HOME:-/tmp}/${test_exec:2}"
+    started=$SECONDS
     "$test_exec" "$PWD" -- "$self" "${original_args[@]}"
     rc=$?
+    # One countable line per command sent to the test host, with how it ended (queue row 928).
+    suite_guard_log "forwarded rc=$rc secs=$((SECONDS - started))" "${original_args[@]}"
     if [[ $rc == 75 || $rc == 125 ]]; then
       echo "zenoforge: test host unavailable (runner exit $rc); not running tests locally" >&2
     fi
