@@ -2,7 +2,7 @@ final_message_of() { awk '/^tokens used$/{getline; buf=""; f=1; next} f{buf=buf 
 tokens_of() { awk '/tokens used/{getline; if (match($0, /[0-9][0-9,]*/)) { n=substr($0, RSTART, RLENGTH); gsub(/,/, "", n); print n }; exit}' "$1" 2>/dev/null; }
 
 write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=目标文件
-  local dst="$1" _t valid=false _units_shape
+  local dst="$1" _t valid=false _units_shape transition_snapshots=""
   _t="$(mktemp "${dst}.tmp.XXXXXX")" || return 1
   cat > "$_t"
   # Identical bytes are no write: validation reads two multi-MB files, the .bak copy and the mtime bump drop every cached ledger view.
@@ -38,11 +38,20 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
   if [[ -s "$_t" && "$valid" == true ]]; then
     if [[ "$dst" == "$UNITS" && "${UNIT_TRANSITION_STAGE_WRITE:-false}" == true ]] \
       && declare -F unit_transition_observe_ledger >/dev/null; then
-      unit_transition_observe_ledger "$dst" "$_t" "${UNIT_TRANSITION_CALLER:-${FUNCNAME[1]:-top}}" \
-        "${UNIT_TRANSITION_UNIT_ID:-}" "${UNIT_TRANSITION_FROM:-}" || { rm -f -- "$_t"; return 1; }
+      transition_snapshots="$(unit_transition_observe_ledger "$dst" "$_t" "${UNIT_TRANSITION_CALLER:-${FUNCNAME[1]:-top}}" \
+        "${UNIT_TRANSITION_UNIT_ID:-}" "${UNIT_TRANSITION_FROM:-}")" || {
+        unit_task_state_rollback "$transition_snapshots" || say 'task-state rollback failed after a unit transition write error'
+        rm -f "$_t"
+        say 'unit ledger write refused: transition refused or task-state write failed'
+        return 1
+      }
     fi
     cp "$dst" "$dst.bak" 2>/dev/null || true
-    mv "$_t" "$dst"
+    if ! mv "$_t" "$dst"; then
+      unit_task_state_rollback "$transition_snapshots" || say 'task-state rollback failed after a unit ledger commit error'
+      rm -f "$_t"
+      return 1
+    fi
     if [[ "$dst" == "$WORKERS" ]]; then LIVE_WORKER_CACHE_UNTIL=0; fi
     return 0
   else

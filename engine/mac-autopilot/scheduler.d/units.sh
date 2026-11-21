@@ -114,28 +114,24 @@ retire_terminal_units() {
 
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）; rc 3 when no row has the id (logged ledger-write-missed, nothing written)
   [[ "${SET_UNIT_QUEUE:-0}" != 1 ]] || { dep_q_enqueue "$@"; return 0; } # release_dependency_blocks batches its writes, see dep_q_flush
-  local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage="" row n_rows lock_secs write_secs write_started holder_phase=unknown; local -x UNIT_TRANSITION_STAGE_WRITE=false UNIT_TRANSITION_UNIT_ID="$1" UNIT_TRANSITION_FROM="" UNIT_TRANSITION_CALLER="${FUNCNAME[1]:-top}"
+  local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage="" new_unit="" old_unit="{}" row n_rows lock_secs write_secs write_started holder_phase=unknown; local -x UNIT_TRANSITION_STAGE_WRITE=false UNIT_TRANSITION_UNIT_ID="$1" UNIT_TRANSITION_FROM="" UNIT_TRANSITION_CALLER="${FUNCNAME[1]:-top}"
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || ! declare -F ledger_lock_holder_phase >/dev/null || holder_phase="$(ledger_lock_holder_phase)"; if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_lock || return 1; else acquire_scheduler_lock_wait || return 1; fi; own_lock=true; fi; lock_secs=$((SECONDS - started)); write_started=$SECONDS
   if declare -F harvest_unit_cas_check >/dev/null; then harvest_unit_cas_check "$1" || { if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi; return 1; }; fi
-  # 2026-11-18 measured: compact ledger 2.65 MB vs pretty 3.23 MB, one jq read 64 ms vs 82 ms; one read here gives row count and old stage (was two reads).
-  row="$(jqf -r --arg id "$1" '[.units[] | select(.id==$id)] | "\(length)\t\(.[0].stage // "")"' "$UNITS")" || row=""; n_rows="${row%%$'\t'*}"; old_stage="${row#*$'\t'}"; if [[ "${HARVEST_CAS_ACTIVE:-false}" == true && "$1" == "${HARVEST_CAS_UNIT:-}" ]]; then old_stage="$(unit_field "$1" '.stage')" || old_stage=""; fi; UNIT_TRANSITION_STAGE_WRITE=true UNIT_TRANSITION_FROM="$old_stage"
+  # 2026-11-18 measured: compact ledger 2.65 MB vs pretty 3.23 MB, one jq read 64 ms vs 82 ms; retain the matched row for transition details.
+  row="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)] | {count:length,unit:.[0]}' "$UNITS")" || row=""; n_rows="$(jqf -r '.count // 0' <<< "$row")" || n_rows=0; old_unit="$(jqf -c '.unit // {}' <<< "$row")" || old_unit="{}"
+  if [[ "${HARVEST_CAS_ACTIVE:-false}" == true && "$1" == "${HARVEST_CAS_UNIT:-}" ]]; then old_unit="$(unit_field "$1" '.')" || old_unit="{}"; fi; old_stage="$(jqf -r '.stage // empty' <<< "$old_unit")" || old_stage=""; UNIT_TRANSITION_STAGE_WRITE=true UNIT_TRANSITION_FROM="$old_stage"
   # No row with this id: the update would match nothing, and write_state takes the unchanged bytes as success.
   if [[ "$n_rows" == 0 ]]; then
     say "ledger-write-missed unit=$1 caller=${FUNCNAME[1]:-top}"; rc=3
   else
-    jqf -c --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
+    new_unit="$(jqf -cn --arg id "$1" --slurpfile unit <(printf '%s' "$old_unit") '$unit[0] | ('"$2"')')" || rc=$?; if (( rc == 0 )); then jqf -c --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?; fi
   fi
   if (( rc == 0 )) && declare -F harvest_unit_cas_advance >/dev/null; then harvest_unit_cas_advance "$1" || rc=$?; fi
+  if (( rc == 0 )); then new_stage="$(jqf -r '.stage // empty' <<< "$new_unit")" || new_stage=""; fi
   if [[ "$own_lock" == true ]]; then if [[ "${HARVEST_STATION_ACTIVE:-false}" == true ]]; then hs_unlock; else release_scheduler_lock; fi; fi
   write_secs=$((SECONDS - write_started)); elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]] && (( lock_secs >= 2 || write_secs >= 2 )) && say "dispatch detail ledger_write unit=$1 secs=${elapsed}s lock_wait=${lock_secs}s write=${write_secs}s holder_phase=$holder_phase"
-  if (( rc == 0 )) && [[ -n "$old_stage" ]]; then
-    new_stage="$(unit_field "$1" '.stage')" || new_stage=""
-    if [[ "$old_stage" != "$new_stage" ]] && declare -F footprint_owner_transition >/dev/null; then
-      footprint_owner_transition "$1" "$old_stage" "$new_stage" \
-        || say "footprint wait cleanup failed owner=$1 stage=$new_stage"
-    fi
-  fi
+  if (( rc == 0 )) && [[ -n "$old_stage" && "$old_stage" != "$new_stage" ]] && declare -F footprint_owner_transition >/dev/null; then footprint_owner_transition "$1" "$old_stage" "$new_stage" || say "footprint wait cleanup failed owner=$1 stage=$new_stage"; fi
   return "$rc"
 }
 units_update() { # jq args; transactionally update the unit ledger under the shared scheduler lock

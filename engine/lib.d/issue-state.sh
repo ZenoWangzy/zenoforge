@@ -681,13 +681,19 @@ issue_transition_rest_label_write() {
 
 
 # issue_transition <issue> <state-label> <reason> [state-merge-filter] [skip-label-write] [issue-json] [source-issue] [open-issue]
-# Keep state JSON and GitHub stage labels serialized by state_merge's lock.
-# GitHub and local disk cannot share a transaction; a failed label write rolls
-# the local snapshot back, and HEALTH reports any remote drift it cannot undo.
+# Snapshot and task records roll back together when the GitHub write fails.
 # skip-label-write is for callers that already know the destination label is set.
+issue_transition_rollback_snapshot() {
+  local n="$1" f="$2" before="$3" had_state="$4" task_snapshot="${5:-}" status=0
+  if [ "$had_state" = 1 ]; then printf '%s\n' "$before" > "$f.tmp" && mv -f -- "$f.tmp" "$f" || status=2
+  else rm -f -- "$f" "$f.tmp" || status=2
+  fi
+  [ -z "$task_snapshot" ] || node "$_AGENT_LIB_DIR/task-state.mjs" rollback-transition "$AGENT_HOME/task-state" <<< "$task_snapshot" || status=2
+  return "$status"
+}
 issue_transition() (
   local n="${1:-}" to="${2:-}" reason="${3:-}" patch="${4:-.}" skip_label_write="${5:-0}" intake_json="${6:-}" source_issue="${7:-}" open_issue="${8:-0}" expected_hold="${9:-}" lock_mode="${10:-}" f before from live_from add_label label restore_status=0 transition_lock_fd release_hold_overlay=0
-  local had_state=0 requeue_epoch started_epoch merged_epoch merged_at reason_file requeue_transition=0 hold_json write_kind="label write"
+  local had_state=0 requeue_epoch started_epoch merged_epoch merged_at reason_file requeue_transition=0 hold_json write_kind="label write" task_state_snapshot=""
   local -a add_labels=() edit_args=() api_args=() issue_labels=()
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "issue_transition: valid issue number required" >&2; return 64; }
   [ -n "$reason" ] || { echo "issue_transition: reason required for #$n -> $to" >&2; return 64; }
@@ -860,11 +866,7 @@ issue_transition() (
       if ! jq -e '.durable_record == true' <<< "$hold_json" >/dev/null 2>&1; then
         if ! hold_durable_record_publish "$n" "$hold_json" \
           || ! state_merge "$n" '.hold.durable_record = true' __issue_transition_lock_held; then
-          if [ "$had_state" = 1 ]; then
-            printf '%s\n' "$before" > "$f.tmp" && mv -f -- "$f.tmp" "$f" || restore_status=2
-          else
-            rm -f -- "$f" "$f.tmp" || restore_status=2
-          fi
+          issue_transition_rollback_snapshot "$n" "$f" "$before" "$had_state" || restore_status=$?
           echo "issue_transition: durable hold record failed for #$n; state rollback status=$restore_status" >&2
           return 1
         fi
@@ -873,6 +875,7 @@ issue_transition() (
       state_merge "$n" '.hold.durable_record = false' __issue_transition_lock_held || { echo "issue_transition: could not clear durable hold flag for #$n" >&2; return 1; }
     fi
   fi
+  task_state_snapshot="$(if [ "$DRY_RUN" = 1 ]; then :; else jq -cn --arg issue "$n" --arg stage "$to" --rawfile reason <(printf '%s' "$reason") --slurpfile before <(printf '%s' "$before") --slurpfile after <(state_read "$n") '{issue:$issue,stage:$stage,reason:$reason,before:$before[0],after:$after[0]}' | node "$_AGENT_LIB_DIR/task-state.mjs" write-issue-transition "$AGENT_HOME/task-state"; fi)" || { issue_transition_rollback_snapshot "$n" "$f" "$before" "$had_state" || restore_status=$?; echo "issue_transition: task-state write failed for #$n; state rollback status=$restore_status" >&2; return 1; }
   [ "$skip_label_write" != 1 ] || return 0
 
   edit_args=(gh issue edit "$n" --repo "$REPO")
@@ -914,11 +917,7 @@ issue_transition() (
     guarded_write "${edit_args[@]}" || restore_status=$?
   fi
   if [ "$restore_status" -ne 0 ]; then
-    if [ "$had_state" = 1 ]; then
-      printf '%s\n' "$before" > "$f.tmp" && mv -f -- "$f.tmp" "$f" || restore_status=2
-    else
-      rm -f -- "$f" "$f.tmp" || restore_status=2
-    fi
+    issue_transition_rollback_snapshot "$n" "$f" "$before" "$had_state" "$task_state_snapshot" || restore_status=$?
     echo "issue_transition: $write_kind failed for #$n; state rollback status=$restore_status" >&2
     return 1
   fi

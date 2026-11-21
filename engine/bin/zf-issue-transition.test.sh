@@ -64,6 +64,7 @@ if [ "${1:-}" = api ]; then
   exit 1
 fi
 if [ "${1:-}" = issue ] && [ "${2:-}" = edit ]; then
+  [ "${ZF_GH_FAIL_ISSUE_EDIT:-0}" != 1 ] || exit 1
   exit 0
 fi
 printf 'unexpected gh call: %s\n' "$*" >&2
@@ -137,6 +138,58 @@ grep -Fq 'dry-run: table refuses #5312 needs-advisor -> duplicate (reason=superv
 [ "$(cat "$AGENT_HOME/state/5312.json")" = "$before_state" ] || fail 'dry-run refusal changed the state file'
 [ ! -s "$GH_LOG" ] || fail "dry-run refusal made gh calls: $(cat "$GH_LOG")"
 echo 'ok - dry-run reports the table answer without writing'
+
+# Task state follows the same stage choke point and restores its prior bytes
+# when the GitHub label write fails.
+live_labels 5410 needs-triage
+seed_state 5410 '{"state":"needs-triage","goal":"ship the fixture","done_when":"merged","owner_id":"worker-triage"}'
+# Triage routes the issue to an agent; stored implement success, advisor review, and merged evidence
+# then exercise the same transition choke point through release and conclusion.
+bash "$CLI" 5410 ready-for-agent triage-complete >/dev/null
+jq '.run.implement_started_at="2026-11-19T00:00:00Z" | .unit_results.implement={result:"success",exit_status:0} | .model_policy={unit:"implement",step:"work"}' \
+  "$AGENT_HOME/state/5410.json" > "$AGENT_HOME/state/5410.json.tmp"
+mv "$AGENT_HOME/state/5410.json.tmp" "$AGENT_HOME/state/5410.json"
+bash "$CLI" 5410 needs-advisor advisor-route >/dev/null
+jq '.advisor_decision="admit after review" | .advisor_ruled_at="2026-11-19T00:00:00Z"' \
+  "$AGENT_HOME/state/5410.json" > "$AGENT_HOME/state/5410.json.tmp"
+mv "$AGENT_HOME/state/5410.json.tmp" "$AGENT_HOME/state/5410.json"
+bash "$CLI" 5410 ready-for-agent advisor-admission >/dev/null
+jq '.run.outcome="merged" | .run.evidence.pr_number=77 | .deploy_state="pending"' \
+  "$AGENT_HOME/state/5410.json" > "$AGENT_HOME/state/5410.json.tmp"
+mv "$AGENT_HOME/state/5410.json.tmp" "$AGENT_HOME/state/5410.json"
+bash "$CLI" 5410 awaiting-release merged-pr >/dev/null
+bash "$CLI" 5410 concluded conclude:deployed >/dev/null
+task_dir="$AGENT_HOME/task-state/issue-5410"
+jq -e '.stage == "concluded" and .owner == "worker-triage"' "$task_dir/task.json" >/dev/null \
+  || fail 'triage, implement, review and merge did not leave one current task at the final stage'
+[ "$(grep -c '^task.json$' < <(ls "$task_dir"))" -eq 1 ] || fail 'expected one task record for the issue'
+jq -se 'length == 1 and .[0].record_type == "decision" and .[0].decision == "admit after review" and .[0].by == "advisor"' \
+  "$task_dir/events.jsonl" >/dev/null || fail 'stored advisor ruling was not recorded once'
+echo 'ok - issue stage changes keep one current task and record the advisor ruling'
+
+live_labels 5413 needs-advisor
+seed_state 5413 '{"state":"needs-advisor","advisor_decision":"admit with safeguards","guard_reason":"required checks remain enabled"}'
+bash "$CLI" 5413 ready-for-agent guarded-admission >/dev/null
+jq -se 'length == 1 and .[0].record_type == "decision" and .[0].decision == "admit with safeguards" and .[0].by == "advisor" and .[0].why == "required checks remain enabled"' \
+  "$AGENT_HOME/task-state/issue-5413/events.jsonl" >/dev/null || fail 'guarded advisor ruling was not recorded'
+echo 'ok - guarded advisor admission records the stored ruling'
+
+live_labels 5411 needs-triage
+seed_state 5411 '{"state":"needs-triage"}'
+bash "$CLI" 5411 on-hold hold-applied >/dev/null
+jq -se 'length == 1 and .[0].record_type == "handoff" and .[0].from == "issue-5411" and .[0].to == "hold"' \
+  "$AGENT_HOME/task-state/issue-5411/events.jsonl" >/dev/null \
+  || fail 'a held issue did not append a handoff record'
+
+live_labels 5412 needs-triage
+seed_state 5412 '{"state":"needs-triage"}'
+fail_rc=0
+ZF_GH_FAIL_ISSUE_EDIT=1 bash "$CLI" 5412 ready-for-agent triage-complete >/dev/null 2>&1 || fail_rc=$?
+[ "$fail_rc" -ne 0 ] || fail 'failed GitHub label write unexpectedly succeeded'
+[ "$(jq -r .state "$AGENT_HOME/state/5412.json")" = needs-triage ] || fail 'failed GitHub write did not restore the issue snapshot'
+[ ! -e "$AGENT_HOME/task-state/issue-5412/task.json" ] || fail 'failed GitHub write left a task record behind'
+[ ! -e "$AGENT_HOME/task-state/issue-5412/events.jsonl" ] || fail 'failed GitHub write left task events behind'
+echo 'ok - failed GitHub label writes roll task records and events back'
 
 # #352: a label-only hold (no state record) cannot be released by an ordinary
 # reason, but `bare-hold-release:<why>` clears the label and moves the issue in
