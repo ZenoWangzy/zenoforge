@@ -746,7 +746,7 @@ timeout --signal=TERM --kill-after=1 6 env HOME="$unreachable_home" AGENT_HOME="
   > "$unreachable_case.stdout" 2> "$unreachable_case.stderr" || remote_timeout=$?
 [[ $remote_timeout == 0 ]] || fail "unreachable host run returned rc=$remote_timeout (details: $unreachable_case.stderr)"
 [[ ! -e "$unreachable_root/roots/remote-unreachable" ]] || fail 'unreachable host started a remote clone'
-assert_file_contains "$unreachable_scratch/luna/remote-unreachable/events.jsonl" 'remote.event'
+assert_file_contains "$unreachable_scratch/luna/remote-unreachable/events.jsonl" 'local.event'
 printf 'PASS unreachable host is skipped promptly and local capacity runs the worker\n'
 
 stop_case="$test_root/remote-stop"; stop_root="$test_root/fake-remote-stop"
