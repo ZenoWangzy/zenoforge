@@ -37,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FAILED=0
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf -- "$TMP_DIR" "$test_env_root"' EXIT
 
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
@@ -81,6 +81,8 @@ BANNED_EXACT = {
     "native_json", "open_issues_json", "closing_body",
     # Fastlane stage snapshots contain every issue body and comment.
     "all_rows", "issue_rows", "rows",
+    # Intake's candidates cache contains the whole, potentially large rows string.
+    "cache",
 }
 
 def is_banned(name):
@@ -315,6 +317,15 @@ cache_rows() {
 }
 EOF
 BAD_ROWS_HITS="$(scan_file "$BAD_ROWS_FIXTURE")"
+BAD_CACHE_FIXTURE="$TMP_DIR/bad_cache.sh"
+cat > "$BAD_CACHE_FIXTURE" <<'EOF'
+flush_candidates() {
+  local cache
+  cache="$(jqf_optional_file "$A/intake-candidates.json" -c '.')"
+  jqf -cn --argjson cache "$cache" '{}'
+}
+EOF
+BAD_CACHE_HITS="$(scan_file "$BAD_CACHE_FIXTURE")"
 BAD_LOOP_FIXTURE="$TMP_DIR/bad_loop_growth.sh"
 cat > "$BAD_LOOP_FIXTURE" <<'EOF'
 intake_footprint_snapshot() {
@@ -338,6 +349,8 @@ assert_eq "meta-test: both unbounded fastlane census snapshots are caught" \
   "2" "$(printf '%s\n' "$BAD_CENSUS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: an unbounded rows value passed through --arg is caught" \
   "1" "$(printf '%s\n' "$BAD_ROWS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+assert_eq "meta-test: a whole candidates cache passed through --argjson is caught" \
+  "1" "$(printf '%s\n' "$BAD_CACHE_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: loop-grown owners and GitHub census values are caught with file:line" \
   "2" "$(printf '%s\n' "$BAD_LOOP_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: all closed-tracker dependency payloads are caught" \
