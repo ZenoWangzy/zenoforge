@@ -57,7 +57,7 @@ transient = [(300 + i, "fork", root[0], root[3]) for i in range(660)]
 write_proc(proc, 10660, [manager, root, *transient])
 for pid, *_ in transient:
     shutil.rmtree(proc / str(pid))
-write_proc(proc, 11800, [manager, root])
+write_proc(proc, 10660, [manager, root])
 value, detail, score_value = fork_rate.sample(state, now=5011.0)
 assert value == 0.0 and score_value == 60.0 and status(score_value) == "UNHEALTHY", (value, score_value, status(score_value))
 assert "total_rate: 60.0/s" in detail and "unattributed: 60.0/s (100%)" in detail, detail
