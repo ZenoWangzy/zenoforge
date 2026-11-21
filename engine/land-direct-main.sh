@@ -967,11 +967,7 @@ reconcile_merged_pr() {
   return "$status"
 }
 
-# Every landing waits for MemAvailable >= 3 GB (one focused worker plus reserve), not load.
-# The two bounded slots below already stop the issue-1985 pile-up. Hand and implement agents
-# keep load near 5x nproc for hours, so a load gate never opened and only its 45-minute cap
-# released each FIFO head in turn: on 2026-10-10 five landings waited 30+ minutes behind
-# two empty slots, then ran at the same load anyway.
+# Landings wait for 3 GB available memory before taking one of the FIFO preflight slots.
 wait_for_preflight_memory() {
   local meminfo_file="${AGENT_DISPATCH_MEMINFO_FILE:-/proc/meminfo}" available_kib mem_mb waited=0
   while :; do
@@ -997,15 +993,8 @@ wait_for_preflight_memory() {
 
 with_preflight_slot() {
   if [[ -n "$slot_held" ]]; then "$@"; return; fi
-  # One bounded slot set for every landing's test-running part, queue landings included. On
-  # 2026-10-08 queue landings skipped the slots: 7+ ran focused suites at once (load ~55 on 12
-  # cores) and landing 278 failed "host overloaded during preflight". The fast path keeps each
-  # slot hold to minutes, so waiters wait here without spawning suites.
   local slots="${ZF_LAND_PREFLIGHT_SLOTS:-2}"
   [[ "$slots" =~ ^[1-9][0-9]*$ ]] || { echo "land-direct-main: ZF_LAND_PREFLIGHT_SLOTS must be a positive integer" >&2; return 2; }
-  # FIFO: only the oldest live waiter tries the slots; a random race starved
-  # one landing for 155 minutes on 2026-09-28. The command drops its ticket
-  # when it starts, so the next waiter can take the other slot.
   local slot status waited=0 admission_checked=0 queue="$lock_dir/preflight-queue" ticket head t
   mkdir -p -- "$queue"
   ticket="${ZF_LAND_RELOAD_QUEUE_TICKET:-$queue/$(date +%s%N).$BASHPID}"
@@ -1037,8 +1026,6 @@ with_preflight_slot() {
         fi
         [[ "$status" == 200 ]] || { rm -f -- "$ticket"; return "$status"; }
       done
-      # Memory can change while this waiter sits behind occupied slots. Recheck
-      # before each later attempt to claim a newly freed slot.
       admission_checked=0
     fi
     [[ "$waited" == 1 ]] || echo "land-direct-main: waiting for a preflight slot" >&2
@@ -1267,23 +1254,24 @@ landed_range_changes_postsubmit_input() {
   return 1
 }
 
-# 2026-11-03 incident (27 min of failed converge ticks): the product's engine pin landed on main
-# while the pinned engine had changed a file the product overrides (hotfix/hf-start.sh, engine #164);
-# the build hook's override guard ran only at converge, after the pin was live, and the only fix was a
-# manual re-override. Root cause: the lander verified the range against the engine's own checks but never
-# against the target's engine-build contract. This preflight runs the converge gates before the push --
-# hook --build into a scratch versions root, then --check, then the built engine's --preflight runner --
-# only when the range touches the pin file, the override table or the vendored pack. Converge and landing both call that
-# built engine's engine-sync.sh --preflight, which reads the same publish-preflight/gates.tsv list.
-# The pin file is the target config root's build.json (the same resolution engine-sync.sh uses; today
-# .zenoforge/build.json). The hook path comes from the pin file's hook field (repo-relative), and the
-# override table is the overrides.tsv beside that hook, the layout the build contract reads.
+# Run the target's build, override and publish-preflight gates before a pin change lands.
+# The hook and shared gate list come from the target's build.json and the built engine.
 land_pin_preflight_verified_key=""
+land_preflight_private_refs=()
+land_preflight_private_repo=""
+land_cleanup_preflight_private_refs() {
+  local ref
+  for ref in ${land_preflight_private_refs[@]+"${land_preflight_private_refs[@]}"}; do
+    git -C "$land_preflight_private_repo" update-ref -d "$ref" >/dev/null 2>&1 \
+      || echo "land-direct-main: could not remove private landing ref $ref" >&2
+  done
+  land_preflight_private_refs=()
+  land_preflight_private_repo=""
+}
 land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes the pin file, override table or vendored pack
   local base="$1" head="$2"
   local key="$base:$head"
-  # Once per (base, head): the push loop retries after a rebase, where both change; an unchanged
-  # retry (lost push acknowledgment) reuses the verification instead of rebuilding the engine.
+  # Reuse an unchanged range after a lost push acknowledgment.
   [[ "$key" != "$land_pin_preflight_verified_key" ]] || return 0
   land_pin_preflight_verified_key="$key"
   local config_root="${ZF_CONFIG_ROOT:-$repo_root/.zenoforge}"
@@ -1317,6 +1305,16 @@ land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes th
     return 1
   fi
   local timeout_seconds="${ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS:-600}" out_root started_ms elapsed_ms status runner_cmd publish_failed=0
+  local vecta_repo_dir="${VECTA_REPO_DIR:-$repo_root}" private_ref="refs/zf-land/${head:0:12}"
+  if [[ "$vecta_repo_dir" != "$repo_root" ]] && ! git -C "$vecta_repo_dir" cat-file -e "$head^{commit}" 2>/dev/null; then
+    if ! git -C "$vecta_repo_dir" fetch --no-tags --no-write-fetch-head "$repo_root" "+refs/heads/$branch:$private_ref" >/dev/null 2>&1 \
+        || [[ "$(git -C "$vecta_repo_dir" rev-parse --verify "$private_ref^{commit}" 2>/dev/null || true)" != "$head" ]]; then
+      git -C "$vecta_repo_dir" update-ref -d "$private_ref" >/dev/null 2>&1 || true
+      printf 'land-direct-main: landing head %s is not readable in VECTA_REPO_DIR=%s; refusing push\n' "${head:0:12}" "$vecta_repo_dir" >&2; return 1
+    fi
+    land_preflight_private_repo="$vecta_repo_dir"
+    land_preflight_private_refs+=("$private_ref")
+  fi
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
     echo "land-direct-main: ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS must be a positive integer" >&2
     return 2
@@ -1324,8 +1322,7 @@ land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes th
   out_root="$(mktemp -d "${TMPDIR:-/tmp}/zf-land-pin.XXXXXX")" || return 1
   started_ms="$(date +%s%3N)"
   echo "land-direct-main: engine pin preflight start pin=$engine product=$head hook=$hook deadline_seconds=$timeout_seconds" >&2
-  # Keep build, directory discovery, and check under one deadline in the shared preflight slot.
-  # This uses the same slot and timeout path as the lander's normal preflight.
+  # Keep build and checks under the shared slot's single deadline.
   runner_cmd='
 set -euo pipefail
 repo_root="$1"
@@ -1334,6 +1331,7 @@ engine="$3"
 head="$4"
 out_root="$5"
 agent_home="$6"
+vecta_repo_dir="$7"
 bash "$repo_root/$hook" --build "$engine" "$head" --out "$out_root" >&2
 listing="$(find "$out_root" -mindepth 1 -maxdepth 1 -type d ! -name ".*" | LC_ALL=C sort)"
 version_dirs=()
@@ -1348,7 +1346,7 @@ intended="$repo_root/.zenoforge/build/intended-changes.tsv"
 preflight_args=("$version_dir/engine/engine-sync.sh" --preflight "$version_dir")
 [[ ! -f "$intended" ]] || preflight_args+=("$intended")
 publish_started_ms="$(date +%s%3N)"
-if AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo_root" VECTA_REPO_DIR="$repo_root" \
+if AGENT_HOME="$agent_home" ZF_REPO_DIR="$vecta_repo_dir" VECTA_REPO_DIR="$vecta_repo_dir" \
     ZF_PREFLIGHT_LIVE_REF="$head" bash "${preflight_args[@]}" >&2; then
   publish_elapsed_ms="$(($(date +%s%3N) - publish_started_ms))"
   echo "land-direct-main: publish preflight passed pin=$engine duration_ms=$publish_elapsed_ms" >&2
@@ -1361,7 +1359,7 @@ fi
 '
   status=0
   if with_preflight_slot timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
-      bash -c "$runner_cmd" pin-preflight "$repo_root" "$hook" "$engine" "$head" "$out_root" "$AGENT_HOME" 1>&2; then
+      bash -c "$runner_cmd" pin-preflight "$repo_root" "$hook" "$engine" "$head" "$out_root" "$AGENT_HOME" "$vecta_repo_dir" 1>&2; then
     status=0
   else
     status=$?
@@ -1385,6 +1383,7 @@ fi
   fi
   echo "land-direct-main: engine pin preflight passed pin=$engine product=$head duration_ms=$elapsed_ms" >&2
 }
+trap 'land_cleanup_preflight_private_refs' EXIT
 
 # Paths whose landing runs engine/systemd/sync-cihost-*.sh on cihost after the push.
 cihost_sync_path() {

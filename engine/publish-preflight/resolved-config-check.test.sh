@@ -68,6 +68,10 @@ rm "$t/new/engine/prompts/guide.md"
 printf 'prompts/guide.md\t\n' > "$t/bad.tsv"
 rc=0; run "$t/bad.tsv" >/dev/null 2>&1 || rc=$?
 [[ $rc == 2 ]] || { echo "FAIL: entry without reason accepted (rc=$rc)"; exit 1; }
+# A missing commit surfaces Git's cause before Python's CalledProcessError traceback.
+bad_ref_out=$(python3 -I "$here/resolved-config-check.py" "$t/base" "$t/repo" missing-resolved-config-ref \
+  "$t/new" "$t/repo" HEAD 2>&1) && { echo 'FAIL: missing commit accepted'; exit 1; }
+[[ "${bad_ref_out%%$'\n'*}" == fatal:* ]] || { echo "FAIL: Git error was not first: $bad_ref_out"; exit 1; }
 # An unreadable engine file fails the check instead of being skipped.
 if [[ $EUID != 0 ]]; then
   chmod 000 "$t/new/engine/reader.sh"
