@@ -1043,15 +1043,22 @@ assert_eq "pipeline-system re-preparation resets stale advisor state and bumps i
 rm -rf "$REPREP_HOME" "$REPREP_LOG"
 
 # Exercise the real triage selection loops with only GitHub/systemd edges
-# stubbed. Selected issues go into one batch; retry-alone markers override
-# ordinary members, and cap leftovers remain queued for another tick.
+# stubbed. Selected issues go into one batch; a retry-alone marker waits
+# behind that batch and runs solo only when nothing else was selected (queue
+# row 897), a maintainer-test issue still runs alone at once, and cap
+# leftovers remain queued for another tick.
 TRIAGE_SELECTION_BODY="$(sed -n '/^  for next_triage in \$NEEDS_TRIAGE_IDS; do$/,/^  done$/p' "$PIPELINE_SRC")"
 MEASURE_SELECTION_BODY="$(sed -n '/^  for next_measure in \$READY_MEASURE_IDS; do$/,/^  done$/p' "$PIPELINE_SRC")"
+# shellcheck source=./lib.d/triage-solo.sh
+source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 run_triage_selection() (
-  local mode="$1" issue_numbers="$2" deferred_issue="$3" retry_deadline="$4" now="$5" backoff_issue="${6:-}" retry_alone_issue="${7:-}"
+  local mode="$1" issue_numbers="$2" deferred_issue="$3" retry_deadline="$4" now="$5" backoff_issue="${6:-}" retry_alone_issues="${7:-}" maintainer_test_issue="${8:-}"
   TRIAGE_CAP="${AGENT_TRIAGE_CAP:-8}" TRIAGE_RETRY_NOW="$now" REPO=test/repo
   NEEDS_TRIAGE_IDS="$issue_numbers" READY_MEASURE_IDS="$issue_numbers"
   NEEDS_TRIAGE_JSON="$(printf '%s\n' "$issue_numbers" | jq -Rsc 'split("\n") | map(select(test("^[0-9]+$")) | tonumber | {number:.,labels:[]})')"
+  if [ -n "$maintainer_test_issue" ]; then
+    NEEDS_TRIAGE_JSON="$(jq --argjson n "$maintainer_test_issue" 'map(if .number == $n then .labels += [{name:"founder-test"}] else . end)' <<< "$NEEDS_TRIAGE_JSON")"
+  fi
   READY_MEASURE_JSON="$NEEDS_TRIAGE_JSON"
   triage_slots="$TRIAGE_CAP"
   TRIAGE_BATCH_IDS=()
@@ -1059,11 +1066,13 @@ run_triage_selection() (
   TRIAGE_DEFERRED_COUNT=0
   TRIAGE_SELECT_CUT=0
   TRIAGE_SELECT_RESERVE=0
+  declare -A TRIAGE_SKIPS=()
+  triage_skip() { TRIAGE_SKIPS[$1]=$(( ${TRIAGE_SKIPS[$1]:-0} + 1 )); }
   triage_slice_seconds_left() { printf '9999\n'; }
   state_read() {
     if [ "$1" = "$deferred_issue" ]; then
       printf '{"triage_retry_after_epoch":%s}\n' "$retry_deadline"
-    elif [ "$1" = "$retry_alone_issue" ]; then
+    elif [[ " $retry_alone_issues " == *" $1 "* ]]; then
       printf '{"triage_batch_retry_alone":true}\n'
     else
       printf '{}\n'
@@ -1084,8 +1093,9 @@ run_triage_selection() (
   else
     eval "$MEASURE_SELECTION_BODY"
   fi
+  triage_solo_candidate_dispatch
   [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ] || dispatch_triage_batch "${TRIAGE_BATCH_IDS[@]}"
-  printf 'deferred:%s\n' "$TRIAGE_DEFERRED_COUNT"
+  printf 'deferred:%s\nretry-alone:%s\n' "$TRIAGE_DEFERRED_COUNT" "$TRIAGE_RETRY_ALONE"
 )
 # The empty-batch explanation is the main-flow block after the selection loops; eval just that block.
 run_triage_empty_case() (
@@ -1103,25 +1113,37 @@ assert_eq 'empty triage batch writes one triage batch empty line to scheduler.lo
 
 TRIAGE_QUEUE_FIXTURE=$'910201\n910202'
 assert_eq "stale-index deferral lets next needs-triage issue use the slot" \
-  $'batch:910202\ndeferred:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" 910201 2000 1000)"
+  $'batch:910202\ndeferred:0\nretry-alone:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" 910201 2000 1000)"
 assert_eq "needs-triage retry resumes at its deadline" \
-  $'batch:910201\ndeferred:1' "$(AGENT_TRIAGE_CAP=1 run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" 910201 2000 2000)"
+  $'batch:910201\ndeferred:1\nretry-alone:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" 910201 2000 2000)"
 assert_eq "scoped model failure skips only failed triage issue and leaves slot for next issue" \
-  $'batch:910202\ndeferred:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" '' 0 1000 910201)"
+  $'batch:910202\ndeferred:0\nretry-alone:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" '' 0 1000 910201)"
 assert_eq "stale-index deferral also lets next precut measurement use the slot" \
-  $'batch:910202\ndeferred:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection measure "$TRIAGE_QUEUE_FIXTURE" 910201 2000 1000)"
+  $'batch:910202\ndeferred:0\nretry-alone:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection measure "$TRIAGE_QUEUE_FIXTURE" 910201 2000 1000)"
 assert_eq "scoped model failure skips only failed precut measurement and leaves slot for next issue" \
-  $'batch:910202\ndeferred:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection measure "$TRIAGE_QUEUE_FIXTURE" '' 0 1000 910201)"
+  $'batch:910202\ndeferred:0\nretry-alone:0' "$(AGENT_TRIAGE_CAP=1 run_triage_selection measure "$TRIAGE_QUEUE_FIXTURE" '' 0 1000 910201)"
 TRIAGE_MULTI_QUEUE_FIXTURE=$'910201\n910202\n910203\n910204'
 assert_eq "AGENT_TRIAGE_CAP=3 dispatches three needs-triage issues in one tick" \
-  $'batch:910201 910202 910203\ndeferred:1' \
+  $'batch:910201 910202 910203\ndeferred:1\nretry-alone:0' \
   "$(AGENT_TRIAGE_CAP=3 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000)"
 assert_eq "AGENT_TRIAGE_CAP=3 dispatches three precut measurements in one tick" \
-  $'batch:910201 910202 910203\ndeferred:1' \
+  $'batch:910201 910202 910203\ndeferred:1\nretry-alone:0' \
   "$(AGENT_TRIAGE_CAP=3 run_triage_selection measure "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000)"
-assert_eq "a failed record retries alone after backoff" \
-  $'batch:910202\ndeferred:0' \
+assert_eq "a flagged issue waits behind the normal batch instead of replacing it" \
+  $'batch:910201 910203 910204\ndeferred:0\nretry-alone:0' \
   "$(AGENT_TRIAGE_CAP=3 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' 910202)"
+assert_eq "a flagged issue runs solo only when no unflagged issue was selected" \
+  $'batch:910202\ndeferred:0\nretry-alone:1' \
+  "$(run_triage_selection needs-triage 910202 0 0 1000 '' 910202)"
+assert_eq "two flagged issues with no unflagged one dispatch only the first" \
+  $'batch:910201\ndeferred:0\nretry-alone:1' \
+  "$(run_triage_selection needs-triage "$TRIAGE_QUEUE_FIXTURE" 0 0 1000 '' '910201 910202')"
+assert_eq "a flagged maintainer-test issue still runs alone at once" \
+  $'batch:910201\ndeferred:0\nretry-alone:1' \
+  "$(AGENT_TRIAGE_CAP=3 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' 910201 910201)"
+assert_eq "a flagged measure candidate does not stop unflagged measurement selection" \
+  $'batch:910202 910203 910204\ndeferred:0\nretry-alone:0' \
+  "$(AGENT_TRIAGE_CAP=3 run_triage_selection measure "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' 910201)"
 
 jq -n '{issues:[991010]}' > "$AGENT_HOME/triage-batch-active.json"
 TRIAGE_BATCH_MEMBER_ACTIVE="$(
@@ -2016,7 +2038,7 @@ run_refresh_admission_case() (
   local launch_status="$1" status=0
   REPO_DIR="$SCRIPT_DIR/.." ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf
   eval "$(sed -n '/^dispatch_gitnexus_refresh() {/,/^}/p' "$PIPELINE_SRC")"
-  gitnexus_index_matches_origin_main() { return 1; }
+  gitnexus_index_matches_origin_main_early() { return 1; }
   systemctl() { return 1; }
   guarded_write() { return "$launch_status"; }
   record_env_fault() { printf 'fault:%s\n' "$1"; }
@@ -2775,25 +2797,69 @@ assert_contains "issue-pipeline defaults the Node env-proxy opt-in before any di
   'export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"'
 # 2026-10-09: with triage paused, nothing refreshed the GitNexus index that
 # hand agents query; the pipeline launches one refresh unit when it is stale.
+# Queue row 897 (2026-11-21): the unit starts on the early due line (2400 s)
+# so a triage batch never waits on a refresh, and a successful start lifts the
+# old gitnexus-refresh quarantine; a failed start leaves it for the next tick.
 eval "$(sed -n '/^dispatch_gitnexus_refresh() {/,/^}/p' "$PIPELINE_SRC")"
 GITNEXUS_REFRESH_CAPTURE="$AGENT_HOME/gitnexus-refresh-systemd-run.log"
+GITNEXUS_DISPATCH_REPO="$AGENT_HOME/gitnexus-dispatch-repo"
+mkdir -p "$GITNEXUS_DISPATCH_REPO"
+git -C "$GITNEXUS_DISPATCH_REPO" init -q -b main
+git -C "$GITNEXUS_DISPATCH_REPO" config user.email test@example.com
+git -C "$GITNEXUS_DISPATCH_REPO" config user.name test
+printf 'fixture\n' > "$GITNEXUS_DISPATCH_REPO/tracked"
+git -C "$GITNEXUS_DISPATCH_REPO" add tracked
+git -C "$GITNEXUS_DISPATCH_REPO" commit -qm baseline
+GITNEXUS_DISPATCH_SHA="$(git -C "$GITNEXUS_DISPATCH_REPO" rev-parse HEAD)"
+git -C "$GITNEXUS_DISPATCH_REPO" update-ref refs/remotes/origin/main "$GITNEXUS_DISPATCH_SHA"
+mkdir -p "$GITNEXUS_DISPATCH_REPO/.gitnexus"
+gitnexus_dispatch_index_age() {
+  jq -n --arg sha "$GITNEXUS_DISPATCH_SHA" --arg at "$(date -u -d "$1 seconds ago" +%Y-%m-%dT%H:%M:%SZ)" \
+    '{lastCommit:$sha,indexedAt:$at}' > "$GITNEXUS_DISPATCH_REPO/.gitnexus/meta.json"
+}
+gitnexus_dispatch_quarantine_open() {
+  mkdir -p "$QUARANTINE_DIR"
+  jq -n --argjson now "$(date +%s)" \
+    '{scope:"gitnexus-refresh",signature:"fixture",detail:"fixture",since:$now,hits:1,canaries:0}' \
+    > "$QUARANTINE_DIR/gitnexus-refresh.json"
+}
 run_gitnexus_refresh_site() (
   PATH="$ENV_PROXY_FAKE_BIN:$PATH"
-  local index_status="$1"
-  gitnexus_index_matches_origin_main() { return "$index_status"; }
+  REPO_DIR="$GITNEXUS_DISPATCH_REPO"
   record_env_fault() { :; }
   guarded_write() { printf '%s\n' "$*" >> "$GITNEXUS_REFRESH_CAPTURE"; }
   dispatch_gitnexus_refresh
 )
+run_gitnexus_refresh_failed_start() (
+  PATH="$ENV_PROXY_FAKE_BIN:$PATH"
+  REPO_DIR="$GITNEXUS_DISPATCH_REPO"
+  record_env_fault() { :; }
+  guarded_write() { return 1; }
+  dispatch_gitnexus_refresh
+)
 : > "$GITNEXUS_REFRESH_CAPTURE"
-run_gitnexus_refresh_site 1
-assert_contains "a stale GitNexus index gets one refresh unit" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
+gitnexus_dispatch_index_age 2500
+run_gitnexus_refresh_site
+assert_contains "an index 2500 seconds old and 0 commits behind starts one refresh unit" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
   "--unit zf-gitnexus-refresh"
 assert_contains "the refresh unit goes through the shared locked helper" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
   "gitnexus_refresh_index_once"
+assert_contains "the unit refresh runs the early due check against origin/main" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
+  "gitnexus_index_matches_origin_main_early"
 : > "$GITNEXUS_REFRESH_CAPTURE"
-run_gitnexus_refresh_site 0
-assert_eq "a fresh GitNexus index launches no refresh unit" "" "$(cat "$GITNEXUS_REFRESH_CAPTURE")"
+gitnexus_dispatch_index_age 2000
+run_gitnexus_refresh_site
+assert_eq "an index 2000 seconds old launches no refresh unit" "" "$(cat "$GITNEXUS_REFRESH_CAPTURE")"
+gitnexus_dispatch_index_age 2500
+gitnexus_dispatch_quarantine_open
+run_gitnexus_refresh_site
+assert_eq "a successful unit start lifts the gitnexus-refresh quarantine" false \
+  "$(test -e "$QUARANTINE_DIR/gitnexus-refresh.json" && echo true || echo false)"
+gitnexus_dispatch_index_age 2500
+gitnexus_dispatch_quarantine_open
+run_gitnexus_refresh_failed_start >/dev/null 2>&1 || true
+assert_eq "a failed unit start leaves the gitnexus-refresh quarantine open" true \
+  "$(test -e "$QUARANTINE_DIR/gitnexus-refresh.json" && echo true || echo false)"
 rm -rf "$ENV_PROXY_FAKE_BIN"
 
 

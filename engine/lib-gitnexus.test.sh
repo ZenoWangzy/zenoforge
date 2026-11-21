@@ -351,6 +351,21 @@ assert_false "origin/main freshness predicate rejects an exact-SHA index older t
   gitnexus_index_matches_origin_main "$GITNEXUS_TEST_REPO" origin/main
 jq -n --arg sha "$GITNEXUS_SUCCESS_SHA" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{lastCommit:$sha,indexedAt:$at}' > "$GITNEXUS_TEST_REPO/.gitnexus/meta.json"
+# Queue row 897 (2026-11-21): readers keep the 3600 s line; the refresh unit
+# starts on the earlier GITNEXUS_REFRESH_EARLY_AGE_SECONDS line (2400 s) so a
+# refresh lands before any reader can see a stale index.
+jq -n --arg sha "$GITNEXUS_SUCCESS_SHA" --arg at "$(date -u -d '3500 seconds ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  '{lastCommit:$sha,indexedAt:$at}' > "$GITNEXUS_TEST_REPO/.gitnexus/meta.json"
+assert_true "origin/main freshness accepts an index 3500 seconds old" \
+  gitnexus_index_matches_origin_main "$GITNEXUS_TEST_REPO" origin/main
+jq -n --arg sha "$GITNEXUS_SUCCESS_SHA" --arg at "$(date -u -d '2500 seconds ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  '{lastCommit:$sha,indexedAt:$at}' > "$GITNEXUS_TEST_REPO/.gitnexus/meta.json"
+assert_false "the early refresh line refuses an index 2500 seconds old" \
+  gitnexus_index_matches_origin_main_early "$GITNEXUS_TEST_REPO" origin/main
+jq -n --arg sha "$GITNEXUS_SUCCESS_SHA" --arg at "$(date -u -d '2000 seconds ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  '{lastCommit:$sha,indexedAt:$at}' > "$GITNEXUS_TEST_REPO/.gitnexus/meta.json"
+assert_true "the early refresh line accepts an index 2000 seconds old" \
+  gitnexus_index_matches_origin_main_early "$GITNEXUS_TEST_REPO" origin/main
 git -C "$GITNEXUS_TEST_REPO" commit --allow-empty -qm 'origin/main advanced'
 GITNEXUS_ORIGIN_ADVANCED_SHA="$(git -C "$GITNEXUS_TEST_REPO" rev-parse HEAD)"
 git -C "$GITNEXUS_TEST_REPO" update-ref refs/remotes/origin/main "$GITNEXUS_ORIGIN_ADVANCED_SHA"

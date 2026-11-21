@@ -1459,6 +1459,174 @@ assert_eq "a hand-labeled ready-for-agent candidate whose stored fields are legi
 assert_eq "an unreadable/missing gh falls back to phase 2" \
   "2" "$(PATH=/nonexistent read_agent_phase)"
 
+# --- read_agent_pipeline: the AGENT_PIPELINE kill-switch read shared by
+# issue-pipeline.sh (MODE) and issue-pipeline-slices.sh (mode). Queue row
+# 897, 2026-11-21: one four-hour window held 133 journal reads of `triage`
+# and one `off`, and nothing shows that off came from a failed read — but
+# both sites' `|| echo off` fallback would have turned any failure into
+# the kill switch stopping the tick. Three cases: a read value is printed
+# and remembered; a 404 (the variable deleted) answers off and is
+# remembered like a value that was read; a failed read reuses the last
+# value read, 30 minutes at most, then answers off, says the value is too
+# old on stderr and sends one supervisor notice an hour. An answer that
+# fits no case clearly is a failed read quoting its first line. gh is
+# stubbed the same subshell-function way has_open_blocker's tests below
+# use; the failed reads run in a NEW process so the remembered value must
+# come from AGENT_HOME, not this shell.
+RAP_ROOT="$(mktemp -d)"
+LIB_TEST_TMP_DIRS+=("$RAP_ROOT")
+mkdir -p "$RAP_ROOT/remembered" "$RAP_ROOT/empty" "$RAP_ROOT/off" "$RAP_ROOT/ws"
+
+RAP_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/remembered" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "triage\n"; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/remembered-ok.err" || true)"
+assert_eq "a successful triage read prints triage" "triage" "$RAP_READ"
+assert_eq "a successful read writes nothing to stderr" "" "$(cat "$RAP_ROOT/remembered-ok.err" 2>/dev/null || true)"
+
+RAP_FAIL_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/remembered" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: refusing read because the owner-admission deadline cannot fit one bounded attempt\n" >&2; return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/remembered-fail.err" || true)"
+assert_eq "a failed read in a new process reuses the remembered triage, not off" "triage" "$RAP_FAIL_READ"
+assert_eq "the failed read writes exactly one stderr line" "1" "$(grep -c '' "$RAP_ROOT/remembered-fail.err" 2>/dev/null || true)"
+assert_contains "the stderr line says the read failed" \
+  "$(cat "$RAP_ROOT/remembered-fail.err" 2>/dev/null || true)" "read failed"
+assert_contains "the stderr line names the earlier value used" \
+  "$(cat "$RAP_ROOT/remembered-fail.err" 2>/dev/null || true)" "triage"
+
+RAP_NONE_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/empty" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/empty-fail.err" || true)"
+assert_eq "a failed read with nothing remembered prints off" "off" "$RAP_NONE_READ"
+assert_contains "its stderr line says no earlier value exists" \
+  "$(cat "$RAP_ROOT/empty-fail.err" 2>/dev/null || true)" "no earlier"
+
+RAP_OFF_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/off" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "off\n"; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/off-ok.err" || true)"
+assert_eq "a successful off read prints off" "off" "$RAP_OFF_READ"
+assert_eq "a successful off read writes nothing to stderr" "" "$(cat "$RAP_ROOT/off-ok.err" 2>/dev/null || true)"
+
+RAP_OFF_FAIL_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/off" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/off-fail.err" || true)"
+assert_eq "a really-read off replaces the remembered value, so a later failed read stays off" "off" "$RAP_OFF_FAIL_READ"
+
+RAP_WS_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/ws" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "  triage \n"; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/ws-ok.err" || true)"
+assert_eq "a successful read with trailing whitespace prints the bare value" "triage" "$RAP_WS_READ"
+
+# --- the reviewer's 2026-11-21 follow-up on the same read: a missing
+# variable, the 30-minute reuse limit, and an unrecognized answer.
+
+RAP_MISS_HOME="$RAP_ROOT/miss"; mkdir -p "$RAP_MISS_HOME"
+printf 'triage\n' > "$RAP_MISS_HOME/agent-pipeline-last"
+touch -d '10 minutes ago' "$RAP_MISS_HOME/agent-pipeline-last"
+RAP_404_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_MISS_HOME" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: Not Found (HTTP 404)\n" >&2; return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/miss-404.err" || true)"
+assert_eq "a 404 answer prints off even when triage was remembered" "off" "$RAP_404_READ"
+assert_eq "a 404 answer writes nothing to stderr" "" "$(cat "$RAP_ROOT/miss-404.err" 2>/dev/null || true)"
+assert_eq "a 404 answer is remembered like a value that was read" "off" \
+  "$(cat "$RAP_MISS_HOME/agent-pipeline-last" 2>/dev/null || true)"
+
+RAP_AFTER_404_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_MISS_HOME" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: API rate limit exceeded for installation 123 (HTTP 403)\n" >&2; return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/miss-after404.err" || true)"
+assert_eq "the next failed read after a 404 prints off" "off" "$RAP_AFTER_404_READ"
+
+RAP_RL_HOME="$RAP_ROOT/ratelimit"; mkdir -p "$RAP_RL_HOME"
+printf 'triage\n' > "$RAP_RL_HOME/agent-pipeline-last"
+touch -d '10 minutes ago' "$RAP_RL_HOME/agent-pipeline-last"
+RAP_RL_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_RL_HOME" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: API rate limit exceeded for installation 123 (HTTP 403)\n" >&2; return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/ratelimit.err" || true)"
+assert_eq "a rate-limit failure with triage remembered less than 30 minutes ago prints triage" "triage" "$RAP_RL_READ"
+assert_contains "its stderr line says the read failed" \
+  "$(cat "$RAP_ROOT/ratelimit.err" 2>/dev/null || true)" "read failed"
+assert_not_contains "a known rate-limit failure is not called unrecognized" \
+  "$(cat "$RAP_ROOT/ratelimit.err" 2>/dev/null || true)" "unrecognized"
+
+RAP_RL_NONE_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ROOT/empty" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: API rate limit exceeded for installation 123 (HTTP 403)\n" >&2; return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/empty-ratelimit.err" || true)"
+assert_eq "a rate-limit failure with nothing remembered prints off" "off" "$RAP_RL_NONE_READ"
+assert_contains "its stderr line says no earlier value exists" \
+  "$(cat "$RAP_ROOT/empty-ratelimit.err" 2>/dev/null || true)" "no earlier"
+
+RAP_STALE_HOME="$RAP_ROOT/stale"; mkdir -p "$RAP_STALE_HOME"
+printf 'triage\n' > "$RAP_STALE_HOME/agent-pipeline-last"
+touch -d '45 minutes ago' "$RAP_STALE_HOME/agent-pipeline-last"
+RAP_STALE_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_STALE_HOME" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: API rate limit exceeded for installation 123 (HTTP 403)\n" >&2; return 1; }
+  notices="$3"; supervisor_inbox_append_once() { printf "%s|%s\n" "$1" "$2" >> "$notices"; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/stale.err" "$RAP_ROOT/stale-notices" || true)"
+assert_eq "a failed read with a remembered value older than 30 minutes prints off" "off" "$RAP_STALE_READ"
+assert_contains "its stderr line says the remembered value is too old" \
+  "$(cat "$RAP_ROOT/stale.err" 2>/dev/null || true)" "too old"
+assert_eq "exactly one supervisor notice is sent" "1" "$(grep -c '' "$RAP_ROOT/stale-notices" 2>/dev/null || true)"
+RAP_STALE_NOTICE="$(head -n 1 -- "$RAP_ROOT/stale-notices" 2>/dev/null || true)"
+assert_contains "the notice key is per hour" "$RAP_STALE_NOTICE" "agent-pipeline-stale:"
+if grep -qE 'the last value read is [0-9]+s old' <<<"$RAP_STALE_NOTICE"; then
+  ok "the notice names the age of the last successful read"
+else
+  echo "not ok - the notice names the age of the last successful read (notice: [$RAP_STALE_NOTICE])" >&3
+  FAILED=1
+fi
+
+RAP_ODD_HOME="$RAP_ROOT/odd"; mkdir -p "$RAP_ODD_HOME"
+printf 'triage\n' > "$RAP_ODD_HOME/agent-pipeline-last"
+touch -d '5 minutes ago' "$RAP_ODD_HOME/agent-pipeline-last"
+RAP_ODD_READ="$(REPO=test/repo ZF_REPO_DIR="$RAP_ROOT" AGENT_HOME="$RAP_ODD_HOME" bash -c '
+  set -euo pipefail
+  source "$1/lib.sh" 2>/dev/null
+  gh() { printf "gh: the answer is a mirror\nand a second line\n" >&2; return 1; }
+  read_agent_pipeline 2>"$2"
+' _ "$SCRIPT_DIR" "$RAP_ROOT/odd.err" || true)"
+assert_eq "an answer that is neither a value nor a 404 nor a known failure still reuses the fresh remembered value" \
+  "triage" "$RAP_ODD_READ"
+assert_contains "its stderr line quotes the answer's first line" \
+  "$(cat "$RAP_ROOT/odd.err" 2>/dev/null || true)" "the answer is a mirror"
+assert_not_contains "the quote stops at the first line" \
+  "$(cat "$RAP_ROOT/odd.err" 2>/dev/null || true)" "a second line"
+assert_eq "the unrecognized answer still writes exactly one stderr line" \
+  "1" "$(grep -c '' "$RAP_ROOT/odd.err" 2>/dev/null || true)"
+
+rm -rf "$RAP_ROOT"
+
 # --- triage_classification_status: the #1130-#1137 unmeasured-vs-corrupt
 # gate. issue-pipeline.sh's section (c) calls this BEFORE ever calling
 # enforce_autonomy_gate — see its comment in lib.sh for the full incident
@@ -7374,5 +7542,33 @@ else
   TRIAGE_CONFIG_OVERRIDE_STATUS=rejected
 fi
 assert_eq "triage schema validation reads target config override" rejected "$TRIAGE_CONFIG_OVERRIDE_STATUS"
+
+# Row 897 round 2: triage_result_schema_failure names the first failing path
+# and why; triage_result_matches_schema is its yes/no view, so the two must
+# agree on every failure kind (one set of rules, dispatch-gates.sh).
+SCHEMA_NAMING_DIR="$(mktemp -d)"
+LIB_TEST_TMP_DIRS+=("$SCHEMA_NAMING_DIR")
+SCHEMA_NAMING_SCHEMA="$SCRIPT_DIR/prompts/triage.schema.json"
+SCHEMA_NAMING_BASE="$(jq -c '. + {related: [], suspected_shared_cause: null, advisor_reason: "none"}' "$TRIAGE_CONFIG_OVERRIDE_RESULT")"
+schema_naming_case() {
+  local desc="$1" filter="$2" want="$3" file="$SCHEMA_NAMING_DIR/case.json" verdict named
+  jq "$filter" <<< "$SCHEMA_NAMING_BASE" > "$file"
+  if triage_result_matches_schema "$file" "$SCHEMA_NAMING_SCHEMA"; then verdict=valid; else verdict=invalid; fi
+  named="$(triage_result_schema_failure "$file" "$SCHEMA_NAMING_SCHEMA")"
+  assert_eq "$desc: yes/no check says invalid" invalid "$verdict"
+  assert_contains "$desc: namer says the path and why" "$named" "$want"
+}
+schema_naming_case "enum outside the schema" '.entry_surface = "Carrier Pigeon"' 'entry_surface: value not in enum'
+schema_naming_case "missing required field" 'del(.notes_md)' 'notes_md: missing'
+schema_naming_case "extra property" '. + {foo: 1}' 'foo: property not allowed'
+jq '.' <<< "$SCHEMA_NAMING_BASE" > "$SCHEMA_NAMING_DIR/valid.json"
+if triage_result_matches_schema "$SCHEMA_NAMING_DIR/valid.json" "$SCHEMA_NAMING_SCHEMA"; then
+  SCHEMA_NAMING_VALID_VERDICT=valid
+else
+  SCHEMA_NAMING_VALID_VERDICT=invalid
+fi
+assert_eq "valid record agrees both ways: check says valid" valid "$SCHEMA_NAMING_VALID_VERDICT"
+assert_eq "valid record agrees both ways: namer stays empty" "" \
+  "$(triage_result_schema_failure "$SCHEMA_NAMING_DIR/valid.json" "$SCHEMA_NAMING_SCHEMA")"
 
 lib_case_exit

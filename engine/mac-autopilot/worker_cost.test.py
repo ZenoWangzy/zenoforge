@@ -4,6 +4,8 @@ cost rows and totals out.
 
 Run through worker_cost.test.sh. Expected numbers are worked by hand from each fixture, never
 recomputed with the module's own formulas."""
+import contextlib
+import io
 import json
 import os
 import re
@@ -18,6 +20,7 @@ import worker_cost as wc  # noqa: E402
 import roi_collect  # noqa: E402
 import roi_ledger  # noqa: E402
 import usage_reader  # noqa: E402
+import worker_cost_memo  # noqa: E402
 
 
 def write(path, lines, end="2026-10-20T12:30:00Z"):
@@ -530,6 +533,187 @@ class Ledger(unittest.TestCase):
         self.assertEqual(kpis["coverage_pct"], dict.fromkeys(keys, 89.9))
         self.assertEqual((kpis["fresh_tokens_per_merged"], kpis["waste_pct"], kpis["repair_pct"]), (None, None, None))
         self.assertEqual(kpis["coverage_status"], dict.fromkeys(keys, "NO-DATA"))
+
+
+class RunRowsMemo(unittest.TestCase):
+    """run_rows' memo (worker_cost_memo): a second call opens no unchanged log, a grown log or
+    a changed worker record is measured again, and a corrupt or interrupted memo never costs a
+    row. Expected rows come from the first, unmemoized call and from measure() itself."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.sup = os.path.join(self._dir.name, "sup")
+        os.makedirs(os.path.join(self.sup, "autopi"))
+        self.memo_path = os.path.join(self.sup, worker_cost_memo.MEMO_NAME)
+
+    def log(self, name, lines, end="2026-10-20T12:30:00Z"):
+        return write(os.path.join(self.sup, name), lines, end)
+
+    def workers(self, rows):
+        with open(os.path.join(self.sup, "autopi", "workers.json"), "w", encoding="utf-8") as out:
+            json.dump({"workers": rows}, out)
+
+    def run_rows(self):
+        """run_rows with stderr captured, so the memo's own report can be asserted."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rows = wc.run_rows(self.sup)
+        return rows, stderr.getvalue()
+
+    def measured(self):
+        """run_rows with measure() wrapped, so every log the memo did open is named."""
+        opened, original = [], wc.measure
+
+        def counting(path, worker):
+            opened.append(os.path.basename(path))
+            return original(path, worker)
+
+        wc.measure = counting
+        try:
+            rows, stderr = self.run_rows()
+        finally:
+            wc.measure = original
+        return rows, stderr, opened
+
+    def test_second_call_opens_no_unchanged_log_and_returns_equal_rows(self):
+        self.workers([{"log": "impl-issue-5-20261020T120000Z.worker.log", "unit": "issue-5",
+                       "type": "implement", "model": "gpt-6-luna", "mode": "fresh",
+                       "finished_at": "2026-10-20T12:25:00Z"}])
+        self.log("impl-issue-5-20261020T120000Z.worker.log", codex_json_stream(
+            "aaaaaaaa-0000-0000-0000-000000000001",
+            [{"input_tokens": 200_000, "cached_input_tokens": 150_000, "output_tokens": 20_000}]))
+        self.log("impl-issue-6-20261020T120500Z.worker.log", ["codex", "tokens used", "12,345", "done"],
+                 end="2026-10-20T12:40:00Z")
+        first, _, _ = self.measured()
+        second, stderr, opened = self.measured()
+        self.assertEqual(second, first)  # datetimes and Usage values included
+        self.assertEqual(opened, [])
+        self.assertIn("files=2 hit=2 read=0 read_mb=0.0 rebuilt=0", stderr)
+
+    def test_a_row_whose_usage_is_none_is_a_hit_on_the_second_call(self):
+        # Round-2 defect 1: usage/last None round-tripped as null but _row_in(None) raised
+        # "usage shape", so footer logs (no codex/zcode usage) were remeasured on every run.
+        name = "impl-issue-7-20261020T120000Z.worker.log"
+        self.workers([])
+        self.log(name, ["codex", "tokens used", "12,345", "done"])
+        first, _, _ = self.measured()
+        self.assertIsNone(first[0]["usage"])
+        self.assertIsNone(first[0]["last"])
+        second, stderr, opened = self.measured()
+        self.assertEqual(second, first)  # None stays None on the way in, for both fields
+        self.assertEqual(opened, [])
+        self.assertIn("files=1 hit=1 read=0 read_mb=0.0 rebuilt=0", stderr)
+        self.assertNotIn("remeasured", stderr)  # a stored None is a value, not a malformed entry
+
+    def test_a_log_that_grew_is_measured_again(self):
+        name = "impl-issue-6-20261020T120000Z.worker.log"
+        self.workers([])
+        self.log(name, ["codex", "tokens used", "12,345", "done"])
+        first, _, _ = self.measured()
+        self.assertEqual(first[0]["footer_tokens"], 12_345)
+        self.log(name, ["codex", "tokens used", "145,678", "done"], end="2026-10-20T12:50:00Z")
+        second, stderr, opened = self.measured()
+        self.assertEqual(opened, [name])
+        self.assertEqual(second[0]["footer_tokens"], 145_678)
+        self.assertEqual(second[0]["minutes"], 50.0)
+        self.assertIn("hit=0 read=1", stderr)
+
+    def test_a_changed_worker_record_is_measured_again_like_a_fresh_measure(self):
+        name = "impl-issue-5-20261020T120000Z.worker.log"
+        self.log(name, codex_json_stream(
+            "aaaaaaaa-0000-0000-0000-000000000002",
+            [{"input_tokens": 200_000, "cached_input_tokens": 150_000, "output_tokens": 20_000}]))
+        self.workers([{"log": name, "unit": "issue-5", "type": "implement", "mode": "resume",
+                       "token_usage_start": {"input_tokens": 100_000, "cached_input_tokens": 50_000,
+                                             "output_tokens": 10_000}}])
+        first, _, _ = self.measured()
+        self.assertEqual((first[0]["usage"].input, first[0]["usage"].cached,
+                          first[0]["usage"].output), (100_000, 100_000, 10_000))
+        later = {"log": name, "unit": "issue-5", "type": "implement", "mode": "resume",
+                 "token_usage_start": {"input_tokens": 150_000, "cached_input_tokens": 60_000,
+                                       "output_tokens": 12_000}}
+        self.workers([later])  # the dispatch baseline moved; the log file itself never did
+        second, _, opened = self.measured()
+        self.assertEqual(opened, [name])
+        self.assertEqual(second, [wc.measure(os.path.join(self.sup, name), later)])
+
+    def test_an_unreadable_memo_file_is_rewritten_and_costs_no_row(self):
+        self.workers([])
+        self.log("impl-issue-6-20261020T120000Z.worker.log", ["codex", "tokens used", "12,345", "done"])
+        expected, _, _ = self.measured()
+        with open(self.memo_path, "w", encoding="utf-8") as out:
+            out.write("{not json\n")
+        rows, stderr = self.run_rows()
+        self.assertEqual(rows, expected)
+        self.assertIn("1 logs remeasured (unreadable memo file)", stderr)
+        self.assertIn("rebuilt=1", stderr)
+        with open(self.memo_path, encoding="utf-8") as source:
+            self.assertEqual(json.load(source)["version"], 1)
+        _, stderr = self.run_rows()
+        self.assertIn("hit=1 read=0", stderr)  # the rewritten memo serves the next run
+
+    def test_a_malformed_entry_is_remeasured_and_rewritten(self):
+        self.workers([])
+        self.log("impl-issue-5-20261020T120000Z.worker.log", ["codex", "tokens used", "10,000", "done"])
+        self.log("impl-issue-6-20261020T120500Z.worker.log", ["codex", "tokens used", "20,000", "done"],
+                 end="2026-10-20T12:40:00Z")
+        expected, _, _ = self.measured()
+        with open(self.memo_path, encoding="utf-8") as source:
+            memo = json.load(source)
+        memo["entries"]["impl-issue-5-20261020T120000Z.worker.log"]["row"] = {}  # no skeleton
+        memo["entries"]["impl-issue-6-20261020T120500Z.worker.log"]["row"]["usage"] = "not a usage"
+        with open(self.memo_path, "w", encoding="utf-8") as out:
+            json.dump(memo, out)
+        rows, stderr = self.run_rows()
+        self.assertEqual(rows, expected)
+        self.assertIn("2 logs remeasured (malformed memo entries)", stderr)
+        _, stderr = self.run_rows()
+        self.assertIn("hit=2 read=0", stderr)
+
+    def test_a_run_killed_after_a_flush_leaves_a_memo_the_next_run_continues_from(self):
+        self.workers([])
+        for index in (1, 2, 3):
+            self.log(f"impl-issue-{index}-20261020T12000{index}Z.worker.log",
+                     ["codex", "tokens used", f"{index}0,000", "done"],
+                     end=f"2026-10-20T12:{index}0:00Z")
+        original, flush_rows, seen = wc.measure, worker_cost_memo.FLUSH_ROWS, []
+
+        def killed_by_the_timeout(path, worker):
+            seen.append(os.path.basename(path))
+            if len(seen) == 3:
+                raise KeyboardInterrupt  # the 900 s kill, mid-scan: no done(), no final flush
+            return original(path, worker)
+
+        worker_cost_memo.FLUSH_ROWS = 2  # a flush lands after the second measured log
+        wc.measure = killed_by_the_timeout
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                wc.run_rows(self.sup)
+        finally:
+            wc.measure, worker_cost_memo.FLUSH_ROWS = original, flush_rows
+        with open(self.memo_path, encoding="utf-8") as source:
+            self.assertEqual(sorted(json.load(source)["entries"]), sorted(seen[:2]))
+        rows, stderr, opened = self.measured()
+        self.assertEqual([r["footer_tokens"] for r in rows], [10_000, 20_000, 30_000])
+        self.assertEqual(opened, [seen[2]])  # only the log the kill caught mid-scan is read again
+        self.assertIn("hit=2 read=1", stderr)
+
+    def test_a_deleted_logs_entry_is_dropped_after_a_full_run(self):
+        # Round-2 defect 3: without an end-of-scan prune, a deleted log's entry stayed forever
+        # and the memo file grew without bound.
+        name = "impl-issue-5-20261020T120000Z.worker.log"
+        gone = "impl-issue-6-20261020T120500Z.worker.log"
+        self.workers([])
+        self.log(name, ["codex", "tokens used", "10,000", "done"])
+        self.log(gone, ["codex", "tokens used", "20,000", "done"], end="2026-10-20T12:40:00Z")
+        self.measured()
+        os.unlink(os.path.join(self.sup, gone))
+        rows, stderr = self.run_rows()
+        self.assertEqual([r["log"] for r in rows], [name])
+        self.assertIn("hit=1 read=0", stderr)  # the surviving log keeps its entry
+        with open(self.memo_path, encoding="utf-8") as source:
+            self.assertEqual(list(json.load(source)["entries"]), [name])
 
 
 class Eval(unittest.TestCase):

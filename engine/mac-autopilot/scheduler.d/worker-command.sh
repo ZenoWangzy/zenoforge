@@ -1,6 +1,33 @@
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/codex-mcp.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/worker-output-cap.sh"
 
+# 派发与修复提示里「在哪跑测试」的措辞：scheduler.sh 在 INTEGRATION_RULE 原字面之后调 apply_test_host_rules。
+# 未配测试 runner（$ZF_CONFIG_ROOT/config.json 的 .engine.test_exec 为空串，且未设 ZF_TEST_EXEC）时维持本机测试库
+# 措辞（三个默认即原字面）；配了 runner 才改写：本机只跑 agent，测试/typecheck/build 经 runner 只跑受影响文件
+# （创始人规则 2026-11-20：worker 在本机跑 vitest/build 挤占内存切片，11-21 一小时内 53 个派发因内存无处启动被跳过）。
+VERIFY_RUN_RULE='，定向跑受影响测试与 typecheck 全绿。'
+VERIFY_LEAD_RULE='本地定向验证全绿；'
+CI_REPRO_RULE='失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push'
+apply_test_host_rules() { # 解析 .engine.test_exec（ZF_TEST_EXEC 优先，与 engine/bin/install-guard/guard 同序）；非空才覆盖上面的默认与本机集成规则
+  local runner='' config_root host_rule
+  if [[ -n "${ZF_TEST_EXEC:-}" ]]; then
+    runner="$ZF_TEST_EXEC"
+  else
+    config_root="${ZF_CONFIG_ROOT:-}"
+    if [[ -n "$config_root" && -f "$config_root/config.json" ]]; then
+      runner="$(jq -r '.engine | if type == "object" then (.test_exec // empty) else empty end | select(type == "string" and length > 0)' \
+        "$config_root/config.json" 2>/dev/null)" || runner=''
+    fi
+  fi
+  [[ -n "$runner" ]] || return 0
+  [[ "$runner" != '~/'* ]] || runner="${HOME:-/tmp}/${runner:2}"
+  host_rule="本机只跑 agent：测试、typecheck、build 一律不在本机跑。要跑就经测试 runner 只跑受影响文件（改动文件及其相关测试，绝不跑整包或整套）：${runner} \"\$(git rev-parse --show-toplevel)\" -- <命令>。runner 退出码 75、125、127，或输出含 test host unavailable，即测试主机不可用：不要在本机改跑这条命令，在报告里写明哪条命令没跑与错误文本，照常 push 交给 PR 的 CI 验证。"
+  INTEGRATION_RULE="改动涉及集成测试（*.integration.test.*、tests/integration/、迁移）时既不在本机跑、也不经测试 runner 跑，交给 PR 的 CI 验证。"
+  VERIFY_RUN_RULE="。${host_rule}"
+  VERIFY_LEAD_RULE="$host_rule"
+  CI_REPRO_RULE='修复后直接 push，由本 PR 的 CI 验证；不在本机复现，单测经测试 runner 只跑受影响文件'
+}
+
 product_boundary_rule() { # 整块取得才输出；CLAUDE.md 缺失或被改写到某组关键词消失，就什么都不输出并返回 1
   local kws lines block=""
   (( ${#PRODUCT_BOUNDARY_SELECTORS[@]} )) || return 1
@@ -126,6 +153,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     # never a bare `zcode` on PATH: the host may only carry the worker bundle.
     mapfile -t zcode_cmd < <(zf_zcode_bin_argv 2>/dev/null)
     (( ${#zcode_cmd[@]} > 0 )) || return 1
+    # 11-21: six zcode reviews in plan mode put the report into the plan-exit call; stdout held a 1-line stub with no VERDICT.
+    [[ "$type" != review && "$type" != rereview ]] || prompt_arg+=$'\n（把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。当前是 plan 模式，只为保证目录只读：不要调用 ExitPlanMode，不要尝试写报告文件，不要等待批准；最终回答本身就是报告全文，含唯一一行 VERDICT。）'
     CODEX_COMMAND=(env -u GH_TOKEN -u GITHUB_TOKEN NODE_USE_ENV_PROXY=1 "BASH_MAX_OUTPUT_LENGTH=$(worker_output_cap_chars)" "${zcode_cmd[@]}" -p "$prompt_arg" --cwd "$workdir" --mode "$zcode_mode")
     return 0
   fi

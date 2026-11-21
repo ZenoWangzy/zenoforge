@@ -1,0 +1,4 @@
+{
+  "engine/mac-autopilot/worker_cost.py": ["engine/mac-autopilot/worker_cost.test.sh"],
+  "engine/mac-autopilot/worker_cost_memo.py": ["engine/mac-autopilot/worker_cost.test.sh"]
+}

@@ -14,14 +14,9 @@ root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="$root/luna/$key"
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
-if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 && ${ZF_WORKER_HOST:-local} != local ]]; then
-  helper="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/worker-remote.py"
-  python3 "$helper" run "$ZF_WORKER_HOST" "$key" "$cwd" "$prompt" "$schema"
-  remote_rc=$?
-  if [[ ! -s "$out/remote-refused" ]]; then exit "$remote_rc"; fi
-  remote_reason=$(cat "$out/remote-refused"); rm -f "$out/remote-refused" "$out/remote.host" "$out/remote.scope"
-  printf 'luna: remote host %s refused (%s); falling back to local capacity gate\n' "$ZF_WORKER_HOST" "$remote_reason" >&2
-fi
+# Shared with bin/zc (lib.d/worker-remote-handoff.sh): a remote run exits there; a refusal falls back to the local gate below.
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib.d/worker-remote-handoff.sh"
+worker_remote_handoff luna "$out" "$key" "$cwd" "$prompt" "$schema"
 # The local host gate keeps WSL responsive (maintainer, 2026-10-24: scale worker count with CPU load). A local run starts only while the box has room:
 #   - always, if fewer than LUNA_MIN (2) runs are going and at least 2 GB is available;
 #   - otherwise only below LUNA_MAX (10) runs, with sampled CPU busy under LUNA_CPU_TARGET (85%), memory pressure
@@ -44,8 +39,9 @@ chain_exit_trap() {
   eval "prior=$(sed -n 's/^trap -- //; s/ EXIT$//p' <<<"$cur")"
   trap "$1${prior:+; $prior}" EXIT # lint-exempt: preserve any existing exit trap
 }
-scope_systemctl() { if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then systemctl "$@"; else systemctl --user "$@"; fi; }
-chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || scope_systemctl stop "$scope.scope" >/dev/null 2>&1 || true'
+# The remote account is never root (the placement probe refuses uid 0) and has linger on, so local and
+# remote scopes both live in the user manager.
+chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true'
 mx=8
 if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
   exec {mx}>"$slots/mutex"
@@ -62,9 +58,9 @@ if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
 else
   scope="${ZF_WORKER_REMOTE_SCOPE_NAME:-}"
   [[ "$scope" =~ ^zf-remote-[A-Za-z0-9_-]+-[0-9a-f]{8}$ ]] || { echo 'luna: invalid remote scope name' >&2; exit 2; }
-  systemctl set-property --runtime zf-remote.slice "CPUWeight=${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}" >/dev/null 2>&1 || {
-    echo 'luna: could not set zf-remote.slice CPUWeight' >&2; exit 74;
-  }
+  # A user manager without a delegated cpu controller refuses CPUWeight: log one line and run without the weight.
+  systemctl --user set-property --runtime zf-remote.slice "CPUWeight=${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}" >/dev/null 2>&1 \
+    || echo 'luna: could not set zf-remote.slice CPUWeight (running without it)' >&2
   printf '%s\n' "$scope" >"$out/remote.scope"
 fi
 # Workers need no MCP servers; each codex run otherwise spawns chrome-devtools, gbrain and gitnexus (~360 MB).
@@ -82,8 +78,7 @@ source "${ZF_ENGINE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/th
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
-systemd_args=(--scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
-[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || systemd_args=(--user "${systemd_args[@]}")
+systemd_args=(--user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
 cpu_weight="${AGENT_WORKER_CPU_WEIGHT:-10}"
 if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight="${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}"
 elif [[ ${LUNA_PRIORITY:-} == hotfix ]]; then cpu_weight=1000; fi

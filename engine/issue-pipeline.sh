@@ -41,6 +41,8 @@ source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 source "$SCRIPT_DIR/hand-completion-refill.sh"
 source "$SCRIPT_DIR/lib.d/release-walk.sh"
+# shellcheck source=./lib.d/triage-solo.sh
+source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 PIPELINE_CLAIM_KEY=""
 PIPELINE_CLAIM_OWNER=""
 PIPELINE_CLAIM_UNIT=""
@@ -1086,20 +1088,20 @@ dispatch_policy_unit() {
 }
 
 
-# Hand agents query the GitNexus index, but only triage and advisor runs
-# refresh it: with triage paused it went 46 commits stale (2026-10-09).
-# gitnexus_refresh_index_once owns the lock, throttle and memory floor.
+# Hand agents query the GitNexus index; this per-tick dispatch keeps it fresh
+# even with triage paused (2026-10-09: 46 commits stale). It starts the unit on
+# the early due line; gitnexus_refresh_index_once owns the lock, throttle and memory floor.
 dispatch_gitnexus_refresh() {
-  gitnexus_index_matches_origin_main "$REPO_DIR" && return 0
+  gitnexus_index_matches_origin_main_early "$REPO_DIR" && return 0
   systemctl --user is-active --quiet ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh && return 0
   local dispatch_status
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY \
     -p RuntimeMaxSec=2700 \
     bash -c 'source "$2/lib.sh" || exit 1
-      gitnexus_refresh_index_once "$1" "$(git -C "$1" rev-parse origin/main)" gitnexus_index_matches_origin_main
+      gitnexus_refresh_index_once "$1" "$(git -C "$1" rev-parse origin/main)" gitnexus_index_matches_origin_main_early
       rc=$?; printf "%s\n" "$GITNEXUS_REFRESH_OUTPUT" | tail -20; exit "$rc"' _ "$REPO_DIR" "$ZF_ENGINE_DIR"; then
-    :
+    quarantine_lift gitnexus-refresh "the refresh unit started"
   else
     dispatch_status=$?
     if [ "$dispatch_status" -eq 75 ]; then
@@ -1702,7 +1704,7 @@ if [ -e "$PAUSE_FILE" ]; then
 fi
 
 # Kill switch: gh variable AGENT_PIPELINE. off|triage|implement|release, each
-# mode enabling the previous ones. Unset/unreadable defaults to off.
+# mode enabling the previous ones. A failed read reuses the last value really read for 30 minutes at most (read_agent_pipeline); a value read as off, or the variable missing (404), stops the loop.
 #
 # 2026-09-12 bug: only "off" and "triage" (and "!= release") were ever
 # checked against MODE, so a typo, trailing whitespace from `gh variable
@@ -1711,8 +1713,7 @@ fi
 # maintainer reaches for from a phone under pressure — it must fail closed on
 # anything it doesn't recognize, validated the same explicit-allowlist way
 # AGENT_PHASE already is in run-triage.sh.
-MODE="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>/dev/null || echo off)"
-MODE="$(echo "$MODE" | tr -d '[:space:]')"
+MODE="$(read_agent_pipeline)"
 case "$MODE" in
   off|triage) ;;
   # The scheduler owns implement and release; the retired values behave as triage.
@@ -2429,14 +2430,11 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" 
     if pipeline_triage_skip_inflight "$next_triage"; then triage_skip scheduler_inflight; continue; fi
     stage_dispatch_allowed triage || { triage_skip quarantine; break; }
     # The roadmap placement is a GitHub call per issue; a candidate that will
-    # only be deferred past the cap does not pay for it.
+    # only be deferred past the cap does not pay for it. A flagged issue is
+    # remembered as the solo candidate instead of replacing the batch (row 897).
     if [ "$(state_read "$next_triage" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
-      ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage || { triage_skip roadmap_parent; continue; }
-      TRIAGE_BATCH_IDS=("$next_triage")
-      TRIAGE_RETRY_ALONE=1
-      break
+      triage_flagged_selection "$next_triage" needs-triage <<< "$NEEDS_TRIAGE_JSON" && break || continue
     fi
-    [ "$TRIAGE_RETRY_ALONE" = "1" ] && continue
     if [ "$triage_slots" -le 0 ]; then
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
       continue
@@ -2514,7 +2512,7 @@ if [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
     fi
   done <<< "$READY_MEASURE_IDS")"
 fi
-if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
+if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
   for next_measure in $READY_MEASURE_IDS; do
     if [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
       TRIAGE_SELECT_CUT=1
@@ -2538,10 +2536,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
     if pipeline_triage_skip_inflight "$next_measure"; then triage_skip scheduler_inflight; continue; fi
     stage_dispatch_allowed triage || { triage_skip quarantine; break; }
     if [ "$(state_read "$next_measure" | jq -r '.triage_batch_retry_alone // false')" = "true" ]; then
-      ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent || { triage_skip roadmap_parent; continue; }
-      TRIAGE_BATCH_IDS=("$next_measure")
-      TRIAGE_RETRY_ALONE=1
-      break
+      triage_flagged_selection "$next_measure" ready-for-agent <<< "$READY_MEASURE_JSON" && break || continue
     fi
     if [ "$triage_slots" -le 0 ]; then
       TRIAGE_DEFERRED_COUNT=$((TRIAGE_DEFERRED_COUNT + 1))
@@ -2552,6 +2547,9 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_RETRY_ALONE" = "0" ] && [ "$RE
     triage_slots=$((triage_slots - 1))
   done
 fi
+# Row 897: with both loops done, a remembered flagged candidate runs alone
+# only when no unflagged issue was selected and no batch unit is active.
+triage_solo_candidate_dispatch
 if [ "$TRIAGE_DEFERRED_COUNT" -gt 0 ]; then
   echo "issue-pipeline: triage batch cap deferred $TRIAGE_DEFERRED_COUNT selectable issue(s); they remain queued for a later tick" >&2
 fi
