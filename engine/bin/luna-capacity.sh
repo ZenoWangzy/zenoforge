@@ -72,19 +72,21 @@ luna_backend_peak_p90() { # <backend>: that backend's p90 with the 512 MB floor,
     | tail -"$LUNA_MEMORY_PEAK_TAIL" | sort -n \
     | awk '{ v[NR] = $1 } END { if (NR) { r = int((9 * NR + 9) / 10); if (r < 1) r = 1; if (v[r] < 512) v[r] = 512; print v[r] } }' || :
 }
-worker_peak_mb() { # <backend|->: prints "<mb> <set|measured|default>"; explicit LUNA_WORKER_PEAK_MB wins, a known backend
-  # uses its own p90, and an unknown asker (the scheduler's dispatch hold, before bin/worker picks a backend) takes
-  # the higher of the two measured p90s so whichever backend starts still fits; 1200 when there are no samples
-  local backend="${1:-}" p90="" other=""
+# Interim until run-p peaks are recorded (a later row gives run-p scopes a unit name).
+LUNA_NO_BACKEND_PEAK_MB=800
+worker_peak_mb() { # <backend|->: prints "<mb> <set|measured|interim|default>"; explicit LUNA_WORKER_PEAK_MB wins, a known
+  # backend uses its own p90 with 1200 when it has no samples, and an ask with no backend (the scheduler's dispatch
+  # hold) holds at the interim fixed peak: it starts run-p workers, whose peaks no backend store records, so a
+  # measured p90 (floored at 512) would admit starts that then push the slice to memory.high
+  local backend="${1:-}" p90=""
   if [[ -n "${LUNA_WORKER_PEAK_MB:-}" ]]; then printf '%s set\n' "$LUNA_WORKER_PEAK_MB"; return 0; fi
   if [[ "$backend" == luna || "$backend" == zc ]]; then
     p90="$(luna_backend_peak_p90 "$backend")"
+    if [[ -n "$p90" ]]; then printf '%s measured\n' "$p90"; return 0; fi
+    printf '1200 default\n'
   else
-    p90="$(luna_backend_peak_p90 luna)"; other="$(luna_backend_peak_p90 zc)"
-    [[ -z "$other" || ( -n "$p90" && "$p90" -ge "$other" ) ]] || p90="$other"
+    printf '%s interim\n' "$LUNA_NO_BACKEND_PEAK_MB"
   fi
-  if [[ -n "$p90" ]]; then printf '%s measured\n' "$p90"; return 0; fi
-  printf '1200 default\n'
 }
 luna_record_scope_peak() { # <backend> <scope>: best-effort append of one ended worker scope's cgroup peak; records nothing when unreadable
   local backend="$1" scope="$2" bytes mb file tmp
