@@ -170,20 +170,32 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
     def decision_log_flag: type=="object" and keys==["entry","reason"]
       and (.entry|type)=="string" and (.entry|test("\\S")) and (.entry|test("^[^\\r\\n]+$"))
       and (.reason|type)=="string" and (.reason|test("\\S")) and (.reason|test("^[^\\r\\n]+$"));
+    def nested_flags_array: (has("decision_log_flags")|not) or (.decision_log_flags|type)=="array";
+    def unique_flags: reduce .[] as $flag ([]; if index($flag)==null then . + [$flag] else . end);
     def disposition: type=="object" and (.id|type)=="string" and (.id|length)>0
       and (.disposition|IN("fixed","disproved","intentional","out-of-scope"))
       and (.reason|type)=="string" and (.reason|test("\\S")) and (.reason|test("^[^\\r\\n]+$"))
       and keys==["disposition","id","reason"];
-    if type=="array" and all(.[]; finding(true)) then
-      {findings:map(normalized_finding),dispositions:[],decision_log_flags:[],legacy:true,dropped:0,dropped_findings:[]}
+    if type=="array" and all(.[]; finding(true) and nested_flags_array) then
+      . as $legacy
+      | ([$legacy[] | .decision_log_flags[]?] | unique_flags) as $flags
+      | if all($flags[]; decision_log_flag) then
+          {findings:($legacy|map(del(.decision_log_flags)|normalized_finding)),dispositions:[],decision_log_flags:$flags,legacy:true,dropped:0,dropped_findings:[]}
+        else empty end
     elif type=="object" and (keys==["dispositions","findings"] or keys==["decision_log_flags","dispositions","findings"]) and (.findings|type)=="array" and (.dispositions|type)=="array"
-      and all(.findings[]; finding(false)) and all(.dispositions[]; disposition)
-      and ((has("decision_log_flags")|not) or ((.decision_log_flags|type)=="array" and all(.decision_log_flags[]; decision_log_flag)))
-      and (([.findings[].id] | length)==([.findings[].id] | unique | length))
-      and (([.dispositions[].id] | length)==([.dispositions[].id] | unique | length)) then
-      {findings:(.findings|map(select(evidence_gap==[])|normalized_finding)),dispositions:.dispositions,decision_log_flags:(.decision_log_flags // []),legacy:false,
-       dropped:([.findings[]|select(evidence_gap!=[])]|length),
-       dropped_findings:[.findings[]|select(evidence_gap!=[])|{id,reason:("no rerunnable evidence: missing "+(evidence_gap|join(", ")))}]}
+      and ((has("decision_log_flags")|not) or (.decision_log_flags|type)=="array")
+      and all(.findings[]; nested_flags_array) then
+      . as $block
+      | ([($block.decision_log_flags // [])[], ($block.findings[] | .decision_log_flags[]?)] | unique_flags) as $flags
+      | ($block | .findings |= map(del(.decision_log_flags)) | .decision_log_flags=$flags) as $normalized
+      | if all($normalized.findings[]; finding(false)) and all($normalized.dispositions[]; disposition)
+          and all($normalized.decision_log_flags[]; decision_log_flag)
+          and (([$normalized.findings[].id] | length)==([$normalized.findings[].id] | unique | length))
+          and (([$normalized.dispositions[].id] | length)==([$normalized.dispositions[].id] | unique | length)) then
+          {findings:($normalized.findings|map(select(evidence_gap==[])|normalized_finding)),dispositions:$normalized.dispositions,decision_log_flags:$normalized.decision_log_flags,legacy:false,
+           dropped:([$normalized.findings[]|select(evidence_gap!=[])]|length),
+           dropped_findings:[$normalized.findings[]|select(evidence_gap!=[])|{id,reason:("no rerunnable evidence: missing "+(evidence_gap|join(", ")))}]}
+        else empty end
     else empty end' <<<"$raw" 2>/dev/null
 }
 review_decision_log_flags_append() { # review report unit → append marked entries as JSONL in the supervisor directory
