@@ -770,7 +770,8 @@ until [[ -e "$stop_root/remote-codex-started" && -s "$stop_scratch/luna/remote-s
 [[ -e "$stop_root/remote-codex-started" ]] || fail 'remote stop fixture did not start Codex'
 stop_rc=0
 env WORKER_SCRATCH_ROOT="$stop_scratch" ZF_WORKER_STOP_QUIET=0.1 ZF_TEST_WORKER_STOP_SCRIPT="$script_dir/worker-stop" \
-  PATH="$test_root/bin:/usr/bin:/bin" zf-stop remote-stop > "$stop_case.stop.stdout" 2> "$stop_case.stop.stderr" || stop_rc=$?
+  ZF_TEST_REMOTE_ROOT="$stop_root" PATH="$test_root/bin:/usr/bin:/bin" zf-stop remote-stop \
+  > "$stop_case.stop.stdout" 2> "$stop_case.stop.stderr" || stop_rc=$?
 [[ $stop_rc == 0 && -e "$stop_root/remote-codex-stopped" ]] || fail 'zf-stop did not stop the remote run'
 wait "$stop_worker_pid" 2>/dev/null || :
 printf 'PASS zf-stop stops the remote scope\n'
