@@ -17,11 +17,15 @@ REPO="test/repo"
 export REPO REPO_DIR
 
 if [[ "${OPTIMISTIC_MERGE_NO_ORIGIN_MAIN_CHECK:-}" != 1 ]]; then
+  NO_ORIGIN_MAIN_SOURCE="$test_root/no-origin-main-source"
   NO_ORIGIN_MAIN_CLONE="$test_root/no-origin-main"
-  command git init -q -b main "$NO_ORIGIN_MAIN_CLONE"
-  command git -C "$NO_ORIGIN_MAIN_CLONE" remote add origin "$REPO_DIR"
-  command git -C "$NO_ORIGIN_MAIN_CLONE" fetch -q origin HEAD:refs/remotes/origin/main
-  command git -C "$NO_ORIGIN_MAIN_CLONE" checkout -q --detach refs/remotes/origin/main
+  command git init -q -b main "$NO_ORIGIN_MAIN_SOURCE"
+  command git -C "$REPO_DIR" archive HEAD | tar -x -C "$NO_ORIGIN_MAIN_SOURCE"
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" config user.name 'no-origin-main fixture'
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" config user.email 'no-origin-main@example.invalid'
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" add -f --all
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" commit -qm 'no-origin-main fixture base'
+  command git clone -q --no-local "$NO_ORIGIN_MAIN_SOURCE" "$NO_ORIGIN_MAIN_CLONE"
   command git -C "$NO_ORIGIN_MAIN_CLONE" update-ref -d refs/remotes/origin/main
   if command git -C "$NO_ORIGIN_MAIN_CLONE" show-ref --quiet --verify refs/remotes/origin/main; then
     printf 'not ok - clone still has refs/remotes/origin/main\n' >&2
