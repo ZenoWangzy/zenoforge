@@ -97,9 +97,14 @@ def connect_timeout_seconds():
     return value
 
 
+def remote_said(text):
+    text = text.decode(errors="replace") if isinstance(text, bytes) else text
+    return "".join(f": {line[:200]}" for line in (text or "").strip().splitlines()[-1:])
+
+
 def remote_probe_command(root):
     code = r'''import json, os, pathlib, re, subprocess, sys
-root = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[1]); writable = root.is_dir() and os.access(root, os.W_OK | os.X_OK)
 proc = pathlib.Path(os.environ.get("ZF_WORKER_REMOTE_PROC_ROOT", "/proc"))
 path = root
 while not path.exists() and path != path.parent:
@@ -113,14 +118,12 @@ if status.is_file():
     if match:
         uid = int(match.group(1))
 mem = int(re.search(r"^MemAvailable:\s+(\d+)", (proc / "meminfo").read_text(), re.M).group(1)) // 1024
-psi = (proc / "pressure/cpu").read_text()
-match = re.search(r"^some\s+[^\n]*\bavg60=([0-9.]+)", psi, re.M)
+match = re.search(r"^some\s+[^\n]*\bavg60=([0-9.]+)", (proc / "pressure/cpu").read_text(), re.M)
 if not match:
     raise RuntimeError("CPU PSI some avg60 is unavailable")
-disk = subprocess.check_output(["df", "-P", str(path)], text=True).splitlines()[-1].split()
-disk_pct = int(disk[-2].rstrip("%"))
+disk_pct = int(subprocess.check_output(["df", "-P", str(path)], text=True).splitlines()[-1].split()[-2].rstrip("%"))
 print(json.dumps({"load5": load5, "cores": cores, "uid": uid, "memavailable_mb": mem,
-                  "disk_percent": disk_pct, "cpu_psi_some_avg60": float(match.group(1))}))
+                  "disk_percent": disk_pct, "cpu_psi_some_avg60": float(match.group(1)), "root_writable": writable}))
 '''
     return f"python3 -c {shlex.quote(code)} {shlex.quote(root)}"
 
@@ -213,15 +216,12 @@ def probe(host, root=None, backend="luna"):
     max_disk_percent = setting_int("ZF_WORKER_REMOTE_MAX_DISK_PERCENT", "95", 1, 100)
     max_cpu_psi = setting_int("ZF_WORKER_REMOTE_MAX_CPU_PSI", "60", 1, 100)
     max_load_per_core = setting_float("ZF_WORKER_REMOTE_MAX_LOAD_PER_CORE", "1.0", 0.1, 100)
-    reasons = []
-    if metrics["uid"] == 0:
-        reasons.append("remote user is root")
+    reasons = [] if metrics["root_writable"] else [f"remote root {root} is missing or not writable"]
+    if metrics["uid"] == 0: reasons.append("remote user is root")
     if metrics["load5"] > metrics["cores"] * max_load_per_core:
         reasons.append(f"load5 {metrics['load5']:g} is above {metrics['cores']} cores x {max_load_per_core:g}")
-    if metrics["memavailable_mb"] < min_mem_mb:
-        reasons.append(f"MemAvailable {metrics['memavailable_mb']} MB is below {min_mem_mb} MB")
-    if metrics["disk_percent"] > max_disk_percent:
-        reasons.append(f"disk use {metrics['disk_percent']}% is above {max_disk_percent}%")
+    if metrics["memavailable_mb"] < min_mem_mb: reasons.append(f"MemAvailable {metrics['memavailable_mb']} MB is below {min_mem_mb} MB")
+    if metrics["disk_percent"] > max_disk_percent: reasons.append(f"disk use {metrics['disk_percent']}% is above {max_disk_percent}%")
     if metrics["cpu_psi_some_avg60"] > max_cpu_psi:
         reasons.append(f"CPU PSI some avg60 {metrics['cpu_psi_some_avg60']:g} is above {max_cpu_psi}")
     if not reasons:
@@ -720,12 +720,12 @@ def command_run(host, key, cwd, prompt, schema, backend="luna"):
             try:
                 with archive_path.open("rb") as stream:
                     shipped = remote_call(host, transfer, timeout=setting_seconds("ZF_WORKER_TRANSFER_TIMEOUT", "180"),
-                                          stdin=stream, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                          stdin=stream, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             except (OSError, subprocess.SubprocessError) as error:
-                print(f"worker-remote: transfer failed on {host} ({type(error).__name__})", file=sys.stderr)
+                print(f"worker-remote: transfer failed on {host} ({type(error).__name__}){remote_said(getattr(error, 'stderr', None))}", file=sys.stderr)
                 return 125
             if shipped.returncode:
-                print(f"worker-remote: transfer failed on {host} (rc={shipped.returncode})", file=sys.stderr)
+                print(f"worker-remote: transfer failed on {host} (rc={shipped.returncode}){remote_said(shipped.stderr)}", file=sys.stderr)
                 return 125
             prepare = (f"python3 {shlex.quote(local_staging_script)} remote-prepare "
                        f"{shlex.quote(staging)} {shlex.quote(target)}")
