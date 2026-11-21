@@ -22,7 +22,8 @@ mkdir -p "$HOME/wt" "$AGENT_HOME/state" "$AGENT_HOME/night"
 jq -n '{founder_login:"maintainer"}' > "$AGENT_HOME/recipients.json"
 for n in 910301 910302 910303 910401 910504 910505 910506 910507 910508 910509 910703 910901 910903 910904 \
   911001 911002 911003 911004 911005 911101 911102 911103 911104 911111 911112 911113 911114 911121 911122 \
-  911131 911132 911133 911141 911501 911502 911503 911511 911512 911531; do
+  911131 911132 911133 911141 911501 911502 911503 911511 911512 911531 \
+  911551 911552 911553 911561 911562 911563 911571 911572 911573; do
   if [ -e "$HOME/wt/triage-$n" ]; then
     echo "run-triage-batch.test: refusing to overwrite existing worktree $HOME/wt/triage-$n" >&2
     exit 2
@@ -182,8 +183,10 @@ case "$1 ${2:-}" in
   "pr list") echo '[]' ;;
   "api "*)
     # The shared admission guard requires a verified native-child read.
-    if [[ "${2:-}" == repos/test/repo/issues/*/sub_issues?per_page=100 ]]; then echo '[]'; else exit 1; fi
-    ;;
+    if [[ "${2:-}" == repos/test/repo/issues/*/sub_issues?per_page=100 ]]; then echo '[]'
+    # Row 920: intake-priority's label writes (row 920 tests) land in the log like issue edit.
+    elif [[ "${2:-}" == "-X" ]]; then printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+    else exit 1; fi ;;
   "issue edit")
     printf '%s\n' "$*" >> "$FAKE_GH_LOG"
     if [[ " $* " == *" --add-label founder-test "* ]]; then : > "${FAKE_GH_LOG}.founder-test.$3"; fi
@@ -806,6 +809,99 @@ assert_eq "invalid record is kept for diagnosis, not as a pair" 1 \
   "$(find "$AGENT_HOME/triage-invalid" -name '911531-*.json' | wc -l | tr -d ' ')"
 assert_eq "invalid record leaves no kept pair" 0 \
   "$(find "$AGENT_HOME/triage-kept" -name '911531-*' 2>/dev/null | wc -l | tr -d ' ')"
+
+# Queue row 920: the batch's first credits-exhausted TypeSafe answer writes one
+# stop file in the batch's scratch dir (ZF_INTAKE_JUDGE_STOP_FILE); the batch's
+# remaining issues skip the judge call, log one fixed line each, and still get
+# their fallback result through the haiku path. A request-failed answer never
+# sets the file, and a valid record whose apply fails lands in the new
+# apply_failed count beside applied_count and failed_record_count.
+export FAKE_CLAUDE_JUDGE_LOG="$TEST_ROOT/intake-claude.log"
+export FAKE_TS_JUDGE_LOG="$TEST_ROOT/intake-judge.log"
+cat > "$FAKE_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'called\n' >> "$FAKE_CLAUDE_JUDGE_LOG"
+jq -cn --arg result '{"priority":"low","route":null}' '{type:"result",is_error:false,result:$result}'
+EOF
+cat > "$FAKE_BIN/ts-judge-stub.sh" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' "$1" >> "$FAKE_TS_JUDGE_LOG"
+if [ "$1" = intake-priority ]; then
+  jq -cn --arg reason "${FAKE_TS_JUDGE_REASON:-credits-exhausted}" '{status:"fallback",question_set:"intake-priority",reason:$reason,candidate:null,confidence:null,decision:null,adopted:false}'
+else
+  printf '%s\n' '{"status":"answered","adopted":false,"decision":"ready-for-agent"}'
+fi
+EOF
+chmod +x "$FAKE_BIN/claude" "$FAKE_BIN/ts-judge-stub.sh"
+jq -n '{roots:[{number:900,title:"Roadmap",state:"open",labels:["roadmap"],children:[{number:901,title:"Theme",state:"open",labels:["roadmap-theme"],children:[{number:902,title:"Release epic",state:"open",labels:["roadmap-epic"],children:[]}]}]}]}' > "$TEST_ROOT/intake-roadmap.json"
+run_intake_batch() { # <reason> <tick-id> <issues...>: one batch run with the TypeSafe stubs in its environment
+  FAKE_TS_JUDGE_REASON="$1" TYPESAFE_API_KEY=fixture-only \
+    ZF_TS_JUDGE_SCRIPT="$FAKE_BIN/ts-judge-stub.sh" ZF_ROADMAP_TREE_CACHE_FILE="$TEST_ROOT/intake-roadmap.json" \
+    ZF_TRIAGE_TICK_ID="$2" bash "$BATCH_SRC" --scheduled "${@:3}" 2>&1
+}
+
+: > "$FAKE_CLAUDE_JUDGE_LOG"; : > "$FAKE_TS_JUDGE_LOG"; : > "$FAKE_GH_LOG"
+jq -n '[911551, 911552, 911553] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+printf '%s\n' "{\"lastCommit\":\"$(git -C "$ZF_REPO_DIR" rev-parse HEAD)\"}" > "$ZF_REPO_DIR/.gitnexus/meta.json"
+jq -nc --argjson result "$VALID" '{issue:911551,result:$result},{issue:911552,result:$result},{issue:911553,result:$result}' > "$FAKE_CODEX_OUTPUT"
+set +e
+JUDGE_STOP_OUTPUT="$(run_intake_batch credits-exhausted judge-stop-9115 911551 911552 911553)"
+JUDGE_STOP_STATUS=$?
+set -e
+assert_eq "credits-exhausted batch exits cleanly" 0 "$JUDGE_STOP_STATUS"
+assert_eq "the first credits-exhausted answer is the batch's only intake judge call" 1 \
+  "$(grep -Fc 'intake-priority' "$FAKE_TS_JUDGE_LOG" || true)"
+assert_eq "the batch's other two issues log the fixed skip line" 2 \
+  "$(grep -Fc 'intake-priority: judge skipped (credits-exhausted earlier in this batch)' <<< "$JUDGE_STOP_OUTPUT" || true)"
+assert_eq "the stop file leaves the triage-size judge alone" 3 \
+  "$(grep -Fc 'triage-size' "$FAKE_TS_JUDGE_LOG" || true)"
+assert_eq "every issue still reaches the haiku fallback" 3 "$(wc -l < "$FAKE_CLAUDE_JUDGE_LOG" | tr -d ' ')"
+assert_eq "every issue writes its fallback priority label" 3 "$(grep -Fc 'labels[]=priority:low' "$FAKE_GH_LOG" || true)"
+assert_eq "every issue is marked as a judge fallback" 3 "$(grep -Fc 'labels[]=judge:fallback' "$FAKE_GH_LOG" || true)"
+assert_contains "credits-exhausted batch still applies every verdict" "$JUDGE_STOP_OUTPUT" \
+  'applied 3 valid result(s); apply_failed=0; failed_or_missing=0'
+
+: > "$FAKE_TS_JUDGE_LOG"; : > "$FAKE_CLAUDE_JUDGE_LOG"
+jq -n '[911561, 911562, 911563] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" '{issue:911561,result:$result},{issue:911562,result:$result},{issue:911563,result:$result}' > "$FAKE_CODEX_OUTPUT"
+set +e
+JUDGE_RETRY_OUTPUT="$(run_intake_batch request-failed judge-retry-9115 911561 911562 911563)"
+JUDGE_RETRY_STATUS=$?
+set -e
+assert_eq "request-failed batch exits cleanly" 0 "$JUDGE_RETRY_STATUS"
+assert_eq "request-failed keeps the judge called for every issue" 3 \
+  "$(grep -Fc 'intake-priority' "$FAKE_TS_JUDGE_LOG" || true)"
+assert_eq "request-failed never logs the skip line" 0 \
+  "$(grep -Fc 'intake-priority: judge skipped' <<< "$JUDGE_RETRY_OUTPUT" || true)"
+assert_eq "request-failed batch still labels every issue through haiku" 3 "$(wc -l < "$FAKE_CLAUDE_JUDGE_LOG" | tr -d ' ')"
+rm -f "$FAKE_BIN/claude"
+
+# A valid record whose write-back fails is a count of its own: the summary line
+# and the metrics log carry apply_failed, and applied + apply_failed +
+# failed_or_missing covers every included issue of the batch.
+jq -n '[911571, 911572, 911573] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -nc --argjson result "$VALID" '{issue:911571,result:$result},{issue:911572,result:$result},{issue:911573,result:$result}' > "$FAKE_CODEX_OUTPUT"
+printf '2\n' > "${FAKE_GH_LOG}.view-fail-from.911572"
+set +e
+APPLY_FAIL_OUTPUT="$(ZF_TRIAGE_TICK_ID=apply-fail-9115 bash "$BATCH_SRC" --scheduled 911571 911572 911573 2>&1)"
+APPLY_FAIL_STATUS=$?
+set -e
+rm -f "${FAKE_GH_LOG}.view-fail-from.911572"
+assert_eq "one failed apply does not fail the batch" 0 "$APPLY_FAIL_STATUS"
+assert_contains "one failed apply keeps its valid result for the next run" "$APPLY_FAIL_OUTPUT" 'Apply failed'
+assert_contains "summary line carries the new apply_failed count" "$APPLY_FAIL_OUTPUT" \
+  'applied 2 valid result(s); apply_failed=1; failed_or_missing=0; tokens=12345'
+APPLY_FAIL_LOG="$(cat "$AGENT_HOME/logs/triage-apply-fail-9115.log")"
+assert_contains "batch log keeps applied_count" "$APPLY_FAIL_LOG" 'applied_count=2'
+assert_contains "batch log gains apply_failed_count beside it" "$APPLY_FAIL_LOG" 'apply_failed_count=1'
+assert_contains "batch log keeps failed_record_count" "$APPLY_FAIL_LOG" 'failed_record_count=0'
+assert_eq "the three counts cover every included issue" 3 \
+  "$(( $(sed -n 's/^applied_count=//p' <<< "$APPLY_FAIL_LOG") + $(sed -n 's/^apply_failed_count=//p' <<< "$APPLY_FAIL_LOG") + $(sed -n 's/^failed_record_count=//p' <<< "$APPLY_FAIL_LOG") ))"
 
 # Queue row 897, round 2: when the model call exited 0 and more than half of
 # a multi-issue batch has no valid result, the failure follows the batch, not
