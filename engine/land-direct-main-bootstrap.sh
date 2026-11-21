@@ -237,7 +237,8 @@ node "$land_lint_dir/supervisor-hold-lesson-lint.mjs" \
 
 # The remaining recurrence >= 2 lesson lints (#4503) share the same contract.
 node "$land_lint_dir/lesson-lints.mjs" \
-  --repo "$repo_root" --base "$land_main_base" --head HEAD
+  --repo "$repo_root" --base "$land_main_base" --head HEAD \
+  --ledger "$agent_home/state/lesson-lint-lifecycle.jsonl"
 
 land_agent_home="$agent_home"
 land_guard_source_root="$land_code_root"
