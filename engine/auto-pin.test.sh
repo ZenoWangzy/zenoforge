@@ -520,7 +520,8 @@ echo base > "$anchor/zf/README"; g -C "$anchor/zf" add -A; g -C "$anchor/zf" com
 echo block > "$anchor/zf/engine/mac-autopilot/scheduler.d/dispatch-queue.sh"; g -C "$anchor/zf" add -A; g -C "$anchor/zf" commit -qm 'culprit: add dispatch block'
 echo more >> "$anchor/zf/README"; g -C "$anchor/zf" add -A; g -C "$anchor/zf" commit -qm unrelated; new=$(git -C "$anchor/zf" rev-parse HEAD)
 echo 'anchor = "scheduler.d/dispatch-queue.sh"' > "$tmp/product-writer/.zenoforge/build/pack/scripts/zenoforge-pack/patch-native-blocker-dispatch.py"
-g -C "$tmp/product-writer" add -A; g -C "$tmp/product-writer" commit -qm 'pack patch'; g -C "$tmp/product-writer" push -q origin main
+# Earlier cases merge into product-origin.git directly, so the writer clone is behind: rebase before the push.
+g -C "$tmp/product-writer" add -A; g -C "$tmp/product-writer" commit -qm 'pack patch'; g -C "$tmp/product-writer" pull -q --rebase origin main; g -C "$tmp/product-writer" push -q origin main
 g -C "$tmp/agent/checkout" fetch -q origin main
 export ANCHOR_CREATE_CALLS=$tmp/anchor-creates ANCHOR_TITLES=$tmp/anchor-titles ANCHOR_BODIES=$tmp/anchor-bodies
 : > "$ANCHOR_CREATE_CALLS"; : > "$ANCHOR_TITLES"; : > "$ANCHOR_BODIES"
