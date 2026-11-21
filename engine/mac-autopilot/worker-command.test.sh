@@ -170,6 +170,7 @@ impl_tools="$(impl_value --allowedTools)"
 [[ ",$impl_tools," == *",Edit(/$impl_repo/**),"* && ",$impl_tools," == *",Write(/$impl_repo/**),"* ]] || fail "Claude implement writes are not scoped to the worktree: $impl_tools"
 [[ ",$impl_tools," == *",Read(/$SUP/**),"* ]] || fail 'Claude implement cannot read the supervisor reports'
 [[ ",$impl_tools," == *',Bash(git push origin unit/impl-1),'* ]] || fail "Claude implement cannot push its own branch: $impl_tools"
+[[ ",$impl_tools," == *",Bash(git -C $impl_repo push origin unit/impl-1),"* ]] || fail "Claude implement cannot push its own branch with git -C: $impl_tools"
 for bare in Edit Write Read 'Bash(git push:*)' 'Bash(git:*)' 'Bash(git *)' 'Bash(gh pr merge:*)' 'Bash(curl:*)' 'Bash(node:*)'; do
   [[ ",$impl_tools," != *",$bare,"* ]] || fail "Claude implement allows $bare"
 done
@@ -179,7 +180,7 @@ build_codex_command implement claude-sonnet-5-5 high impl-1 'p' 'p' "$impl_repo"
 git -C "$impl_repo" checkout -q unit/impl-1
 unit_json='{"lane":"direct-main"}'
 build_codex_command implement claude-sonnet-5-5 high impl-1 'p' 'p' "$impl_repo" claude || fail 'Claude direct-main implement was refused'
-[[ "$(impl_value --allowedTools)" != *'git push'* ]] || fail 'Claude direct-main implement may push'
+[[ "$(impl_value --allowedTools)" != *'git push'* && "$(impl_value --allowedTools)" != *'push origin'* ]] || fail 'Claude direct-main implement may push'
 
 # repair resumes the recorded Claude session when its file exists, with a fresh start otherwise.
 claude_sid=123e4567-e89b-12d3-a456-426614174000
@@ -230,4 +231,9 @@ review_denied="$(claude_review_disallowed_tools)"
 [[ ",$implement_tools," == *",Bash(git mv:*),"* ]] || fail "claude implement tools lack Bash(git mv:*)"
 [[ "$review_tools" != *"Bash(git rm"* && "$review_tools" != *"Bash(git mv"* ]] || fail "claude review tools allow git rm or git mv"
 [[ ",$review_denied," == *",Bash(git commit:*),"* ]] || fail "claude review deny list lost Bash(git commit:*)"
+for want in "Bash(git -C $test_env_root/wt diff:*)" "Bash(git -C $test_env_root/wt add:*)" "Bash(git -C $test_env_root/wt commit:*)" 'Bash(git ls-tree:*)' 'Bash(gh pr list:*)'; do
+  [[ ",$implement_tools," == *",$want,"* ]] || fail "claude implement tools lack $want"
+done
+[[ ",$implement_tools," != *',Bash(cp:'* && ",$implement_tools," != *',Bash(rm:'* ]] || fail "claude implement tools allow cp or rm: $implement_tools"
+printf '%s\n' 'PASS Claude implement tools allow git -C in the worktree, git ls-tree and gh pr list; not cp or rm'
 printf '%s\n' 'PASS Claude implement tools allow git rm and git mv; review tools stay read-only'

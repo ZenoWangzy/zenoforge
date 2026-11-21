@@ -1,6 +1,33 @@
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/codex-mcp.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/worker-output-cap.sh"
 
+# 派发与修复提示里「在哪跑测试」的措辞：scheduler.sh 在 INTEGRATION_RULE 原字面之后调 apply_test_host_rules。
+# 未配测试 runner（$ZF_CONFIG_ROOT/config.json 的 .engine.test_exec 为空串，且未设 ZF_TEST_EXEC）时维持本机测试库
+# 措辞（三个默认即原字面）；配了 runner 才改写：本机只跑 agent，测试/typecheck/build 经 runner 只跑受影响文件
+# （创始人规则 2026-11-20：worker 在本机跑 vitest/build 挤占内存切片，11-21 一小时内 53 个派发因内存无处启动被跳过）。
+VERIFY_RUN_RULE='，定向跑受影响测试与 typecheck 全绿。'
+VERIFY_LEAD_RULE='本地定向验证全绿；'
+CI_REPRO_RULE='失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push'
+apply_test_host_rules() { # 解析 .engine.test_exec（ZF_TEST_EXEC 优先，与 engine/bin/install-guard/guard 同序）；非空才覆盖上面的默认与本机集成规则
+  local runner='' config_root host_rule
+  if [[ -n "${ZF_TEST_EXEC:-}" ]]; then
+    runner="$ZF_TEST_EXEC"
+  else
+    config_root="${ZF_CONFIG_ROOT:-}"
+    if [[ -n "$config_root" && -f "$config_root/config.json" ]]; then
+      runner="$(jq -r '.engine | if type == "object" then (.test_exec // empty) else empty end | select(type == "string" and length > 0)' \
+        "$config_root/config.json" 2>/dev/null)" || runner=''
+    fi
+  fi
+  [[ -n "$runner" ]] || return 0
+  [[ "$runner" != '~/'* ]] || runner="${HOME:-/tmp}/${runner:2}"
+  host_rule="本机只跑 agent：测试、typecheck、build 一律不在本机跑。要跑就经测试 runner 只跑受影响文件（改动文件及其相关测试，绝不跑整包或整套）：${runner} \"\$(git rev-parse --show-toplevel)\" -- <命令>。runner 退出码 75、125、127，或输出含 test host unavailable，即测试主机不可用：不要在本机改跑这条命令，在报告里写明哪条命令没跑与错误文本，照常 push 交给 PR 的 CI 验证。"
+  INTEGRATION_RULE="改动涉及集成测试（*.integration.test.*、tests/integration/、迁移）时既不在本机跑、也不经测试 runner 跑，交给 PR 的 CI 验证。"
+  VERIFY_RUN_RULE="。${host_rule}"
+  VERIFY_LEAD_RULE="$host_rule"
+  CI_REPRO_RULE='修复后直接 push，由本 PR 的 CI 验证；不在本机复现，单测经测试 runner 只跑受影响文件'
+}
+
 product_boundary_rule() { # 整块取得才输出；CLAUDE.md 缺失或被改写到某组关键词消失，就什么都不输出并返回 1
   local kws lines block=""
   (( ${#PRODUCT_BOUNDARY_SELECTORS[@]} )) || return 1
@@ -39,11 +66,13 @@ claude_session_file_for_id() { compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/p
 # 没有 OS 沙箱：这是权限规则，不是隔离；测试运行器仍会执行 worker 写的代码（Codex 实现同样是 danger-full-access，见 SECURITY.md）。
 claude_implement_tools() { # workdir unit → --allowedTools 值
   local workdir="$1" unit="$2" branch tools
-  tools="Grep,Glob,Read(/$workdir/**),Edit(/$workdir/**),Write(/$workdir/**),Bash(cd:*),Bash(pwd),Bash(echo:*),Bash(printf:*),Bash(sed:*),Bash(sort:*),Bash(uniq:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(mkdir:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(git rm:*),Bash(git mv:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(git branch --show-current),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh),Bash(node scripts/branch-delivery-preflight.mjs:*),Bash(node engine/verification-plan.mjs:*)"
+  tools="Grep,Glob,Read(/$workdir/**),Edit(/$workdir/**),Write(/$workdir/**),Bash(cd:*),Bash(pwd),Bash(echo:*),Bash(printf:*),Bash(sed:*),Bash(sort:*),Bash(uniq:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(jq:*),Bash(mkdir:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git stash:*),Bash(git merge:*),Bash(git fetch:*),Bash(git rm:*),Bash(git mv:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(git ls-tree:*),Bash(git branch --show-current),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(pnpm:*),Bash(npx vitest:*),Bash(node --test:*),Bash(bash *.test.sh),Bash(node scripts/branch-delivery-preflight.mjs:*),Bash(node engine/verification-plan.mjs:*)"
+  local g
+  for g in status diff log show add commit stash merge fetch rm mv rev-parse merge-base ls-files; do tools+=",Bash(git -C $workdir $g:*)"; done
   [[ -z "${SUP:-}" ]] || tools+=",Read(/$SUP/**)"
   branch="$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [[ "$(unit_field "$unit" '.lane // empty')" != direct-main && "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != main ]]; then
-    tools+=",Bash(git push origin $branch),Bash(git push -u origin $branch)"
+    tools+=",Bash(git push origin $branch),Bash(git push -u origin $branch),Bash(git -C $workdir push origin $branch),Bash(git -C $workdir push -u origin $branch)"
   fi
   printf '%s' "$tools"
 }
@@ -63,7 +92,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
   local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="$6" workdir="$7" report_only="${8:-false}" expected_session_id="${9:-}" prior session_id cold_prompt tools=Read,Grep,Glob allowed=Read,Grep,Glob
   local -a resume=() common=()
   local note="
-（本次运行只能写当前工作目录，无权写其他路径：把完整报告正文作为最终回答输出，调度器会原样落盘为报告。Bash 只认白名单单条命令：git status/diff/log/show/add/commit/stash/merge/fetch、git push origin 本单元分支、pnpm、npx vitest、node --test、bash <file>.test.sh、node scripts/branch-delivery-preflight.mjs、rg/grep/sed/cat/ls/head/tail/wc/jq；一条被拒就拆成白名单单条命令重试，不要换路绕过。）"
+（本次运行只能写当前工作目录，无权写其他路径：把完整报告正文作为最终回答输出，调度器会原样落盘为报告。Bash 只认白名单单条命令：git status/diff/log/show/add/commit/stash/merge/fetch、git push origin 本单元分支、pnpm、npx vitest、node --test、bash <file>.test.sh、node scripts/branch-delivery-preflight.mjs、rg/grep/sed/cat/ls/head/tail/wc/jq；一条被拒就拆成白名单单条命令重试，命令不要以 cd 或变量赋值开头，不要用子 shell 和重定向到工作目录以外；被拒也不能放弃交付，git add、git commit、git push origin 本单元分支 这三条单独命令始终可用，改完必须用它们提交并推送，不要换路绕过。）"
   prompt+="$note"; cold_prompt="$prompt"
   if [[ "$type" == repair ]]; then
     prior="$(unit_field "$unit" '.sessions.repair // {}')"

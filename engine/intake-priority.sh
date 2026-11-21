@@ -260,14 +260,31 @@ intake_priority_judge() {
     [[ -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]] || { echo 'intake-priority: TypeSafe key is not configured' >&2; return 78; }
   fi
   state="$(intake_priority_prepare_state "$repo" "$issue_file" "$triage_state" "$config")" || return 1
-  if ! result="$(printf '%s\n' "$state" | bash "$judge_script" intake-priority)"; then
+  if [[ -n "${ZF_INTAKE_JUDGE_STOP_FILE:-}" && -e "$ZF_INTAKE_JUDGE_STOP_FILE" ]]; then
+    # Queue row 920: credits already ran out earlier in this batch (the stop file is the batch's, set by
+    # the code just below), so this issue takes the judge's exhausted-credits fallback result without a
+    # call and keeps the haiku labelling path. Unset, a single run-triage or the backlog pass is unchanged.
+    echo 'intake-priority: judge skipped (credits-exhausted earlier in this batch)' >&2
+    result="$(jq -cn --argjson decision "$(jq -c '.currentDecision // null' <<< "$state")" \
+      --argjson duplicates "$(jq -c '.duplicateCandidates // []' <<< "$state")" \
+      --argjson containers "$(jq -c '.roadmapContainers // []' <<< "$state")" \
+      '{status:"fallback",question_set:"intake-priority",reason:"credits-exhausted",candidate:null,confidence:null,
+        decision:$decision,adopted:false,rollout_ready:false,
+        intake_context:{duplicate_candidates:$duplicates,roadmap_containers:$containers}}')" || return 1
+  elif ! result="$(printf '%s\n' "$state" | bash "$judge_script" intake-priority)"; then
     echo 'intake-priority: judge failed' >&2
     return 1
+  else
+    result="$(jq -ce --argjson duplicates "$(jq -c '.duplicateCandidates' <<< "$state")" \
+      --argjson containers "$(jq -c '.roadmapContainers' <<< "$state")" \
+      '. + {intake_context:{duplicate_candidates:$duplicates,roadmap_containers:$containers}}' <<< "$result")" || return 1
   fi
-  result="$(jq -ce --argjson duplicates "$(jq -c '.duplicateCandidates' <<< "$state")" \
-    --argjson containers "$(jq -c '.roadmapContainers' <<< "$state")" \
-    '. + {intake_context:{duplicate_candidates:$duplicates,roadmap_containers:$containers}}' <<< "$result")" || return 1
   if [[ "$(jq -r '.status == "fallback" and (.reason == "credits-exhausted" or .reason == "request-failed")' <<< "$result")" == true ]]; then
+    # Queue row 920: only exhausted credits stop the batch's remaining judge calls (noclobber, like
+    # intake_backlog_signal_stop); one request-failed call may be transient and must not switch the judge off.
+    if [[ "$(jq -r '.reason == "credits-exhausted"' <<< "$result")" == true && -n "${ZF_INTAKE_JUDGE_STOP_FILE:-}" ]]; then
+      (set -o noclobber; printf 'credits-exhausted\n' > "$ZF_INTAKE_JUDGE_STOP_FILE") 2>/dev/null || true
+    fi
     result="$(intake_priority_haiku_fallback "$issue_file" "$result" "$state" "$config")" || {
       fallback_rc=$?
       (( fallback_rc == 75 )) && return 75

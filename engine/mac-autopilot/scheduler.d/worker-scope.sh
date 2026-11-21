@@ -71,7 +71,7 @@ worker_scope_prepare() { # config/systemd probe, cached for this scheduler tick
 # reports the first fork the scope's TasksMax refused (pids.events "max"). Builtins only: a fork-bound scope cannot spawn `sleep`.
 read -r -d '' WORKER_SCOPE_WATCH <<'WATCH' || :
 # The stamps end in Z: format them in UTC whatever TZ the worker scope inherits (Asia/Shanghai put them 8 h ahead).
-TZ=UTC0 leader=$1 max=$2 label=$3 sched_log=$4 tag=${5:-log=$3} hit=0 ev=${WORKER_SCOPE_EVENTS_FILE:-}
+TZ=UTC0 leader=$1 max=$2 label=$3 sched_log=$4 tag=${5:-log=$3} capacity=${6:-} hit=0 ev=${WORKER_SCOPE_EVENTS_FILE:-}
 if [[ -z $ev ]]; then read -r ev < /proc/self/cgroup && ev=/sys/fs/cgroup${ev#0::}/pids.events; fi
 [[ -r $ev ]] || exit 0
 cs=${ev%/*}/cpu.stat
@@ -91,6 +91,16 @@ done
 u=0; while read -r k v; do [[ $k == usage_usec ]] && u=$v; done 2>/dev/null < "$cs"
 TZ=UTC0 printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
 [[ -z $sched_log ]] || echo "[$now] worker cost $tag wall=${SECONDS} cpu=$((u / 1000000)).$((u / 100000 % 10))" >> "$sched_log"
+# Row 894: this watcher is what keeps the scope's cgroup alive after the leader dies (systemd reaps it the instant
+# its last process ends), so memory.peak is readable here and nowhere later. Record it as one sched sample while
+# the cgroup still exists; the dispatch hold sizes itself from the sched p90. Only a run-p scope is a scheduler
+# worker scope. jq and friends fork only now, after the leader's forks freed the TasksMax budget. An unreadable
+# memory.peak records nothing.
+peak=0; read -r peak < "${ev%/*}/memory.peak" 2>/dev/null || peak=0
+scope_name=${ev%/*}; scope_name=${scope_name##*/}; scope_name=${scope_name%.scope}
+if [[ $peak =~ ^[1-9][0-9]*$ && $scope_name =~ ^run-p[1-9][0-9]*-i[^/]*$ && -r $capacity ]]; then
+  source "$capacity" 2>/dev/null && declare -F luna_record_scope_peak >/dev/null 2>&1 && luna_record_scope_peak sched "$scope_name" "$peak"
+fi
 WATCH
 
 # The run-p scope a live pid sits in (systemd-run --scope names it run-p<pid>-i<id>.scope); empty for any other cgroup.
@@ -135,8 +145,8 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
         st="$(pid_start_id "$$")" || exit 125
         pid_file=$1; printf "%s %s\n" "$$" "$st" > "$pid_file" || exit 125
         [[ -z $6 ]] || printf "%s\n" "$$" > "$6" || exit 125
-        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" "$7" & shift 8; exec "$@"' \
-      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${WORKER_PIDFILE:-}" "${WORKER_COST_TAG:-}" "$proc_sh" "${worker_command[@]}"
+        setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" "$7" "$9" & shift 9; exec "$@"' \
+      worker-scope "$pid_file" "$WORKER_TASKS_MAX" "$label" "${LOG:-}" "$WORKER_SCOPE_WATCH" "${WORKER_PIDFILE:-}" "${WORKER_COST_TAG:-}" "$proc_sh" "${proc_sh%/*}/bin/luna-capacity.sh" "${worker_command[@]}"
   fi
   exec "${launcher[@]}" "${worker_command[@]}"
 }

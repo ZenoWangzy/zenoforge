@@ -269,64 +269,8 @@ pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
 }
 # The PR body is derived from the unit's report, rendered here once for the open and again for the refresh (PR 5650, 2026-11-08: a
 # report that gained ## prior-art never reached the body, and the next review round was spent on the missing section).
-pr_body_source() { # issue report-path [unit-json] → the body text before closing keywords are scrubbed
-  local report sec
-  report="$(head -40 "$2")"
-  sec="$(awk -v h="## decision-log" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$2")"
-  if [[ -n "$sec" ]]; then
-    report="$(awk '/^## decision-log[[:space:]]*$/{skip=1; next} /^##[[:space:]]/{skip=0} !skip' <<<"$report")"
-    report+=$'\n\n'"$sec"
-  fi
-  printf '%s%s%s' "${1:+Refs #$1
+source "$(dirname -- "${BASH_SOURCE[0]}")/pr-body.sh"
 
-}" "Implemented by the the product autopilot. Implementer report (first lines):
-
-${report}" "$(self_check_verification_body "${3:-}")"
-}
-pr_body_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
-pr_body_append_missing() { # unit pr report hash unit-json → a legacy PR (opened before .pr_body_hash) keeps its body; missing report, decision-log, and verification sections are appended
-  local body new file h sec added=false missing=false unit="${5:-}"
-  body="$(gh pr view "$2" --json body -q .body 2>/dev/null)" || return 0
-  new="$body"
-  for h in root-cause recurrence-guard prior-art decision-log verification; do
-    grep -qE "^## $h[[:space:]]*\$" <<<"$body" && continue
-    if [[ "$h" == verification ]]; then sec="$(self_check_verification_body "$unit")"; else sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"; fi
-    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else [[ "$h" == verification ]] || missing=true; fi
-  done
-  if [[ "$added" == true ]]; then
-    file="$(mktemp)" || return 0
-    scrub_closing_keywords <<<"$new" > "$file"
-    if gh pr edit "$2" --body-file "$file" >/dev/null 2>&1 && set_unit "$1" ".pr_body_hash=$(js "$4")"; then
-      say "unit $1 PR#$2 legacy body: appended the sections it lacked from ${3##*/}"
-    else
-      say "unit $1 PR#$2 legacy body append failed; tried again at the next review or land"
-    fi
-    rm -f -- "$file"
-  elif [[ "$missing" == false ]]; then
-    set_unit "$1" ".pr_body_hash=$(js "$4")" # complete as it is: the normal path takes over, one gh read less per pass
-  fi
-}
-pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current report renders a body other than the one stored at open
-  local id pr rep src hash stored file
-  id="$(jqf -r '.id // empty' <<<"$1")"; pr="$(jqf -r '.pr // empty' <<<"$1")"
-  rep="$(jqf -r '.implementation_report // empty' <<<"$1")"; stored="$(jqf -r '.pr_body_hash // empty' <<<"$1")"
-  [[ "$pr" =~ ^[0-9]+$ && -n "$rep" ]] || return 0
-  [[ "$rep" == /* ]] || rep="$SUP/$rep"
-  [[ -s "$rep" ]] || return 0
-  src="$(pr_body_source "$(jqf -r '.issue // empty' <<<"$1")" "$rep" "$1")"
-  hash="$(pr_body_hash "$src")"
-  # No stored hash: the PR opened before the hash existed and its body may carry hand edits, so it is never re-rendered, only completed.
-  [[ -n "$stored" ]] || { pr_body_append_missing "$id" "$pr" "$rep" "$hash" "$1"; return 0; }
-  [[ "$hash" != "$stored" ]] || return 0
-  file="$(mktemp)" || return 0
-  scrub_closing_keywords <<<"$src" > "$file"
-  if gh pr edit "$pr" --body-file "$file" >/dev/null 2>&1 && set_unit "$id" ".pr_body_hash=$(js "$hash")"; then
-    say "unit $id PR#$pr body re-rendered from ${rep##*/}"
-  else
-    say "unit $id PR#$pr body refresh failed; tried again at the next review or land"
-  fi
-  rm -f -- "$file"
-}
 run_merge_lane_pass() {
   local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts current_unit verified_by
   local -A merge_head_ref=()
@@ -586,7 +530,7 @@ run_merge_lane_pass() {
         set_unit "$id" ".ci_facts_head=$(js "$head") | .ci_facts=$(js "$red_facts")"
         say "triage PR#$pr head ${head:0:9}: $(ci_triage "$head" "$red_facts") (verdict only; routing unchanged)"
         cancel_branch_runs "$(jqf -r '.branch // empty' <<<"$ready")" "tests already red; repair pushes a new head" || :
-        set_unit "$id" "$(hist ci-test-red "$red") | .history[-1].tests=$(ci_red_tests "$red_facts" "$red") | .approved_sha=null | .repair_hint=$(js "PR head $head 的必需检查已有测试失败：${red}。用 gh pr checks $pr 与失败 job 日志定位：读取日志用 gh api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/<job id>/logs，绝不要用 gh run view --log；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$head" "$red_facts")") | .stage=\"repair-pending\""
+        set_unit "$id" "$(hist ci-test-red "$red") | .history[-1].tests=$(ci_red_tests "$red_facts" "$red") | .approved_sha=null | .repair_hint=$(js "PR head $head 的必需检查已有测试失败：${red}。用 gh pr checks $pr 与失败 job 日志定位：读取日志用 gh api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/<job id>/logs，绝不要用 gh run view --log；${CI_REPRO_RULE}；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$head" "$red_facts")") | .stage=\"repair-pending\""
         set_unit "$id" ".history[-1].head=$(js "$head")"
         say "merge skipped PR#$pr (tests failed in: $red) -> repair-pending without waiting for the other checks or a rerun"
         pass_step_end repair-tests-red "$pr"; continue

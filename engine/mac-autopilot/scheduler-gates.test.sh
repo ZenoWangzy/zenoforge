@@ -1970,6 +1970,109 @@ GH_HEAD="$H1"; GH_MERGES=()
 units "{\"units\":[{\"id\":\"pr-82\",\"pr\":82,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]},{\"id\":\"pr-83\",\"pr\":83,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"
 fast_land_lane || :
 [[ "${LANDS[*]}" == "82:$H1:$H1" && "$(field pr-82 .stage)" == landing && "$(field pr-83 .stage)" == ready-to-merge ]] || fail "fast lane must land one approval with both SHA bindings at a time (${LANDS[*]:-none})"
+
+# Row 898: fast-land 的克隆（git 拉取/建工作树）在台账锁外跑；landing 台账写在锁内；
+# 克隆窗口里批准被换掉就跳过派发并记一行。
+release_scheduler_lock
+acquire_scheduler_lock || fail 'row-898 fast-land probe could not take the scheduler lock'
+# ensure_clone runs inside a $( ) capture in fast_land_clone_collect, so its lock-state counter
+# must live in a file: a shell variable bumped inside the command substitution dies with the subshell.
+r898_counts="$fixture/r898-fastland-counts"
+r898_write_free=0
+eval "ensure_clone_r898() $(declare -f ensure_clone | sed '1d')"
+ensure_clone() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898_counts"; else echo free >>"$r898_counts"; fi
+  ensure_clone_r898 "$@"
+}
+eval "set_unit_r898() $(declare -f set_unit | sed '1d')"
+set_unit() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
+  set_unit_r898 "$@"
+}
+LANDS=(); : > "$A/scheduler.log"; : >"$r898_counts"
+units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"
+GH_HEAD="$H1"; fast_land_lane || :
+r898_free="$(grep -c '^free$' "$r898_counts" || true)"; r898_held="$(grep -c '^held$' "$r898_counts" || true)"
+[[ "$r898_free" -ge 1 && "$r898_held" == 0 ]] || fail "fast-land clone ran under the ledger lock (free=$r898_free held=$r898_held)"
+[[ "$r898_write_free" == 0 ]] || fail "$r898_write_free fast-land ledger writes ran with the lock released"
+[[ "${LANDS[*]}" == "86:$H1:$H1" && "$(field pr-86 .stage)" == landing ]] || fail "probe run did not land the approved unit (${LANDS[*]:-none} $(field pr-86 .stage))"
+# 克隆窗口里批准被换：跳过派发并记一行，不写 landing
+LANDS=(); : > "$A/scheduler.log"
+ensure_clone() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898_counts"; else echo free >>"$r898_counts"; fi
+  jq '(.units[] | select(.id=="pr-86") | .approved_sha) = "0000000000000000000000000000000000000000"' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS"
+  ensure_clone_r898 "$@"
+}
+units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"
+GH_HEAD="$H1"; fast_land_lane || :
+[[ ${#LANDS[@]} == 0 && "$(field pr-86 .stage)" == ready-to-merge ]] || fail "a stale fast-land decision was dispatched (${LANDS[*]:-none} $(field pr-86 .stage))"
+grep -q 'fast-land skip unit=pr-86: the unit changed while the ledger lock was released' "$A/scheduler.log" \
+  || fail "the stale fast-land skip did not log its one line: $(cat "$A/scheduler.log")"
+release_scheduler_lock
+unset -f ensure_clone
+eval "ensure_clone() $(declare -f ensure_clone_r898 | sed '1d')"; unset -f ensure_clone_r898
+unset -f set_unit
+eval "set_unit() $(declare -f set_unit_r898 | sed '1d')"; unset -f set_unit_r898
+
+# Row 898: supersede 的 gh run list 在台账锁外跑；supersede 台账写在锁内；
+# 窗口里有 refill 派出 worker，候选重算后该单元不再被 supersede，并记一行。
+R898_MAIN=1111111111111111111111111111111111111111
+R898_BASE=2222222222222222222222222222222222222222
+release_scheduler_lock
+acquire_scheduler_lock || fail 'row-898 supersede probe could not take the scheduler lock'
+# gh_run_list_cached runs inside a $( ) capture in main_suites_load, so its lock-state counter
+# must live in a file: a shell variable bumped inside the command substitution dies with the subshell.
+r898s_counts="$fixture/r898-supersede-counts"
+r898s_write_free=0
+eval "gh_run_list_cached_s898() $(declare -f gh_run_list_cached | sed '1d')" # the engine's loader, restored below
+eval "git_r898() $(declare -f git | sed '1d')"
+git() {
+  if [[ "${1:-}" == -C && "${3:-}" == merge-base && "${4:-}" == --is-ancestor ]]; then
+    [[ "${5:-}" == "$R898_BASE" && "${6:-}" == "$R898_MAIN" ]] && return 0
+    [[ "${5:-}" == "$R898_MAIN" && "${6:-}" == "$R898_MAIN" ]] && return 0
+    return 1
+  fi
+  git_r898 "$@"
+}
+eval "set_unit_s898() $(declare -f set_unit | sed '1d')"
+set_unit() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898s_write_free=$((r898s_write_free + 1))
+  set_unit_s898 "$@"
+}
+gh_run_list_cached() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898s_counts"; else echo free >>"$r898s_counts"; fi
+  printf '[{"headSha":"%s","conclusion":"success","status":"completed","createdAt":"t","databaseId":9}]' "$R898_MAIN"
+}
+units "{\"units\":[{\"id\":\"mr-1\",\"main_red\":true,\"ci_sha\":\"$R898_BASE\",\"stage\":\"implement-pending\",\"history\":[]}]}"
+MAIN_HEAD="$R898_MAIN"; MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS=""
+: > "$A/scheduler.log"; : >"$r898s_counts"; supersede_resolved_main_red_units || :
+r898s_free="$(grep -c '^free$' "$r898s_counts" || true)"; r898s_held="$(grep -c '^held$' "$r898s_counts" || true)"
+[[ "$r898s_free" -ge 1 && "$r898s_held" == 0 ]] || fail "supersede's run list ran under the ledger lock (free=$r898s_free held=$r898s_held)"
+[[ "$r898s_write_free" == 0 ]] || fail "$r898s_write_free supersede writes ran with the lock released"
+[[ "$(field mr-1 .stage)" == closed ]] || fail "probe run did not supersede the pending main-red unit ($(field mr-1 .stage))"
+grep -q "main-red unit mr-1 superseded by green Pipeline suites at $R898_MAIN" "$A/scheduler.log" || fail 'the supersede line is missing'
+# 窗口里 refill 派出了 worker：候选重算掉该单元，不写 superseded，并记一行
+: > "$A/scheduler.log"
+units "{\"units\":[{\"id\":\"mr-1\",\"main_red\":true,\"ci_sha\":\"$R898_BASE\",\"stage\":\"implement-pending\",\"history\":[]}]}"
+MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS=""
+gh_run_list_cached() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898s_counts"; else echo free >>"$r898s_counts"; fi
+  # a refill dispatched the worker while the ledger lock was released (the window is this very call)
+  jq '{workers:[{pid:991,unit:"mr-1",type:"implement",log:"w.log",report:"r.md"}]}' > "$WORKERS"
+  printf '[{"headSha":"%s","conclusion":"success","status":"completed","createdAt":"t","databaseId":9}]' "$R898_MAIN"
+}
+supersede_resolved_main_red_units || :
+[[ "$(field mr-1 .stage)" == implement-pending ]] || fail "a unit with a live worker was superseded: $(field mr-1 .stage)"
+jq -e --arg id mr-1 'any(.units[]; .id==$id and ((.history // []) | any(.stage == "superseded")) | not)' "$UNITS" >/dev/null || fail 'a stale supersede decision was written'
+grep -q 'supersede re-read candidates after the ledger lock was released' "$A/scheduler.log" || fail 'the candidate re-read did not log its one line'
+unset -f gh_run_list_cached
+eval "gh_run_list_cached() $(declare -f gh_run_list_cached_s898 | sed '1d')"; unset -f gh_run_list_cached_s898
+MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS="" # later cases load runs afresh, as they did before the probe
+unset -f git
+eval "git() $(declare -f git_r898 | sed '1d')"; unset -f git_r898
+unset -f set_unit
+eval "set_unit() $(declare -f set_unit_s898 | sed '1d')"; unset -f set_unit_s898
+release_scheduler_lock
 # If the PR head has rolled back since review, even an approved ancestor candidate is not landed.
 LANDS=(); GH_HEAD="$H1"
 units "{\"units\":[{\"id\":\"pr-84\",\"pr\":84,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H2\",\"history\":[]}]}"
@@ -2438,6 +2541,56 @@ rm -f "$A/orphan-check.epoch"; ORPHAN_REGISTER_MAX=2 reconcile_orphan_prs || :
 : > "$fixture/pr-ops"; reconcile_orphan_prs || :
 [[ ! -s "$fixture/pr-ops" ]] || fail 'reconcile ran again inside ORPHAN_CHECK_SECONDS'
 eval "$gh_issue_stub"
+
+# Row 898: orphan reconcile 的 GitHub 调用（issue 普查、pr close、gated 加标签）在台账锁外跑；
+# 收编的台账写回在锁内；窗口里被别的写收编的 PR 跳过登记并记一行。
+release_scheduler_lock
+acquire_scheduler_lock || fail 'row-898 probe could not take the scheduler lock'
+# the graphql census runs inside a $( ) capture in orphan_census_collect, so the lock-state counter
+# must live in a file: a shell variable bumped inside the command substitution dies with the subshell.
+r898_orphan_counts="$fixture/r898-orphan-counts"
+r898_write_free=0
+: > "$fixture/pr-ops2"
+eval "write_state_orig() $(declare -f write_state | sed '1d')"
+write_state() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
+  write_state_orig "$@"
+}
+r898_lock_probe() { if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898_orphan_counts"; else echo free >>"$r898_orphan_counts"; fi; }
+units '{"units":[{"id":"issue-90","issue":90,"stage":"implement","history":[]}]}'
+gh() { case "$1 $2" in
+  "pr list") echo '[{"number":510,"headRefName":"agent/issue-81","isDraft":true,"title":"gated draft"},{"number":511,"headRefName":"agent/issue-82","isDraft":false,"title":"plain"},{"number":512,"headRefName":"agent/issue-83","isDraft":false,"title":"closed issue"}]' ;;
+  "api graphql") r898_lock_probe; jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}' ;;
+  "pr close") r898_lock_probe; echo "$1 $2 $3" >> "$fixture/pr-ops2" ;;
+  "pr edit") r898_lock_probe; echo "$*" >> "$fixture/pr-ops2" ;;
+  "label list") echo '[]' ;;
+  "label create") : ;;
+  esac; }
+rm -f "$A/orphan-check.epoch"; : >"$r898_orphan_counts"; reconcile_orphan_prs || :
+r898_free="$(grep -c '^free$' "$r898_orphan_counts" || true)"; r898_held="$(grep -c '^held$' "$r898_orphan_counts" || true)"
+[[ "$r898_free" -ge 3 && "$r898_held" == 0 ]] || fail "orphan census/close/edit ran under the ledger lock (free=$r898_free held=$r898_held)"
+[[ "$r898_write_free" == 0 ]] || fail "$r898_write_free orphan ledger writes ran with the lock released"
+[[ "$(sort "$fixture/pr-ops2" | tr '\n' ' ')" == "pr close 512 pr edit 510 --add-label agent/ci-gated " ]] || fail "wrong lock-free orphan ops: $(tr '\n' ' ' < "$fixture/pr-ops2")"
+[[ "$(field pr-511 .stage)" == review-pending ]] || fail "the open-issue orphan was not registered ($(field pr-511 .stage))"
+# 窗口里被收编的 PR：加标签窗口内另一个写把 PR-510 收进台账，登记前重查后跳过并记一行
+: > "$fixture/pr-ops2"; : > "$LOG"
+units '{"units":[{"id":"issue-90","issue":90,"stage":"implement","history":[]}]}'
+gh() { case "$1 $2" in
+  "pr list") echo '[{"number":510,"headRefName":"agent/issue-81","isDraft":true,"title":"gated draft"},{"number":511,"headRefName":"agent/issue-82","isDraft":false,"title":"plain"},{"number":512,"headRefName":"agent/issue-83","isDraft":false,"title":"closed issue"}]' ;;
+  "api graphql") jq -c "${@: -1}" <<<'{"data":{"repository":{"i81":{"state":"OPEN","labels":{"nodes":[]}},"i82":{"state":"OPEN","labels":{"nodes":[]}},"i83":{"state":"CLOSED","labels":{"nodes":[]}}}}}' ;;
+  "pr close") echo "$1 $2 $3" >> "$fixture/pr-ops2" ;;
+  "pr edit") echo "$*" >> "$fixture/pr-ops2"; jq '.units += [{id:"pr-510",pr:510,stage:"review-pending",history:[]}]' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS" ;;
+  "label list") echo '[]' ;;
+  "label create") : ;;
+  esac; }
+rm -f "$A/orphan-check.epoch"; reconcile_orphan_prs || :
+[[ "$(jq --argjson p 510 '[.units[] | select(.pr==$p)] | length' "$UNITS")" == 1 ]] || fail 'the PR adopted inside the window was registered twice'
+jq -e --argjson p 510 'any(.units[]; .pr == $p and .issue == 81)' "$UNITS" >/dev/null && fail 'a stale orphan registration was written'
+grep -q 'orphan skip PR#510: a ledger unit took the PR' "$LOG" || fail 'the stale orphan skip did not log its one line'
+release_scheduler_lock
+eval "$gh_issue_stub"
+unset -f write_state
+eval "write_state() $(declare -f write_state_orig | sed '1d')"; unset -f write_state_orig
 
 # 生产热修回迁：评审写 BLOCKED-ON 也不停在前置上，先按热修规则重评，第二次交 supervisor；评审提示带热修规则
 units '{"units":[{"id":"pr-596","pr":596,"hotpatch":true,"stage":"review","history":[]}]}'

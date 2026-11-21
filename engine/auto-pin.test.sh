@@ -554,4 +554,70 @@ run_anchor "$anchor/fail-a.log"
 [[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail 'second pin on the same anchor filed another issue'
 run_anchor "$anchor/fail-c.log"
 [[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail 'a pin log without the anchor line filed an issue'
+
+# The pin also moves the shared tool clone (ZF_AUTO_PIN_TOOL_CLONE) to the pinned commit; the sync never fails or undoes the pin (row 887).
+printf 'some avg10=0 avg60=0 avg300=0 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
+unset ZF_AUTO_PIN_LOAD_WAIT_SECS
+echo 0 > "$PIN_RC"
+tool=$tmp/tool-clone; export ZF_AUTO_PIN_TOOL_CLONE=$tool
+tool_alerts=$AGENT_HOME/logs/head-watch.alerts
+
+# a clean tool clone behind the pin ends detached at exactly the pinned commit, and the log names old and new HEAD
+g clone -q "$tmp/origin.git" "$tool"
+g -C "$tool" checkout -q --detach "$c1"
+tool_old=$(g -C "$tool" rev-parse HEAD)
+c_tool=$(commit tool-sync)
+auto_pin_pass > "$tmp/tool-clean.out"
+[[ $(last) == "$c_tool" ]] || fail 'the clean tool-clone pass did not pin'
+[[ $(g -C "$tool" rev-parse HEAD) == "$c_tool" ]] || fail 'the tool clone did not move to the pinned commit'
+if g -C "$tool" symbolic-ref -q HEAD; then fail 'the tool clone is not detached after the sync'; fi
+grep -Fq "TOOL-CLONE-SYNCED ${tool_old:0:12} -> ${c_tool:0:12}" "$tmp/tool-clean.out" || fail 'the sync log does not name the old and new HEAD'
+[[ $(grep -c TOOL-CLONE-STALE "$tool_alerts" 2>/dev/null || :) == 0 ]] || fail 'a clean sync alerted'
+
+# a dirty tool clone keeps its HEAD and its uncommitted change; one alert, and a second pin with the same state adds no second alert
+echo dirty-line >> "$tool/f"
+tool_dirty_head=$(g -C "$tool" rev-parse HEAD)
+c_tool2=$(commit tool-dirty)
+auto_pin_pass > "$tmp/tool-dirty.out"
+[[ $(last) == "$c_tool2" ]] || fail 'the dirty tool-clone pass did not pin'
+[[ $(g -C "$tool" rev-parse HEAD) == "$tool_dirty_head" ]] || fail 'a dirty tool clone moved'
+grep -q '^dirty-line$' "$tool/f" || fail 'a dirty tool clone lost its uncommitted change'
+[[ $(grep -c TOOL-CLONE-STALE "$tool_alerts") == 1 ]] || fail 'a dirty tool clone did not alert exactly once'
+grep -Fq "TOOL-CLONE-STALE $tool head=$tool_dirty_head reason=dirty" "$tool_alerts" || fail 'the dirty alert does not name the clone, its HEAD and the reason'
+c_tool3=$(commit tool-dirty-again)
+auto_pin_pass > "$tmp/tool-dirty2.out"
+[[ $(last) == "$c_tool3" ]] || fail 'the second dirty tool-clone pass did not pin'
+[[ $(grep -c TOOL-CLONE-STALE "$tool_alerts") == 1 ]] || fail 'a second pin with the same clone state alerted again'
+
+# a tool clone with a local commit that is not on main keeps its HEAD, with one alert
+g -C "$tool" checkout -q -- f
+echo local > "$tool/local-only"; g -C "$tool" add -A; g -C "$tool" commit -qm off-main
+tool_ahead_head=$(g -C "$tool" rev-parse HEAD)
+c_tool4=$(commit tool-off-main)
+auto_pin_pass > "$tmp/tool-ahead.out"
+[[ $(last) == "$c_tool4" ]] || fail 'the off-main tool-clone pass did not pin'
+[[ $(g -C "$tool" rev-parse HEAD) == "$tool_ahead_head" ]] || fail 'an off-main tool clone moved'
+[[ $(grep -c TOOL-CLONE-STALE "$tool_alerts") == 2 ]] || fail 'an off-main tool clone did not alert exactly once'
+grep -Fq "TOOL-CLONE-STALE $tool head=$tool_ahead_head reason=local-commit" "$tool_alerts" || fail 'the off-main alert does not name the clone, its HEAD and the reason'
+
+# a missing tool clone directory: the pin is still PINNED, no alert
+export ZF_AUTO_PIN_TOOL_CLONE=$tmp/no-such-tool-clone
+c_tool5=$(commit tool-missing)
+auto_pin_pass > "$tmp/tool-missing.out"
+grep -q PINNED "$tmp/tool-missing.out" || fail 'a missing tool clone failed the pin'
+[[ $(last) == "$c_tool5" ]] || fail 'a missing tool clone did not advance the state'
+[[ $(grep -c TOOL-CLONE-STALE "$tool_alerts") == 2 ]] || fail 'a missing tool clone alerted'
+grep -Fq "$tmp/no-such-tool-clone" "$tmp/tool-missing.out" || fail 'a missing tool clone did not log its skip'
+
+# a failing fetch in the tool clone leaves the pin PINNED and the state file updated; the error only logs
+export ZF_AUTO_PIN_TOOL_CLONE=$tool
+g -C "$tool" remote set-url origin "$tmp/missing-origin.git"
+c_tool6=$(commit tool-fetch-fail)
+auto_pin_pass > "$tmp/tool-fetch-fail.out"
+grep -q PINNED "$tmp/tool-fetch-fail.out" || fail 'a failed tool-clone fetch failed the pin'
+[[ $(last) == "$c_tool6" ]] || fail 'a failed tool-clone fetch did not advance the state'
+[[ $(grep -c TOOL-CLONE-STALE "$tool_alerts") == 2 ]] || fail 'a failed tool-clone fetch alerted'
+grep -Fq 'tool-clone: fetch failed' "$tmp/tool-fetch-fail.out" || fail 'a failed tool-clone fetch did not log'
+g -C "$tool" remote set-url origin "$tmp/origin.git"
+
 echo "auto-pin.test.sh: ok"

@@ -97,6 +97,10 @@ fi
 
 mkdir -p "$AGENT_HOME/tmp"
 SCRATCH_DIR="$(mktemp -d "$AGENT_HOME/tmp/triage-batch.XXXXXX")"
+# Queue row 920: the batch's first credits-exhausted TypeSafe answer writes this stop file
+# (intake_priority_judge); every later issue of the batch then skips the judge call and goes
+# straight to the haiku fallback. It lives in the scratch dir, so the batch's cleanup removes it.
+export ZF_INTAKE_JUDGE_STOP_FILE="$SCRATCH_DIR/intake-judge-stop"
 
 TRIAGE_RETRY_NOW="$(date +%s)"
 GH_ENV_FAULT_STAGE=triage
@@ -218,13 +222,19 @@ done
 # are kept as one pair per issue under $AGENT_HOME; a newer pair replaces an
 # older one. A later batch run applies an unchanged issue's pair through the
 # same run-triage.sh batch-result path, with no model call for that issue.
+# Queue row 919: the pair is written the moment a record passes the schema
+# check, before the first apply starts, and removed after its issue applies,
+# so a run ended by a signal or an error keeps every result it has not
+# applied yet (2026-11-21 17:42Z lost nine paid-for records to the unit
+# timeout's TERM inside the apply loop). Copies, not moves: the run still
+# applies its own result from the scratch file.
 triage_kept_pair_save() { # <issue> <result-file> <snapshot-file>
   local n="$1" result_file="$2" snapshot_file="$3" dir="$AGENT_HOME/triage-kept" stamp
   mkdir -p "$dir" || return 1
   rm -f -- "$dir/$n"-*.result.json "$dir/$n"-*.snapshot.json
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  mv -f -- "$result_file" "$dir/$n-$stamp.result.json" || return 1
-  mv -f -- "$snapshot_file" "$dir/$n-$stamp.snapshot.json" || { rm -f -- "$dir/$n-$stamp.result.json"; return 1; }
+  cp -f -- "$result_file" "$dir/$n-$stamp.result.json" || return 1
+  cp -f -- "$snapshot_file" "$dir/$n-$stamp.snapshot.json" || { rm -f -- "$dir/$n-$stamp.result.json"; return 1; }
 }
 
 triage_kept_pair_delete() { # <issue>
@@ -273,13 +283,26 @@ triage_kept_pair_apply() {
     return 0
   fi
   echo "run-triage-batch: #$n Apply failed for the kept result; pair stays for the next run" >&2
+  # Queue row 920: this failed apply was in no count, so it counts as apply_failed like the
+  # apply loop's own failures below; kept-pair successes stay out of applied_count.
+  APPLY_FAILED_COUNT=$((APPLY_FAILED_COUNT + 1))
   return 0
 }
 
 MODEL_BATCH_IDS=()
+KEPT_PAIR_SERVED=0
+APPLY_FAILED_COUNT=0
 for n in "${INCLUDED_IDS[@]}"; do
-  triage_kept_pair_apply "$n" || MODEL_BATCH_IDS+=("$n")
+  if triage_kept_pair_apply "$n"; then
+    KEPT_PAIR_SERVED=$((KEPT_PAIR_SERVED + 1))
+  else
+    MODEL_BATCH_IDS+=("$n")
+  fi
 done
+# Queue row 919: pairs left by a run that did not finish are served here.
+if [ "$KEPT_PAIR_SERVED" -gt 0 ]; then
+  echo "run-triage-batch: $KEPT_PAIR_SERVED issue(s) served from kept pairs left by an earlier run that did not finish" >&2
+fi
 INCLUDED_IDS=("${MODEL_BATCH_IDS[@]}")
 [ "${#INCLUDED_IDS[@]}" -gt 0 ] || { echo "run-triage-batch: every included issue was served from a kept result; no model call" >&2; exit 0; }
 
@@ -289,8 +312,8 @@ RESULT_DIR="$SCRATCH_DIR/results"
 mkdir -p "$RESULT_DIR"
 
 ORIGIN_MAIN_SHA="$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || echo unknown)"
-INDEX_FRESHNESS_NOTE="refreshed once for the batch immediately before this prompt; treat it as up to date"
-if ! gitnexus_refresh_index_once "$REPO_DIR" "$ORIGIN_MAIN_SHA" gitnexus_index_matches_origin_main; then
+INDEX_FRESHNESS_NOTE="checked fresh for this batch immediately before this prompt -- index at most 60 minutes old and at most 20 commits behind origin/main; treat it as up to date"
+if ! gitnexus_index_matches_origin_main "$REPO_DIR"; then
   ORIGIN_MAIN_SHA="$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || echo unknown)"
   INDEX_FRESHNESS_NOTE="NOT confirmed fresh this batch -- refresh was deferred or failed; do not use a LOW/non-HIGH/CRITICAL impact reading to justify phase-3 L2 admission"
   echo "run-triage-batch: GitNexus freshness not confirmed for origin/main ($ORIGIN_MAIN_SHA); L2 gate will fail closed" >&2
@@ -538,6 +561,10 @@ while IFS= read -r line; do
     continue
   fi
   RESULT_FILES["$n"]="$RESULT_FILE"
+  # Queue row 919: every valid result reaches the kept-pair directory before
+  # the first apply starts; a successful apply below deletes it again.
+  triage_kept_pair_save "$n" "$RESULT_FILE" "${ISSUE_FILES[$n]}" \
+    || echo "run-triage-batch: #$n valid result could not be kept for a retry without a new model call" >&2
 done <<< "$OUTPUT"
 
 triage_batch_fail_issue() {
@@ -618,7 +645,9 @@ for n in "${INCLUDED_IDS[@]}"; do
       bash "$SCRIPT_DIR/run-triage.sh" --batch-result "${RESULT_FILES[$n]}" \
         --batch-snapshot "${ISSUE_FILES[$n]}" "$n"; then
       APPLIED_COUNT=$((APPLIED_COUNT + 1))
+      triage_kept_pair_delete "$n"
     else
+      APPLY_FAILED_COUNT=$((APPLY_FAILED_COUNT + 1))
       triage_kept_pair_save "$n" "${RESULT_FILES[$n]}" "${ISSUE_FILES[$n]}" \
         || echo "run-triage-batch: #$n valid result could not be kept for a retry without a new model call" >&2
       echo "run-triage-batch: #$n Apply failed; valid result and snapshot kept for the next run; other records continue" >&2
@@ -630,7 +659,9 @@ for n in "${INCLUDED_IDS[@]}"; do
   fi
 done
 
-echo "run-triage-batch: applied $APPLIED_COUNT valid result(s); failed_or_missing=$FAILED_RECORD_COUNT; tokens=${TOKENS_USED:-unavailable}" >&2
+# Queue row 920: apply_failed counts valid records whose write-back failed (and kept-pair applies that
+# failed again); applied + apply_failed + failed_or_missing equals the batch's included issues.
+echo "run-triage-batch: applied $APPLIED_COUNT valid result(s); apply_failed=$APPLY_FAILED_COUNT; failed_or_missing=$FAILED_RECORD_COUNT; tokens=${TOKENS_USED:-unavailable}" >&2
 
 NEEDS_TRIAGE_SELECTABLE_AFTER="unavailable"
 if ! NEEDS_TRIAGE_SELECTABLE_AFTER="$(triage_needs_queue_selectable_count)"; then
@@ -655,6 +686,7 @@ if mkdir -p "$LOG_DIR" && {
   printf 'tokens_used=%s\n' "${TOKENS_USED:-unavailable}"
   printf 'average_tokens_per_issue=%s\n' "$AVERAGE_TOKENS_PER_ISSUE"
   printf 'applied_count=%s\n' "$APPLIED_COUNT"
+  printf 'apply_failed_count=%s\n' "$APPLY_FAILED_COUNT"
   printf 'failed_record_count=%s\n' "$FAILED_RECORD_COUNT"
   printf 'needs_triage_selectable_before=%s\n' "$NEEDS_TRIAGE_SELECTABLE_BEFORE"
   printf 'needs_triage_selectable_after=%s\n' "$NEEDS_TRIAGE_SELECTABLE_AFTER"

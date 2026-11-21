@@ -1,3 +1,4 @@
+declare -F slow_call_yield >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/lock-free-calls.sh"
 
 # 每拍按 NODE-HEALTH.md 的标准给各环节打分：快照写 node-health.txt，UNHEALTHY 写 alerts/node-health.md（每指标每小时一次）；
 # 持续 3 小时 UNHEALTHY 的指标自动开/续 pipeline-system issue，由流水线自己修（maintainer 2026-10-20：系统要自己发现并报告异常）。
@@ -307,6 +308,7 @@ unpark_resolved_main_red_units() {
   scheduler_lock_yield_between_units || return 1
 }
 
+main_suites_load_collect() { main_suites_load; return 0; } # row 898: the run-list fetch runs with the ledger lock released
 supersede_resolved_main_red_units() {
   [[ "$MAIN_HEAD" =~ $SHA_RE ]] || return 0
   local pending unmarked_closed green_shas id ci_sha candidate reason history_update resolved_at
@@ -326,7 +328,23 @@ supersede_resolved_main_red_units() {
       | [.id,.ci_sha] | @tsv
   ' "$UNITS")"
   if [[ -n "$pending" || -n "$unmarked_closed" ]]; then
-    main_suites_load
+    # Row 898: main_suites_load 的 gh run list 让开台账锁；重取后重算候选（窗口里可能有 refill 派出 worker）。
+    local pending_before="$pending" unmarked_before="$unmarked_closed"
+    slow_call_yield supersede_resolved_main_red_units main_suites_load_collect || return 1
+    pending="$(jqf -r --slurpfile workers "$WORKERS" '
+    .units[] as $unit
+    | select($unit.main_red == true and $unit.stage == "implement-pending")
+    | select(any($workers[0].workers[]; .unit == $unit.id and .harvested != true) | not)
+    | [$unit.id, ($unit.ci_sha // "")] | @tsv
+  ' "$UNITS")"
+    unmarked_closed="$(jqf -r '
+    .units[] | select(.main_red==true and .stage=="closed"
+      and ((.ci_sha // "") | test("^[0-9a-f]{40}$")))
+      | select((.resolved_main_sha // "")=="" or (.resolved_main_at // "")=="")
+      | [.id,.ci_sha] | @tsv
+  ' "$UNITS")"
+    [[ "$pending" == "$pending_before" && "$unmarked_closed" == "$unmarked_before" ]] \
+      || say "supersede re-read candidates after the ledger lock was released"
     if [[ -n "$MAIN_SUITES_RUNS" ]]; then
       green_shas="$(jqf -r '
         [ .[] | select((.headSha // "") | test("^[0-9a-f]{40}$"))
