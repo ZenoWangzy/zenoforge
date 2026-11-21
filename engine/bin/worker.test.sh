@@ -483,7 +483,7 @@ assert_file_contains "$fatal_dir/failover" 'repeated AI_APICallError'
 assert_file_contains "$fatal_dir/briefs" 'Resume after backend failover'
 printf 'PASS fatal stderr pattern -> immediate failover\n'
 
-LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-session 0 gated success 1 25 zc gpt-6-luna '' '' '' 20
+LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-session 0 gated success 5 25 zc gpt-6-luna '' '' '' 20
 late_gate_dir=$CASE_DIR
 [[ -s "$late_gate_dir/codex.pid" && $(cat "$late_gate_dir/rc") == 0 && ! -e "$late_gate_dir/failover" ]] || fail 'session gate override did not wait through late admission'
 printf 'PASS session gate override admits after the default bound\n'
