@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/release-runner-delivery.XXXXXX")"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_eq() { [[ "$1" == "$2" ]] || fail "$3: expected <$2>, got <$1>"; }
