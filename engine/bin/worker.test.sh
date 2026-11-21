@@ -189,6 +189,11 @@ while (($#)) && [[ $1 != -- ]]; do shift; done
 exec "$@"
 EOF
 chmod +x "$test_root/bin/systemctl" "$test_root/bin/systemd-run"
+cat > "$test_root/bin/zf-stop" <<'EOF'
+#!/usr/bin/env bash
+exec bash "$ZF_TEST_WORKER_STOP_SCRIPT" "$@"
+EOF
+chmod +x "$test_root/bin/zf-stop"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_file_contains() { grep -Fq -- "$2" "$1" || fail "expected '$2' in $1"; }
@@ -651,6 +656,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${1:-} != --user ]] || exit 0
+printf '%s\n' "$*" >> "$ZF_TEST_REMOTE_ROOT/systemctl.log"
 action=${1:-}; unit=${3:-${2:-}}; unit=${unit%.scope}
 pidfile="$ZF_TEST_REMOTE_ROOT/scopes/$unit.pid"
 case "$action" in
@@ -710,6 +716,7 @@ remote_dir="$remote_scratch/luna/remote-sync"
 assert_file_contains "$remote_dir/events.jsonl" 'remote.event'
 assert_file_contains "$remote_dir/last.md" 'remote last message'
 [[ $(cat "$remote_dir/rc") == 0 && -s "$remote_dir/codex.pid" ]] || fail 'remote run did not sync rc and codex.pid'
+assert_file_contains "$remote_root/systemctl.log" 'set-property --runtime zf-remote.slice CPUWeight=20'
 printf 'PASS remote run syncs events, last.md, rc and codex.pid\n'
 
 unreachable_case="$test_root/remote-unreachable"; unreachable_root="$test_root/fake-remote-unreachable"
@@ -758,8 +765,8 @@ deadline=$((SECONDS + 12))
 until [[ -e "$stop_root/remote-codex-started" && -s "$stop_scratch/luna/remote-stop/remote.scope" ]] || (( SECONDS >= deadline )); do sleep 0.05; done
 [[ -e "$stop_root/remote-codex-started" ]] || fail 'remote stop fixture did not start Codex'
 stop_rc=0
-env WORKER_SCRATCH_ROOT="$stop_scratch" ZF_WORKER_STOP_QUIET=0.1 PATH="$test_root/bin:/usr/bin:/bin" \
-  bash "$script_dir/worker-stop" remote-stop > "$stop_case.stop.stdout" 2> "$stop_case.stop.stderr" || stop_rc=$?
-[[ $stop_rc == 0 && -e "$stop_root/remote-codex-stopped" ]] || fail 'worker-stop did not stop the remote run'
+env WORKER_SCRATCH_ROOT="$stop_scratch" ZF_WORKER_STOP_QUIET=0.1 ZF_TEST_WORKER_STOP_SCRIPT="$script_dir/worker-stop" \
+  PATH="$test_root/bin:/usr/bin:/bin" zf-stop remote-stop > "$stop_case.stop.stdout" 2> "$stop_case.stop.stderr" || stop_rc=$?
+[[ $stop_rc == 0 && -e "$stop_root/remote-codex-stopped" ]] || fail 'zf-stop did not stop the remote run'
 wait "$stop_worker_pid" 2>/dev/null || :
-printf 'PASS worker-stop stops the remote scope\n'
+printf 'PASS zf-stop stops the remote scope\n'

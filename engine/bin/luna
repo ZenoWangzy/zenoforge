@@ -61,6 +61,9 @@ if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
 else
   scope="${ZF_WORKER_REMOTE_SCOPE_NAME:-}"
   [[ "$scope" =~ ^zf-remote-[A-Za-z0-9_-]+-[0-9a-f]{8}$ ]] || { echo 'luna: invalid remote scope name' >&2; exit 2; }
+  systemctl set-property --runtime zf-remote.slice "CPUWeight=${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}" >/dev/null 2>&1 || {
+    echo 'luna: could not set zf-remote.slice CPUWeight' >&2; exit 74;
+  }
   printf '%s\n' "$scope" >"$out/remote.scope"
 fi
 # Workers need no MCP servers; each codex run otherwise spawns chrome-devtools, gbrain and gitnexus (~360 MB).
@@ -81,7 +84,7 @@ trap 'exit 129' HUP
 systemd_args=(--scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
 [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || systemd_args=(--user "${systemd_args[@]}")
 cpu_weight="${AGENT_WORKER_CPU_WEIGHT:-10}"
-if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight=20
+if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight="${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}"
 elif [[ ${LUNA_PRIORITY:-} == hotfix ]]; then cpu_weight=1000; fi
 codex_mcp_context_mode_sentinel_dir "$root/tmp/$key" && TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
   systemd-run "${systemd_args[@]}" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \

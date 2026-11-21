@@ -35,6 +35,16 @@ def setting_seconds(name, default):
     return value
 
 
+def setting_int(name, default, minimum, maximum):
+    try:
+        value = int(os.environ.get(name, default))
+    except ValueError:
+        raise ValueError(f"{name} must be an integer") from None
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 def ssh_args(host):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", host):
         raise ValueError("worker host must be an SSH alias")
@@ -99,13 +109,16 @@ def probe(host, root=None):
         metrics["cpu_psi_some_avg60"] = float(metrics["cpu_psi_some_avg60"])
     except (ValueError, KeyError, TypeError):
         return None, "remote capacity metrics were unreadable"
+    min_mem_mb = setting_int("ZF_WORKER_REMOTE_MIN_MEM_MB", "8192", 1, 1048576)
+    max_disk_percent = setting_int("ZF_WORKER_REMOTE_MAX_DISK_PERCENT", "95", 1, 100)
+    max_cpu_psi = setting_int("ZF_WORKER_REMOTE_MAX_CPU_PSI", "60", 1, 100)
     reasons = []
-    if metrics["memavailable_mb"] < 8192:
-        reasons.append(f"MemAvailable {metrics['memavailable_mb']} MB is below 8192 MB")
-    if metrics["disk_percent"] > 95:
-        reasons.append(f"disk use {metrics['disk_percent']}% is above 95%")
-    if metrics["cpu_psi_some_avg60"] > 60:
-        reasons.append(f"CPU PSI some avg60 {metrics['cpu_psi_some_avg60']:g} is above 60")
+    if metrics["memavailable_mb"] < min_mem_mb:
+        reasons.append(f"MemAvailable {metrics['memavailable_mb']} MB is below {min_mem_mb} MB")
+    if metrics["disk_percent"] > max_disk_percent:
+        reasons.append(f"disk use {metrics['disk_percent']}% is above {max_disk_percent}%")
+    if metrics["cpu_psi_some_avg60"] > max_cpu_psi:
+        reasons.append(f"CPU PSI some avg60 {metrics['cpu_psi_some_avg60']:g} is above {max_cpu_psi}")
     metrics["reason"] = "; ".join(reasons)
     return metrics, metrics["reason"]
 
@@ -224,17 +237,43 @@ def repository_info(cwd):
     origin = git_output(top, "remote", "get-url", "origin", allow_failure=True)
     origin_url = safe_origin(origin.stdout.strip()) if origin.returncode == 0 else ""
     head = git_output(top, "rev-parse", "HEAD").stdout.strip()
-    return top, relative, branch, origin_url, head
+    base_branch = ""
+    if origin_url:
+        candidates = [branch]
+        remote_head = git_output(top, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD", allow_failure=True)
+        if remote_head.returncode == 0 and remote_head.stdout.strip().startswith("origin/"):
+            candidates.append(remote_head.stdout.strip().split("/", 1)[1])
+        candidates.extend(("main", "master"))
+        for candidate in dict.fromkeys(candidates):
+            ref = git_output(top, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{candidate}", allow_failure=True)
+            if ref.returncode == 0:
+                base_branch = candidate
+                break
+    base_ref = f"refs/remotes/origin/{base_branch}" if base_branch else ""
+    return top, relative, branch, origin_url, head, base_branch, base_ref
 
 
 def make_payload(top, cwd, prompt, schema, key, target, archive_path):
-    _, relative, branch, origin, head = repository_info(cwd)
+    _, relative, branch, origin, head, base_branch, base_ref = repository_info(cwd)
     engine = Path(__file__).resolve().parent.parent
     temp = archive_path.parent
     bundle = temp / "snapshot.bundle"
     patch = temp / "worktree.patch"
-    subprocess.run(["git", "-C", str(top), "bundle", "create", str(bundle), "HEAD"],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    bundle.write_bytes(b"")
+    if base_ref:
+        is_ahead = git_output(top, "merge-base", "--is-ancestor", base_ref, "HEAD", allow_failure=True)
+        if is_ahead.returncode == 0:
+            count = int(git_output(top, "rev-list", "--count", f"{base_ref}..HEAD").stdout.strip())
+            if count:
+                subprocess.run(["git", "-C", str(top), "bundle", "create", str(bundle), "HEAD", f"^{base_ref}"],
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        else:
+            is_behind = git_output(top, "merge-base", "--is-ancestor", "HEAD", base_ref, allow_failure=True)
+            if is_behind.returncode != 0:
+                raise RuntimeError("local branch and origin base have diverged")
+    else:
+        subprocess.run(["git", "-C", str(top), "bundle", "create", str(bundle), "HEAD"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     with patch.open("wb") as stream:
         subprocess.run(["git", "-C", str(top), "diff", "--binary", "HEAD", "--", ".",
                         ":(exclude)**/.env*", ":(exclude)**/.npmrc", ":(exclude)**/.netrc",
@@ -250,11 +289,13 @@ def make_payload(top, cwd, prompt, schema, key, target, archive_path):
     manifest = {
         "key": key,
         "branch": branch,
+        "base_branch": base_branch or branch,
         "origin": origin,
         "head": head,
         "cwd": relative,
         "target": target,
         "memory_max": os.environ.get("ZF_WORKER_REMOTE_MEMORY_MAX", "8G"),
+        "cpu_weight": os.environ.get("ZF_WORKER_REMOTE_CPU_WEIGHT", "20"),
         "model": os.environ.get("CODEX_MODEL", "gpt-6-luna"),
         "effort": os.environ.get("CODEX_EFFORT", "max"),
         "search": bool(os.environ.get("CODEX_SEARCH")),
@@ -264,6 +305,8 @@ def make_payload(top, cwd, prompt, schema, key, target, archive_path):
     }
     if not re.fullmatch(r"[1-9][0-9]*(?:[KMGTP]i?B?)?", manifest["memory_max"], re.I):
         raise ValueError("ZF_WORKER_REMOTE_MEMORY_MAX must be a systemd size such as 8G")
+    if not manifest["cpu_weight"].isdigit() or not 1 <= int(manifest["cpu_weight"]) <= 10000:
+        raise ValueError("ZF_WORKER_REMOTE_CPU_WEIGHT must be an integer from 1 to 10000")
     job_file = temp / "job.json"
     job_file.write_text(json.dumps(manifest))
     file_list = subprocess.check_output(["git", "-C", str(top), "ls-files", "--others", "--exclude-standard", "-z"])
@@ -297,13 +340,13 @@ def remote_prepare(staging, target):
     staging = Path(staging)
     target = Path(target)
     job = json.loads((staging / "job.json").read_text())
-    key, branch, origin = job["key"], job["branch"], job["origin"]
+    key, branch, base_branch, origin = job["key"], job["branch"], job["base_branch"], job["origin"]
     validate_key(key)
     target.parent.mkdir(parents=True, exist_ok=True)
     fresh = not (target / ".git").exists()
     if fresh:
         if origin:
-            clone = subprocess.run(["git", "clone", "--quiet", "--single-branch", "--branch", branch, origin, str(target)],
+            clone = subprocess.run(["git", "clone", "--quiet", "--single-branch", "--branch", base_branch, origin, str(target)],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             if clone.returncode:
                 raise RuntimeError("clone from GitHub failed")
@@ -316,19 +359,41 @@ def remote_prepare(staging, target):
         raise RuntimeError("remote worktree is dirty on a different branch")
     if not dirty:
         if origin:
-            subprocess.run(["git", "-C", str(target), "fetch", "--quiet", "origin", branch],
+            subprocess.run(["git", "-C", str(target), "fetch", "--quiet", "origin", base_branch],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        subprocess.run(["git", "-C", str(target), "fetch", "--quiet", str(staging / "snapshot.bundle"),
-                        "+HEAD:refs/remotes/zf/worker-input"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if branch != base_branch:
+                git_output(target, "fetch", "--quiet", "origin", f"{branch}:refs/remotes/origin/{branch}", allow_failure=True)
+        bundle = staging / "snapshot.bundle"
+        input_ref = "refs/remotes/zf/worker-input"
+        if bundle.stat().st_size:
+            subprocess.run(["git", "-C", str(target), "fetch", "--quiet", str(bundle),
+                            f"+HEAD:{input_ref}"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if current_branch != branch:
-            base_ref = f"refs/remotes/origin/{branch}" if origin else "refs/remotes/zf/worker-input"
+            if origin:
+                requested_ref = git_output(target, "show-ref", "--verify", "--quiet",
+                                           f"refs/remotes/origin/{branch}", allow_failure=True)
+                base_ref = (f"refs/remotes/origin/{branch}" if requested_ref.returncode == 0
+                            else f"refs/remotes/origin/{base_branch}")
+            elif bundle.stat().st_size:
+                base_ref = input_ref
+            else:
+                raise RuntimeError("remote branch has no base commit")
             subprocess.run(["git", "-C", str(target), "checkout", "-B", branch, base_ref],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        input_ref = "refs/remotes/zf/worker-input"
-        merge = subprocess.run(["git", "-C", str(target), "merge", "--ff-only", input_ref],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        if merge.returncode:
-            raise RuntimeError("local branch and remote branch have diverged")
+        elif origin:
+            remote_branch = git_output(target, "show-ref", "--verify", "--quiet",
+                                       f"refs/remotes/origin/{branch}", allow_failure=True)
+            if remote_branch.returncode == 0:
+                merge_remote = subprocess.run(["git", "-C", str(target), "merge", "--ff-only",
+                                               f"refs/remotes/origin/{branch}"],
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                if merge_remote.returncode:
+                    raise RuntimeError("remote branch has diverged")
+        if bundle.stat().st_size:
+            merge = subprocess.run(["git", "-C", str(target), "merge", "--ff-only", input_ref],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if merge.returncode:
+                raise RuntimeError("local branch and remote branch have diverged")
         if (staging / "worktree.patch").stat().st_size:
             subprocess.run(["git", "-C", str(target), "apply", "--3way", str(staging / "worktree.patch")],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -376,6 +441,7 @@ def remote_run(staging):
         "ZF_WORKER_SLICE": "zf-remote.slice",
         "LUNA_MEM_HIGH": job["memory_max"],
         "LUNA_MEM_MAX": job["memory_max"],
+        "ZF_WORKER_REMOTE_CPU_WEIGHT": str(job["cpu_weight"]),
         "AGENT_WORKER_CPU_WEIGHT": "20",
         "LUNA_PRIORITY": job["priority"],
         "CODEX_MODEL": job["model"],
@@ -498,6 +564,15 @@ def stop_remote(host, scope):
     return 0 if result.returncode == 0 else 1
 
 
+def cleanup_remote_staging(host, staging):
+    command = f"rm -rf -- {shlex.quote(staging)}"
+    try:
+        remote_call(host, command, timeout=connect_timeout_seconds() + 10,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def command_run(host, key, cwd, prompt, schema):
     validate_key(key)
     root = os.environ.get("ZF_WORKER_REMOTE_ROOT", "/srv/zf-workers")
@@ -518,65 +593,63 @@ def command_run(host, key, cwd, prompt, schema):
         print(f"worker-remote: refusing {host}: {detail}", file=sys.stderr)
         return 75
     print(f"worker-remote: admitted {format_metrics(host, metrics)}", flush=True)
-    top, _, _, _, _ = repository_info(cwd)
     staging_id = uuid.uuid4().hex
     staging = posixpath.join(root.rstrip("/"), ".incoming", staging_id)
     target = posixpath.join(root.rstrip("/"), key)
     local_staging_script = posixpath.join(staging, "worker-remote.py")
     with tempfile.TemporaryDirectory(prefix="zf-worker-remote-") as temp:
         archive_path = Path(temp) / "payload.tar"
+        top = Path(git_output(cwd, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
         manifest = make_payload(top, cwd, prompt, schema, key, target, archive_path)
         transfer = (f"umask 077; mkdir -p -- {shlex.quote(staging)}; "
                     f"tar -xf - --no-same-owner --no-same-permissions -C {shlex.quote(staging)}")
         try:
-            with archive_path.open("rb") as stream:
-                shipped = remote_call(host, transfer, timeout=setting_seconds("ZF_WORKER_TRANSFER_TIMEOUT", "180"),
-                                      stdin=stream, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError) as error:
-            print(f"worker-remote: transfer failed on {host} ({type(error).__name__})", file=sys.stderr)
-            return 125
-        if shipped.returncode:
-            print(f"worker-remote: transfer failed on {host} (rc={shipped.returncode})", file=sys.stderr)
-            return 125
-        prepare = (f"python3 {shlex.quote(local_staging_script)} remote-prepare "
-                   f"{shlex.quote(staging)} {shlex.quote(target)}")
-        prepared = remote_call(host, prepare, timeout=setting_seconds("ZF_WORKER_TRANSFER_TIMEOUT", "180"),
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if prepared.returncode:
-            print(f"worker-remote: clone setup failed on {host} (rc={prepared.returncode})", file=sys.stderr)
-            return 125
-        scope = manifest["scope"]
-        (local_out / "remote.host").write_text(host + "\n")
-        (local_out / "remote.scope").write_text(scope + "\n")
-        remote_out = posixpath.join(target, ".git/zf-worker-scratch/luna", key)
-        command = f"python3 {shlex.quote(local_staging_script)} remote-run {shlex.quote(staging)}"
-        stdout_path = local_out / "backend-run.stdout.log"
-        stderr_path = local_out / "backend-run.stderr.log"
-        offsets = (0, 0)
-        interval = setting_seconds("ZF_WORKER_SYNC_INTERVAL_SECONDS", "2")
-        with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
             try:
-                child = subprocess.Popen([*ssh_args(host), command], stdout=stdout, stderr=stderr, start_new_session=True)
-            except OSError as error:
-                print(f"worker-remote: could not start SSH to {host} ({type(error).__name__})", file=sys.stderr)
+                with archive_path.open("rb") as stream:
+                    shipped = remote_call(host, transfer, timeout=setting_seconds("ZF_WORKER_TRANSFER_TIMEOUT", "180"),
+                                          stdin=stream, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError) as error:
+                print(f"worker-remote: transfer failed on {host} ({type(error).__name__})", file=sys.stderr)
                 return 125
-            while child.poll() is None:
-                if STOP_REQUESTED:
-                    stop_remote(host, scope)
-                offsets = sync_remote(host, local_staging_script, remote_out, local_out, offsets)
+            if shipped.returncode:
+                print(f"worker-remote: transfer failed on {host} (rc={shipped.returncode})", file=sys.stderr)
+                return 125
+            prepare = (f"python3 {shlex.quote(local_staging_script)} remote-prepare "
+                       f"{shlex.quote(staging)} {shlex.quote(target)}")
+            prepared = remote_call(host, prepare, timeout=setting_seconds("ZF_WORKER_TRANSFER_TIMEOUT", "180"),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if prepared.returncode:
+                print(f"worker-remote: clone setup failed on {host} (rc={prepared.returncode})", file=sys.stderr)
+                return 125
+            scope = manifest["scope"]
+            (local_out / "remote.host").write_text(host + "\n")
+            (local_out / "remote.scope").write_text(scope + "\n")
+            remote_out = posixpath.join(target, ".git/zf-worker-scratch/luna", key)
+            command = f"python3 {shlex.quote(local_staging_script)} remote-run {shlex.quote(staging)}"
+            stdout_path = local_out / "backend-run.stdout.log"
+            stderr_path = local_out / "backend-run.stderr.log"
+            offsets = (0, 0)
+            interval = setting_seconds("ZF_WORKER_SYNC_INTERVAL_SECONDS", "2")
+            with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
                 try:
-                    child.wait(timeout=interval)
-                except subprocess.TimeoutExpired:
-                    pass
-            status = child.wait()
-        offsets = sync_remote(host, local_staging_script, remote_out, local_out, offsets)
-        cleanup = f"rm -rf -- {shlex.quote(staging)}"
-        try:
-            remote_call(host, cleanup, timeout=connect_timeout_seconds() + 10,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
-            pass
-        return status if status >= 0 else 128 - status
+                    child = subprocess.Popen([*ssh_args(host), command], stdout=stdout, stderr=stderr,
+                                             start_new_session=True)
+                except OSError as error:
+                    print(f"worker-remote: could not start SSH to {host} ({type(error).__name__})", file=sys.stderr)
+                    return 125
+                while child.poll() is None:
+                    if STOP_REQUESTED:
+                        stop_remote(host, scope)
+                    offsets = sync_remote(host, local_staging_script, remote_out, local_out, offsets)
+                    try:
+                        child.wait(timeout=interval)
+                    except subprocess.TimeoutExpired:
+                        pass
+                status = child.wait()
+            sync_remote(host, local_staging_script, remote_out, local_out, offsets)
+            return status if status >= 0 else 128 - status
+        finally:
+            cleanup_remote_staging(host, staging)
 
 
 def request_stop(_signum, _frame):

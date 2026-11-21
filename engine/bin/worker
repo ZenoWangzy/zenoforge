@@ -236,8 +236,7 @@ run_backend() {
     backend_cmd=(env ZC_OUT_ROOT="$S/luna" "$B/zc" "$key" "$cwd" "$zc_prompt")
   else
     round_model=$model
-    if [[ ${LUNA_PRIORITY:-} == hotfix && -z ${ZF_WORKER_HOST:-} ]]; then worker_host=local
-    else worker_host=$(python3 "$B/worker-remote.py" choose 2>>"$d/placement.log") || worker_host=local; fi
+    worker_host=$(python3 "$B/worker-remote.py" choose 2>>"$d/placement.log") || worker_host=local
     [[ -n "$worker_host" ]] || worker_host=local
     backend_cmd=(env CODEX_MODEL="$model" ZF_WORKER_HOST="$worker_host" "$B/luna" "$key" "$cwd" "$prompt" "$schema")
   fi

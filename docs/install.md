@@ -169,6 +169,8 @@ Set these in the unit files (with a drop-in, see section 7), in `capacity.env`, 
 | `ZF_WORKER_HOSTS` | unset | Ordered SSH aliases probed for automatic Luna placement |
 | `ZF_WORKER_REMOTE_ROOT` | `/srv/zf-workers` | Per-key remote clone root |
 | `ZF_WORKER_REMOTE_MEMORY_MAX` | `8G` | Remote Codex scope memory limit |
+| `ZF_WORKER_REMOTE_CPU_WEIGHT` | `20` | CPU weight applied to remote scopes and their slice |
+| `ZF_WORKER_REMOTE_MIN_MEM_MB`, `ZF_WORKER_REMOTE_MAX_DISK_PERCENT`, `ZF_WORKER_REMOTE_MAX_CPU_PSI` | `8192`, `95`, `60` | Remote host admission thresholds |
 | `ZF_WORKER_SSH_CONNECT_TIMEOUT` | `15` seconds | Bound SSH connection attempts |
 | `ZF_WORKER_SYNC_INTERVAL_SECONDS` | `2` seconds | Interval for mirroring remote worker output |
 | `LUNA_MAX`, `LUNA_CPU_TARGET`, `LUNA_MEM_MAX`, `LUNA_PRIORITY` | 10, 85, 4G, `normal` | The Codex wrapper's gate. `LUNA_PRIORITY` can be `hotfix`, `opt`, or `normal` |
