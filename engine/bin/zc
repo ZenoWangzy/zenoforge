@@ -2,6 +2,7 @@
 # Run one ZCode (Z.ai) agent non-interactively, the same lane shape as luna.
 # Usage: zc <key> <cwd> <prompt-file>
 # Writes .scratch/zc/<key>/{last.md,events.jsonl,stderr.log,rc} plus wrapper.pid and codex.pid (the worker pid; name kept for health-watch).
+# A remote ZF_WORKER_HOST hands the run to worker-remote.py first (shared hand-off with luna); a refusal runs locally.
 # ZC_MODE (default yolo) maps to `zcode --mode`; yolo is not a sandbox, same trust level as luna's danger-full-access.
 # The worker is the ZCode Node bundle run through a copy of node named `zcode`, so its comm is `zcode-cli` (ZCode renames its own process title).
 set -uo pipefail
@@ -22,6 +23,9 @@ root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="${ZC_OUT_ROOT:-$root/zc}/$key"   # bin/worker sets ZC_OUT_ROOT=.scratch/luna so every backend reports in one place
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
+# Shared with bin/luna (lib.d/worker-remote-handoff.sh): a remote run exits there; a refusal falls back to the local gate below.
+source "$B/../lib.d/worker-remote-handoff.sh"
+worker_remote_handoff zc "$out" "$key" "$cwd" "$prompt"
 # Same capacity gate and mutex as luna; all scopes in zf-workers.slice count for both backends.
 source "$B/luna-capacity.sh"
 slots="${LUNA_SLOTS:-$root/tmp/luna-slots}"; mkdir -p "$slots"
@@ -41,21 +45,34 @@ chain_exit_trap() {
   trap "$1${prior:+; $prior}" EXIT # lint-exempt: preserve any existing exit trap
 }
 chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true'
-exec {mx}>"$slots/mutex"
-while :; do
-  flock "$mx"
-  [[ -e "$wait_f" ]] || : >"$wait_f"
-  [[ -e "$wait_f" ]] || { echo "zc: cannot publish capacity ticket $wait_f" >&2; exit 74; }
-  luna_reload_live_gate
-  if declare -F luna_waiter_has_room >/dev/null; then
-    if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
-  elif box_has_room; then
-    rm -f -- "$wait_f" "$out/gate-wait"; break
-  fi
-  [[ -e "$wait_f" ]] || { echo "zc: capacity ticket disappeared: $wait_f" >&2; exit 74; }
-  [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
-  flock -u "$mx"; sleep "${LUNA_WAIT_SECONDS:-30}"
-done
+mx=8
+if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
+  exec {mx}>"$slots/mutex"
+  while :; do
+    flock "$mx"
+    [[ -e "$wait_f" ]] || : >"$wait_f"
+    [[ -e "$wait_f" ]] || { echo "zc: cannot publish capacity ticket $wait_f" >&2; exit 74; }
+    luna_reload_live_gate
+    if declare -F luna_waiter_has_room >/dev/null; then
+      if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+    elif box_has_room; then
+      rm -f -- "$wait_f" "$out/gate-wait"; break
+    fi
+    [[ -e "$wait_f" ]] || { echo "zc: capacity ticket disappeared: $wait_f" >&2; exit 74; }
+    [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
+    flock -u "$mx"; sleep "${LUNA_WAIT_SECONDS:-30}"
+  done
+else
+  # Remote zc joins luna's inner shape: no local capacity gate, a validated zf-remote scope under
+  # zf-remote.slice with its own CPU weight; the system-level stop is chained so the next same-key run can recreate the scope.
+  scope="${ZF_WORKER_REMOTE_SCOPE_NAME:-}"
+  [[ "$scope" =~ ^zf-remote-[A-Za-z0-9_-]+-[0-9a-f]{8}$ ]] || { echo 'zc: invalid remote scope name' >&2; exit 2; }
+  systemctl set-property --runtime zf-remote.slice "CPUWeight=${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}" >/dev/null 2>&1 || {
+    echo 'zc: could not set zf-remote.slice CPUWeight' >&2; exit 74;
+  }
+  chain_exit_trap 'systemctl stop "$scope.scope" >/dev/null 2>&1 || true'
+  printf '%s\n' "$scope" >"$out/remote.scope"
+fi
 mapfile -t zcode_cmd < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bin_argv)
 (( ${#zcode_cmd[@]} )) || { echo "zc: zcode executable missing (config engine.zcode_bin, ZCODE_BIN, zc-src, PATH)" >&2; echo 75 >"$out/rc"; exit 75; }
 # MCP, plugins, skills, hooks and memory are switched off in ~/.zcode/cli/config.json (features.* = false).
@@ -64,12 +81,17 @@ mapfile -t zcode_cmd < <(source "$B/../config.sh" >/dev/null 2>&1 && zf_zcode_bi
 # One CPU budget across agent runs (maintainer 10-29 [...]); shared with dispatch-codex.sh.
 source "${ZF_ENGINE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/thread-budget.sh" && agent_thread_budget
 source "${ZF_ENGINE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/lib.d/worker-output-cap.sh"
-scope="luna-zc-${key//[^A-Za-z0-9_-]/-}-$$"
+[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || scope="luna-zc-${key//[^A-Za-z0-9_-]/-}-$$"
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
+cpu_weight="${AGENT_WORKER_CPU_WEIGHT:-10}"
+if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight="${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}"
+elif [[ "${LUNA_PRIORITY:-}" == hotfix ]]; then cpu_weight=1000; fi
+systemd_args=(--scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
+[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || systemd_args=(--user "${systemd_args[@]}")
 TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)" \
-  systemd-run --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo "${AGENT_WORKER_CPU_WEIGHT:-10}")" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  systemd-run "${systemd_args[@]}" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   "${zcode_cmd[@]}" \
   --prompt "$(<"$prompt")" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
