@@ -77,6 +77,7 @@ grep -Eq 'pr-2 +review-pending +180m' <<<"$out" || fail 'stuck pending unit not 
 grep -Fq 'NEEDS PRODUCT DECISION' <<<"$out" || fail 'escalated unit not listed'
 grep -Fq "drift check: STRATEGY.md 'Maintainer intents'" <<<"$out" || fail 'drift check line missing'
 grep -Fq 'unhealthy nodes:' <<<"$out" || fail "node health scorecard not appended: $out"
+grep -Fq 'lesson-lifecycle: window=30d' <<<"$out" || fail "lesson lifecycle report not appended: $out"
 # 体检打分与 scheduler 同环境：runtime-env.sh 给的 PGTEST_URL 要传到打分进程（否则测试库误报不可达）
 # health_standards.py loads its adjacent health-standards.json.
 hr="$test_env_root/hr"; mkdir -p "$hr"; cp "$script_dir"/*.py "$script_dir"/health-standards.json "$hr/" # every module: node_health.py gained an import its copy list missed (#684, fixed in #691)
