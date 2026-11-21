@@ -2566,12 +2566,7 @@ gh() { case "$1 $2" in
   "label list") echo '[]' ;;
   "label create") : ;;
   esac; }
-PS4='+r898 ${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-top}: ' # r898-diag temporary
-set -x # r898-diag temporary
-rm -f "$A/orphan-check.epoch"; : >"$r898_orphan_counts"; reconcile_orphan_prs 2> >(tail -n 150 >&2) || : # r898-diag temporary
-set +x # r898-diag temporary
-wait # r898-diag temporary
-echo "r898 diag: lock pid file=$(cat "$SCHED_LOCK/pid" 2>/dev/null || echo none) self=$$ counts=$(tr '\n' ',' < "$r898_orphan_counts") pr-ops2=$(tr '\n' '|' < "$fixture/pr-ops2")" >&2 # r898-diag temporary
+rm -f "$A/orphan-check.epoch"; : >"$r898_orphan_counts"; reconcile_orphan_prs || :
 r898_free="$(grep -c '^free$' "$r898_orphan_counts" || true)"; r898_held="$(grep -c '^held$' "$r898_orphan_counts" || true)"
 [[ "$r898_free" -ge 3 && "$r898_held" == 0 ]] || fail "orphan census/close/edit ran under the ledger lock (free=$r898_free held=$r898_held)"
 [[ "$r898_write_free" == 0 ]] || fail "$r898_write_free orphan ledger writes ran with the lock released"
