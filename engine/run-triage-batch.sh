@@ -10,6 +10,8 @@ done
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+# shellcheck source=./lib.d/triage-solo.sh
+source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 source "$SCRIPT_DIR/night/hand-agent-watchdog.sh"
 TRIAGE_TICK_ID="${ZF_TRIAGE_TICK_ID:-triage-batch-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
@@ -21,7 +23,7 @@ if ! [[ "$BATCH_CAP" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 declare -a BATCH_IDS=() INCLUDED_IDS=()
-declare -A REQUESTED=() ISSUE_FILES=() RESULT_FILES=() SEEN_ISSUES=() BAD_ISSUES=() INCLUDED_MEMBER=()
+declare -A REQUESTED=() ISSUE_FILES=() RESULT_FILES=() SEEN_ISSUES=() BAD_ISSUES=() INCLUDED_MEMBER=() SOLO_RETRY_AT_START=()
 declare -A MAINTAINER_TEST_IDS=()
 DEFERRED_BY_CAP=0
 for n in "${ARGS[@]}"; do
@@ -203,6 +205,9 @@ for n in "${BATCH_IDS[@]}"; do
   printf '%s\n' "$ISSUE_JSON" > "$ISSUE_FILE"
   ISSUE_FILES["$n"]="$ISSUE_FILE"
   INCLUDED_IDS+=("$n")
+  # Row 897: a solo retry run is one whose only included issue entered
+  # flagged; remember the flag now, before any result handling changes it.
+  [ "$(state_read "$n" | jq -r '.triage_batch_retry_alone // false')" = "true" ] && SOLO_RETRY_AT_START["$n"]=1
 done
 [ "${#INCLUDED_IDS[@]}" -gt 0 ] || exit 0
 
@@ -394,6 +399,9 @@ else
 fi
 STATUS=$?
 set -e
+# Row 897: a solo retry run's flag comes off now, whatever the model's exit
+# status, before results are handled (lib.d/triage-solo.sh).
+triage_solo_flag_clear_after_model_call
 if [ "$BATCH_ON_CLAUDE" = 1 ]; then
   TOKENS_USED="$(claude_tokens_used < "$TRANSCRIPT_FILE")"
 else
@@ -454,6 +462,9 @@ triage_batch_fail_issue() {
     echo "run-triage-batch: #$n failure bookkeeping failed; other issues continue" >&2
     return 0
   fi
+  # Row 897: solo retry runs count only result failures and conclude at the
+  # second one instead of returning the issue to a queue (lib.d/triage-solo.sh).
+  triage_solo_count_result_failure "$n" "$reason" && return 0
   if [ "$BATCH_FAILURE_KIND" = execution ] && model_call_is_configuration_error "$(tail -c 4000 "$TRANSCRIPT_FILE")" "$STATUS"; then
     record_model_config_fault "$n" triage work "$WORK_ROLE" "$(tail -c 4000 "$TRANSCRIPT_FILE")" || return 1
   fi

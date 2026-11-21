@@ -4,6 +4,8 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BATCH_SRC="$SCRIPT_DIR/run-triage-batch.sh"
+# shellcheck source=./lib.d/triage-solo.sh
+source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 TEST_ROOT="$(mktemp -d)"
 ZF_CONFIG_ROOT="$TEST_ROOT/repo/.zenoforge"
 mkdir -p "$ZF_CONFIG_ROOT/prompts"
@@ -18,7 +20,7 @@ export REPO="test/repo"
 export ZF_REPO="$REPO"
 mkdir -p "$HOME/wt" "$AGENT_HOME/state" "$AGENT_HOME/night"
 jq -n '{founder_login:"maintainer"}' > "$AGENT_HOME/recipients.json"
-for n in 910301 910302 910303 910401 910504 910505 910506 910507 910508 910509 910703; do
+for n in 910301 910302 910303 910401 910504 910505 910506 910507 910508 910509 910703 910901 910903 910904; do
   if [ -e "$HOME/wt/triage-$n" ]; then
     echo "run-triage-batch.test: refusing to overwrite existing worktree $HOME/wt/triage-$n" >&2
     exit 2
@@ -30,7 +32,7 @@ cleanup() {
   if [ -e "$ZF_REPO_DIR/.git" ]; then
     while IFS= read -r worktree; do
       case "$worktree" in
-        "$HOME/wt/triage-batch-run-"*|"$HOME/wt/triage-910301"|"$HOME/wt/triage-910302"|"$HOME/wt/triage-910303"|"$HOME/wt/triage-910401"|"$HOME/wt/triage-910504"|"$HOME/wt/triage-910505"|"$HOME/wt/triage-910506"|"$HOME/wt/triage-910507"|"$HOME/wt/triage-910508"|"$HOME/wt/triage-910509"|"$HOME/wt/triage-910703")
+        "$HOME/wt/triage-batch-run-"*|"$HOME/wt/triage-910301"|"$HOME/wt/triage-910302"|"$HOME/wt/triage-910303"|"$HOME/wt/triage-910401"|"$HOME/wt/triage-910504"|"$HOME/wt/triage-910505"|"$HOME/wt/triage-910506"|"$HOME/wt/triage-910507"|"$HOME/wt/triage-910508"|"$HOME/wt/triage-910509"|"$HOME/wt/triage-910703"|"$HOME/wt/triage-910901"|"$HOME/wt/triage-910903"|"$HOME/wt/triage-910904")
           git -C "$ZF_REPO_DIR" worktree remove --force "$worktree" >/dev/null 2>&1 || true
           ;;
       esac
@@ -489,6 +491,69 @@ assert_eq "missing member is marked for retry alone" true "$(jq -r '.triage_batc
 MISSING_ISSUE_EDIT="$(sed -n '/^issue edit 910402 /p' "$FAKE_GH_LOG")"
 assert_not_contains "missing issue stays out of advisor until its solo retry" "$MISSING_ISSUE_EDIT" '--add-label needs-advisor'
 assert_not_contains "second cap leftover stays unapplied" "$(cat "$FAKE_GH_LOG")" 'issue edit 910403'
+
+# Queue row 897: a solo retry run -- its one included issue entered flagged --
+# takes the flag off once its model call returned, whatever the exit status.
+# Only a zero exit with an invalid or missing record counts as a solo result
+# failure, and the second one concludes the issue instead of requeueing it.
+: > "$FAKE_CODEX_ARGS"
+printf '%s\n' "{\"lastCommit\":\"$(git -C "$ZF_REPO_DIR" rev-parse HEAD)\"}" \
+  > "$ZF_REPO_DIR/.gitnexus/meta.json"
+jq -n '[910901] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+echo '[]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+jq -n '{triage_batch_retry_alone:true}' > "$AGENT_HOME/state/910901.json"
+jq -nc --argjson issue 910901 --argjson result "$INVALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
+set +e
+SOLO_INVALID_OUTPUT="$(ZF_TRIAGE_TICK_ID=solo-invalid-910901 bash "$BATCH_SRC" --scheduled 910901 2>&1)"
+SOLO_INVALID_STATUS=$?
+set -e
+assert_eq "solo retry run with an invalid record exits cleanly" 0 "$SOLO_INVALID_STATUS"
+assert_contains "solo run reports its invalid record" "$SOLO_INVALID_OUTPUT" 'failed_or_missing=1'
+assert_eq "solo invalid record removes the retry-alone flag" false "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/910901.json")"
+assert_eq "solo invalid record counts its first solo result failure" 1 "$(jq -r '.triage_solo_result_failures // 0' "$AGENT_HOME/state/910901.json")"
+
+jq -n '{triage_batch_retry_alone:true,triage_solo_result_failures:1}' > "$AGENT_HOME/state/910903.json"
+: > "$FAKE_CODEX_OUTPUT"
+set +e
+SOLO_NONZERO_OUTPUT="$(FAKE_CODEX_STATUS=1 ZF_TRIAGE_TICK_ID=solo-nonzero-910903 bash "$BATCH_SRC" --scheduled 910903 2>&1)"
+SOLO_NONZERO_STATUS=$?
+set -e
+assert_eq "solo retry run with a non-zero model exit exits cleanly" 0 "$SOLO_NONZERO_STATUS"
+assert_eq "non-zero model exit still removes the retry-alone flag" false "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/910903.json")"
+assert_eq "non-zero model exit leaves the solo failure counter unchanged" 1 "$(jq -r '.triage_solo_result_failures // 0' "$AGENT_HOME/state/910903.json")"
+
+jq -n '{triage_batch_retry_alone:true,triage_solo_result_failures:1}' > "$AGENT_HOME/state/910904.json"
+jq -nc --argjson issue 910904 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
+set +e
+SOLO_VALID_OUTPUT="$(ZF_TRIAGE_TICK_ID=solo-valid-910904 bash "$BATCH_SRC" --scheduled 910904 2>&1)"
+SOLO_VALID_STATUS=$?
+set -e
+assert_eq "solo retry run with a valid record exits cleanly" 0 "$SOLO_VALID_STATUS"
+assert_eq "solo valid record applies its verdict" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/910904.json")"
+assert_eq "solo valid record leaves no retry-alone flag" false "$(jq -r '.triage_batch_retry_alone // false' "$AGENT_HOME/state/910904.json")"
+assert_eq "solo valid record clears the solo failure counter" 0 "$(jq -r '.triage_solo_result_failures // 0' "$AGENT_HOME/state/910904.json")"
+
+# The second solo result failure goes through the terminal path, not back to
+# a queue: conclude_run is stubbed so the call itself is the assertion. The
+# helper is sourced from its module, never extracted by text range
+# (source-extract ratchet).
+SOLO_CONCLUDE_LOG="$TEST_ROOT/solo-conclude.log"
+SOLO_FAIL_STATE="$TEST_ROOT/solo-fail-state.json"
+jq -n '{triage_solo_result_failures:1}' > "$SOLO_FAIL_STATE"
+(
+  conclude_run() { printf 'conclude_run %s %s %s\n' "$1" "$2" "$3" >> "$SOLO_CONCLUDE_LOG"; }
+  state_read() { cat "$SOLO_FAIL_STATE"; }
+  state_merge() { local merged; merged="$(jq "$2" "$SOLO_FAIL_STATE")" && printf '%s\n' "$merged" > "$SOLO_FAIL_STATE"; }
+  INCLUDED_IDS=(910902)
+  declare -A SOLO_RETRY_AT_START=([910902]=1)
+  STATUS=0
+  triage_solo_count_result_failure 910902 "invalid triage.schema.json record (Codex exit 0)"
+)
+assert_contains "second solo result failure calls conclude_run" "$(cat "$SOLO_CONCLUDE_LOG")" \
+  'conclude_run 910902 not-completed two solo triage result failures'
+assert_eq "second solo failure leaves no retry-alone flag" false "$(jq -r '.triage_batch_retry_alone // false' "$SOLO_FAIL_STATE")"
+assert_eq "second solo failure records the solo result failure cap" 2 "$(jq -r '.triage_solo_result_failures // 0' "$SOLO_FAIL_STATE")"
 
 # A batch process timeout is transient for every admitted issue: preserve the
 # model-policy rung and refund the attempt charged when recording the result.

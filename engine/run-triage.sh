@@ -882,7 +882,7 @@ RESULT="$(echo "$RESULT" | jq --arg ms "$MODEL_STATE" \
 # Persist the full triage result so run-implement.sh doesn't need to re-parse
 # GitHub comments, and so the collision/merge gates have expected_packages.
 STATE_MERGE_FILTER=". + $RESULT"
-STATE_MERGE_FILTER="$STATE_MERGE_FILTER | del(.pipeline_system.enabled, .pipeline_system.product_ruling, .triage_batch_retry_alone)"
+STATE_MERGE_FILTER="$STATE_MERGE_FILTER | del(.pipeline_system.enabled, .pipeline_system.product_ruling, .triage_batch_retry_alone, .triage_solo_result_failures)"
 if [ "$ADVISOR_ADMISSION_MEASURE_ONLY" = "1" ]; then
   STATE_MERGE_FILTER="$STATE_MERGE_FILTER | del(.advisor_admission_measure_only)"
 fi
