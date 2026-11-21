@@ -19,6 +19,7 @@ engine/mac-autopilot/scheduler.d/existing-walk-station.sh 0
 engine/mac-autopilot/scheduler.d/feature-map-maintain.sh 0
 engine/mac-autopilot/scheduler.d/footprint-memo.sh 0
 engine/mac-autopilot/scheduler.d/footprint.sh 1
+engine/mac-autopilot/scheduler.d/harvest-collect.sh 0
 engine/mac-autopilot/scheduler.d/harvest-scope.sh 0
 engine/mac-autopilot/scheduler.d/harvest-station.sh 0
 engine/mac-autopilot/scheduler.d/harvest-workers.sh 1
@@ -30,6 +31,7 @@ engine/mac-autopilot/scheduler.d/intake.sh 3
 engine/mac-autopilot/scheduler.d/intake-steps.sh 0
 engine/mac-autopilot/scheduler.d/land-lane.sh 0
 engine/mac-autopilot/scheduler.d/lib-bridge.sh 16
+engine/mac-autopilot/scheduler.d/lock-free-calls.sh 0
 engine/mac-autopilot/scheduler.d/locks-views.sh 0
 engine/mac-autopilot/scheduler.d/merge-lane.sh 1
 engine/mac-autopilot/scheduler.d/merge-prep.sh 0
@@ -38,6 +40,7 @@ engine/mac-autopilot/scheduler.d/models.sh 47
 engine/mac-autopilot/scheduler.d/no-human-wait.sh 1
 engine/mac-autopilot/scheduler.d/orphan-prs.sh 2
 engine/mac-autopilot/scheduler.d/park-label-sweep.sh 0
+engine/mac-autopilot/scheduler.d/pr-body.sh 0
 engine/mac-autopilot/scheduler.d/recut-reopen.sh 2
 engine/mac-autopilot/scheduler.d/release-deps-station.sh 0
 engine/mac-autopilot/scheduler.d/reports.sh 0

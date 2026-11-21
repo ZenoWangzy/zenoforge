@@ -415,6 +415,6 @@ echo 'ok - quota lookups reach gh during backoff while ordinary calls stay block
   gh search issues fixture --repo "$REPO" > /dev/null
   gh api repos/fixture/repo/issues/8124 > /dev/null
   gh run list --repo "$REPO" > /dev/null
-  [[ "$(tick_gh_calls_summary)" == 'gh_calls=6 gql=4 rest=2' ]]
+  [[ "$(tick_gh_calls_summary)" == 'gh_calls=6 gql=4 rest=2 gh_locked=0' ]] # row 898: the summary carries the tick's under-lock count
 )
 echo 'ok - scheduler tick metrics split GraphQL and REST calls'

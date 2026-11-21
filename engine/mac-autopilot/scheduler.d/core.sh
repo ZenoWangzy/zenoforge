@@ -180,10 +180,32 @@ ready_since_epoch() { # → jq 表达式：.ready_since 归一为 epoch 秒（IS
   # %s 实参不做反斜杠转义：jq 源里的 "\\." 必须原样到达 jq（printf 格式串会吞掉一层）
   printf '%s' '(.ready_since // 0 | if type=="string" then (try (sub("\\.[0-9]+"; "") | fromdateiso8601) catch 0) else . end)'
 }
+# A gh call made while this shell holds the ledger lock blocks every refill (row 898): count each one, log one line per
+# caller per tick, and with ZF_GH_UNDER_LOCK=fail refuse the call (rc 97, the line on stderr) without touching the network.
+gh_under_lock_record() { # gh-args… → 0 (counted, gh still runs) or 97 in fail mode
+  local caller="${FUNCNAME[2]:-top}"
+  # two statements: one local's words are all expanded before any assignment lands, so a $caller in the
+  # same statement is unbound under set -u on bash 5.2 patch levels that expand declaration words first
+  local line="gh-under-lock phase=${SCHED_LOCK_HOLDER_PHASE:-unknown} caller=$caller args=${1:-unknown}${2:+ $2}"
+  # one line per call feeds gh_locked=<n>; the say line itself is at most once per caller per tick
+  if [[ -n "${GH_UNDER_LOCK_FILE:-}" && -n "${LOG:-}" ]]; then
+    if ! grep -Fqx -- "$caller" "$GH_UNDER_LOCK_FILE" 2>/dev/null; then
+      printf '%s\n' "$caller" >>"$GH_UNDER_LOCK_FILE" 2>/dev/null || :
+      say "$line"
+    else
+      printf '%s\n' "$caller" >>"$GH_UNDER_LOCK_FILE" 2>/dev/null || :
+    fi
+  fi
+  [[ "${ZF_GH_UNDER_LOCK:-}" != fail ]] || { printf '%s\n' "$line" >&2; return 97; }
+  return 0
+}
 gh() {
   local api_class started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}" run_id
   local timeout_op="${1:-unknown}" timeout_unit="${id:-unknown}"
   local timeout_seconds="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"
+  if [[ "${SCHED_LOCK_HELD:-false}" == true ]]; then
+    gh_under_lock_record "$@" || return $?
+  fi
   if [[ -n "${GH_TICK_CALLS_FILE:-}" ]]; then
     api_class="$(gh_rate_limit_api_class "$@")"
     [[ "$api_class" == graphql ]] || api_class=rest
@@ -232,6 +254,8 @@ tick_gh_calls_begin() {
   tick_rest_usage_begin
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
   : >"$GH_TICK_CALLS_FILE" 2>/dev/null || GH_TICK_CALLS_FILE=""
+  GH_UNDER_LOCK_FILE="$A/gh-under-lock.$BASHPID" # one line per gh call made under the ledger lock (gh_under_lock_record)
+  : >"$GH_UNDER_LOCK_FILE" 2>/dev/null || GH_UNDER_LOCK_FILE=""
   ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$A/deployment-status.$BASHPID"
   rm -rf -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || :
   mkdir -p -- "$ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR" 2>/dev/null || ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR=""
@@ -248,6 +272,7 @@ tick_gh_calls_begin() {
   find "$A" -maxdepth 1 -name '.jqf-stderr.*' ! -name ".jqf-stderr.${_JQF_ERR_SCOPE:-$BASHPID}.*" -delete 2>/dev/null || :
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
+  find "$A" -maxdepth 1 -name 'gh-under-lock.*' -mmin +120 -delete 2>/dev/null || :
   find "$A" -maxdepth 1 -type d -name 'deployment-status.*' -mmin +60 -exec rm -rf -- {} + 2>/dev/null || :
   find "$A" -maxdepth 1 -name 'intake-reads.*' -mmin +120 -delete 2>/dev/null || :
   find "$GH_ETAG_DIR" -type f -mmin +360 -delete 2>/dev/null || :
@@ -267,7 +292,12 @@ tick_roadmap_cache_end() {
   unset ZF_ROADMAP_TREE_CACHE_FILE TICK_ROADMAP_CACHE_OWNED
 }
 tick_gh_calls_count() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf '0\n'; return 0; }; awk 'END {print NR}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf '0\n'; }
-tick_gh_calls_summary() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf 'gh_calls=0 gql=0 rest=0\n'; return 0; }; awk '$0 == "graphql" {gql++} $0 == "rest" {rest++} END {printf "gh_calls=%d gql=%d rest=%d\n", NR, gql, rest}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf 'gh_calls=0 gql=0 rest=0\n'; }
+tick_gh_calls_summary() { # the same string feeds the tick-phases line (gh_locked=) and the tick/refill done lines
+  local locked=0
+  [[ -z "${GH_UNDER_LOCK_FILE:-}" ]] || locked="$(awk 'END {print NR+0}' "$GH_UNDER_LOCK_FILE" 2>/dev/null || printf '0')"
+  [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf 'gh_calls=0 gql=0 rest=0 gh_locked=%d\n' "$locked"; return 0; }
+  awk -v locked="$locked" '$0 == "graphql" {gql++} $0 == "rest" {rest++} END {printf "gh_calls=%d gql=%d rest=%d gh_locked=%d\n", NR, gql, rest, locked}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf 'gh_calls=0 gql=0 rest=0 gh_locked=%d\n' "$locked"
+}
 # Rate-limit deltas are host-wide; other callers share the same token.
 tick_rest_usage_begin() {
   local core remaining reset

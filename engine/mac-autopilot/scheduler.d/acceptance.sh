@@ -62,12 +62,17 @@ mechanism_event_after() { # mechanism-json landed-epoch → stdout：晚于落�
   return 1
 }
 
-landed_live_event_wait() { # unit issue land-sha → 0=无 live-event 项，照旧立即关票；1=已转等待生产事件
-  local stored
-  stored="$(unit_field "$1" '.acceptance // empty')"
-  if [[ -z "$stored" ]]; then
-    # M5 之前派发的在途单没有存档：落地时读当前验收块作为基线；读不到按无验收块关票
-    stored="$(gh issue view "$2" --json number,title,body,state,labels 2>/dev/null | jqf -r '.body // ""' | acceptance_block_from_body || true)"
+landed_live_event_wait() { # unit issue land-sha [acceptance-collected [collected-block]] → 0=无 live-event 项，照旧立即关票；1=已转等待生产事件
+  # $4/$5 来自 harvest 的锁外取回（row 898）：验收块已在台账锁外用 gh issue view 读好时不再读 GitHub
+  local stored collected="${4:-false}"
+  if [[ "$collected" == true ]]; then
+    stored="${5:-}"
+  else
+    stored="$(unit_field "$1" '.acceptance // empty')"
+    if [[ -z "$stored" ]]; then
+      # M5 之前派发的在途单没有存档：落地时读当前验收块作为基线；读不到按无验收块关票
+      stored="$(gh issue view "$2" --json number,title,body,state,labels 2>/dev/null | jqf -r '.body // ""' | acceptance_block_from_body || true)"
+    fi
   fi
   [[ -n "$stored" ]] || return 0
   acceptance_has_live_event "$stored" || return 0
