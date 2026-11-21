@@ -513,4 +513,43 @@ printf 'some avg10=75 avg60=75 avg300=75 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
 [[ $(grep -Fc "$c_psi_expired" "$PIN_CALLS") == 1 ]] || fail 'expired CPU PSI wait did not run the pin'
 grep -q '^auto-pin: waiting, cpu psi avg60 75 > 60$' "$tmp/psi-expired.out" || fail 'expired CPU PSI wait did not log its wait'
 grep -q '^auto-pin: load wait expired$' "$tmp/psi-expired.out" || fail 'expired CPU PSI wait did not log expiry'
+# A broken pack patch anchor files one re-anchor issue per (patch, engine file), however many pins fail on it.
+anchor=$tmp/anchor; mkdir -p "$anchor/zf/engine/mac-autopilot/scheduler.d" "$tmp/product-writer/.zenoforge/build/pack/scripts/zenoforge-pack"
+git init -q "$anchor/zf"; g -C "$anchor/zf" checkout -q -b main
+echo base > "$anchor/zf/README"; g -C "$anchor/zf" add -A; g -C "$anchor/zf" commit -qm base; base=$(git -C "$anchor/zf" rev-parse HEAD)
+echo block > "$anchor/zf/engine/mac-autopilot/scheduler.d/dispatch-queue.sh"; g -C "$anchor/zf" add -A; g -C "$anchor/zf" commit -qm 'culprit: add dispatch block'
+echo more >> "$anchor/zf/README"; g -C "$anchor/zf" add -A; g -C "$anchor/zf" commit -qm unrelated; new=$(git -C "$anchor/zf" rev-parse HEAD)
+echo 'anchor = "scheduler.d/dispatch-queue.sh"' > "$tmp/product-writer/.zenoforge/build/pack/scripts/zenoforge-pack/patch-native-blocker-dispatch.py"
+g -C "$tmp/product-writer" add -A; g -C "$tmp/product-writer" commit -qm 'pack patch'; g -C "$tmp/product-writer" push -q origin main
+g -C "$tmp/agent/checkout" fetch -q origin main
+export ANCHOR_CREATE_CALLS=$tmp/anchor-creates ANCHOR_TITLES=$tmp/anchor-titles ANCHOR_BODIES=$tmp/anchor-bodies
+: > "$ANCHOR_CREATE_CALLS"; : > "$ANCHOR_TITLES"; : > "$ANCHOR_BODIES"
+cat > "$tmp/agent/engine-live/roadmap-issue-create.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$ANCHOR_CREATE_CALLS"
+title= body=
+while (($#)); do case $1 in --title) title=$2; shift ;; --body) body=$2; shift ;; esac; shift; done
+printf '%s\n' "$title" >> "$ANCHOR_TITLES"; printf '%s\n' "$body" >> "$ANCHOR_BODIES"
+echo https://github.com/ZenoWangzy/vecta/issues/9001
+STUB
+cat > "$tmp/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+[[ ${1-} == issue && ${2-} == list ]] || { echo "gh stub: unexpected $*" >&2; exit 1; }
+jq -Rn '[inputs | select(length > 0) | {title: ., url: "https://github.com/ZenoWangzy/vecta/issues/9001"}]' < "$ANCHOR_TITLES"
+STUB
+chmod +x "$tmp/bin/gh"
+anchor_line='/tmp/zf-pin-vecta-out.azxX7cJy/.build.DevUpu/engine/mac-autopilot/scheduler.d/dispatch-queue.sh: expected one patch anchor, found 0'
+printf 'pin-vecta: refusing publication\n%s\n' "$anchor_line" > "$anchor/fail-a.log"
+printf 'pin-vecta: refusing publication\nother failure\n' > "$anchor/fail-c.log"
+run_anchor() { ( C=$anchor/zf; pin_anchor_finding "$1" "$base" "$new" ); }
+run_anchor "$anchor/fail-a.log"
+[[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail 'anchor pin did not file exactly one issue'
+grep -q 'supervisor-created' "$ANCHOR_CREATE_CALLS" || fail 'anchor issue lacks the supervisor-created label'
+grep -q 'pin anchor: re-anchor patch-native-blocker-dispatch.py for engine/mac-autopilot/scheduler.d/dispatch-queue.sh' "$ANCHOR_TITLES" || fail 'anchor issue title lacks patch or engine file'
+grep -q 'culprit: add dispatch block' "$ANCHOR_BODIES" || fail 'anchor issue body lacks the culprit commit'
+grep -q 'PIN-ANCHOR-FIX https://github.com/ZenoWangzy/vecta/issues/9001 patch=patch-native-blocker-dispatch.py' "$AGENT_HOME/logs/head-watch.alerts" || fail 'anchor alert does not name the issue'
+run_anchor "$anchor/fail-a.log"
+[[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail 'second pin on the same anchor filed another issue'
+run_anchor "$anchor/fail-c.log"
+[[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail 'a pin log without the anchor line filed an issue'
 echo "auto-pin.test.sh: ok"
