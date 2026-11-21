@@ -60,6 +60,50 @@ slice_room_mb() { # prints MB left under the worker slice's memory.high, or noth
   echo $(( (high - cur) / 1048576 ))
 }
 worker_scope_runs() { local scope n=0; for scope in "$LUNA_WORKER_SLICE_DIR"/luna-*.scope "$LUNA_WORKER_SLICE_DIR"/zc-*.scope; do [[ -d "$scope" ]] || continue; n=$((n+1)); done; echo "$n"; }
+# 11-21 (queue row 881): the flat 1200 MB peak held implement stations out for hours at memory.high 3072 while real
+# workers peaked far lower. One ended luna/zc scope appends its cgroup memory.peak to a backend-keyed rolling tail,
+# and the gate uses that backend's p90 with execution-admission.py's 512 MB calibration floor. Sibling of the
+# class-keyed store: record_scope_memory_peak keeps only class rows, so backend rows there would be dropped on its
+# next append.
+LUNA_MEMORY_PEAK_TAIL=200
+luna_backend_peak_p90() { # <backend>: that backend's p90 with the 512 MB floor, or nothing with no samples
+  jq -Rr --arg b "$1" 'fromjson? // empty | select(type == "object") | select(.backend == $b) | .memory_peak_mb | numbers | select(. == floor and . > 0)' \
+    "$LUNA_GATE_HOME/locks/execution-memory-peaks-backend.jsonl" 2>/dev/null \
+    | tail -"$LUNA_MEMORY_PEAK_TAIL" | sort -n \
+    | awk '{ v[NR] = $1 } END { if (NR) { r = int((9 * NR + 9) / 10); if (r < 1) r = 1; if (v[r] < 512) v[r] = 512; print v[r] } }' || :
+}
+worker_peak_mb() { # <backend|->: prints "<mb> <set|measured|default>"; explicit LUNA_WORKER_PEAK_MB wins, a known backend
+  # uses its own p90, and an unknown asker (the scheduler's dispatch hold, before bin/worker picks a backend) takes
+  # the higher of the two measured p90s so whichever backend starts still fits; 1200 when there are no samples
+  local backend="${1:-}" p90="" other=""
+  if [[ -n "${LUNA_WORKER_PEAK_MB:-}" ]]; then printf '%s set\n' "$LUNA_WORKER_PEAK_MB"; return 0; fi
+  if [[ "$backend" == luna || "$backend" == zc ]]; then
+    p90="$(luna_backend_peak_p90 "$backend")"
+  else
+    p90="$(luna_backend_peak_p90 luna)"; other="$(luna_backend_peak_p90 zc)"
+    [[ -z "$other" || ( -n "$p90" && "$p90" -ge "$other" ) ]] || p90="$other"
+  fi
+  if [[ -n "$p90" ]]; then printf '%s measured\n' "$p90"; return 0; fi
+  printf '1200 default\n'
+}
+luna_record_scope_peak() { # <backend> <scope>: best-effort append of one ended worker scope's cgroup peak; records nothing when unreadable
+  local backend="$1" scope="$2" bytes mb file tmp
+  [[ ( "$backend" == luna || "$backend" == zc ) && -n "$scope" ]] || return 0
+  bytes=$(cat "$LUNA_WORKER_SLICE_DIR/$scope.scope/memory.peak" 2>/dev/null) || return 0
+  [[ "$bytes" =~ ^[1-9][0-9]*$ ]] || return 0
+  mb=$(( (bytes + 1048575) / 1048576 ))
+  file="$LUNA_GATE_HOME/locks/execution-memory-peaks-backend.jsonl"
+  mkdir -p "${file%/*}" 2>/dev/null || return 0
+  tmp=$(mktemp "${file}.XXXXXX") || return 0
+  if flock 9; then
+    { jq -Rc 'fromjson? // empty | select(type == "object") | select(.backend == "luna" or .backend == "zc") | select(.memory_peak_mb | numbers | . == floor) | select(.memory_peak_mb > 0)' "$file" 2>/dev/null || true
+      printf '{"backend":"%s","memory_peak_mb":%d}\n' "$backend" "$mb"
+    } | tail -"$LUNA_MEMORY_PEAK_TAIL" > "$tmp" && mv -f -- "$tmp" "$file" || rm -f -- "$tmp" 2>/dev/null || :
+  else
+    rm -f -- "$tmp" 2>/dev/null || :
+  fi 9>>"${file%.jsonl}.lock" || rm -f -- "$tmp" 2>/dev/null || :
+  return 0
+}
 # Keep the old test seam name; production runs now come from worker cgroup scopes.
 codex_runs() { worker_scope_runs; }
 slice_cpu_max() { cat "${LUNA_WORKER_SLICE_DIR%/*}/cpu.max" 2>/dev/null || true; }
@@ -102,8 +146,8 @@ slice_cpu_used() { # latest worker CPU average in cores (zf-workers.slice only; 
   return 1
 }
 BOX_ROOM_WHY=""
-box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, and the priority hold
-  local age="${1:-$SECONDS}" runs scope_runs avail cpu full cap slice quota_line quota period cpu_cap floor_cap fallback_cap cpu_used cpu_est quota_cpus used_display
+box_has_room() { # optional waiter age in seconds, then the asking backend (luna|zc); shared by bin/luna, bin/zc, and the priority hold
+  local age="${1:-$SECONDS}" backend="${2:-}" runs scope_runs avail cpu full cap slice peak peak_source quota_line quota period cpu_cap floor_cap fallback_cap cpu_used cpu_est quota_cpus used_display
   BOX_ROOM_WHY=""
   [[ "$age" =~ ^[0-9]+$ ]] || age=0
   runs=$(codex_runs)
@@ -115,9 +159,12 @@ box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, a
   avail=$(awk '/^MemAvailable:/{print int($2/1024)}' "${LUNA_PROC_MEMINFO:-/proc/meminfo}")
   full=$(awk -F'avg10=' '/^full/{print int($2)}' "${LUNA_PROC_PSI_MEMORY:-/proc/pressure/memory}")
   slice=$(slice_room_mb)
-  if [[ -n "$slice" ]] && (( slice < ${LUNA_WORKER_PEAK_MB:-1200} )); then
-    BOX_ROOM_WHY="worker slice ${slice}MB left under memory.high < ${LUNA_WORKER_PEAK_MB:-1200}MB worker peak"
-    return 1
+  if [[ -n "$slice" ]]; then
+    read -r peak peak_source <<< "$(worker_peak_mb "$backend")"
+    if (( slice < peak )); then
+      BOX_ROOM_WHY="worker slice ${slice}MB left under memory.high < ${peak}MB worker peak backend=${backend:--} source=${peak_source:-default}"
+      return 1
+    fi
   fi
   # Hotfix crosses the run cap and the zf.slice CPU scope cap (ruling hand-resource-hotfix-optimization-general), but keeps
   # the memory floor: slice room above, MemAvailable >= 3072 MB and no full-memory pressure. 11-20: the scope cap came first
@@ -198,7 +245,7 @@ luna_wait_ticket_ahead() {
 }
 LUNA_WAIT_AHEAD=""
 luna_waiter_has_room() { # publish once, clean stale tickets, respect priority/FIFO, then check capacity
-  local slots="$1" wait_f="$2" priority="$3" age="${4:-$SECONDS}" now last ahead
+  local slots="$1" wait_f="$2" priority="$3" age="${4:-$SECONDS}" backend="${5:-}" now last ahead
   LUNA_WAIT_AHEAD=""
   [[ -d "$slots" ]] && { [[ -e "$wait_f" ]] || date +%s > "$wait_f"; } || return 1
   [[ -e "$wait_f" ]] || return 1
@@ -212,5 +259,5 @@ luna_waiter_has_room() { # publish once, clean stale tickets, respect priority/F
     fi
     return 1
   fi
-  box_has_room "$age"
+  box_has_room "$age" "$backend"
 }

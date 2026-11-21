@@ -54,7 +54,7 @@ if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
     [[ -e "$wait_f" ]] || : >"$wait_f"
     [[ -e "$wait_f" ]] || { echo "luna: cannot publish capacity ticket $wait_f" >&2; exit 74; }
     luna_reload_live_gate
-    if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+    if luna_waiter_has_room "$slots" "$wait_f" "$prio" "$SECONDS" luna; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
     [[ -e "$wait_f" ]] || { echo "luna: capacity ticket disappeared: $wait_f" >&2; exit 74; }
     [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
     flock -u "$mx"; sleep "${LUNA_WAIT_SECONDS:-30}"
@@ -92,6 +92,8 @@ codex_mcp_context_mode_sentinel_dir "$root/tmp/$key" && TMPDIR="$root/tmp/$key" 
   codex ${CODEX_SEARCH:+--search} "${args[@]}" - <"$prompt" >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 cpid=$!; echo "$cpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
 wait "$cpid"; rc=$?
+# Record this scope's peak before the EXIT trap stops it; a missing memory.peak records nothing and leaves rc alone.
+declare -F luna_record_scope_peak >/dev/null 2>&1 && luna_record_scope_peak luna "$scope"
 echo "$rc" >"$out/rc"
 # EXIT cleanup also stops the scope if the wrapper is interrupted after launch.
 exit "$rc"
