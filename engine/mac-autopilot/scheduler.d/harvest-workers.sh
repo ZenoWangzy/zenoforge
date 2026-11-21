@@ -102,10 +102,10 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     # 慢读让开台账锁（row 898）：整个日志的读取（usage reader、整日志 jq、页脚 grep、会话用量）在
     # phase_yield_lock_batch 的窗口里锁外跑，重取锁并重校验 worker 行（pid+unit+日志名+pid_start 身份）
     # 后才套用；结束 worker 的日志已冻结，读出的值不会过期。键含日志名与 pid_start，行被顶替即弃。
-    local hkey hended=true
+    local hkey hended=false
     hkey="$(harvest_collect_key "$w")"
     if [[ -z "${HARVEST_COLLECT[$hkey]+x}" ]]; then
-      harvest_worker_alive "$w" || hended=false
+      harvest_worker_alive "$w" || hended=true
       harvest_slow_yield harvest_worker_collect "$w" "$hended" || return 1
       harvest_row_revalidate "$w" || continue
       HARVEST_COLLECT["$hkey"]="$HARVEST_WORKER_BLOB"
@@ -138,9 +138,11 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     fi
 
     # The worker ended during the lock-free collect window: the blob was taken in live mode, so collect the
-    # ended set now, as this pass did before row 898 (rare; the log is frozen from here on).
+    # ended set now, as this pass did before row 898 (rare; the log is frozen from here on) — through another
+    # lock-free window: it is the same whole-log read, and the row is revalidated after the re-take.
     if [[ "$(harvest_blob_field "$hcollected" mode)" != ended ]]; then
-      harvest_worker_collect "$w" true
+      harvest_slow_yield harvest_worker_collect "$w" true || return 1
+      harvest_row_revalidate "$w" || continue
       HARVEST_COLLECT["$hkey"]="$HARVEST_WORKER_BLOB"
       hcollected="$HARVEST_WORKER_BLOB"
     fi

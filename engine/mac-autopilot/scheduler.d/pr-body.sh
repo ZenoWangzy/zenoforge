@@ -3,14 +3,21 @@ declare -F slow_call_yield >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURC
 # Row 898：gh pr view/gh pr edit 让开台账锁（decide 在锁内、调用在窗口、重取后重校验再写 hash）；
 # 本 shell 未持锁时就地调用（合并站与派发路径的锁纪律不一，不得替调用方拿锁）。
 PR_BODY_EDIT_OK=false
+PR_BODY_VIEW_OK=false
 PR_BODY_VIEW_JSON=""
 pr_body_edit_collect() { # pr file → PR_BODY_EDIT_OK；台账锁外运行
   PR_BODY_EDIT_OK=false
   gh pr edit "$1" --body-file "$2" >/dev/null 2>&1 && PR_BODY_EDIT_OK=true
   return 0
 }
-pr_body_view_collect() { # pr → PR_BODY_VIEW_JSON（失败为空）；台账锁外运行
-  PR_BODY_VIEW_JSON="$(gh pr view "$1" --json body -q .body 2>/dev/null)" || PR_BODY_VIEW_JSON=""
+pr_body_view_collect() { # pr → PR_BODY_VIEW_JSON（读取成功但正文为空也是合法正文，与失败分开：PR_BODY_VIEW_OK）；台账锁外运行
+  PR_BODY_VIEW_OK=false
+  PR_BODY_VIEW_JSON=""
+  if PR_BODY_VIEW_JSON="$(gh pr view "$1" --json body -q .body 2>/dev/null)"; then
+    PR_BODY_VIEW_OK=true
+  else
+    PR_BODY_VIEW_JSON=""
+  fi
   return 0
 }
 pr_body_slow() { # fn args… → 持锁时经 slow_call_yield 让锁跑，未持锁时就地跑
@@ -42,7 +49,7 @@ pr_body_unit_current() { # id pr → 0 while the unit row still owns this PR (re
 pr_body_append_missing() { # unit pr report hash unit-json → a legacy PR (opened before .pr_body_hash) keeps its body; missing report, decision-log, and verification sections are appended
   local body new file h sec added=false missing=false unit="${5:-}"
   pr_body_slow pr_body_view_collect "$2"
-  [[ -n "$PR_BODY_VIEW_JSON" ]] || return 0
+  [[ "$PR_BODY_VIEW_OK" == true ]] || return 0
   body="$PR_BODY_VIEW_JSON"
   new="$body"
   for h in root-cause recurrence-guard prior-art decision-log verification; do

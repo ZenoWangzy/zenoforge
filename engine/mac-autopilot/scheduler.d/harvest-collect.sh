@@ -39,6 +39,12 @@ harvest_slow_yield() { # fn args… → run one slow harvest call with the ledge
   # runs inside this window changes no PRs, while clearing the warm list here would add one gh pr list per
   # worker to every pass (harvest_workers re-primes per finished implement/repair/land worker already).
   local rc=0
+  # An unlocked caller (library-mode harvest tests) runs the call in place: the unconditional re-take
+  # below leaked a held lock into callers that never held one (row 898 round 2).
+  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
+    "$@"
+    return $?
+  fi
   release_scheduler_lock
   "$@" || rc=$?
   reacquire_scheduler_lock_timed || rc=1

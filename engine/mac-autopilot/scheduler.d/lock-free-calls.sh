@@ -4,6 +4,12 @@
 # window does not add one gh pr list per unit to the owning phase.
 slow_call_yield() { # phase-name fn args… → the callback's rc, or 1 when the re-take was refused
   local rc=0 phase="$1"; shift
+  # A caller that never held the lock (library-mode phase tests) must not gain one here: the
+  # unconditional re-take below leaked a held lock into unlocked callers (row 898 round 2).
+  if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
+    "$@"
+    return $?
+  fi
   release_scheduler_lock
   "$@" || rc=$?
   reacquire_scheduler_lock_timed || rc=1

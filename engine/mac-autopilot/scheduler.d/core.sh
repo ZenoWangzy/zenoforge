@@ -183,7 +183,10 @@ ready_since_epoch() { # → jq 表达式：.ready_since 归一为 epoch 秒（IS
 # A gh call made while this shell holds the ledger lock blocks every refill (row 898): count each one, log one line per
 # caller per tick, and with ZF_GH_UNDER_LOCK=fail refuse the call (rc 97, the line on stderr) without touching the network.
 gh_under_lock_record() { # gh-args… → 0 (counted, gh still runs) or 97 in fail mode
-  local caller="${FUNCNAME[2]:-top}" line="gh-under-lock phase=${SCHED_LOCK_HOLDER_PHASE:-unknown} caller=$caller args=${1:-unknown}${2:+ $2}"
+  local caller="${FUNCNAME[2]:-top}"
+  # two statements: one local's words are all expanded before any assignment lands, so a $caller in the
+  # same statement is unbound under set -u on bash 5.2 patch levels that expand declaration words first
+  local line="gh-under-lock phase=${SCHED_LOCK_HOLDER_PHASE:-unknown} caller=$caller args=${1:-unknown}${2:+ $2}"
   # one line per call feeds gh_locked=<n>; the say line itself is at most once per caller per tick
   if [[ -n "${GH_UNDER_LOCK_FILE:-}" && -n "${LOG:-}" ]]; then
     if ! grep -Fqx -- "$caller" "$GH_UNDER_LOCK_FILE" 2>/dev/null; then
