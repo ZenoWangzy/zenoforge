@@ -79,7 +79,7 @@ def seconds(value):
 
 
 def calendar_entries(value, offset_minutes):
-    # shortcut: only "*-*-* HH[/step]:MM:00 UTC" (the shipped form), no seconds or dates; add more when a unit needs them
+    # shortcut: only "*-*-* HH[/step]:MM:00 UTC" (the shipped form), no seconds or dates, upgrade in zenoforge#1010 (PT-7c)
     match = CALENDAR.fullmatch(value)
     if not match:
         raise ValueError(f"unsupported OnCalendar {value!r}")
@@ -98,7 +98,7 @@ def read_env_file(path):
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        # shortcut: no escapes or multi-line values, add when an engine.env needs them
+        # shortcut: no escapes or multi-line values, upgrade in zenoforge#1011 (PT-7d)
         env[key.strip()] = value.strip().strip("\"'")
     return env
 
