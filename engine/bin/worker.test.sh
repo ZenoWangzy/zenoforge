@@ -500,7 +500,8 @@ root="$test_root/hang/.scratch"
 wt="$test_root/hang/worktree"
 prompt="$test_root/hang/brief.md"
 key=test-after-zc-breaker
-timeout 4 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+timeout 4 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCRATCH_ROOT="$root" \
+  WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
   FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" \
   > "$test_root/after-zc-breaker.stdout" 2> "$test_root/after-zc-breaker.stderr"
 [[ $(cat "$root/luna/$key/backend") == luna ]] || fail 'new automatic job ignored the open zc breaker'
@@ -617,7 +618,8 @@ root="$test_root/luna-fatal/.scratch"
 wt="$test_root/luna-fatal/worktree"
 prompt="$test_root/luna-fatal/brief.md"
 key=test-after-luna-breaker
-timeout 4 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+timeout 4 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCRATCH_ROOT="$root" \
+  WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
   FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" \
   > "$test_root/after-breaker.stdout" 2> "$test_root/after-breaker.stderr"
 [[ $(cat "$root/luna/$key/backend") == zc ]] || fail 'unset WORKER_BACKEND did not route around the open luna breaker'
