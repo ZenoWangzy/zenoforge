@@ -81,7 +81,7 @@ jqf() {
   [[ -n "${LOG:-}" ]] || { jq "$@" 2>/dev/null; return $?; }
   _err_dir="${A:-${LOG%/*}}"
   [[ -n "${A:-}" || "$_err_dir" != "$LOG" ]] || _err_dir=.
-  _err="$_err_dir/.jqf-stderr.$_JQF_ERR_SCOPE.$BASHPID"
+  _err="$_err_dir/.jqf-stderr.${_JQF_ERR_SCOPE:-$BASHPID}.$BASHPID"
   if ! : >"$_err"; then jq "$@" 2>/dev/null; return $?; fi
   jq "$@" 2>"$_err"
   _rc=$?
@@ -104,9 +104,9 @@ jqf() {
 _JQF_ERR_SCOPE="$BASHPID"
 _jqf_stderr_cleanup() {
   [[ -n "${LOG:-}" ]] || return 0
-  local _err_dir="${A:-${LOG%/*}}"
+  local _err_dir="${A:-${LOG%/*}}" _err_scope="${_JQF_ERR_SCOPE:-$BASHPID}"
   [[ -n "${A:-}" || "$_err_dir" != "$LOG" ]] || _err_dir=.
-  rm -f -- "$_err_dir"/.jqf-stderr."$_JQF_ERR_SCOPE".* 2>/dev/null || :
+  rm -f -- "$_err_dir"/.jqf-stderr."$_err_scope".* 2>/dev/null || :
 }
 chain_exit_trap _jqf_stderr_cleanup
 # Optional file reads return 64 without logging only when the path is truly
