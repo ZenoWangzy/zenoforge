@@ -170,3 +170,58 @@ for f in "$bin/luna" "$bin/zc"; do
   grep -Fq 'if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then' "$f" || fail "$(basename "$f") does not use ticket-ordered admission"
 done
 echo "ok - ticket admission orders hotfix before normal and older waiters before newer ones; stale tickets drop; uncontended hotfix admitted"
+
+remote_root="$root/fake-remote"
+local_root="$root/remote-fallback"
+mkdir -p "$remote_root/proc/pressure" "$remote_root/home" "$local_root/bin" "$local_root/scratch/tmp"
+printf '0.1 0.1 0.1 1/1 1\n' > "$remote_root/proc/loadavg"
+printf 'MemAvailable: 4194304 kB\n' > "$remote_root/proc/meminfo"
+printf 'some avg10=20 avg60=61 avg300=61 total=1\n' > "$remote_root/proc/pressure/cpu"
+printf 'MemAvailable: 6144000 kB\n' > "$local_root/meminfo"
+printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$local_root/psi"
+cat > "$local_root/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+while [[ ${1:-} == -o ]]; do shift 2; done
+shift
+cd "$ZF_TEST_REMOTE_ROOT"
+export HOME="$ZF_TEST_REMOTE_ROOT/home" ZF_WORKER_REMOTE_PROC_ROOT="$ZF_TEST_REMOTE_ROOT/proc"
+exec bash -c "$*"
+EOF
+cat > "$local_root/bin/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+while (($#)) && [[ $1 != -- ]]; do shift; done
+[[ ${1:-} == -- ]] && shift
+exec "$@"
+EOF
+cat > "$local_root/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$local_root/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+output=
+while (($#)); do
+  if [[ $1 == -o && $# -gt 1 ]]; then output=$2; shift 2; else shift; fi
+done
+printf '%s\n' '{"type":"local.event"}'
+printf 'local fallback\n' > "$output"
+EOF
+chmod +x "$local_root/bin/ssh" "$local_root/bin/systemd-run" "$local_root/bin/systemctl" "$local_root/bin/codex"
+mkdir -p "$local_root/home" "$local_root/agent-home" "$local_root/worktree"
+git -C "$local_root/worktree" init -q
+git -C "$local_root/worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+: > "$local_root/prompt"
+env HOME="$local_root/home" AGENT_HOME="$local_root/agent-home" PATH="$local_root/bin:/usr/bin:/bin" \
+  WORKER_SCRATCH_ROOT="$local_root/scratch" ZF_WORKER_HOST=remote-one ZF_WORKER_REMOTE_ROOT="$remote_root/root" \
+  ZF_TEST_REMOTE_ROOT="$remote_root" ZF_WORKER_SSH_CONNECT_TIMEOUT=1 LUNA_MIN=2 \
+  LUNA_PROC_MEMINFO="$local_root/meminfo" LUNA_PROC_PSI_MEMORY="$local_root/psi" \
+  LUNA_WORKER_SLICE_DIR="$local_root/no-slice" "$bin/luna" fallback "$local_root/worktree" "$local_root/prompt" \
+  > "$local_root/stdout" 2> "$local_root/stderr"
+grep -Fq 'CPU PSI some avg60 61 is above 60' "$local_root/stderr" || fail 'remote refusal did not report the CPU PSI reason'
+grep -Fq 'falling back to local capacity gate' "$local_root/stderr" || fail 'remote refusal did not fall back to local admission'
+grep -Fq 'local.event' "$local_root/scratch/luna/fallback/events.jsonl" || fail 'local worker did not run after remote refusal'
+[[ ! -e "$remote_root/root/fallback" ]] || fail 'remote refusal created a remote clone'
+echo 'ok - remote gate refusal reports its reason and falls back when local capacity admits'
