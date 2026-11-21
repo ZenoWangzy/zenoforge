@@ -60,6 +60,78 @@ EOF
 parsed="$(findings_block_of "$tmp/review.md")" || fail 'review findings with optional decision-log flags were rejected'
 [[ "$(jq -r '.decision_log_flags[0].entry' <<<"$parsed")" == 'Tried cache-first; verification covered only the mock.' ]] \
   || fail 'the optional decision-log flag was not kept by the review parser'
+
+cat >"$tmp/nested-flags.json" <<'EOF'
+{
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "P1",
+      "file": "src/review-target.ts",
+      "line": 280,
+      "rule": "Defect",
+      "status": "open",
+      "summary": "The default view omits rows that need review.",
+      "introduced_by": "candidate",
+      "base_evidence": "The base version includes all rows; the candidate filters them.",
+      "rerun_command": "grep -n 'changedRows' src/review-target.ts",
+      "rerun_output": "280: filter changedRows",
+      "decision_log_flags": []
+    }
+  ],
+  "dispositions": []
+}
+EOF
+write_findings_report() {
+  {
+    printf '```review-findings\n'
+    cat "$1"
+    printf '\n```\n'
+  } >"$2"
+}
+write_findings_report "$tmp/nested-flags.json" "$tmp/review-nested-empty.md"
+nested_empty="$(findings_block_of "$tmp/review-nested-empty.md")" || fail 'the nested-flags review fixture was rejected'
+[[ "$(jq -r 'has("decision_log_flags")' <<<"$nested_empty")" == true ]] \
+  || fail 'the parser did not expose decision-log flags at the top level'
+[[ "$(jq -r '.findings[0] | has("decision_log_flags")' <<<"$nested_empty")" == false ]] \
+  || fail 'the parser kept decision-log flags on the finding'
+
+jq --arg top_entry 'Tried cache-first.' --arg top_reason 'The check only covered a mock.' \
+  --arg nested_entry 'Could not verify the live path.' --arg nested_reason 'The report lacks live-path evidence.' \
+  '.decision_log_flags=[{entry:$top_entry,reason:$top_reason}]
+   | .findings[0].decision_log_flags=[{entry:$top_entry,reason:$top_reason},{entry:$nested_entry,reason:$nested_reason}]' \
+  "$tmp/nested-flags.json" >"$tmp/nested-flags-valid.json"
+write_findings_report "$tmp/nested-flags-valid.json" "$tmp/review-nested-valid.md"
+nested_valid="$(findings_block_of "$tmp/review-nested-valid.md")" || fail 'valid nested decision-log flags were rejected'
+[[ "$(jq -r '[.decision_log_flags[].entry] | join("|")' <<<"$nested_valid")" == \
+  'Tried cache-first.|Could not verify the live path.' ]] \
+  || fail 'nested decision-log flags were not appended and de-duplicated at the top level'
+[[ "$(jq -r '.findings[0] | has("decision_log_flags")' <<<"$nested_valid")" == false ]] \
+  || fail 'the parser kept hoisted decision-log flags on the finding'
+
+jq '.findings[0].foo="unknown"' "$tmp/nested-flags.json" >"$tmp/nested-flags-unknown.json"
+write_findings_report "$tmp/nested-flags-unknown.json" "$tmp/review-nested-unknown.md"
+if findings_block_of "$tmp/review-nested-unknown.md" >/dev/null 2>&1; then
+  fail 'a finding with an unknown key was accepted'
+fi
+
+jq '.findings[0].decision_log_flags=[{"entry":"Missing reason"}]' "$tmp/nested-flags.json" \
+  >"$tmp/nested-flags-missing-reason.json"
+write_findings_report "$tmp/nested-flags-missing-reason.json" "$tmp/review-nested-missing-reason.md"
+if findings_block_of "$tmp/review-nested-missing-reason.md" >/dev/null 2>&1; then
+  fail 'a nested decision-log flag without a reason was accepted'
+fi
+
+jq --arg entry 'A legacy finding carried a decision-log flag.' --arg reason 'The flag must survive normalization.' \
+  '[.findings[0] | .decision_log_flags=[{entry:$entry,reason:$reason}]]' \
+  "$tmp/nested-flags.json" >"$tmp/nested-flags-legacy.json"
+write_findings_report "$tmp/nested-flags-legacy.json" "$tmp/review-nested-legacy.md"
+nested_legacy="$(findings_block_of "$tmp/review-nested-legacy.md")" || fail 'a legacy finding with nested flags was rejected'
+[[ "$(jq -r '.decision_log_flags[0].entry' <<<"$nested_legacy")" == 'A legacy finding carried a decision-log flag.' ]] \
+  || fail 'a legacy finding decision-log flag was not hoisted'
+[[ "$(jq -r '.findings[0] | has("decision_log_flags")' <<<"$nested_legacy")" == false ]] \
+  || fail 'a legacy finding kept its decision-log flags after normalization'
+
 review_decision_log_flags_append "$tmp/review.md" issue-876 || fail 'decision-log flags did not append'
 [[ "$(jq -r '[.entry,.reason,.unit,.at] | join("|")' "$SUP/decision-log-flags.jsonl")" == \
   'Tried cache-first; verification covered only the mock.|The report has no live-path verification.|issue-876|2026-11-10T23:30:00Z' ]] \
