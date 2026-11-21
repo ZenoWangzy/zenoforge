@@ -186,7 +186,7 @@ aged_pr_classify() { # 一个超龄候选的只读慢分类（gh issue view / gi
   # 由 phase_yield_lock_batch 放到台账锁外跑（#541：这串 git/gh 曾在锁内占 770s，补派 15 分钟拿不到锁）；
   # 结论写 action/close_class/close_reason（与意图摘要），动作由调用方重取锁并重校验后在锁内执行。
   # 中间层 phase_yield_lock_batch 自带 local rc，这里的草稿变量必须 local，别把它的 rc 写花。
-  local rc mt plus total files f missing file_total issue_json pr_json_meta
+  local rc mt plus total files f missing file_total issue_json
   action="" close_class="" close_reason=""
   # 原 ticket 已关闭：意图已有结局，这个 PR 不再承载活的东西。
   if [[ -n "$n" ]]; then
@@ -230,9 +230,12 @@ aged_pr_classify() { # 一个超龄候选的只读慢分类（gh issue view / gi
   if [[ -n "$n" ]]; then
     intent_title="$(jqf -r .title <<<"$issue_json")"; intent_body="$(jqf -r .body <<<"$issue_json")"
   else
-    pr_json_meta="$(jqf -c --argjson pr "$prn" '[.[] | select(.number == $pr) | {title,body}][0] // empty' <<<"$pr_json")"
-    [[ -n "$pr_json_meta" ]] || pr_json_meta="$(gh pr view "$prn" --json title,body 2>/dev/null)" || { say "aged PR#$prn: pr view failed; retry next round"; return 0; }
-    intent_title="$(jqf -r .title <<<"$pr_json_meta")"; intent_body="$(jqf -r .body <<<"$pr_json_meta")"
+    # 轻量 census 不带 body：标题取 census 行，正文按需单读这一条（tick_pr_body，进程内缓存）。
+    # 读不到、空、字面 "null" 都不开票、留到下一轮：绝不把 "null" 当意图写进新 ticket（row 893 round 2）。
+    intent_title="$(jqf -r --argjson pr "$prn" '[.[] | select(.number == $pr) | .title] | first // empty' <<<"$pr_json")"
+    if ! intent_body="$(tick_pr_body "$prn" 2>/dev/null)" || [[ -z "$intent_body" || "$intent_body" == null ]]; then
+      say "aged PR#$prn: pr view failed; retry next round"; return 0
+    fi
   fi
   action=reopen
   return 0

@@ -86,7 +86,7 @@ $(mk_issue 906 OPEN "改 c" "issue 906 body"),
 $(mk_issue 903 OPEN "让导入每行有交代" "导入的每一行都要有下落，失败要说明原因。"),
 $(mk_issue 905 CLOSED "已完成的票" "done")]
 JSON
-echo 9000 > "$NEXT"; : > "$ACTIONS"
+echo 9000 > "$NEXT"; : > "$ACTIONS"; : > "$DB/pr-body-unreadable"
 
 source "$script_dir/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
@@ -102,7 +102,8 @@ gh() {
       grep -qx -- "$3" "$DB/labels" || printf '%s\n' "$3" >> "$DB/labels"
       printf 'label-create\t%s\n' "$3" >> "$ACTIONS" ;;
     'pr list')
-      jq -c 'map(select(.state == "OPEN"))' "$DB/prs.json" ;;
+      # 轻量 census（row 893）：列表不再携带 body，正文一律按需走 pr view。
+      jq -c 'map(select(.state == "OPEN") | del(.body))' "$DB/prs.json" ;;
     'pr close')
       n="$3"; c=""
       [[ "$4" == --comment ]] && c="$5"
@@ -110,7 +111,13 @@ gh() {
       jq --argjson n "$n" 'map(if .number == $n then .state = "CLOSED" else . end)' "$DB/prs.json" > "$DB/prs.json.tmp"
       mv "$DB/prs.json.tmp" "$DB/prs.json" ;;
     'pr view')
-      jq -c --argjson n "$3" 'map(select(.number == $n)) | first | {title, body}' "$DB/prs.json" ;;
+      # 记在 pr-body-unreadable 里的 PR 模拟正文读失败（row 893 round 2）；--jq 形状是 tick_pr_body 的单正文读。
+      if grep -qx -- "$3" "$DB/pr-body-unreadable" 2>/dev/null; then return 1; fi
+      if [[ "$*" == *' --jq '* ]]; then
+        jq -r --argjson n "$3" 'map(select(.number == $n)) | first | .body // ""' "$DB/prs.json"
+      else
+        jq -c --argjson n "$3" 'map(select(.number == $n)) | first | {title, body}' "$DB/prs.json"
+      fi ;;
     'issue view')
       jq -c --argjson n "$3" 'map(select(.number == $n)) | first' "$DB/issues.json" ;;
     'issue create')
@@ -235,5 +242,25 @@ grep -q $'git: cat-file\tread\tfree' "$LOCK_PROBE" || fail "cat-file classificat
 grep -q $'gh: pr close\tact\theld' "$LOCK_PROBE" || fail "aged_pr_close never ran under the lock"
 actions_of pr-close | grep -q $'^pr-close\t108\t' || fail "probe run should close PR 108 (closed ticket)"
 actions_of pr-close | grep -q $'^pr-close\t109\t' || fail "probe run should close PR 109 (deleted targets)"
+
+# ---- row 893 round 2：轻量列表不带 body，无 issue 的重开路径按需读正文 ----------------------------------
+# 110：正文可读 → 新 ticket 的意图正文就是这条 PR 正文（census 缺 body 不再变成字面 "null"）；
+# 111：正文读失败 → 什么都不做（不开新票、不关 PR），留到下一轮重试。
+printf '111\n' > "$DB/pr-body-unreadable"
+jq --argjson add "[$(mk_pr 110 hand/5678 "$head_903" 9 main "hand follow-up" "hand pr body 110"),$(mk_pr 111 hand/6789 "$head_903" 9 main "hand body unreadable" "hand pr body 111")]" \
+  '. + $add' "$DB/prs.json" > "$DB/prs.json.tmp" && mv "$DB/prs.json.tmp" "$DB/prs.json"
+tick_prs_changed # 上一轮的进程内 census 缓存作废：新加的 PR 要重新列表才可见
+rm -f "$A/aged-pr-check.epoch"
+creates_before="$(grep -c $'^issue-create\t' "$ACTIONS")"
+aged_pr_lifecycle
+create_110="$(grep -F $'issue-create\t9004\t' "$ACTIONS")"
+[[ "$create_110" == *"重做（旧 PR #110）：hand follow-up"* ]] || fail "no-issue new ticket title should come from the census row: $create_110"
+[[ "$create_110" == *"hand pr body 110"* ]] || fail "no-issue new ticket body should be the on-demand PR body: $create_110"
+[[ "$create_110" != *'"title"'* ]] || fail "intent body leaked the whole pr-view JSON instead of the body text: $create_110"
+grep -q $'^pr-close\t110\t.*分类：仍需要' "$ACTIONS" || fail "PR 110 (body readable) should close as 仍需要"
+[[ "$(grep -c $'^issue-create\t' "$ACTIONS")" == "$((creates_before + 1))" ]] \
+  || fail "body-unreadable PR must not file a ticket: $(grep -c $'^issue-create\t' "$ACTIONS") creates, expected $((creates_before + 1))"
+! grep -q $'^pr-close\t111\t' <(actions_of pr-close) || fail "body-unreadable PR 111 must stay open for the next round"
+grep -q 'aged PR#111: pr view failed; retry next round' "$LOG" || fail "body-unreadable PR should log the retry message"
 
 echo "aged-pr-lifecycle.test.sh: all assertions passed"
