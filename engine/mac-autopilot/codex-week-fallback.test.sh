@@ -53,12 +53,12 @@ if pick_implementer "$sticky"; then fail 'claude share 0 still routed to Claude'
 CFG="$(jq '.models.implement_share.claude=50' <<<"$CFG")"
 
 CFG="$(jq '.models.implement_share={claude:100,codex:0,zcode:0}' <<<"$CFG")"; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
-printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CODEX_EXHAUSTED_MARKER_FILE"
-if pick_implementer '{"id":"unreviewable-claude"}'; then fail 'Claude implement dispatched without an other-family reviewer'; fi
-if pick_implementer '{"id":"unreviewable-claude-again"}'; then fail 'second unreviewable Claude implement dispatched'; fi
-[[ "$(grep -Fc 'implement-route unreviewable family=claude reason=codex-hold' "$LOG")" == 2 \
-  && "$(grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=claude' "$AGENT_HOME/logs/head-watch.alerts")" == 1 ]] \
-  || fail 'skip logging or the per-hour head-watch alert was not correct'
+MAX=8; printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CODEX_EXHAUSTED_MARKER_FILE"
+# A timed Codex hold defers the Claude route instead of refusing it (queue row 942): one deferred log line, no alert.
+pick_implementer '{"id":"deferred-claude"}' || fail 'Claude implement refused while the Codex reviewer is on a timed hold'
+[[ "$PICK_PROVIDER" == claude ]] || fail "deferred Claude route went to $PICK_PROVIDER"
+[[ "$(grep -Fc 'implement-route deferred-review family=claude' "$LOG")" == 1 ]] || fail 'deferred route not logged once'
+! grep -Fq 'IMPLEMENT-ROUTE-UNREVIEWABLE family=claude' "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null || fail 'deferred route alerted'
 rm -f "$CODEX_EXHAUSTED_MARKER_FILE"; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
 pick_implementer '{"id":"reviewable-claude"}' || fail 'Claude route changed when the Codex hold was absent'
 [[ "$PICK_PROVIDER" == claude ]] || fail "available Claude share routed to $PICK_PROVIDER"

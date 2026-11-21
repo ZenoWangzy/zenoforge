@@ -243,6 +243,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       v="$(verdict_of "$rep")"
       [[ "$wtype" != review && "$wtype" != rereview ]] || review_report_harvest "$rep" "$unit" "$w"
       review_harvest_gate "$w" "$rep" "$unit" "$wtype" || { v=NOT_READY; say "review-fix gate failed unit=$unit report=$report"; }
+      [[ "$wtype" != review && "$wtype" != rereview ]] || review_family_verdict "$(harvest_unit_snapshot "$unit")" "$(jqf -r '[.provider,.model,.effort] | join(":")' <<<"$w")" "$v" || v=REVIEW-SAME-FAMILY
       if [[ "$wtype" == review || "$wtype" == rereview ]] && [[ "$v" == READY ]]; then
         incident_unit_json="$(harvest_unit_snapshot "$unit")"
         incident_gate_reason="$(decision_log_gate_reason "$incident_unit_json")"
@@ -298,7 +299,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       case "$wtype" in
         review|rereview)
           local reviewed=".reviewed_sha=$(js "$wsha") | .reviewed_pr_head=$(js "$wprhead") | .review_report=$(js "$report")"
-          case "$v" in
+          case "$v" in REVIEW-SAME-FAMILY) ;;
             READY)
               # 同时保留审核候选与当时观察到的 GitHub PR head；旧 worker 缺失 PR head 时拒绝批准。
               if [[ "$wprhead" =~ $SHA_RE ]]; then
