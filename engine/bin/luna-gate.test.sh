@@ -322,7 +322,18 @@ env HOME="$local_root/home" AGENT_HOME="$local_root/agent-home" PATH="$local_roo
   LUNA_WORKER_SLICE_DIR="$local_root/no-slice" "$bin/luna" fallback "$local_root/worktree" "$local_root/prompt" \
   > "$local_root/stdout" 2> "$local_root/stderr"
 grep -Fq 'CPU PSI some avg60 61 is above 60' "$local_root/stderr" || fail 'remote refusal did not report the CPU PSI reason'
+grep -Fq 'is missing or not writable' "$local_root/stderr" || fail 'remote refusal did not report the missing run root'
 grep -Fq 'falling back to local capacity gate' "$local_root/stderr" || fail 'remote refusal did not fall back to local admission'
 grep -Fq 'local.event' "$local_root/scratch/luna/fallback/events.jsonl" || fail 'local worker did not run after remote refusal'
 [[ ! -e "$remote_root/root/fallback" ]] || fail 'remote refusal created a remote clone'
 echo 'ok - remote gate refusal reports its reason and falls back when local capacity admits'
+
+mkdir -p "$remote_root/writable-root" "$local_root/probe-bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$local_root/probe-bin/codex"; chmod +x "$local_root/probe-bin/codex"
+env PATH="$local_root/probe-bin:$local_root/bin:/usr/bin:/bin" HOME="$local_root/home" ZF_TEST_REMOTE_ROOT="$remote_root" \
+  ZF_WORKER_REMOTE_ROOT="$remote_root/writable-root" ZF_WORKER_SSH_CONNECT_TIMEOUT=1 \
+  ZF_WORKER_REMOTE_MIN_MEM_MB=1 ZF_WORKER_REMOTE_MAX_CPU_PSI=100 \
+  python3 "$bin/worker-remote.py" probe remote-one > "$local_root/probe.out" 2> "$local_root/probe.err" \
+  || fail "remote probe refused a writable run root: $(cat "$local_root/probe.err")"
+grep -Fq 'worker-host: admitted' "$local_root/probe.err" || fail 'remote probe did not admit a writable run root'
+echo 'ok - remote probe admits a writable run root'
