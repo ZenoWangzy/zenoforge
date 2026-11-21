@@ -15,6 +15,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO="test/repo"
 export REPO REPO_DIR
+
+if [[ "${OPTIMISTIC_MERGE_NO_ORIGIN_MAIN_CHECK:-}" != 1 ]]; then
+  NO_ORIGIN_MAIN_SOURCE="$test_root/no-origin-main-source"
+  NO_ORIGIN_MAIN_CLONE="$test_root/no-origin-main"
+  command git init -q -b main "$NO_ORIGIN_MAIN_SOURCE"
+  command git -C "$REPO_DIR" archive HEAD | tar -x -C "$NO_ORIGIN_MAIN_SOURCE"
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" config user.name 'no-origin-main fixture'
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" config user.email 'no-origin-main@example.invalid'
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" add -f --all
+  command git -C "$NO_ORIGIN_MAIN_SOURCE" commit -qm 'no-origin-main fixture base'
+  command git clone -q --no-local "$NO_ORIGIN_MAIN_SOURCE" "$NO_ORIGIN_MAIN_CLONE"
+  command git -C "$NO_ORIGIN_MAIN_CLONE" update-ref -d refs/remotes/origin/main
+  if command git -C "$NO_ORIGIN_MAIN_CLONE" show-ref --quiet --verify refs/remotes/origin/main; then
+    printf 'not ok - clone still has refs/remotes/origin/main\n' >&2
+    exit 1
+  fi
+  if (cd "$NO_ORIGIN_MAIN_CLONE" && OPTIMISTIC_MERGE_NO_ORIGIN_MAIN_CHECK=1 \
+    bash engine/optimistic-merge.test.sh > "$test_root/no-origin-main.log" 2>&1); then
+    printf 'ok - optimistic merge test passes without origin/main\n'
+  else
+    no_origin_main_rc=$?
+    cat "$test_root/no-origin-main.log" >&2
+    printf 'not ok - optimistic merge test without origin/main (rc=%s)\n' "$no_origin_main_rc" >&2
+    exit 1
+  fi
+fi
+
 DRY_RUN=1
 AGENT_DRY_RUN=1
 export DRY_RUN AGENT_DRY_RUN
@@ -241,7 +268,7 @@ command git init -q --bare "$MERGE_RESULT_REMOTE"
 command git init -q -b main "$MERGE_RESULT_REPO"
 command git -C "$MERGE_RESULT_REPO" config user.name 'merge-result fixture'
 command git -C "$MERGE_RESULT_REPO" config user.email 'merge-result@example.invalid'
-command git -C "$REPO_DIR" archive origin/main engine | tar -x -C "$MERGE_RESULT_REPO"
+command git -C "$REPO_DIR" archive HEAD engine | tar -x -C "$MERGE_RESULT_REPO"
 mkdir -p "$MERGE_RESULT_REPO/scripts"
 command git -C "$MERGE_RESULT_REPO" add engine
 command git -C "$MERGE_RESULT_REPO" commit -qm 'merge-result fixture base'
