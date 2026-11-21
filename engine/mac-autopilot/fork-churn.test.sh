@@ -3,9 +3,10 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-engine_dir="$(cd -- "$script_dir/../.." && pwd -P)"
+engine_dir="$(cd -- "$script_dir/.." && pwd -P)"
 work="$test_env_root/fork-churn"
-baseline_engine="$work/origin-main"
+baseline_root="$work/origin-main"
+baseline_engine="$baseline_root/engine/mac-autopilot"
 driver="$work/tick-driver.sh"
 base_ref="${FORK_CHURN_BASE_REF:-origin/main}"
 strace_bin="${FORK_CHURN_STRACE_BIN:-$(command -v strace || true)}"
@@ -16,11 +17,8 @@ fail() { echo "fork-churn.test.sh: $*" >&2; exit 1; }
 git cat-file -e "$base_ref:engine/mac-autopilot/scheduler.d/harvest-workers.sh" \
   || fail "cannot read the origin/main baseline at $base_ref"
 mkdir -p "$work"
-mkdir -p "$baseline_engine"
-cp -a "$script_dir/." "$baseline_engine/"
-git show "$base_ref:engine/mac-autopilot/scheduler.d/harvest-workers.sh" > "$baseline_engine/scheduler.d/harvest-workers.sh"
-git show "$base_ref:engine/mac-autopilot/scheduler.d/size-recuts.sh" > "$baseline_engine/scheduler.d/size-recuts.sh"
-git show "$base_ref:engine/mac-autopilot/bell.sh" > "$baseline_engine/bell.sh"
+mkdir -p "$baseline_root"
+git archive "$base_ref" engine | tar -x -C "$baseline_root"
 
 cat > "$driver" <<'SH'
 #!/usr/bin/env bash
@@ -94,10 +92,11 @@ fork_count() {
 }
 profile_tick() {
   local label="$1" engine="$2" run="$3" summary
+  local engine_root="${engine%/mac-autopilot}"
   summary="$work/$label.tick.strace"
   export HOME="$run/home" AGENT_HOME="$run/agent" TMPDIR="$run/tmp"
   export MAC_AUTOPILOT_ROOT="$run/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$run/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$run/runtime"
-  export ZF_ENGINE_DIR="$engine_dir" ZF_REPO_DIR="$run/repo" ZF_GH_REPO=example-maintainer/example-repo
+  export ZF_ENGINE_DIR="$engine_root" ZF_REPO_DIR="$run/repo" ZF_GH_REPO=example-maintainer/example-repo
   export ZF_FORK_CHURN_ENGINE_DIR="$engine" CODEX_SESSIONS_DIR="$run/sessions" WORKER_SCRATCH_ROOT="$run/worker-scratch"
   export AUTOPILOT_PAUSE_FILE="$run/agent/PAUSE" SIZE_RECUT_RECONCILE_SECONDS=300
   "$timeout_bin" 1500 "$strace_bin" -f -c -e trace=clone,clone3,fork,vfork -o "$summary" bash "$driver" > "$run/tick.out" 2>&1
@@ -158,10 +157,11 @@ prepare_bell() {
 }
 profile_bell() {
   local label="$1" engine="$2" run="$3" summary
+  local engine_root="${engine%/mac-autopilot}"
   summary="$work/$label.bell.strace"
   export HOME="$run/home" AGENT_HOME="$run/agent" TMPDIR="$run/tmp" PATH="$mock_bin:$PATH"
   export MAC_AUTOPILOT_ROOT="$run/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$run/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$run/runtime"
-  export ZF_ENGINE_DIR="$engine_dir" ZF_REPO_DIR="$run/repo" ZF_GH_REPO=example-maintainer/example-repo
+  export ZF_ENGINE_DIR="$engine_root" ZF_REPO_DIR="$run/repo" ZF_GH_REPO=example-maintainer/example-repo
   export BELL_SUPERVISOR_DIR="$run/supervisor" BELL_AUTOPI_DIR="$run/runtime" BELL_LIVE_EVIDENCE_DISABLE=1 BELL_STALE_CI_DISABLE=1
   unset AUTOPILOT_LOOP_UNIT
   "$timeout_bin" 1500 "$strace_bin" -f -c -e trace=clone,clone3,fork,vfork -o "$summary" bash "$engine/bell.sh" > "$run/bell.out" 2>&1
