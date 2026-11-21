@@ -237,7 +237,7 @@ PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
 actual_calls="$(grep -v '^api:' "$fixture/gh-calls")"
-[[ "$actual_calls" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$actual_calls" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 grep -Fq 'api:api --paginate repos/{owner}/{repo}/pulls/17/files -q .[].filename' "$fixture/gh-calls" \
   || fail 'gate-file lookup did not use the paginated REST file list'
