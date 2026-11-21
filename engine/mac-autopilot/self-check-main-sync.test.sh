@@ -111,4 +111,35 @@ grep -Fq "conflict-unit|202|self-check: conflicts with main before builds|$confl
 [[ -z "$(git -C "$conflict" ls-files -u)" ]] || fail 'conflict left unmerged paths in the unit worktree'
 [[ "$(git -C "$conflict" rev-parse origin/main)" == "$conflict_main" ]] || fail 'conflict fixture main moved unexpectedly'
 
+# A stored red verdict for the same head is reused even when the head is behind main; other verdicts still restart.
+TAG=20261121T000000Z
+unit_writes="$test_env_root/unit-writes"
+set_unit() { printf '%s\n' "$2" >> "$unit_writes"; }
+say() { :; }
+js() { command jq -Rn --arg v "$1" '$v'; }
+pid_start() { echo 1; }
+decision_log_gate_reason() { :; }
+how_why_gate_reason() { :; }
+incident_report_gate_reason() { :; }
+self_check_run() { echo stub; }
+reuse_unit() { # status unit-sha
+  command jq -cn --arg s "$1" --arg sha "$2" '{id:"reuse-unit",lane:"",self_check_sha:$sha,self_check_status:$s,self_check_lane:"",self_check_base:"",self_check_fixes:0}'
+}
+ROOT="$clean"
+before="$(ls "$SUP" | wc -l)"
+: > "$unit_writes"
+rc=0; self_check_before_review reuse-unit "$clean_head" "$clean" "$(reuse_unit red "$clean_head")" || rc=$?
+[[ "$rc" == 0 ]] || fail "stale head with stored red for the same sha was not reused (rc=$rc)"
+[[ ! -s "$unit_writes" ]] || fail 'reused red still wrote unit state'
+[[ "$(ls "$SUP" | wc -l)" == "$before" ]] || fail 'reused red started a new self-check log'
+rc=0; self_check_before_review reuse-unit "$clean_head" "$clean" "$(reuse_unit pass "$clean_head")" || rc=$?
+wait
+[[ "$rc" == 1 ]] || fail "stale head with stored pass was reused instead of re-checked (rc=$rc)"
+grep -Fq 'self_check_pid' "$unit_writes" || fail 'stored pass did not start a new self-check'
+: > "$unit_writes"
+rc=0; self_check_before_review reuse-unit "$clean_head" "$clean" "$(reuse_unit red "$clean_main")" || rc=$?
+wait
+[[ "$rc" == 1 ]] || fail "stored red for another sha was reused (rc=$rc)"
+grep -Fq 'self_check_pid' "$unit_writes" || fail 'red for another sha did not start a new self-check'
+
 echo 'self-check-main-sync.test.sh: PASS'
