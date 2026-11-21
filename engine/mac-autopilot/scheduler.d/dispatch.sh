@@ -44,16 +44,16 @@ scheduler_clear_canary_after_failed_start() (
 # first byte). A new engine build sets a floor, so the old build's workers stop counting. Returns 1 = hold. The signal is read
 # once per scheduler process; the state file $A/start-silent-breaker.json carries engine, floor, open time, alert and probe.
 start_silent_breaker() { # worker-type
-  local type="$1" file="$A/start-silent-breaker.json" now now_iso build stored floor opened alerted last_probe next tmp cutoff row log started bytes probe_epoch line closed_log="" decide=0
-  local -a rows=()
+  local type="$1" file="$A/start-silent-breaker.json" now now_iso build stored floor opened alerted last_probe next old tmp cutoff row log started bytes probe_epoch body closed_log="" decide=0
+  local -a rows=() fields=()
   now="$(date +%s)"; now_iso="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
   build="$(readlink -f -- "${ZF_ENGINE_DIR:-$ROOT/engine}" 2>/dev/null)" || build=""
   build="${build:+$(basename -- "$(dirname -- "$build")")}"; build="${build:-unknown}"
-  stored="$(jqf -r '.engine // empty' "$file" 2>/dev/null)" || stored=""
-  floor="$(jqf -r '.floor // empty' "$file" 2>/dev/null)" || floor=""
-  opened="$(jqf -r '.opened_at // empty' "$file" 2>/dev/null)" || opened=""
-  alerted="$(jqf -r '.alerted // false' "$file" 2>/dev/null)" || alerted=false
-  last_probe="$(jqf -r '.last_probe // empty' "$file" 2>/dev/null)" || last_probe=""
+  # No state file, no jq call: a jq failure on a missing file would be logged to scheduler.log on every dispatch.
+  if [[ -s "$file" ]]; then
+    mapfile -t fields < <(jqf -r '.engine // "", .floor // "", .opened_at // "", (.alerted // false), .last_probe // ""' "$file" 2>/dev/null || true)
+  fi
+  stored="${fields[0]:-}"; floor="${fields[1]:-}"; opened="${fields[2]:-}"; alerted="${fields[3]:-false}"; last_probe="${fields[4]:-}"
   if [[ -n "$stored" && "$stored" != "$build" ]]; then floor="$now_iso"; opened=""; alerted=false; last_probe=""; fi
   if [[ -z "${START_SILENT_DONE:-}" ]]; then
     START_SILENT_DONE=1; START_SILENT_OPEN=false
@@ -77,8 +77,8 @@ start_silent_breaker() { # worker-type
   if [[ "${START_SILENT_OPEN:-false}" == true ]]; then
     [[ -n "$opened" ]] || opened="$now_iso"
     if [[ "$alerted" != true ]]; then
-      line="[$STAMP] WORKER-START-SILENT engine=$build silent=$START_SILENT_N first_log=$START_SILENT_FIRST since=$START_SILENT_SINCE dispatch held, probe every $WORKER_START_SILENT_PROBE_MINUTES min"
-      mkdir -p -- "$A/alerts"; printf '%s\n' "$line" >> "$A/alerts/slo.md"; say "$line"; alerted=true
+      body="WORKER-START-SILENT engine=$build silent=$START_SILENT_N first_log=$START_SILENT_FIRST since=$START_SILENT_SINCE dispatch held, probe every $WORKER_START_SILENT_PROBE_MINUTES min"
+      mkdir -p -- "$A/alerts"; printf '[%s] %s\n' "$STAMP" "$body" >> "$A/alerts/slo.md"; say "$body"; alerted=true
     fi
     decide=1
     if [[ "$type" == implement || "$type" == repair || "$type" == supervise ]]; then
@@ -92,7 +92,9 @@ start_silent_breaker() { # worker-type
   if [[ "${START_SILENT_OPEN:-false}" == true || -n "$floor" ]]; then
     next="$(jqf -cn --arg engine "$build" --arg floor "$floor" --arg opened "$opened" --argjson alerted "$alerted" --arg last_probe "$last_probe" \
       '{engine:$engine,floor:$floor,opened_at:$opened,alerted:$alerted,last_probe:$last_probe}')"
-    if [[ "$next" != "$(jqf -c . "$file" 2>/dev/null)" ]]; then
+    old=""
+    if [[ -s "$file" ]]; then old="$(jqf -c . "$file" 2>/dev/null || true)"; fi
+    if [[ "$next" != "$old" ]]; then
       tmp="$(mktemp "$A/.start-silent.XXXXXX")" && printf '%s\n' "$next" > "$tmp" && mv -f -- "$tmp" "$file"
     fi
   else

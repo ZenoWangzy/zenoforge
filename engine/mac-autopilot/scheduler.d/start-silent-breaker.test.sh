@@ -32,6 +32,13 @@ BUILD_ABC="$fixture/engine-versions/build-abc/engine"
 BUILD_DEF="$fixture/engine-versions/build-def/engine"
 ZF_ENGINE_DIR="$BUILD_ABC"
 say() { printf '%s\n' "$*" >> "$LOG"; }
+# Count every jqf call that names the state file while the file is missing (a logged jq failure per dispatch in production).
+JQF_STATE_READS="$fixture/jqf-state-reads"
+eval "$(declare -f jqf | sed '1s/^jqf/jqf_real/')"
+jqf() {
+  case " $* " in *" $STATE "*) [[ -e "$STATE" ]] || echo x >> "$JQF_STATE_READS" ;; esac
+  jqf_real "$@"
+}
 
 fail() { echo "start-silent-breaker.test.sh: $*" >&2; exit 1; }
 ago() { date -u -d "@$(( $(date +%s) - $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
@@ -40,7 +47,7 @@ set_workers() { printf '%s\n' "$@" | jq -s '{workers: .}' > "$WORKERS"; }
 silent() { : > "$SUP/$1"; }
 busy() { printf 'x' > "$SUP/$1"; }
 alerts() { grep -c 'WORKER-START-SILENT' "$SLO" || true; }
-reset() { rm -f -- "$STATE" "$LOG" "$SUP"/*.log; : > "$SLO"; unset START_SILENT_DONE START_SILENT_OPEN; ZF_ENGINE_DIR="$BUILD_ABC"; }
+reset() { rm -f -- "$STATE" "$LOG" "$SUP"/*.log "$JQF_STATE_READS"; : > "$SLO"; unset START_SILENT_DONE START_SILENT_OPEN; ZF_ENGINE_DIR="$BUILD_ABC"; }
 expect_rc() { # want-rc command...
   local want="$1" got=0; shift
   "$@" || got=$?
@@ -114,4 +121,14 @@ expect_rc 0 start_silent_breaker implement
 [[ ! -e "$STATE" ]] || fail "(e) state file kept after a counted byte"
 grep -qF 'start-silent-breaker closed: impl-a.log has output' "$LOG" || fail "(e) no closed line"
 
-echo "start-silent-breaker.test.sh: pass (open, reviews ignored, build change, probe window, closed by bytes)"
+# (f) no state file and the signal closed: nothing is created, and jqf never reads the missing state file
+reset
+silent impl-a.log; silent impl-b.log
+set_workers "$(rec implement "$T_A" impl-a.log)" "$(rec implement "$T_B" impl-b.log)"
+expect_rc 0 start_silent_breaker implement
+unset START_SILENT_DONE
+expect_rc 0 start_silent_breaker review
+[[ ! -e "$STATE" ]] || fail "(f) state file created while closed"
+[[ ! -s "$JQF_STATE_READS" ]] || fail "(f) jqf read the missing state file $(wc -l < "$JQF_STATE_READS") times"
+
+echo "start-silent-breaker.test.sh: pass (open, reviews ignored, build change, probe window, closed by bytes, no read of a missing state file)"
