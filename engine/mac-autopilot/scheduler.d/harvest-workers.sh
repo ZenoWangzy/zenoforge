@@ -58,7 +58,7 @@ incident_report_pre_review() { # implement/repair worker-json report-name report
 }
 
 harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main implement workers locally plus <=2 finished PR-lane implement/review/rereview/repair workers; pid:unit limits the pass to that one worker (harvest station)
-  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" worker_snapshot="${3:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled
+  local pr_harvested=0 local_only="${1:-false}" only="${2:-}" worker_snapshot="${3:-}" w pid unit wtype report rep lg session_id tk v msg wmode wsha wprhead role dispatch_usage_count session_usage_count usage_end usage_start accounting started s mins pgid limit_hit stream claude_impl decision incident_unit_json incident_gate_reason original_report gate_id report_resume_source report_resume_stage report_only_requeue_handled hcollected
   while read -r w; do
     scheduler_lock_yield_between_units || return 1
     if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]]; then
@@ -68,7 +68,10 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     fi
     [[ "$(jqf -r '.harvested // false' <<<"$w")" == "true" ]] && continue
     pid="$(jqf -r .pid <<<"$w")"; unit="$(jqf -r .unit <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"; [[ -z "$only" || "$pid:$unit" == "$only" ]] || continue
-    report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"; model_not_found_cache_observe_worker "$w" "$lg" || true
+    report="$(jqf -r .report <<<"$w")"; rep="$SUP/$report"; lg="$SUP/$(jqf -r .log <<<"$w")"
+    # implement/repair rows get their model_not_found observation from the lock-free collect below; the branches
+    # that never reach it (eval, supervise) keep the direct call, so no observation is lost.
+    [[ "$wtype" == implement || "$wtype" == repair ]] || model_not_found_cache_observe_worker "$w" "$lg" || true
     if [[ "$local_only" == true ]]; then
       if [[ "$wtype" =~ ^(review|rereview|repair)$ || ( "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ) ]]; then
         # Finished worker with a report: harvest now so its slot frees and the next stage dispatches in this refill. Land, eval, supervise and report-less deaths stay on the slow tick.
@@ -96,10 +99,23 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
     # --json 日志：末次累计 turn.completed 的新鲜 token 减去派发时的 token_usage_start（续会话累计计数器）；legacy 日志退回页脚
     claude_impl=false
     [[ "$(jqf -r '.provider // empty' <<<"$w")" == claude && "$wtype" =~ ^(implement|repair)$ ]] && claude_impl=true
+    # 慢读让开台账锁（row 898）：整个日志的读取（usage reader、整日志 jq、页脚 grep、会话用量）在
+    # phase_yield_lock_batch 的窗口里锁外跑，重取锁并重校验 worker 行（pid+unit+日志名+pid_start 身份）
+    # 后才套用；结束 worker 的日志已冻结，读出的值不会过期。键含日志名与 pid_start，行被顶替即弃。
+    local hkey hended=true
+    hkey="$(harvest_collect_key "$w")"
+    if [[ -z "${HARVEST_COLLECT[$hkey]+x}" ]]; then
+      harvest_worker_alive "$w" || hended=false
+      harvest_slow_yield harvest_worker_collect "$w" "$hended" || return 1
+      harvest_row_revalidate "$w" || continue
+      HARVEST_COLLECT["$hkey"]="$HARVEST_WORKER_BLOB"
+    fi
+    hcollected="${HARVEST_COLLECT[$hkey]}"
     # Claude implement logs are stream-json: the result line carries the session, the final answer, usage and any provider fault.
-    stream="$(python3 "$USAGE_READER" "$([[ "$claude_impl" == true ]] && echo claude-stream || echo codex-stream)" "$lg" 2>/dev/null || true)"
+    stream="$(harvest_blob_field "$hcollected" stream)"
+    [[ "$(harvest_blob_field "$hcollected" mnf)" != true ]] || model_not_found_cache_record "$(jqf -r '.model // empty' <<<"$w")" || true
     tk="$(jqf -r --argjson s "$([[ "$claude_impl" == true ]] && echo null || jqf -c '.token_usage_start // null' <<<"$w")" --arg m "$(jqf -r '.mode // "fresh"' <<<"$w")" 'if .fresh == null then empty elif $s == null then (if $m == "resume" then empty else .fresh end) else .fresh - ($s | if (.cached_input_tokens|type)=="number" then .input_tokens - .cached_input_tokens + .output_tokens else empty end) | select(. >= 0) end' <<<"$stream")"
-    [[ "$tk" =~ ^[0-9]+$ ]] || tk="$(tokens_of "$lg")"
+    [[ "$tk" =~ ^[0-9]+$ ]] || tk="$(harvest_blob_field "$hcollected" tk_footer)"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk=""  # 读不出来就是 unavailable，不当 0
     # ZCode prints its turn error and then idles with the process alive: stop it so the zero-output path below records the death.
     if harvest_worker_alive "$w" && zcode_turn_failed_hung "$lg"; then
@@ -121,6 +137,14 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       continue
     fi
 
+    # The worker ended during the lock-free collect window: the blob was taken in live mode, so collect the
+    # ended set now, as this pass did before row 898 (rare; the log is frozen from here on).
+    if [[ "$(harvest_blob_field "$hcollected" mode)" != ended ]]; then
+      harvest_worker_collect "$w" true
+      HARVEST_COLLECT["$hkey"]="$HARVEST_WORKER_BLOB"
+      hcollected="$HARVEST_WORKER_BLOB"
+    fi
+
     # Older stdout-report workers launched their backend in a separate session,
     # whose group was not recorded. Recheck after a grace period, even if a
     # report has appeared: it might still be in the middle of being written.
@@ -138,17 +162,15 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       case "$wtype" in implement|repair|land) tick_prs_changed ;; esac # Finished workers may have pushed.
       tick_prs_prime
     fi
-    # --json 日志先取事件流自身的 session id（thread.started）；legacy 日志退回页脚 grep，再退回台账（resume 派发时已知）
+    # --json 日志先取事件流自身的 session id（thread.started）；legacy 日志退回页脚 grep，再退回台账（resume 派发时已知）。
+    # execution 与 session 链都在锁外收好（harvest-collect.sh），这里只取结果。
     local execution
-    execution="$(jq -Rsc '[split("\n")[] | fromjson? | select(.type=="pipeline.execution")] | last // {}' "$lg" 2>/dev/null)"
+    execution="$(harvest_blob_field "$hcollected" execution)"
     if [[ "$(jqf -r '.reason // empty' <<<"$execution")" == resume-startup-failed ]]; then
       w="$(jqf '.mode="fresh" | .session_id="" | .token_usage_start={input_tokens:0,cached_input_tokens:0,output_tokens:0}' <<<"$w")"
       say "repair fallback unit=$unit mode=fresh reason=resume-startup-failed"
     fi
-    session_id="$(jqf -r '.session_id // empty' <<<"$stream")"
-    [[ "$session_id" =~ $SESSION_RE ]] || session_id="$(grep -m1 -Eo 'session id: [[:xdigit:]-]{36}' "$lg" 2>/dev/null | sed 's/^session id: //' || true)"
-    [[ "$session_id" =~ $SESSION_RE ]] || session_id="$(jqf -r '.session_id // empty' <<<"$w")"
-    [[ "$session_id" =~ $SESSION_RE ]] || session_id=""
+    session_id="$(harvest_blob_field "$hcollected" session_id)"
     # Persist every run, including runs without a report. Review has its own slot.
     if [[ -n "$session_id" && "$wtype" =~ ^(implement|repair|review|rereview)$ ]]; then
       role="$(session_role "$wtype")"
@@ -159,14 +181,14 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
       session_record="$(jqf -cn --arg id "$session_id" --arg provider "$session_provider" --arg model "$session_model" '{id:$id,provider:$provider,model:$model}')"
       set_unit "$unit" ".session_id=$(js "$session_id") | .session_ids[\"$role\"]=$(js "$session_id") | .sessions[\"$role\"]=$session_record"
     fi
-    # 原生 turn 事件入库（provider/session/turn 幂等键，重复交付/重扫不重复计数）；legacy 日志无事件，no-op
-    python3 "$USAGE_READER" codex-ingest "$lg" "$session_id" "$(jqf -r '.started // empty' <<<"$w")" "$BUDGET_EVENTS" >/dev/null 2>&1 || true
+    # 原生 turn 事件入库（provider/session/turn 幂等键，重复交付/重扫不重复计数）；legacy 日志无事件，no-op。
+    # 入库随 collect 窗口挪到锁外（harvest-collect.sh），幂等键保证重复交付不重复计数。
     if [[ ! -s "$rep" && "$rep" == *-r-* && -s "${rep/-r-/-}" ]]; then
       # 复审 worker 偶尔把报告写成 review-N-<TAG>.md（丢了 -r-）：pr-3972 两次 APPROVE 因此被当成无产出死亡。
       mv -f -- "${rep/-r-/-}" "$rep" && say "report for unit=$unit was written as $(basename "${rep/-r-/-}"); moved to $report"
     fi
     if [[ ! -s "$rep" ]]; then
-      msg="$(final_message_of "$lg")"
+      msg="$(harvest_blob_field "$hcollected" final_msg)"
       # --json 日志没有页脚：只有全部 turn 都收到 turn.completed 的日志，最后的 agent_message 才是最终答复；
       # 被杀/中断的 worker 只剩旁白，不能当报告（否则绕过无产出计数、重试与限额冷却）
       [[ -n "${msg//[[:space:]]/}" ]] || msg="$(jqf -r 'select(.complete == true) | .message // empty' <<<"$stream")"
@@ -175,7 +197,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
         printf '%s\n' "$msg" > "$rep" && say "report for unit=$unit missing; recovered the worker's final message into $report"
       fi
     fi
-    if [[ "$claude_impl" == true ]]; then usage_end="$(jqf -c '.usage' <<<"$stream")"; else usage_end="$(session_usage_for_id "$session_id")"; fi
+    if [[ "$claude_impl" == true ]]; then usage_end="$(jqf -c '.usage' <<<"$stream")"; else usage_end="$(harvest_blob_field "$hcollected" usage_raw)"; fi
     usage_start="$(jqf -c '.token_usage_start // null' <<<"$w")"
     accounting="$(jqf -cn --argjson start "$usage_start" --argjson end "$usage_end" \
       --arg mode "$(jqf -r '.mode // "fresh"' <<<"$w")" --arg before "$(jqf -r '.session_id // empty' <<<"$w")" --arg after "$session_id" '
@@ -377,7 +399,13 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             else
               disposition_update=""
             fi
-            read -r head_class head_base <<<"$(repair_head_class "$unit" "$(jqf -r '.workdir // empty' <<<"$w")")"
+            # repair_head_class 的 ls-remote/pr view 在锁外跑（row 898）：verdict 已定，重取锁后重校验再套用
+            if [[ -z "${HARVEST_REPAIR_CLS[$hkey]+x}" ]]; then
+              harvest_slow_yield harvest_repair_head_class_collect "$unit" "$(jqf -r '.workdir // empty' <<<"$w")" || return 1
+              harvest_row_revalidate "$w" || continue
+              HARVEST_REPAIR_CLS["$hkey"]="$HARVEST_SLOW_RESULT"
+            fi
+            read -r head_class head_base <<<"${HARVEST_REPAIR_CLS[$hkey]}"
             repair_workdir="$(jqf -r '.workdir // empty' <<<"$w")"
             delivered_head=""; [[ -z "$repair_workdir" ]] || delivered_head="$(git -C "$repair_workdir" rev-parse --verify HEAD 2>/dev/null || true)"
             set_unit "$unit" "$(repair_run_filter "$unit" "$head_class" "$head_base" "$tk" "$lg" "$rep" "$delivered_head") $disposition_update | .author_dispositions_pending=false"
@@ -403,10 +431,23 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             LANDED*)
                      set_unit "$unit" "$(hist landed "verified_by=$land_verified_by; $land_result") | .stage=\"landed\" | .verified_by=$(js "$land_verified_by") | .land_sha=$(js "${land_result#LANDED }")"
                      local land_issue; land_issue="$(unit_field "$unit" .issue)"
-                     # M5（#4501）：验收块带 live-event 项的票不立即关票，转等待生产事件（live_event_watch）
-                     if [[ -n "$land_issue" && -z "$(unit_field "$unit" .pr)" ]] \
-                       && landed_live_event_wait "$unit" "$land_issue" "${land_result#LANDED }"; then
-                       gh issue close "$land_issue" --comment "Landed on main as ${land_result#LANDED } through the autopilot direct-main lane (reviewed local commit, no PR)." >/dev/null 2>&1
+                     # M5（#4501）：验收块带 live-event 项的票不立即关票，转等待生产事件（live_event_watch）。
+                     # 旧票的验收块要从 gh issue view 读（慢）：锁外取回（row 898），关票的 gh issue close 同样让锁。
+                     if [[ -n "$land_issue" && -z "$(unit_field "$unit" .pr)" ]]; then
+                       local land_stored="" land_collected=false
+                       if [[ -z "$(unit_field "$unit" '.acceptance // empty')" ]]; then
+                         if [[ -z "${HARVEST_LAND_ACCEPT[$hkey]+x}" ]]; then
+                           harvest_slow_yield harvest_land_acceptance_collect "$land_issue" || return 1
+                           harvest_row_revalidate "$w" || continue
+                           HARVEST_LAND_ACCEPT["$hkey"]="$HARVEST_SLOW_RESULT"
+                         fi
+                         land_stored="${HARVEST_LAND_ACCEPT[$hkey]}" land_collected=true
+                       fi
+                       if [[ -z "$(unit_field "$unit" .pr)" ]] \
+                         && landed_live_event_wait "$unit" "$land_issue" "${land_result#LANDED }" "$land_collected" "$land_stored"; then
+                         harvest_slow_yield harvest_landed_issue_close "$land_issue" "${land_result#LANDED }" || return 1
+                         harvest_row_revalidate "$w" || continue
+                       fi
                      fi
                      echo "[$STAMP] fast-landed unit=$unit $land_result" >> "$A/alerts/merge.md" ;;
             *"not eligible"*)
@@ -455,7 +496,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
           '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (. += $accounting | .harvested=true | .finished_at=$finished) else . end))'
         continue
       fi
-      limit_hit="$( { tail -n 40 "$lg"; cat "$rep.partial"; } 2>/dev/null | grep -m1 -oiE "$PROVIDER_LIMIT_RE" || true)"
+      limit_hit="$(harvest_blob_field "$hcollected" limit_hit)"
       rm -f -- "$rep.partial"
       [[ -n "$limit_hit" ]] || limit_hit="$(jqf -r '.limit // empty' <<<"$stream")"
       if [[ -n "$limit_hit" ]]; then
@@ -697,3 +738,4 @@ coord_reconcile_scheduler_workers() { # snapshot workers; check processes unlock
   (( unknown == 0 ))
 }
 source "$(dirname -- "${BASH_SOURCE[0]}")/stuck-workers.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/harvest-collect.sh"

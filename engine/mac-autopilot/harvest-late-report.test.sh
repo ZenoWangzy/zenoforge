@@ -19,7 +19,7 @@ setsid bash -c 'bash -c '\''while [[ ! -e "$1/go" ]]; do sleep 0.05; done; print
 pid=$!
 backend=''
 cleanup() { [[ -z "$backend" ]] || kill "$backend" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; }
-trap cleanup EXIT
+trap 'cleanup; rm -rf -- "$test_env_root"' EXIT
 wait "$pid"
 backend="$(cat "$sup/backend.pid")"
 jq -n --argjson pid "$pid" '{workers:[{pid:$pid,pid_start:1,process_group:$pid,claim_owner:"test-owner",unit:"issue-1",type:"review",provider:"zcode",log:"worker.log",report:"report.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
@@ -88,7 +88,7 @@ coord_on_expire "$claim" || { echo 'never-launched claim wedged after expiry' >&
 # A non-dumpable worker (as Codex makes itself) hides its /proc cwd and fds from us; kill -0 must still see it.
 python3 -c 'import ctypes,time; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(60)' < /dev/null > /dev/null 2>&1 &
 undumpable=$!
-trap 'kill "$undumpable" 2>/dev/null || :; cleanup' EXIT
+trap 'kill "$undumpable" 2>/dev/null || :; cleanup; rm -rf -- "$test_env_root"' EXIT
 for _ in $(seq 100); do readlink "/proc/$undumpable/cwd" >/dev/null 2>&1 || break; sleep 0.05; done
 ! readlink "/proc/$undumpable/cwd" >/dev/null 2>&1 || { echo 'test worker did not become non-dumpable' >&2; exit 1; }
 echo "$undumpable" > "$pidfile"
@@ -383,3 +383,52 @@ guard_review_rule="$(lane_rule direct-main test-head)"
 [[ "$guard_review_rule" == *'评审阶段不得运行测试命令'* && "$guard_review_rule" == *'测试文件可只读检查'* && "$guard_review_rule" == *'Focused 检查在 land 后的 Pipeline 运行'* && "$guard_review_rule" == *'test evidence: not run, post-land'* ]] \
   || { echo 'direct-main review does not tell reviewers to inspect tests without running them' >&2; exit 1; }
 echo 'ok - test-guard outcomes, repeated refusals, and direct-main review evidence'
+
+# Row 898: the frozen-log collect (usage reader, whole-log jq, session usage) runs with the ledger lock
+# released; the ledger writes (set_unit, workers_update) see it held; a worker row that changed while the
+# lock was released is not written and logs one skip line.
+release_scheduler_lock
+harvest_probe_case() (
+  acquire_scheduler_lock || { echo 'probe could not take the scheduler lock' >&2; exit 1; }
+  local collect_free=0 collect_held=0 write_free=0
+  eval "harvest_worker_collect_orig() $(declare -f harvest_worker_collect | sed '1d')"
+  eval "set_unit_orig() $(declare -f set_unit | sed '1d')"
+  eval "workers_update_orig() $(declare -f workers_update | sed '1d')"
+  set_unit() {
+    [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]] || write_free=$((write_free + 1))
+    set_unit_orig "$@"
+  }
+  workers_update() {
+    [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]] || write_free=$((write_free + 1))
+    workers_update_orig "$@"
+  }
+  harvest_worker_collect() {
+    if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$BASHPID" ]]; then collect_held=$((collect_held + 1)); else collect_free=$((collect_free + 1)); fi
+    harvest_worker_collect_orig "$@"
+  }
+  printf '{"units":[{"id":"issue-9","stage":"review","history":[]}]}' > "$UNITS"
+  printf 'VERDICT: INPUT_INCOMPLETE\n' > "$sup/report9.md"
+  : > "$sup/worker9.log"
+  jq -n '{workers:[{pid:999999998,unit:"issue-9",type:"review",provider:"codex",log:"worker9.log",report:"report9.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+  harvest_workers
+  [[ "$collect_free" -ge 1 && "$collect_held" == 0 ]] || { echo "collect ran under the ledger lock (free=$collect_free held=$collect_held)" >&2; exit 1; }
+  [[ "$write_free" == 0 ]] || { echo "$write_free ledger writes ran with the lock released" >&2; exit 1; }
+  jq -e '.workers[0].harvested == true' "$WORKERS" >/dev/null || { echo 'the finished worker was not marked harvested' >&2; exit 1; }
+  jq -e '.units[0].stage == "blocked-external"' "$UNITS" >/dev/null || { echo 'the INPUT_INCOMPLETE harvest did not land: '"$(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
+  # the row changes while the lock is released: the stale decision is not written
+  collect_free=0 collect_held=0 write_free=0
+  printf '{"units":[{"id":"issue-9","stage":"review","history":[]}]}' > "$UNITS"
+  jq -n '{workers:[{pid:999999998,unit:"issue-9",type:"review",provider:"codex",log:"worker9.log",report:"report9.md",started:"2026-11-04T00:00:00Z",harvested:false}]}' > "$WORKERS"
+  harvest_worker_collect() {
+    harvest_worker_collect_orig "$@"
+    # a concurrent harvest station marked the row while the ledger lock was released
+    jq '(.workers[] | select(.unit=="issue-9") | .harvested) = true' "$WORKERS" > "$WORKERS.p" && mv "$WORKERS.p" "$WORKERS"
+  }
+  harvest_workers
+  [[ "$collect_free" -ge 1 ]] || { echo 'the stale case never ran its collect lock-free' >&2; exit 1; }
+  jq -e '.units[0].stage == "review"' "$UNITS" >/dev/null || { echo 'a stale decision was written: '"$(jq -c '.units[0]' "$UNITS")" >&2; exit 1; }
+  jq -e '(.units[0].history | length) == 0' "$UNITS" >/dev/null || { echo 'the stale pass wrote history events' >&2; exit 1; }
+  grep -q 'harvest skip unit=issue-9' "$LOG" || { echo 'the stale skip did not log its one line' >&2; exit 1; }
+)
+if ! harvest_probe_case; then echo 'not ok - harvest collect lock discipline (row 898)' >&2; exit 1; fi
+echo 'ok - harvest collects frozen logs lock-free and revalidates the row before writing (row 898)'
