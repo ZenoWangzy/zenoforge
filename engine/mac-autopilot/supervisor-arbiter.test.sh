@@ -1127,6 +1127,39 @@ eval "$saved_cite_gh"
 grep -Fxq 'gh api repos/ZenoWangzy/zenoforge/issues/9410' "$GH_CALLS" \
   || fail "the continuation case must exercise the REST issue read rc 1"
 
+# Queue row 917, round 2: the ruling entry itself, not only supervisor_return_stage, must send a no-verdict escalation
+# back to review. The arbiter's requeue at 18:43Z sent issue-7156/issue-7160 to implement-pending through this gate.
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9411.json"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"arbiter-vm-reroute",issue:9411,pr:99411,lane:"pr",branch:"agent/issue-9411",stage:"implement-pending",task:"original task",reviewed_sha:$sha,reviewed_pr_head:$sha,
+  history:[{stage:"pr-opened",result:"PR#99411",at:"2026-11-21T17:20:00Z"},{stage:"verdict-missing",result:"review-99411-1.md",at:"2026-11-21T17:26:00Z"},
+           {stage:"supervisor-escalated",result:"review report review-99411-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"},
+           {stage:"supervisor-requeue",result:"rerun the review on the current head",at:"2026-11-21T18:43:00Z"}]}]}')"
+rule_entry arbiter-vm-reroute reroute 6737000001 "rerun the review on the current head" || fail "the reroute ruling must land"
+[[ "$(field arbiter-vm-reroute .stage)" == review-pending ]] || fail "a reroute on a no-verdict escalation must return the unit to review, got $(field arbiter-vm-reroute .stage)"
+[[ "$(field arbiter-vm-reroute .task)" == "original task" ]] || fail "a reroute to review must not append the ruling to .task, got $(field arbiter-vm-reroute .task)"
+jq -e '.units[] | select(.id=="arbiter-vm-reroute") | .reviewed_sha == null and .reviewed_pr_head == null and .history[-1].stage == "supervisor-reroute"' "$UNITS" >/dev/null \
+  || fail "the reroute must clear the reviewed pair and record its verdict: $(jq -c '.units[0]' "$UNITS")"
+
+# Without a verdict-missing event the escalation proves nothing was reviewed: the task+branch route stands.
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9412.json"
+units "$(jq -cn '{units:[{id:"arbiter-vm-other",issue:9412,pr:99412,lane:"pr",branch:"agent/issue-9412",stage:"implement-pending",task:"original task",
+  history:[{stage:"pr-opened",result:"PR#99412",at:"2026-11-21T17:20:00Z"},
+           {stage:"supervisor-escalated",result:"repair breaker: three repairs without a new head",at:"2026-11-21T18:22:00Z"},
+           {stage:"supervisor-requeue",result:"resume the repair",at:"2026-11-21T18:43:00Z"}]}]}')"
+rule_entry arbiter-vm-other reroute 6737000002 "resume the implement round" || fail "the reroute ruling must land"
+[[ "$(field arbiter-vm-other .stage)" == implement-pending ]] || fail "an escalation for another reason keeps the task+branch route, got $(field arbiter-vm-other .stage)"
+[[ "$(field arbiter-vm-other .task)" == *"supervisor ruling 6737000002"* ]] || fail "the task+branch route must still append the ruling, got $(field arbiter-vm-other .task)"
+
+# A requeue ruling on the still-escalated unit takes the same road (issue already ready: no transition needed).
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9413.json"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"arbiter-vm-review",issue:9413,pr:99413,lane:"pr",branch:"agent/issue-9413",stage:"supervisor-review",reviewed_sha:$sha,reviewed_pr_head:$sha,
+  history:[{stage:"pr-opened",result:"PR#99413",at:"2026-11-21T17:20:00Z"},{stage:"verdict-missing",result:"review-99413-1.md",at:"2026-11-21T17:26:00Z"},
+           {stage:"supervisor-escalated",result:"review report review-99413-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"}]}]}')"
+rule_entry arbiter-vm-review requeue 6737000003 "rerun the review" || fail "the requeue ruling must land"
+[[ "$(field arbiter-vm-review .stage)" == review-pending ]] || fail "a requeue on the escalated no-verdict unit must return it to review, got $(field arbiter-vm-review .stage)"
+jq -e '.units[] | select(.id=="arbiter-vm-review") | .reviewed_sha == null and .reviewed_pr_head == null and .history[-1].stage == "supervisor-requeue"' "$UNITS" >/dev/null \
+  || fail "the requeue must clear the reviewed pair and record its verdict: $(jq -c '.units[0]' "$UNITS")"
+
 # A non-stop-loss hold is a deterministic refusal and must park for the regular dead-park recovery route.
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"manual","holder":"head"}}' > "$issue_states/9407.json"
 requeue_test_unit arbiter-nonstoploss 9407 99407
