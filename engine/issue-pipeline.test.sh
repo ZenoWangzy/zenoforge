@@ -1530,8 +1530,6 @@ assert_cond "advisor stored-verdict resumes gate before dispatch and slot decrem
 
 SELECTION_BODY="$(sed -n '/^if \[ "\$ADVISOR_QUEUE_COUNT" -ge "\$ADVISOR_BATCH_MIN" \]; then/,/^# Advisor slice ends/p' "$PIPELINE_SRC" | sed '$d')"
 DECISION_BODY="$(sed -n '/^record_advisor_decision() {/,/^}/p' "$PIPELINE_SRC")"
-ADVISOR_SNAPSHOT_READ_BODY="$(sed -n '/^ADVISOR_QUEUE_READ_FAILED=0$/,/^NEEDS_ADVISOR_IDS="$(prioritize_advisor_blockers/p' "$PIPELINE_SRC" | sed '$d')"
-ADVISOR_FILTER_BODY="$(sed -n '/^NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do$/,/^done <<< "\$NEEDS_ADVISOR_IDS")"$/p' "$PIPELINE_SRC")"
 if grep -q '^ADVISOR_BATCH_MIN=1$' "$PIPELINE_SRC"; then
   echo 'ok - a one-ticket queue is eligible for the batch dialogue'
 else
@@ -1613,14 +1611,7 @@ run_advisor_snapshot_selection() (
     fi
   }
   is_on_hold() { gh issue view "$1" --repo "$REPO" --json labels; }
-  eval "$ADVISOR_SNAPSHOT_READ_BODY"
-  if [ -n "$held_id" ]; then
-    hold_status=0
-    advisor_issue_on_hold "$held_id" || hold_status=$?
-    printf 'snapshot-hold-status=%s\n' "$hold_status"
-  fi
   prioritize_advisor_blockers() { printf '%s\n' "$1"; }
-  NEEDS_ADVISOR_IDS="$(prioritize_advisor_blockers "$NEEDS_ADVISOR_IDS")"
   issue_is_tracker_parent() { return 1; }
   hand_agent_issue_is_live_owned() { return 1; }
   roadmap_issue_is_container() { return 1; }
@@ -1631,6 +1622,7 @@ run_advisor_snapshot_selection() (
   advisor_discard_stored_verdict() { :; }
   record_advisor_decision() { :; }
   ADVISOR_SELECT_MAX=12
+  ADVISOR_CAP=1
   triage_slice_seconds_left() {
     local calls
     calls="$(cat "$clock_calls")"
@@ -1638,12 +1630,18 @@ run_advisor_snapshot_selection() (
     printf '%s\n' "$calls" > "$clock_calls"
     if [ "$mode" = reserve ] && [ "$calls" -ge 2 ]; then echo 59; else echo 61; fi
   }
-  eval "$ADVISOR_FILTER_BODY"
+  cap_slots_remaining() { echo 1; }
+  stage_unit_count() { echo 0; }
+  eval "$ADVISOR_QUEUE_READ_BODY"
+  if [ -n "$held_id" ]; then
+    hold_status=0
+    advisor_issue_on_hold "$held_id" || hold_status=$?
+    printf 'snapshot-hold-status=%s\n' "$hold_status"
+  fi
   ADVISOR_QUEUE_COUNT="$(awk 'NF { n += 1 } END { print n + 0 }' <<< "$NEEDS_ADVISOR_IDS")"
   ADVISOR_BATCH_MIN=1
   ADVISOR_PENDING_JOB_IDS=""
   ADVISOR_STALE_PENDING_JOB_IDS=""
-  ADVISOR_QUEUE_READ_FAILED=0
   ADVISOR_BATCH_UNIT_ACTIVE=0
   advisor_slots=1
   STAGE_DISPATCH_BLOCKING_SCOPES=""
