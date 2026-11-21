@@ -533,6 +533,7 @@ while (($#)); do case $1 in --title) title=$2; shift ;; --body) body=$2; shift ;
 printf '%s\n' "$title" >> "$ANCHOR_TITLES"; printf '%s\n' "$body" >> "$ANCHOR_BODIES"
 echo https://github.com/ZenoWangzy/vecta/issues/9001
 STUB
+unset -f gh # the earlier gh() function would shadow this PATH stub
 cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 [[ ${1-} == issue && ${2-} == list ]] || { echo "gh stub: unexpected $*" >&2; exit 1; }
