@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AGENT_HOME</key>
+		<string>/home/zf-golden/.zenoforge</string>
+		<key>PATH</key>
+		<string>/home/zf-golden/.local/bin:/home/zf-golden/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
+		<key>WORKER_SCRATCH_ROOT</key>
+		<string>/home/zf-golden/.zenoforge/scratch</string>
+		<key>ZF_HOME</key>
+		<string>/home/zf-golden/.zenoforge</string>
+	</dict>
+	<key>Label</key>
+	<string>zenoforge.zenoforge-retro</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>e="$(readlink -e /home/zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; fi; exec "${e:-/home/zf-golden/.zenoforge/checkout/engine}/retro/run-retro.sh"</string>
+	</array>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>8192</integer>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-retro.log</string>
+	<key>StandardOutPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-retro.log</string>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Hour</key>
+			<integer>11</integer>
+			<key>Minute</key>
+			<integer>30</integer>
+		</dict>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/home/zf-golden/.zenoforge/checkout</string>
+</dict>
+</plist>

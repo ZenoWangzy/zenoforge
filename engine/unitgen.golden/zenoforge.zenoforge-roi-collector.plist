@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AGENT_HOME</key>
+		<string>/home/zf-golden/.zenoforge</string>
+		<key>MAC_AUTOPILOT_RUNTIME_DIR</key>
+		<string>/home/zf-golden/.zenoforge/checkout/.scratch-supervisor/autopi</string>
+		<key>MAC_AUTOPILOT_SUPERVISOR_DIR</key>
+		<string>/home/zf-golden/.zenoforge/checkout/.scratch-supervisor</string>
+		<key>PATH</key>
+		<string>/home/zf-golden/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
+		<key>ZF_HOME</key>
+		<string>/home/zf-golden/.zenoforge</string>
+		<key>ZF_HOST_ID</key>
+		<string>origin-wsl</string>
+	</dict>
+	<key>Label</key>
+	<string>zenoforge.zenoforge-roi-collector</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>e="$(readlink -e /home/zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; for v in ZF_RELEASE_TRAIN_SCRIPT AGENT_INCIDENT_GUARDS_FILE ZF_PRODUCTION_TENANT_MARKER_EXCEPTIONS_FILE; do p="${!v-}"; case "$p" in /home/zf-golden/.zenoforge/engine-live/*) export "$v=$e/${p#/home/zf-golden/.zenoforge/engine-live/}";; esac; done; fi; exec /usr/bin/python3 -B "${e:-/home/zf-golden/.zenoforge/checkout/engine}/mac-autopilot/roi_collect.py"</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>8192</integer>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-roi-collector.log</string>
+	<key>StandardOutPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-roi-collector.log</string>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>WorkingDirectory</key>
+	<string>/home/zf-golden/.zenoforge/checkout</string>
+</dict>
+</plist>
