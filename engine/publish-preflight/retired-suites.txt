@@ -1,0 +1,1 @@
+mac-autopilot/fork-churn.test.sh reverted with #1304 by 8569341 (2026-11-21); compared against origin/main and could not pass on main
