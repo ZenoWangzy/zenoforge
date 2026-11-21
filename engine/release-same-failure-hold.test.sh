@@ -23,7 +23,7 @@ assert_eq() {
   [ "$2" = "$3" ] || { echo "FAIL $1: expected [$2] got [$3]" >&2; exit 1; }
   echo "ok - $1"
 }
-# row <sha> <result> <line>: a row that started now, so the 6 h probe does not apply to it.
+# row <sha> <result> <line>: a row that started now, so the 2 h probe does not apply to it.
 row() { printf '%s\t%s\t%s\t%s\n' "$NOW_TS" "$1" "$2" "$3"; }
 set_rows() { : > "$FILE"; for r in "$@"; do printf '%s\n' "$r" >> "$FILE"; done; }
 reset() { rm -f "$AGENT_HOME/decisions" "$AGENT_HOME/inbox-keys" "$FILE"; : > "$AGENT_HOME/journal-stub"; }
@@ -128,16 +128,16 @@ reset
 ( DRY_RUN=1; release_batch_outcome_start "$FIX" )
 assert_eq 'a dry run writes no outcome row' no "$( [ -e "$FILE" ] && echo yes || echo no )"
 
-# (m) the last failed batch started 7 h ago: the 6 h probe applies, no hold; 5 h ago: hold
+# (m) the last failed batch started 3 h ago: the 2 h probe applies, no hold; 1 h ago: hold
 reset
-old7="$(( NOW_TS - 7 * 3600 ))"
-set_rows "$(row "$DOCS" failed "$LINE")" "$(printf '%s\t%s\tfailed\t%s\n' "$old7" "$BASE" "$LINE")"
+old3="$(( NOW_TS - 3 * 3600 ))"
+set_rows "$(row "$DOCS" failed "$LINE")" "$(printf '%s\t%s\tfailed\t%s\n' "$old3" "$BASE" "$LINE")"
 rc=0; release_batch_same_failure_hold "$DOCS" 910101 || rc=$?
-assert_eq 'a last failure 7 h old is probed again: no hold' 1 "$rc"
+assert_eq 'a last failure 3 h old is probed again: no hold' 1 "$rc"
 reset
-old5="$(( NOW_TS - 5 * 3600 ))"
-set_rows "$(row "$DOCS" failed "$LINE")" "$(printf '%s\t%s\tfailed\t%s\n' "$old5" "$BASE" "$LINE")"
+old1="$(( NOW_TS - 1 * 3600 ))"
+set_rows "$(row "$DOCS" failed "$LINE")" "$(printf '%s\t%s\tfailed\t%s\n' "$old1" "$BASE" "$LINE")"
 rc=0; release_batch_same_failure_hold "$DOCS" 910101 || rc=$?
-assert_eq 'a last failure 5 h old still holds' 0 "$rc"
+assert_eq 'a last failure 1 h old still holds' 0 "$rc"
 
 echo 'all same-failure hold cases passed'
