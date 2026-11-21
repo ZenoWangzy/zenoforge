@@ -38,7 +38,7 @@ c=$(census \
   "$(run 'NUL bytes' completed success 2026-11-08T09:57:47Z 101)" \
   "$(run 'NUL bytes' completed cancelled 2026-11-08T09:57:05Z 100)")
 [[ "$c" == '{"checks":[{"name":"Required CI gates","bucket":"pass"},{"name":"NUL bytes","bucket":"pass"}],"ci":0}' ]] || fail "older CANCELLED, newer SUCCESS" "$c"
-! lane_skips "$c" || fail "older CANCELLED, newer SUCCESS" "lane skips"
+! lane_skips "$(jq -c '.checks' <<<"$c")" || fail "older CANCELLED, newer SUCCESS" "lane skips"
 
 # Reverse: older SUCCESS, newer FAILURE must stay visible as fail.
 c=$(census "$(run 'Required CI gates' completed success 2026-11-08T09:57:16Z 100)" "$(run 'Required CI gates' completed failure 2026-11-08T10:18:14Z 101)")
@@ -47,7 +47,7 @@ c=$(census "$(run 'Required CI gates' completed success 2026-11-08T09:57:16Z 100
 # Newest run still running: pending, so the lane waits (the 10:02Z/10:10Z case); pending is not green.
 c=$(census "$(run 'Required CI gates' completed success 2026-11-08T09:57:16Z 100)" "$(run 'Required CI gates' in_progress '' 2026-11-08T10:01:00Z 101)")
 [[ "$c" == '{"checks":[{"name":"Required CI gates","bucket":"pending"}],"ci":2}' ]] || fail "newest run in progress" "$c"
-lane_skips "$c" || fail "newest run in progress" "lane must skip"
+lane_skips "$(jq -c '.checks' <<<"$c")" || fail "newest run in progress" "lane must skip"
 
 # PR#5848 shape: SKIPPED and CANCELLED copies first, then a newer FAILURE on two gates. The lane must see
 # fail (its `fails` list is non-empty, so it takes the red/repair path), not pending.
@@ -61,7 +61,7 @@ c=$(census \
   "$(run 'Required CI gates' completed failure 2026-11-08T10:20:00Z 202)" \
   "$(run 'contract' completed success 2026-11-08T10:00:00Z 202)")
 [[ "$c" == '{"checks":[{"name":"Touched packages PR gate","bucket":"fail"},{"name":"Required CI gates","bucket":"fail"},{"name":"contract","bucket":"pass"}],"ci":1}' ]] || fail "5848 shape" "$c"
-! lane_skips "$c" || fail "5848 shape" "lane skips a real red"
+! lane_skips "$(jq -c '.checks' <<<"$c")" || fail "5848 shape" "lane skips a real red"
 [[ "$(jq -r '[.checks[] | select(.bucket == "fail") | .name] | sort | join(",")' <<<"$c")" == "Required CI gates,Touched packages PR gate" ]] || fail "5848 shape" "fails list"
 
 # A name whose only rows are SKIPPED drops out and does not block.

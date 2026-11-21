@@ -225,6 +225,9 @@ SH
   tick_prs_prime() { :; }; tick_prs_changed() { :; }; post_approved_status() { :; }
   decision_log_gate_reason() { :; }; how_why_gate_reason() { :; }; incident_report_gate_reason() { :; }
   harvest_workers || :
+  # The stubs were for the harvest only; the merge lane below reads a live census again, so
+  # restore the real functions and drop the shared 60 s census file an earlier case left.
+  eval "$tick_prs_prime_saved"; eval "$tick_prs_changed_saved"; tick_prs_changed
   [[ "$(field pr-behind-main .stage)" == ready-to-merge \
       && "$(field pr-behind-main '.history[-1].stage')" == review-approve \
       && "$(field pr-behind-main .stale_base_hop_used)" == false ]] \

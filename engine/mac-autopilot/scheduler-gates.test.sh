@@ -1062,16 +1062,19 @@ grep -Fq 'MECH_REGISTRY_FILE="$(sched_mechanism_registry)" || { MECH_REGISTRY_FI
   || fail 'mechanism registry must resolve through sched_mechanism_registry'
 hotfix_list_calls="$fixture/hotfix-issue-list.calls"; : > "$hotfix_list_calls"
 hotfix_label_edits=()
+hotfix_reg_prs="$(jq -cn --arg sha "$H1" '[
+  {number:10,headRefOid:$sha,headRefName:"agent/issue-31-cells",isDraft:false,title:"branch linked",labels:[],body:""},
+  {number:11,headRefOid:$sha,headRefName:"feat/plain",isDraft:false,title:"body linked",labels:[],body:"work\n\nRefs #31"},
+  {number:12,headRefOid:$sha,headRefName:"hotfix/urgent",isDraft:false,title:"configured prefix",labels:[],body:""},
+  {number:13,headRefOid:$sha,headRefName:"agent/issue-hf-32",isDraft:false,title:"hf prefix",labels:[],body:""},
+  {number:14,headRefOid:$sha,headRefName:"feat/ordinary",isDraft:false,title:"ordinary",labels:[],body:"no association"},
+  {number:15,headRefOid:$sha,headRefName:"hotfix/label-write-fails",isDraft:false,title:"label write failure",labels:[],body:""}
+]')"
 gh() {
   if [[ "$1 $2" == "pr list" ]]; then
-    jq -cn --arg sha "$H1" '[
-      {number:10,headRefOid:$sha,headRefName:"agent/issue-31-cells",isDraft:false,title:"branch linked",labels:[],body:""},
-      {number:11,headRefOid:$sha,headRefName:"feat/plain",isDraft:false,title:"body linked",labels:[],body:"work\n\nRefs #31"},
-      {number:12,headRefOid:$sha,headRefName:"hotfix/urgent",isDraft:false,title:"configured prefix",labels:[],body:""},
-      {number:13,headRefOid:$sha,headRefName:"agent/issue-hf-32",isDraft:false,title:"hf prefix",labels:[],body:""},
-      {number:14,headRefOid:$sha,headRefName:"feat/ordinary",isDraft:false,title:"ordinary",labels:[],body:"no association"},
-      {number:15,headRefOid:$sha,headRefName:"hotfix/label-write-fails",isDraft:false,title:"label write failure",labels:[],body:""}
-    ]'
+    printf '%s\n' "$hotfix_reg_prs"
+  elif [[ "$1 $2" == "pr view" && "$*" == *'--json body'* ]]; then # the light census carries no body; registration reads it per PR
+    jq -r --argjson n "$3" 'first(.[] | select(.number == $n) | .body // "")' <<<"$hotfix_reg_prs"
   elif [[ "$1 $2" == "issue list" ]]; then
     printf '%s\n' "$*" >> "$hotfix_list_calls"
     [[ "$*" == *"--label hotfix"* && "$*" == *"--json number,labels"* ]] || fail "hotfix issue census ignored config or labels ($*)"

@@ -625,7 +625,7 @@ tick_gh() {
     # head 本身就是 PR 号；main 的两个 run head 由 main-check-runs.json 回答（原 api * 分支的行为）。
     'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
       local cr_sha="$2" cr_jq="" cr_prev="" cr_rows cr_n cr_f
-      cr_sha="${cr_sha#*commits/}"; cr_sha="${cr_sha%%\?*}"
+      cr_sha="${cr_sha#*commits/}"; cr_sha="${cr_sha%%/*}"
       for arg in "$@"; do [[ "$cr_prev" == --jq ]] && cr_jq="$arg"; cr_prev="$arg"; done
       if [[ -f "$TF/pr-census.json" ]] && command jq -e --arg sha "$cr_sha" 'any(.[]; .headRefOid == $sha and ((.statusCheckRollup // []) | length > 0))' "$TF/pr-census.json" >/dev/null 2>&1; then
         cr_rows="$(command jq -c --arg sha "$cr_sha" '[.[] | select(.headRefOid == $sha)][0].statusCheckRollup' "$TF/pr-census.json")"
