@@ -118,7 +118,7 @@ merge_pr_prior_art_ok() {
 # has no test run to prove, and a green full-suite result for the same SHA
 # (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
-  local pr="$1" head_sha="$2" success_only="${3:-false}" with_url="${4:-false}" view count files path
+  local pr="$1" head_sha="$2" success_only="${3:-false}" with_url="${4:-false}" focused="${5:-false}" view count files path
   view="$(if [[ "$with_url" == true ]]; then merge_pr_rollup_rest "$pr"; else gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null || merge_pr_rollup_rest "$pr" 2>/dev/null; fi)" || return 1
   files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)" || return 1
   [[ -n "$files" ]] || return 1
@@ -129,20 +129,11 @@ merge_pr_ci_green_check_count() {
     esac
   done <<<"$files"
   # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
-  count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --arg details "$with_url" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
+  count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --arg details "$with_url" --arg focused "$focused" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
     def check_run_time: .startedAt // .completedAt;
-    def completed_success:
-      if .__typename == "CheckRun" then
-        .status == "COMPLETED"
-        and (if $strict == "true" then .conclusion == "SUCCESS"
-          else (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL") end)
-      elif .__typename == "StatusContext" then .state == "SUCCESS" and $strict == "false"
-      else false end;
-    def required_check($need):
-      .__typename == "CheckRun"
-      and (.workflowName | type == "string" and length > 0)
-      and .workflowName == (if $need == "cli" then "cli-tests" else "engine-tests" end)
-      and .name == $need and .status == "COMPLETED" and .conclusion == "SUCCESS";
+    def completed_success: if .__typename == "CheckRun" then .status == "COMPLETED" and (if $strict == "true" then .conclusion == "SUCCESS" else (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL") end) elif .__typename == "StatusContext" then .state == "SUCCESS" and $strict == "false" else false end;
+    def is_pending: if .__typename == "CheckRun" then .status != "COMPLETED" else .__typename == "StatusContext" and .state == "PENDING" end;
+    def required_check($need): .__typename == "CheckRun" and (.workflowName | type == "string" and length > 0) and .workflowName == (if $need == "cli" then "cli-tests" else "engine-tests" end) and .name == $need and .status == "COMPLETED" and .conclusion == "SUCCESS";
     . as $view
     | ($view.statusCheckRollup // null) as $checks
     | select($view.headRefOid == $sha)
@@ -153,9 +144,13 @@ merge_pr_ci_green_check_count() {
     | ([$checks[] | select(.__typename != "CheckRun" or check_run_time == null)]) as $single_checks
     | ($newest_check_runs + $single_checks) as $current_checks
     | (["cli"] + [range(0;$shards) | "suites (\(.))"]) as $required
-    | ([$current_checks[] | select(.__typename == "CheckRun" and .status != "COMPLETED")] | length) as $pending
-    | select(all($current_checks[]; if .__typename == "CheckRun" and .status != "COMPLETED" then true else completed_success end))
-    | if $pending > 0 then "pending\t\($pending)" elif all($required[]; . as $need | any($current_checks[]; required_check($need))) then if $details == "true" then [$checks | length, ([$current_checks[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks | length end else empty end
+    | ([$current_checks[] | select(is_pending)] | length) as $pending
+    | select(all($current_checks[]; if is_pending then true else completed_success end))
+    | if $pending > 0 then (if $focused == "true" then "pending\t\($pending)" else empty end)
+      elif all($required[]; . as $need | any($current_checks[]; required_check($need))) then if $details == "true" then [$checks | length, ([$current_checks[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks | length end
+      elif $focused == "true" then ([$current_checks[] | select(.__typename == "CheckRun" and .workflowName == "engine-tests" and (.name | test("^suites \\([0-9]+\\)$")))] ) as $suites
+        | if (any($current_checks[]; .__typename == "CheckRun" and .workflowName == "engine-tests" and .name == "select" and .status == "COMPLETED" and .conclusion == "SUCCESS") and all($suites[]; .status == "COMPLETED" and .conclusion == "SUCCESS") and (([$current_checks[] | select(.__typename == "CheckRun" and .workflowName == "cli-tests")] | length) == 0 or any($current_checks[]; required_check("cli")))) then "focused\t\($suites | length)" else empty end
+      else empty end
   ' <<<"$view" 2>/dev/null)" || return 1
   [[ "$count" != pending$'\t'* ]] || { printf '%s\n' "${count#*$'\t'}"; return 2; }
   printf '%s\n' "$count"
@@ -182,7 +177,7 @@ merge_pr_view() {
 }
 
 merge_pr_test_receipt_ok() {
-  local pr="$1" view head_sha root result_file='' receipt bad ci_rc
+  local pr="$1" view head_sha root result_file='' receipt bad ci_rc ci_kind ci_count
   if ! view="$(merge_pr_view "$pr" body,files,commits 2>/dev/null)" \
     || ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
     merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
@@ -221,7 +216,11 @@ merge_pr_test_receipt_ok() {
     return 1
   }
   if [[ ! -s "$receipt" ]]; then
-    if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2; return 0
+    if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha" false false "$(jq -r --arg re "$MERGE_PR_GATE_RE" 'if any(.files[].path; test($re)) then "false" else "true" end' <<<"$view")")"; then
+      IFS=$'\t' read -r ci_kind ci_count <<<"$count"
+      if [[ "$ci_kind" == focused ]]; then printf 'merge-pr: receipt: ci-focused %s suites at %.12s\n' "$ci_count" "$head_sha" >&2
+      else printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$ci_kind" "$head_sha" >&2; fi
+      return 0
     else ci_rc=$?; [[ "$ci_rc" != 2 ]] || { merge_pr_refuse "$pr" "PR CI pending at ${head_sha:0:12} ($count checks not finished); the merge waits for PR CI"; return 1; }
     fi
     merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"

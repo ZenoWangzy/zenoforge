@@ -471,6 +471,16 @@ ci_rollup() {
       + [range(0;8) | {name:("suites (" + tostring + ")"),workflowName:"engine-tests"}])
     | map(. + {__typename:"CheckRun",status:"COMPLETED",conclusion:"SUCCESS"})'
 }
+focused_ci_rollup() {
+  ci_rollup | jq -c '[.[] | select(.name == "cla" or .name == "suites (0)" or .name == "suites (1)" or .name == "suites (2)")] + [{__typename:"CheckRun",name:"select",workflowName:"engine-tests",status:"COMPLETED",conclusion:"SUCCESS"}]'
+}
+PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '[.[] | select(.name == "cla" or .name == "select")]')"
+expect_receipt_merge 'focused CI with an empty suite selection'
+[[ "$(cat "$fixture/check-output")" == *'receipt: ci-focused 0 suites'* ]] || fail "empty focused CI receipt was not logged: $(cat "$fixture/check-output")"
+PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '. + [{__typename:"CheckRun",name:"cli",workflowName:"cli-tests",status:"COMPLETED",conclusion:"SUCCESS"}]')"
+expect_receipt_merge 'focused CI with a completed cli check'
+PR_CI_ROLLUP="$(focused_ci_rollup | jq -c '. + [{__typename:"CheckRun",name:"cli",workflowName:"cli-tests",status:"COMPLETED",conclusion:"SKIPPED"}]')"
+expect_receipt_refusal 'focused CI with a skipped cli check' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 ci_rollup_with_times() {
   ci_rollup | jq -c 'map(. + {startedAt:"2026-11-10T09:55:10Z",completedAt:"2026-11-10T10:14:00Z"})'
 }
@@ -526,6 +536,16 @@ PR_CI_ROLLUP="$(ci_rollup)"
 ci_set 'suites (3)' COMPLETED FAILURE
 rm -f "$receipt_dir/$rsha"
 expect_receipt_refusal 'failed CI suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_CI_ROLLUP="$(focused_ci_rollup)"
+expect_receipt_merge 'focused CI with three suites and no cli'
+[[ "$(cat "$fixture/check-output")" == *"receipt: ci-focused 3 suites at ${rsha:0:12}"* ]] || fail "focused CI receipt path was not logged: $(cat "$fixture/check-output")"
+PR_CI_ROLLUP="$(focused_ci_rollup)"; ci_set 'suites (1)' IN_PROGRESS ''; expect_receipt_refusal 'focused CI with a pending suite' "PR CI pending at ${rsha:0:12} (1 checks not finished); the merge waits for PR CI"
+PR_CI_ROLLUP="$(focused_ci_rollup)"; ci_set 'suites (1)' COMPLETED FAILURE; expect_receipt_refusal 'focused CI with a failed suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_FILES='["tools/merge-pr.sh"]'
+PR_CI_ROLLUP="$(focused_ci_rollup)"
+expect_receipt_refusal 'gate file with only three suites' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+PR_FILES='["tools/quick-land.sh"]'
+PR_CI_ROLLUP="$(focused_ci_rollup)"; ci_set select COMPLETED FAILURE; expect_receipt_refusal 'focused CI with failed select' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_ROLLUP="$(ci_rollup)"; ci_set 'suites (3)' IN_PROGRESS ''; expect_receipt_refusal 'pending CI suite' "PR CI pending at ${rsha:0:12} (1 checks not finished); the merge waits for PR CI"
 PR_CI_ROLLUP="$(ci_rollup)"; ci_set 'suites (3)' IN_PROGRESS ''; ci_set 'suites (4)' COMPLETED FAILURE; expect_receipt_refusal 'failed check with a pending required suite' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 PR_CI_HEAD=ffffffffffffffffffffffffffffffffffffffff
