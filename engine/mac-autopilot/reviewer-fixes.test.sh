@@ -63,6 +63,7 @@ build_codex_command rereview gpt-6-luna max readonly-review 'rereview prompt' ''
 [[ " ${CODEX_COMMAND[*]} " == *' -s read-only resume '* ]] || fail 'Codex rereview resume left the read-only sandbox'
 build_codex_command review GLM-5.3 max readonly-review 'review prompt' '' "$readonly_repo" zcode
 [[ " ${CODEX_COMMAND[*]} " == *'--mode plan '* ]] || fail 'ZCode review did not use plan mode'
+[[ " ${CODEX_COMMAND[*]} " == *'不要调用 ExitPlanMode'*'含唯一一行 VERDICT'* ]] || fail 'ZCode review prompt does not ask for the full report as the final answer'
 TEST_BRANCH=agent/reviewer
 build_codex_command review claude-sonnet-5-5 high readonly-review 'review prompt' '' "$readonly_repo" claude
 [[ " ${CODEX_COMMAND[*]} " == *'--permission-mode plan'* ]] || fail 'Claude review did not use plan mode'
