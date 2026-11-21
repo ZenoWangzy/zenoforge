@@ -1975,10 +1975,13 @@ fast_land_lane || :
 # 克隆窗口里批准被换掉就跳过派发并记一行。
 release_scheduler_lock
 acquire_scheduler_lock || fail 'row-898 fast-land probe could not take the scheduler lock'
-r898_free=0 r898_held=0 r898_write_free=0
+# ensure_clone runs inside a $( ) capture in fast_land_clone_collect, so its lock-state counter
+# must live in a file: a shell variable bumped inside the command substitution dies with the subshell.
+r898_counts="$fixture/r898-fastland-counts"
+r898_write_free=0
 eval "ensure_clone_r898() $(declare -f ensure_clone | sed '1d')"
 ensure_clone() {
-  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898_counts"; else echo free >>"$r898_counts"; fi
   ensure_clone_r898 "$@"
 }
 eval "set_unit_r898() $(declare -f set_unit | sed '1d')"
@@ -1986,16 +1989,17 @@ set_unit() {
   [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
   set_unit_r898 "$@"
 }
-LANDS=(); : > "$A/scheduler.log"
+LANDS=(); : > "$A/scheduler.log"; : >"$r898_counts"
 units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"
 GH_HEAD="$H1"; fast_land_lane || :
+r898_free="$(grep -c '^free$' "$r898_counts" || true)"; r898_held="$(grep -c '^held$' "$r898_counts" || true)"
 [[ "$r898_free" -ge 1 && "$r898_held" == 0 ]] || fail "fast-land clone ran under the ledger lock (free=$r898_free held=$r898_held)"
 [[ "$r898_write_free" == 0 ]] || fail "$r898_write_free fast-land ledger writes ran with the lock released"
 [[ "${LANDS[*]}" == "86:$H1:$H1" && "$(field pr-86 .stage)" == landing ]] || fail "probe run did not land the approved unit (${LANDS[*]:-none} $(field pr-86 .stage))"
 # 克隆窗口里批准被换：跳过派发并记一行，不写 landing
 LANDS=(); : > "$A/scheduler.log"
 ensure_clone() {
-  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898_counts"; else echo free >>"$r898_counts"; fi
   jq '(.units[] | select(.id=="pr-86") | .approved_sha) = "0000000000000000000000000000000000000000"' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS"
   ensure_clone_r898 "$@"
 }
@@ -2016,7 +2020,10 @@ R898_MAIN=1111111111111111111111111111111111111111
 R898_BASE=2222222222222222222222222222222222222222
 release_scheduler_lock
 acquire_scheduler_lock || fail 'row-898 supersede probe could not take the scheduler lock'
-r898s_free=0 r898s_held=0 r898s_write_free=0
+# gh_run_list_cached runs inside a $( ) capture in main_suites_load, so its lock-state counter
+# must live in a file: a shell variable bumped inside the command substitution dies with the subshell.
+r898s_counts="$fixture/r898-supersede-counts"
+r898s_write_free=0
 eval "git_r898() $(declare -f git | sed '1d')"
 git() {
   if [[ "${1:-}" == -C && "${3:-}" == merge-base && "${4:-}" == --is-ancestor ]]; then
@@ -2032,12 +2039,13 @@ set_unit() {
   set_unit_s898 "$@"
 }
 gh_run_list_cached() {
-  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898s_held=$((r898s_held + 1)); else r898s_free=$((r898s_free + 1)); fi
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898s_counts"; else echo free >>"$r898s_counts"; fi
   printf '[{"headSha":"%s","conclusion":"success","status":"completed","createdAt":"t","databaseId":9}]' "$R898_MAIN"
 }
 units "{\"units\":[{\"id\":\"mr-1\",\"main_red\":true,\"ci_sha\":\"$R898_BASE\",\"stage\":\"implement-pending\",\"history\":[]}]}"
 MAIN_HEAD="$R898_MAIN"; MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS=""
-: > "$A/scheduler.log"; supersede_resolved_main_red_units || :
+: > "$A/scheduler.log"; : >"$r898s_counts"; supersede_resolved_main_red_units || :
+r898s_free="$(grep -c '^free$' "$r898s_counts" || true)"; r898s_held="$(grep -c '^held$' "$r898s_counts" || true)"
 [[ "$r898s_free" -ge 1 && "$r898s_held" == 0 ]] || fail "supersede's run list ran under the ledger lock (free=$r898s_free held=$r898s_held)"
 [[ "$r898s_write_free" == 0 ]] || fail "$r898s_write_free supersede writes ran with the lock released"
 [[ "$(field mr-1 .stage)" == closed ]] || fail "probe run did not supersede the pending main-red unit ($(field mr-1 .stage))"
@@ -2048,7 +2056,7 @@ units "{\"units\":[{\"id\":\"mr-1\",\"main_red\":true,\"ci_sha\":\"$R898_BASE\",
 jq '{workers:[{pid:991,unit:"mr-1",type:"implement",log:"w.log",report:"r.md"}]}' > "$WORKERS"
 MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS=""
 gh_run_list_cached() {
-  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898s_held=$((r898s_held + 1)); else r898s_free=$((r898s_free + 1)); fi
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898s_counts"; else echo free >>"$r898s_counts"; fi
   printf '[{"headSha":"%s","conclusion":"success","status":"completed","createdAt":"t","databaseId":9}]' "$R898_MAIN"
 }
 supersede_resolved_main_red_units || :
@@ -2534,14 +2542,17 @@ eval "$gh_issue_stub"
 # 收编的台账写回在锁内；窗口里被别的写收编的 PR 跳过登记并记一行。
 release_scheduler_lock
 acquire_scheduler_lock || fail 'row-898 probe could not take the scheduler lock'
-r898_free=0 r898_held=0 r898_write_free=0
+# the graphql census runs inside a $( ) capture in orphan_census_collect, so the lock-state counter
+# must live in a file: a shell variable bumped inside the command substitution dies with the subshell.
+r898_orphan_counts="$fixture/r898-orphan-counts"
+r898_write_free=0
 : > "$fixture/pr-ops2"
 eval "write_state_orig() $(declare -f write_state | sed '1d')"
 write_state() {
   [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
   write_state_orig "$@"
 }
-r898_lock_probe() { if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi; }
+r898_lock_probe() { if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then echo held >>"$r898_orphan_counts"; else echo free >>"$r898_orphan_counts"; fi; }
 units '{"units":[{"id":"issue-90","issue":90,"stage":"implement","history":[]}]}'
 gh() { case "$1 $2" in
   "pr list") echo '[{"number":510,"headRefName":"agent/issue-81","isDraft":true,"title":"gated draft"},{"number":511,"headRefName":"agent/issue-82","isDraft":false,"title":"plain"},{"number":512,"headRefName":"agent/issue-83","isDraft":false,"title":"closed issue"}]' ;;
@@ -2551,7 +2562,8 @@ gh() { case "$1 $2" in
   "label list") echo '[]' ;;
   "label create") : ;;
   esac; }
-rm -f "$A/orphan-check.epoch"; reconcile_orphan_prs || :
+rm -f "$A/orphan-check.epoch"; : >"$r898_orphan_counts"; reconcile_orphan_prs || :
+r898_free="$(grep -c '^free$' "$r898_orphan_counts" || true)"; r898_held="$(grep -c '^held$' "$r898_orphan_counts" || true)"
 [[ "$r898_free" -ge 3 && "$r898_held" == 0 ]] || fail "orphan census/close/edit ran under the ledger lock (free=$r898_free held=$r898_held)"
 [[ "$r898_write_free" == 0 ]] || fail "$r898_write_free orphan ledger writes ran with the lock released"
 [[ "$(sort "$fixture/pr-ops2" | tr '\n' ' ')" == "pr close 512 pr edit 510 --add-label agent/ci-gated " ]] || fail "wrong lock-free orphan ops: $(tr '\n' ' ' < "$fixture/pr-ops2")"
