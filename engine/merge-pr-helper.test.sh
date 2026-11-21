@@ -48,6 +48,7 @@ PR_META='{"title":"fixture","body":""}'
 PR_LIST='[]'
 PR_FILES_BY_PR='{}'
 PR_HEAD_REF=parent-branch
+PR_REPO_NAME=example-maintainer/example-repo
 PR_CHILDREN='[]'
 PR_CI_VIEW_ERROR=0
 PR_CI_VIEW_OUTPUT=''
@@ -159,7 +160,7 @@ gh() {
           fi
           ;;
         'repos/{owner}/{repo}')
-          printf '{"default_branch":"main"}\n'
+          printf '{"full_name":"%s","default_branch":"main"}\n' "$PR_REPO_NAME"
           ;;
         'repos/{owner}/{repo}/pulls?state=open&base='*)
           printf '%s\n' "$PR_CHILDREN"
@@ -464,6 +465,34 @@ PR_FILES='["tools/quick-land.sh"]'
 PR_HEAD="$rsha" # no full-suite result exists for this head, so receipt or CI checks must prove it
 PR_CI_HEAD="$rsha"
 rm -rf "$receipt_dir"
+PR_REPO_NAME=ZenoWangzy/zenoforge
+PR_FILES='["tools/merge-pr.sh"]'
+PR_CHECKS='[{"name":"suites (0)","bucket":"pending"}]'
+merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 \
+  || fail "Zenoforge merge waited for a receipt or pending CI: $(cat "$fixture/check-output")"
+[[ "$(cat "$fixture/gh-calls")" == *merge:* ]] || fail 'Zenoforge PR without a receipt and with pending CI did not merge'
+
+PR_CHECKS='[{"name":"unit","bucket":"fail"}]'
+merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 \
+  || fail "Zenoforge merge refused a failed check: $(cat "$fixture/check-output")"
+grep -Fxq 'merge-pr: merging with failed check unit (founder ruling zenoforge_merge_without_tests_2026_11_21; fix forward)' "$fixture/check-output" \
+  || fail "Zenoforge failed check was not reported: $(cat "$fixture/check-output")"
+[[ "$(cat "$fixture/gh-calls")" == *merge:* ]] || fail 'Zenoforge PR with a failed check did not merge'
+
+PR_BODY=''
+PR_CHECKS='[]'
+: >"$fixture/gh-calls"
+if merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then
+  fail 'Zenoforge PR without prior-art reached merge'
+fi
+[[ "$(cat "$fixture/check-output")" == *'PR body has no "## prior-art" section'* ]] \
+  || fail "Zenoforge missing prior-art was not refused: $(cat "$fixture/check-output")"
+[[ "$(cat "$fixture/gh-calls")" != *merge:* ]] || fail 'Zenoforge PR without prior-art reached merge'
+
+PR_REPO_NAME=example-maintainer/example-repo
+PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
+PR_CHECKS='[]'
+PR_FILES='["tools/quick-land.sh"]'
 expect_receipt_refusal 'no test receipt' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
 ci_rollup() {
   jq -cn '
