@@ -111,8 +111,8 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     expected_session_id="$(jqf -r '.incident_report_resume_session_id // empty' <<<"$worker_context")"
   fi
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
-  # Start-silent breaker (queue row 935): before any claim, guard-file or other state write.
-  start_silent_breaker "$type" || { say "dispatch held unit=$unit reason=start-silent-breaker"; return 1; }
+  # Start-silent breaker (queue row 935): before any claim, guard-file or other state write. Tests that load only this function's text have no breaker.
+  ! declare -F start_silent_breaker >/dev/null || start_silent_breaker "$type" || { say "dispatch held unit=$unit reason=start-silent-breaker"; return 1; }
   # Same install-guard PATH shim the session workers run behind (bin/zc, bin/luna): every dispatched model
   # worker gets it (queue row 906), whatever the provider, so an unsafe install or a whole-suite test run is
   # refused and a configured test goes to the test host instead of this host. Review workers share it: git has
