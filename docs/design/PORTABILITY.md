@@ -294,13 +294,18 @@ Mapping (every systemd key the shipped units use):
 | `ExecStart=` | `ProgramArguments` (split with `shlex`, `%h` expanded) | |
 | `WorkingDirectory=` | `WorkingDirectory` | |
 | `Environment=` (repeated) | `EnvironmentVariables` | `PATH` gets the gnubin and shim directories prepended by the generator |
+| `EnvironmentFile=` | merged into `EnvironmentVariables` | honor systemd's optional `-` prefix and assignment precedence |
+| `Description=` | none | launchd label comes from the unit filename |
 | `StandardOutput/Error=journal` | `StandardOutPath` / `StandardErrorPath` = `$AGENT_HOME/logs/units/<unit>.log` | read back by the `journalctl` shim |
 | `OnActiveSec=`, `OnUnitActiveSec=` | `StartInterval` (seconds of `OnUnitActiveSec`) and `RunAtLoad` | first run at load instead of "1 min after" |
+| `OnBootSec=` | `RunAtLoad` | the boot delay is not represented for a LaunchAgent |
 | `OnCalendar=*-*-* HH:MM:SS UTC` | `StartCalendarInterval` | launchd has no UTC; the offset is applied at generation time and corrected the next time the generator runs (daylight saving) |
 | `Persistent=true` | none needed | launchd runs a missed `StartInterval` once after wake |
 | `TimeoutStartSec=` | the `ProgramArguments` are wrapped in `timeout -k 30 <sec>` | keeps the 20-minute backstop that `engine/systemd/zenoforge-agent.service` exists for. Descendants are not killed (no cgroup); see section 7 |
 | `RandomizedDelaySec=`, `AccuracySec=`, `After=` | dropped | contention between hosts is handled by claims, not jitter (section 8) |
 | `Type=oneshot` | job without `KeepAlive` | launchd does not start a second instance while one runs |
+| `Nice=` | `Nice` | |
+| `CPUWeight=`, `IOWeight=`, `IOSchedulingClass=` | no direct launchd equivalent | systemd scheduling hints are not carried over |
 | `[Install] WantedBy=` | n/a | `bootstrap` loads it |
 
 Added to every plist: `SoftResourceLimits.NumberOfFiles = 8192`. The engine opens many descriptors (161 named-fd sites) and the macOS default soft limit is 256.
