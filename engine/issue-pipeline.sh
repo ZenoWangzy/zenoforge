@@ -775,7 +775,7 @@ dispatch_release_batch() {
     -p "RuntimeMaxSec=$RELEASE_RUNTIME_MAX_SEC" -p SuccessExitStatus=75 \
     "${runtime_env[@]}" \
     "$script" "$anchor" "$batch_sha"; then
-    release_batch_cadence_mark; if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries release || echo "issue-pipeline: canary mark failed after release start" >&2; else echo "issue-pipeline: canary marker missing after release start" >&2; fi
+    release_batch_cadence_mark "$batch_sha"; if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries release || echo "issue-pipeline: canary mark failed after release start" >&2; else echo "issue-pipeline: canary marker missing after release start" >&2; fi
     return 0
   else
     local launch_status=$?
@@ -3163,6 +3163,7 @@ select_release_batch() {
     done
     return 0
   fi
+  if [ "$release_batch_anchor_fleet" -ne 1 ] && release_batch_same_failure_hold "$release_candidate_sha" "$release_batch_anchor"; then return 0; fi
   local release_dispatch_status=0
   dispatch_release_batch "$release_batch_anchor" "$release_candidate_sha" || release_dispatch_status=$?
   if [ "$release_dispatch_status" -eq 75 ]; then

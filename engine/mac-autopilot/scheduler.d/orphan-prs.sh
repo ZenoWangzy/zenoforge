@@ -1,3 +1,4 @@
+declare -F slow_call_yield >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/lock-free-calls.sh"
 
 # ---------- 4b. 环节 SLO 护栏：每个等待环节有预算，超了写 alerts/slo.md（每单元每次停留只报一次） ----------
 handoff_pr_waiting() { # PR issue: unresolved handoffs retain every associated PR
@@ -27,6 +28,25 @@ orphan_issue_states() { # issue numbers... → {number:{state,labels}} from one 
     -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$query} }" \
     --jq '.data.repository | to_entries | map(select(.value != null) | {key:(.key[1:]),value:{state:.value.state,labels:[.value.labels.nodes[]?.name]}}) | from_entries' 2>/dev/null
 }
+# Row 898：孤儿处理的 GitHub 调用让开台账锁（decide 在锁内、调用在 slow_call_yield 窗口、写回前重校验）。
+orphan_census_collect() { # issue numbers… → ORPHAN_CENSUS（失败为空）；台账锁外运行
+  ORPHAN_CENSUS="$(orphan_issue_states "$@")" || ORPHAN_CENSUS=""
+  return 0
+}
+orphan_pr_close() { # pr comment → ORPHAN_ACTION_OK；台账锁外运行
+  ORPHAN_ACTION_OK=false
+  gh pr close "$1" --comment "Autopilot: $2" >/dev/null 2>&1 && ORPHAN_ACTION_OK=true
+  return 0
+}
+orphan_pr_ready() { # pr → 无返回值；台账锁外运行
+  gh pr ready "$1" >/dev/null 2>&1 || :
+  return 0
+}
+orphan_gated_flag() { # pr → ORPHAN_ACTION_OK（gated_flag_pr 的加标签）；台账锁外运行
+  ORPHAN_ACTION_OK=false
+  gated_flag_pr "$1" && ORPHAN_ACTION_OK=true
+  return 0
+}
 reconcile_orphan_prs() {
   local last prs agent_prs states_by_number orphan_issue_numbers blocked rows n prn branch draft title issue_state issue_labels gated reg=0 max="${ORPHAN_REGISTER_MAX:-3}" agent_left=0 foreign=0 now
   local -a issue_numbers=()
@@ -47,7 +67,10 @@ reconcile_orphan_prs() {
           | select(. != null)] | unique' <<<"$agent_prs")" || return 0
   mapfile -t issue_numbers < <(jqf -r '.[]' <<<"$orphan_issue_numbers")
   if (( ${#issue_numbers[@]} > 0 )); then
-    states_by_number="$(orphan_issue_states "${issue_numbers[@]}")" || return 0
+    # Row 898: 孤儿 issue 的 GraphQL 普查在锁外跑（一次让锁窗口），失败照旧跳过本轮。
+    slow_call_yield reconcile_orphan_prs orphan_census_collect "${issue_numbers[@]}" || return 1
+    states_by_number="$ORPHAN_CENSUS"
+    [[ -n "$states_by_number" ]] || return 0
   else
     states_by_number='{}'
   fi
@@ -103,8 +126,8 @@ reconcile_orphan_prs() {
     handoff_pr_waiting "$prn" "$n" && { agent_left=$((agent_left + 1)); continue; }
     if [[ "$issue_state" == CLOSED ]]; then
       tick_prs_changed
-      gh pr close "$prn" --comment "Autopilot: issue #$n is closed; this PR outside the pipeline ledger is superseded." >/dev/null 2>&1 \
-        && say "orphan PR#$prn closed: issue #$n is closed"
+      slow_call_yield reconcile_orphan_prs orphan_pr_close "$prn" "issue #$n is closed; this PR outside the pipeline ledger is superseded." || return 1
+      [[ "$ORPHAN_ACTION_OK" == true ]] && say "orphan PR#$prn closed: issue #$n is closed"
       continue
     fi
     if jqf -e --argjson n "$n" 'any(.units[]; .issue == $n)' <(units_history_index) >/dev/null; then
@@ -113,8 +136,8 @@ reconcile_orphan_prs() {
         agent_left=$((agent_left + 1)); say "orphan PR#$prn kept: issue #$n has a ledger unit without its own PR"; continue
       fi
       tick_prs_changed
-      gh pr close "$prn" --comment "Autopilot: issue #$n is handled by $(jqf -r --argjson n "$n" '[.units[] | select(.issue == $n)][0].id' <(units_history_index)) in the pipeline ledger; this older PR is superseded." >/dev/null 2>&1 \
-        && say "orphan PR#$prn closed: issue #$n already has a ledger unit"
+      slow_call_yield reconcile_orphan_prs orphan_pr_close "$prn" "issue #$n is handled by $(jqf -r --argjson n "$n" '[.units[] | select(.issue == $n)][0].id' <(units_history_index)) in the pipeline ledger; this older PR is superseded." || return 1
+      [[ "$ORPHAN_ACTION_OK" == true ]] && say "orphan PR#$prn closed: issue #$n already has a ledger unit"
       continue
     fi
     if (( reg >= max )); then agent_left=$((agent_left + 1)); continue; fi
@@ -122,7 +145,18 @@ reconcile_orphan_prs() {
     # 不符合门控条件的 draft（如 agent/auto-issue-*）沿用旧行为，ready 后走旧路径。
     gated=0
     if [[ "$draft" == true ]]; then
-      if [[ "$branch" =~ $GATED_BRANCH_RE ]]; then gated_flag_pr "$prn" && gated=1; else tick_prs_changed; gh pr ready "$prn" >/dev/null 2>&1; fi
+      if [[ "$branch" =~ $GATED_BRANCH_RE ]]; then
+        slow_call_yield reconcile_orphan_prs orphan_gated_flag "$prn" || return 1
+        [[ "$ORPHAN_ACTION_OK" == true ]] && gated=1
+      else
+        tick_prs_changed
+        slow_call_yield reconcile_orphan_prs orphan_pr_ready "$prn" || return 1
+      fi
+    fi
+    # Row 898: 加标签/ready 的窗口里可能有别的写收编了这个 PR，登记前重查一次，变了就跳过并记一行。
+    if jqf -e --argjson p "$prn" 'any(.units[]; .pr == $p)' <(units_history_index) >/dev/null; then
+      say "orphan skip PR#$prn: a ledger unit took the PR while the ledger lock was released"
+      continue
     fi
     jqf -c --argjson prn "$prn" --argjson n "$n" --arg b "$branch" --arg t "$title" --arg now "$now" --argjson labels "${issue_labels:-[]}" \
       '.units += [{id:("pr-"+($prn|tostring)), title:$t, stage:"review-pending", pr:$prn, issue:$n, branch:$b, labels:$labels,
