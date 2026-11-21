@@ -1044,10 +1044,9 @@ def _number(value):
         return None
 
 
-def _merge_time(unit):
-    times = [ts(event.get("at")) for event in unit.get("history") or []
-             if event.get("stage") in ("merged", "landed")]
-    times = [value for value in times if value]
+def _merge_time(unit, include_partial_lands=False):
+    stages = ("merged", "landed", "land-head-moved", "land-post-step-failed") if include_partial_lands else ("merged", "landed")
+    times = [ts(event.get("at")) for event in unit.get("history") or [] if event.get("stage") in stages]; times = [value for value in times if value]
     return max(times) if times else None
 
 
@@ -1188,7 +1187,7 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
         merged_at = _merge_time(unit)
         if merged_at and since_30d <= merged_at <= now:
             merged_units.append((unit, merged_at))
-    details["merged_units_30d"] = len(merged_units); stamped_merged = [u for u, _ in merged_units if "verified_by" in u]; unverified_merged = sum(u.get("verified_by") == "none" for u in stamped_merged); details["stamped_merged_units_30d"] = len(stamped_merged); details["unverified_merged_units_30d"] = unverified_merged; values["delivery.unverified_merge_30d_pct"] = 100 * unverified_merged / len(stamped_merged) if stamped_merged else None
+    details["merged_units_30d"] = len(merged_units); stamped_merged = [(u, _merge_time(u, True)) for u in units if "verified_by" in u]; stamped_merged = [(u, t) for u, t in stamped_merged if t and since_30d <= t <= now]; unverified_merged = sum(u.get("verified_by") == "none" for u, _ in stamped_merged); details["stamped_merged_units_30d"] = len(stamped_merged); details["unverified_merged_units_30d"] = unverified_merged; values["delivery.unverified_merge_30d_pct"] = 100 * unverified_merged / len(stamped_merged) if stamped_merged else None
     review_rounds, approval_counts = [], []
     review_stages = {"review-approve", "review-request-changes", "review-block"}
     for unit, merged_at in merged_units:
