@@ -23,8 +23,8 @@ gitnexus_available_memory_kb() {
 }
 
 
-gitnexus_index_matches_origin_main() {
-  local repo_dir="$1" origin_main_sha indexed indexed_at indexed_epoch now age commits_behind
+gitnexus_index_matches_origin_main_within() {
+  local max_age_seconds="$1" repo_dir="$2" origin_main_sha indexed indexed_at indexed_epoch now age commits_behind
   origin_main_sha="$(git -C "$repo_dir" rev-parse origin/main 2>/dev/null || echo unknown)"
   [[ "$origin_main_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
   indexed="$(jq -r '.lastCommit // empty' "$repo_dir/.gitnexus/meta.json" 2>/dev/null)" || return 1
@@ -36,7 +36,26 @@ gitnexus_index_matches_origin_main() {
   now="$(date +%s 2>/dev/null)" || return 1
   age=$((now - indexed_epoch))
   (( age >= 0 )) || age=0
-  (( age <= 3600 ))
+  (( age <= max_age_seconds ))
+}
+
+
+gitnexus_index_matches_origin_main() {
+  gitnexus_index_matches_origin_main_within 3600 "$@"
+}
+
+
+# The refresh unit must start while every reader still sees a fresh index:
+# readers accept 3600 s (gitnexus_index_matches_origin_main), and the early
+# line starts the unit at 2400 + 1074 = 3474 s at the latest, with 1074 s the
+# longest measured refresh (night/gitnexus-analyze-memory.tsv, 2026-11-21),
+# still under the readers' 3600. When a refresh takes longer than 1200
+# seconds, the early line must be worked out again (do not raise it back to
+# 2700).
+GITNEXUS_REFRESH_EARLY_AGE_SECONDS=2400
+
+gitnexus_index_matches_origin_main_early() {
+  gitnexus_index_matches_origin_main_within "$GITNEXUS_REFRESH_EARLY_AGE_SECONDS" "$@"
 }
 
 
@@ -163,7 +182,7 @@ gitnexus_refresh_index_once() {
   fi
 
   # The origin-main path targets its remote ref; checkout HEAD may lag behind it.
-  if [ "$freshness_function" = "gitnexus_index_matches_origin_main" ]; then
+  if [ "$freshness_function" = "gitnexus_index_matches_origin_main" ] || [ "$freshness_function" = "gitnexus_index_matches_origin_main_early" ]; then
     target_sha="$(git -C "$repo_dir" rev-parse --verify refs/remotes/origin/main 2>/dev/null || echo unknown)"
   else
     target_sha="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || echo unknown)"

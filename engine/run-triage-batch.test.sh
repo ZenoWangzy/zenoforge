@@ -395,6 +395,45 @@ assert_eq "deferred issue receives no GitHub mutation" 0 "$(wc -l < "$FAKE_GH_LO
 assert_eq "legacy freshness deferral initializes bounded start time" true \
   "$(jq -e '.triage_freshness_deferred_since_epoch > 0' "$AGENT_HOME/state/910504.json" >/dev/null && echo true || echo false)"
 
+# Queue row 897 (2026-11-21): the batch reads the index and leaves refreshing
+# to the per-tick refresh unit. gitnexus_refresh_index_once opens
+# $AGENT_HOME/gitnexus-analyze.lock on every call, fresh index or not, so the
+# lock staying absent is the proof that the batch never called it.
+: > "$FAKE_CODEX_ARGS"
+rm -f "$AGENT_HOME/gitnexus-analyze.lock"
+jq -n --arg sha "$(git -C "$ZF_REPO_DIR" rev-parse origin/main)" \
+  --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{lastCommit:$sha,indexedAt:$at}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
+jq -nc --argjson issue 910510 --argjson result "$VALID" '{issue:$issue,result:$result}' \
+  > "$FAKE_CODEX_OUTPUT"
+FRESH_NO_REFRESH_OUTPUT="$(bash "$BATCH_SRC" --scheduled 910510 2>&1)"
+assert_eq "fresh index reaches the model call" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_not_contains "fresh index run never reports unconfirmed freshness" "$FRESH_NO_REFRESH_OUTPUT" \
+  'freshness not confirmed'
+assert_eq "fresh index opens no GitNexus refresh lock" false \
+  "$(test -e "$AGENT_HOME/gitnexus-analyze.lock" && echo true || echo false)"
+assert_contains "prompt states what the freshness check verified" "$(cat "$FAKE_PROMPT_CAPTURE")" \
+  'at most 60 minutes old and at most 20 commits behind origin/main'
+assert_not_contains "prompt no longer claims a batch inline refresh" "$(cat "$FAKE_PROMPT_CAPTURE")" \
+  'refreshed once for the batch'
+
+# A stale index keeps the not-confirmed branch exactly as before, and also
+# never calls the refresh helper itself.
+: > "$FAKE_CODEX_ARGS"
+rm -f "$AGENT_HOME/gitnexus-analyze.lock"
+printf '%s\n' '{"lastCommit":"stale"}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
+jq -n --arg updated_at "$TEST_UPDATED_AT" \
+  '{triage_retry_after_epoch:1,triage_freshness_deferred_issue_updated_at:$updated_at}' \
+  > "$AGENT_HOME/state/910511.json"
+STALE_NO_REFRESH_OUTPUT="$(FAKE_ISSUE_UPDATED_AT="$TEST_UPDATED_AT" bash "$BATCH_SRC" --scheduled 910511 2>&1)"
+assert_contains "stale index still takes the not-confirmed branch" "$STALE_NO_REFRESH_OUTPUT" \
+  'all candidates still require the same unconfirmed L2 freshness'
+assert_eq "stale index defers the issue without a model call" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
+assert_eq "stale index opens no GitNexus refresh lock either" false \
+  "$(test -e "$AGENT_HOME/gitnexus-analyze.lock" && echo true || echo false)"
+assert_eq "stale index still advances the freshness retry deadline" true \
+  "$(jq -e --argjson now "$(date +%s)" '.triage_retry_after_epoch > $now' "$AGENT_HOME/state/910511.json" >/dev/null && echo true || echo false)"
+
 # Three failed analyze runs clear the dead wait. Batch re-admits the unchanged
 # issue, while the per-issue apply path keeps its L2 gate closed and records why.
 : > "$FAKE_CODEX_ARGS"

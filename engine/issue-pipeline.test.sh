@@ -2038,7 +2038,7 @@ run_refresh_admission_case() (
   local launch_status="$1" status=0
   REPO_DIR="$SCRIPT_DIR/.." ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf
   eval "$(sed -n '/^dispatch_gitnexus_refresh() {/,/^}/p' "$PIPELINE_SRC")"
-  gitnexus_index_matches_origin_main() { return 1; }
+  gitnexus_index_matches_origin_main_early() { return 1; }
   systemctl() { return 1; }
   guarded_write() { return "$launch_status"; }
   record_env_fault() { printf 'fault:%s\n' "$1"; }
@@ -2797,25 +2797,69 @@ assert_contains "issue-pipeline defaults the Node env-proxy opt-in before any di
   'export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"'
 # 2026-10-09: with triage paused, nothing refreshed the GitNexus index that
 # hand agents query; the pipeline launches one refresh unit when it is stale.
+# Queue row 897 (2026-11-21): the unit starts on the early due line (2400 s)
+# so a triage batch never waits on a refresh, and a successful start lifts the
+# old gitnexus-refresh quarantine; a failed start leaves it for the next tick.
 eval "$(sed -n '/^dispatch_gitnexus_refresh() {/,/^}/p' "$PIPELINE_SRC")"
 GITNEXUS_REFRESH_CAPTURE="$AGENT_HOME/gitnexus-refresh-systemd-run.log"
+GITNEXUS_DISPATCH_REPO="$AGENT_HOME/gitnexus-dispatch-repo"
+mkdir -p "$GITNEXUS_DISPATCH_REPO"
+git -C "$GITNEXUS_DISPATCH_REPO" init -q -b main
+git -C "$GITNEXUS_DISPATCH_REPO" config user.email test@example.com
+git -C "$GITNEXUS_DISPATCH_REPO" config user.name test
+printf 'fixture\n' > "$GITNEXUS_DISPATCH_REPO/tracked"
+git -C "$GITNEXUS_DISPATCH_REPO" add tracked
+git -C "$GITNEXUS_DISPATCH_REPO" commit -qm baseline
+GITNEXUS_DISPATCH_SHA="$(git -C "$GITNEXUS_DISPATCH_REPO" rev-parse HEAD)"
+git -C "$GITNEXUS_DISPATCH_REPO" update-ref refs/remotes/origin/main "$GITNEXUS_DISPATCH_SHA"
+mkdir -p "$GITNEXUS_DISPATCH_REPO/.gitnexus"
+gitnexus_dispatch_index_age() {
+  jq -n --arg sha "$GITNEXUS_DISPATCH_SHA" --arg at "$(date -u -d "$1 seconds ago" +%Y-%m-%dT%H:%M:%SZ)" \
+    '{lastCommit:$sha,indexedAt:$at}' > "$GITNEXUS_DISPATCH_REPO/.gitnexus/meta.json"
+}
+gitnexus_dispatch_quarantine_open() {
+  mkdir -p "$QUARANTINE_DIR"
+  jq -n --argjson now "$(date +%s)" \
+    '{scope:"gitnexus-refresh",signature:"fixture",detail:"fixture",since:$now,hits:1,canaries:0}' \
+    > "$QUARANTINE_DIR/gitnexus-refresh.json"
+}
 run_gitnexus_refresh_site() (
   PATH="$ENV_PROXY_FAKE_BIN:$PATH"
-  local index_status="$1"
-  gitnexus_index_matches_origin_main() { return "$index_status"; }
+  REPO_DIR="$GITNEXUS_DISPATCH_REPO"
   record_env_fault() { :; }
   guarded_write() { printf '%s\n' "$*" >> "$GITNEXUS_REFRESH_CAPTURE"; }
   dispatch_gitnexus_refresh
 )
+run_gitnexus_refresh_failed_start() (
+  PATH="$ENV_PROXY_FAKE_BIN:$PATH"
+  REPO_DIR="$GITNEXUS_DISPATCH_REPO"
+  record_env_fault() { :; }
+  guarded_write() { return 1; }
+  dispatch_gitnexus_refresh
+)
 : > "$GITNEXUS_REFRESH_CAPTURE"
-run_gitnexus_refresh_site 1
-assert_contains "a stale GitNexus index gets one refresh unit" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
+gitnexus_dispatch_index_age 2500
+run_gitnexus_refresh_site
+assert_contains "an index 2500 seconds old and 0 commits behind starts one refresh unit" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
   "--unit zf-gitnexus-refresh"
 assert_contains "the refresh unit goes through the shared locked helper" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
   "gitnexus_refresh_index_once"
+assert_contains "the unit refresh runs the early due check against origin/main" "$(cat "$GITNEXUS_REFRESH_CAPTURE")" \
+  "gitnexus_index_matches_origin_main_early"
 : > "$GITNEXUS_REFRESH_CAPTURE"
-run_gitnexus_refresh_site 0
-assert_eq "a fresh GitNexus index launches no refresh unit" "" "$(cat "$GITNEXUS_REFRESH_CAPTURE")"
+gitnexus_dispatch_index_age 2000
+run_gitnexus_refresh_site
+assert_eq "an index 2000 seconds old launches no refresh unit" "" "$(cat "$GITNEXUS_REFRESH_CAPTURE")"
+gitnexus_dispatch_index_age 2500
+gitnexus_dispatch_quarantine_open
+run_gitnexus_refresh_site
+assert_eq "a successful unit start lifts the gitnexus-refresh quarantine" false \
+  "$(test -e "$QUARANTINE_DIR/gitnexus-refresh.json" && echo true || echo false)"
+gitnexus_dispatch_index_age 2500
+gitnexus_dispatch_quarantine_open
+run_gitnexus_refresh_failed_start >/dev/null 2>&1 || true
+assert_eq "a failed unit start leaves the gitnexus-refresh quarantine open" true \
+  "$(test -e "$QUARANTINE_DIR/gitnexus-refresh.json" && echo true || echo false)"
 rm -rf "$ENV_PROXY_FAKE_BIN"
 
 
