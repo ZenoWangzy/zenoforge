@@ -162,6 +162,23 @@ echo "ok - configured and override test runners are honored without local fallba
 (cd "$t" && whole_suite_refused pnpm test && passed pnpm build)
 echo "ok - non-test commands remain available"
 
+# 2026-11-21: a scheduler worker had the shim dir on PATH through a symlink; the guard kept that
+# spelling, found its own shim again and looped for ever (queue row 934). Same dir, any name: drop it.
+linked="$root/guard-link"; ln -s "$guard" "$linked"
+sys_path=${PATH#"$guard":}; sys_path=${sys_path#"$root/real":}
+linked_out=$(PATH="$linked:$sys_path" timeout 5 bash -c 'echo ok' 2>"$root/stderr") || fail "shim dir through a symlink: bash rc=$?, want 0"
+[[ "$linked_out" == ok ]] || fail "shim dir through a symlink: bash printed '$linked_out', want ok"
+linked_out=$(PATH="$linked:$sys_path" timeout 5 node -e 'console.log("ok")' 2>"$root/stderr") || fail "shim dir through a symlink: node rc=$?, want 0"
+[[ "$linked_out" == ok ]] || fail "shim dir through a symlink: node printed '$linked_out', want ok"
+echo "ok - a PATH entry that is the shim dir through a symlink is dropped"
+
+xdir="$root/x"; mkdir -p "$xdir"; ln -s "$guard/bash" "$xdir/bash"
+rc=0
+PATH="$guard:$xdir:$sys_path" timeout 5 bash -c 'echo ok' >"$root/stdout" 2>"$root/stderr" || rc=$?
+[[ "$rc" == 126 ]] || fail "PATH entry pointing back at this shim: rc=$rc, want 126"
+grep -q 'refusing to loop' "$root/stderr" || fail "PATH entry pointing back at this shim: no refusing-to-loop message"
+echo "ok - a lookup that still resolves to this shim stops with 126 instead of looping"
+
 for f in luna zc; do
   grep -q 'install-guard:' "$guard/../$f" || fail "bin/$f does not put install-guard first on the worker PATH"
 done

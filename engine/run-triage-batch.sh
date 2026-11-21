@@ -97,6 +97,10 @@ fi
 
 mkdir -p "$AGENT_HOME/tmp"
 SCRATCH_DIR="$(mktemp -d "$AGENT_HOME/tmp/triage-batch.XXXXXX")"
+# Queue row 920: the batch's first credits-exhausted TypeSafe answer writes this stop file
+# (intake_priority_judge); every later issue of the batch then skips the judge call and goes
+# straight to the haiku fallback. It lives in the scratch dir, so the batch's cleanup removes it.
+export ZF_INTAKE_JUDGE_STOP_FILE="$SCRATCH_DIR/intake-judge-stop"
 
 TRIAGE_RETRY_NOW="$(date +%s)"
 GH_ENV_FAULT_STAGE=triage
@@ -279,11 +283,15 @@ triage_kept_pair_apply() {
     return 0
   fi
   echo "run-triage-batch: #$n Apply failed for the kept result; pair stays for the next run" >&2
+  # Queue row 920: this failed apply was in no count, so it counts as apply_failed like the
+  # apply loop's own failures below; kept-pair successes stay out of applied_count.
+  APPLY_FAILED_COUNT=$((APPLY_FAILED_COUNT + 1))
   return 0
 }
 
 MODEL_BATCH_IDS=()
 KEPT_PAIR_SERVED=0
+APPLY_FAILED_COUNT=0
 for n in "${INCLUDED_IDS[@]}"; do
   if triage_kept_pair_apply "$n"; then
     KEPT_PAIR_SERVED=$((KEPT_PAIR_SERVED + 1))
@@ -639,6 +647,7 @@ for n in "${INCLUDED_IDS[@]}"; do
       APPLIED_COUNT=$((APPLIED_COUNT + 1))
       triage_kept_pair_delete "$n"
     else
+      APPLY_FAILED_COUNT=$((APPLY_FAILED_COUNT + 1))
       triage_kept_pair_save "$n" "${RESULT_FILES[$n]}" "${ISSUE_FILES[$n]}" \
         || echo "run-triage-batch: #$n valid result could not be kept for a retry without a new model call" >&2
       echo "run-triage-batch: #$n Apply failed; valid result and snapshot kept for the next run; other records continue" >&2
@@ -650,7 +659,9 @@ for n in "${INCLUDED_IDS[@]}"; do
   fi
 done
 
-echo "run-triage-batch: applied $APPLIED_COUNT valid result(s); failed_or_missing=$FAILED_RECORD_COUNT; tokens=${TOKENS_USED:-unavailable}" >&2
+# Queue row 920: apply_failed counts valid records whose write-back failed (and kept-pair applies that
+# failed again); applied + apply_failed + failed_or_missing equals the batch's included issues.
+echo "run-triage-batch: applied $APPLIED_COUNT valid result(s); apply_failed=$APPLY_FAILED_COUNT; failed_or_missing=$FAILED_RECORD_COUNT; tokens=${TOKENS_USED:-unavailable}" >&2
 
 NEEDS_TRIAGE_SELECTABLE_AFTER="unavailable"
 if ! NEEDS_TRIAGE_SELECTABLE_AFTER="$(triage_needs_queue_selectable_count)"; then
@@ -675,6 +686,7 @@ if mkdir -p "$LOG_DIR" && {
   printf 'tokens_used=%s\n' "${TOKENS_USED:-unavailable}"
   printf 'average_tokens_per_issue=%s\n' "$AVERAGE_TOKENS_PER_ISSUE"
   printf 'applied_count=%s\n' "$APPLIED_COUNT"
+  printf 'apply_failed_count=%s\n' "$APPLY_FAILED_COUNT"
   printf 'failed_record_count=%s\n' "$FAILED_RECORD_COUNT"
   printf 'needs_triage_selectable_before=%s\n' "$NEEDS_TRIAGE_SELECTABLE_BEFORE"
   printf 'needs_triage_selectable_after=%s\n' "$NEEDS_TRIAGE_SELECTABLE_AFTER"
