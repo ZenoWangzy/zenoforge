@@ -9,7 +9,6 @@ engine/gh-measure/gh-measure.test.sh
 engine/gitnexus-refresh-target.test.sh
 engine/gitnexus-refresh-window.test.sh
 engine/gitnexus-wrapper.test.sh
-engine/hand-completion-refill.test.sh
 engine/hotfix/hf-brief-lint.test.sh
 engine/hotfix/hf-install-gate.test.sh
 engine/hotfix/hf-pr.test.sh

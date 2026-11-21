@@ -171,7 +171,7 @@ case "$command:$subcommand" in
 esac
 EOF
 chmod +x "$test_env_bin/gh"
-printf '#!/bin/bash\nexit 0\n' > "$test_env_bin/git"
+printf '#!%s\nexit 0\n' "$BASH" > "$test_env_bin/git"
 chmod +x "$test_env_bin/git"
 export ZF_GH_REAL_CLI="$test_env_bin/gh"
 export PATH="$SCRIPT_DIR/gh-shim:$PATH"
@@ -1714,7 +1714,7 @@ test_expired_retired_hand_hold_returns_to_scheduler() {
 test_ops_acceptance_holds_notify_supervisor() {
   local mode n created expiry holder sha
   sha=0123456789abcdef0123456789abcdef01234567
-  printf '#!/bin/bash\nexit 0\n' > "$test_env_bin/systemctl"
+  printf '#!%s\nexit 0\n' "$BASH" > "$test_env_bin/systemctl"
   chmod +x "$test_env_bin/systemctl"
   for mode in expired dead ownerless; do
     reset_fixture
@@ -1805,8 +1805,8 @@ test_maintenance_tick_requeues_ownerless_hold() {
   created="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
   write_issue 4171 '[{"name":"on-hold"}]' '[]' 'ownerless external task'
   write_state 4171 "$(jq -cn --arg created "$created" '{state:"on-hold",external_deliverable:{location:"fixture report",reason:"collect evidence"},hold:{holder:"supervisor",kind:"external-deliverable",created_at:$created,release_condition:"report ready",expires_at:(now+604800|todate)}}')"
-  printf '#!/bin/bash\nexit 0\n' > "$test_env_bin/codex"
-  printf '#!/bin/bash\nexit 0\n' > "$test_env_bin/systemctl"
+  printf '#!%s\nexit 0\n' "$BASH" > "$test_env_bin/codex"
+  printf '#!%s\nexit 0\n' "$BASH" > "$test_env_bin/systemctl"
   chmod +x "$test_env_bin/codex" "$test_env_bin/systemctl"
   ZF_PIPELINE_ROADMAP_SWITCH=false bash "$SCRIPT_DIR/issue-pipeline.sh" --stage maintenance > "$test_env_root/tick.log" 2>&1 || status=$?
   if [[ "$(state_read 4171 | jq -r '.state')" != ready-for-agent ]]; then cat "$test_env_root/tick.log" >&2; fi

@@ -50,7 +50,7 @@ const nightlySuites = [
   ['engine/run-advisor.test.sh', 'nightly-advisor'],
 ];
 const expectedNightly = nightlySuites.map(([, name]) => name);
-const bash = ['/opt/homebrew/bin/bash', '/usr/local/bin/bash', 'bash'].find(command => {
+const bash = [process.env.BASH, 'bash'].filter(Boolean).find(command => {
   const result = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 5000 });
   return result.status === 0 && /GNU bash, version (?:[4-9]|\d{2,})\./.test(result.stdout);
 });

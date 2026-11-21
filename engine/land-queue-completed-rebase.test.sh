@@ -7,18 +7,22 @@ trap 'rm -rf -- "$test_env_root"' EXIT
 export ZF_LAND_QUEUE_DIR="$AGENT_HOME/land-queue"
 export TEST_UNIT_STATE=inactive TEST_UNIT_PID=0 TEST_PS_ROW=''
 mkdir -p "$ZF_LAND_QUEUE_DIR/requests" "$ZF_LAND_QUEUE_DIR/logs" "$ZF_LAND_QUEUE_DIR/worktrees" "$AGENT_HOME/night/hand-registry"
-cat > "$test_env_bin/systemctl" <<'SH'
-#!/bin/bash
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'SH'
 case "$*" in
   *--property=ActiveState*) printf '%s\n' "$TEST_UNIT_STATE" ;;
   *--property=MainPID*) printf '%s\n' "$TEST_UNIT_PID" ;;
   *) exit 97 ;;
 esac
 SH
-cat > "$test_env_bin/ps" <<'SH'
-#!/bin/bash
+} > "$test_env_bin/systemctl"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'SH'
 printf '%s\n' "$TEST_PS_ROW"
 SH
+} > "$test_env_bin/ps"
 chmod +x "$test_env_bin/systemctl" "$test_env_bin/ps"
 fail() { echo "FAIL $*" >&2; exit 1; }
 index=0

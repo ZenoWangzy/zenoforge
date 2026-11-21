@@ -12,8 +12,9 @@ jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$root
 export OWNER_TEST_GIT="$(command -v git)" ZF_HAND_REPO_DIR="$test_env_root/repo" ZF_REPO_DIR="$test_env_root/repo"
 "$OWNER_TEST_GIT" init -q -b fixture "$ZF_HAND_REPO_DIR"
 "$OWNER_TEST_GIT" -C "$ZF_HAND_REPO_DIR" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm fixture
-cat > "$test_env_bin/gh-real" <<'EOF'
-#!/bin/bash
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'EOF'
 set -euo pipefail
 case "$1 $2" in
   'issue view') cat "$OWNER_TEST_ISSUES/$3.json" ;;
@@ -42,19 +43,22 @@ case "$1 $2" in
   *) echo "unexpected gh call: $1 $2" >&2; exit 1 ;;
 esac
 EOF
+} > "$test_env_bin/gh-real"
 chmod +x "$test_env_bin/gh-real"
 export ZF_GH_REAL_CLI="$test_env_bin/gh-real" PATH="$root/engine/gh-shim:$PATH"
-printf '#!/bin/bash\nexit 0\n' > "$test_env_bin/systemd-run"
-cat > "$test_env_bin/git" <<'EOF'
-#!/bin/bash
+printf '#!%s\nexit 0\n' "$BASH" > "$test_env_bin/systemd-run"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'EOF'
 for arg in "$@"; do
   if [ "$arg" = rev-parse ]; then exec "$OWNER_TEST_GIT" "$@"; fi
 done
 exit 0
 EOF
+} > "$test_env_bin/git"
 chmod +x "$test_env_bin/git" "$test_env_bin/systemd-run"
-printf '#!/bin/bash\nexit 3\n' > "$test_env_bin/systemctl"
-printf '#!/bin/bash\ncat "$FAKE_PS_OUTPUT"\n' > "$test_env_bin/ps"
+printf '#!%s\nexit 3\n' "$BASH" > "$test_env_bin/systemctl"
+printf '#!%s\ncat "$FAKE_PS_OUTPUT"\n' "$BASH" > "$test_env_bin/ps"
 chmod +x "$test_env_bin/systemctl" "$test_env_bin/ps"
 : > "$FAKE_PS_OUTPUT"
 fail() { echo "FAIL $*" >&2; exit 1; }

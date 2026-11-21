@@ -9,8 +9,9 @@ export RECOVERY_START_LOG="$test_env_root/starts" RECOVERY_ACTIVE_UNITS="$test_e
 : > "$RECOVERY_ACTIVE_UNITS"
 mkdir -p "$ZF_LAND_QUEUE_DIR/requests" "$test_env_root/wt"
 : > "$RECOVERY_START_LOG"
-cat > "$test_env_bin/systemctl" <<'EOF'
-#!/bin/bash
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'EOF'
 if [[ "$*" == *list-units* ]]; then
   cat "$RECOVERY_ACTIVE_UNITS"
   exit 0
@@ -21,17 +22,22 @@ if [[ "$*" == *is-active* ]]; then
 fi
 exit 0
 EOF
-cat > "$test_env_bin/systemd-run" <<'EOF'
-#!/bin/bash
+} > "$test_env_bin/systemctl"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'EOF'
 for arg in "$@"; do
   case "$arg" in --unit=*) printf '%s\n' "${arg#--unit=}" >> "$RECOVERY_START_LOG" ;; esac
 done
 EOF
-cat > "$test_env_bin/uptime" <<'EOF'
-#!/bin/bash
-date -d '2 hours ago' '+%Y-%m-%d %H:%M:%S'
+} > "$test_env_bin/systemd-run"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'EOF'
+printf '{ sec = %s, usec = 0 }\n' "$(( $(date +%s) - 7200 ))"
 EOF
-chmod +x "$test_env_bin/systemctl" "$test_env_bin/systemd-run" "$test_env_bin/uptime"
+} > "$test_env_bin/sysctl"
+chmod +x "$test_env_bin/systemctl" "$test_env_bin/systemd-run" "$test_env_bin/sysctl"
 python3 - "$ZF_LAND_QUEUE_DIR" "$test_env_root" <<'FIXTURE'
 import json, pathlib, sys
 queue, tmp = map(pathlib.Path, sys.argv[1:])

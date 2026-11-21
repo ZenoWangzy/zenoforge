@@ -4,11 +4,12 @@ source "$(dirname "$0")/test-env.sh"
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 source "$script_dir/hand-completion-refill.sh"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 mkdir -p "$tmp/bin" "$tmp/repo/engine"
 export REFILL_TRACE="$tmp/trace" REFILL_HELPER="$script_dir/hand-completion-refill.sh"
-cat > "$tmp/bin/python3" <<'FAKE'
-#!/bin/bash
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'FAKE'
 for arg; do
   case "$arg" in
     watch-cleanup)
@@ -18,6 +19,7 @@ for arg; do
   esac
 done
 FAKE
+} > "$tmp/bin/python3"
 chmod +x "$tmp/bin/python3"
 watch_source="${REFILL_WATCH_SOURCE:-$script_dir/worktree-lifecycle.sh}"
 watch_fn=$(sed -n '/^watch() {$/,/^}$/p' "$watch_source")
@@ -104,8 +106,9 @@ PATH="$tmp/bin:$PATH" hand_completion_events_run_once "$tmp/repo"
 unset ZF_NIGHT_DIR
 echo 'PASS an invalid older event does not starve the next completion'
 
-cat > "$tmp/watch-cleanup-fixture.sh" <<'SH'
-#!/bin/bash
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'SH'
 set -euo pipefail
 eval "$(sed -n '/^watch_cleanup() {$/,/^}$/p' "$REFILL_WATCH_SOURCE")"
 NIGHT="$REFILL_NIGHT"; AGENTS_FILE="$NIGHT/agents.txt"; mkdir -p "$NIGHT"
@@ -117,6 +120,7 @@ hand_addendum_after_exit() { [ "${REFILL_HANDOFF_FAIL:-0}" != 1 ]; }
 say() { :; }
 watch_cleanup /fixture/worktree 99999997 33
 SH
+} > "$tmp/watch-cleanup-fixture.sh"
 export REFILL_WATCH_SOURCE="$script_dir/worktree-lifecycle.sh" REFILL_WATCH_SCRIPT="$tmp/watch-cleanup-fixture.sh" REFILL_NIGHT="$tmp/watch-night"
 hand_completion_event_publish 99999997 33 /fixture/worktree
 export REFILL_HANDOFF_FAIL=1

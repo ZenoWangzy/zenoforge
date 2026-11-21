@@ -206,7 +206,7 @@ fi
 grep -Fq 'OnCalendar=*-*-* 01:00:00 UTC' "$SCRIPT_DIR/../systemd/zenoforge-daily-perf-report.timer" \
   && echo 'ok - daily summary timer runs at 01:00 UTC' \
   || { echo 'not ok - daily summary timer runs at 01:00 UTC' >&2; exit 1; }
-grep -Eq '^ExecStart=:/bin/bash -c .*checkout/engine}/night/daily-perf-report\.sh"' \
+grep -Eq '^ExecStart=:[^[:space:]]*bash -c .*checkout/engine}/night/daily-perf-report\.sh"' \
   "$SCRIPT_DIR/../systemd/zenoforge-daily-perf-report.service" \
   && echo 'ok - daily summary service uses shared checkout script' \
   || { echo 'not ok - daily summary service uses shared checkout script' >&2; exit 1; }

@@ -1307,7 +1307,7 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
       touch -d '2 days ago' "$active_chain_lock"
       active_chain_output="$(FAKE_ACTIVE_UNITS='sup-land-fixture.service' \
         FAKE_SYSTEMCTL_SHOW_PIDS="$$" \
-        FAKE_PS_OUTPUT="$$ /usr/bin/bash engine/land-seq.sh $ACTIVE_CHAIN" \
+        FAKE_PS_OUTPUT="$$ $BASH engine/land-seq.sh $ACTIVE_CHAIN" \
         run_lifecycle reap "$REPO" 2>&1)"
       [ -d "$ACTIVE_CHAIN" ] || fail "active landing-unit worktree was removed: $active_chain_output"
       [[ "$active_chain_output" == *"skip live worktree $ACTIVE_CHAIN"* ]] || fail "active unit command line did not pin its worktree: $active_chain_output"
@@ -1315,7 +1315,7 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
 
       DISPATCHING="$ROOT/wt-dispatching"
       git -C "$REPO" worktree add -q "$DISPATCHING" -b topic/dispatching main
-      dispatching_output="$(FAKE_PS_OUTPUT="$$ /usr/bin/bash engine/night/dispatch.sh $DISPATCHING /tmp/brief" \
+      dispatching_output="$(FAKE_PS_OUTPUT="$$ $BASH engine/night/dispatch.sh $DISPATCHING /tmp/brief" \
         run_lifecycle reap "$REPO" 2>&1)"
       [ -d "$DISPATCHING" ] || fail "live hand dispatcher worktree was removed: $dispatching_output"
       [[ "$dispatching_output" == *"skip live worktree $DISPATCHING"* ]] || fail "live hand dispatcher PID did not pin its worktree: $dispatching_output"
@@ -1349,7 +1349,7 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
       set +e
       dead_hand_output="$(FAKE_ACTIVE_UNITS="zf-worktree-cleanup-$watcher_pid.service" \
         FAKE_SYSTEMCTL_SHOW_PIDS="$watcher_pid" \
-        FAKE_PS_OUTPUT="$watcher_pid /usr/bin/bash $SCRIPT watch $REPO $DEAD_HAND_LOCK 999999999 1" \
+        FAKE_PS_OUTPUT="$watcher_pid $BASH $SCRIPT watch $REPO $DEAD_HAND_LOCK 999999999 1" \
         run_lifecycle owner-live "$REPO" "$DEAD_HAND_LOCK" 2>&1)"
       dead_hand_status=$?
       set -e
@@ -1380,8 +1380,8 @@ if [ "${WORKTREE_LIFECYCLE_CASE:-all}" != all ]; then
 zf-worktree-cleanup-$WATCHER_PID.service"
       active_pids="$CALLER_PID
 $WATCHER_PID"
-      ps_rows="$CALLER_PID /usr/bin/bash engine/night/dispatch.sh $LEGACY_LOCK /tmp/brief
-$WATCHER_PID /usr/bin/bash $SCRIPT watch $REPO $LEGACY_LOCK 999999999 1"
+      ps_rows="$CALLER_PID $BASH engine/night/dispatch.sh $LEGACY_LOCK /tmp/brief
+$WATCHER_PID $BASH $SCRIPT watch $REPO $LEGACY_LOCK 999999999 1"
       set +e
       broad_scan_output="$(FAKE_ACTIVE_UNITS="$active_units" \
         FAKE_SYSTEMCTL_SHOW_PIDS="$active_pids" FAKE_PS_OUTPUT="$ps_rows" \
