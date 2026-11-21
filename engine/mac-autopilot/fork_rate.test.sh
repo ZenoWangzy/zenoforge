@@ -69,7 +69,8 @@ fork_rate.sample(state, now=6000.0)
 write_proc(proc, 11800, [manager, root, (300, "fork", root[0], root[3])])
 value, detail, score_value = fork_rate.sample(state, now=6011.0)
 assert abs(value - 1 / 11) < 1e-9 and abs(score_value - 1799 / 11) < 1e-9, (value, score_value)
-assert status(score_value) == "UNHEALTHY" and "factory-watch.service (bash, 200): 0.1/s" in detail, detail
+assert status(score_value) == "UNHEALTHY" and "factory-watch.service" not in detail, detail
+assert "total_rate: 163.6/s" in detail and "unattributed: 163.5/s (100%)" in detail, detail
 
 multi = base / "multi"; proc = multi / "proc"; state = multi / "node-health.json"
 os.environ["NODE_HEALTH_PROC_ROOT"] = str(proc)
