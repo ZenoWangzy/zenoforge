@@ -89,7 +89,7 @@ source "$SCHED_DIR/core.sh"
 source "$SCHED_DIR/../../coord.sh"
 source "$SCHED_DIR/locks-views.sh"
 polls=0
-sleep() { # stands in for the poll wait: holder A, then holder B, then the lock is released
+lock_poll_pause() { # stands in for the poll pause: holder A, then holder B, then the lock is released
   polls=$((polls + 1))
   case "$polls" in
     1) printf '%s\t%s\n' "$HOLDER_B" phase_b > "$SCHED_LOCK/holder-phase"; echo "$HOLDER_B" > "$SCHED_LOCK/pid" ;;
