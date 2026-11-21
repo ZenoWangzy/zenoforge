@@ -17,8 +17,14 @@ CALL = re.compile(r'''(?:zf_config_file|sched_config_file|zfConfigFile|zfConfigJ
 
 
 def target_files(repo, ref):
-    out = subprocess.run(['git', '-C', repo, 'ls-tree', '-r', '--name-only', ref, '.zenoforge'],
-                         capture_output=True, text=True, check=True).stdout.split()
+    command = ['git', '-C', repo, 'ls-tree', '-r', '--name-only', ref, '.zenoforge']
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode:
+        error_lines = result.stderr.splitlines()
+        if error_lines:
+            print(error_lines[0], file=sys.stderr)
+        raise subprocess.CalledProcessError(result.returncode, command, result.stdout, result.stderr)
+    out = result.stdout.split()
     return {p[len('.zenoforge/'):] for p in out if not p.startswith('.zenoforge/build/')}
 
 

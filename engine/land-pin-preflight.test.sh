@@ -2,21 +2,27 @@
 set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
+unset VECTA_REPO_DIR ZF_REPO_DIR ZF_CONFIG_ROOT
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 land_script="$script_dir/land-direct-main.sh"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/land-pin-preflight-test.XXXXXX")"
+tmp="$test_env_root/land-pin-preflight"
+mkdir -p "$tmp"
 gates_file="$script_dir/publish-preflight/gates.tsv"
 cp "$gates_file" "$tmp/gates.original"
-restore() { cp "$tmp/gates.original" "$gates_file"; rm -rf -- "$tmp"; }
-trap restore EXIT
+restore() { cp "$tmp/gates.original" "$gates_file"; }
+trap 'restore; rm -rf -- "$test_env_root"' EXIT
 
 fail() { printf 'land-pin-preflight.test.sh: %s\n' "$*" >&2; exit 1; }
 
 # Exercise the focused landing function without taking the suite's real resource slot.
 function_file="$tmp/land-pin-preflight.sh"
-sed -n '/^land_engine_pin_preflight() {/,/^}$/p' "$land_script" > "$function_file"
+sed -n -e '/^land_cleanup_preflight_private_refs() {/,/^}/p' \
+  -e '/^land_engine_pin_preflight() {/,/^}/p' "$land_script" > "$function_file"
 [[ -s "$function_file" ]] || fail 'could not extract land_engine_pin_preflight from land-direct-main.sh'
+grep -Fq "land_cleanup_preflight_private_refs' EXIT" "$land_script" || fail 'private ref cleanup is not tied to landing exit'
+land_preflight_private_refs=()
+land_preflight_private_repo=""
 # shellcheck source=/dev/null
 source "$function_file"
 land_pin_preflight_verified_key=""
@@ -108,6 +114,10 @@ printf 'docs\n' > "$repo/docs/readme.md"
 git -C "$repo" add -A
 git -C "$repo" commit -qm 'fixture: product pins engine v1'
 base="$(git -C "$repo" rev-parse HEAD)"
+vecta_repo="$tmp/vecta"
+vecta_fail_repo="$tmp/vecta-fail"
+git clone --quiet "$repo" "$vecta_repo"
+git clone --quiet "$repo" "$vecta_fail_repo"
 
 agent="$tmp/agent"
 export AGENT_HOME="$agent"
@@ -131,13 +141,28 @@ set_live() { # <engine SHA> <product SHA>
 
 out="$tmp/out"
 orig_cwd="$PWD"
+preflight_vecta_repo="$repo"
+fetch_log="$tmp/fetch.log"
+real_git="$(command -v git)"
+git() {
+  if [[ "${1:-}" == -C && "${3:-}" == fetch ]]; then
+    printf '%s\t%s\n' "$2" "${6:-}" >> "$fetch_log"
+    if [[ "${PIN_PREFLIGHT_FETCH_FAIL:-0}" == 1 ]]; then
+      echo 'fatal: landing repository is unreadable' >&2
+      return 128
+    fi
+  fi
+  "$real_git" "$@"
+}
+fetch_count() { if [[ -f "$fetch_log" ]]; then awk 'END { print NR }' "$fetch_log"; else printf '0\n'; fi; }
 run_preflight() { # <base> <head> <calls-log>; output to $out
   local base_sha="$1" head_sha="$2" calls_log="$3" status=0
   export PIN_PREFLIGHT_CALLS="$calls_log"
   land_pin_preflight_verified_key=""
   cd -- "$repo"
   repo_root="$repo"
-  if land_engine_pin_preflight "$base_sha" "$head_sha" >"$out" 2>&1; then :; else
+  branch="$(git branch --show-current)"
+  if VECTA_REPO_DIR="$preflight_vecta_repo" land_engine_pin_preflight "$base_sha" "$head_sha" >"$out" 2>&1; then :; else
     status=$?
   fi
   cd -- "$orig_cwd"
@@ -198,6 +223,10 @@ git -C "$repo" add -A
 git -C "$repo" commit -qm 'fixture: pin bump declares the engine prompt for this SHA'
 head="$(git -C "$repo" rev-parse HEAD)"
 set_live "$engine_v1" "$base"
+preflight_vecta_repo="$vecta_repo"
+if git -C "$vecta_repo" cat-file -e "$head^{commit}" >/dev/null 2>&1; then
+  fail 'separate VECTA repo unexpectedly has the landing head before preflight'
+fi
 status=0
 run_preflight "$base" "$head" "$tmp/calls-matching.log" || status=$?
 [[ "$status" -eq 0 ]] || fail "matching-SHA intended change was refused (exit $status): $(tail -8 "$out")"
@@ -207,12 +236,52 @@ matching_publish_ms="$(sed -n 's/.*land-direct-main: publish preflight passed pi
 [[ "$matching_publish_ms" =~ ^[0-9]+$ ]] || fail 'landing output did not record the added publish-preflight time'
 [[ "$(grep -c '^build ' "$tmp/calls-matching.log")" -eq 1 ]] || fail 'matching pin bump did not run exactly one build'
 [[ "$(grep -c '^check ' "$tmp/calls-matching.log")" -eq 1 ]] || fail 'matching pin bump did not run exactly one check'
+private_ref="refs/zf-land/${head:0:12}"
+[[ "$(git -C "$vecta_repo" rev-parse --verify "$private_ref^{commit}")" == "$head" ]] \
+  || fail 'separate VECTA repo did not fetch the landing head into its private ref'
+fetches_before_same_repo="$(fetch_count)"
+land_cleanup_preflight_private_refs
+if git -C "$vecta_repo" show-ref --verify --quiet "$private_ref"; then
+  fail 'private landing ref remained after preflight cleanup'
+fi
+
+# (c) A landing repo that already has its head does not fetch.
+preflight_vecta_repo="$repo"
+status=0
+run_preflight "$base" "$head" "$tmp/calls-same-repo.log" || status=$?
+[[ "$status" -eq 0 ]] || fail "same-repo preflight failed (exit $status): $(tail -8 "$out")"
+[[ "$(fetch_count)" == "$fetches_before_same_repo" ]] || fail 'same-repo preflight ran git fetch'
+
 # An unchanged push retry reuses the verified range.
 cd -- "$repo"
 repo_root="$repo"
 land_engine_pin_preflight "$base" "$head" >"$out" 2>&1 || fail 'memoized re-run of the same range failed'
 cd -- "$orig_cwd"
 [[ "$(grep -c '^build ' "$tmp/calls-matching.log")" -eq 1 ]] || fail 'memoized re-run rebuilt the engine'
+
+# (b) A failed fetch from an unreadable landing repo reports that cause without the config-change hint.
+git -C "$repo" checkout -q -b bump-v2-fetch-failure "$base"
+printf '{"hook":".zenoforge/build/engine-sync.sh","engine":"%s"}\n' "$engine_v2" > "$repo/.zenoforge/build.json"
+git -C "$repo" add .zenoforge/build.json
+git -C "$repo" commit -qm 'fixture: pin v2 for fetch failure'
+head="$(git -C "$repo" rev-parse HEAD)"
+preflight_vecta_repo="$vecta_fail_repo"
+if git -C "$vecta_fail_repo" cat-file -e "$head^{commit}" >/dev/null 2>&1; then
+  fail 'fetch-failure VECTA repo unexpectedly has the landing head'
+fi
+status=0
+PIN_PREFLIGHT_FETCH_FAIL=1 run_preflight "$base" "$head" "$tmp/calls-fetch-failure.log" || status=$?
+[[ "$status" -eq 1 ]] || fail "unreadable landing repo was not refused (exit $status): $(tail -8 "$out")"
+grep -Fq "landing head ${head:0:12} is not readable in VECTA_REPO_DIR=$vecta_fail_repo" "$out" \
+  || fail 'fetch failure did not name the unreadable landing head and VECTA repo'
+if grep -Fq 'next step: declare each engine-owned change' "$out"; then
+  fail 'fetch failure printed the unrelated intended-changes hint'
+fi
+private_ref="refs/zf-land/${head:0:12}"
+if git -C "$vecta_fail_repo" show-ref --verify --quiet "$private_ref"; then
+  fail 'failed fetch left a private landing ref'
+fi
+preflight_vecta_repo="$repo"
 
 # A stale SHA and a legacy two-column row are both ignored and warned.
 git -C "$repo" checkout -q -b bump-v2-stale "$base"
