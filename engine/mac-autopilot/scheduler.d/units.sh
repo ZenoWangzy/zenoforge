@@ -203,8 +203,9 @@ handoff_wait_stale() { # unit id -> 0 after clearing the flag when no issue it w
   units_update --arg id "$id" '.units |= map(if .id == $id then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end)' || return 1
   say "handoff wait cleared unit=$id: no issue it waited on has a live handoff episode"
 }
-unit_retries() { # unit stage → 历史里该 stage 出现次数
-  jqf -r --arg id "$1" --arg st "$2" '[.units[] | select(.id==$id) | (.history // [])[] | select(.stage==$st)] | length' "$UNITS"
+unit_retries() { # unit stage → 历史里该 stage 出现次数；verdict-missing 只数还没因为它升级过的（升级把重问预算花掉，裁决放回 review 后重新计，queue row 917）
+  jqf -r --arg id "$1" --arg st "$2" '[.units[] | select(.id==$id) | (.history // []) as $h | ($h | to_entries[]
+    | select(.value.stage==$st and ($st != "verdict-missing" or (($h[(.key + 1):] | any(.stage == "supervisor-escalated")) | not))))] | length' "$UNITS"
 }
 hist() {
   local entry
@@ -223,6 +224,13 @@ decision_entry() { # decision why evidence rejected-json owner -> history decisi
 # An INPUT_INCOMPLETE review judged nothing about the code: the way back is a review, never a commit repair (pr-5650 spent 822k tokens on 3 repairs of an unchanged head).
 last_review_blocked() { # unit-json → 0 when the latest review verdict in its history is review-block
   jqf -e '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last.stage == "review-block"' <<<"$1" >/dev/null 2>&1
+}
+# A report with no single VERDICT line judged nothing either (queue row 917): the way back is another review, never the repair or implement round a ruling once picked.
+verdict_missing_escalation() { # unit-json [unchanged-head] → 0 when the latest supervisor-escalated event is a no-verdict review escalation no review verdict followed; unchanged-head also requires a PR whose reviewed_pr_head is still the last PR head stored after it
+  local gate=true; [[ -z "${2:-}" ]] || gate='(.pr|tostring|test("^[0-9]+$")) and ($rph|test("^[0-9a-f]{40}$")) and ([$h[($e.key+1):][]|select(((.pr_head//"")|tostring) != "" and ((.pr_head//"")|tostring) != $rph)]|length)==0'
+  jqf -e '(.history // []) as $h | ((.reviewed_pr_head // "") | tostring) as $rph | ([$h | to_entries[] | select(.value.stage == "supervisor-escalated")] | last) as $e | $e != null
+    and (($e.value.result // "") | contains("has no single VERDICT line")) and ([$h[($e.key + 1):][] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | length) == 0
+    and ('"$gate"')' <<<"$1" >/dev/null 2>&1
 }
 no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approved), "review-pending" (no current approval), or nothing (a repair is right)
   # A repair with no red check and no open P0/P1 finding has nothing to fix (2026-11-08: issue-5306 went to repair three times on cancelled checks).
@@ -259,7 +267,9 @@ supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending st
   [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"
   if [[ -n "$(jqf -r '.handoff_integration_sha // empty' <<<"$u")" && -z "$(jqf -r '.handoff_delivery_verified_sha // empty' <<<"$u")" && "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]]; then printf 'repair-pending\n'; return 0; fi
   case "$stage" in
-    implement-pending|repair-pending|review-pending|rereview-pending) printf '%s\n' "$stage" ;;
+    implement-pending|repair-pending)
+      if verdict_missing_escalation "$u" unchanged-head; then printf 'review-pending\n'; else printf '%s\n' "$stage"; fi ;;
+    review-pending|rereview-pending) printf '%s\n' "$stage" ;;
     implement|repair|review|rereview) printf '%s-pending\n' "$stage" ;;
     blocked-external)
       local resume
@@ -269,7 +279,7 @@ supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending st
       elif [[ -n "$(jqf -r '.pr // empty' <<<"$u")" ]]; then printf 'repair-pending\n'
       else printf 'implement-pending\n'; fi ;;
     *)
-      if last_review_blocked "$u"; then printf 'review-pending\n'
+      if last_review_blocked "$u" || verdict_missing_escalation "$u"; then printf 'review-pending\n'
       elif [[ -n "$(jqf -r '.pr // empty' <<<"$u")" ]]; then printf 'repair-pending\n'
       elif [[ -n "$(jqf -r '.task // empty' <<<"$u")" && -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; then printf 'implement-pending\n'
       else printf 'review-pending\n'; fi ;;

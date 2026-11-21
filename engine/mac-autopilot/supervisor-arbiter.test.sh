@@ -326,6 +326,27 @@ REASON: 真实评审发现待修
 GUIDANCE: 按 F1 修复后重推'
 [[ "$(field pr-655 .stage)" == repair-pending && "$(field pr-655 .repair_hint)" == *'按 F1 修复'* ]] || fail "real review findings must still go to repair, got $(field pr-655 .stage)"
 
+# Queue row 917: a report with no single VERDICT line is the reviewer's failure — the code was never judged, so the
+# return stage is another review: from supervisor-review, and again after an earlier ruling had moved the unit on
+# while the PR head stood still. The escalation spends the verdict-missing re-ask, so the ruling restarts that budget.
+vm_unit="$(jq -cn --argjson sha "$SHA1" '{id:"pr-7160",pr:7160,lane:"pr",branch:"agent/issue-7160",stage:"supervisor-review",reviewed_sha:$sha,reviewed_pr_head:$sha,
+  history:[{stage:"pr-opened",result:"PR#7160",at:"2026-11-21T17:20:00Z"},{stage:"verdict-missing",result:"review-7160-1.md",at:"2026-11-21T17:26:00Z"},
+           {stage:"supervisor-escalated",result:"review report review-7160-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"}]}')"
+[[ "$(supervisor_return_stage "$vm_unit")" == review-pending ]] || fail "a no-verdict escalation must return review-pending, got $(supervisor_return_stage "$vm_unit")"
+[[ "$(supervisor_return_stage "$(jq -c '.history += [{stage:"review-request-changes",result:"F1",at:"2026-11-21T19:00:00Z"}]' <<<"$vm_unit")")" == repair-pending ]] \
+  || fail "a review verdict after the no-verdict escalation keeps repair-pending"
+[[ "$(supervisor_return_stage "$(jq -c '.history = [{stage:"supervisor-escalated",result:"repair breaker: three repairs without a new head",at:"2026-11-21T18:22:00Z"}]' <<<"$vm_unit")")" == repair-pending ]] \
+  || fail "an escalation for another reason keeps repair-pending"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-7160",pr:7160,stage:"review-pending",reviewed_pr_head:$sha,
+  history:[{stage:"verdict-missing",result:"review-7160-1.md",at:"2026-11-21T17:26:00Z"},{stage:"supervisor-escalated",result:"review report review-7160-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"},{stage:"supervisor-requeue",result:"rerun the review on the current head",at:"2026-11-21T18:43:00Z"}]},
+  {id:"pr-7161",pr:7161,stage:"review-pending",history:[{stage:"verdict-missing",result:"review-7161-1.md",at:"2026-11-21T17:26:00Z"}]}]}')"
+[[ "$(unit_retries pr-7160 verdict-missing)" == 0 ]] || fail "the escalation spends its verdict-missing re-ask: after the ruling the counter must read 0, got $(unit_retries pr-7160 verdict-missing)"
+[[ "$(unit_retries pr-7161 verdict-missing)" == 1 ]] || fail "a first miss with no escalation yet must still count 1 and keep the one re-ask"
+[[ "$(supervisor_return_stage "$(jq -c '.stage="implement-pending"' <<<"$vm_unit")")" == review-pending ]] \
+  || fail "a ruling that moved a no-verdict unit to implement-pending returns it to review while the PR head is unchanged"
+[[ "$(supervisor_return_stage "$(jq -c --argjson sha "$SHA2" '.stage="implement-pending" | .history += [{stage:"write-start",work_type:"implement",pr_head:$sha,at:"2026-11-21T19:05:00Z"}]' <<<"$vm_unit")")" == implement-pending ]] \
+  || fail "a PR head that moved past reviewed_pr_head keeps implement-pending"
+
 units "$(jq -cn --argjson sha "$SHA1" --argjson head "$SHA2" '{units:[{id:"pr-613",issue:613,pr:613,lane:"pr",branch:"agent/issue-613",stage:"supervisor-review",
   reviewed_sha:$sha,reviewed_pr_head:$head,approved_sha:null,
   history:[{stage:"review-approve",result:"ok",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-review",result:"runner environment failure persists",at:"2026-10-27T00:01:00Z"}]}]}')"
@@ -1105,6 +1126,39 @@ eval "$saved_cite_gh"
   || fail "an unreadable continuation issue must leave the tracker unit at supervisor-review"
 grep -Fxq 'gh api repos/ZenoWangzy/zenoforge/issues/9410' "$GH_CALLS" \
   || fail "the continuation case must exercise the REST issue read rc 1"
+
+# Queue row 917, round 2: the ruling entry itself, not only supervisor_return_stage, must send a no-verdict escalation
+# back to review. The arbiter's requeue at 18:43Z sent issue-7156/issue-7160 to implement-pending through this gate.
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9411.json"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"arbiter-vm-reroute",issue:9411,pr:99411,lane:"pr",branch:"agent/issue-9411",stage:"implement-pending",task:"original task",reviewed_sha:$sha,reviewed_pr_head:$sha,
+  history:[{stage:"pr-opened",result:"PR#99411",at:"2026-11-21T17:20:00Z"},{stage:"verdict-missing",result:"review-99411-1.md",at:"2026-11-21T17:26:00Z"},
+           {stage:"supervisor-escalated",result:"review report review-99411-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"},
+           {stage:"supervisor-requeue",result:"rerun the review on the current head",at:"2026-11-21T18:43:00Z"}]}]}')"
+rule_entry arbiter-vm-reroute reroute 6737000001 "rerun the review on the current head" || fail "the reroute ruling must land"
+[[ "$(field arbiter-vm-reroute .stage)" == review-pending ]] || fail "a reroute on a no-verdict escalation must return the unit to review, got $(field arbiter-vm-reroute .stage)"
+[[ "$(field arbiter-vm-reroute .task)" == "original task" ]] || fail "a reroute to review must not append the ruling to .task, got $(field arbiter-vm-reroute .task)"
+jq -e '.units[] | select(.id=="arbiter-vm-reroute") | .reviewed_sha == null and .reviewed_pr_head == null and .history[-1].stage == "supervisor-reroute"' "$UNITS" >/dev/null \
+  || fail "the reroute must clear the reviewed pair and record its verdict: $(jq -c '.units[0]' "$UNITS")"
+
+# Without a verdict-missing event the escalation proves nothing was reviewed: the task+branch route stands.
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9412.json"
+units "$(jq -cn '{units:[{id:"arbiter-vm-other",issue:9412,pr:99412,lane:"pr",branch:"agent/issue-9412",stage:"implement-pending",task:"original task",
+  history:[{stage:"pr-opened",result:"PR#99412",at:"2026-11-21T17:20:00Z"},
+           {stage:"supervisor-escalated",result:"repair breaker: three repairs without a new head",at:"2026-11-21T18:22:00Z"},
+           {stage:"supervisor-requeue",result:"resume the repair",at:"2026-11-21T18:43:00Z"}]}]}')"
+rule_entry arbiter-vm-other reroute 6737000002 "resume the implement round" || fail "the reroute ruling must land"
+[[ "$(field arbiter-vm-other .stage)" == implement-pending ]] || fail "an escalation for another reason keeps the task+branch route, got $(field arbiter-vm-other .stage)"
+[[ "$(field arbiter-vm-other .task)" == *"supervisor ruling 6737000002"* ]] || fail "the task+branch route must still append the ruling, got $(field arbiter-vm-other .task)"
+
+# A requeue ruling on the still-escalated unit takes the same road (issue already ready: no transition needed).
+printf '%s\n' '{"state":"ready-for-agent"}' > "$issue_states/9413.json"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"arbiter-vm-review",issue:9413,pr:99413,lane:"pr",branch:"agent/issue-9413",stage:"supervisor-review",reviewed_sha:$sha,reviewed_pr_head:$sha,
+  history:[{stage:"pr-opened",result:"PR#99413",at:"2026-11-21T17:20:00Z"},{stage:"verdict-missing",result:"review-99413-1.md",at:"2026-11-21T17:26:00Z"},
+           {stage:"supervisor-escalated",result:"review report review-99413-2.md has no single VERDICT line (twice)",at:"2026-11-21T18:22:00Z"}]}]}')"
+rule_entry arbiter-vm-review requeue 6737000003 "rerun the review" || fail "the requeue ruling must land"
+[[ "$(field arbiter-vm-review .stage)" == review-pending ]] || fail "a requeue on the escalated no-verdict unit must return it to review, got $(field arbiter-vm-review .stage)"
+jq -e '.units[] | select(.id=="arbiter-vm-review") | .reviewed_sha == null and .reviewed_pr_head == null and .history[-1].stage == "supervisor-requeue"' "$UNITS" >/dev/null \
+  || fail "the requeue must clear the reviewed pair and record its verdict: $(jq -c '.units[0]' "$UNITS")"
 
 # A non-stop-loss hold is a deterministic refusal and must park for the regular dead-park recovery route.
 printf '%s\n' '{"state":"on-hold","hold":{"kind":"manual","holder":"head"}}' > "$issue_states/9407.json"
