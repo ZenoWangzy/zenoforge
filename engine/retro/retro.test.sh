@@ -223,7 +223,7 @@ jq -n --arg filed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{changes:[{issue:9101,category:"navigation",class:"navigation-refs-fixture",filed_at:$filed}]}' \
   > "$verify_out/retro-verify.json"
 FAKE_ISSUE_VIEW="$test_env_root/open-issue.json" run_verify "$verify_root" "$verify_out"
-jq -e --arg merged "$merge_at" '.changes[0].merged_at == $merged and .before_count == 3 and .after_count == 4' \
+jq -e --arg merged "$merge_at" '.changes[0] | .merged_at == $merged and .before_count == 3 and .after_count == 4' \
   "$verify_out/retro-verify.json" >/dev/null \
   || { echo "retro.test.sh: a Refs-PR change never got its merged time:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
 echo "verification refs-merge-time rc=0"
