@@ -414,3 +414,56 @@ grep -Fq 'echo failed-command-231' <<<"$summary_commands" || fail "triage summar
 kill -TERM -- "-$exact_pid" 2>/dev/null || true
 
 echo "stuck-worker-disposition.test.sh: all assertions passed"
+
+# Row 898：止损路由（hold.sh + gh issue comment）在台账锁外跑；停止/台账写回在锁内；
+# 窗口里单元被别的写动过（stuck_probe 没了）就跳过后续写并记一行。
+r898_free=0 r898_held=0 r898_write_free=0
+eval "stuck_stoploss_comment_orig() $(declare -f stuck_stoploss_comment | sed '1d')"
+eval "set_unit_orig() $(declare -f set_unit | sed '1d')"
+eval "workers_update_orig() $(declare -f workers_update | sed '1d')"
+stuck_stoploss_comment() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi
+  stuck_stoploss_comment_orig "$@"
+}
+set_unit() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
+  set_unit_orig "$@"
+}
+workers_update() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
+  workers_update_orig "$@"
+}
+: > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"; : > "$A/scheduler.log"
+pid9="$(spawn_worker pr-99-second-stuck)"
+seed_log pr-99
+write_workers "[$(mk_worker pr-99 "$pid9" "$fixture/notrepo")]"
+write_units "$(mk_unit pr-77)" "$(mk_unit pr-88)" \
+  "$(mk_unit pr-99 "$(probe_update 90 "$(fp_of pr-99 "$pid9" "$fixture/notrepo")") | .history += [{stage:\"stuck-killed\", result:\"no progress; episode 1\", at:\"$(iso_ago 25)\"}]")"
+STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
+wait_dead "$pid9" || fail "probe run: second stuck worker must be stopped"
+[[ "$r898_free" -ge 1 && "$r898_held" == 0 ]] || fail "stop-loss hold/comment ran under the ledger lock (free=$r898_free held=$r898_held)"
+[[ "$r898_write_free" == 0 ]] || fail "$r898_write_free stuck ledger writes ran with the lock released"
+jq -e '.units[] | select(.id=="pr-99") | .stage == "supervisor-review"' "$UNITS" >/dev/null || fail "probe run: stop-loss route did not land"
+grep -Fq -- '--hold 4371 --holder scheduler-stop-loss' "$FIXTURE_HOLD_LOG" || fail "probe run: hold ran lock-free but was not applied"
+grep -Fq 'gh issue comment 4371' "$FIXTURE_GH_LOG" || fail "probe run: the stop-loss comment never ran lock-free"
+# 窗口里单元被别的写动过：stuck_probe 在锁外被清掉，止损的台账写跳过并记一行
+: > "$A/scheduler.log"; : > "$FIXTURE_HOLD_LOG"; : > "$FIXTURE_GH_LOG"
+pid10="$(spawn_worker pr-88-third-stuck)"
+seed_log pr-88
+write_workers "[$(mk_worker pr-88 "$pid10" "$fixture/notrepo")]"
+write_units "$(mk_unit pr-77)" \
+  "$(mk_unit pr-88 "$(probe_update 90 "$(fp_of pr-88 "$pid10" "$fixture/notrepo")") | .history += [{stage:\"stuck-killed\", result:\"no progress; episode 1\", at:\"$(iso_ago 25)\"}]")" \
+  "$(mk_unit pr-99)"
+stuck_stoploss_comment() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi
+  stuck_stoploss_comment_orig "$@"
+  # a concurrent writer cleared the probe while the ledger lock was released
+  jq '(.units[] | select(.id=="pr-88")) |= del(.stuck_probe)' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS"
+}
+STUCK_CONFIRM_MINUTES=$CONFIRM stuck_worker_disposition
+wait_dead "$pid10" || fail "stale run: the stuck worker must still be stopped"
+jq -e '.units[] | select(.id=="pr-88") | .stage == "review" and ((.history // []) | any(.stage == "stuck-stoploss") | not)' "$UNITS" >/dev/null \
+  || fail "a stale stop-loss decision was written: $(jq -c '.units[] | select(.id=="pr-88")' "$UNITS")"
+grep -q 'stuck skip unit=pr-88: the unit changed while the ledger lock was released' "$A/scheduler.log" \
+  || fail "the stale stop-loss skip did not log its one line"
+echo "stuck-worker-disposition.test.sh: row-898 lock discipline ok"

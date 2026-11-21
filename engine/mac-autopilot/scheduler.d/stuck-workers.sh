@@ -1,3 +1,23 @@
+declare -F slow_call_yield >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/lock-free-calls.sh"
+# Row 898：第二次卡住的止损路由（bash hold.sh 的 GitHub 搁置 + gh issue comment）在台账锁外跑；
+# 重取锁后重校验单元仍在决策时的状态（stuck_probe 还在），再写 supervisor/台账。
+STUCK_HOLD_OK=1
+stuck_stoploss_comment() { # issue unit episode → STUCK_HOLD_OK；台账锁外运行
+  local issue="$1" id="$2" kills="$3" hold_cli
+  STUCK_HOLD_OK=1
+  hold_cli="${ZF_ENGINE_DIR:-$ROOT/engine}/hold.sh"
+  [[ -r "$hold_cli" ]] || hold_cli="$HERE/../hold.sh"
+  if ! bash "$hold_cli" --hold "$issue" --holder scheduler-stop-loss \
+    --release 'supervisor rules on the stuck stop-loss escalation; requeue or approve refills the budget' \
+    --expires 24h --kind stop-loss >/dev/null 2>&1; then
+    STUCK_HOLD_OK=0
+    echo "[$STAMP] STUCK-HOLD-FAILED unit=$id issue=$issue episode=$kills" >> "$A/alerts/events.md"
+    say "STUCK-HOLD-FAILED unit=$id issue=$issue episode=$kills"
+  else
+    gh issue comment "$issue" --body "卡住止损（#4371→#4363）：这张票的单元 $id 第 $kills 次无进展卡住，worker 已停止；自动搁置（on-hold，24h 后未裁决自动恢复），单元转 supervisor 裁决。" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
 stuck_worker_disposition() {
   local scorecard="$A/node-health.json" bound offenders id w pid unit wtype probe fp held kills next issue hold_cli hold_ok cpu_now cpu_then
   local signal_active=0 named_count=0 live_count=0 killed_count=0
@@ -137,17 +157,13 @@ stuck_worker_disposition() {
         issue="$(unit_field "$id" '.issue // empty')"
         hold_ok=1
         if [[ -n "$issue" ]]; then
-          hold_cli="${ZF_ENGINE_DIR:-$ROOT/engine}/hold.sh"
-          [[ -r "$hold_cli" ]] || hold_cli="$HERE/../hold.sh"
-          if ! bash "$hold_cli" --hold "$issue" --holder scheduler-stop-loss \
-            --release 'supervisor rules on the stuck stop-loss escalation; requeue or approve refills the budget' \
-            --expires 24h --kind stop-loss >/dev/null 2>&1; then
-            hold_ok=0
-            echo "[$STAMP] STUCK-HOLD-FAILED unit=$id issue=$issue episode=$kills" >> "$A/alerts/events.md"
-            say "STUCK-HOLD-FAILED unit=$id issue=$issue episode=$kills"
-          else
-            gh issue comment "$issue" --body "卡住止损（#4371→#4363）：这张票的单元 $id 第 $kills 次无进展卡住，worker 已停止；自动搁置（on-hold，24h 后未裁决自动恢复），单元转 supervisor 裁决。" >/dev/null 2>&1 || true
+          # Row 898：止损的 hold/评论让开台账锁；重取后单元不在决策状态（stuck_probe 没了）就跳过后续写并记一行。
+          slow_call_yield stuck_worker_disposition stuck_stoploss_comment "$issue" "$id" "$kills" || return 1
+          if ! jqf -e --arg id "$id" 'any(.units[]; .id==$id and .stuck_probe != null)' "$UNITS" >/dev/null; then
+            say "stuck skip unit=$id: the unit changed while the ledger lock was released"
+            continue
           fi
+          hold_ok=$STUCK_HOLD_OK
         else
           hold_ok=0
           echo "[$STAMP] STUCK-HOLD-FAILED unit=$id issue=missing episode=$kills" >> "$A/alerts/events.md"
