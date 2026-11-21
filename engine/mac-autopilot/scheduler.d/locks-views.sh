@@ -1,3 +1,4 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/feature-map-maintain.sh"
 lock_us_now() { LOCK_US="${EPOCHREALTIME:-0}"; LOCK_US="${LOCK_US//[.,]/}"; } # microseconds since the epoch; 0 where bash has no EPOCHREALTIME
 scheduler_lock_pid_reused() { # $1: live pid in the lock -> 0 when the owner's start ticks name another process (PID reuse)
   local want now
@@ -199,7 +200,10 @@ phase_yield_lock_batch() { # Callback that records its own phases while sharing 
   return "$rc"
 }
 run_views() { # full = 体检 + 看板；dashboard = 只渲染看板（暂停时）
-  [[ "$1" == full ]] && run_node_health
+  if [[ "$1" == full ]]; then
+    run_node_health
+    feature_map_maintenance_schedule full || say 'feature-map-maintain scheduling failed'
+  fi
   SESSION_TZ="$SESSION_TZ" python3 "$HERE/gen_dashboard.py" 2>>"$A/autopilot.err"
 }
 views_entry() { # scheduler.sh --views <mode>：分离进程入口，自己持有视图锁

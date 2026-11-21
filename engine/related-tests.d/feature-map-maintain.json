@@ -1,0 +1,3 @@
+{
+  "engine/mac-autopilot/scheduler.d/feature-map-maintain.sh": ["engine/mac-autopilot/feature-map-maintain.test.sh"]
+}

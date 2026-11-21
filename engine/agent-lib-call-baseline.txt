@@ -16,6 +16,7 @@ engine/mac-autopilot/scheduler.d/dispatch.sh 1
 engine/mac-autopilot/scheduler.d/engine-batch-land.sh 0
 engine/mac-autopilot/scheduler.d/evals-arbiter.sh 0
 engine/mac-autopilot/scheduler.d/existing-walk-station.sh 0
+engine/mac-autopilot/scheduler.d/feature-map-maintain.sh 0
 engine/mac-autopilot/scheduler.d/footprint-memo.sh 0
 engine/mac-autopilot/scheduler.d/footprint.sh 1
 engine/mac-autopilot/scheduler.d/harvest-scope.sh 0
