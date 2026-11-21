@@ -156,6 +156,16 @@ await_rc() { # rc-file: poll for the waiter's exit code
   return 1
 }
 SCHED_LOCK_HELD=false
+# Row 898/g：补派自己的最长持锁记进 REFILL-TIMEOUT 行（先在锁内把起点回拨 2.5 s，不真睡）
+TICK_LOCAL_REFILL=true
+phase_mark harvest_workers
+acquire_scheduler_lock || fail 'own-hold probe could not take the ledger lock'
+lock_us_now
+SCHED_LOCK_AT_US=$((LOCK_US - 2500000))
+release_scheduler_lock
+[[ "${REFILL_OWN_HOLD_PHASE:-}" == harvest_workers && "$(( ${REFILL_OWN_HOLD_US:-0} / 1000000 ))" == 2 ]] \
+  || fail "the refill's own longest hold was not recorded (${REFILL_OWN_HOLD_PHASE:-none}:$(( ${REFILL_OWN_HOLD_US:-0} / 1000000 ))s)"
+TICK_LOCAL_REFILL=false
 holder_ready="$A/.ledger-lock-holder-ready"; rm -f "$holder_ready" "$SCHED_LOCK"
 echo cleanup_tick > "$A/.tick-phase"
 trap 'kill "$holder" 2>/dev/null || :; wait "$holder" 2>/dev/null || :; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
@@ -192,6 +202,8 @@ rm -f "$SCHED_LOCK/holder-phase"
 for _ in 1 2; do rm -f "$lock_rc"; ( rc=0; acquire_scheduler_lock_wait || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
   await_rc "$lock_rc" || { kill "$waiter" 2>/dev/null || :; fail 'a wait after the stop must fail at once'; }; wait "$waiter"; done
 [[ "$(grep -c 'REFILL-TIMEOUT stop: ledger lock wait stopped' "$LOG")" == 1 ]] || fail 'the stop must log one REFILL-TIMEOUT line per refill'
+grep -Eq 'REFILL-TIMEOUT stop:.*own_longest_hold=harvest_workers:2s' "$LOG" \
+  || fail "the stop line must name the refill's own longest hold: $(grep 'REFILL-TIMEOUT stop:' "$LOG" | head -1)"
 grep -q 'REFILL-TIMEOUT refill tick killed' "$LOG" && fail 'a stop must not read as a kill'
 rm -f "$lock_rc" "$A/.refill-stop"; refill_lock_stage() { :; }
 ( rc=0; phase_yield_lock refill_lock_stage || rc=$?; echo "$rc" > "$lock_rc" ) & waiter=$!
