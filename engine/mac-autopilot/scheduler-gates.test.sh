@@ -1970,6 +1970,97 @@ GH_HEAD="$H1"; GH_MERGES=()
 units "{\"units\":[{\"id\":\"pr-82\",\"pr\":82,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]},{\"id\":\"pr-83\",\"pr\":83,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"
 fast_land_lane || :
 [[ "${LANDS[*]}" == "82:$H1:$H1" && "$(field pr-82 .stage)" == landing && "$(field pr-83 .stage)" == ready-to-merge ]] || fail "fast lane must land one approval with both SHA bindings at a time (${LANDS[*]:-none})"
+
+# Row 898: fast-land 的克隆（git 拉取/建工作树）在台账锁外跑；landing 台账写在锁内；
+# 克隆窗口里批准被换掉就跳过派发并记一行。
+release_scheduler_lock
+acquire_scheduler_lock || fail 'row-898 fast-land probe could not take the scheduler lock'
+r898_free=0 r898_held=0 r898_write_free=0
+eval "ensure_clone_r898() $(declare -f ensure_clone | sed '1d')"
+ensure_clone() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi
+  ensure_clone_r898 "$@"
+}
+eval "set_unit_r898() $(declare -f set_unit | sed '1d')"
+set_unit() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898_write_free=$((r898_write_free + 1))
+  set_unit_r898 "$@"
+}
+LANDS=(); : > "$A/scheduler.log"
+units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"
+GH_HEAD="$H1"; fast_land_lane || :
+[[ "$r898_free" -ge 1 && "$r898_held" == 0 ]] || fail "fast-land clone ran under the ledger lock (free=$r898_free held=$r898_held)"
+[[ "$r898_write_free" == 0 ]] || fail "$r898_write_free fast-land ledger writes ran with the lock released"
+[[ "${LANDS[*]}" == "86:$H1:$H1" && "$(field pr-86 .stage)" == landing ]] || fail "probe run did not land the approved unit (${LANDS[*]:-none} $(field pr-86 .stage))"
+# 克隆窗口里批准被换：跳过派发并记一行，不写 landing
+LANDS=(); : > "$A/scheduler.log"
+ensure_clone() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898_held=$((r898_held + 1)); else r898_free=$((r898_free + 1)); fi
+  jq '(.units[] | select(.id=="pr-86") | .approved_sha) = "0000000000000000000000000000000000000000"' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS"
+  ensure_clone_r898 "$@"
+}
+units "{\"units\":[{\"id\":\"pr-86\",\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"
+GH_HEAD="$H1"; fast_land_lane || :
+[[ ${#LANDS[@]} == 0 && "$(field pr-86 .stage)" == ready-to-merge ]] || fail "a stale fast-land decision was dispatched (${LANDS[*]:-none} $(field pr-86 .stage))"
+grep -q 'fast-land skip unit=pr-86: the unit changed while the ledger lock was released' "$A/scheduler.log" \
+  || fail "the stale fast-land skip did not log its one line: $(cat "$A/scheduler.log")"
+release_scheduler_lock
+unset -f ensure_clone
+eval "ensure_clone() $(declare -f ensure_clone_r898 | sed '1d')"; unset -f ensure_clone_r898
+unset -f set_unit
+eval "set_unit() $(declare -f set_unit_r898 | sed '1d')"; unset -f set_unit_r898
+
+# Row 898: supersede 的 gh run list 在台账锁外跑；supersede 台账写在锁内；
+# 窗口里有 refill 派出 worker，候选重算后该单元不再被 supersede，并记一行。
+R898_MAIN=1111111111111111111111111111111111111111
+R898_BASE=2222222222222222222222222222222222222222
+release_scheduler_lock
+acquire_scheduler_lock || fail 'row-898 supersede probe could not take the scheduler lock'
+r898s_free=0 r898s_held=0 r898s_write_free=0
+eval "git_r898() $(declare -f git | sed '1d')"
+git() {
+  if [[ "${1:-}" == -C && "${3:-}" == merge-base && "${4:-}" == --is-ancestor ]]; then
+    [[ "${5:-}" == "$R898_BASE" && "${6:-}" == "$R898_MAIN" ]] && return 0
+    [[ "${5:-}" == "$R898_MAIN" && "${6:-}" == "$R898_MAIN" ]] && return 0
+    return 1
+  fi
+  git_r898 "$@"
+}
+eval "set_unit_s898() $(declare -f set_unit | sed '1d')"
+set_unit() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || r898s_write_free=$((r898s_write_free + 1))
+  set_unit_s898 "$@"
+}
+gh_run_list_cached() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898s_held=$((r898s_held + 1)); else r898s_free=$((r898s_free + 1)); fi
+  printf '[{"headSha":"%s","conclusion":"success","status":"completed","createdAt":"t","databaseId":9}]' "$R898_MAIN"
+}
+units "{\"units\":[{\"id\":\"mr-1\",\"main_red\":true,\"ci_sha\":\"$R898_BASE\",\"stage\":\"implement-pending\",\"history\":[]}]}"
+MAIN_HEAD="$R898_MAIN"; MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS=""
+: > "$A/scheduler.log"; supersede_resolved_main_red_units || :
+[[ "$r898s_free" -ge 1 && "$r898s_held" == 0 ]] || fail "supersede's run list ran under the ledger lock (free=$r898s_free held=$r898s_held)"
+[[ "$r898s_write_free" == 0 ]] || fail "$r898s_write_free supersede writes ran with the lock released"
+[[ "$(field mr-1 .stage)" == closed ]] || fail "probe run did not supersede the pending main-red unit ($(field mr-1 .stage))"
+grep -q "main-red unit mr-1 superseded by green Pipeline suites at $R898_MAIN" "$A/scheduler.log" || fail 'the supersede line is missing'
+# 窗口里 refill 派出了 worker：候选重算掉该单元，不写 superseded，并记一行
+: > "$A/scheduler.log"
+units "{\"units\":[{\"id\":\"mr-1\",\"main_red\":true,\"ci_sha\":\"$R898_BASE\",\"stage\":\"implement-pending\",\"history\":[]}]}"
+jq '{workers:[{pid:991,unit:"mr-1",type:"implement",log:"w.log",report:"r.md"}]}' > "$WORKERS"
+MAIN_SUITES_RUNS_LOADED=false; MAIN_SUITES_RUNS=""
+gh_run_list_cached() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then r898s_held=$((r898s_held + 1)); else r898s_free=$((r898s_free + 1)); fi
+  printf '[{"headSha":"%s","conclusion":"success","status":"completed","createdAt":"t","databaseId":9}]' "$R898_MAIN"
+}
+supersede_resolved_main_red_units || :
+[[ "$(field mr-1 .stage)" == implement-pending ]] || fail "a unit with a live worker was superseded: $(field mr-1 .stage)"
+jq -e --arg id mr-1 'any(.units[]; .id==$id and ((.history // []) | any(.stage == "superseded")) | not)' "$UNITS" >/dev/null || fail 'a stale supersede decision was written'
+grep -q 'supersede re-read candidates after the ledger lock was released' "$A/scheduler.log" || fail 'the candidate re-read did not log its one line'
+unset -f gh_run_list_cached
+unset -f git
+eval "git() $(declare -f git_r898 | sed '1d')"; unset -f git_r898
+unset -f set_unit
+eval "set_unit() $(declare -f set_unit_s898 | sed '1d')"; unset -f set_unit_s898
+release_scheduler_lock
 # If the PR head has rolled back since review, even an approved ancestor candidate is not landed.
 LANDS=(); GH_HEAD="$H1"
 units "{\"units\":[{\"id\":\"pr-84\",\"pr\":84,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H2\",\"history\":[]}]}"
