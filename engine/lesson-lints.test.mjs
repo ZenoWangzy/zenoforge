@@ -2,9 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-import { entryCheckFailures, exactSecondFailures, utcStampFailures } from './lesson-lints.mjs';
+import { entryCheckFailures, exactSecondFailures, lessonLints, runLessonLints, utcStampFailures } from './lesson-lints.mjs';
+
+function lintRepoFixture() {
+  const repo = mkdtempSync(path.join(os.tmpdir(), 'lesson-lints-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' });
+  mkdirSync(path.join(repo, 'engine/lib.d'), { recursive: true });
+  mkdirSync(path.join(repo, 'lessons'), { recursive: true });
+  writeFileSync(path.join(repo, 'engine/lib.d/issue-state.sh'), 'old state writer\n');
+  writeFileSync(path.join(repo, 'lessons/recurrence-ranking.json'), JSON.stringify({ ranking: [
+    { lesson_id: 'V936', incident_class_tag: 'state-single-writer', recurrence_count: 2 },
+  ] }));
+  git('init', '-q');
+  git('config', 'user.name', 'Lesson lint test');
+  git('config', 'user.email', 'lesson-lint-test@example.invalid');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  const base = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  writeFileSync(path.join(repo, 'engine/lib.d/issue-state.sh'), 'unguarded state writer\n');
+  git('add', '.');
+  git('commit', '-qm', 'head');
+  return { repo, base, head: 'HEAD', cleanup: () => rmSync(repo, { recursive: true, force: true }) };
+}
 
 test('a Z stamp formatted in local time fails; a line with date -u, TZ=UTC0 or no Z passes', () => {
   const sources = {
@@ -54,4 +77,21 @@ test('an entry check comparing argv[1] without existsSync and realpathSync fails
 test('no engine script keeps a symlink-blind entry check', () => {
   const files = execFileSync('git', ['ls-files', 'engine'], { encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.deepEqual(entryCheckFailures(files, (file) => readFileSync(file, 'utf8')), []);
+});
+
+test('an observe lint prints would-fail and does not fail the run', () => {
+  const fixture = lintRepoFixture();
+  const lint = lessonLints[0];
+  const originalMode = lint.mode;
+  const lines = [];
+  try {
+    assert.equal(runLessonLints({ ...fixture, log: (line) => lines.push(line) }), 1, 'missing mode defaults to enforce');
+    lint.mode = 'observe';
+    assert.equal(runLessonLints({ ...fixture, log: (line) => lines.push(line) }), 0);
+    assert(lines.some((line) => line.includes('lesson=V936') && line.includes('verdict=would-fail')));
+  } finally {
+    if (originalMode === undefined) delete lint.mode;
+    else lint.mode = originalMode;
+    fixture.cleanup();
+  }
 });

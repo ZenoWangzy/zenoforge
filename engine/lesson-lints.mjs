@@ -471,7 +471,13 @@ function git(repo, args) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 }
 
-export function runLessonLints({ repo, base, head, log = (line) => console.log(line) }) {
+function effectiveMode(lint) {
+  const mode = lint.mode ?? 'enforce';
+  if (mode !== 'observe' && mode !== 'enforce') throw new Error(`invalid lesson lint mode: ${mode}`);
+  return mode;
+}
+
+export function runLessonLints({ repo, base, head = 'HEAD', log = (line) => console.log(line) }) {
   const paths = git(repo, ['diff', '--name-only', `${base}...${head}`, '--']).split(/\r?\n/).filter(Boolean);
   const ranking = JSON.parse(git(repo, ['show', `${head}:${rankingPath}`]));
   const readSource = (file) => git(repo, ['show', `${head}:${file}`]);
@@ -479,25 +485,26 @@ export function runLessonLints({ repo, base, head, log = (line) => console.log(l
   for (const lint of lessonLints) {
     const result = buildLessonLintVerdict({ lint, paths, readSource, ranking });
     if (result.verdict === 'skip') continue;
-    const line = `lesson-lint: lesson=${lint.lesson} incident_class=${lint.classTag} recurrence_count=${result.recurrence_count ?? 0} verdict=${result.verdict}`;
+    const mode = effectiveMode(lint);
+    const verdict = result.verdict === 'fail' && mode === 'observe' ? 'would-fail' : result.verdict;
+    const line = `lesson-lint: lesson=${lint.lesson} incident_class=${lint.classTag} recurrence_count=${result.recurrence_count ?? 0} verdict=${verdict}`;
     log(result.missing?.length ? `${line} missing=${result.missing.join('; ')}` : line);
     if (result.verdict === 'fail') {
       log(`lesson-lint: fix: ${lint.guidance}`);
-      failed += 1;
+      if (mode === 'enforce') failed += 1;
     }
   }
-  const exactSecond = exactSecondFailures(paths, readSource);
-  for (const hit of exactSecond) log(`lesson-lint: lesson=none incident_class=${exactSecondLint.classTag} verdict=fail at=${hit}`);
-  if (exactSecond.length) log(`lesson-lint: fix: ${exactSecondLint.guidance}`);
-  failed += exactSecond.length;
-  const entryChecks = entryCheckFailures(paths, readSource);
-  for (const hit of entryChecks) log(`lesson-lint: lesson=none incident_class=${entryCheckLint.classTag} verdict=fail at=${hit}`);
-  if (entryChecks.length) log(`lesson-lint: fix: ${entryCheckLint.guidance}`);
-  failed += entryChecks.length;
-  const utcStamps = utcStampFailures(paths, readSource);
-  for (const hit of utcStamps) log(`lesson-lint: lesson=none incident_class=${utcStampLint.classTag} verdict=fail at=${hit}`);
-  if (utcStamps.length) log(`lesson-lint: fix: ${utcStampLint.guidance}`);
-  failed += utcStamps.length;
+  for (const [lint, hits] of [
+    [exactSecondLint, exactSecondFailures(paths, readSource)],
+    [entryCheckLint, entryCheckFailures(paths, readSource)],
+    [utcStampLint, utcStampFailures(paths, readSource)],
+  ]) {
+    const mode = effectiveMode(lint);
+    const verdict = hits.length && mode === 'observe' ? 'would-fail' : 'fail';
+    for (const hit of hits) log(`lesson-lint: lesson=none incident_class=${lint.classTag} verdict=${verdict} at=${hit}`);
+    if (hits.length) log(`lesson-lint: fix: ${lint.guidance}`);
+    if (mode === 'enforce') failed += hits.length;
+  }
   return failed;
 }
 
