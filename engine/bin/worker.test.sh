@@ -82,6 +82,20 @@ if [[ $mode == router_noise ]]; then  # 11-13: a tool error echoing the worker's
   sleep 0.3
   mode=success
 fi
+if [[ $mode == db_locked* ]]; then
+  # 11-21 queue 899: every zcode process shares one sqlite db; a locked turn is transient contention. The stray 429
+  # usage line is what made the real verdict fatal, so the retry must ride the same fatal path. db_locked:2 fails twice.
+  db_locked_times=${mode#db_locked}; db_locked_times=${db_locked_times#:}
+  [[ $db_locked_times =~ ^[0-9]+$ ]] || db_locked_times=1
+  db_locked_count=$(($(cat "$scratch/tmp/db-locked-$key.count" 2>/dev/null || echo 0) + 1))
+  printf '%s\n' "$db_locked_count" > "$scratch/tmp/db-locked-$key.count"
+  if (( db_locked_count <= db_locked_times )); then
+    printf '%s\n' '{"type":"turn.failed","error":{"code":"ERR_SQLITE_ERROR","message":"database is locked"}}' > "$d/events.jsonl"
+    printf '%s\n' '{"type":"usage","detail":"window 429 of the 5h quota"}' >> "$d/events.jsonl"
+    exit 1
+  fi
+  mode=success
+fi
 if [[ $mode == auth_turn_failed ]]; then
   printf 'codex_models_manager: failed to refresh available models: unexpected status 401\n' >> "$d/stderr.log"
   printf '%s\n' '{"type":"turn.failed","error":{"code":"authentication_error","message":"Authentication failed: token expired (401)"}}' > "$d/events.jsonl"
@@ -206,6 +220,7 @@ run_case() {
   local initial_model=${8:-gpt-6-luna} history=${10:-}
   local gate_queue_seconds=${12:-}
   local zc_available=${13:-yes}
+  local breaker=${14:-}
   local -a queue_override=() zcode_override=()
   [[ -z $gate_queue_seconds ]] || queue_override=(WORKER_GATE_QUEUE_SECONDS="$gate_queue_seconds")
   local root="$test_root/$name/.scratch" wt="$test_root/$name/worktree" prompt="$test_root/$name/brief.md"
@@ -220,7 +235,10 @@ run_case() {
   fi
   if [[ $hold == active ]]; then
     printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$agent_home/zcode-exhausted-until"
+  elif [[ $hold == luna ]]; then
+    printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$agent_home/codex-exhausted-until"
   fi
+  [[ -z $breaker ]] || touch "$root/tmp/${breaker}-breaker"
   git -C "$wt" init -q
   git -C "$wt" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
   printf 'same brief for both backends\n' > "$prompt"
@@ -472,6 +490,22 @@ assert_file_contains "$CASE_DIR/failover" 'backend=zc skipped; reason=zcode quot
 assert_file_contains "$CASE_DIR/failover" 'rc=75 reason=both backends failed: luna:'
 printf 'PASS luna failure during quota hold exhausts both backends without starting zc\n'
 
+# 11-21 queue 899 (1a): a fatal zc verdict must not start luna while Codex is held by a marker file.
+run_case zc-failover-luna-held 75 fatal_quota success 8 4 zc gpt-6-luna '' '' luna
+zc_luna_held_dir=$CASE_DIR
+[[ $(cat "$zc_luna_held_dir/rc") == 75 ]] || fail 'zc failure with luna held did not write rc=75'
+[[ $(cat "$zc_luna_held_dir/backend") == zc && $(cat "$zc_luna_held_dir/attempt-backend") == zc ]] || fail 'a marker-held luna was started after a zc failure'
+assert_file_contains "$zc_luna_held_dir/failover" 'backend=luna skipped; reason=codex quota hold active'
+assert_file_contains "$zc_luna_held_dir/failover" 'rc=75 reason=both backends failed: zc: fatal stderr pattern: authentication or quota error; luna: codex quota hold active'
+printf 'PASS a fatal zc verdict does not start a marker-held luna\n'
+
+# 11-21 queue 899 (2): a fresh zc breaker file alone is another task's verdict, not a hold; the requested zc run stays.
+run_case zc-breaker-file-only 0 success success 8 4 zc gpt-6-luna '' '' luna '' yes zc
+zc_breaker_dir=$CASE_DIR
+[[ $(cat "$zc_breaker_dir/backend") == zc && $(cat "$zc_breaker_dir/attempt-backend") == zc ]] || fail 'a breaker-only zc run was rerouted or failed over'
+assert_file_contains "$zc_breaker_dir/placement.log" 'backend=zc kept; reason=zc breaker file only, no quota or availability hold'
+printf 'PASS a zc breaker file alone keeps the requested zc run on zc\n'
+
 run_case explicit-zc-no-hold 0 success success 8 4 zc
 [[ $(cat "$CASE_DIR/backend") == zc && $(cat "$CASE_DIR/attempt-backend") == zc ]] || fail 'explicit zc changed backend without a quota hold'
 printf 'PASS explicit zc stays on zc without a quota hold\n'
@@ -639,8 +673,15 @@ printf 'PASS Built-in lines are neither fatal nor meaningful progress\n'
 run_case quota 0 fatal_quota success 8 4
 quota_dir=$CASE_DIR
 assert_file_contains "$quota_dir/failover" 'authentication or quota error'
+# 11-21 queue 899 (4): the matching line is quoted beside the reason, and the failed attempt's stderr survives
+# under a per-attempt name even though the next attempt rewrites stderr.log.
+assert_file_contains "$quota_dir/failover" 'evidence=stderr.log: AI request failed: insufficient_quota, rate limit exceeded'
+quota_stderr_copy=''
+for f in "$quota_dir"/stderr.zc.*.log; do [[ -f $f ]] && quota_stderr_copy=$f; done
+[[ -n $quota_stderr_copy ]] || fail 'the failed zc attempt kept no per-attempt stderr copy'
+assert_file_contains "$quota_stderr_copy" 'insufficient_quota'
 [[ $(cat "$quota_dir/backend") == luna ]] || fail 'quota case did not finish on luna'
-printf 'PASS auth/quota stderr pattern -> immediate failover\n'
+printf 'PASS auth/quota stderr pattern -> immediate failover with kept evidence\n'
 
 run_case turn-failed 0 turn_failed success 8 4
 turn_dir=$CASE_DIR
@@ -652,6 +693,26 @@ assert_file_contains "$turn_dir/failover" 'backend=zc failed; next=luna; reason=
 [[ -f "$test_root/turn-failed/.scratch/tmp/zc-breaker" ]] || fail 'Turn execution failed did not open the zc breaker'
 assert_file_contains "$turn_dir/last.md" 'success from luna'
 printf 'PASS zc Turn execution failed -> luna failover with reason; partial worktree preserved\n'
+
+# 11-21 queue 899 (5): a locked zcode database is transient contention, not a provider failure: retry zc once,
+# touch no breaker, never start luna; a second locked failure gives up rc=75.
+run_case zc-locked-retry 0 db_locked success 8 60 zc
+locked_dir=$CASE_DIR
+[[ $(cat "$locked_dir/rc") == 0 && $(cat "$locked_dir/backend") == zc && $(cat "$locked_dir/attempt-backend") == zc ]] ||
+  fail 'a locked-database zc run did not retry zc to success'
+[[ ! -e "$test_root/zc-locked-retry/.scratch/tmp/zc-breaker" ]] || fail 'a locked database opened the zc breaker'
+assert_file_contains "$locked_dir/failover" 'locked database: waiting to retry zc'
+assert_file_contains "$locked_dir/last.md" 'success from zc'
+printf 'PASS a locked database retries zc once and touches no breaker\n'
+
+run_case zc-locked-twice 75 db_locked:2 success 8 60 zc
+locked_twice_dir=$CASE_DIR
+[[ $(cat "$locked_twice_dir/rc") == 75 ]] || fail 'two locked failures did not end rc=75'
+[[ $(cat "$locked_twice_dir/backend") == zc && $(cat "$locked_twice_dir/attempt-backend") == zc ]] || fail 'two locked failures started luna'
+[[ ! -e "$test_root/zc-locked-twice/.scratch/tmp/zc-breaker" ]] || fail 'two locked failures opened the zc breaker'
+assert_file_contains "$locked_twice_dir/failover" 'locked database twice: giving up'
+assert_file_contains "$locked_twice_dir/failover" 'rc=75 reason=both backends failed: zc: fatal event pattern: turn.failed; zc retry after locked database: fatal event pattern: turn.failed'
+printf 'PASS two locked failures give up rc=75 with no luna start and no breaker\n'
 
 run_case models-manager-401 0 success models_manager_401 8 4 luna
 [[ $(cat "$CASE_DIR/backend") == luna ]] || fail 'models_manager refresh 401 was treated as fatal'
