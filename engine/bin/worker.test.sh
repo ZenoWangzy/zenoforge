@@ -628,9 +628,13 @@ make_fake_remote() {
   cat > "$test_root/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-while [[ ${1:-} == -o ]]; do shift 2; done
+connect_timeout=15
+while [[ ${1:-} == -o ]]; do
+  [[ ${2:-} != ConnectTimeout=* ]] || connect_timeout=${2#ConnectTimeout=}
+  shift 2
+done
 host=${1:-}; shift || true
-[[ $host != unreachable ]] || exit 255
+if [[ $host == unreachable ]]; then sleep "$connect_timeout"; exit 255; fi
 remote=${ZF_TEST_REMOTE_ROOT:?}
 cd "$remote"
 export HOME="$remote/home" PATH="$remote/bin:/usr/bin:/bin"
