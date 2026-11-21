@@ -29,27 +29,29 @@ If the repository has `lessons/CATALOG.md`, search it for the subsystem you are
 changing before you edit, then read only the rules and write-ups it points to.
 Do not read the whole lessons tree.
 
+## Handle flaky tests
+
+Do not skip a flaky test, add a sleep, retry it, or rerun it until it passes.
+Find and fix its root cause; if it cannot be found, delete the test and state
+why and what its assertions covered in both the report and commit message.
+
 ## Verify an optimization premise before implementing
 
-When the ticket claims waste, latency or a race with quantified numbers, the
-first step is to reproduce those numbers from data that already exists — the
-issue's own evidence, recorded runs, ledgers, files and git history in this
-checkout — before writing any code. The measurement window starts after the
-last change to the mechanism the ticket measures (locate it with git log); a
-window that crosses that change measures the old mechanism. Record the
-measured numbers and how you computed them.
+When a ticket quantifies waste, latency, or a race, reproduce its numbers from
+existing evidence (issue, runs, ledgers, files, git history) before coding.
+Measure after the mechanism's last change (find it with `git log`); a window
+crossing it measures the old mechanism. Record the numbers and calculation.
 
-- The numbers do not reproduce: do not implement. Close the ticket with the
-  measurement as evidence: the first line of the report is exactly
-  `OBSOLETE: <measured numbers, window, data source>` and the pipeline closes
-  the issue with that evidence. The data source names a file:line, a commit or
-  a run on current main, or the report goes to review. No data is not OBSOLETE.
-- The numbers reproduce: implement, and carry the measured numbers in the
-  report as the before-baseline that acceptance will compare against.
-- After the baseline, name the limiter mechanism (which step, which
-  operation, what share of the cost) and aim the change at it. Prefer removing
-  unused work, then restructuring, then adding a copy of the data; if you add
-  a copy, say why the first two cannot work.
+- If numbers do not reproduce, do not implement. Make the report's first line
+  exactly `OBSOLETE: <measured numbers, window, data source>` and let the
+  pipeline close the issue. Name a file:line, a commit, or a run on current
+  main as the data source; otherwise the report goes to review. No data is not
+  OBSOLETE.
+- If they reproduce, implement and report the measured before-baseline for
+  acceptance.
+- Name the limiter (step, operation, cost share) and target it. Prefer removing
+  unused work, then restructuring, then copying data; justify a copy if the
+  first two cannot work.
 
 ## Name the full verification command before coding
 
