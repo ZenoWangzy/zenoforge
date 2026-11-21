@@ -53,10 +53,11 @@ if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
     flock "$mx"
     [[ -e "$wait_f" ]] || : >"$wait_f"
     [[ -e "$wait_f" ]] || { echo "luna: cannot publish capacity ticket $wait_f" >&2; exit 74; }
+    luna_reload_live_gate
     if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
     [[ -e "$wait_f" ]] || { echo "luna: capacity ticket disappeared: $wait_f" >&2; exit 74; }
     [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
-    flock -u "$mx"; sleep 30
+    flock -u "$mx"; sleep "${LUNA_WAIT_SECONDS:-30}"
   done
 else
   scope="${ZF_WORKER_REMOTE_SCOPE_NAME:-}"

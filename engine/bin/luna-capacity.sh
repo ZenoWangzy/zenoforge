@@ -1,5 +1,49 @@
 # Shared worker-scope capacity used by both backend gates and the scheduler.
 LUNA_RUNS_HARD_CAP=10
+LUNA_GATE_HOME="${AGENT_HOME:-${ZF_HOME:-}}"
+if [[ -z "$LUNA_GATE_HOME" ]]; then
+  LUNA_GATE_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+  if [[ -r "$LUNA_GATE_ENGINE_DIR/deploy.env" ]]; then
+    LUNA_GATE_HOME="$(source "$LUNA_GATE_ENGINE_DIR/deploy.env" >/dev/null 2>&1; printf '%s' "${AGENT_HOME:-${ZF_HOME:-}}")"
+  fi
+  unset LUNA_GATE_ENGINE_DIR
+fi
+LUNA_GATE_HOME="${LUNA_GATE_HOME:-${HOME:-}/.zenoforge}"
+LUNA_GATE_LAST_SOURCE="${LUNA_GATE_LAST_SOURCE:-$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)}"
+
+luna_reload_live_gate() {
+  local live_file="$LUNA_GATE_HOME/engine-live/bin/luna-capacity.sh" resolved source_file function_name
+  local old_cap="${LUNA_RUNS_HARD_CAP:-}" old_why="${BOX_ROOM_WHY:-}" old_ahead="${LUNA_WAIT_AHEAD:-}"
+  local -a old_functions=()
+  local -A saved_functions=()
+  resolved="$(readlink -f -- "$live_file" 2>/dev/null)" || return 0
+  [[ -f "$resolved" && -r "$resolved" && "$resolved" != "${LUNA_GATE_LAST_SOURCE:-}" ]] || return 0
+  bash -n "$resolved" 2>/dev/null || return 0
+
+  source_file="${LUNA_GATE_LAST_SOURCE:-}"
+  if [[ -r "$source_file" ]]; then
+    mapfile -t old_functions < <(sed -nE 's/^([[:alnum:]_]+)\(\) \{.*/\1/p' "$source_file")
+  fi
+  for function_name in "${old_functions[@]}"; do
+    saved_functions["$function_name"]="$(declare -f "$function_name" 2>/dev/null || true)"
+  done
+
+  if source "$resolved" 2>/dev/null; then
+    LUNA_GATE_LAST_SOURCE="$resolved"
+    printf 'luna: gate reloaded from %s\n' "$resolved" >&2
+  else
+    for function_name in "${old_functions[@]}"; do
+      if [[ -n "${saved_functions[$function_name]}" ]]; then
+        eval "${saved_functions[$function_name]}"
+      else
+        unset -f "$function_name"
+      fi
+    done
+    LUNA_RUNS_HARD_CAP="$old_cap" BOX_ROOM_WHY="$old_why" LUNA_WAIT_AHEAD="$old_ahead"
+    LUNA_GATE_LAST_SOURCE="$source_file"
+  fi
+}
+
 luna_run_cap() { local cap="${LUNA_MAX:-$LUNA_RUNS_HARD_CAP}"; (( cap < LUNA_RUNS_HARD_CAP )) || cap=$LUNA_RUNS_HARD_CAP; printf '%s\n' "$cap"; }
 cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
   local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))

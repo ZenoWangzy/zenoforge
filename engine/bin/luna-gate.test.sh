@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 bin=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$bin/../mac-autopilot/scheduler.d/self-check.sh"
-root=$(mktemp -d); ticket_pid=""; trap '[[ -z "${ticket_pid:-}" ]] || { kill "$ticket_pid" 2>/dev/null || :; wait "$ticket_pid" 2>/dev/null || :; }; rm -rf -- "$root" "$test_env_root"' EXIT
+root=$(mktemp -d); ticket_pid=""; reload_pid=""; trap '[[ -z "${ticket_pid:-}" ]] || { kill "$ticket_pid" 2>/dev/null || :; wait "$ticket_pid" 2>/dev/null || :; }; [[ -z "${reload_pid:-}" ]] || { kill "$reload_pid" 2>/dev/null || :; wait "$reload_pid" 2>/dev/null || :; }; rm -rf -- "$root" "$test_env_root"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 export LUNA_WORKER_SLICE_DIR="$root/no-slice" # cases below must not read the host's live worker slice
 
@@ -166,8 +166,107 @@ ticket_admission_cases() {
   [[ "$box_calls" == 1 ]] || fail "uncontended hotfix did not reach capacity check: calls=$box_calls"
 }
 ticket_admission_cases
+write_gate_version() {
+  local version="$2" result="$3" file="$1/engine/bin/luna-capacity.sh"
+  mkdir -p "${file%/*}"
+  cp "$bin/luna-capacity.sh" "$file"
+  cat >> "$file" <<EOF
+luna_waiter_has_room() {
+  printf '%s\\n' '$version' >> "\$LUNA_GATE_CALLS"
+  return $result
+}
+EOF
+}
+install_reload_stubs() {
+  local d="$root/reload-bin"; mkdir -p "$d"
+  cat > "$d/codex" <<'EOF'
+#!/usr/bin/env bash
+printf 'started\n' >> "$LUNA_STARTED"
+EOF
+  cat > "$d/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+while (($#)); do [[ "$1" == -- ]] && { shift; exec "$@"; }; shift; done
+exit 90
+EOF
+  cat > "$d/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$d/codex" "$d/systemd-run" "$d/systemctl"
+  RELOAD_STUB_BIN="$d"
+}
+wait_for_lines() {
+  local file="$1" count="$2" lines
+  for _ in {1..200}; do
+    if [[ -f "$file" ]]; then
+      lines=$(wc -l < "$file")
+      (( lines >= count )) && return 0
+    fi
+    sleep .01
+  done
+  return 1
+}
+wait_for_file() {
+  local file="$1"
+  for _ in {1..200}; do [[ -e "$file" ]] && return 0; sleep .01; done
+  return 1
+}
+start_gate_waiter() {
+  local case_root="$1" key="$2"
+  env AGENT_HOME="$case_root/agent" LUNA_GATE_CALLS="$case_root/calls" LUNA_STARTED="$case_root/started" \
+    WORKER_SCRATCH_ROOT="$case_root/scratch" LUNA_SLOTS="$case_root/slots" LUNA_WAIT_SECONDS=.1 \
+    PATH="$RELOAD_STUB_BIN:$PATH" "$bin/luna" "$key" "$case_root" "$case_root/prompt" \
+    >"$case_root/waiter.log" 2>&1 &
+  reload_pid=$!
+}
+prepare_gate_case() {
+  local case_root="$1"
+  mkdir -p "$case_root/agent" "$case_root/scratch" "$case_root/slots"
+  printf 'Reply with one word.\n' > "$case_root/prompt"
+}
+live_gate_reload_case() {
+  local case_root="$root/reload-success" engine_a="$root/reload-success/engine-versions/A/engine" \
+    engine_b="$root/reload-success/engine-versions/B/engine" resolved_b
+  prepare_gate_case "$case_root"; install_reload_stubs
+  write_gate_version "${engine_a%/engine}" A 1
+  write_gate_version "${engine_b%/engine}" B 0
+  ln -s "$engine_a" "$case_root/agent/engine-live"
+  start_gate_waiter "$case_root" reload-success
+  wait_for_lines "$case_root/calls" 1 || fail 'luna did not call version A gate'
+  [[ -z "$(cat "$case_root/started" 2>/dev/null || :)" ]] || fail 'version A unexpectedly started the run'
+  ln -sfn "$engine_b" "$case_root/agent/engine-live"
+  wait_for_file "$case_root/started" || fail 'luna did not start after the live gate changed to B'
+  wait "$reload_pid" || fail 'luna failed after the live gate admitted the run'; reload_pid=""
+  [[ "$(cat "$case_root/calls")" == $'A\nB' ]] || fail "luna did not admit on the first poll after reloading B: $(cat "$case_root/calls")"
+  resolved_b=$(readlink -f -- "$engine_b/bin/luna-capacity.sh")
+  grep -Fq "luna: gate reloaded from $resolved_b" "$case_root/waiter.log" || fail 'luna did not log the resolved B gate path'
+}
+broken_live_gate_case() {
+  local case_root="$root/reload-broken" engine_a="$root/reload-broken/engine-versions/A/engine" \
+    engine_b="$root/reload-broken/engine-versions/B/engine"
+  prepare_gate_case "$case_root"
+  write_gate_version "${engine_a%/engine}" A 1
+  mkdir -p "$engine_b/bin"
+  cat > "$engine_b/bin/luna-capacity.sh" <<'EOF'
+luna_waiter_has_room() { printf 'broken\n' >> "$LUNA_GATE_CALLS"; return 0; }
+false
+EOF
+  ln -s "$engine_a" "$case_root/agent/engine-live"
+  start_gate_waiter "$case_root" reload-broken
+  wait_for_lines "$case_root/calls" 1 || fail 'luna did not call version A gate before the broken reload'
+  ln -sfn "$engine_b" "$case_root/agent/engine-live"
+  wait_for_lines "$case_root/calls" 2 || fail 'luna did not continue calling A after B failed to source'
+  kill -0 "$reload_pid" 2>/dev/null || fail 'luna exited after the live gate failed to source'
+  [[ "$(cat "$case_root/calls")" == $'A\nA' ]] || fail "broken B replaced A gate functions: $(cat "$case_root/calls")"
+  [[ ! -e "$case_root/started" ]] || fail 'broken B admitted the run'
+  kill "$reload_pid" 2>/dev/null || :; wait "$reload_pid" 2>/dev/null || :; reload_pid=""
+}
+live_gate_reload_case
+broken_live_gate_case
 for f in "$bin/luna" "$bin/zc"; do
   grep -Fq 'if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then' "$f" || fail "$(basename "$f") does not use ticket-ordered admission"
+  grep -Fq 'luna_reload_live_gate' "$f" || fail "$(basename "$f") does not reload the live gate"
+  grep -Fq 'sleep "${LUNA_WAIT_SECONDS:-30}"' "$f" || fail "$(basename "$f") does not use the waiter sleep override"
 done
 echo "ok - ticket admission orders hotfix before normal and older waiters before newer ones; stale tickets drop; uncontended hotfix admitted"
 
