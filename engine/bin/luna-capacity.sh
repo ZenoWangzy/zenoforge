@@ -64,41 +64,68 @@ worker_scope_runs() { local scope n=0; for scope in "$LUNA_WORKER_SLICE_DIR"/lun
 # workers peaked far lower. One ended luna/zc scope appends its cgroup memory.peak to a backend-keyed rolling tail,
 # and the gate uses that backend's p90 with execution-admission.py's 512 MB calibration floor. Sibling of the
 # class-keyed store: record_scope_memory_peak keeps only class rows, so backend rows there would be dropped on its
-# next append.
+# next append. Row 894 added the third backend sched: the scheduler's own run-p worker scopes, recorded at end by
+# worker-scope-watch, so the no-backend dispatch hold can size itself from them.
 LUNA_MEMORY_PEAK_TAIL=200
-luna_backend_peak_p90() { # <backend>: that backend's p90 with the 512 MB floor, or nothing with no samples
+luna_backend_peak_values() { # <backend>: that backend's recorded peaks (MB), rolling tail, oldest first
   jq -Rr --arg b "$1" 'fromjson? // empty | select(type == "object") | select(.backend == $b) | .memory_peak_mb | numbers | select(. == floor and . > 0)' \
     "$LUNA_GATE_HOME/locks/execution-memory-peaks-backend.jsonl" 2>/dev/null \
-    | tail -"$LUNA_MEMORY_PEAK_TAIL" | sort -n \
+    | tail -"$LUNA_MEMORY_PEAK_TAIL" || :
+}
+luna_backend_peak_count() { # <backend>: valid samples in that backend's rolling tail
+  luna_backend_peak_values "$1" | wc -l
+}
+luna_backend_peak_p90() { # <backend>: that backend's p90 with the 512 MB floor, or nothing with no samples
+  luna_backend_peak_values "$1" | sort -n \
     | awk '{ v[NR] = $1 } END { if (NR) { r = int((9 * NR + 9) / 10); if (r < 1) r = 1; if (v[r] < 512) v[r] = 512; print v[r] } }' || :
 }
-# Interim until run-p peaks are recorded (a later row gives run-p scopes a unit name).
+# Row 894: the no-backend ask falls back to this until LUNA_SCHED_PEAK_MIN_SAMPLES sched samples exist.
 LUNA_NO_BACKEND_PEAK_MB=800
+LUNA_SCHED_PEAK_MIN_SAMPLES=5
 worker_peak_mb() { # <backend|->: prints "<mb> <set|measured|interim|default>"; explicit LUNA_WORKER_PEAK_MB wins, a known
   # backend uses its own p90 with 1200 when it has no samples, and an ask with no backend (the scheduler's dispatch
-  # hold) holds at the interim fixed peak: it starts run-p workers, whose peaks no backend store records, so a
-  # measured p90 (floored at 512) would admit starts that then push the slice to memory.high
-  local backend="${1:-}" p90=""
+  # hold, which starts run-p workers) uses the sched p90 of recorded scheduler worker peaks once enough samples
+  # exist, else the interim fixed peak
+  local backend="${1:-}" p90="" samples=""
   if [[ -n "${LUNA_WORKER_PEAK_MB:-}" ]]; then printf '%s set\n' "$LUNA_WORKER_PEAK_MB"; return 0; fi
   if [[ "$backend" == luna || "$backend" == zc ]]; then
     p90="$(luna_backend_peak_p90 "$backend")"
     if [[ -n "$p90" ]]; then printf '%s measured\n' "$p90"; return 0; fi
     printf '1200 default\n'
   else
+    samples="$(luna_backend_peak_count sched)"
+    if [[ "$samples" =~ ^[0-9]+$ && "$samples" -ge "$LUNA_SCHED_PEAK_MIN_SAMPLES" ]]; then
+      p90="$(luna_backend_peak_p90 sched)"
+      if [[ -n "$p90" ]]; then printf '%s measured\n' "$p90"; return 0; fi
+    fi
     printf '%s interim\n' "$LUNA_NO_BACKEND_PEAK_MB"
   fi
 }
-luna_record_scope_peak() { # <backend> <scope>: best-effort append of one ended worker scope's cgroup peak; records nothing when unreadable
-  local backend="$1" scope="$2" bytes mb file tmp
-  [[ ( "$backend" == luna || "$backend" == zc ) && -n "$scope" ]] || return 0
-  bytes=$(cat "$LUNA_WORKER_SLICE_DIR/$scope.scope/memory.peak" 2>/dev/null) || return 0
-  [[ "$bytes" =~ ^[1-9][0-9]*$ ]] || return 0
+# 11-21 (row 894 experiment): systemd reaps a scope's cgroup the moment its last process ends, so a read after
+# wait returns nothing. The wrapper samples memory.peak while the scoped pid lives (builtin read; the wrapper may
+# itself sit in a TasksMax-bound scope) and the last sample, at most 10 s stale, survives the cgroup.
+luna_watch_scope_peak() { # <scope> <pid> <sample-file>: keep the last memory.peak read while the scoped pid lives
+  local scope="$1" pid="$2" sample="$3" bytes fd
+  exec {fd}<> <(:) || return 0
+  while kill -0 "$pid" 2>/dev/null; do
+    bytes=''
+    read -r bytes < "$LUNA_WORKER_SLICE_DIR/$scope.scope/memory.peak" 2>/dev/null || :
+    if [[ "$bytes" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$bytes" > "$sample"; fi
+    read -r -t 10 -u "$fd" || :
+  done
+}
+luna_record_scope_peak() { # <backend> <scope> [peak bytes read while the scope lived]: best-effort append of one ended
+  # worker scope's cgroup peak to the rolling tail; given bytes spare the cgroup read (already reaped at the caller's
+  # wait), and with neither readable bytes nor a readable memory.peak it records nothing
+  local backend="$1" scope="$2" bytes="${3:-}" mb file tmp
+  [[ ( "$backend" == luna || "$backend" == zc || "$backend" == sched ) && -n "$scope" ]] || return 0
+  [[ "$bytes" =~ ^[1-9][0-9]*$ ]] || bytes=$(cat "$LUNA_WORKER_SLICE_DIR/$scope.scope/memory.peak" 2>/dev/null) || return 0
   mb=$(( (bytes + 1048575) / 1048576 ))
   file="$LUNA_GATE_HOME/locks/execution-memory-peaks-backend.jsonl"
   mkdir -p "${file%/*}" 2>/dev/null || return 0
   tmp=$(mktemp "${file}.XXXXXX") || return 0
   if flock 9; then
-    { jq -Rc 'fromjson? // empty | select(type == "object") | select(.backend == "luna" or .backend == "zc") | select(.memory_peak_mb | numbers | . == floor) | select(.memory_peak_mb > 0)' "$file" 2>/dev/null || true
+    { jq -Rc 'fromjson? // empty | select(type == "object") | select(.backend == "luna" or .backend == "zc" or .backend == "sched") | select(.memory_peak_mb | numbers | . == floor) | select(.memory_peak_mb > 0)' "$file" 2>/dev/null || true
       printf '{"backend":"%s","memory_peak_mb":%d}\n' "$backend" "$mb"
     } | tail -"$LUNA_MEMORY_PEAK_TAIL" > "$tmp" && mv -f -- "$tmp" "$file" || rm -f -- "$tmp" 2>/dev/null || :
   else

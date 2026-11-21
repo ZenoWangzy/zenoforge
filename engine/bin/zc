@@ -96,10 +96,16 @@ TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
   --prompt "$(<"$prompt")" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 zpid=$!; echo "$zpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
+# Sample the scope's memory.peak while it lives: systemd reaps the cgroup the moment the run ends (11-21: four
+# ended runs had no scope dir left at a read after wait), so the peak must come from a read made during the run.
+peak_sample="$root/tmp/$key/scope-peak.sample"
+declare -F luna_watch_scope_peak >/dev/null 2>&1 && luna_watch_scope_peak "$scope" "$zpid" "$peak_sample" &
 wait "$zpid"; rc=$?
-# Record this scope's peak before the EXIT trap stops it; a missing memory.peak records nothing and leaves rc alone.
+# Record the last peak read while the scope lived; none readable at any time records nothing and leaves rc alone.
 # A remote run has no local zf-workers scope (its zf-remote scope lives on the remote host), so it records no peak.
-[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || { declare -F luna_record_scope_peak >/dev/null 2>&1 && luna_record_scope_peak zc "$scope"; }
+read -r peak_bytes < "$peak_sample" 2>/dev/null || peak_bytes=''
+[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || { declare -F luna_record_scope_peak >/dev/null 2>&1 && luna_record_scope_peak zc "$scope" "$peak_bytes"; }
+rm -f -- "$peak_sample"
 # stream-json writes events as the run goes (json wrote one object at exit, so bin/worker saw no progress and killed
 # 27 healthy zc runs at 600 s, 10-27); the closing {"type":"result"} line carries the same .response.
 jq -Rr 'fromjson? | select(.type=="result") | .response // empty' "$out/events.jsonl" >"$out/last.md" 2>/dev/null

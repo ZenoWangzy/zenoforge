@@ -86,9 +86,15 @@ codex_mcp_context_mode_sentinel_dir "$root/tmp/$key" && TMPDIR="$root/tmp/$key" 
   systemd-run "${systemd_args[@]}" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   codex ${CODEX_SEARCH:+--search} "${args[@]}" - <"$prompt" >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 cpid=$!; echo "$cpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
+# Sample the scope's memory.peak while it lives: systemd reaps the cgroup the moment the run ends (11-21: four
+# ended runs had no scope dir left at a read after wait), so the peak must come from a read made during the run.
+peak_sample="$root/tmp/$key/scope-peak.sample"
+declare -F luna_watch_scope_peak >/dev/null 2>&1 && luna_watch_scope_peak "$scope" "$cpid" "$peak_sample" &
 wait "$cpid"; rc=$?
-# Record this scope's peak before the EXIT trap stops it; a missing memory.peak records nothing and leaves rc alone.
-declare -F luna_record_scope_peak >/dev/null 2>&1 && luna_record_scope_peak luna "$scope"
+# Record the last peak read while the scope lived; none readable at any time records nothing and leaves rc alone.
+read -r peak_bytes < "$peak_sample" 2>/dev/null || peak_bytes=''
+declare -F luna_record_scope_peak >/dev/null 2>&1 && luna_record_scope_peak luna "$scope" "$peak_bytes"
+rm -f -- "$peak_sample"
 echo "$rc" >"$out/rc"
 # EXIT cleanup also stops the scope if the wrapper is interrupted after launch.
 exit "$rc"
