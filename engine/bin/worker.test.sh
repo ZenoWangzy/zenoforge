@@ -363,21 +363,22 @@ mkdir -p "$stale_root/tmp" "$stale_root/luna" "$stale_root/zc-src/bin" "$stale_h
 git -C "$stale_wt" init -q
 git -C "$stale_wt" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
 printf 'stale cache brief\n' > "$stale_prompt"
-write_stale_zcode() {  # $1 = the --version probe's exit code; rewriting the stub also refreshes its mtime
-  cat > "$stale_zcode" <<EOF
+write_stale_zcode() {  # $1 = the --version probe's exit code, $2 = stub path (default $stale_zcode); rewriting refreshes the mtime
+  local exe=${2:-$stale_zcode}
+  cat > "$exe" <<EOF
 #!/usr/bin/env bash
 if [[ \${1:-} == --version ]]; then printf 'probe\n' >> "\$ZCODE_PROBE_LOG"; exit $1; fi
 exit 0
 EOF
-  chmod +x "$stale_zcode"
+  chmod +x "$exe"
 }
 run_explicit_zc() {
-  local name=$1
+  local name=$1 zcode_bin=${2:-$stale_zcode}
   timeout --signal=TERM --kill-after=1 8 \
     env -u WORKER_GATE_QUEUE_SECONDS -u ZCODE_BIN HOME="$stale_home" AGENT_HOME="$stale_agent_home" \
       ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
       CODEX_MODEL=gpt-6-luna WORKER_SCRATCH_ROOT="$stale_root" WORKER_BACKEND=zc \
-      ZF_ZCODE_BIN="$stale_zcode" ZCODE_PROBE_LOG="$stale_probe_log" \
+      ZF_ZCODE_BIN="$zcode_bin" ZCODE_PROBE_LOG="$stale_probe_log" \
       WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
       FAKE_ZC_MODE=success FAKE_LUNA_MODE=success \
       bash "$worker_script" "$name" "$stale_wt" "$stale_prompt" \
@@ -394,6 +395,7 @@ assert_file_contains "$stale_d/placement.log" "backend=zc rerouted to luna; reas
 [[ $(grep -c 'WORKER-ZCODE-UNRUNNABLE' "$stale_alerts") == 1 ]] || fail 'the first failing probe did not alert exactly once'
 printf 'PASS explicit zc reroute records the reason in the run directory and alerts once\n'
 
+touch "$stale_cache"  # keep the young failure under the 300 s expiry bound even if the runner stalls between runs
 run_explicit_zc zc-stale-fresh
 [[ $(cat "$stale_root/luna/zc-stale-fresh/backend") == luna ]] || fail 'a young cached failure did not keep routing to luna'
 [[ $(wc -l < "$stale_probe_log") == 1 ]] || fail 'a young cached failure was probed again'
@@ -418,6 +420,23 @@ run_explicit_zc zc-stale-success-cached
 [[ $(cat "$stale_root/luna/zc-stale-success-cached/backend") == zc ]] || fail 'a cached successful probe did not keep zc'
 [[ $(wc -l < "$stale_probe_log") == 3 ]] || fail 'a cached successful probe was repeated in the same boot'
 printf 'PASS a cached successful probe is not repeated in the same boot\n'
+
+# Round 2: a package unpack can keep the archive's mtimes, so a reinstall can leave the executable older than the cached
+# failure; a failure older than 300 s must expire even then. Second stub path: the first path's success cache stands for
+# the whole boot, so a fresh failure needs a different argv key.
+stale_zcode2="$stale_root/zc-src/bin/zcode2"
+write_stale_zcode 127 "$stale_zcode2"
+run_explicit_zc zc-stale-unpack-failure "$stale_zcode2"
+[[ $(cat "$stale_root/luna/zc-stale-unpack-failure/backend") == luna ]] || fail 'the fresh second-path failure did not route to luna'
+[[ $(wc -l < "$stale_probe_log") == 4 ]] || fail 'the second-path failing run did not probe exactly once'
+[[ $(grep -c 'WORKER-ZCODE-UNRUNNABLE' "$stale_alerts") == 1 ]] || fail 'the second-path failing probe wrote another alert in the same boot'
+write_stale_zcode 0 "$stale_zcode2"; touch -d '2 hours ago' "$stale_zcode2"; touch -d '1 hour ago' "$stale_cache"
+run_explicit_zc zc-stale-unpack-retry "$stale_zcode2"
+[[ $(cat "$stale_root/luna/zc-stale-unpack-retry/backend") == zc &&
+   $(cat "$stale_root/luna/zc-stale-unpack-retry/attempt-backend") == zc ]] ||
+  fail 'a failure older than 300 s with an executable older than the cache did not expire'
+[[ $(wc -l < "$stale_probe_log") == 5 ]] || fail 'the time-expired cached failure was not probed exactly once more'
+printf 'PASS a cached failure older than 300 s expires even when the executable is older than the cache\n'
 
 path_root="$test_root/auto-path-zc/.scratch"
 path_zcode_bin="$test_root/auto-path-zcode-bin"

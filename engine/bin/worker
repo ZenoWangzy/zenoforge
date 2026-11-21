@@ -87,12 +87,15 @@ zc_executable=${zc_argv[0]:-$S/zc-src/bin/zcode}
 zc_configured=0; ((${#zc_argv[@]})) && zc_configured=1
 zc_probe_rc=0
 # 11-21 queue 884: a cached failed probe expires when the executable changed after the probe was written (a reinstall
-# must not misroute until the next boot); a cached success stands for the whole boot. argv[0] is absolute in every
-# resolution mode, so its mtime is the reinstall signal.
+# must not misroute until the next boot) or when the probe is older than 300 s (a package unpack can keep the archive's
+# mtimes, so a reinstall can leave the executable older than the cache); a cached success stands for the whole boot.
+# argv[0] is absolute in every resolution mode, so its mtime is the reinstall signal.
 zc_probe_expired() {
-  local exe_mtime
+  local exe_mtime cache_mtime
+  cache_mtime=$(stat -c %Y "$1" 2>/dev/null) || return 1
+  (( $(date +%s) - cache_mtime > 300 )) && return 0
   exe_mtime=$(stat -c %Y "$zc_executable" 2>/dev/null) || return 1
-  (( exe_mtime > $(stat -c %Y "$1" 2>/dev/null || echo 0) ))
+  (( exe_mtime > cache_mtime ))
 }
 zc_runnable() {
   local boot_id argv_key cache="$S/tmp/zc-runnable" alerts lock_fd
