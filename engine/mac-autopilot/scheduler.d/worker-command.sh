@@ -5,7 +5,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/worke
 # 未配测试 runner（$ZF_CONFIG_ROOT/config.json 的 .engine.test_exec 为空串，且未设 ZF_TEST_EXEC）时维持本机测试库
 # 措辞（三个默认即原字面）；配了 runner 才改写：本机只跑 agent，测试/typecheck/build 经 runner 只跑受影响文件
 # （创始人规则 2026-11-20：worker 在本机跑 vitest/build 挤占内存切片，11-21 一小时内 53 个派发因内存无处启动被跳过）。
-_TEST_HOST_CONFIG_SH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/config.sh"
 VERIFY_RUN_RULE='，定向跑受影响测试与 typecheck 全绿。'
 VERIFY_LEAD_RULE='本地定向验证全绿；'
 CI_REPRO_RULE='失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push'
@@ -14,7 +13,7 @@ apply_test_host_rules() { # 解析 .engine.test_exec（ZF_TEST_EXEC 优先，与
   if [[ -n "${ZF_TEST_EXEC:-}" ]]; then
     runner="$ZF_TEST_EXEC"
   else
-    config_root="${ZF_CONFIG_ROOT:-$(source "$_TEST_HOST_CONFIG_SH" >/dev/null 2>&1 && printf '%s' "$ZF_CONFIG_ROOT")}"
+    config_root="${ZF_CONFIG_ROOT:-}"
     if [[ -n "$config_root" && -f "$config_root/config.json" ]]; then
       runner="$(jq -r '.engine | if type == "object" then (.test_exec // empty) else empty end | select(type == "string" and length > 0)' \
         "$config_root/config.json" 2>/dev/null)" || runner=''

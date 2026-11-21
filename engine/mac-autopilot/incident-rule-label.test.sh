@@ -121,6 +121,18 @@ dispatch_pending false >/dev/null
 [[ "$captured_type" == implement && "$captured_prompt" == *"本地定向验证全绿；$INTEGRATION_RULE"* ]] \
   || { echo 'not ok - unconfigured pr implement prompt lost the local verification lead and integration rule' >&2; exit 1; }
 (
+  # 调度器启动路径：ZF_CONFIG_ROOT 与 ZF_TEST_EXEC 都没有时，apply_test_host_rules 在 set -e 下要返回 0（调度器走到调用之后的行），三个默认措辞原样。
+  unset ZF_CONFIG_ROOT ZF_TEST_EXEC
+  apply_test_host_rules
+  [[ "$INTEGRATION_RULE" == *'本机测试库'* && "$VERIFY_LEAD_RULE" == '本地定向验证全绿；' && "$CI_REPRO_RULE" == *'RUN_INTEGRATION=1 npx vitest run'* ]] \
+    || { echo 'not ok - no-config-root call did not keep the three default texts' >&2; exit 1; }
+  git -C "$ROOT" branch -f agent/issue-prompt-pr-no-root HEAD
+  jq -n '{units:[{id:"issue-prompt-pr-no-root",issue:907,task:"pr implementation",branch:"agent/issue-prompt-pr-no-root",stage:"implement-pending",lane:"pr",title:"prompt fixture",history:[]}]}' > "$UNITS"
+  dispatch_pending false >/dev/null
+  [[ "$captured_type" == implement && "$captured_prompt" == *"本地定向验证全绿；$INTEGRATION_RULE"* ]] \
+    || { echo 'not ok - no-config-root implement prompt lost the local wording' >&2; exit 1; }
+)
+(
   runner_root="$fixture/runner-config"; mkdir -p "$runner_root"
   printf '%s\n' '{"engine":{"test_exec":"/stub/test-runner"}}' > "$runner_root/config.json"
   export ZF_CONFIG_ROOT="$runner_root"
