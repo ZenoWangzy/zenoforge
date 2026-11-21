@@ -48,3 +48,40 @@ jq -e 'all(.units[]; .stage == "merged" and .awaiting_release_pending == null an
   || fail 'outside-pipeline merged units must retire and clear their bounded transition marks'
 
 echo 'ci-status-relabel.test.sh: ok'
+
+# Row 898: retire's GitHub reads (pr_view, and behind it mergeCommit) run with the ledger lock released;
+# the retire write sees the lock held; a unit changed inside the window is not written and logs one skip line.
+release_scheduler_lock
+acquire_scheduler_lock || fail 'probe could not take the scheduler lock'
+probe_free=0 probe_held=0 probe_write_free=0
+eval "pr_view_orig() $(declare -f pr_view | sed '1d')"
+eval "set_unit_orig() $(declare -f set_unit | sed '1d')"
+pr_view() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then probe_held=$((probe_held + 1)); else probe_free=$((probe_free + 1)); fi
+  printf 'MERGED'
+}
+set_unit() {
+  [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]] || probe_write_free=$((probe_write_free + 1))
+  set_unit_orig "$@"
+}
+jq -cn '{units:[{id:"issue-804",pr:1804,stage:"review-pending",history:[]}]}' > "$UNITS"
+retire_landed_pr_units
+[[ "$probe_free" -ge 1 && "$probe_held" == 0 ]] || fail "retire's pr_view ran under the ledger lock (free=$probe_free held=$probe_held)"
+[[ "$probe_write_free" == 0 ]] || fail "$probe_write_free retire writes ran with the lock released"
+jq -e '.units[0].stage == "merged"' "$UNITS" >/dev/null || fail 'the merged outside-pipeline PR did not retire: '"$(jq -c '.units[0]' "$UNITS")"
+grep -q 'unit=issue-804 PR#1804 already merged on GitHub; retired before dispatch' "$LOG" || fail 'the retire line is missing'
+# the unit changes while the lock is released: the stale decision is not written
+: > "$LOG"
+jq -cn '{units:[{id:"issue-804",pr:1804,stage:"review-pending",history:[]}]}' > "$UNITS"
+pr_view() {
+  if [[ "$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then probe_held=$((probe_held + 1)); else probe_free=$((probe_free + 1)); fi
+  # a concurrent writer landed the unit while the ledger lock was released
+  jq '(.units[] | select(.id=="issue-804") | .stage) = "landed"' "$UNITS" > "$UNITS.p" && mv "$UNITS.p" "$UNITS"
+  printf 'MERGED'
+}
+retire_landed_pr_units
+jq -e '.units[0].stage == "landed" and (.units[0].history | length) == 0' "$UNITS" >/dev/null \
+  || fail 'a stale retire decision was written: '"$(jq -c '.units[0]' "$UNITS")"
+grep -q 'retire skip unit=issue-804' "$LOG" || fail 'the stale retire skip did not log its one line'
+release_scheduler_lock
+echo 'ci-status-relabel.test.sh: retire lock discipline ok'
