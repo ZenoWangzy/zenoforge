@@ -1598,6 +1598,7 @@ fi
 run_advisor_snapshot_selection() (
   local mode="$1" issue_json="$2" held_id="${3:-}" gh_calls="$AGENT_HOME/advisor-snapshot-gh.log"
   local clock_calls="$AGENT_HOME/advisor-fake-clock-calls" hold_status=skip list_calls view_calls queue_status dispatch_status
+  : > "$gh_calls"
   printf '0\n' > "$clock_calls"
   REPO=test/repo
   PIPELINE_SYSTEM_LABELS_JSON='[]'
