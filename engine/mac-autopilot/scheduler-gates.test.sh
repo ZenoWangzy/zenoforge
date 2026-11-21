@@ -1528,7 +1528,10 @@ GH_CHECKS='[{"name":"Pipeline suites","bucket":"pass"}]'
 run_merge_lane || :
 unset GH_CHECKS
 [[ "${GH_MERGES[0]:-}" == *"--match-head-commit $H1"* ]] || fail "merge not pinned to the approved head (${GH_MERGES[*]:-none})"
-[[ "$(field pr-11 .stage)" == merged && "$(field pr-11 .merge_sha)" == "$M2" ]] || fail 'a green pipeline PR did not merge straight to merged'
+[[ "$(field pr-11 .stage)" == merged && "$(field pr-11 .merge_sha)" == "$M2" && "$(field pr-11 .verified_by)" == ci && "$(field pr-11 '.history[-1].result')" == *'verified_by=ci'* ]] || fail 'a green pipeline PR did not merge straight to merged with its CI verification stamp'
+units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-11-evidence",pr:11,stage:"ready-to-merge",approved_sha:$sha,self_check_status:"pass",self_check_sha:$sha,verification:{exit_code:0,sha:$sha},history:[]}]}')"
+GH_CHECKS='[{"name":"Pipeline suites","bucket":"pass"}]'; GH_MERGES=(); run_merge_lane || :; unset GH_CHECKS
+[[ "$(field pr-11-evidence .verified_by)" == evidence && "$(field pr-11-evidence '.history[-1].result')" == *'verified_by=evidence'* ]] || fail 'a same-head passing verification was not stamped as evidence'
 # Pipeline PRs merge independently on their own checks: no batch, no merging state, no interim-run cancel.
 gh_int_saved="$(declare -f gh)"
 gh() {
@@ -1984,12 +1987,17 @@ git() {
 run_merge_lane || :
 [[ ${#GH_MERGES[@]} == 0 ]] || fail 'merge lane merged a direct-main PR'
 unset -f git
-units "{\"units\":[{\"id\":\"pr-82\",\"pr\":82,\"stage\":\"landing\",\"history\":[]}]}"
+units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-82",pr:82,stage:"landing",self_check_status:"pass",self_check_sha:$sha,verification:{exit_code:0,sha:$sha},history:[]}]}')"
 printf 'LANDED %s\n' "$M2" > "$sup/land-82.md"
-jq -n '{workers:[{pid:8282,unit:"pr-82",type:"land",log:"land-82.worker.log",report:"land-82.md"}]}' > "$WORKERS"
+jq -n --arg sha "$H1" '{workers:[{pid:8282,unit:"pr-82",type:"land",log:"land-82.worker.log",report:"land-82.md",sha:$sha}]}' > "$WORKERS"
 alive() { return 1; }
 harvest_workers || :
-[[ "$(field pr-82 .stage)" == landed && "$(field pr-82 .land_sha)" == "$M2" ]] || fail 'LANDED report not harvested'
+[[ "$(field pr-82 .stage)" == landed && "$(field pr-82 .land_sha)" == "$M2" && "$(field pr-82 .verified_by)" == evidence && "$(field pr-82 '.history[-1].result')" == *'verified_by=evidence'* ]] || fail 'LANDED report did not retain its same-head evidence stamp'
+units '{"units":[{"id":"pr-83","pr":83,"stage":"landing","history":[]}]}'
+printf 'LANDED %s\n' "$M2" > "$sup/land-83.md"
+jq -n --arg sha "$H1" '{workers:[{pid:8383,unit:"pr-83",type:"land",log:"land-83.worker.log",report:"land-83.md",sha:$sha}]}' > "$WORKERS"
+harvest_workers || :
+[[ "$(field pr-83 .verified_by)" == none && "$(field pr-83 '.history[-1].result')" == *'verified_by=none'* ]] || fail 'a [skip ci] landing without same-head evidence must be stamped none'
 units '{"units":[{"id":"pr-84","pr":84,"stage":"landing","history":[]}]}'
 printf 'FAILED not eligible for the direct-main lane (product paths)\n' > "$sup/land-84.md"
 jq -n '{workers:[{pid:8484,unit:"pr-84",type:"land",log:"l.log",report:"land-84.md"}]}' > "$WORKERS"
@@ -2010,9 +2018,11 @@ land_case pr-88 'FAILED land-direct-main: lock-released outcome=push-failed' '[{
 [[ "$(field pr-88 .stage)" == supervisor-review ]] || fail 'second push failure not escalated'
 land_case pr-89 "LANDED-HEAD-MOVED $M2 $H2" '[]'
 [[ "$(field pr-89 .stage)" == rereview-pending && "$(field pr-89 .land_sha)" == "$M2" \
+  && "$(field pr-89 .verified_by)" == none && "$(field pr-89 '.history[-1].result')" == *'verified_by=none'* \
   && "$(field pr-89 '.approved_sha // "none"')" == none ]] || fail 'landed PR head drift was treated as terminal'
 land_case pr-90 "FAILED POST-LAND PR CLOSE $M2" '[]'
 [[ "$(field pr-90 .stage)" == supervisor-review && "$(field pr-90 .land_sha)" == "$M2" \
+  && "$(field pr-90 .verified_by)" == none && "$(field pr-90 '[.history[] | select(.stage=="land-post-step-failed") | .result] | last')" == *'verified_by=none'* \
   && "$(field pr-90 '.approved_sha // "none"')" == none \
   && "$(field pr-90 .note)" == *'PR 后续处理失败'* ]] || fail 'failed PR close was not escalated with landed SHA'
 grep -Fq 'post-land follow-up failed unit=pr-90' "$A/alerts/events.md" || fail 'failed PR close was not written to scheduler alerts'

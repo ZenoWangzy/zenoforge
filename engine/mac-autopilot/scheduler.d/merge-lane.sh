@@ -328,7 +328,7 @@ pr_body_refresh() { # unit-json → one gh pr edit --body-file when the current 
   rm -f -- "$file"
 }
 run_merge_lane_pass() {
-  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts
+  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts current_unit verified_by
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
@@ -760,17 +760,17 @@ run_merge_lane_pass() {
     if [[ "$pre_merge_sha" =~ $SHA_RE ]]; then
       tick_prs_changed
       if gh pr merge "$pr" --squash --match-head-commit "$approved" >/dev/null 2>&1; then
-        merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"
-        [[ "$merge_sha" =~ $SHA_RE ]] || merge_sha=""
+        current_unit="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"; verified_by="$(unit_verification_stamp "$current_unit" "$head" "$checks")"
+        merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"; [[ "$merge_sha" =~ $SHA_RE ]] || merge_sha=""
         if [[ -n "$merge_sha" ]]; then
-          set_unit "$id" "$(hist merged "merged on green PR CI; main CI verifies $merge_sha") | (.stage=\"merged\") | .merge_sha=\"$merge_sha\" | .pre_merge_sha=\"$pre_merge_sha\" | $(awaiting_release_mark "$pr")"
+          set_unit "$id" "$(hist merged "verified_by=$verified_by; merged on green PR CI; main CI verifies $merge_sha") | (.stage=\"merged\") | .verified_by=\"$verified_by\" | .merge_sha=\"$merge_sha\" | .pre_merge_sha=\"$pre_merge_sha\" | $(awaiting_release_mark "$pr")"
           merge_lane_awaiting_release "$ready" "$pr"
           merged_count=$((merged_count + 1))
           say "merged PR#$pr merge=$merge_sha (own checks green; main CI verifies)"
           (( merged_count >= merge_max )) && { pass_step_end merged "$pr"; break; }
           pass_step_end merged "$pr"; continue
         fi
-        set_unit "$id" "$(hist merged "merged on green PR CI; mergeCommit SHA unavailable") | (.stage=\"merged\") | $(awaiting_release_mark "$pr")"
+        set_unit "$id" "$(hist merged "verified_by=$verified_by; merged on green PR CI; mergeCommit SHA unavailable") | (.stage=\"merged\") | .verified_by=\"$verified_by\" | $(awaiting_release_mark "$pr")"
         merge_lane_awaiting_release "$ready" "$pr"
         echo "[$STAMP] merged PR#$pr but mergeCommit SHA unavailable; unit=$id marked merged, main CI covers it" >> "$A/alerts/merge.md"
         pass_step_end merged-sha-unavailable "$pr"; break

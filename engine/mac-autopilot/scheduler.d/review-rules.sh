@@ -313,10 +313,21 @@ review_prompt() { # pr-or-subject title sha report [lane] [checkout]
 $(review_fix_prompt_rule "${5:-}")
 禁止 merge、评论或改 GitHub 状态。报告写到 $SUP/$4。落盘后交付完即结束。$(risk_class_safety_rule "${6:-}")$(lane_rule "${5:-}" "$3")"
 }
+review_verification_state() { # unit-json sha → passed/red/skipped
+  jqf -r --arg sha "$2" 'if .self_check_status == "red" then "red" elif .self_check_status == "pass" and .verification.exit_code == 0 and .verification.sha == $sha then "passed" else "skipped" end' <<<"$1"
+}
+unit_verification_stamp() { # unit-json sha PR-checks → evidence/ci/none
+  local state
+  state="$(review_verification_state "$1" "$2")"
+  if [[ "$state" == passed ]]; then echo evidence
+  elif jqf -e 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<<"$3" >/dev/null; then echo ci
+  else echo none
+  fi
+}
 review_verification_rule() { # unit-json dir log sha → status paragraph; copies the verification output when the command ran
   local u="$1" dir="$2" log="$3" sha="$4" state ev
   rm -f "$dir/verification.txt" # the clone is reused: never leave an older head's evidence behind
-  state="$(jqf -r --arg sha "$sha" 'if .self_check_status == "red" then "red" elif .self_check_status == "pass" and .verification.exit_code == 0 and .verification.sha == $sha then "passed" else "skipped" end' <<<"$u")"
+  state="$(review_verification_state "$u" "$sha")"
   [[ "$state" == skipped || -z "$log" || ! -s "$log.verification-output" ]] || cp -f "$log.verification-output" "$dir/verification.txt"
   ev="$dir/verification.txt"; [[ -s "$ev" ]] || ev="not available (verification output was not copied)" # name the copy only when it exists
   case "$state" in
