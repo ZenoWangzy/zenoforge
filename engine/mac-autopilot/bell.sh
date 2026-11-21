@@ -588,13 +588,12 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
         continue
       fi
       # KILL/BLOCK 必须大小写敏感：小写的 blocked/unblocked/no-kill 是常规行，不是事故（#266 #314 #320）。
-      printf '%s\n' "$line" | grep -Eiq 'SLOW|orphan-recover|budget|merge-revert|error' || printf '%s\n' "$line" | grep -Eq 'KILL|BLOCK' || continue
-      clean_line="$(printf '%s\n' "$line" | sed -E 's/^\[[^]]+\][[:space:]]*//' | tr '\t\r\n' '   ')"
-      sev=medium
-      { printf '%s\n' "$clean_line" | grep -Eq 'KILL|BLOCK' || printf '%s\n' "$clean_line" | grep -Eiq 'merge-revert|error'; } && sev=high
-      if printf '%s\n' "$clean_line" | grep -Eiq 'merge-reverted'; then
-        unit="$(printf '%s\n' "$clean_line" | sed -nE 's/.*merge-reverted unit=([^ ]+).*/\1/p')"
-        [[ -n "$unit" ]] || unit=unknown
+      [[ "${line,,}" =~ slow|orphan-recover|budget|merge-revert|error ]] || [[ "$line" =~ KILL|BLOCK ]] || continue
+      clean_line="$line"; if [[ "$clean_line" =~ ^\[[^]]+\][[:space:]]* ]]; then clean_line="${clean_line#"${BASH_REMATCH[0]}"}"; fi
+      clean_line="${clean_line//$'\t'/ }"; clean_line="${clean_line//$'\r'/ }"; clean_line="${clean_line//$'\n'/ }"
+      sev=medium; { [[ "$clean_line" =~ KILL|BLOCK ]] || [[ "${clean_line,,}" =~ merge-revert|error ]]; } && sev=high
+      if [[ "${clean_line,,}" == *merge-reverted* ]]; then
+        unit=unknown; [[ "$clean_line" =~ .*merge-reverted\ unit=([^ ]+).* ]] && unit="${BASH_REMATCH[1]}"
         raw="merge-reverted unit=$unit"; sev=high
       else
         raw="scheduler:$clean_line"
