@@ -398,7 +398,10 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
                      read -r _ landed_sha moved_head <<<"$land_result"
                      set_unit "$unit" "$(hist land-head-moved "$land_result") | .land_sha=$(js "$landed_sha") | .approved_sha=null | .land_pr_head=$(js "$moved_head") | .stage=\"rereview-pending\""
                      echo "[$STAMP] fast-landed-with-new-head unit=$unit $land_result" >> "$A/alerts/events.md" ;;
-            LANDED*) set_unit "$unit" "$(hist landed "$land_result") | .stage=\"landed\" | .land_sha=$(js "${land_result#LANDED }")"
+            LANDED*) local land_verified_by land_head
+                     land_head="$(jqf -r '.sha // empty' <<<"$w")"
+                     land_verified_by="$(unit_verification_stamp "$(harvest_unit_snapshot "$unit")" "$land_head" '[]')"
+                     set_unit "$unit" "$(hist landed "verified_by=$land_verified_by; $land_result") | .stage=\"landed\" | .verified_by=$(js "$land_verified_by") | .land_sha=$(js "${land_result#LANDED }")"
                      local land_issue; land_issue="$(unit_field "$unit" .issue)"
                      # M5（#4501）：验收块带 live-event 项的票不立即关票，转等待生产事件（live_event_watch）
                      if [[ -n "$land_issue" && -z "$(unit_field "$unit" .pr)" ]] \

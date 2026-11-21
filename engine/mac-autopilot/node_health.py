@@ -101,7 +101,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **existing_wal
     "delivery.issue_to_accept_p95_7d_hours": ("delivery", "issue created -> release accepted p95, 7 d hours", 72, 168, False),
     "delivery.issue_to_accept_p50_30d_hours": ("delivery", "issue created -> release accepted p50, 30 d hours", 24, 72, False),
     "delivery.issue_to_accept_p95_30d_hours": ("delivery", "issue created -> release accepted p95, 30 d hours", 72, 168, False),
-    "delivery.revert_rate_30d_pct": ("delivery", "accepted units reverted within 30 d %", 5, 10, False),
+    "delivery.revert_rate_30d_pct": ("delivery", "accepted units reverted within 30 d %", 5, 10, False), "delivery.unverified_merge_30d_pct": ("delivery", "merged units stamped none among stamped units, 30 d %", 5, 20, False),
     "delivery.incident_rate_30d_pct": ("delivery", "accepted units named by a production incident within 30 d %", 5, 10, False),
     "delivery.cycles_to_pass_30d": ("delivery", "review rounds to pass per merged unit, 30 d", 1.32, 2.28, False),
     "delivery.approvals_per_merge_30d": ("delivery", "review approvals per merged unit, 30 d", 1, 2.28, False),
@@ -200,7 +200,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_h
     "delivery.issue_to_accept_p95_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
     "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
     "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
-    "delivery.revert_rate_30d_pct": "过去 30 天接受单元中，release-closer 接受后 main 出现对应 Git revert marker 的比例。",
+    "delivery.revert_rate_30d_pct": "过去 30 天接受单元中，release-closer 接受后 main 出现对应 Git revert marker 的比例。", "delivery.unverified_merge_30d_pct": "过去 30 天 merged / landed 单元中 verified_by=none 的比例；分母只含带 verified_by 字段的单元，旧单元不计。",
     "delivery.incident_rate_30d_pct": "过去 30 天被线上事故明确点名的接受单元数 ÷ 同期接受单元数（上限 100%）。只统计能关联到接受单元的事故；没有点名 issue 的线上告警不在这里，由 delivery.unlinked_incidents_30d 计分，所以 0 不代表线上没有问题。",
     "delivery.cycles_to_pass_30d": "过去 30 天合并单元从首次评审到第一次 review-approve 的评审轮数均值，含通过轮。",
     "delivery.approvals_per_merge_30d": "过去 30 天合并单元的 review-approve 台账事件均值。",
@@ -268,7 +268,7 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_heal
     "delivery.issue_to_accept_p95_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
     "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
     "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
-    "delivery.revert_rate_30d_pct": "units.json 接受单元的 merge SHA，与 origin/main Git revert commit 的 This reverts commit marker",
+    "delivery.revert_rate_30d_pct": "units.json 接受单元的 merge SHA，与 origin/main Git revert commit 的 This reverts commit marker", "delivery.unverified_merge_30d_pct": "units.json / units-archive.json 的 merged / landed 历史时间及 verified_by 字段",
     "delivery.incident_rate_30d_pct": "night/founder-health-mail.json production incidents (same ledger as the owner mail) naming an issue ID in release-closer acceptance events ÷ unique accepted issue IDs",
     "delivery.cycles_to_pass_30d": "units.json review-approve / review-request-changes / review-block events before merged / landed",
     "delivery.approvals_per_merge_30d": "units.json review-approve events on merged / landed units",
@@ -1188,7 +1188,7 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
         merged_at = _merge_time(unit)
         if merged_at and since_30d <= merged_at <= now:
             merged_units.append((unit, merged_at))
-    details["merged_units_30d"] = len(merged_units)
+    details["merged_units_30d"] = len(merged_units); stamped_merged = [u for u, _ in merged_units if "verified_by" in u]; unverified_merged = sum(u.get("verified_by") == "none" for u in stamped_merged); details["stamped_merged_units_30d"] = len(stamped_merged); details["unverified_merged_units_30d"] = unverified_merged; values["delivery.unverified_merge_30d_pct"] = 100 * unverified_merged / len(stamped_merged) if stamped_merged else None
     review_rounds, approval_counts = [], []
     review_stages = {"review-approve", "review-request-changes", "review-block"}
     for unit, merged_at in merged_units:
@@ -1386,7 +1386,7 @@ def main():
     repo_root = revert_root(a, here)
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main", delivery_unavailable)
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times,
-                                delivery_unavailable=delivery_unavailable); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
+                                delivery_unavailable=delivery_unavailable); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")}); sample_counts["delivery.unverified_merge_30d_pct"] = delivery["details"].get("stamped_merged_units_30d")
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
     metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); SOURCE.update(live_delivery.SOURCE); merge_metrics, merge_details = merge_wait.collect(repo, now, here, merge_wait.gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)

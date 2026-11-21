@@ -1213,8 +1213,10 @@ for offset, hours in enumerate(latencies, start=1):
                        {"stage":"review-approve", "at":approved_at.strftime("%Y-%m-%dT%H:%M:%SZ")}] if offset in (1, 3) else
                       [{"stage":"review-approve", "at":approved_at.strftime("%Y-%m-%dT%H:%M:%SZ")}])
     history = review_history + [{"stage":"merged", "at":merge_at.strftime("%Y-%m-%dT%H:%M:%SZ")}]
-    units.append({"id":f"pr-{pr_number}", "issue":number, "pr":pr_number, "merge_sha":merge_sha,
-                  "stage":"merged", "history":history})
+    unit = {"id":f"pr-{pr_number}", "issue":number, "pr":pr_number, "merge_sha":merge_sha,
+            "stage":"merged", "history":history}
+    if offset <= 3: unit["verified_by"] = ("evidence", "ci", "none")[offset - 1]
+    units.append(unit)
     releases.append({"issue":number, "sha":f"{offset:040x}", "at":closed.strftime("%Y-%m-%dT%H:%M:%SZ")})
 issues.append({"number":199, "createdAt":"2026-10-20T00:00:00Z", "closedAt":"2026-10-25T00:00:00Z"})
 releases.append({"issue":199, "sha":"f"*40, "at":"2026-10-25T00:00:00Z"})
@@ -1245,6 +1247,9 @@ assert values["delivery.issue_to_accept_p95_30d_hours"] == 240, values
 assert values["delivery.issue_to_accept_p50_7d_hours"] == 96 and values["delivery.issue_to_accept_p95_7d_hours"] == 120, values
 assert details["accepted_units_7d"] == 7, details
 assert values["delivery.revert_rate_30d_pct"] == 100 / 6, values
+assert values["delivery.unverified_merge_30d_pct"] == 100 / 3 and details["stamped_merged_units_30d"] == 3 and details["unverified_merged_units_30d"] == 1, (values, details)
+stamp_criteria = n.CRITERIA["delivery.unverified_merge_30d_pct"]
+assert stamp_criteria[2:4] == (5, 20) and n.MEANING["delivery.unverified_merge_30d_pct"] and n.SOURCE["delivery.unverified_merge_30d_pct"]
 assert values["delivery.incident_rate_30d_pct"] == 200 / 8, values
 assert values["delivery.cycles_to_pass_30d"] == 9 / 7, values
 assert values["delivery.approvals_per_merge_30d"] == 1, values
@@ -1259,6 +1264,7 @@ acceptance = n.delivery_metrics(
     [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
     [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
 assert acceptance["values"]["delivery.issue_to_accept_p50_30d_hours"] == 120, acceptance
+assert acceptance["values"]["delivery.unverified_merge_30d_pct"] is None and acceptance["details"]["stamped_merged_units_30d"] == 0, acceptance
 # An older unit with no issue field joins by its branch agent/issue-N.
 by_branch = n.delivery_metrics(
     [{"id":"pr-201", "pr":201, "branch":"agent/issue-101", "merge_sha":"a"*40,
