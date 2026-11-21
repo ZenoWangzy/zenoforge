@@ -20,7 +20,6 @@ engine/hotfix/hf-supersede.test.sh
 engine/hotfix/hf-worker-stuck.test.sh
 engine/hotfix/validate-acceptance.test.sh
 engine/join-plan-package-trailer.test.sh
-engine/jq-arg-safety.test.sh
 engine/jq-regex-safety.test.sh
 engine/land-agent-home.test.sh
 engine/landed-incident-guards.test.sh

@@ -37,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FAILED=0
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf -- "$TMP_DIR" "$test_env_root"' EXIT
 
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
@@ -94,6 +94,9 @@ def is_banned(name):
 ARG_RE = re.compile(r'--arg(?:json)?\s+[A-Za-z_][A-Za-z0-9_]*\s+"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"')
 FUNCTION_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{')
 ASSIGN_RE = re.compile(r'(?:^|;)\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(\+?=)\s*([^;]*)')
+# A value parsed from an entire JSON file is unbounded even when its local name
+# is generic; partial projections such as `.states` do not match this rule.
+WHOLE_FILE_READ_RE = re.compile(r'\b(?:jqf|jqf_optional_file)\b.*\s["\']\.["\']\s*\)?')
 # Includes completed run lists: 100 runs crossed the limit and stopped main-red-bisect for 39 hours, through a main_gh wrapper.
 COLLECTION_COMMAND_RE = re.compile(r'\bgh\s+(?:pr|issue|run)\s+list\b|gh\s+api\b[^;]*/actions/[^;]*/runs\?')
 PAGINATED_API_RE = re.compile(r'\bgh\s+api\b[^;]*--paginate')
@@ -171,6 +174,15 @@ def growing_variables(lines, growable_functions):
         loop_depth = max(0, loop_depth + opens - closes)
     return growing
 
+def whole_file_variables(lines):
+    whole = set()
+    for raw in lines:
+        for match in ASSIGN_RE.finditer(code_only(raw)):
+            name, _, rhs = match.groups()
+            if WHOLE_FILE_READ_RE.search(rhs):
+                whole.add(name)
+    return whole
+
 all_sources = {}
 for fn in files:
     try:
@@ -190,6 +202,7 @@ for fn, lines in all_sources.items():
     line_to_function = {}
     for function, start, end in blocks:
         growth = growing_variables(lines[start:end], growable_functions)
+        growth.update(whole_file_variables(lines[start:end]))
         for var in growth:
             by_line.setdefault(function, set()).add(var)
         for i in range(start, end):
@@ -315,6 +328,24 @@ cache_rows() {
 }
 EOF
 BAD_ROWS_HITS="$(scan_file "$BAD_ROWS_FIXTURE")"
+BAD_CACHE_FIXTURE="$TMP_DIR/bad_cache.sh"
+cat > "$BAD_CACHE_FIXTURE" <<'EOF'
+flush_candidates() {
+  local cache
+  cache="$(jqf_optional_file "$A/intake-candidates.json" -c '.')"
+  jqf -cn --argjson cache "$cache" '{}'
+}
+EOF
+BAD_CACHE_HITS="$(scan_file "$BAD_CACHE_FIXTURE")"
+CACHE_PROJECTION_FIXTURE="$TMP_DIR/cache_projection.sh"
+cat > "$CACHE_PROJECTION_FIXTURE" <<'EOF'
+use_state_projection() {
+  local cache
+  cache="$(jqf_optional_file "$A/dep-check.cache.json" -c '.states')"
+  jqf -cn --argjson cache "$cache" '{}'
+}
+EOF
+CACHE_PROJECTION_HITS="$(scan_file "$CACHE_PROJECTION_FIXTURE")"
 BAD_LOOP_FIXTURE="$TMP_DIR/bad_loop_growth.sh"
 cat > "$BAD_LOOP_FIXTURE" <<'EOF'
 intake_footprint_snapshot() {
@@ -338,6 +369,10 @@ assert_eq "meta-test: both unbounded fastlane census snapshots are caught" \
   "2" "$(printf '%s\n' "$BAD_CENSUS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: an unbounded rows value passed through --arg is caught" \
   "1" "$(printf '%s\n' "$BAD_ROWS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+assert_eq "meta-test: a whole candidates cache passed through --argjson is caught" \
+  "1" "$(printf '%s\n' "$BAD_CACHE_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+assert_eq "meta-test: a projected cache value is not mistaken for a whole-file read" \
+  "0" "$([ -n "$CACHE_PROJECTION_HITS" ] && echo 1 || echo 0)"
 assert_eq "meta-test: loop-grown owners and GitHub census values are caught with file:line" \
   "2" "$(printf '%s\n' "$BAD_LOOP_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: all closed-tracker dependency payloads are caught" \

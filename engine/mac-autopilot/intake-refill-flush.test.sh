@@ -157,4 +157,22 @@ grep -Fq -- '--json number,title,body,state,labels,subIssuesSummary,blockedBy,up
 jq -e '.schema == 5 and ([.skipped | keys[]] == ["99"])' "$A/intake-candidates.json" >/dev/null \
   || { echo 'not ok - candidate refresh kept verdicts for removed issues' >&2; cat "$A/intake-candidates.json" >&2; exit 1; }
 
+# A large candidates rows value stays in the cache file while skip verdicts merge; stale verdicts expire on flush.
+cache_rows_file="$fixture/cache-rows"
+head -c 204800 /dev/zero | tr '\0' x > "$cache_rows_file"
+test_now="$(date +%s)"
+jq -cn --rawfile rows "$cache_rows_file" --argjson expired_at "$((test_now - 3601))" --argjson fresh_at "$((test_now - 1))" \
+  '{schema:5,created_at:0,rows:$rows,skipped:{expired:{updated_at:"old",verdict:"parent",at:$expired_at},fresh:{updated_at:"fresh",verdict:"parent",at:$fresh_at}}}' \
+  > "$A/intake-candidates.json"
+declare -A intake_skip_cache_at=([101]=2026-11-12T00:00:02Z)
+declare -A intake_skip_cache_verdict=([101]=task)
+declare -A intake_skip_cache_stamp=([101]="$test_now")
+declare -A intake_skip_cache_pending=([101]=1)
+INTAKE_SKIP_CACHE_TTL=3600 intake_skip_cache_flush
+jq -e '.skipped | (has("expired") | not) and .fresh.verdict == "parent" and .["101"].verdict == "task"' "$A/intake-candidates.json" >/dev/null \
+  || { echo 'not ok - skip cache flush did not expire old verdicts and retain fresh/pending verdicts' >&2; cat "$A/intake-candidates.json" >&2; exit 1; }
+jq -j '.rows' "$A/intake-candidates.json" > "$fixture/cache-rows-after"
+cmp -s "$cache_rows_file" "$fixture/cache-rows-after" \
+  || { echo 'not ok - skip cache flush changed the large candidates rows string' >&2; exit 1; }
+
 echo 'ok - refill intake writes its census_partial wait marks in one ledger update, also on a budget stop'

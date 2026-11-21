@@ -50,19 +50,32 @@ intake_skip_cache_hit() {
   intake_skip "$verdict" cached
 }
 intake_skip_cache_flush() {
-  local cache_file="$A/intake-candidates.json" cache_tmp updates cache n
+  local cache_file="$A/intake-candidates.json" cache_tmp updates n now ttl merge_filter
   (( ${#intake_skip_cache_pending[@]} )) || return 0
   updates="$(for n in "${!intake_skip_cache_pending[@]}"; do
     printf '%s\t%s\t%s\t%s\n' "$n" "${intake_skip_cache_at[$n]}" "${intake_skip_cache_verdict[$n]}" "${intake_skip_cache_stamp[$n]}"
   done | jqf -Rn '[inputs | split("\t") | {key:.[0],value:{updated_at:.[1],verdict:.[2],at:(.[3] | tonumber)}}] | from_entries')" || return 0
+  now="$(date +%s)"
+  ttl="${INTAKE_SKIP_CACHE_TTL:-3600}"
+  [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=3600
+  merge_filter='(. // {}) as $cache
+    | {schema:5,created_at:($cache.created_at // 0),rows:($cache.rows // ""),
+       skipped:((($cache.skipped // {}) | with_entries(select(
+         (.value.at // "" | tostring) as $at
+         | ($at | test("^[0-9]+$")) and ($at | tonumber) <= $now and ($now - ($at | tonumber) < $ttl)
+       ))) + ($updates[0] // {}))}'
   cache_tmp="$cache_file.skip.$BASHPID.$RANDOM.tmp"
   if ! (
     exec 9>"$cache_file.lock" || exit 1
     flock -x 9 || exit 1
-    cache="$(jqf_optional_file "$cache_file" -c '.' 2>/dev/null || printf '{}')"
-    jqf -cn --argjson cache "$cache" --argjson updates "$updates" \
-      '{schema:5,created_at:($cache.created_at // 0),rows:($cache.rows // ""),skipped:(($cache.skipped // {}) + $updates)}' >"$cache_tmp" \
-      && mv -f -- "$cache_tmp" "$cache_file"
+    if [[ -s "$cache_file" ]]; then
+      jqf -c --slurpfile updates <(printf '%s' "$updates") --argjson now "$now" --argjson ttl "$ttl" \
+        "$merge_filter" "$cache_file" >"$cache_tmp" || exit 1
+    else
+      printf '{}\n' | jqf -c --slurpfile updates <(printf '%s' "$updates") --argjson now "$now" --argjson ttl "$ttl" \
+        "$merge_filter" >"$cache_tmp" || exit 1
+    fi
+    mv -f -- "$cache_tmp" "$cache_file"
   ); then
     rm -f -- "$cache_tmp"
     say "intake skip cache write failed"
