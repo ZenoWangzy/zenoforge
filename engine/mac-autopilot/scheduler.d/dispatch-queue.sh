@@ -185,10 +185,16 @@ dispatch_pending_pass() {
   TICK_PRIORITY_ADMISSION_CACHE=()
   TICK_CONTAINER_RUNTIME=""
   local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed dispatch_rc ordered
-  local TICK_DISPATCH_PENDING_ACTIVE=true TICK_STARTED_WIP_COUNT="" TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 pending_started=$SECONDS revalidate_secs loop_started
+  local TICK_DISPATCH_PENDING_ACTIVE=true TICK_STARTED_WIP_COUNT="" TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 TICK_DISPATCH_HOST_CAPACITY_BLOCKED=false TICK_DISPATCH_HOST_CAPACITY_WHY="" dispatch_host_capacity_skipped=0 pending_started=$SECONDS revalidate_secs loop_started
   # A refill tick carries its start; a standalone dispatch pass starts on entry.
   local dispatch_refill_started="${TICK_REFILL_STARTED:-$SECONDS}" refill_elapsed
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
+  # Probe at a fresh waiter's age; rows with a priority waiter keep the existing per-unit decision path.
+  if [[ -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] \
+    && ! LUNA_CPU_TARGET="${AUTOPI_DISPATCH_CPU_TARGET:-101}" priority_admission_has_room normal 0; then
+    TICK_DISPATCH_HOST_CAPACITY_BLOCKED=true
+    TICK_DISPATCH_HOST_CAPACITY_WHY="${BOX_ROOM_WHY:-unknown}"
+  fi
   # A full tick's first pass: past the walk deadline room_for refuses every start, so the tail still gets its parks and holds.
   local TICK_DISPATCH_PAST_DEADLINE=false
   # A refill: cap the units that reach footprint work (footprint_room); cheap skips do not count.
@@ -628,6 +634,12 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
         dmark task_read
         [[ -z "$task" ]] && { say "implement-pending unit=$id has no .task; supervisor required"; dispatch_why_reason "$id" no-task; continue; }
         [[ -z "$branch" ]] && { say "implement-pending unit=$id has no .branch; supervisor required"; continue; }
+        if [[ "$TICK_DISPATCH_HOST_CAPACITY_BLOCKED" == true && "$(unit_dispatch_priority "$u")" == normal ]] \
+          && ! higher_priority_waiting normal; then
+          dispatch_why "$id" host-capacity
+          dispatch_host_capacity_skipped=$((dispatch_host_capacity_skipped + 1))
+          continue
+        fi
         wt=""
         park_if_body_blocked "$u" && { dispatch_skip body-blocked; dispatch_why_reason "$id" body-blocked; continue; }
         if [[ "$local_refill" == true ]]; then
@@ -752,6 +764,8 @@ $deliver"
   ordered="$(jqf -c --argjson ids "$defer_ids" 'select(.id as $i | $ids | index($i))' <<<"$(dispatch_order)")" || true
   TICK_FOOTPRINT_DEFER=false; TICK_FOOTPRINT_CAP_HIT=false; dmark pass2_order
   done
+  (( dispatch_host_capacity_skipped == 0 )) \
+    || say "dispatch skip-all reason=host-capacity units=$dispatch_host_capacity_skipped why=$TICK_DISPATCH_HOST_CAPACITY_WHY"
   dmark "after_$dispatch_step_last"
   # Per-unit checks under the 2s detail threshold add up: name the waiters' share of this phase.
   { (( SECONDS - pending_started < 10 )) && [[ -z "$TICK_REVIEW_WAITS" ]]; } || say "dispatch detail pending_summary secs=$((SECONDS - pending_started)) revalidate_secs=$revalidate_secs loop_secs=$((SECONDS - loop_started)) units=$(grep -c . <<<"$ordered") footprint_room_ms=$((TICK_FOOTPRINT_ROOM_USEC / 1000)) footprint_room_calls=$TICK_FOOTPRINT_ROOM_CALLS footprint_waits=$TICK_FOOTPRINT_ROOM_WAITS $(review_wait_summary)"
