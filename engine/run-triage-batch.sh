@@ -217,8 +217,8 @@ RESULT_DIR="$SCRATCH_DIR/results"
 mkdir -p "$RESULT_DIR"
 
 ORIGIN_MAIN_SHA="$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || echo unknown)"
-INDEX_FRESHNESS_NOTE="refreshed once for the batch immediately before this prompt; treat it as up to date"
-if ! gitnexus_refresh_index_once "$REPO_DIR" "$ORIGIN_MAIN_SHA" gitnexus_index_matches_origin_main; then
+INDEX_FRESHNESS_NOTE="checked fresh for this batch immediately before this prompt -- index at most 60 minutes old and at most 20 commits behind origin/main; treat it as up to date"
+if ! gitnexus_index_matches_origin_main "$REPO_DIR"; then
   ORIGIN_MAIN_SHA="$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || echo unknown)"
   INDEX_FRESHNESS_NOTE="NOT confirmed fresh this batch -- refresh was deferred or failed; do not use a LOW/non-HIGH/CRITICAL impact reading to justify phase-3 L2 admission"
   echo "run-triage-batch: GitNexus freshness not confirmed for origin/main ($ORIGIN_MAIN_SHA); L2 gate will fail closed" >&2

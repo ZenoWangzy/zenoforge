@@ -1088,20 +1088,20 @@ dispatch_policy_unit() {
 }
 
 
-# Hand agents query the GitNexus index, but only triage and advisor runs
-# refresh it: with triage paused it went 46 commits stale (2026-10-09).
-# gitnexus_refresh_index_once owns the lock, throttle and memory floor.
+# Hand agents query the GitNexus index; this per-tick dispatch keeps it fresh
+# even with triage paused (2026-10-09: 46 commits stale). It starts the unit on
+# the early due line; gitnexus_refresh_index_once owns the lock, throttle and memory floor.
 dispatch_gitnexus_refresh() {
-  gitnexus_index_matches_origin_main "$REPO_DIR" && return 0
+  gitnexus_index_matches_origin_main_early "$REPO_DIR" && return 0
   systemctl --user is-active --quiet ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh && return 0
   local dispatch_status
   if guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY \
     -p RuntimeMaxSec=2700 \
     bash -c 'source "$2/lib.sh" || exit 1
-      gitnexus_refresh_index_once "$1" "$(git -C "$1" rev-parse origin/main)" gitnexus_index_matches_origin_main
+      gitnexus_refresh_index_once "$1" "$(git -C "$1" rev-parse origin/main)" gitnexus_index_matches_origin_main_early
       rc=$?; printf "%s\n" "$GITNEXUS_REFRESH_OUTPUT" | tail -20; exit "$rc"' _ "$REPO_DIR" "$ZF_ENGINE_DIR"; then
-    :
+    quarantine_lift gitnexus-refresh "the refresh unit started"
   else
     dispatch_status=$?
     if [ "$dispatch_status" -eq 75 ]; then
