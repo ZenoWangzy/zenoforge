@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import uuid
 
 RUNTIME_FILES = (
@@ -33,6 +34,8 @@ SENSITIVE_NAMES = (
     "service-account*", "service_account*", "*.pem", "*.key", "*.p12", "*.pfx",
 )
 STOP_REQUESTED = False
+# One zcode login prompt per host: a pass is cached 15 min (a prompt costs quota); a failure 300 s (bin/worker's bound).
+LOGIN_PROMPT, LOGIN_OK_SECONDS, LOGIN_FAIL_SECONDS = "Reply with exactly: ok", 900, 300
 
 
 def setting_seconds(name, default):
@@ -123,7 +126,7 @@ print(json.dumps({"load5": load5, "cores": cores, "uid": uid, "memavailable_mb":
 
 
 BACKEND_CHECKS = {
-    # luna: the login check probe-codex-sandbox.sh makes locally; zc: the zcode --version probe bin/worker makes locally.
+    # The cheap first step: luna's `codex login status` is the login check itself; zc's --version then probe_zc_login.
     "luna": ("codex", "codex login status"),
     "zc": ("zcode", "timeout 10 zcode --version"),
 }
@@ -135,6 +138,44 @@ def validate_backend(backend):
     return backend
 
 
+def run_login_probe(host):
+    # `zcode --version` returns 0 with no login (zcode 0.17.1 has no login-status command), so one prompt proves the
+    # credential: bin/zc's flags and NODE_USE_ENV_PROXY, zcode from PATH like the remote run; the temp --cwd is removed.
+    command = (f'd=$(mktemp -d) || exit 1; NODE_USE_ENV_PROXY=1 timeout 60 zcode --prompt {shlex.quote(LOGIN_PROMPT)} '
+               f'--cwd "$d" --mode "${{ZC_MODE:-yolo}}" --output-format stream-json --no-color; rc=$?; rm -rf -- "$d"; exit $rc')
+    try:
+        result = remote_call(host, command, capture_output=True, text=True,
+                             timeout=60 + connect_timeout_seconds() + 15)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"ssh:{type(error).__name__}"
+    if result.returncode:
+        return f"rc={result.returncode}"
+    if '"turn.failed"' in result.stdout:
+        return "turn.failed"
+    return "ok" if '"turn.completed"' in result.stdout else "no turn.completed"
+
+
+def cached_login_detail(cache):
+    try:
+        stamp, detail = cache.read_text().split(None, 1)
+        lifetime = LOGIN_OK_SECONDS if detail.strip() == "ok" else LOGIN_FAIL_SECONDS
+        return detail.strip() if time.time() - int(stamp) <= lifetime else None
+    except (OSError, ValueError):
+        return None
+
+
+def probe_zc_login(host):
+    # One prompt per host per window; the cache sits under the scratch root beside bin/worker's zc-runnable facts.
+    scratch = Path(os.environ.get("WORKER_SCRATCH_ROOT", str(Path.home() / ".zenoforge/scratch")))
+    cache = scratch / "tmp" / "zc-login" / host
+    detail = cached_login_detail(cache)
+    if detail is None:
+        detail = run_login_probe(host)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(f"{int(time.time())} {detail}\n")
+    return None if detail == "ok" else f"zcode login probe failed ({detail})"
+
+
 def probe_backend(host, backend):
     name, check = BACKEND_CHECKS[validate_backend(backend)]
     try:
@@ -142,7 +183,8 @@ def probe_backend(host, backend):
     except (OSError, subprocess.SubprocessError) as error:
         return f"{backend} backend check unavailable ({type(error).__name__})"
     if result.returncode == 0:
-        return None
+        # The cheap check proves only the binary: a zcode host is usable when one real prompt proves its login.
+        return None if backend == "luna" else probe_zc_login(host)
     if result.returncode == 127:
         return f"{backend} backend unusable: {name} not found on the remote host"
     return f"{backend} backend unusable: {check} returned rc={result.returncode}"
@@ -521,7 +563,7 @@ def remote_run(staging):
     child = subprocess.Popen(command, env=env, start_new_session=True)
 
     def stop_child(signum, _frame):
-        subprocess.run(["systemctl", "stop", job["scope"] + ".scope"],
+        subprocess.run(["systemctl", "--user", "stop", job["scope"] + ".scope"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             child.send_signal(signum)
@@ -615,9 +657,11 @@ def sync_remote(host, sync_script, remote_out, local_out, offsets):
 def stop_remote(host, scope):
     if not re.fullmatch(r"zf-remote-[A-Za-z0-9_-]+-[0-9a-f]{8}", scope):
         raise ValueError("remote scope name is invalid")
+    # The remote ssh user is never root (the probe refuses uid 0) and its account has linger on, so the
+    # scope lives in its user manager.
     unit = scope + ".scope"
-    command = (f"systemctl stop {shlex.quote(unit)} >/dev/null 2>&1 || true; "
-               f"for i in $(seq 1 100); do systemctl is-active --quiet {shlex.quote(unit)} || exit 0; "
+    command = (f"systemctl --user stop {shlex.quote(unit)} >/dev/null 2>&1 || true; "
+               f"for i in $(seq 1 100); do systemctl --user is-active --quiet {shlex.quote(unit)} || exit 0; "
                "sleep 0.1; done; exit 1")
     try:
         result = remote_call(host, command, timeout=connect_timeout_seconds() + 15,
@@ -656,6 +700,9 @@ def command_run(host, key, cwd, prompt, schema, backend="luna"):
     if metrics is None or reason:
         detail = reason or "remote capacity probe failed"
         (local_out / "remote-refused").write_text(detail + "\n")
+        # The choose-side refusals land here through bin/worker's redirect; this run-side probe writes its own line.
+        with (local_out / "placement.log").open("a") as placement_log:
+            print(f"worker-host: skipping {host}: {detail}", file=placement_log)
         print(f"worker-remote: refusing {host}: {detail}", file=sys.stderr)
         return 75
     print(f"worker-remote: admitted {format_metrics(host, metrics)}", flush=True)

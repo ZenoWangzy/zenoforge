@@ -55,6 +55,7 @@ source "$SCRIPT_DIR/config.sh"
 source "$ZF_ENGINE_DIR/issue-pipeline-slices.sh"
 REPO="${ZF_REPO:-example-maintainer/example-repo}"
 gh() { printf 'triage\n'; }
+read_agent_pipeline() { printf 'triage\n'; }
 check_gmail_credential() { :; }
 manual_pause_is_valid() { return 1; }
 roadmap_switch_value() { printf 'false\n'; }

@@ -283,6 +283,7 @@ profile_mark() { :; }
 manual_pause_is_valid() { return 1; }
 check_gmail_credential() { :; }
 gh() { [[ "${1:-}:${2:-}" == variable:get ]] && printf 'triage\n'; }
+read_agent_pipeline() { printf 'triage\n'; }
 roadmap_switch_value() { printf 'false\n'; }
 LOCK_FILE="$test_env_root/pipeline.lock"
 REPO=test/repo

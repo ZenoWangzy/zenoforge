@@ -20,10 +20,23 @@ run_tick() {
   return 0
 }
 # 补派 tick（#4628）：单独限时，避免本地 clone/dispatch 卡住 refill controller。
+# rc 75 = 台账锁被占（#541）：一行可数的 refused 日志，60 秒最多一条。节流状态就是日志里上一条的
+# 时间戳（run_refill 在子壳里跑，变量不跨次），不新增文件。
+refill_refused_log() {
+  local last ts holder
+  last="$(grep -F 'refill refused: scheduler lock busy' "$A/scheduler.log" 2>/dev/null | tail -n 1)"
+  if [[ "$last" =~ ^\[([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})Z\] ]] \
+    && ts="$(date -u -d "${BASH_REMATCH[1]}Z" +%s 2>/dev/null)" \
+    && (( $(date -u +%s) - ts < 60 )); then
+    return 0
+  fi
+  holder="$(cut -f2 "$A/.scheduler.lock/holder-phase" 2>/dev/null || true)"
+  echo "[$(date -u +%FT%TZ)] refill refused: scheduler lock busy holder=${holder:-unknown}" >> "$A/scheduler.log"
+}
 run_refill() {
   local rc=0
   timeout --foreground -k 30 "${AUTOPI_REFILL_LIMIT_SECONDS:-300}" bash "$LIVE/scheduler.sh" --refill >> "$A/loop.out" 2>&1 || rc=$?
-  (( rc != 75 )) || return 75 # shared scheduler lock is busy; keep the refill due and retry on the next poll
+  (( rc != 75 )) || { refill_refused_log; return 75; } # shared scheduler lock is busy; keep the refill due and retry on the next poll
   if (( rc == 124 || rc == 137 )); then
     echo "[$(date -u +%FT%TZ)] REFILL-TIMEOUT refill tick killed after ${AUTOPI_REFILL_LIMIT_SECONDS:-300}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown); the next tick clears the stale lock" \
       | tee -a "$A/scheduler.log" >> "$A/alerts/waste.md"
