@@ -14,7 +14,7 @@ source "$script_dir/scheduler.d/core.sh"
 fail() { printf 'jqf-forks.test.sh: %s\n' "$*" >&2; exit 1; }
 
 main() {
-  local original_path real_mktemp real_rm real_head stub_dir stub_calls i
+  local original_path real_mktemp real_rm real_head stub_dir stub_calls i child_scope
   local expected_rc rc expected_first jqf_line count refusal_rc large_value expected
   original_path="$PATH"
   real_mktemp="$(command -v mktemp)"
@@ -47,6 +47,27 @@ STUB
   export PATH
   hash -r
   printf 'ok - 100 successful jqf calls skip mktemp, rm, and head\n'
+
+  (
+    source "$script_dir/scheduler.d/core.sh"
+    GH_ETAG_DIR="$fixture/gh-etags"
+    mkdir -p "$GH_ETAG_DIR"
+    tick_rest_usage_begin() { :; }
+    _JQF_ERR_SCOPE="$BASHPID"
+    local stale_file="$A/.jqf-stderr.previous.$BASHPID"
+    local active_file="$A/.jqf-stderr.$_JQF_ERR_SCOPE.$BASHPID"
+    : > "$stale_file"
+    : > "$active_file"
+    tick_gh_calls_begin
+    [[ ! -e "$stale_file" ]] || fail 'tick-start cleanup kept an earlier scope file'
+    [[ -e "$active_file" ]] || fail 'tick-start cleanup removed the active scope file'
+    jqf -n '1' >/dev/null
+    [[ -e "$active_file" ]] || fail 'successful jqf removed the active scope file before exit'
+    printf '%s\n' "$BASHPID" > "$fixture/jqf-child-scope"
+  ) || fail 'tick-start stderr cleanup failed'
+  IFS= read -r child_scope < "$fixture/jqf-child-scope"
+  [[ ! -e "$A/.jqf-stderr.$child_scope.$child_scope" ]] || fail 'active scope stderr file survived shell exit'
+  printf 'ok - tick start clears stale scopes and shell exit clears its own scope\n'
 
   expected_rc=0
   if LC_ALL=C jq -e . <<< '{bad' >/dev/null 2>"$fixture/jq.err"; then

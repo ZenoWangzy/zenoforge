@@ -245,6 +245,7 @@ tick_gh_calls_begin() {
   TICK_PHASE_DETAILS=""
   TICK_PHASES=""
   TICK_LOCK_WAIT=0
+  find "$A" -maxdepth 1 -name '.jqf-stderr.*' ! -name ".jqf-stderr.${_JQF_ERR_SCOPE:-$BASHPID}.*" -delete 2>/dev/null || :
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
   find "$A" -maxdepth 1 -type d -name 'deployment-status.*' -mmin +60 -exec rm -rf -- {} + 2>/dev/null || :
