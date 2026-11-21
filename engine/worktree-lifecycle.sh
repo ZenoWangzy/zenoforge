@@ -796,14 +796,13 @@ unit_is_active() {
 }
 
 caller_pid_or_ancestor() {
-  local candidate="$1" current="$CALLER_PID" stat_line rest state parent
+  local candidate="$1" current="$CALLER_PID" parent
   [[ "$candidate" =~ ^[1-9][0-9]*$ && "$current" =~ ^[1-9][0-9]*$ ]] || return 1
   while [[ "$current" =~ ^[1-9][0-9]*$ ]]; do
     [ "$candidate" = "$current" ] && return 0
     [ "$current" -gt 1 ] || break
-    IFS= read -r stat_line < "/proc/$current/stat" 2>/dev/null || break
-    rest="${stat_line##*) }"
-    read -r state parent _ <<< "$rest"
+    parent="$(LC_ALL=C ps -o ppid= -p "$current" 2>/dev/null)" || break
+    parent="${parent//[[:space:]]/}"
     [[ "$parent" =~ ^[1-9][0-9]*$ && "$parent" != "$current" ]] || break
     current="$parent"
   done

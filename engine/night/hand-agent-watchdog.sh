@@ -97,10 +97,9 @@ hand_agent_worktree_pid() {
 }
 
 hand_agent_session_id() {
-  local pid="$1" stat_line rest _state _ppid _pgrp sid
-  IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 1
-  rest="${stat_line##*) }"
-  read -r _state _ppid _pgrp sid _rest <<< "$rest"
+  local pid="$1" sid
+  sid="$(LC_ALL=C ps -o sid= -p "$pid" 2>/dev/null)" || return 1
+  sid="${sid//[[:space:]]/}"
   [[ "$sid" =~ ^[1-9][0-9]*$ ]] || return 1
   printf '%s\n' "$sid"
 }
@@ -312,19 +311,17 @@ hand_agent_write_worktree_snapshot() {
 }
 
 hand_agent_process_started_at() {
-  local pid="$1" stat_line rest _state _ppid _pgrp _session _tty _tpgid _flags
-  local _minflt _cminflt _majflt _cmajflt _utime _stime _cutime _cstime
-  local _priority _nice _threads _itrealvalue starttime _tail ticks boot
-  IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 1
-  rest="${stat_line##*) }"
-  read -r _state _ppid _pgrp _session _tty _tpgid _flags _minflt _cminflt \
-    _majflt _cmajflt _utime _stime _cutime _cstime _priority _nice _threads \
-    _itrealvalue starttime _tail <<< "$rest"
-  [[ "$starttime" =~ ^[0-9]+$ ]] || return 1
+  local pid="$1" start_id ticks boot
+  start_id="$(pid_start_id "$pid" 2>/dev/null)" || return 1
+  [[ "$start_id" =~ ^[0-9]+$ ]] || return 1
+  if [[ ${OSTYPE:-} == darwin* ]]; then
+    printf '%s\n' "$start_id"
+    return 0
+  fi
   ticks="$(getconf CLK_TCK 2>/dev/null || true)"
   boot="$(awk '$1=="btime" {print $2; exit}' /proc/stat 2>/dev/null)"
   [[ "$ticks" =~ ^[1-9][0-9]*$ && "$boot" =~ ^[0-9]+$ ]] || return 1
-  echo $((boot + starttime / ticks))
+  echo $((boot + start_id / ticks))
 }
 
 hand_agent_codex_session_file() {

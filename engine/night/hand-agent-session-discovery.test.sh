@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$script_dir/../proc.sh"
 eval "$(sed -n '/^hand_agent_process_tree() {/,/^}/p; /^hand_agent_codex_session_file() {/,/^}/p; /^hand_agent_process_started_at() {/,/^}/p'  "$script_dir/hand-agent-watchdog.sh")"
 
 agent_epoch() { date -u -d "$1" +%s; }
