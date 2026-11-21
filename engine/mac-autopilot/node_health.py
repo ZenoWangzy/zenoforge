@@ -1401,7 +1401,7 @@ def main():
     host_missing = host_prereqs_missing(); host_missing = None if host_missing is None else host_missing + zcode_bin_missing()
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
-    metrics["host.stale_worktrees"] = stale_worktrees(now); metrics["host.fork_rate_root_max"], fork_detail = fork_rate.sample(args.json or os.path.join(a, "node-health.json"))
+    metrics["host.stale_worktrees"] = stale_worktrees(now); fork_value, fork_detail, metrics["host.fork_rate_root_max"] = fork_rate.sample(args.json or os.path.join(a, "node-health.json"))
     closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
     metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open); metrics["intake.laneless_open_issues"] = intake_laneless_health.open_laneless_count(a, repo, now, _gh_json, agent_home)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
@@ -1493,7 +1493,7 @@ def main():
     except OSError:
         metrics["pipeline.orphan_prs"] = None
 
-    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = health_standards.pause_idle(score(metrics, criteria, sample_counts, minimums, invalid_standards), line_holds.pause_state(agent_home))
+    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = health_standards.pause_idle(score(metrics, criteria, sample_counts, minimums, invalid_standards), line_holds.pause_state(agent_home)); metrics["host.fork_rate_root_max"] = fork_value; rows = [(node, mid, desc, fork_value if mid == "host.fork_rate_root_max" else v, healthy, unhealthy, higher, status) for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
     future_note = f" future_stamped={future_stamped}" if future_stamped else ""
     print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}{future_note}")
     print(f"  {'node':<12} {'metric':<48} {'value':>7}  healthy  unhealthy  status")

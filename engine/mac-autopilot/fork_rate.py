@@ -64,14 +64,14 @@ def _root(pid, processes):
 
 
 def sample(node_health_path, now=None):
-    """Return the maximum per-root fork rate and roots above 20/s; first sample is NO-DATA."""
+    """Return the highest attributed root rate, its detail, and the rate used for status."""
     proc_root = os.environ.get("NODE_HEALTH_PROC_ROOT", "/proc")
     try:
         with open(os.path.join(proc_root, "stat")) as stats:
             total = next(int(line.split()[1]) for line in stats if line.startswith("processes "))
         processes, pids = _processes(proc_root)
     except (OSError, StopIteration, ValueError):
-        return None, ""
+        return None, "", None
 
     sampled_at = time.time() if now is None else float(now)
     state_path = Path(os.path.abspath(node_health_path)).parent / "node-health-fork-rate-state.json"
@@ -84,20 +84,27 @@ def sample(node_health_path, now=None):
         previous_at = previous_total = None
         previous_pids = set()
 
+    temporary = None
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = state_path.with_name(state_path.name + f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps({"sampled_at": sampled_at, "processes": total, "pids": sorted(pids)}))
         os.replace(temporary, state_path)
     except OSError:
-        return None, ""
+        return None, "", None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
     if previous_at is None:
-        return None, ""
+        return None, "", None
     elapsed, delta = sampled_at - previous_at, total - previous_total
-    if elapsed <= 0 or delta < 0:
-        return None, ""
+    if not 10 < elapsed <= 600 or delta < 0:
+        return None, "", None
     if delta == 0:
-        return 0.0, ""
+        return 0.0, "", 0.0
 
     roots = {}
     for pid in pids - previous_pids:
@@ -112,16 +119,16 @@ def sample(node_health_path, now=None):
         group["count"] += 1
         label = (root["comm"], root_pid)
         group["roots"][label] = group["roots"].get(label, 0) + 1
-    if not roots:
-        return None, ""
-
     total_rate = delta / elapsed
     attributed = sum(group["count"] for group in roots.values())
+    unattributed = max(0, delta - attributed)
+    unattributed_rate = unattributed / elapsed
     rates = []
     for group in roots.values():
         comm, pid = min(group["roots"], key=lambda label: (-group["roots"][label], label[1]))
-        rate = total_rate * group["count"] / attributed
+        rate = group["count"] / elapsed
         rates.append((rate, group["unit"], comm, pid))
     rates.sort(key=lambda row: (-row[0], row[1], row[3]))
-    detail = "; ".join(f"{unit} ({comm}, {pid}): {rate:.1f}/s" for rate, unit, comm, pid in rates if rate > 20)
-    return rates[0][0], detail
+    details = [f"{unit} ({comm}, {pid}): {rate:.1f}/s" for rate, unit, comm, pid in rates if rate > 20]
+    details += [f"total_rate: {total_rate:.1f}/s", f"unattributed: {unattributed_rate:.1f}/s ({unattributed / delta:.0%})"]
+    return rates[0][0] if rates else 0.0, "; ".join(details), max(rates[0][0] if rates else 0.0, unattributed_rate)

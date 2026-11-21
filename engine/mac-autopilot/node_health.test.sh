@@ -480,8 +480,7 @@ nh 2026-10-20T03:40:00Z   # refile window open again, but the issue was closed i
 python3 - "$script_dir" "$health_doc" <<'CHECK' || fail 'metric standards out of alignment'
 import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
 doc = open(sys.argv[2]).read()
-# The scoped host row is validated here; the task limits production-doc changes to the existing scorecard files.
-gaps = [m for m in n.CRITERIA if m not in n.MEANING or (m != "host.fork_rate_root_max" and f"`{m}`" not in doc)] + [m for m in n.MEANING if m not in n.CRITERIA]
+gaps = [m for m in n.CRITERIA if m not in n.MEANING or f"`{m}`" not in doc] + [m for m in n.MEANING if m not in n.CRITERIA]
 gaps += [k for k in n.UNIT_STANDARDS if f"`unit.{k}`" not in doc]
 gaps += [f"source:{m}" for m in n.CRITERIA if not n.SOURCE.get(m)] + [f"source:{m}" for m in n.SOURCE if m not in n.CRITERIA]
 gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in doc]
