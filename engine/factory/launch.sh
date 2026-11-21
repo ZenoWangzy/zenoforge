@@ -20,5 +20,8 @@ git -C "$C" fetch -q origin main || exit 1
 export http_proxy="${http_proxy:-${HTTP_PROXY:-}}" https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" no_proxy="${no_proxy:-${NO_PROXY:-}}"
 # 10-30 head: opt workers bypassed the luna CPU cap (CPUQuota=infinity); cap every opt worker at start (hotfix weight is 1000)
 systemd-run --user --unit "$key" --collect --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="${AGENT_WORKER_CPU_WEIGHT:-10}" -p MemoryHigh="${AGENT_WORKER_MEM_HIGH:-2G}" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY \
-  -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY -E WORKER_SCRATCH_ROOT -E LUNA_PRIORITY=opt -E LUNA_AGE_ADMIT_SECONDS -p WorkingDirectory="$W" \
+  -E no_proxy -E NO_PROXY -E ALL_PROXY -E NODE_USE_ENV_PROXY -E WORKER_SCRATCH_ROOT -E ZF_WORKER_HOST -E ZF_WORKER_HOSTS \
+  -E ZF_WORKER_REMOTE_ROOT -E ZF_WORKER_REMOTE_MEMORY_MAX -E ZF_WORKER_REMOTE_CPU_WEIGHT \
+  -E ZF_WORKER_REMOTE_MIN_MEM_MB -E ZF_WORKER_REMOTE_MAX_DISK_PERCENT -E ZF_WORKER_REMOTE_MAX_CPU_PSI \
+  -E ZF_WORKER_SSH_CONNECT_TIMEOUT -E ZF_WORKER_SYNC_INTERVAL_SECONDS -E ZF_WORKER_TRANSFER_TIMEOUT -E LUNA_PRIORITY=opt -E LUNA_AGE_ADMIT_SECONDS -p WorkingDirectory="$W" \
   "$S/bin/worker" "$key" "$W" "$B" >/dev/null 2>&1 && echo "started $key #$issue" || echo "FAILED $key"

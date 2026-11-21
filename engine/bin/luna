@@ -3,7 +3,7 @@
 # Model and effort: CODEX_MODEL (default gpt-6-luna) and CODEX_EFFORT (default max); use gpt-6.1-sol for heavy batches.
 # CODEX_SEARCH=1 enables live web search.
 # Usage: luna <key> <cwd> <prompt-file> [output-schema.json]
-# Writes .scratch/luna/<key>/{last.md,events.jsonl,stderr.log,rc}.
+# Writes .scratch/luna/<key>/{last.md,events.jsonl,stderr.log,rc}; remote runs sync these files to the local scratch.
 set -uo pipefail
 # The whole body is one { ... } block, so bash parses it before running any of it: editing this file while jobs
 # run cannot make a running job read the new bytes at its old offset (2026-10-24: six wrappers deadlocked that way).
@@ -14,8 +14,15 @@ root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="$root/luna/$key"
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
-# WSL has 12 GB and 12 cores, shared by both supervisor sessions and all their subagents (maintainer, 2026-10-24:
-# scale the worker count with CPU load, never let WSL freeze). A new Codex run starts only while the box has room:
+if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 && ${ZF_WORKER_HOST:-local} != local ]]; then
+  helper="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/worker-remote.py"
+  python3 "$helper" run "$ZF_WORKER_HOST" "$key" "$cwd" "$prompt" "$schema"
+  remote_rc=$?
+  if [[ ! -s "$out/remote-refused" ]]; then exit "$remote_rc"; fi
+  remote_reason=$(cat "$out/remote-refused"); rm -f "$out/remote-refused" "$out/remote.host" "$out/remote.scope"
+  printf 'luna: remote host %s refused (%s); falling back to local capacity gate\n' "$ZF_WORKER_HOST" "$remote_reason" >&2
+fi
+# The local host gate keeps WSL responsive (maintainer, 2026-10-24: scale worker count with CPU load). A local run starts only while the box has room:
 #   - always, if fewer than LUNA_MIN (2) runs are going and at least 2 GB is available;
 #   - otherwise only below LUNA_MAX (10) runs, with sampled CPU busy under LUNA_CPU_TARGET (85%), memory pressure
 #     under 5% and at least 3 GB available (maintainer 2026-10-24: keep the box near 85% busy).
@@ -37,17 +44,28 @@ chain_exit_trap() {
   eval "prior=$(sed -n 's/^trap -- //; s/ EXIT$//p' <<<"$cur")"
   trap "$1${prior:+; $prior}" EXIT # lint-exempt: preserve any existing exit trap
 }
-chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true'
-exec {mx}>"$slots/mutex"
-while :; do
-  flock "$mx"
-  [[ -e "$wait_f" ]] || : >"$wait_f"
-  [[ -e "$wait_f" ]] || { echo "luna: cannot publish capacity ticket $wait_f" >&2; exit 74; }
-  if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
-  [[ -e "$wait_f" ]] || { echo "luna: capacity ticket disappeared: $wait_f" >&2; exit 74; }
-  [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
-  flock -u "$mx"; sleep 30
-done
+scope_systemctl() { if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then systemctl "$@"; else systemctl --user "$@"; fi; }
+chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || scope_systemctl stop "$scope.scope" >/dev/null 2>&1 || true'
+mx=8
+if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
+  exec {mx}>"$slots/mutex"
+  while :; do
+    flock "$mx"
+    [[ -e "$wait_f" ]] || : >"$wait_f"
+    [[ -e "$wait_f" ]] || { echo "luna: cannot publish capacity ticket $wait_f" >&2; exit 74; }
+    if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+    [[ -e "$wait_f" ]] || { echo "luna: capacity ticket disappeared: $wait_f" >&2; exit 74; }
+    [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
+    flock -u "$mx"; sleep 30
+  done
+else
+  scope="${ZF_WORKER_REMOTE_SCOPE_NAME:-}"
+  [[ "$scope" =~ ^zf-remote-[A-Za-z0-9_-]+-[0-9a-f]{8}$ ]] || { echo 'luna: invalid remote scope name' >&2; exit 2; }
+  systemctl set-property --runtime zf-remote.slice "CPUWeight=${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}" >/dev/null 2>&1 || {
+    echo 'luna: could not set zf-remote.slice CPUWeight' >&2; exit 74;
+  }
+  printf '%s\n' "$scope" >"$out/remote.scope"
+fi
 # Workers need no MCP servers; each codex run otherwise spawns chrome-devtools, gbrain and gitnexus (~360 MB).
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/codex-mcp.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/worker-output-cap.sh"
@@ -59,12 +77,17 @@ args=(exec -C "$cwd" "${mcp_off[@]}" "${CODEX_PLUGINS_OFF_ARGS[@]}" -m "${CODEX_
 # took 8.7 GB and pushed memory pressure to 32%) is OOM-killed inside its job instead of freezing WSL.
 # One CPU budget across agent runs (maintainer 10-29 [...]); shared with dispatch-codex.sh.
 source "${ZF_ENGINE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/thread-budget.sh" && agent_thread_budget
-scope="luna-${key//[^A-Za-z0-9_-]/-}-$$"
+[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || scope="luna-${key//[^A-Za-z0-9_-]/-}-$$"
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
+systemd_args=(--scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
+[[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]] || systemd_args=(--user "${systemd_args[@]}")
+cpu_weight="${AGENT_WORKER_CPU_WEIGHT:-10}"
+if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight="${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}"
+elif [[ ${LUNA_PRIORITY:-} == hotfix ]]; then cpu_weight=1000; fi
 codex_mcp_context_mode_sentinel_dir "$root/tmp/$key" && TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-  systemd-run --user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$([[ "${LUNA_PRIORITY:-}" == hotfix ]] && echo 1000 || echo "${AGENT_WORKER_CPU_WEIGHT:-10}")" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  systemd-run "${systemd_args[@]}" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   codex ${CODEX_SEARCH:+--search} "${args[@]}" - <"$prompt" >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 cpid=$!; echo "$cpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
 wait "$cpid"; rc=$?

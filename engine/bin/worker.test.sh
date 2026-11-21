@@ -14,11 +14,17 @@ cleanup() {
     sleep 0.1
     kill -KILL -- "-$pid" 2>/dev/null || true
   done < <(find "$test_root" -name backend-run.pid -type f 2>/dev/null)
-  rm -rf "$test_root"
+  for pid_file in "$test_root"/fake-remote-*/scopes/*.pid; do
+    [[ -f $pid_file ]] || continue
+    pid=$(cat "$pid_file" 2>/dev/null || true)
+    [[ $pid =~ ^[0-9]+$ ]] && kill -TERM "$pid" 2>/dev/null || true
+  done
+  rm -rf "$test_root" "$test_env_root"
 }
 trap cleanup EXIT
 mkdir -p "$test_root/home" "$test_root/agent-home"
 export HOME="$test_root/home" AGENT_HOME="$test_root/agent-home"
+export ZF_WORKER_HOST=local
 mkdir -p "$test_root/config-root" "$test_root/lib.d"
 cp "$script_dir/../config.sh" "$test_root/config.sh"
 cat > "$test_root/thread-budget.sh" <<'EOF'
@@ -46,6 +52,7 @@ key=$1 cwd=$2 prompt=$3
 scratch=${WORKER_SCRATCH_ROOT:?}
 d="$scratch/luna/$key"
 mkdir -p "$d"
+if [[ $backend == luna && ${FAKE_REMOTE_LUNA:-0} == 1 ]]; then exec "$REAL_LUNA_SCRIPT" "$@"; fi
 if [[ $backend == zc ]]; then mode=${FAKE_ZC_MODE:-success}; else mode=${FAKE_LUNA_MODE:-success}; fi
 if [[ $backend == zc && ${FAKE_REAL_ZC:-0} == 1 ]]; then exec "$REAL_ZC_SCRIPT" "$@"; fi
 if [[ $backend == luna ]]; then
@@ -164,6 +171,8 @@ BACKEND
 }
 # The worker finds its backends beside itself; the scratch root has no bin/ (10-30 rc=127 on every dispatch).
 make_fake_backends "$test_root/bin"
+cp "$script_dir/worker-remote.py" "$test_root/bin/worker-remote.py"
+chmod +x "$test_root/bin/worker-remote.py"
 cp "$worker_script" "$test_root/bin/worker"; worker_script="$test_root/bin/worker"
 cp "$script_dir/zc" "$test_root/bin/real-zc"
 cat > "$test_root/bin/luna-capacity.sh" <<'EOF'
@@ -180,6 +189,11 @@ while (($#)) && [[ $1 != -- ]]; do shift; done
 exec "$@"
 EOF
 chmod +x "$test_root/bin/systemctl" "$test_root/bin/systemd-run"
+cat > "$test_root/bin/zf-stop" <<'EOF'
+#!/usr/bin/env bash
+exec bash "$ZF_TEST_WORKER_STOP_SCRIPT" "$@"
+EOF
+chmod +x "$test_root/bin/zf-stop"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_file_contains() { grep -Fq -- "$2" "$1" || fail "expected '$2' in $1"; }
@@ -469,7 +483,7 @@ assert_file_contains "$fatal_dir/failover" 'repeated AI_APICallError'
 assert_file_contains "$fatal_dir/briefs" 'Resume after backend failover'
 printf 'PASS fatal stderr pattern -> immediate failover\n'
 
-LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-session 0 gated success 1 25 zc gpt-6-luna '' '' '' 20
+LUNA_AGE_ADMIT_SECONDS=0 run_case late-gate-session 0 gated success 5 25 zc gpt-6-luna '' '' '' 20
 late_gate_dir=$CASE_DIR
 [[ -s "$late_gate_dir/codex.pid" && $(cat "$late_gate_dir/rc") == 0 && ! -e "$late_gate_dir/failover" ]] || fail 'session gate override did not wait through late admission'
 printf 'PASS session gate override admits after the default bound\n'
@@ -604,3 +618,160 @@ kill -0 "$child_pid" 2>/dev/null && fail 'backend child survived worker TERM'
 [[ -f $d/hang-terminated && -f $d/hang-child-terminated ]] || fail 'TERM did not reach entire backend group'
 assert_file_contains "$root/luna/rounds.log" 'test-term gpt-6.1-terra rc=143'
 printf 'PASS worker TERM stops backend session and child, logs rc=143\n'
+
+make_fake_remote() {
+  local remote=$1
+  mkdir -p "$remote/proc/pressure" "$remote/bin" "$remote/home" "$remote/scopes" "$remote/roots"
+  printf '0.1 0.1 0.1 1/1 1\n' > "$remote/proc/loadavg"
+  printf 'MemAvailable: 16777216 kB\n' > "$remote/proc/meminfo"
+  printf 'some avg10=10 avg60=20 avg300=20 total=1\n' > "$remote/proc/pressure/cpu"
+  cat > "$test_root/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+connect_timeout=15
+while [[ ${1:-} == -o ]]; do
+  [[ ${2:-} != ConnectTimeout=* ]] || connect_timeout=${2#ConnectTimeout=}
+  shift 2
+done
+host=${1:-}; shift || true
+if [[ $host == unreachable ]]; then sleep "$connect_timeout"; exit 255; fi
+remote=${ZF_TEST_REMOTE_ROOT:?}
+cd "$remote"
+export HOME="$remote/home" PATH="$remote/bin:/usr/bin:/bin"
+export ZF_WORKER_REMOTE_PROC_ROOT="$remote/proc" ZF_TEST_REMOTE_ROOT="$remote"
+export FAKE_REMOTE_CODEX_MODE="${ZF_TEST_REMOTE_CODEX_MODE:-success}"
+exec bash -c "$*"
+EOF
+  chmod +x "$test_root/bin/ssh"
+  cat > "$remote/bin/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+unit=
+while (($#)); do
+  case "$1" in
+    --unit=*) unit=${1#--unit=} ;;
+    --) shift; mkdir -p "$ZF_TEST_REMOTE_ROOT/scopes"; printf '%s\n' "$$" > "$ZF_TEST_REMOTE_ROOT/scopes/$unit.pid"; exec "$@" ;;
+  esac
+  shift
+done
+exit 2
+EOF
+  cat > "$remote/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${1:-} != --user ]] || exit 0
+printf '%s\n' "$*" >> "$ZF_TEST_REMOTE_ROOT/systemctl.log"
+action=${1:-}; unit=${3:-${2:-}}; unit=${unit%.scope}
+pidfile="$ZF_TEST_REMOTE_ROOT/scopes/$unit.pid"
+case "$action" in
+  stop) pid=$(cat "$pidfile" 2>/dev/null || true); [[ ! $pid =~ ^[0-9]+$ ]] || kill -TERM "$pid" 2>/dev/null || true ;;
+  is-active) pid=$(cat "$pidfile" 2>/dev/null || true); [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null ;;
+  *) exit 0 ;;
+esac
+EOF
+  cat > "$remote/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+output=
+while (($#)); do
+  if [[ $1 == -o && $# -gt 1 ]]; then output=$2; shift 2; else shift; fi
+done
+printf '%s\n' '{"type":"remote.event"}'
+[[ -z $output ]] || printf 'remote last message\n' > "$output"
+if [[ ${FAKE_REMOTE_CODEX_MODE:-success} == hang ]]; then
+  touch "$ZF_TEST_REMOTE_ROOT/remote-codex-started"
+  trap 'touch "$ZF_TEST_REMOTE_ROOT/remote-codex-stopped"; exit 143' TERM INT
+  while :; do printf '%s\n' '{"type":"remote.progress"}'; read -r -t 0.05 _ || true; done
+fi
+EOF
+  chmod +x "$remote/bin/systemd-run" "$remote/bin/systemctl" "$remote/bin/codex"
+  cat > "$test_root/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+output=
+while (($#)); do
+  if [[ $1 == -o && $# -gt 1 ]]; then output=$2; shift 2; else shift; fi
+done
+printf '%s\n' '{"type":"local.event"}'
+printf 'local fallback\n' > "$output"
+EOF
+  chmod +x "$test_root/bin/codex"
+}
+
+remote_case="$test_root/remote-sync"; remote_root="$test_root/fake-remote-sync"
+remote_scratch="$remote_case/.scratch"; remote_worktree="$remote_case/worktree"; remote_prompt="$remote_case/brief.md"
+remote_home="$remote_case/home"; remote_agent_home="$remote_case/agent-home"
+mkdir -p "$remote_scratch/tmp" "$remote_scratch/luna" "$remote_worktree" "$remote_home" "$remote_agent_home"
+make_fake_remote "$remote_root"
+git -C "$remote_worktree" init -q
+git -C "$remote_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'remote sync brief\n' > "$remote_prompt"
+remote_timeout=0
+timeout --signal=TERM --kill-after=1 12 env ZF_WORKER_HOST=unreachable HOME="$remote_home" AGENT_HOME="$remote_agent_home" \
+  ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+  ZF_WORKER_HOSTS="remote-one" ZF_WORKER_REMOTE_ROOT="$remote_root/roots" ZF_TEST_REMOTE_ROOT="$remote_root" \
+  ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=luna \
+  WORKER_SCRATCH_ROOT="$remote_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  FAKE_REMOTE_LUNA=1 REAL_LUNA_SCRIPT="$script_dir/luna" CODEX_MODEL=gpt-6-luna \
+  bash "$worker_script" remote-sync "$remote_worktree" "$remote_prompt" \
+  > "$remote_case.stdout" 2> "$remote_case.stderr" || remote_timeout=$?
+[[ $remote_timeout == 0 ]] || fail "remote run returned rc=$remote_timeout (details: $remote_case.stderr)"
+remote_dir="$remote_scratch/luna/remote-sync"
+assert_file_contains "$remote_dir/events.jsonl" 'remote.event'
+assert_file_contains "$remote_dir/last.md" 'remote last message'
+[[ $(cat "$remote_dir/rc") == 0 && -s "$remote_dir/codex.pid" ]] || fail 'remote run did not sync rc and codex.pid'
+assert_file_contains "$remote_root/systemctl.log" 'set-property --runtime zf-remote.slice CPUWeight=20'
+printf 'PASS remote run syncs events, last.md, rc and codex.pid\n'
+
+unreachable_case="$test_root/remote-unreachable"; unreachable_root="$test_root/fake-remote-unreachable"
+unreachable_scratch="$unreachable_case/.scratch"; unreachable_worktree="$unreachable_case/worktree"
+unreachable_prompt="$unreachable_case/brief.md"; unreachable_home="$unreachable_case/home"
+unreachable_agent_home="$unreachable_case/agent-home"
+mkdir -p "$unreachable_scratch/tmp" "$unreachable_scratch/luna" "$unreachable_worktree" "$unreachable_home" "$unreachable_agent_home"
+make_fake_remote "$unreachable_root"
+git -C "$unreachable_worktree" init -q
+git -C "$unreachable_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'unreachable host brief\n' > "$unreachable_prompt"
+printf 'MemAvailable: 6144000 kB\n' > "$unreachable_case/meminfo"
+printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$unreachable_case/psi"
+remote_timeout=0
+timeout --signal=TERM --kill-after=1 6 env HOME="$unreachable_home" AGENT_HOME="$unreachable_agent_home" \
+  ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+  ZF_WORKER_HOST=unreachable ZF_WORKER_REMOTE_ROOT="$unreachable_root/roots" ZF_TEST_REMOTE_ROOT="$unreachable_root" \
+  ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=luna \
+  WORKER_SCRATCH_ROOT="$unreachable_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  LUNA_MIN=2 LUNA_PROC_MEMINFO="$unreachable_case/meminfo" LUNA_PROC_PSI_MEMORY="$unreachable_case/psi" \
+  LUNA_WORKER_SLICE_DIR="$unreachable_case/no-slice" FAKE_REMOTE_LUNA=1 REAL_LUNA_SCRIPT="$script_dir/luna" \
+  bash "$worker_script" remote-unreachable "$unreachable_worktree" "$unreachable_prompt" \
+  > "$unreachable_case.stdout" 2> "$unreachable_case.stderr" || remote_timeout=$?
+[[ $remote_timeout == 0 ]] || fail "unreachable host run returned rc=$remote_timeout (details: $unreachable_case.stderr)"
+[[ ! -e "$unreachable_root/roots/remote-unreachable" ]] || fail 'unreachable host started a remote clone'
+assert_file_contains "$unreachable_scratch/luna/remote-unreachable/events.jsonl" 'local.event'
+printf 'PASS unreachable host is skipped promptly and local capacity runs the worker\n'
+
+stop_case="$test_root/remote-stop"; stop_root="$test_root/fake-remote-stop"
+stop_scratch="$stop_case/.scratch"; stop_worktree="$stop_case/worktree"; stop_prompt="$stop_case/brief.md"
+stop_home="$stop_case/home"; stop_agent_home="$stop_case/agent-home"
+mkdir -p "$stop_scratch/tmp" "$stop_scratch/luna" "$stop_worktree" "$stop_home" "$stop_agent_home"
+make_fake_remote "$stop_root"
+git -C "$stop_worktree" init -q
+git -C "$stop_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'stop remote brief\n' > "$stop_prompt"
+env HOME="$stop_home" AGENT_HOME="$stop_agent_home" ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" \
+  PATH="$test_root/bin:/usr/bin:/bin" ZF_WORKER_HOST=remote-one ZF_WORKER_REMOTE_ROOT="$stop_root/roots" \
+  ZF_TEST_REMOTE_ROOT="$stop_root" ZF_TEST_REMOTE_CODEX_MODE=hang ZF_WORKER_SSH_CONNECT_TIMEOUT=1 \
+  ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=luna WORKER_SCRATCH_ROOT="$stop_scratch" \
+  WORKER_STALL_SECONDS=60 WORKER_HEALTH_INTERVAL_SECONDS=0.05 FAKE_REMOTE_LUNA=1 \
+  REAL_LUNA_SCRIPT="$script_dir/luna" CODEX_MODEL=gpt-6-luna timeout --signal=TERM --kill-after=1 15 \
+  bash "$worker_script" remote-stop "$stop_worktree" "$stop_prompt" > "$stop_case.stdout" 2> "$stop_case.stderr" &
+stop_worker_pid=$!
+deadline=$((SECONDS + 12))
+until [[ -e "$stop_root/remote-codex-started" && -s "$stop_scratch/luna/remote-stop/remote.scope" ]] || (( SECONDS >= deadline )); do sleep 0.05; done
+[[ -e "$stop_root/remote-codex-started" ]] || fail 'remote stop fixture did not start Codex'
+stop_rc=0
+env WORKER_SCRATCH_ROOT="$stop_scratch" ZF_WORKER_STOP_QUIET=0.1 ZF_TEST_WORKER_STOP_SCRIPT="$script_dir/worker-stop" \
+  ZF_TEST_REMOTE_ROOT="$stop_root" PATH="$test_root/bin:/usr/bin:/bin" zf-stop remote-stop \
+  > "$stop_case.stop.stdout" 2> "$stop_case.stop.stderr" || stop_rc=$?
+[[ $stop_rc == 0 && -e "$stop_root/remote-codex-stopped" ]] || fail 'zf-stop did not stop the remote run'
+wait "$stop_worker_pid" 2>/dev/null || :
+printf 'PASS zf-stop stops the remote scope\n'
