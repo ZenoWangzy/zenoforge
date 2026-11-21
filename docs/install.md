@@ -172,12 +172,15 @@ Set these in the unit files (with a drop-in, see section 7), in `capacity.env`, 
 | `ZF_WORKER_REMOTE_CPU_WEIGHT` | `20` | CPU weight applied to remote scopes and their slice |
 | `ZF_WORKER_REMOTE_MIN_MEM_MB`, `ZF_WORKER_REMOTE_MAX_DISK_PERCENT`, `ZF_WORKER_REMOTE_MAX_CPU_PSI` | `8192`, `95`, `60` | Remote host admission thresholds |
 | `ZF_WORKER_SSH_CONNECT_TIMEOUT` | `15` seconds | Bound SSH connection attempts |
+| `ZF_WORKER_TRANSFER_TIMEOUT` | `180` seconds | Bound remote bundle transfer and clone setup |
 | `ZF_WORKER_SYNC_INTERVAL_SECONDS` | `2` seconds | Interval for mirroring remote worker output |
 | `LUNA_MAX`, `LUNA_CPU_TARGET`, `LUNA_MEM_MAX`, `LUNA_PRIORITY` | 10, 85, 4G, `normal` | The Codex wrapper's gate. `LUNA_PRIORITY` can be `hotfix`, `opt`, or `normal` |
 | `AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER` | 2 | Load limit for the fetch-starved guard in `run-tick.sh` |
 | `GIT_FETCH_TIMEOUT_SEC`, `GH_CALL_TIMEOUT_SEC` | 60, 60 | Timeouts used by `run-tick.sh` |
 | `HF_STALE_MINUTES` | 30 | How long a hotfix PR may sit idle before an alert |
 | `PGTEST_URL` | a placeholder local URL | Database URL for integration tests, if the target repository has them |
+
+Remote hosts need the same `codex-cli` version as the control host and an existing login under the account that runs workers. The worker transport never copies Codex credentials.
 
 ## 7. systemd units
 

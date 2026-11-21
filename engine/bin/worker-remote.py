@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Ship one Luna worktree to an SSH worker and mirror its run files locally."""
+import fnmatch
 import io
 import json
 import os
@@ -21,6 +22,12 @@ RUNTIME_FILES = (
     "lib.d/codex-mcp.sh",
     "lib.d/worker-output-cap.sh",
     "thread-budget.sh",
+)
+SENSITIVE_DIRS = (".codex", ".ssh", ".aws", ".azure", ".config", ".docker", ".gnupg", ".kube")
+SENSITIVE_NAMES = (
+    ".env*", ".npmrc*", ".netrc", ".pypirc", ".git-credentials", "auth.json", "credentials*",
+    "id_rsa*", "id_ed25519*", "token.json", "access_token*", "refresh_token*", "client_secret*",
+    "service-account*", "service_account*", "*.pem", "*.key", "*.p12", "*.pfx",
 )
 STOP_REQUESTED = False
 
@@ -46,7 +53,7 @@ def setting_int(name, default, minimum, maximum):
 
 
 def ssh_args(host):
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", host):
+    if not valid_ssh_alias(host):
         raise ValueError("worker host must be an SSH alias")
     try:
         connect_timeout = int(os.environ.get("ZF_WORKER_SSH_CONNECT_TIMEOUT", "15"))
@@ -55,6 +62,10 @@ def ssh_args(host):
     if not 1 <= connect_timeout <= 120:
         raise ValueError("ZF_WORKER_SSH_CONNECT_TIMEOUT must be between 1 and 120")
     return ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}", host]
+
+
+def valid_ssh_alias(host):
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", host))
 
 
 def remote_call(host, command, timeout=None, **kwargs):
@@ -151,7 +162,7 @@ def command_choose():
         if host in seen:
             continue
         seen.add(host)
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", host):
+        if not valid_ssh_alias(host):
             print(f"worker-host: skipping invalid SSH alias {host!r}", file=sys.stderr)
             continue
         metrics, reason = probe(host)
@@ -180,18 +191,11 @@ def scope_name(key):
 
 def safe_source_path(raw, root):
     path = PurePosixPath(raw)
-    if path.is_absolute() or not path.parts or any(part in {
-        "", ".", "..", ".git", ".codex", ".ssh", ".aws", ".azure", ".docker", ".gnupg", ".kube", "node_modules"
-    } for part in path.parts):
+    if path.is_absolute() or not path.parts or any(part in {"", ".", "..", ".git", "node_modules", *SENSITIVE_DIRS}
+                                                  for part in path.parts):
         return None
     name = path.name.lower()
-    if (name.startswith((".env", ".npmrc")) or name in {
-        ".git-credentials", ".netrc", ".pypirc", "auth.json", "credentials", "credentials.json",
-        "id_rsa", "id_ed25519", "token.json", "access_token", "refresh_token", "client_secret.json",
-        "service-account.json", "service_account.json",
-    }):
-        return None
-    if name.endswith((".pem", ".key")):
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in SENSITIVE_NAMES):
         return None
     source = root.joinpath(*path.parts)
     try:
@@ -218,6 +222,12 @@ def safe_origin(raw):
         authority, path = raw.split(":", 1)
         return f"git@{authority.rsplit('@', 1)[-1]}:{path}"
     return raw
+
+
+def sensitive_pathspecs():
+    directories = [f":(exclude)**/{name}/**" for name in SENSITIVE_DIRS]
+    files = [f":(exclude)**/{pattern}" for pattern in SENSITIVE_NAMES]
+    return [*directories, *files]
 
 
 def git_output(cwd, *args, allow_failure=False):
@@ -275,16 +285,7 @@ def make_payload(top, cwd, prompt, schema, key, target, archive_path):
         subprocess.run(["git", "-C", str(top), "bundle", "create", str(bundle), "HEAD"],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     with patch.open("wb") as stream:
-        subprocess.run(["git", "-C", str(top), "diff", "--binary", "HEAD", "--", ".",
-                        ":(exclude)**/.env*", ":(exclude)**/.npmrc", ":(exclude)**/.netrc",
-                        ":(exclude)**/.pypirc", ":(exclude)**/.git-credentials",
-                        ":(exclude)**/.codex/**", ":(exclude)**/.ssh/**", ":(exclude)**/.aws/**",
-                        ":(exclude)**/.azure/**", ":(exclude)**/.docker/**", ":(exclude)**/.gnupg/**",
-                        ":(exclude)**/.kube/**",
-                        ":(exclude)**/auth.json", ":(exclude)**/credentials*", ":(exclude)**/*.pem",
-                        ":(exclude)**/*.key", ":(exclude)**/token.json", ":(exclude)**/access_token",
-                        ":(exclude)**/refresh_token", ":(exclude)**/client_secret.json",
-                        ":(exclude)**/service-account.json", ":(exclude)**/service_account.json"],
+        subprocess.run(["git", "-C", str(top), "diff", "--binary", "HEAD", "--", ".", *sensitive_pathspecs()],
                        check=True, stdout=stream, stderr=subprocess.PIPE)
     manifest = {
         "key": key,
