@@ -2667,7 +2667,7 @@ GH_MERGES=(); run_merge_lane || :
     [[ "$(field issue-89 '.awaiting_release_pending // "none"')" == none ]] || fail "a $past issue kept its pending mark"
   done
   grep -q 'not written for on-hold issue #89' "$A/alerts/merge.md" || fail 'an on-hold issue left no alert'
-  scheduler_issue_state() { printf '{"state":"ready-for-agent"}'; }
+  scheduler_issue_state() { printf '{"state":"on-hold"}'; }
   units "{\"units\":[{\"id\":\"issue-90\",\"issue\":90,\"pr\":90,\"stage\":\"parked\",\"approved_sha\":\"$H1\",\"history\":[]},{\"id\":\"issue-91\",\"issue\":91,\"pr\":91,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"supervisor_owned\":true,\"history\":[]},{\"id\":\"issue-92\",\"issue\":92,\"pr\":92,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"hotpatch\":true,\"history\":[]}]}"
   retire_landed_pr_units
   [[ "$(field issue-90 .stage)" == merged && "$(field issue-90 '.awaiting_release_pending // "none"')" == none \
