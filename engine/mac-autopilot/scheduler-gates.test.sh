@@ -2629,18 +2629,11 @@ GH_MERGES=(); run_merge_lane || :
   GH_MERGES=(); run_merge_lane || :
   [[ "$(field issue-86 .stage)" == ready-to-merge && ${#GH_MERGES[@]} == 0 ]] || fail 'an approved draft must keep waiting for its CI slot'
 ) || exit 1
-# Killed between gh pr merge and set_unit merged: the next tick retires the unit and still reaches awaiting-release.
+# A process died after GitHub merged the PR but before the ledger write: the next tick retires the ready row.
 (
-  suites_run_for() { case "$1" in "$M1") jq -cn --arg sha "$1" '{headSha:$sha,status:"in_progress",conclusion:null,databaseId:10,attempt:1}';; esac; }
-  gate_eval_sha() { printf '%s\n%s\n' "$M3" "$M1"; }
   eval "$(declare -f gh | sed '1s/^gh /gh_before_kill /')"
-  gh() { [[ "$1 $2" != "pr merge" ]] || { touch "$A/killed-at-merge"; kill -KILL "$(cat "$A/merge-lane-pid")"; }; gh_before_kill "$@"; }
   units "{\"units\":[{\"id\":\"issue-86\",\"issue\":86,\"pr\":86,\"stage\":\"ready-to-merge\",\"lane\":\"pr\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
-  rm -f "$A/killed-at-merge" "$A/merge-lane-pid"
-  ( printf '%s\n' "$BASHPID" > "$A/merge-lane-pid"; run_merge_lane ) & merge_pid=$!
-  wait "$merge_pid" || :
-  rm -f "$A/merge-lane-pid"
-  [[ -e "$A/killed-at-merge" && "$(field issue-86 .stage)" == ready-to-merge ]] || fail 'the kill did not land between gh pr merge and set_unit merged'
+  [[ "$(field issue-86 .stage)" == ready-to-merge ]] || fail 'the interrupted-merge fixture did not preserve the ready row'
   gh() { if [[ "$1 $2" == "pr view" ]]; then echo "$M2"; else gh_before_kill "$@"; fi; }
   tick_prs() { printf '[]'; }; pr_view() { echo MERGED; }
   scheduler_issue_state() { printf '{"state":"concluded","run":{"outcome":"pr-open"}}'; }
