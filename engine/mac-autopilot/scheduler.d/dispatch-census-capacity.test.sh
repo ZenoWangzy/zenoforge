@@ -215,6 +215,7 @@ self_fix_calls=0; stop_loss_calls=0
 self_fix_dispatch() { self_fix_calls=$((self_fix_calls + 1)); }
 to_supervisor() { stop_loss_calls=$((stop_loss_calls + 1)); }
 : > "$fixture/hold.sh"; export ZF_ENGINE_DIR="$fixture"
+cp "$engine_dir/task-state.mjs" "$fixture/task-state.mjs"
 gh() { return 0; }
 ticket_budget_reason() { printf '9 rounds\n'; }
 : > "$LOG"; SECONDS=0; dispatch_pending false

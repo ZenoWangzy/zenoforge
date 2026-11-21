@@ -38,6 +38,7 @@ eval "$original_state_read"
   fixture_runtime="$test_env_root/hold-rule-autopi"
   fixture_bin="$test_env_root/hold-rule-bin"
   mkdir -p "$fixture_engine/mac-autopilot" "$fixture_runtime" "$fixture_bin" "$AGENT_HOME/state"
+  cp "$SCRIPT_DIR/task-state.mjs" "$fixture_engine/task-state.mjs"
   cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -319,6 +320,7 @@ printf 'ok - rule_entry requeues a recut-closed unit whose issue is open, ready 
 # hold_rule hands the waiver and the comment author to scheduler.sh after checking the range; a bad range releases nothing.
 (
   fe="$test_env_root/hold-waiver-engine"; fb="$test_env_root/hold-waiver-bin"; mkdir -p "$fe/mac-autopilot" "$fb"
+  cp "$SCRIPT_DIR/task-state.mjs" "$fe/task-state.mjs"
   cat > "$fe/mac-autopilot/scheduler.sh" <<'EOT'
 #!/usr/bin/env bash
 if [[ "$1" == --size-waiver-check ]]; then [[ "$2" -le 1280 ]] || { echo "rule: out of range" >&2; exit 1; }; exit 0; fi
@@ -407,6 +409,7 @@ printf 'ok - a worker report on a dropped dependency does not park; the reroute 
   rescue_sha=2222222222222222222222222222222222222222
   rescue_ref=refs/heads/rescued/agent-issue-7-fixture
   mkdir -p "$fixture_engine/mac-autopilot" "$fixture_repo" "$fixture_runtime/alerts" "$fixture_sup" "$fixture_bin" "$AGENT_HOME/state"
+  cp "$SCRIPT_DIR/task-state.mjs" "$fixture_engine/task-state.mjs"
   cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$fixture_runtime/config.json"
   printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/7.json"
   jq -cn --arg head "$remote_head" --arg sha "$rescue_sha" --arg ref "$rescue_ref" '{units:[{
@@ -500,6 +503,7 @@ printf 'ok - supersede-handoff clears the snapshot, records the ruling and curre
   fixture_runtime="$test_env_root/ready-autopi"
   ready_calls="$test_env_root/ready-calls.log"
   mkdir -p "$fixture_engine/mac-autopilot" "$fixture_runtime/alerts" "$test_env_root/ready-repo" "$test_env_root/ready-sup" "$AGENT_HOME/state"
+  cp "$SCRIPT_DIR/task-state.mjs" "$fixture_engine/task-state.mjs"
   cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$fixture_runtime/config.json"
   printf '%s\n' '{"workers":[]}' > "$fixture_runtime/workers.json"
   cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT2'
@@ -559,6 +563,7 @@ printf 'ok - hold.sh --rule usage names --ready\n'
 (
   fixture_engine="$test_env_root/hold-rule-post-read-engine"
   mkdir -p "$fixture_engine/mac-autopilot"
+  cp "$SCRIPT_DIR/task-state.mjs" "$fixture_engine/task-state.mjs"
   cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$HOLD_RULE_REPRO_RECORD"

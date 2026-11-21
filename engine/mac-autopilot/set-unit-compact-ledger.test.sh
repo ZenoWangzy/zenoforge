@@ -28,7 +28,8 @@ footprint_owner_transition() { echo "$1 $2 $3" >> "$transitions"; }
 : > "$calls"
 set_unit u1 '.note="counted"' || fail "set_unit returned rc $?"
 [[ "$(wc -l < "$UNITS")" == 1 ]] || fail "ledger is not one line after set_unit: $(wc -l < "$UNITS") lines"
-[[ "$(wc -l < "$calls")" == 3 ]] || fail "set_unit read the ledger $(wc -l < "$calls") times, want 3"
+# #1332 removed the post-write unit_field read: set_unit takes the new stage from the row it already holds (units.sh new_unit), so 2 reads of the ledger.
+[[ "$(wc -l < "$calls")" == 2 ]] || fail "set_unit read the ledger $(wc -l < "$calls") times, want 2"
 jq -e '.units[0].note == "counted"' "$UNITS" >/dev/null || fail 'the update did not land'
 
 : > "$transitions"
