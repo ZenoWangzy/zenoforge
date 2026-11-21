@@ -111,7 +111,7 @@ sim_publish_status() {
   source "$SIM_ENGINE_DIR/coord/status.sh"
   instance="$(<"$SIM_HOST_DIR/instance")"
   caps='{"os":"linux","arch":"sim","wsl":false,"cpus":1,"mem_mb":1,"cli":{}}'
-  payload="$(status_record "$SIM_HOST_ID" "$instance" "$(sim_now)" "$caps")"
+  payload="$(ZF_COORD=on status_record "$SIM_HOST_ID" "$instance" "$(sim_now)" "$caps")"
   ref="refs/status/$SIM_HOST_ID"
   old_oid="$(sim_ref_oid "$ref")"
   sim_write_ref "$ref" "$old_oid" "$payload"

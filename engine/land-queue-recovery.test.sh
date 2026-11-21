@@ -31,13 +31,8 @@ for arg in "$@"; do
 done
 EOF
 } > "$test_env_bin/systemd-run"
-{
-  printf '#!%s\n' "$BASH"
-  cat <<'EOF'
-printf '{ sec = %s, usec = 0 }\n' "$(( $(date +%s) - 7200 ))"
-EOF
-} > "$test_env_bin/sysctl"
-chmod +x "$test_env_bin/systemctl" "$test_env_bin/systemd-run" "$test_env_bin/sysctl"
+export ZF_BOOT_EPOCH=$(( $(date +%s) - 7200 ))
+chmod +x "$test_env_bin/systemctl" "$test_env_bin/systemd-run"
 python3 - "$ZF_LAND_QUEUE_DIR" "$test_env_root" <<'FIXTURE'
 import json, pathlib, sys
 queue, tmp = map(pathlib.Path, sys.argv[1:])

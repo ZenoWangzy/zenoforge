@@ -527,7 +527,7 @@ export ANCHOR_CREATE_CALLS=$tmp/anchor-creates ANCHOR_TITLES=$tmp/anchor-titles 
 : > "$ANCHOR_CREATE_CALLS"; : > "$ANCHOR_TITLES"; : > "$ANCHOR_BODIES"
 cat > "$tmp/agent/engine-live/roadmap-issue-create.sh" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >> "$ANCHOR_CREATE_CALLS"
+echo "${*//$'\n'/ }" >> "$ANCHOR_CREATE_CALLS"
 title= body=
 while (($#)); do case $1 in --title) title=$2; shift ;; --body) body=$2; shift ;; esac; shift; done
 printf '%s\n' "$title" >> "$ANCHOR_TITLES"; printf '%s\n' "$body" >> "$ANCHOR_BODIES"
