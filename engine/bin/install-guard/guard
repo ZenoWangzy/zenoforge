@@ -5,9 +5,10 @@ set -uo pipefail
 self=$1; shift
 dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 rest=() ; IFS=: read -ra parts <<<"$PATH"
-for p in "${parts[@]}"; do [[ $p == "$dir" || -z $p ]] || rest+=("$p"); done
+for p in "${parts[@]}"; do [[ -z $p || $p == "$dir" || $p -ef $dir ]] || rest+=("$p"); done
 PATH=$(IFS=:; echo "${rest[*]}"); export PATH
 real=$(command -v "$self") || { echo "install-guard: no real $self on PATH" >&2; exit 127; }
+[[ ! $real -ef "$dir/$self" && ! ${real%/*} -ef $dir ]] || { echo "install-guard: $self on PATH still resolves to this shim ($real); refusing to loop" >&2; exit 126; }
 original_args=("$@") tool=$self args=("$@")
 if [[ $self == corepack && ${1:-} =~ ^(pnpm|npm|npx)$ ]]; then tool=$1; args=("${@:2}"); fi
 
