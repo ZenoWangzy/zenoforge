@@ -75,8 +75,8 @@ slice_cpu_store_sample() {
     return 1
   fi
 }
-slice_cpu_used() { # latest zf.slice CPU average in cores, only after a 30-second cpu.stat delta
-  local stat="${LUNA_WORKER_SLICE_DIR%/*}/cpu.stat" file usage now last_at="" last_usage="" last_measured="" elapsed_cs used
+slice_cpu_used() { # latest worker CPU average in cores (zf-workers.slice only; scheduler, batch, release and bell load in zf.slice is not counted), only after a 30-second cpu.stat delta
+  local stat="$LUNA_WORKER_SLICE_DIR/cpu.stat" file usage now last_at="" last_usage="" last_measured="" elapsed_cs used
   usage=$(awk '$1 == "usage_usec" && $2 ~ /^[0-9]+$/ { print $2; found=1; exit } END { if (!found) exit 1 }' "$stat" 2>/dev/null) || return 1
   [[ "$usage" =~ ^[0-9]+$ ]] || return 1
   file=$(slice_cpu_sample_file)
@@ -133,7 +133,7 @@ box_has_room() { # optional waiter age in seconds; shared by bin/luna, bin/zc, a
       quota_cpus=$(awk -v q="$quota" -v p="$period" 'BEGIN { printf "%.6g", q / p }')
       if (( scope_runs >= floor_cap )) || ! awk -v used="$cpu_used" -v est="$cpu_est" -v quota="$quota" -v period="$period" 'BEGIN { exit !(used + est <= quota / period) }'; then
         used_display=$(awk -v used="$cpu_used" 'BEGIN { printf "%.2f", used }')
-        BOX_ROOM_WHY="zf.slice cpu used $used_display/$quota_cpus CPUs, est +$cpu_est per run"
+        BOX_ROOM_WHY="zf-workers.slice cpu used $used_display/$quota_cpus CPUs, est +$cpu_est per run"
         return 1
       fi
     elif (( scope_runs >= fallback_cap )); then
