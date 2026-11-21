@@ -10,7 +10,8 @@ mkdir -p "$fixture/repo" "$fixture/sup/autopi"
 cp "$script_dir/config.template.json" "$fixture/sup/autopi/config.json"
 printf '{"units":[]}\n' > "$fixture/sup/autopi/units.json"
 export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$fixture/sup" MAC_AUTOPILOT_RUNTIME_DIR="$fixture/sup/autopi"
-export REAL_GIT="$(command -v git)" TEST_GIT_CALLS="$fixture/git-calls" TEST_GIT_FAILED="$fixture/git-failed" TEST_GH_CALLS="$fixture/gh-calls" TEST_PRS="$fixture/prs.json"
+export REAL_GIT="$(command -v git)" TEST_GIT_CALLS="$fixture/git-calls" TEST_GIT_FAILED="$fixture/git-failed" TEST_GH_CALLS="$fixture/gh-calls" TEST_GH_ARGS="$fixture/gh-args" TEST_PRS="$fixture/prs.json" TEST_PR_BODY="$fixture/pr-body"
+printf 'fixture pr body\nRefs #77\n' > "$TEST_PR_BODY"
 cat > "$test_env_bin/git" <<'SH'
 #!/usr/bin/env bash
 if [[ " $* " == *' log '* ]]; then
@@ -22,10 +23,12 @@ SH
 cat > "$test_env_bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s %s\n' "${1:-}" "${2:-}" >> "$TEST_GH_CALLS"
+[[ "$1" != pr ]] || printf '%s\n' "$*" >> "$TEST_GH_ARGS"
 case "${1:-} ${2:-}" in
-  'pr list') cat "$TEST_PRS" ;;
+  'pr list') [[ "${TEST_GH_LIST_FAIL:-false}" != true ]] || exit 1; cat "$TEST_PRS" ;;
   'pr view')
     case "$*" in
+      *'--json body'*) cat "$TEST_PR_BODY" ;;
       *'--json state'*) printf 'CLOSED\n' ;;
       *'--json mergeable'*) printf 'UNKNOWN\n' ;;
       *) printf '%s\n' 0123456789012345678901234567890123456789 ;;
@@ -54,14 +57,14 @@ fail() { printf 'tick-census.test.sh: %s\n' "$*" >&2; exit 1; }
 
 test_census() {
   local sha=0123456789012345678901234567890123456789
-  jq -n --arg sha "$sha" '[range(1;5) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
+  jq -n --arg sha "$sha" '[range(1;5) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
   jq -n --arg sha "$sha" '{units:([range(1;5) | {id:("parent-" + tostring),issue:.,lane:"pr",pr:.,branch:("branch-" + tostring),stage:"ready-to-merge",approved_sha:$sha,reviewed_pr_head:$sha,history:[]}]
     + [range(1;5) | {id:("child-" + tostring),issue:(. + 10),lane:"pr",branch:("child-" + tostring),stage:"blocked-external",blocked_on:.,labels:["stack-pilot"],history:[]}])}' > "$UNITS"
   dep_states() { local dep; for dep in "$@"; do printf '%s\tOPEN\t\tOPEN\n' "$dep"; done; }
   stack_initial_branch() { return 0; }
   DEP_CHECK_SECONDS=0
   : > "$TEST_GH_CALLS"
-  TICK_PRS=''
+  tick_prs_changed
   phase release_dependency_blocks
   jq -e '[.units[] | select(.id | startswith("child-")) | .stage] == ["implement-pending","implement-pending","implement-pending","implement-pending"]' "$UNITS" >/dev/null || fail 'dependency phase did not release the four approved stacks'
   jq -n --arg sha "$sha" '{units:[range(1;5) | {id:("pr-" + tostring),pr:.,stage:"blocked-external",reviewed_sha:$sha,blocked_main_sha:$sha}]}' > "$UNITS"
@@ -100,11 +103,9 @@ test_census() {
   [[ -z "$TICK_PRS" ]] || fail 'a yielded scheduler lock retained the PR census'
   tick_prs_prime
   [[ "$(tick_pr_head 1)" == 1111111111111111111111111111111111111111 ]] || fail 'the PR change during the lock yield was not reloaded'
-  TICK_PR_CHECK_CENSUS='{"1":{"draft":false}}'
   tick_prs_set_draft 1 true
   tick_prs_add_label 1 gated
   jq -e '.[0].isDraft == true and any(.[0].labels[]; .name == "gated")' <<<"$TICK_PRS" >/dev/null || fail 'draft and label changes were not mirrored'
-  [[ -z "$TICK_PR_CHECK_CENSUS" ]] || fail 'a draft change retained the old normalized census'
   TICK_PR_STATE[99]=OPEN
   gated_status "$sha" success test/context test
   [[ -z "$TICK_PRS" && -z "${TICK_PR_STATE[99]:-}" ]] || fail 'a new commit status did not invalidate cached PR facts'
@@ -159,19 +160,19 @@ test_census() {
 
 test_adopt() { # #1038: the per-head PR lookup is answered from the loaded census
   local sha=0123456789012345678901234567890123456789 calls rc
-  jq -n --arg sha "$sha" '[range(1;5) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:(. == 2),title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
-  TICK_PRS=''; tick_prs_prime
+  jq -n --arg sha "$sha" '[range(1;5) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:(. == 2),title:"fixture",labels:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
+  tick_prs_changed; tick_prs_prime
   : > "$TEST_GH_CALLS"
   scheduler_pr_adopt_open branch-2 || fail 'a PR in the census was not adopted'
   [[ "$SCHED_PR_NUM" == 2 ]] || fail "adopted PR $SCHED_PR_NUM, expected 2"
   rc=0; scheduler_pr_adopt_open branch-9 || rc=$?
   [[ "$rc" == 1 && -z "$SCHED_PR_NUM" ]] || fail 'a head missing from a complete census was adopted'
   [[ ! -s "$TEST_GH_CALLS" ]] || fail "a loaded census still called gh: $(cat "$TEST_GH_CALLS")"
-  TICK_PRS=''
+  tick_prs_changed
   rc=0; scheduler_pr_adopt_open branch-2 || rc=$?
   [[ "$(grep -c '^pr list$' "$TEST_GH_CALLS")" == 1 ]] || fail 'an empty census did not fall back to the live lookup'
-  jq -n --arg sha "$sha" '[range(1;301) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
-  TICK_PRS=''; tick_prs_prime
+  jq -n --arg sha "$sha" '[range(1;301) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
+  tick_prs_changed; tick_prs_prime
   : > "$TEST_GH_CALLS"
   scheduler_pr_adopt_open branch-300 || fail 'a PR in a full census was not adopted'
   [[ ! -s "$TEST_GH_CALLS" ]] || fail 'a hit in a full census called gh'
@@ -216,11 +217,50 @@ test_footprint() {
   [[ "$actual" == $'0\n1' && "$logs" == 2 ]] || fail 'a failed git log was not retried for the next footprint decision'
 }
 
+test_light_census() { # 轻量列表：字段不带 body/statusCheckRollup；60s 窗口文件跨进程复用；失败不落盘；正文按 PR 单取
+  local sha=0123456789012345678901234567890123456789 lists
+  jq -n --arg sha "$sha" '[{number:7,headRefOid:$sha,headRefName:"branch-7",baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"MERGEABLE"}]' > "$TEST_PRS"
+  tick_prs_changed
+  : > "$TEST_GH_CALLS"; : > "$TEST_GH_ARGS"
+  tick_prs_prime
+  [[ -n "$TICK_PRS" ]] || fail 'the light list read failed'
+  # the list call asks for the light fields only: no body, no statusCheckRollup
+  grep -Fxq 'pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision' "$TEST_GH_ARGS" \
+    || fail "the list call is not the light field set: $(cat "$TEST_GH_ARGS")"
+  [[ -s "$A/.tick-prs-census.json" ]] || fail 'a successful list wrote no cross-process cache file'
+  # a second reader process inside the 60 s window reuses the file and makes no list call
+  lists="$(grep -c '^pr list$' "$TEST_GH_CALLS")"
+  (
+    TICK_PRS='' TICK_PR_STATE=() TICK_PR_CHECK_RUNS=() TICK_PR_BODY=() TICK_PR_BODY_LOADED=()
+    tick_prs_prime
+    [[ -n "$TICK_PRS" ]] || exit 3
+  ) || fail 'a second process could not read the shared census'
+  [[ "$(grep -c '^pr list$' "$TEST_GH_CALLS")" == "$lists" ]] || fail 'a second process within 60 s called gh pr list again'
+  # tick_prs_changed drops the file: the next reader lists again
+  tick_prs_changed
+  [[ ! -e "$A/.tick-prs-census.json" ]] || fail 'tick_prs_changed kept the cross-process cache file'
+  tick_prs_prime
+  [[ "$(grep -c '^pr list$' "$TEST_GH_CALLS")" == "$((lists + 1))" ]] || fail 'after tick_prs_changed no fresh list call was made'
+  # a failed read never writes the file
+  export TEST_GH_LIST_FAIL=true
+  tick_prs_changed
+  tick_prs_prime
+  unset TEST_GH_LIST_FAIL
+  [[ -z "$TICK_PRS" ]] || fail 'a failed list still filled the census'
+  [[ ! -e "$A/.tick-prs-census.json" ]] || fail 'a failed list wrote the cross-process cache file'
+  # a body reader still gets the body: one gh pr view per PR per process
+  : > "$TEST_GH_CALLS"
+  [[ "$(tick_pr_body 7)" == "$(cat "$TEST_PR_BODY")" ]] || fail 'the body reader did not get the PR body'
+  tick_pr_body 7 > /dev/null
+  [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 1 ]] || fail "the body was fetched $(grep -c '^pr view$' "$TEST_GH_CALLS") times for one PR"
+}
+
 case "${1:-all}" in
   census) test_census ;;
   adopt) test_adopt ;;
   footprint) test_footprint ;;
-  all) test_census; test_adopt; test_footprint ;;
+  light) test_light_census ;;
+  all) test_census; test_adopt; test_footprint; test_light_census ;;
   *) fail "unknown test $1" ;;
 esac
 printf 'tick-census.test.sh: ok\n'

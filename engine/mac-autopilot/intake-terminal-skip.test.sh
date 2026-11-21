@@ -17,6 +17,7 @@ gh_log="$fixture/gh.log"; : > "$gh_log"
 cat > "$fixture/bin/gh" <<'GH'
 #!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
+if [[ "$1 $2" == "pr list" ]]; then printf '%s\n' "${PRS:-[]}"; exit 0; fi # the handoff's body-carrying list (open_pr_case feeds it via PRS)
 [[ "$1 $2" == "pr view" ]] && printf '{"number":%s,"headRefName":"agent/issue-x","title":"t","body":"","state":"MERGED","labels":[]}\n' "$3"
 exit 0
 GH

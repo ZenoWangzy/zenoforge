@@ -4,6 +4,8 @@ GH_MERGES=(); GH_RERUNS=()
 # 离线和非 PR 池（cihost-ci-main）的不算。GH_RUNNERS 是 actions/runners 的响应体，应答时套调用方
 # 的 --jq；GH_RUN_JOBS 按 run id 给 {jobs:[...]}。
 GH_RUNNERS='{"runners":[{"id":1,"status":"online","busy":false,"labels":[{"name":"cihost-ci"}]},{"id":2,"status":"offline","busy":false,"labels":[{"name":"cihost-ci"}]},{"id":3,"status":"online","busy":false,"labels":[{"name":"cihost-ci-main"}]}]}'
+# per-head check-runs reads land in their own log so GH_PR_CALLS line-shape asserts stay about pr commands
+GH_CHECK_RUNS_CALLS="$fixture/check-runs.calls"; : > "$GH_CHECK_RUNS_CALLS"
 GH_RUN_JOBS='{}'
 GH_CHECKS_PASS='[{"name":"ci","bucket":"pass"}]'
 # open PR 表放在文件里（$(...) 和后台任务里的调用也算数）。用例把 GH_PR_TABLE 指到一个文件才打开；
@@ -15,15 +17,14 @@ gh_pr_open() { # number head draft(true|false) mergeable branch [statusCheckRoll
 }
 gh_pr_is_draft() { jq -r --argjson n "$1" '.[] | select(.number == $n) | .isDraft' "$GH_PR_TABLE"; }
 gh_pr_list() { # pr list ... [--json fields] [--jq expr]
-  local fields="" query="." n c rows='[]'
+  local fields="" query="." n rows='[]'
   echo "$*" >> "$GH_PR_CALLS"
   if [[ -z "${GH_PR_TABLE:-}" ]]; then
-    # No table: the census check rows come from the per-PR `pr checks` stub; the head is the one `pr view` reports (GH_HEAD).
-    [[ "$*" == *statusCheckRollup* ]] || return 0
+    # No table: light census rows for the ready PRs; the check rows come from the per-head check-runs stub (GH_CHECKS),
+    # the head is the one `pr view` reports (GH_HEAD).
     while (( $# )); do case "$1" in --jq) query="$2" ;; esac; shift; done
     for n in $(jq -r '.units[] | select(.stage == "ready-to-merge" and .pr != null) | .pr' "$UNITS"); do
-      c="$(gh pr checks "$n" --json name,bucket,link 2>/dev/null)"
-      rows="$(jq -c --argjson n "$n" --arg head "${GH_HEAD:-}" --arg mergeable "${GH_MERGEABLE_STATE:-}" --argjson c "${c:-[]}" '. += ([{number: $n, headRefOid: (if $head == "" then null else $head end), isDraft: false, statusCheckRollup: ($c | map({__typename: "CheckRun", name: .name, detailsUrl: (.link // ""), startedAt: (.started_at // null), status: (if .bucket == "pending" then "IN_PROGRESS" else "COMPLETED" end), conclusion: ({pass: "SUCCESS", fail: "FAILURE", skipping: "SKIPPED", neutral: "NEUTRAL", cancel: "CANCELLED"}[.bucket] // null)}))}] | map(. + (if $mergeable == "" then {} else {mergeable:$mergeable} end)))' <<<"$rows")"
+      rows="$(jq -c --argjson n "$n" --arg head "${GH_HEAD:-}" --arg mergeable "${GH_MERGEABLE_STATE:-}" '. += ([{number: $n, headRefOid: (if $head == "" then null else $head end), isDraft: false}] | map(. + (if $mergeable == "" then {} else {mergeable:$mergeable} end)))' <<<"$rows")"
     done
     jq -cr "$query" <<<"$rows"
     return 0
@@ -135,6 +136,24 @@ gh() {
         jq -r --arg st "$st" '.[] | select(.status == $st) | .databaseId' <<<"$GH_RUNS"
       else
         jq -c --arg st "$st" '.[] | select(.status == $st)' <<<"$GH_RUNS"
+      fi ;;
+    # 检查行按 head SHA 单取（轻量 census 不再带 statusCheckRollup）：表模式把该 head 所在 PR 的
+    # statusCheckRollup 行转成 REST check_runs（同一 head 有多行时取第一个 PR）；无表时把 GH_CHECKS
+    # 的 bucket 行转成 REST 行，pending 即未完成的 status。
+    "api repos/{owner}/{repo}/commits/"*"/check-runs"*)
+      local cr_sha="$2" cr_jq="" cr_prev=""
+      cr_sha="${cr_sha#*commits/}"; cr_sha="${cr_sha%%/*}"
+      echo "check-runs $cr_sha" >> "$GH_CHECK_RUNS_CALLS"
+      for arg in "$@"; do [[ "$cr_prev" == --jq ]] && cr_jq="$arg"; cr_prev="$arg"; done
+      if [[ -n "${GH_PR_TABLE:-}" ]] && jq -e --arg sha "$cr_sha" 'any(.[]; .headRefOid == $sha)' "$GH_PR_TABLE" >/dev/null 2>&1; then
+        jq -c --arg sha "$cr_sha" '[.[] | select(.headRefOid == $sha)][0].statusCheckRollup // []
+          | {total_count: length, check_runs: map({name: (.name // ""), details_url: (.detailsUrl // ""), started_at: (.startedAt // null),
+              status: ((.status // "completed") | ascii_downcase),
+              conclusion: (if (.conclusion // null) == null then null else (.conclusion | ascii_downcase) end)})}' "$GH_PR_TABLE" | jq -r "${cr_jq:-.}"
+      else
+        jq -c '{total_count: length, check_runs: map({name: .name, details_url: (.link // ""), started_at: (.started_at // null),
+            status: (if .bucket == "pending" then "in_progress" else "completed" end),
+            conclusion: ({pass: "success", fail: "failure", skipping: "skipped", neutral: "neutral", cancel: "cancelled"}[.bucket] // null)})}' <<<"${GH_CHECKS:-[]}" | jq -r "${cr_jq:-.}"
       fi ;;
     # 一个 run 的 job 快照：[{status, runner_id}]（cd947d120 的共享缓存契约）
     "api repos/{owner}/{repo}/actions/runs/"*"/jobs"*)

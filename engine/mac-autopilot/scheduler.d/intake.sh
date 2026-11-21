@@ -224,15 +224,12 @@ startable_pending_count() { # pending units eligible to start under intake's #15
 # time (a long hold is measured from its start) and goes when a pass gets past the held checks, which is when intake can add.
 intake_hold_mark() { [[ -e "$A/intake-held-since" ]] || date -u +%Y-%m-%dT%H:%M:%SZ > "$A/intake-held-since"; }
 intake_census_prime() { # the open-PR census the handoff block reads; register_new_issues calls it, and so does a tick that left the walk to the existing-walk station
-  local cached_prs pr_number
+  local pr_number
   HANDOFF_CENSUS_PARTIAL=0; HANDOFF_WAIT_PRS='[]'; HANDOFF_WAIT_BRANCHES='[]'
   tick_prs_prime
-  cached_prs="$(tick_prs 2>/dev/null || true)"
-  if [[ -n "$cached_prs" ]] && jqf -e 'type=="array" and length < 300' <<<"$cached_prs" >/dev/null; then
-    HANDOFF_PR_CENSUS="$(jqf -c '[.[] | {number,headRefName,title,body,labels}]' <<<"$cached_prs")"
-  else
-    HANDOFF_PR_CENSUS="$(intake_gh_read pr list --state open --limit 500 --json number,headRefName,title,body,labels 2>/dev/null)" || HANDOFF_PR_CENSUS=""
-  fi
+  # the light tick census carries no body, and the handoff indexes PR→issue claims from "Refs/Fixes #N" body
+  # lines: this list keeps its own body-carrying read (intake_gh_read caps it) instead of N per-PR body views
+  HANDOFF_PR_CENSUS="$(intake_gh_read pr list --state open --limit 500 --json number,headRefName,title,body,labels 2>/dev/null)" || HANDOFF_PR_CENSUS=""
   jqf -e 'type == "array" and all(.[]; (.number | type)=="number" and (.labels | type)=="array" and all(.labels[]; (.name | type)=="string"))' <<<"${HANDOFF_PR_CENSUS:-}" >/dev/null || HANDOFF_PR_CENSUS=""
   if [[ -z "$HANDOFF_PR_CENSUS" ]]; then
     HANDOFF_CENSUS_PARTIAL=1; HANDOFF_PR_CENSUS='[]'
@@ -332,14 +329,9 @@ register_new_issues_pass() {
   if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" != 1 ]]; then
     busy="$(intake_busy_text <<<"$HANDOFF_PR_CENSUS")"
   else
-    tick_prs_prime
-    busy_prs="$(tick_prs 2>/dev/null)" || busy_prs=""
-    if [[ -n "$busy_prs" ]]; then
-      busy="$(intake_busy_text <<<"$busy_prs")"
-    else
-      busy_prs="$(intake_gh_read pr list --state open --limit 200 --json headRefName,title,body 2>/dev/null)" || return 0
-      busy="$(intake_busy_text <<<"$busy_prs")"
-    fi
+    # the light tick census carries no body, and the hold check reads body lines: take the body-carrying list
+    busy_prs="$(intake_gh_read pr list --state open --limit 200 --json headRefName,title,body 2>/dev/null)" || return 0
+    busy="$(intake_busy_text <<<"$busy_prs")"
   fi
   fi
   if (( ! existing_only )); then

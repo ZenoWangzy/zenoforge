@@ -69,9 +69,7 @@ hotfix_issue_numbers() { TICK_HOTFIX_ISSUES='[]'; return 0; }
 prepare_tick() {
   make_units
   : > "$GH_CALLS"
-  TICK_PRS=''
-  TICK_PR_CHECK_CENSUS=''
-  TICK_PR_STATE=()
+  tick_prs_changed
   TICK_UNFINISHED=''
   TICK_UNFINISHED_LOADED=false
   TICK_HOTFIX_ISSUES='[]'
@@ -122,7 +120,7 @@ run_ci_dagger_engine_loss_case() (
   CI_RUN_JOBS_CACHE=()
   ROOT="$fixture/repo"; MAIN_HEAD="$(printf '%040x' 6100)"; SCHED_LOCK_HELD=true
   CFG="$(jq -c . "$supervisor/autopi/config.json")"
-  TICK_PR_STATE=(); TICK_PRS=''; TICK_PR_CHECK_CENSUS=''
+  TICK_PR_STATE=(); tick_prs_changed
   TICK_UNFINISHED='[]'; TICK_UNFINISHED_LOADED=true; TICK_UNFINISHED_ALL_OK=true
   TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=true
   STAMP=2026-11-17T17:21:42Z
@@ -219,7 +217,7 @@ run_merge_empty_case() {
   # run list, or prime the open-PR census. A blocked-PR retry remains separate.
   echo '{"units":[]}' > "$UNITS"
   ROOT="$fixture/empty-root"
-  TICK_PRS=''; TICK_PR_CHECK_CENSUS=''; TICK_PR_STATE=()
+  tick_prs_changed
   : > "$GH_CALLS"
   gate_eval_sha() { printf '%040x\n' 1; }
   run_merge_lane

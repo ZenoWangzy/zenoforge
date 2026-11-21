@@ -102,6 +102,7 @@ gh() {
       [[ "$*" != *"/issues/2628/"* ]] || printf '5028\n'
       return 0 ;;
     *git/ref/heads/*) printf 'abcdef0123456789\n'; return 0 ;;
+    *'--json body'*) jq -r --argjson n "$3" 'map(select(.number == $n))[0].body // ""' <<<"${PRS:-[]}"; return 0 ;; # bodies come per PR now
   esac
   return 1
 }

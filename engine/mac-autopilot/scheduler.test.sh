@@ -620,6 +620,25 @@ tick_gh() {
       command jq -cn --argjson n "$pr_number" --arg oid "$(printf '%040x' "$pr_number")" \
         '{number:$n,merged:true,base:{ref:"main"},merge_commit_sha:$oid,merged_at:"2026-10-29T00:00:00Z"}'
       ;;
+    # 轻量 census 后的检查行：按 head SHA 读 check-runs。优先用 pr-census.json 里该 head 的 statusCheckRollup
+    # （fixture 原样保留），否则把 head（%040x 的 PR 号）还原成 PR 号读 per-PR pr checks 夹具。
+    'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
+      local cr_sha="$2" cr_jq="" cr_prev="" cr_rows cr_n
+      cr_sha="${cr_sha#*commits/}"; cr_sha="${cr_sha%%\?*}"
+      for arg in "$@"; do [[ "$cr_prev" == --jq ]] && cr_jq="$arg"; cr_prev="$arg"; done
+      if [[ -f "$TF/pr-census.json" ]] && command jq -e --arg sha "$cr_sha" 'any(.[]; .headRefOid == $sha and ((.statusCheckRollup // []) | length > 0))' "$TF/pr-census.json" >/dev/null 2>&1; then
+        cr_rows="$(command jq -c --arg sha "$cr_sha" '[.[] | select(.headRefOid == $sha)][0].statusCheckRollup' "$TF/pr-census.json")"
+        command jq -c '{total_count: length, check_runs: map({name: (.name // ""), details_url: (.detailsUrl // ""), started_at: (.startedAt // null),
+            status: ((.status // "completed") | ascii_downcase), conclusion: (if (.conclusion // null) == null then null else (.conclusion | ascii_downcase) end)})}' <<<"$cr_rows" | command jq -r "${cr_jq:-.}"
+      else
+        cr_n="$(printf '%d' "0x$cr_sha" 2>/dev/null)" || cr_n=""
+        cr_rows='[]'
+        [[ "$cr_n" =~ ^[0-9]+$ ]] && cr_rows="$(tick_gh pr checks "$cr_n" --json name,bucket,link 2>/dev/null || printf '[]')"
+        command jq -c '{total_count: length, check_runs: map({name: .name, details_url: (.link // ""), started_at: (.started_at // null),
+            status: (if .bucket == "pending" then "in_progress" else "completed" end),
+            conclusion: ({pass: "success", fail: "failure", skipping: "skipped", cancel: "cancelled"}[.bucket] // null)})}' <<<"$cr_rows" | command jq -r "${cr_jq:-.}"
+      fi
+      ;;
     'run list')
       if [[ -f "$TF/ci-admission-runs.json" && "$*" == *'--limit 300 --json databaseId,status,event,headBranch,headSha,workflowName'* ]]; then
         cat "$TF/ci-admission-runs.json"
@@ -752,7 +771,7 @@ tick_gh() {
       if [[ -f "$TF/aged-prs.json" && "$*" == *'--json number,headRefName,headRefOid,createdAt,baseRefName'* ]]; then cat "$TF/aged-prs.json"; return; fi
       if [[ -f "$TF/handoff-lookup-fail" && "$*" == *'--json number,headRefName,title,body'* ]]; then return 1; fi
       # The tick census is the open-PR census (948e839b2), so a failing handoff lookup fails that listing too.
-      if [[ -f "$TF/handoff-lookup-fail" && "$*" == *statusCheckRollup* ]]; then return 1; fi
+      if [[ -f "$TF/handoff-lookup-fail" && "$*" == *'--json number,headRefOid,headRefName,baseRefName,isDraft'* ]]; then return 1; fi
       if [[ -f "$TF/handoff-lookup.json" && "$*" == *'--json number,headRefName,title,body'* ]]; then
         if [[ "$*" == *'--head '* ]]; then
           command jq -c '[.[] | select(.headRefName=="agent/issue-779") | if has("labels") then . else . + {labels:[]} end]' "$TF/handoff-lookup.json"
@@ -761,7 +780,7 @@ tick_gh() {
         fi
         return
       fi
-      if [[ -f "$TF/pr-census.json" && "$*" == *statusCheckRollup* ]]; then
+      if [[ -f "$TF/pr-census.json" && "$*" == *'--json number,headRefOid,headRefName,baseRefName,isDraft'* ]]; then
         # The census carries the PR body (the handoff finds a PR through its "Refs #N" line); take it from the lookup fixture when the row has none.
         if [[ -f "$TF/handoff-lookup.json" ]]; then
           command jq -c --slurpfile RU "$TF/handoff-lookup.json" 'map(. as $r | . + {body: ($r.body // (first($RU[0][] | select(.number == $r.number) | .body) // ""))})' "$TF/pr-census.json"
@@ -772,8 +791,9 @@ tick_gh() {
         cat "$TF/busy-pr"
         return
       fi
-      if [[ "$*" == *statusCheckRollup* ]]; then
-        # The census: check rows come from the per-PR `pr checks` fixture above, heads from the `pr view` fixture.
+      if [[ "$*" == *'--json number,headRefOid,headRefName,baseRefName,isDraft'* ]]; then
+        # The light census: heads come from the `pr view` fixture; check rows now arrive per head SHA via the
+        # check-runs branch below (the per-PR `pr checks` fixture feeds it).
         local query="." rows='[]' n c previous="" arg
         for arg in "$@"; do [[ "$previous" == --jq ]] && query="$arg"; previous="$arg"; done
         for n in $(command jq -r '.units[] | select(.stage == "ready-to-merge" and .pr != null) | .pr' "$TF/supervisor/autopi/units.json"); do
@@ -1238,7 +1258,7 @@ sched_ci_slot_sync_case() (
   A="$test_dir"; LOG="$test_dir/scheduler.log"; : > "$LOG"
   CFG='{"precheck":false}'; STAMP=ci-admission-test; SCHED_LOCK_HELD=true
   GATED_LABEL=agent/ci-gated; CI_HOTFIX_BRANCHES='[]'; GATED_CENSUS_LOADED=true
-  TICK_PRS=''; TICK_PR_CHECK_CENSUS=''
+  tick_prs_changed
   GATED_OF=(); GATED_OF["$branch"]="80 true $old_head"; GATED_SLOT=(); READIED_PRS=()
   SLOT_SYNC_CARRIED_HEAD=""
   command jq -cn --arg old "$old_head" --arg branch "$branch" '{units:[{
@@ -1306,7 +1326,7 @@ sched_case_ci_admission_census_retry() (
   echo 0 > "$calls_file"; : > "$sleeps_file"
   CFG='{"hotfix_lane":{"label":"hotfix","branch_prefixes":[]}}'
   LOG="$test_dir/scheduler.log"; : > "$LOG"; STAMP=ci-census-test
-  TICK_PRS=''; TICK_PR_CHECK_CENSUS=''; TICK_HOTFIX_ISSUES_LOADED=true; TICK_HOTFIX_ISSUES='[]'
+tick_prs_changed; TICK_HOTFIX_ISSUES_LOADED=true; TICK_HOTFIX_ISSUES='[]'
   tick_prs_prime() { :; }
   sleep() { printf '%s\n' "$*" >> "$sleeps_file"; }
   gh() {
@@ -5328,7 +5348,7 @@ sched_case_hold_handoff_orphan_and_aged_pr() {
     if [[ "$mode" == ambiguous ]]; then
       grep -Fq 'handoff-pr-ambiguous issue=#779' "$TF/agent-home/supervisor-inbox" \
         || { echo 'not ok - orphan ambiguity was not sent to supervisor' >&2; exit 1; }
-      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt' "$TF/calls" \
+      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision' "$TF/calls" \
         || { echo 'not ok - aged PR fixture did not run' >&2; exit 1; }
     elif [[ "$mode" == incomplete ]]; then
       grep -Fq 'aged PR lifecycle deferred: handoff PR census unavailable' "$TF/supervisor/autopi/scheduler.log" \
@@ -5336,7 +5356,7 @@ sched_case_hold_handoff_orphan_and_aged_pr() {
     else
       command jq -e '.units[0].hold_handoff_waiting==true' "$TF/supervisor/autopi/units.json" >/dev/null \
         || { echo 'not ok - live owner did not hold the handoff' >&2; exit 1; }
-      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt' "$TF/calls" \
+      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision' "$TF/calls" \
         || { echo 'not ok - aged PR fixture did not run while waiting for the live owner' >&2; exit 1; }
     fi
   done
