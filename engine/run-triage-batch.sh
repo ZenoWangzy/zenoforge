@@ -218,13 +218,19 @@ done
 # are kept as one pair per issue under $AGENT_HOME; a newer pair replaces an
 # older one. A later batch run applies an unchanged issue's pair through the
 # same run-triage.sh batch-result path, with no model call for that issue.
+# Queue row 919: the pair is written the moment a record passes the schema
+# check, before the first apply starts, and removed after its issue applies,
+# so a run ended by a signal or an error keeps every result it has not
+# applied yet (2026-11-21 17:42Z lost nine paid-for records to the unit
+# timeout's TERM inside the apply loop). Copies, not moves: the run still
+# applies its own result from the scratch file.
 triage_kept_pair_save() { # <issue> <result-file> <snapshot-file>
   local n="$1" result_file="$2" snapshot_file="$3" dir="$AGENT_HOME/triage-kept" stamp
   mkdir -p "$dir" || return 1
   rm -f -- "$dir/$n"-*.result.json "$dir/$n"-*.snapshot.json
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  mv -f -- "$result_file" "$dir/$n-$stamp.result.json" || return 1
-  mv -f -- "$snapshot_file" "$dir/$n-$stamp.snapshot.json" || { rm -f -- "$dir/$n-$stamp.result.json"; return 1; }
+  cp -f -- "$result_file" "$dir/$n-$stamp.result.json" || return 1
+  cp -f -- "$snapshot_file" "$dir/$n-$stamp.snapshot.json" || { rm -f -- "$dir/$n-$stamp.result.json"; return 1; }
 }
 
 triage_kept_pair_delete() { # <issue>
@@ -277,9 +283,18 @@ triage_kept_pair_apply() {
 }
 
 MODEL_BATCH_IDS=()
+KEPT_PAIR_SERVED=0
 for n in "${INCLUDED_IDS[@]}"; do
-  triage_kept_pair_apply "$n" || MODEL_BATCH_IDS+=("$n")
+  if triage_kept_pair_apply "$n"; then
+    KEPT_PAIR_SERVED=$((KEPT_PAIR_SERVED + 1))
+  else
+    MODEL_BATCH_IDS+=("$n")
+  fi
 done
+# Queue row 919: pairs left by a run that did not finish are served here.
+if [ "$KEPT_PAIR_SERVED" -gt 0 ]; then
+  echo "run-triage-batch: $KEPT_PAIR_SERVED issue(s) served from kept pairs left by an earlier run that did not finish" >&2
+fi
 INCLUDED_IDS=("${MODEL_BATCH_IDS[@]}")
 [ "${#INCLUDED_IDS[@]}" -gt 0 ] || { echo "run-triage-batch: every included issue was served from a kept result; no model call" >&2; exit 0; }
 
@@ -538,6 +553,10 @@ while IFS= read -r line; do
     continue
   fi
   RESULT_FILES["$n"]="$RESULT_FILE"
+  # Queue row 919: every valid result reaches the kept-pair directory before
+  # the first apply starts; a successful apply below deletes it again.
+  triage_kept_pair_save "$n" "$RESULT_FILE" "${ISSUE_FILES[$n]}" \
+    || echo "run-triage-batch: #$n valid result could not be kept for a retry without a new model call" >&2
 done <<< "$OUTPUT"
 
 triage_batch_fail_issue() {
@@ -618,6 +637,7 @@ for n in "${INCLUDED_IDS[@]}"; do
       bash "$SCRIPT_DIR/run-triage.sh" --batch-result "${RESULT_FILES[$n]}" \
         --batch-snapshot "${ISSUE_FILES[$n]}" "$n"; then
       APPLIED_COUNT=$((APPLIED_COUNT + 1))
+      triage_kept_pair_delete "$n"
     else
       triage_kept_pair_save "$n" "${RESULT_FILES[$n]}" "${ISSUE_FILES[$n]}" \
         || echo "run-triage-batch: #$n valid result could not be kept for a retry without a new model call" >&2
