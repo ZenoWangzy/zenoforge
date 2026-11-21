@@ -152,42 +152,6 @@ auto_pin_land_row() { # log last next -> path on success
   ) 2>>"$log"
 }
 
-# A pin refused by "expected one patch anchor, found N" needs a VectA pack re-anchor, not a retry: file one issue per (patch script, engine file)
-# and name its URL in head-watch.alerts. Never blocks or changes the pin; output goes to $log.anchor, not $log (pin-fail-triage and rate-limit checks read $log).
-pin_anchor_finding() { # log last next -> 0 always
-  local log=$1 last=$2 next=$3 line engine patch live culprits title open url alerts
-  line=$(grep -E -m1 'expected one patch anchor, found [0-9]+$' "$log" 2>/dev/null) || return 0
-  engine=$(sed -n 's#^.*/\(engine/[^:]*\): expected one patch anchor, found [0-9]*$#\1#p' <<<"$line")
-  [[ -n $engine ]] || return 0
-  # The runner does not print the patch name, so take the pack patch that names this engine file on product main.
-  patch=$(git -C "$AGENT_HOME/checkout" grep -l -F -e "$(basename -- "$engine")" origin/main -- .zenoforge/build/pack 2>/dev/null \
-    | sed -n 's#^.*/\(patch-[^/]*\.py\)$#\1#p' | sort -u | paste -sd, -)
-  patch=${patch:-unknown}
-  live=$(git -C "$AGENT_HOME/checkout" show HEAD:.zenoforge/build.json 2>/dev/null | jq -er '.engine' 2>/dev/null) || live=$last
-  culprits=$(git -C "$C" log --format='%h %s' "$live..$next" -- "$engine" 2>/dev/null | head -5)
-  culprits=${culprits:-none in $live..$next}
-  title="pin anchor: re-anchor $patch for $engine"
-  open=$(gh issue list -R ZenoWangzy/vecta --state open --limit 500 --json title,url 2>>"$log.anchor") \
-    || { echo "pin-anchor: issue list failed" >>"$log.anchor"; return 0; }
-  url=$(jq -r --arg t "$title" '.[] | select(.title == $t) | .url' <<<"$open" | head -1)
-  if [[ -z $url ]]; then
-    url=$(bash "$AGENT_HOME/engine-live/roadmap-issue-create.sh" gh issue create --repo ZenoWangzy/vecta --title "$title" --label supervisor-created \
-      --body "Pin of zenoforge ${next:0:12} refused on a broken VectA pack patch anchor.
-Patch script: $patch (VectA .zenoforge/build/pack). Engine file: $engine.
-Log line: $line
-Culprit engine commits ($live..${next:0:12}, this file):
-$culprits
-
-The re-anchored patch must apply on BOTH the live pin (land-direct-main checks the live pin) and the new engine (auto-pin checks main),
-and must be idempotent on both: row 869 needed three landing rounds for exactly this." 2>>"$log.anchor" | grep -E '^https://' | tail -1) || url=''
-  fi
-  [[ -n $url ]] || { echo "pin-anchor: no issue URL for $title" >>"$log.anchor"; return 0; }
-  alerts=${ZF_ALERTS_FILE:-$AGENT_HOME/logs/head-watch.alerts}
-  mkdir -p "$(dirname -- "$alerts")" 2>/dev/null || return 0
-  printf '%s PIN-ANCHOR-FIX %s patch=%s engine=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$url" "$patch" "$engine" >> "$alerts"
-  return 0
-}
-
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
   local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head product_fetch_secs product_fetch_now product_fetch_last product_fetch_rc product_tries
@@ -243,7 +207,6 @@ auto_pin_pass() {
     vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
     product_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)
     echo "$(date -u +%H:%M:%S) PIN-FAILED ${next:0:12} log=$log"; grep -E 'pin-vecta:|refus|add this row' "$log" | tail -4 | cut -c1-200
-    pin_anchor_finding "$log" "$last" "$next" || :
     # A reviewed merge can land its own missing row through the checked VectA PR path; keep the pending engine SHA for the next pass.
     if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
       && reviewed_merge "$next" && ! row_named_exact_declared "$log" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv"; then
