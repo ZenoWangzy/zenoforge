@@ -2022,7 +2022,7 @@ land_case pr-89 "LANDED-HEAD-MOVED $M2 $H2" '[]'
   && "$(field pr-89 '.approved_sha // "none"')" == none ]] || fail 'landed PR head drift was treated as terminal'
 land_case pr-90 "FAILED POST-LAND PR CLOSE $M2" '[]'
 [[ "$(field pr-90 .stage)" == supervisor-review && "$(field pr-90 .land_sha)" == "$M2" \
-  && "$(field pr-90 .verified_by)" == none && "$(field pr-90 '.history[-1].result')" == *'verified_by=none'* \
+  && "$(field pr-90 .verified_by)" == none && "$(field pr-90 '[.history[] | select(.stage=="land-post-step-failed") | .result] | last')" == *'verified_by=none'* \
   && "$(field pr-90 '.approved_sha // "none"')" == none \
   && "$(field pr-90 .note)" == *'PR 后续处理失败'* ]] || fail 'failed PR close was not escalated with landed SHA'
 grep -Fq 'post-land follow-up failed unit=pr-90' "$A/alerts/events.md" || fail 'failed PR close was not written to scheduler alerts'
