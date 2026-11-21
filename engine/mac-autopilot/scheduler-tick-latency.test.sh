@@ -271,6 +271,52 @@ refill_refused_case() { # subshell: run_refill with the refill command stubbed t
 }
 if ! refill_refused_case; then failures+=('a refill refused by the scheduler lock must log one countable line per 60 s (loop.sh run_refill)'); fi
 
+# The gh() guard (row 898): a call made while this shell holds the ledger lock is counted and logged once per
+# caller per tick; ZF_GH_UNDER_LOCK=fail refuses it with rc 97 and the same line on stderr, without calling gh.
+gh_under_lock_case() (
+  uld="$fixture/gh-under-lock"
+  rm -rf -- "$uld"; mkdir -p "$uld"
+  A="$uld"; LOG="$uld/scheduler.log"; : > "$LOG"; STAMP=gh-under-lock-test
+  SCHED_LOCK="$uld/.scheduler.lock"; SCHED_LOCK_HELD=false; SCHED_LOCK_HOLDER_PHASE=harvest_workers
+  # the harness gh() stub above shadows the library wrapper: re-source core.sh so the real gh() runs, with the
+  # network layer (gh_timeout) stubbed to a recorder before anything can call it
+  source "$script_dir/scheduler.d/core.sh"
+  gh_stub="$uld/gh-timeout-calls"; : > "$gh_stub"
+  gh_timeout() { printf '%s\n' "$*" >>"$gh_stub"; return 0; }
+  tick_gh_calls_begin; : > "$gh_stub" # begin's own rate-limit probe goes through the stub; start counting after it
+  # fail mode, lock held: rc 97, the line on stderr, gh itself never runs
+  ZF_GH_UNDER_LOCK=fail SCHED_LOCK_HELD=true
+  rc=0; gh pr view 123 --json mergeCommit >/dev/null 2>"$uld/err" || rc=$?
+  [[ "$rc" == 97 ]] || { echo "under-lock fail mode should return 97, got $rc" >&2; exit 1; }
+  grep -q '^gh-under-lock phase=harvest_workers caller=gh_under_lock_case args=pr view$' "$uld/err" \
+    || { echo "fail mode must print the gh-under-lock line to stderr: $(cat "$uld/err")" >&2; exit 1; }
+  [[ ! -s "$gh_stub" ]] || { echo "fail mode must not call gh: $(cat "$gh_stub")" >&2; exit 1; }
+  # fail mode, lock released: the call runs
+  SCHED_LOCK_HELD=false
+  rc=0; gh pr view 123 --json mergeCommit >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 0 ]] || { echo "a call with the lock released should run the stub, got $rc" >&2; exit 1; }
+  grep -q 'pr view 123 --json mergeCommit' "$gh_stub" || { echo "the stub never ran with the lock released" >&2; exit 1; }
+  # default mode: count every under-lock call, still run gh, log one line per caller per tick
+  unset ZF_GH_UNDER_LOCK
+  tick_gh_calls_begin; : > "$LOG"; : > "$gh_stub"
+  SCHED_LOCK_HELD=true
+  gh issue view 5 --json state >/dev/null 2>&1 || :
+  gh issue view 6 --json state >/dev/null 2>&1 || :
+  gh pr close 7 >/dev/null 2>&1 || :
+  [[ "$(grep -c '^gh-under-lock phase=' "$LOG")" == 1 ]] \
+    || { echo "one caller should log one gh-under-lock line per tick, got $(grep -c '^gh-under-lock phase=' "$LOG")" >&2; exit 1; }
+  grep -q '^gh-under-lock phase=harvest_workers caller=gh_under_lock_case args=issue view$' "$LOG" \
+    || { echo "the logged line names phase, caller and the first two args: $(grep gh-under-lock "$LOG")" >&2; exit 1; }
+  [[ "$(wc -l < "$gh_stub" | tr -d ' ')" == 3 ]] || { echo "default mode must still run every gh call: $(cat "$gh_stub")" >&2; exit 1; }
+  tick_gh_calls_summary | grep -q '^gh_calls=3 gql=[0-9]* rest=[0-9]* gh_locked=3$' \
+    || { echo "the summary must count every under-lock call: $(tick_gh_calls_summary)" >&2; exit 1; }
+  # a later call with the lock released runs but does not raise the tick's under-lock count
+  SCHED_LOCK_HELD=false
+  gh api rate_limit >/dev/null 2>&1 || :
+  tick_gh_calls_summary | grep -q 'gh_locked=3$' || { echo "summary after release keeps the tick's count: $(tick_gh_calls_summary)" >&2; exit 1; }
+)
+if ! gh_under_lock_case; then failures+=('the gh() guard must count under-lock calls, log one line per caller per tick, and refuse them under ZF_GH_UNDER_LOCK=fail'); fi
+
 # main(): footprint_hog_alert reads snapshots and appends one line, so it runs after the scheduler lock is released, not under it.
 main_src="$script_dir/scheduler.sh"
 rel_line="$(awk '/^main\(\) \{/{m=1} m && /^  release_scheduler_lock$/{print NR; exit}' "$main_src")"
