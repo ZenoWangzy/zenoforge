@@ -26,6 +26,9 @@ git -C "$repo" config user.email quick-land-test@example.invalid
 printf 'fixture\n' > "$repo/doc.md"
 printf 'exit "${STUB_RULE_RC:-0}"\n' > "$repo/engine/rule-lane.sh"
 printf '[[ -z ${STUB_SIZE_FAIL:-} ]] || { echo "FAIL tools/big.sh grew"; exit 1; }\necho size-ratchet ok\n' > "$repo/tools/size-ratchet.sh"
+cp "$MODEL_POLICY_TEST_REPO/tools/shortcut-ratchet.sh" "$repo/tools/"
+printf '# shortcut: fixture limit, remove when paid down\n' > "$repo/engine/ratcheted.sh"
+printf '1\tengine/ratcheted.sh\n1\tengine/stale.sh\n' > "$repo/tools/shortcut-baseline.txt"
 printf 'echo suite\n' > "$repo/engine/old.test.sh"
 printf 'echo ok\n' > "$repo/engine/ok.test.sh"
 git -C "$repo" add -A
@@ -38,6 +41,10 @@ git fetch -q origin main
 git switch -q --detach origin/main
 
 reset_fixture() { git switch -q --detach origin/main; git reset -q --hard; git clean -qfd; }
+drop_quick_branches() {
+  local branch
+  while IFS= read -r branch; do git branch -q -D "$branch"; done < <(git for-each-ref --format='%(refname:short)' refs/heads/quick/)
+}
 
 # quick_land_refusal reads the staged diff, the number of --test given and the --prior-art text.
 pa='no external prior art: fixture'
@@ -101,13 +108,14 @@ reset_fixture
 
 # End to end against the bare origin: the change lands on main with no PR.
 origin_main() { git rev-parse origin/main; }
+quick_land_output="$test_env_root/quick-land.out"
 land() { # <expected rc> <quick-land args...>; leaves origin/main at what the run did
   local want="$1" got=0
   shift
   git fetch -q origin main
   git switch -q --detach origin/main
-  quick_land_main "$@" >/dev/null 2>&1 || got=$?
-  [[ "$got" == "$want" ]] || fail "quick_land_main $* returned $got, wanted $want"
+  quick_land_main "$@" >"$quick_land_output" 2>&1 || got=$?
+  [[ "$got" == "$want" ]] || fail "quick_land_main $* returned $got, wanted $want: $(cat "$quick_land_output")"
   git fetch -q origin main
 }
 
@@ -146,6 +154,29 @@ reset_fixture
 printf 'x\n' > tools/big.sh
 STUB_SIZE_FAIL=1 land 1 --test 'true' --prior-art "$pa" 'size'
 [[ "$(origin_main)" == "$before" ]] || fail 'a size-ratchet refusal landed'
+reset_fixture
+
+printf '# shortcut: another fixture limit\n' >> engine/ratcheted.sh
+land 1 --test 'true' --prior-art "$pa" 'shortcut growth'
+[[ "$(origin_main)" == "$before" ]] || fail 'a shortcut-ratchet FAIL landed'
+[[ "$(cat "$quick_land_output")" == *'shortcut-ratchet: FAIL engine/ratcheted.sh has 2 shortcut comments'* ]] || fail "a shortcut-ratchet FAIL was not named: $(cat "$quick_land_output")"
+reset_fixture
+drop_quick_branches
+
+printf '# no shortcut remains\n' > engine/ratcheted.sh
+land 1 --test 'true' --prior-art "$pa" 'shortcut paid down'
+[[ "$(origin_main)" == "$before" ]] || fail 'a last-shortcut note landed without tightening'
+[[ "$(cat "$quick_land_output")" == *'shortcut-ratchet: NOTE engine/ratcheted.sh has no shortcut comments left'*'run bash tools/shortcut-ratchet.sh --tighten'* ]] || fail "a last-shortcut refusal did not name --tighten: $(cat "$quick_land_output")"
+git reset -q --soft origin/main
+bash tools/shortcut-ratchet.sh --tighten >/dev/null
+git add -A
+git switch -q --detach origin/main
+drop_quick_branches
+quick_land_main --test 'true' --prior-art "$pa" 'shortcut tightened' >"$quick_land_output" 2>&1 || fail "quick_land_main did not land after tightening: $(cat "$quick_land_output")"
+git fetch -q origin main
+[[ "$(origin_main)" != "$before" && "$(git show origin/main:engine/ratcheted.sh)" == '# no shortcut remains' ]] || fail 'tightening and recommitting did not land the shortcut removal'
+! git show origin/main:tools/shortcut-baseline.txt | grep -q $'\tengine/ratcheted.sh$' || fail 'the tightened baseline kept the empty row'
+before="$(origin_main)"
 reset_fixture
 
 printf 'echo no bootstrap\n' > engine/new.test.sh
