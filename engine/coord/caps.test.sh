@@ -10,30 +10,36 @@ printf 'Linux version 6.6.0-microsoft-standard-WSL2 (gcc)\n' > "$t/wsl-version"
 printf 'Linux version 6.6.0 (gcc)\n' > "$t/native-version"
 printf 'MemTotal:       32768000 kB\n' > "$t/meminfo"
 
-# run_caps <ZF_OS> <proc version file>: detect with codex and gh stubbed, zf-absent-cli never installed.
+# run_caps <ZF_OS> <proc version file> [runner] [timers]: detect with codex and gh stubbed, zf-absent-cli never installed.
 run_caps() {
-  PATH="$t/bin:$PATH" ZF_OS="$1" ZF_PROC_VERSION_FILE="$2" ZF_MEMINFO_FILE="$t/meminfo" \
+  PATH="$t/bin:$PATH" ZF_OS="$1" ZF_PROC_VERSION_FILE="$2" ZF_RUNNER="${3:-}" ZF_TIMERS="${4:-}" ZF_MEMINFO_FILE="$t/meminfo" \
     ZF_CAPS_CLI='codex zf-absent-cli gh' bash "$engine/coord/caps.sh"
 }
 
-out=$(run_caps linux "$t/wsl-version")
-jq -e '.os == "linux" and .wsl == true and .cli.codex == "ok" and .cli.gh == "ok"
+out=$(run_caps linux "$t/wsl-version" pidfile loop)
+jq -e '.os == "linux" and .wsl == true and .runner == "pidfile" and .timers == "loop" and .cli.codex == "ok" and .cli.gh == "ok"
   and .cli["zf-absent-cli"] == "missing" and .mem_mb == 32000 and (.cpus | type == "number")' <<<"$out" >/dev/null \
   || fail "linux WSL2 detection wrong: $out"
 
 out=$(run_caps linux "$t/native-version")
-jq -e '.wsl == false' <<<"$out" >/dev/null || fail "native Linux reported as WSL: $out"
+jq -e '.wsl == false and .runner == "systemd" and .timers == "systemd"' <<<"$out" >/dev/null \
+  || fail "native Linux defaults wrong: $out"
 
 out=$(run_caps darwin "$t/native-version")
-jq -e '.os == "darwin" and .wsl == false' <<<"$out" >/dev/null || fail "darwin detection wrong: $out"
+jq -e '.os == "darwin" and .wsl == false and .runner == "pidfile" and .timers == "launchd"' <<<"$out" >/dev/null \
+  || fail "darwin detection wrong: $out"
 
 source "$engine/coord/status.sh"
-caps_a='{"os":"linux","arch":"x86_64","wsl":true,"cpus":12,"mem_mb":32000,"cli":{"codex":"ok","claude":"missing","gh":"ok"}}'
-caps_b='{"os":"darwin","arch":"arm64","wsl":false,"cpus":8,"mem_mb":16384,"cli":{"codex":"missing","claude":"ok","gh":"ok"}}'
-status_record host-b 4b7d02 2026-11-12T10:00:30Z "$caps_b" > "$t/status/host-b.json"
-status_record host-a 9f2c1e 2026-11-12T10:00:00Z "$caps_a" > "$t/status/host-a.json"
-jq -e '.proto == 1 and .draining == false and .caps.os == "linux"' "$t/status/host-a.json" >/dev/null \
+caps_a='{"os":"linux","arch":"x86_64","wsl":true,"runner":"pidfile","timers":"loop","cpus":12,"mem_mb":32000,"cli":{"codex":"ok","claude":"missing","gh":"ok"}}'
+caps_b='{"os":"darwin","arch":"arm64","wsl":false,"runner":"pidfile","timers":"launchd","cpus":8,"mem_mb":16384,"cli":{"codex":"missing","claude":"ok","gh":"ok"}}'
+off_record="$(ZF_COORD=off status_record host-off 4b7d02 2026-11-12T10:00:30Z "$caps_b")"
+[[ -z "$off_record" ]] || fail "coordination-off status record was emitted"
+ZF_COORD=on status_record host-b 4b7d02 2026-11-12T10:00:30Z "$caps_b" > "$t/status/host-b.json"
+ZF_COORD=on status_record host-a 9f2c1e 2026-11-12T10:00:00Z "$caps_a" > "$t/status/host-a.json"
+jq -e '.proto == 1 and .draining == false and .caps.os == "linux" and .caps.runner == "pidfile" and .caps.timers == "loop"' "$t/status/host-a.json" >/dev/null \
   || fail "status record schema wrong"
+jq -e '.caps.os == "darwin" and .caps.runner == "pidfile" and .caps.timers == "launchd"' "$t/status/host-b.json" >/dev/null \
+  || fail "second host status record omitted portability fields"
 
 want=$(cat <<'EOF'
 HOST       INSTANCE   OS      ARCH     CPUS   MEM_MB HEARTBEAT            CLI

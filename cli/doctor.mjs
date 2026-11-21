@@ -3,6 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { run, which } from './util.mjs';
 
+const FLEET_STATUS_QUERY = `query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    refs(refPrefix: "refs/status/", first: 100, after: $endCursor) {
+      nodes { name target { __typename ... on Blob { text } } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
 export const AGENT_CLIS = ['codex', 'claude', 'zcode'];
 
 /** "GNU bash, version 5.2.37(1)-release" -> [5, 2, 37]; null when unparseable. */
@@ -155,4 +164,38 @@ export function formatDoctor(results) {
 
 export function detectAgents(find = (n) => which(n)) {
   return AGENT_CLIS.filter((a) => find(a));
+}
+
+export function readFleetStatus(repo, exec = run) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? '')) throw new Error('repository must be owner/name');
+  const [owner, name] = repo.split('/');
+  const response = exec('gh', ['api', 'graphql', '--paginate', '--slurp', '-f', `query=${FLEET_STATUS_QUERY}`, '-F', `owner=${owner}`, '-F', `name=${name}`]);
+  if (!response.ok) throw new Error((response.stderr || response.stdout || 'gh api failed').trim().split('\n')[0]);
+
+  const pages = JSON.parse(response.stdout);
+  if (!Array.isArray(pages)) throw new Error('unreadable fleet status response');
+  const refs = pages.flatMap((page) => {
+    const nodes = page?.data?.repository?.refs?.nodes;
+    if (!Array.isArray(nodes)) throw new Error('unreadable fleet status response');
+    return nodes;
+  });
+  return refs.map(({ name: ref, target }) => {
+    const host = ref?.startsWith('refs/status/') ? ref.slice('refs/status/'.length) : '';
+    if (!/^[A-Za-z0-9._-]+$/.test(host) || target?.__typename !== 'Blob' || typeof target.text !== 'string') {
+      throw new Error('unreadable fleet status record');
+    }
+    const record = JSON.parse(target.text);
+    if (record.host !== host || !record.caps || typeof record.caps !== 'object' || Array.isArray(record.caps)) {
+      throw new Error(`invalid fleet status record for ${host}`);
+    }
+    return { host, caps: record.caps };
+  });
+}
+
+export function formatFleetStatus(records) {
+  if (!records.length) return 'No coordinated hosts found.';
+  const value = (v) => typeof v === 'boolean' || (typeof v === 'string' && /^[A-Za-z0-9._-]+$/.test(v)) ? String(v) : 'unknown';
+  return [...records].sort((a, b) => a.host.localeCompare(b.host)).map(({ host, caps }) =>
+    `${host} os=${value(caps.os)} wsl=${value(caps.wsl)} runner=${value(caps.runner)} timers=${value(caps.timers)}`
+  ).join('\n');
 }

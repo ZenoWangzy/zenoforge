@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { doctor as doctorCommand } from './commands.mjs';
+import * as doctor from './doctor.mjs';
 import { formatDoctor, hardFailures, isGnuDate, parseGhScopes, parseVersion, runDoctor, versionAtLeast } from './doctor.mjs';
 
 test('version parsing', () => {
@@ -21,7 +23,7 @@ test('gh scopes and GNU date detection', () => {
 });
 
 const ghOk = "✓ Logged in to github.com account octo (keyring)\n- Token scopes: 'repo'\n";
-function probe({ missing = [], bashOut = 'GNU bash, version 5.2.37(1)-release', dateOut = 'date (GNU coreutils) 9.4', gh = { ok: true, stdout: ghOk, stderr: '' }, systemd = true } = {}) {
+function probe({ missing = [], bashOut = 'GNU bash, version 5.2.37(1)-release', dateOut = 'date (GNU coreutils) 9.4', gh = { ok: true, stdout: ghOk, stderr: '' }, systemd = true, fleetResponse } = {}) {
   return {
     platform: 'linux',
     nodeVersion: '22.1.0',
@@ -29,6 +31,7 @@ function probe({ missing = [], bashOut = 'GNU bash, version 5.2.37(1)-release', 
     exec: (cmd, args) => {
       if (args[0] === '--version' && cmd.endsWith('bash')) return { ok: true, stdout: bashOut, stderr: '' };
       if (args[0] === '--version' && cmd.endsWith('date')) return { ok: true, stdout: dateOut, stderr: '' };
+      if (args[0] === 'api') return fleetResponse ?? { ok: false, stdout: '', stderr: 'unexpected API call' };
       if (cmd === 'gh') return gh;
       if (cmd === 'systemctl') return { ok: systemd, stdout: '', stderr: '' };
       return { ok: false, stdout: '', stderr: '' };
@@ -94,4 +97,48 @@ test('native Windows is a single hard failure that points at WSL2', () => {
   assert.equal(r.length, 1);
   assert.match(r[0].fix, /wsl --install/);
   assert.equal(hardFailures(r).length, 1);
+});
+
+test('fleet doctor prints os, wsl, runner and timers for each host', () => {
+  assert.equal(typeof doctor.readFleetStatus, 'function');
+  assert.equal(typeof doctor.formatFleetStatus, 'function');
+  const blobs = {
+    a: { host: 'host-a', caps: { os: 'linux', wsl: true, runner: 'systemd', timers: 'systemd' } },
+    b: { host: 'host-b', caps: { os: 'darwin', wsl: false, runner: 'pidfile', timers: 'launchd' } },
+  };
+  const calls = [];
+  const exec = (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args[0] === 'api' && args[1] === 'graphql') {
+      const page = { data: { repository: { refs: { nodes: [
+        { name: 'refs/status/host-b', target: { __typename: 'Blob', text: JSON.stringify(blobs.b) } },
+        { name: 'refs/status/host-a', target: { __typename: 'Blob', text: JSON.stringify(blobs.a) } },
+      ] } } } };
+      return { ok: true, stdout: JSON.stringify([page]) };
+    }
+    return { ok: false, stdout: '', stderr: `unexpected command: ${args.join(' ')}` };
+  };
+
+  const status = doctor.readFleetStatus('example/repo', exec);
+  assert.equal(doctor.formatFleetStatus(status), [
+    'host-a os=linux wsl=true runner=systemd timers=systemd',
+    'host-b os=darwin wsl=false runner=pidfile timers=launchd',
+  ].join('\n'));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(0, 5), ['gh', 'api', 'graphql', '--paginate', '--slurp']);
+  assert.ok(calls[0].some((arg) => arg.includes('refs(refPrefix: "refs/status/"')));
+  assert.ok(calls[0].includes('-F') && calls[0].includes('owner=example') && calls[0].includes('name=repo'));
+
+  const logs = [];
+  const ok = doctorCommand({ fleet: true }, {
+    ...probe({ fleetResponse: { ok: true, stdout: JSON.stringify([{
+      data: { repository: { refs: { nodes: [
+        { name: 'refs/status/host-a', target: { __typename: 'Blob', text: JSON.stringify(blobs.a) } },
+        { name: 'refs/status/host-b', target: { __typename: 'Blob', text: JSON.stringify(blobs.b) } },
+      ] } } },
+    }]) } }),
+    env: { ZF_REPO: 'example/repo' }, home: '/tmp', log: (line) => logs.push(line),
+  });
+  assert.equal(ok, true);
+  assert.match(logs.at(-1), /host-a os=linux wsl=true runner=systemd timers=systemd/);
 });

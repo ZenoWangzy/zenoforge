@@ -3,8 +3,9 @@
 # heartbeat_at, draining and caps. Publishing it to refs/status/<host> is K2; this reads records from a directory.
 # Usage: status.sh show <dir>   (dir holds one <host>.json per host)
 
-# status_record <host> <instance> <heartbeat_at> <caps-json>: print one worker.json record.
+# status_record <host> <instance> <heartbeat_at> <caps-json>: print one worker.json record only with coordination on.
 status_record() {
+  [[ ${ZF_COORD:-off} == on ]] || return 0
   jq -n --arg host "$1" --arg instance "$2" --arg at "$3" --argjson caps "$4" \
     '{proto: 1, host: $host, instance: $instance, heartbeat_at: $at, draining: false, caps: $caps}'
 }
