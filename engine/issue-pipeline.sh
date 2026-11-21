@@ -1702,7 +1702,7 @@ if [ -e "$PAUSE_FILE" ]; then
 fi
 
 # Kill switch: gh variable AGENT_PIPELINE. off|triage|implement|release, each
-# mode enabling the previous ones. A failed read reuses the last value really read (read_agent_pipeline); only a value read as off stops the loop.
+# mode enabling the previous ones. A failed read reuses the last value really read for 30 minutes at most (read_agent_pipeline); a value read as off, or the variable missing (404), stops the loop.
 #
 # 2026-09-12 bug: only "off" and "triage" (and "!= release") were ever
 # checked against MODE, so a typo, trailing whitespace from `gh variable

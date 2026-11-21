@@ -39,36 +39,61 @@ read_agent_phase() {
 
 
 # 2026-11-21 queue row 897: AGENT_PIPELINE is the kill switch — `off`
-# stops the issue loop — and both readers (issue-pipeline.sh's MODE,
-# issue-pipeline-slices.sh's mode) fetched it with `gh variable get ...
-# || echo off`, so a FAILED read (rate limit, timeout, or gh refusing
-# because the owner-admission deadline cannot fit one bounded attempt;
-# that day the journal held 133 `triage` reads and one `off`) was
-# indistinguishable from the maintainer switching the factory off, and
-# stopped the tick the same way. Only a value that was really READ as
-# off may stop the loop: a successful read is stripped, remembered in
-# $AGENT_HOME/agent-pipeline-last (the same single-value marker style
-# as gitnexus-analyze-last-start; a failed write warns, never fails the
-# read) and printed; a failed read reuses that last value and says so
-# on stderr, falling back to off only when no earlier value exists.
-# The call sites keep their own allowlist case, so an unknown value
-# that WAS successfully read still maps to off there, unchanged.
+# stops the issue loop — and gh exits nonzero both when the read fails
+# and when the variable does not exist, so a failed read is retried
+# through gh api, whose error text carries the HTTP status. Three cases:
+# a value really read is stripped, remembered in
+# $AGENT_HOME/agent-pipeline-last and printed; the variable missing
+# (HTTP 404) is off, remembered like a value that was read — deleting
+# the variable must stop the factory; a failed read reuses the last
+# value read for 30 minutes at most (the remember file's mtime), then
+# answers off, writes one stderr line and one supervisor notice an
+# hour. An answer that fits neither case clearly is treated as a failed
+# read and quotes the error's first line; a failed notice or
+# remember-write never fails the read. The call sites keep their own
+# allowlist case, so an unknown value that WAS successfully read still
+# maps to off there, unchanged.
 read_agent_pipeline() {
-  local value
-  if value="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>/dev/null)"; then
+  local value err err_file age note last="$AGENT_HOME/agent-pipeline-last"
+  err_file="$(mktemp "${TMPDIR:-/tmp}/agent-pipeline-read.XXXXXX")" || err_file="$last.read-err"
+  # The gh api retry runs only once the first read has failed; its error
+  # text carries the HTTP status a bare exit code cannot show.
+  if value="$(gh variable get AGENT_PIPELINE --repo "$REPO" 2>"$err_file")" \
+    || value="$(gh api "repos/$REPO/actions/variables/AGENT_PIPELINE" --jq .value 2>"$err_file")"; then
+    rm -f -- "$err_file"
     value="${value//[[:space:]]/}"
-    printf '%s\n' "$value" > "$AGENT_HOME/agent-pipeline-last" 2>/dev/null \
+    printf '%s\n' "$value" > "$last" 2>/dev/null \
       || echo "read_agent_pipeline: could not persist the last AGENT_PIPELINE value" >&2
     printf '%s\n' "$value"
     return 0
   fi
-  value="$(cat "$AGENT_HOME/agent-pipeline-last" 2>/dev/null || true)"
-  if [ -n "$value" ]; then
-    echo "read_agent_pipeline: AGENT_PIPELINE read failed; using the last value read: $value" >&2
-  else
-    value=off
-    echo "read_agent_pipeline: AGENT_PIPELINE read failed; no earlier value read; using off" >&2
+  err="$(head -n 1 -- "$err_file" 2>/dev/null || true)"
+  rm -f -- "$err_file"
+  if grep -qF '(HTTP 404)' <<<"$err"; then
+    printf 'off\n' > "$last" 2>/dev/null \
+      || echo "read_agent_pipeline: could not persist the last AGENT_PIPELINE value" >&2
+    printf 'off\n'
+    return 0
   fi
+  note=""
+  if [ -n "$err" ] && ! grep -qiE 'rate limit|timeout|timed out|deadline|connection|refus|resolv|resolution|network|EOF|\(HTTP [0-9]{3}\)' <<<"$err"; then
+    note=" (unrecognized answer: $err)"
+  fi
+  value="$(cat "$last" 2>/dev/null || true)"
+  if [ -z "$value" ]; then
+    echo "read_agent_pipeline: AGENT_PIPELINE read failed; no earlier value read; using off$note" >&2
+    printf 'off\n'
+    return 0
+  fi
+  age="$(( $(date +%s) - $(stat -c %Y -- "$last" 2>/dev/null || date +%s) ))"
+  if [ "$age" -gt 1800 ]; then
+    echo "read_agent_pipeline: AGENT_PIPELINE read failed; the remembered value $value is too old (${age}s, past the 30-minute reuse limit); using off$note" >&2
+    supervisor_inbox_append_once "agent-pipeline-stale:$(date -u +%Y-%m-%dT%H)" \
+      "agent-pipeline-stale AGENT_PIPELINE read failed; the last value read is ${age}s old, past the 30-minute reuse limit; answering off" || :
+    printf 'off\n'
+    return 0
+  fi
+  echo "read_agent_pipeline: AGENT_PIPELINE read failed; using the last value read: $value$note" >&2
   printf '%s\n' "$value"
 }
 
