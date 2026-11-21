@@ -86,8 +86,7 @@ ci_update_branch() { # pr head
 ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（多为 runner 抖动），重跑后仍红才派 repair
   local r n=0 runs runs_json infra_rc failed_steps
   if [[ "${5:-}" != dagger-engine-loss ]] && ci_stale_base_hop_available "$1" && [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
-    # 落后 main 的红多半是旧 base 的红（2026-10-19：main 自身 suites 红，5 个就绪 PR 跟着红）：服务端合入 main 再跑，
-    # 不在旧 base 上重跑、不派 LLM 修复；干净合并的新 head 沿用原批准（approval_carries）。
+    # A stale-base failure reruns on main via update-branch; a clean new head carries approval.
     if ci_update_branch "$2" "$3"; then
       set_unit "$1" "$(hist ci-red-update-branch "$4") | .stale_base_hop_used=true | .ci_rerun_sha=$(js "$3")"
       say "merge skipped PR#$2 (checks red on a stale base: $4) -> update-branch"
@@ -115,9 +114,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     return 0
   fi
   if [[ "${5:-}" == dagger-engine-loss ]] || ci_infra_red "$3"; then
-    # runner 环境步骤红（磁盘/容量门、Set up job、checkout 前准备）不是代码结论：不作废批准、不派 LLM 修复，
-    # 再重跑；同一 head 连红 CI_INFRA_RERUNS 次交给 supervisor 修 runner（2026-10-20 cihost /data 90% 满，
-    # 磁盘门把 PR CI 全拦红，已批准单元被送去 repair 又丢批准）。
+    # Runner environment failures keep approval and retry before escalating after CI_INFRA_RERUNS.
     local k decision; k="$(unit_field "$1" '.ci_infra_reruns // 0')"; [[ "$k" =~ ^[0-9]+$ ]] || k=0
     failed_steps="$(ci_failed_steps "$3")" || { say "CI infra red unit=$1: failed to read failed steps for head $3"; return 1; }
     echo "[$STAMP] RUNNER-INFRA-RED PR#$2 head=$3 steps: $(sort -u <<<"$failed_steps" | paste -sd ';') (rerun $((k+1))/$CI_INFRA_RERUNS)" >> "$A/alerts/gate.md"
@@ -147,8 +144,7 @@ ci_cancelled_upstream() { # checks_json
     and any(.[]; (.name == "Select pipeline-suite scope" or (.name | startswith("Pipeline suites "))) and .bucket == "cancel")' <<<"$1" >/dev/null
 }
 
-# The merge lane can rerun a check that admission just cancelled, before .ci_wip_wait lands (the flag is what would say so, and it is
-# the thing missing in that window). The cancel audit is already written before the cancel is sent, so its latest reason for the run decides.
+# The cancel audit precedes the cancel, so its latest reason resolves the window before .ci_wip_wait lands.
 ci_admission_cancelled() { # run-id -> 0 when the audit's latest reason for the run is admission's (ci wip / ci deferred)
   tail -n 2000 "$AGENT_HOME/logs/actions-run-cancellations.jsonl" 2>/dev/null \
     | jqf -es --arg r "$1" '[.[] | select(.run_id == $r and (.reason // "") != "")] | last | (.reason // "" | split(";")[0]) | IN("ci wip", "ci deferred")' >/dev/null 2>&1
@@ -174,17 +170,14 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
   say "merge skipped PR#$2 (checks cancelled, not failed: $4) -> restarted $n run(s), approval and rerun credit kept"
 }
 
-# 停线（Jidoka）：失败 job 的日志里已有测试断言失败（vitest FAIL / AssertionError / TAP not ok），就是确定性的代码结论。
-# 以前要等其余检查全部跑完、再整体重跑一次才派修复：热修 #3860 04:15 测试已红，按旧路径约 2 小时后才会开始修（L62）。
+# Test assertion failures in job logs are deterministic code failures and can route to repair immediately.
 ci_test_red_checks() { # checks_json [infra-summary] → first line: test-red names [tab + summary]; remaining lines: parsed test facts
   local name link job hits="" logfile facts="" marker i pid failed_jobs="$(jqf -r '[.[] | select(.bucket=="fail")] | length' <<<"$1" 2>/dev/null || printf 0)" logs_read=0 loss_matches=0
   local -a names=() logfiles=() pids=() log_status=()
   # 失败 job 日志有界并行抓（GH_PARALLEL）。
   while IFS=$'\t' read -r name link; do
     job="${link##*/job/}"; [[ "$job" =~ ^[0-9]+$ ]] || continue
-    # Dagger 里的 vitest 输出带 ANSI 颜色（ESC[41m FAIL ESC[49m），不去色就匹配不到：热修 #3860 的确定性测试红
-    # 三次被当成"旧 base 的红"走 update-branch，每次多耗一整轮 CI（L75）。
-    # 一次日志抓取同时给出红判定和 scripts/ci/vitest-fail-facts.mjs 打印的标记行；没有标记行的检查回退到 ` FAIL  <file> > <test>` 行（至多 12 条）。
+    # Strip ANSI before classifying Vitest output; capture its structured facts in the same bounded log read.
     logfile="$(mktemp)" || continue
     names+=("$name"); logfiles+=("$logfile"); log_status+=("$logfile.ok")
     { if gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$logfile"; then : > "$logfile.ok"; fi; } &
@@ -212,9 +205,7 @@ ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → failing suite
   jqf -cn --argjson tests "$tests" --arg fallback "${2:-}" '$tests | if length > 0 then . elif $fallback != "" then [$fallback[:120]] else [] end'
 }
 
-# 分诊（只出结论，不路由、不写台账）：stale-base / attributable / unknown。失败套件取自 ci_test_red_checks 的事实，
-# 改动面取自 GitHub compare 的不可变 SHA 对（PR 自己相对合并基点的改动 + main 自合并基点以来的改动），映射只用
-# engine/failure-triage.mjs 里复用的 pipeline-suites-scope.mjs；结果按 SHA 对落盘，同一对不再请求。
+# Classify failures from check facts and immutable compare SHAs; cache the result per SHA pair.
 ci_compare_cached() { # base head file：SHA 对不可变，已落盘就不再请求
   [[ -s "$3" ]] && return 0
   if gh api "repos/{owner}/{repo}/compare/$1...$2" > "$3.tmp" 2>/dev/null; then mv "$3.tmp" "$3"; else rm -f "$3.tmp"; return 1; fi
@@ -249,9 +240,7 @@ ci_triage() { # head facts → verdict
   printf '%s\n' "$result"
 }
 
-# 早期 stale-base 路由：开关开、判定 stale-base、非热修/非关键单元时，用一次服务端 update-branch 代替 LLM 修复；
-# 批准沿用仍只走 approval_carries。第二次 stale-base 失败在同一批准下落到修复。
-# hop 与另外两个 update-on-failure 路径共用台账行 .stale_base_hop_used。返回 0 = 已更新分支，调用方不再派修复。
+# Early stale-base routing uses update-branch once; a second failure with the same approval goes to repair.
 ci_stale_base_hop() { # id pr head facts
   [[ "$STALE_BASE_ROUTING" == true ]] || return 1
   [[ "$(unit_field "$1" '.hotpatch // false')" != true && "$(unit_field "$1" '.critical // false')" != true ]] || return 1
@@ -265,8 +254,7 @@ ci_stale_base_hop() { # id pr head facts
   say "merge skipped PR#$2 (stale-base failure in $suites) -> update-branch at $3, no repair"
 }
 
-# 失败套件与断言事实 → 修复提示片段。facts 是标记行 JSON（每行一个）；PR 改动面只用本地 git（head 对象不在就不说），
-# 不推导 import 闭包：只比对 diff 是否触及失败文件或其所在包目录。
+# Build repair hints from marked failure facts and changed files, without inferring import closure.
 ci_fact_hint() { # head facts
   [[ -n "$2" ]] || return 0
   local changed="" txt
@@ -602,7 +590,7 @@ release_session_pr_units() {
   scheduler_lock_yield_between_units || return 1
 }
 retire_landed_pr_units() {
-  local tmpdir open_file rows_file id pr state release_mark merge_sha n=0
+  local tmpdir open_file rows_file id issue pr state release_mark merge_sha n=0
   tmpdir="$(mktemp -d)" || return 0
   open_file="$tmpdir/open-pr-numbers.json"
   rows_file="$tmpdir/retired-units.tsv"
@@ -630,12 +618,15 @@ retire_landed_pr_units() {
     [[ "$state" == MERGED || "$state" == CLOSED ]] || continue
     [[ "$state" == MERGED ]] && state=merged || state=closed
     release_mark=.
-    # Only a lane merge that died before recording itself: older, session and hotpatch units own their issue state.
+    # A lane merge may start from concluded/pr-open; every other owner moves on only from ready-for-agent.
     if [[ "$state" == merged ]] && jqf -e --arg id "$id" 'any(.units[]; .id == $id and .stage == "ready-to-merge"
         and ((.approved_sha // "") != "") and (.hotpatch // false) == false and (.supervisor_owned // false) == false)' "$UNITS" >/dev/null; then
       merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"
       release_mark="$(awaiting_release_mark "$pr")"
       [[ ! "$merge_sha" =~ $SHA_RE ]] || release_mark+=" | .merge_sha=$(js "$merge_sha")"
+    elif [[ "$state" == merged ]]; then
+      issue="$(unit_field "$id" .issue)"
+      [[ "$issue" =~ ^[1-9][0-9]*$ ]] && release_mark="$(awaiting_release_mark "$pr") | .awaiting_release_ready_only=true"
     fi
     [[ "$state" != closed ]] || closed_unit_issue_route "$id" pr-closed || continue
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
@@ -650,8 +641,8 @@ awaiting_release_mark() { # pr -> jq filter
   printf 'if (.issue | type) == "number" then .awaiting_release_pending=%s else . end' "$1"
 }
 retry_awaiting_release() {
-  local id issue pr tries state_json issue_state n=0 clear='del(.awaiting_release_pending) | del(.awaiting_release_tries)'
-  while IFS=$'\t' read -r id issue pr tries; do
+  local id issue pr tries ready_only state_json issue_state n=0 clear='del(.awaiting_release_pending) | del(.awaiting_release_tries, .awaiting_release_ready_only)'
+  while IFS=$'\t' read -r id issue pr tries ready_only; do
     [[ -n "$id" ]] || continue
     scheduler_lock_yield_between_units || return 1
     if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
@@ -659,11 +650,17 @@ retry_awaiting_release() {
         'any(.units[]; .id==$id and .issue==$issue and .awaiting_release_pending==$pr)' "$UNITS" >/dev/null; then
       continue
     fi
-    (( n < ${AWAITING_RELEASE_RETRY_MAX:-5} )) || break
-    n=$((n + 1))
+    if [[ "$ready_only" != true ]]; then
+      (( n < ${AWAITING_RELEASE_RETRY_MAX:-5} )) || continue
+      n=$((n + 1))
+    fi
     state_json="$(scheduler_issue_state "$issue" 2>/dev/null)" || continue # a transition is in progress: not a try
     # A run that opened its PR ends concluded/pr-open, which is what a merge moves on from; any other concluded run is past it.
     issue_state="$(jqf -r 'if .state == "concluded" and .run.outcome == "pr-open" then "pr-open" else .state // "untracked" end' <<<"$state_json")"
+    if [[ "$ready_only" == true && "$issue_state" != ready-for-agent ]]; then
+      set_unit "$id" "$clear"
+      continue
+    fi
     # Past or beside the merge, a repeat would move the issue backwards or drop a hold.
     case "$issue_state" in
       awaiting-release|concluded|released) set_unit "$id" "$clear"; continue ;;
@@ -682,7 +679,7 @@ retry_awaiting_release() {
       set_unit "$id" ".awaiting_release_tries=$((tries + 1))"
     fi
   done < <(jqf -r '.units[] | select(.awaiting_release_pending != null and (.issue | type) == "number")
-    | [.id, .issue, .awaiting_release_pending, (.awaiting_release_tries // 0)] | @tsv' "$UNITS")
+    | [.id, .issue, .awaiting_release_pending, (.awaiting_release_tries // 0), (.awaiting_release_ready_only // false)] | @tsv' "$UNITS")
   scheduler_lock_yield_between_units || return 1
 }
 

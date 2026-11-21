@@ -1,9 +1,7 @@
 # Dead proof's active routes differ from intake skips: it includes live routes and excludes two terminal labels.
 DEP_DEAD_ACTIVE_LABELS=(on-hold needs-info awaiting-release ready-for-agent needs-advisor needs-triage roadmap roadmap-epic roadmap-theme needs-recut checks-blocked awaiting-pipeline-sync hotfix opt-lane session-owned pipeline-system finish-first concluded)
 
-# 依赖链（2026-10-20：#3680–#3686 是同一张日报的串行票，前置未交付时 worker 正确地拒绝动手）：
-# 报告写 BLOCKED-ON #N → 单元停在 blocked-external（不占开发产能），前置单元合并/落地或 issue 关闭后自动回到 implement-pending。
-# 前 12 行认宽松写法；协议标记 `BLOCKED-ON: #N` 全文都认（#3469 评审把它写在第 16 行，被当成无前置的阻塞升级）。
+# 依赖链：BLOCKED-ON #N 将单元置为 blocked-external，前置交付后恢复；协议标记 `BLOCKED-ON: #N` 全文都认。
 # Issue-body dependency dispatch contract: docs/agents/issue-pipeline.md#autopilot-issue-body-dependencies (#4485).
 blocked_on_of() {
   { head -12 "$1" | grep -oiE 'BLOCKED[- ]?(ON|BY)[^0-9#]{0,12}#?[0-9]+'; grep -oE 'BLOCKED-ON:[[:space:]]*#[0-9]+' "$1"; } 2>/dev/null \
@@ -11,16 +9,13 @@ blocked_on_of() {
 }
 park_blocked() { # unit dep [source: worker-report | review-report | issue-body | dep-marker]
   local source="${3:-worker-report}"
-  # supervisor 已在 reroute 中放弃的前置（dropped_deps）：worker 报告的 BLOCKED-ON 不停住单元，单元留在原环节再跑一次。
-  # 调用方若刚把单元标成 blocked-external（评审路径），这里还原成可继续的环节。
+  # A supervisor-dropped dependency does not block again; undo a reviewer-created blocked stage too.
   if unit_dep_dropped "$1" "$2"; then
-    # Same dependency ignored again with nothing else changed (last event is the same ignore, unit already runnable): no second event, no log line.
     jqf -e --arg id "$1" --arg r "#$2" --argjson d "$2" 'any(.units[]; .id == $id and .stage != "blocked-external" and .dep_wait_delivery != $d and (((.history // [])[-1] // {}) | .stage == "dropped-dep-ignored" and .result == $r))' "$UNITS" >/dev/null && return 0
     set_unit "$1" "$(hist dropped-dep-ignored "#$2") | (if .dep_wait_delivery == $2 then del(.dep_wait_delivery, .unpark_condition) else . end) | (if .stage == \"blocked-external\" or $(js "$source") == \"review-report\" then .stage = (if .pr != null then \"review-pending\" else \"implement-pending\" end) else . end)"
     say "unit $1 ignores dropped dependency #$2 from a worker report; it runs again"
     return 0
   fi
-  # 生产热修回迁不等前置（代码已在线）：第一次退回按热修规则重评，第二次交 supervisor（pr-3596 被 #3145 挡住）。
   if [[ "$(unit_field "$1" '.hotpatch // false')" == true ]]; then
     if jqf -e --arg id "$1" 'any(.units[]; .id == $id and any(.history[]?; .stage == "hotpatch-not-blocked"))' "$UNITS" >/dev/null; then
       to_supervisor "$1" "hot-patch forward-port blocked on #$2 twice"
@@ -30,7 +25,6 @@ park_blocked() { # unit dep [source: worker-report | review-report | issue-body 
     fi
     return 0
   fi
-  # Blocked again on the same predecessor: the worker disagrees with the release (issue-1168 cost 375k tokens in 90 minutes). Only a delivery ends this wait.
   local real_wait=""
   if jqf -e --arg id "$1" --arg r "#$2" 'any(.units[]; .id == $id and any(.history[]?; .stage == "blocked-on" and .result == $r))' "$UNITS" >/dev/null; then
     real_wait=" | .dep_wait_delivery=$2 | .unpark_condition=$(js "#$2 delivered in the ledger or closed on GitHub")"
@@ -41,7 +35,6 @@ park_blocked() { # unit dep [source: worker-report | review-report | issue-body 
   set_unit "$1" "$(hist_blocked blocked-on "$2" "$source") | .blocked_on=$2 | .note=$(js "waiting for predecessor #$2") | .stage=\"blocked-external\"$real_wait"
   say "unit $1 blocked on predecessor #$2"
 }
-# 正文 `## Blocked by` 只认小节内的 issue 引用；小节外的 #N 不算前置（#4485 正文自己就引用了 #4384/#4486）。
 blocked_by_ids_from_body() { # stdin: issue body → references within its Blocked by section
   awk 'tolower($0) ~ /^#+[[:space:]]*blocked[[:space:]]+by([[:space:]:]|$)/{s=1;next} s && /^#/{s=0} s' \
     | grep -oE '#[0-9]+' | tr -d '#' | awk '!p[$0]++' || true
@@ -67,20 +60,18 @@ dep_delivered_snapshot() {
   while IFS=$'\t' read -r dep pr sha; do
     [[ "$dep" =~ ^[0-9]+$ ]] || continue
     DEP_DELIVERED_CACHE["$dep"]=1
-    # the PR and merge sha ride along so the review prompt can name them (review-rules.sh supervisor_rule)
     if [[ "$pr" =~ ^[0-9]+$ && "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then DEP_DELIVERED_PR["$dep"]="PR #$pr merged at ${sha:0:12}"; fi
   done < <(jqf -r '.units[] | select(.stage | IN("merged","landed","awaiting-live-event"))
     | ((.pr // "") | tostring) as $p | (.merge_sha // .land_sha // "") as $s
     | ((.issue | select(type == "number")),
        (if ((.branch // "") | test("^agent/issue-[0-9]+$")) then (.branch | sub("^agent/issue-"; "") | tonumber) else empty end))
     | "\(.)\t\($p)\t\($s)"' <(units_history_index))
-  # cached MERGED (awaiting-release) is delivered for release too; the gate must agree or it flaps (#4381)
   while IFS= read -r dep; do [[ "$dep" =~ ^[0-9]+$ ]] && DEP_DELIVERED_CACHE["$dep"]=1; done < <(jqf_optional_file "$A/dep-check.cache.json" -r '(.states // {}) | to_entries[] | select(.value.state == "MERGED") | .key' 2>/dev/null)
 }
 dep_delivered_in_ledger() { # release_dependency_blocks 从台账建一次快照，避免每个 blocker 重读全文件
   [[ "${DEP_DELIVERED_CACHE[$1]:-}" == 1 ]]
 }
-# 正文依赖状态由 release_dependency_blocks 按 DEP_CHECK_SECONDS 批量缓存；派发门禁只读缓存，不逐单元调用 GitHub。
+# Body dependency state is cached in one batch; dispatch reads only that cache.
 dep_cache_info() { # predecessor issue → cached {state,labels} or {}
   jqf_optional_file "$A/dep-check.cache.json" -c --arg d "$1" '.states[$d] // {}' 2>/dev/null || echo '{}'
 }
@@ -88,8 +79,7 @@ unit_body_declares_dependency() { # unit predecessor-issue → true when the iss
   unit_body_blockers "$1" | grep -Fxq "$2"
 }
 declare -A TRACKER_KIDS=() # blocker → its recut_children, "-" when it is no tracker parent; one state read per blocker per tick (dep_delivered_snapshot resets it)
-# A tracker counts as delivered only when every recut child is, so a child that names its own parent as blocker waits on itself forever (#5714 on #5712),
-# and a latched real_wait skipped the one path that knows trackers (#2511 on #2510). Wait on the OTHER children only; no other children = cleared.
+# A tracker is delivered when every other recut child is delivered; a child must not wait on its own parent.
 tracker_dep_cleared() { # blocker blocked-issue → 0 when the blocker is a tracker parent and every recut child but the blocked issue is delivered or closed
   local dep="$1" issue="$2" st kids c s
   [[ "$dep" =~ ^[0-9]+$ ]] || return 1
@@ -112,7 +102,7 @@ tracker_dep_cleared() { # blocker blocked-issue → 0 when the blocker is a trac
   [[ " ${TRACKER_KIDS[$dep]} " != *" $issue "* ]] || say "issue #$issue waits on tracker #$dep, its own parent: dependency rewritten to its sibling children, all delivered"
   return 0
 }
-# Merged but awaiting-release is not delivered for a dependent that needs it live: its dep-disagreement marker or its own text says so (2026-11-18 #7075 ran on #7074 twice).
+# A dependent that needs live release holds on merged-but-awaiting-release predecessors.
 dep_awaiting_release_holds() { # unit-json predecessor → 0 while the predecessor is merged, awaiting-release (not released), and this unit needs it live
   local info labels
   jqf -e --argjson d "$2" --arg re "(needs|需要|等待?) ?#$2"'([^0-9]|$)[^\n]{0,20}(live|released|delivered|上线|发布|交付)' '(.dep_wait_delivery == $d) or ((.task // "") | test($re; "i"))' <<<"$1" >/dev/null 2>&1 || return 1
@@ -125,12 +115,10 @@ dep_cleared() { # unit-json predecessor → 0 when the ledger and the cached Git
   dep_awaiting_release_holds "$1" "$2" && return 1
   dep_delivered_in_ledger "$2" && return 0
   ! dep_dead_ruled "$1" "$2" || return 0
-  # 11-17: once dead_blocker_resolve moved this unit off a recut root, the root no longer blocks it; the body gate re-blocked
-  # issue-2941/4388/4397 on #2911 after every tracker release (repoint -> release -> re-block, 6 cycles in 30 min).
+  # A blocker explicitly repointed after recut no longer blocks this unit.
   jqf -e --arg p "#$2 closed in ledger after recut;" 'any(.history[]?; .stage == "blocker-repointed" and ((.result // "") | startswith($p)))' <<<"$1" >/dev/null && return 0
   info="$(dep_cache_info "$2")"
   state="$(jqf -r '.state // empty' <<<"$info")"
-  # A requeued unit can reach dispatch before the next cache refresh listed its blockers: no entry is unknown, not open (#1135 parked on #1133, closed not_planned). One fresh read decides; unreadable or OPEN still blocks.
   [[ -n "$state" ]] || state="$(dep_fresh_state "$2")"
   [[ "$state" == CLOSED || "$state" == MERGED ]] && return 0
   labels="$(jqf -r '.labels // ""' <<<"$info")"
@@ -180,23 +168,18 @@ park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发�
   [[ "$dep" =~ ^[0-9]+$ ]] || return 1
   park_blocked "$id" "$dep" issue-body
 }
-# 前置状态每 DEP_CHECK_SECONDS（默认 600）向 GitHub 刷新一次，同一前置每拍只查一次：逐单元 gh issue view
-# 让这一步占了一拍 58 秒（2026-10-20，42 个 blocked 单元）。台账内可判定的（已交付、互等）仍每拍处理。
-# 一拍 500–660 秒，600 秒的刷新几乎每拍都到期；逐个前置 gh issue view（39 个）一拍 60 秒（10-21 09:10）。
-# 改成一次 GraphQL 批量查；issueOrPullRequest 让前置是 PR 号时也能判（gh issue view 对 PR 号失败，永远放不开）。
+# Refresh predecessor state in one GraphQL batch every DEP_CHECK_SECONDS; issueOrPullRequest also handles PR blockers.
 dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一次 GraphQL 调用
   (( $# > 0 )) || return 0
   local q="" d
   for d in "$@"; do
     q+=" i$d: issueOrPullRequest(number: $d) { ... on Issue { state stateReason updatedAt labels(first: 30) { nodes { name } } closedByPullRequestsReferences(first: 10) { nodes { number merged } } } ... on PullRequest { state updatedAt labels(first: 30) { nodes { name } } } }"
-    q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { totalCount }"
+    q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { nodes { number } }"
   done
-  # awaiting-release is only set after a verified merge into main (AGENTS.md), so it counts as delivered here too, whatever the PR branch is called.
-  # issue 要到发布后才关（close-after-release）：只看 issue 状态，前置合并了后继还要多等一整个发布周期
-  # （10-22 #3122/#3431 已合并、后继仍停着）。流水线的实现分支是 agent/issue-N：它的 PR 合并即交付。
+  # awaiting-release follows a verified merge; agent/issue-N PR merges also count as delivery before issue closure.
   gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
     --jq '.data.repository | . as $r | to_entries[] | select((.key | startswith("i")) and .value != null) | .key[1:] as $d
-      | "\($d)\t\(if ($r["p" + $d].totalCount // 0) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")\t\(.value.updatedAt // "")\t\(([.value.closedByPullRequestsReferences.nodes[]? | select(.merged) | .number] | first) // "")"' 2>/dev/null
+      | "\($d)\t\(if (($r["p" + $d].nodes // []) | length) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end)\t\([.value.labels.nodes[].name] | join(","))\t\(.value.state)\t\(.value.stateReason // "")\t\(.value.updatedAt // "")\t\(([.value.closedByPullRequestsReferences.nodes[]? | select(.merged) | .number] | first) // "")\t\(($r["p" + $d].nodes[0].number // "") | tostring)"' 2>/dev/null
 }
 stack_pilot_label() { jqf -r 'if .stacking.enabled == false then "" else (.stacking.pilot_label // "stack-pilot") end' <<<"$CFG"; }
 unit_has_stack_pilot() { # unit-json
@@ -233,10 +216,7 @@ stack_approved_dependency() { # dependent unit-id issue-number unit-json; 0 when
   say "unit $child stacked on $(jqf -r .id <<<"$predecessor")@$approved"
   return 0
 }
-# blocker 的台账单元已 closed（recut 或 PR 关闭）而 issue 仍开：永远等不到 CLOSED/MERGED，也无人升级（2026-10-30 17 个单元）。
-# 有 recut_children → 改等子票（排除自己）；无子票且 issue 为 tracker/concluded/released（有意关闭的 spec/epic 父票）→ 视为已交付；
-# 其余 → 升级 supervisor 一次。Airflow upstream_failed / Temporal timeout：每个等待都要有失败传播或超时。返回 0 = 已处理。
-# Parked rows now follow this path too; a latched wait keeps its delivery marker when it follows an open child.
+# Retire dead blockers by following live recut children, accepting handled parents, or escalating once; parked rows preserve latched waits.
 dead_blocker_resolve() { # unit-id blocker-issue dependent-issue real-wait
   local id="$1" dep="$2" issue="$3" real_wait="${4:-false}" st children c next="" s key all_delivered=true
   dep_rows_closed_or_parked "$dep" || return 1; st="$(scheduler_issue_state "$dep")" || return 1
@@ -248,7 +228,6 @@ dead_blocker_resolve() { # unit-id blocker-issue dependent-issue real-wait
     if [[ -z "${TRACKER_KIDS[$key]+x}" ]]; then s="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$c")")"; [[ -n "$s" ]] || s="$(dep_fresh_state "$c")"; TRACKER_KIDS["$key"]="${s:-unknown}"; fi
     [[ "${TRACKER_KIDS[$key]}" == OPEN ]] && { next="$c"; break; }
   done
-  # 11-17: after the repoint the worker still read #$dep in the body and reported BLOCKED-ON it (issue-2941, 29k tokens a round); tell it once.
   if [[ -n "$next" ]]; then jqf -e --arg id "$id" --arg p "Scheduler note: predecessor #$dep was recut" 'any(.units[]; .id == $id and ((.task // "") | contains($p)))' "$UNITS" >/dev/null \
       || dep_task_note "$id" "Scheduler note: predecessor #$dep was recut and is closed in the ledger; its open work is #$next. Do not report BLOCKED-ON #$dep. If the work of #$next is a real code dependency, report BLOCKED-ON #$next."
     set_unit "$id" "$(hist blocker-repointed "#$dep closed in ledger after recut; now waits on child #$next") | .blocked_on=$next | (if .dep_wait_delivery == $dep then .dep_wait_delivery=$next | .unpark_condition=$(js "#$next delivered in the ledger or closed on GitHub") else . end)"; say "unit $id blocker #$dep dead (recut): repointed to child #$next"; return 0; fi
@@ -274,11 +253,7 @@ dep_release_delivered() { # unit-id blocker [true|false, when the caller already
   else jqf -e --arg id "$1" --arg n "$note" 'any(.units[]; .id == $id and ((.task // "") | contains($n)))' "$UNITS" >/dev/null || dep_task_note "$1" "$note"; fi
   unblock_unit "$1" "#$2 delivered" "$2" delivered "#$2 delivered: ${DEP_DELIVERED_PR[$2]:-PR merged to main}"
 }
-# One pass over the blocked units (2026-11-08: 349 s on a ledger of 59 blocked units, the 10:47Z tick then died in dispatch_pending).
-# A row used to cost ~14 jq calls plus one parse of the merged hot+archive ledger (13 MB, ~0.4 s) for the dead-blocker and
-# has-unit checks; every freed row was one locked ledger write of its own. Now: one jq per loop lists each row with every field
-# the decisions read, one history pass indexes the rows per issue (DEP_ROWS), and set_unit calls queue (SET_UNIT_QUEUE) into one
-# units_update per loop. Decisions, log lines and gh calls are unchanged; dependencies-onepass.test.sh pins both.
+# One pass snapshots blocked rows and queues their ledger updates; dependencies-onepass.test.sh pins the decisions and calls.
 declare -A DEP_ROWS=() DEP_ROWS_IDS=() DEP_ROWS_TOUCHED=() DEP_ROWS_CLOSED=()
 declare -a DEP_Q_IDS=() DEP_Q_EXPRS=()
 declare -A DEP_ROWSJSON=()
@@ -365,6 +340,7 @@ dep_now() { # run a command that reads the ledger it just wrote (to_supervisor c
 }
 release_dependency_blocks_pass() {
   local id dep issue state labels gh_due=1 last decision dep_results dep_states_json dep_cache_file dep_cache u line fresh
+  local local_state state_json issue_state_cache merged_pr release_mark
   local blocker_issue pair_key real_wait recut stacked bb has_info pilot has_note epic_seen marked pilot_label delivered_note
   local -a deps=() unique_deps=()
   local -A DEP_BLOCKED_PAIR_COUNTS=() intake_step_secs=() intake_step_counts=()
@@ -379,8 +355,20 @@ release_dependency_blocks_pass() {
   intake_mark snapshot
   dep_cache_file="$A/dep-check.cache.json"
   last="$(cat "$A/dep-check.epoch" 2>/dev/null)"
-  if [[ "$last" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last < ${DEP_CHECK_SECONDS:-600} )); then gh_due=0; else echo "$NOW_EPOCH" > "$A/dep-check.epoch"; fi
+  if [[ "$last" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - last < ${DEP_CHECK_SECONDS:-600} )); then
+    gh_due=0
+    if [[ -r "$dep_cache_file" ]] && jqf -e --slurpfile c "$dep_cache_file" '
+      any(.units[]; . as $u
+        | select((.stage | IN("blocked-external","parked","supervisor-review")) and .pr == null and (.issue | type)=="number")
+        | ($c[0].states[($u.issue | tostring)] // {}) as $d
+        | $d.state == "MERGED" and $d.issue_state == "OPEN"
+          and (($d.merged_pr // $d.merged_closer // "") | tostring | test("^[1-9][0-9]*$") | not))
+    ' "$UNITS" >/dev/null 2>&1; then gh_due=1; fi
+  else
+    gh_due=1
+  fi
   if (( gh_due )); then
+    echo "$NOW_EPOCH" > "$A/dep-check.epoch"
     while IFS= read -r dep; do
       [[ "$dep" =~ ^[0-9]+$ ]] || continue
       dep_delivered_in_ledger "$dep" || deps+=("$dep")
@@ -388,8 +376,7 @@ release_dependency_blocks_pass() {
     while IFS= read -r dep; do # 自己的 issue 已关的单元要能被收掉（带 PR 的也查，not_planned 时关 PR）：并入同一次批量查询
       [[ "$dep" =~ ^[0-9]+$ ]] && deps+=("$dep")
     done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review" or .stage=="implement-pending") and (.issue | type)=="number") | .issue' "$UNITS")
-    # a blocked unit goes pending this tick: its other predecessors must already be cached, or it blocks on one that is closed.
-    # Two jq runs for all units: stored body lists as numbers, and the saved task text of an older unit without a list (RS-separated; awk parses it).
+    # A blocked unit goes pending only after the other predecessors are cached; older task bodies use the same batch pass.
     while IFS= read -r dep; do
       [[ "$dep" =~ ^[0-9]+$ ]] || continue
       dep_delivered_in_ledger "$dep" || deps+=("$dep")
@@ -410,7 +397,8 @@ release_dependency_blocks_pass() {
         [inputs | split("\t") | select(length >= 2 and .[0] != "" and .[1] != "")]
         | map({key:.[0],value:({state:.[1],labels:(.[2] // ""),issue_state:(.[3] // ""),state_reason:(.[4] // "")}
           + (if (.[5] // "") == "" then {} else {updated_at:.[5]} end)
-          + (if (.[6] // "") == "" then {} else {merged_closer:.[6]} end))}) | from_entries')"
+          + (if (.[6] // "") == "" then {} else {merged_closer:.[6]} end)
+          + (if ((.[7] // "") | test("^[1-9][0-9]*$")) then {merged_pr:(.[7] | tonumber)} else {} end))}) | from_entries')"
     else
       dep_states_json='{}'
     fi
@@ -420,11 +408,31 @@ release_dependency_blocks_pass() {
   intake_mark gh_batch
   dep_cache="$(jqf_optional_file "$dep_cache_file" -c 'if (.states|type)=="object" then .states else {} end' 2>/dev/null || echo '{}')"
   DEP_ROWS_PASS=1 DEP_ROWS_BUILT=0 SET_UNIT_QUEUE=1; DEP_Q_IDS=(); DEP_Q_EXPRS=()
-  while IFS=$'\t' read -r id issue; do # 自己的 issue 已关或已交付：单元作废（2026-10-30 issue-3681 等 5 个）
-    set_unit "$id" "$(hist issue-closed "issue #$issue already closed on GitHub") | .stage=\"closed\" | del(.blocked_on) | .note=null"
-    say "unit=$id issue #$issue already closed on GitHub; retired"
-  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .pr == null and (.issue | type)=="number"
-    and ((($c[0][(.issue | tostring)].state) // "") | IN("CLOSED","MERGED"))) | [.id, .issue] | @tsv' "$UNITS")
+  while IFS=$'\t' read -r id issue state issue_state_cache merged_pr; do
+    if [[ "$state" == MERGED && "$issue_state_cache" == OPEN ]]; then
+      state_json="$(scheduler_issue_state "$issue" 2>/dev/null || true)"
+      local_state="$(jqf -r '.state // "untracked"' <<<"$state_json" 2>/dev/null || printf 'untracked')"
+      [[ "$merged_pr" =~ ^[1-9][0-9]*$ ]] || merged_pr="$(jqf -r '.run.evidence.pr_number // empty' <<<"$state_json" 2>/dev/null || true)"
+      release_mark=.
+      if [[ "$local_state" == ready-for-agent && "$merged_pr" =~ ^[1-9][0-9]*$ ]]; then
+        if scheduler_conclude_merged_pr "$issue" "$merged_pr" >>"$LOG" 2>&1; then
+          say "issue #$issue reached awaiting-release for PR#$merged_pr"
+        else
+          release_mark="$(awaiting_release_mark "$merged_pr") | .awaiting_release_ready_only=true"
+        fi
+      elif [[ "$local_state" == untracked && "$merged_pr" =~ ^[1-9][0-9]*$ ]]; then
+        release_mark="$(awaiting_release_mark "$merged_pr") | .awaiting_release_ready_only=true"
+      fi
+      set_unit "$id" "$(hist issue-merged "issue #$issue delivered by merged PR; awaiting release") | .stage=\"merged\" | del(.blocked_on) | .note=null | $release_mark"
+      say "unit=$id issue #$issue delivered by merged PR; awaiting release"
+    else
+      set_unit "$id" "$(hist issue-closed "issue #$issue already closed on GitHub") | .stage=\"closed\" | del(.blocked_on) | .note=null"
+      say "unit=$id issue #$issue already closed on GitHub; retired"
+    fi
+  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review") and .pr == null and (.issue | type)=="number")
+    | . as $u | ($c[0][($u.issue | tostring)] // {}) as $d
+    | select(($d.state // "") | IN("CLOSED","MERGED"))
+    | [$u.id, $u.issue, ($d.state // ""), ($d.issue_state // ""), (($d.merged_pr // $d.merged_closer // "") | tostring)] | @tsv' "$UNITS")
   dep_q_flush
   intake_mark retire_closed
   while IFS=$'\t' read -r id issue pr; do # 自己的 issue 以 not_planned 关闭、PR 仍开：关 PR 一次，单元走同一条终局路径
@@ -450,8 +458,7 @@ release_dependency_blocks_pass() {
       dep_blocker_forget "$issue" "$dep"
       dep_release_delivered "$id" "$dep" "$has_note"; continue
     fi
-    # 两个单元互相等对方（2026-10-20 #2743↔#3330）：放开这一个，另一个继续等它交付。
-    # 11-17: both waits latched (#6780↔#6781 sat 4.5 h): neither releases; the larger issue goes to the arbiter once.
+    # Break an unlatched mutual wait once; a latched cycle goes to the arbiter once.
     pair_key="$dep:$issue"
     if [[ "$issue" =~ ^[0-9]+$ && "${DEP_BLOCKED_PAIR_COUNTS[$pair_key]:-0}" =~ ^[1-9][0-9]*$ ]]; then
       if [[ "$real_wait" == true ]]; then
@@ -464,7 +471,7 @@ release_dependency_blocks_pass() {
     [[ "$has_info" == true ]] || continue
     if (( gh_due )) && [[ "$state" == OPEN && "$real_wait" != true && "$pilot" == true ]] && ! dep_body_declares "$bb" "$u" "$dep" \
         && dep_now stack_approved_dependency "$id" "$dep" "$u"; then continue; fi
-    # A marker ends on delivery or a ruling: a closed issue that delivered nothing goes to dep_dead_sweep, and a stale closed state cannot release it (#536).
+    # A closed issue that delivered nothing goes through dep_dead_sweep; stale closed cache state cannot release it.
     if [[ "$real_wait" == true && "$state" == CLOSED ]]; then # a stale closed cache with no unit row needs one fresh read; a fresh MERGED releases as delivered (#536)
       if dep_has_unit "$dep"; then continue; fi; fresh="$(dep_fresh_state "$dep")"
       [[ "$fresh" == CLOSED || "$fresh" == MERGED ]] || continue; [[ "$fresh" != MERGED ]] || state=MERGED
@@ -474,8 +481,7 @@ release_dependency_blocks_pass() {
       if [[ "$state" == MERGED ]]; then dep_release_delivered "$id" "$dep" "$has_note"; else unblock_unit "$id" "#$dep delivered"; fi
       continue
     fi
-    # A tracker whose other children are all delivered is delivered for this unit, even when real_wait latched (dead_blocker_resolve below only runs without it).
-    # The old real_wait guard is gone; dead_blocker_resolve now repoints an open child without dropping the latched wait.
+    # Other delivered children clear a tracker wait, including a latched wait.
     if [[ "$state" == OPEN ]] && tracker_dep_cleared "$dep" "$issue"; then
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep tracker: every other child delivered"; continue
@@ -483,8 +489,7 @@ release_dependency_blocks_pass() {
     if [[ "$state" == OPEN ]] && dead_blocker_resolve "$id" "$dep" "$issue" "$real_wait"; then
       dep_blocker_forget "$issue" "$dep"; continue
     fi
-    # 路线图 epic/主题是伞形 issue，永远不会"交付"；停在它上面就是永远停（2026-10-20 六个单元）。放开一次，
-    # 同一个 epic 第二次停住就交给 supervisor。
+    # A roadmap epic is not delivered; release one wait and escalate a repeat.
     if [[ "$real_wait" != true && ",$labels," =~ ,roadmap(-epic|-theme)?, ]]; then
       if [[ "$epic_seen" == true ]]; then
         dep_blocker_forget "$issue" "$dep"
@@ -512,8 +517,7 @@ release_dependency_blocks_pass() {
     | map(tostring) | join("\u001f")' "$UNITS")
   dep_q_flush
   intake_mark release_row
-  # supervisor 搁置（park）的单元仍带着 .blocked_on，却没有任何机制在前置交付后放开它；只放有前置号、无其它 parked_reason 的
-  # （cap/stop-loss/founder 问题的搁置不点名前置，保持搁置）。
+  # Release only parked units waiting on a predecessor; preserve unrelated supervisor parks.
   while IFS="$US" read -r id dep marked state; do
     if [[ "$marked" == "$dep" ]] && ! dep_delivered_in_ledger "$dep" && { dep_has_unit "$dep" || { [[ "$state" == CLOSED ]] && ! dep_fresh_closed "$dep"; }; } && [[ "$state" != MERGED ]]; then continue; fi
     if dep_delivered_in_ledger "$dep" || [[ "$state" =~ ^(CLOSED|MERGED)$ ]]; then
@@ -524,8 +528,7 @@ release_dependency_blocks_pass() {
   dep_q_flush
   DEP_ROWS_PASS=0 SET_UNIT_QUEUE=0
   intake_mark parked_release
-  # A ready issue without a recorded predecessor has no release event to wait for. If GitHub
-  # still labels it ready, release it; keep non-ready issues on the supervisor route.
+  # A ready issue with no predecessor has no release event; keep non-ready issues on the supervisor route.
   while IFS="$US" read -r id ready; do
     if [[ "$ready" == true ]]; then
       unblock_unit "$id" "no predecessor recorded; issue remains ready-for-agent"
@@ -602,9 +605,7 @@ dep_dead_unpark() { # delivery clears every repeat park; a dead undelivered bloc
     echo "[$STAMP] dep-dead unit=$id predecessor=#$dep action=released reason=parked-before-release" >> "$A/alerts/events.md"
   done < <(jqf -c '.units[] | select(.stage=="parked" and .parked_reason=="dep-dead-repeat" and (.dep_wait_delivery | type)=="number")' "$UNITS")
 }
-# A parked blocker holds its dependents (2026-11-08: five released ones ran against prerequisites that never shipped, 5 implement + 5 review rounds lost).
-# Two ledger-only passes per tick, both idempotent (the ledger decides, no marker): units the old release rule freed while they have no PR wait on
-# the blocker again, then every parked or supervisor-review unit carries the count of units waiting on it, and a supervisor-park one is escalated once.
+# Re-block dependents of parked blockers and escalate supervisor parks with waiters; both ledger-only passes are idempotent.
 dep_hold_parked() {
   local id n note
   while IFS=$'\t' read -r id n; do
@@ -734,8 +735,7 @@ reconcile_stacked_units() {
     parent_reviewed="$(jqf -r '.reviewed_pr_head // empty' <<<"$parent")"
     child_stage="$(jqf -r .stage <<<"$child")"; old_stack="$(jqf -r '.stacked_on_sha // empty' <<<"$child")"
     [[ "$(jqf -r '.size_recut_pending // false' <<<"$child")" == true ]] && continue
-    # A worker owns the clone while running. A size escalation owns the unit
-    # afterward: restacking must not silently send it back to review (#4482).
+    # Once a worker exits, a size escalation owns the unit; restacking must not send it back to review.
     case "$child_stage" in implement|review|repair|rereview|supervisor-review|parked) continue ;; esac
     [[ "$parent_pr" =~ ^[0-9]+$ && -n "$parent_branch" ]] || continue
     parent_snapshot="$(jqf -c --argjson pr "$parent_pr" '[.[] | select(.number==$pr) | {headRefOid}] | .[0] // empty' <<<"$prs")"
