@@ -48,8 +48,8 @@ while :; do
   [[ -e "$wait_f" ]] || { echo "zc: cannot publish capacity ticket $wait_f" >&2; exit 74; }
   luna_reload_live_gate
   if declare -F luna_waiter_has_room >/dev/null; then
-    if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
-  elif box_has_room; then
+    if luna_waiter_has_room "$slots" "$wait_f" "$prio" "$SECONDS" zc; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+  elif box_has_room "$SECONDS" zc; then
     rm -f -- "$wait_f" "$out/gate-wait"; break
   fi
   [[ -e "$wait_f" ]] || { echo "zc: capacity ticket disappeared: $wait_f" >&2; exit 74; }
@@ -75,6 +75,8 @@ TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 zpid=$!; echo "$zpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
 wait "$zpid"; rc=$?
+# Record this scope's peak before the EXIT trap stops it; a missing memory.peak records nothing and leaves rc alone.
+declare -F luna_record_scope_peak >/dev/null 2>&1 && luna_record_scope_peak zc "$scope"
 # stream-json writes events as the run goes (json wrote one object at exit, so bin/worker saw no progress and killed
 # 27 healthy zc runs at 600 s, 10-27); the closing {"type":"result"} line carries the same .response.
 jq -Rr 'fromjson? | select(.type=="result") | .response // empty' "$out/events.jsonl" >"$out/last.md" 2>/dev/null

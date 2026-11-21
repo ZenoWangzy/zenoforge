@@ -183,4 +183,117 @@ else
   failures=$((failures + 1))
 fi
 
+# Per-backend worker peak (queue row 881): no samples keep the flat 1200; a backend's own recorded p90 replaces it
+# for that backend only; an explicit LUNA_WORKER_PEAK_MB wins; a missing memory.peak at scope end records nothing.
+store="$AGENT_HOME/locks/execution-memory-peaks-backend.jsonl"
+unset LUNA_WORKER_PEAK_MB
+record_peak() { # <backend> <scope> <mb>: one ended worker scope fixture with that cgroup peak
+  mkdir -p "$worker_slice/$2.scope"
+  printf '%s\n' "$(( $3 * 1048576 ))" > "$worker_slice/$2.scope/memory.peak"
+  luna_record_scope_peak "$1" "$2"
+}
+slice_room_set() { # <mb>: leave <mb> under the 10 GiB memory.high, no scopes running
+  make_n_scopes 0
+  printf '10737418240\n' > "$worker_slice/memory.high"
+  printf '%s\n' "$(( (10240 - $1) * 1048576 ))" > "$worker_slice/memory.current"
+}
+
+# (a) no samples: the flat 1200 stays, named as the default.
+rm -f -- "$store"
+printf 'max 100000\n' > "$root/cgroup/zf.slice/cpu.max"
+slice_room_set 300
+read -r estimate estimate_source <<< "$(worker_peak_mb)"
+if [[ "$estimate" == 1200 && "$estimate_source" == default ]]; then
+  printf 'PASS no samples keeps the flat 1200MB peak for a backend-less ask\n'
+else
+  printf 'FAIL backend-less estimate without samples: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+if box_has_room 0 zc; then
+  printf 'FAIL no samples admits with only 300MB left under memory.high\n'
+  failures=$((failures + 1))
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 300MB left under memory.high < 1200MB worker peak backend=zc source=default' ]]; then
+  printf 'PASS no samples keeps the flat 1200MB peak as the default\n'
+else
+  printf 'FAIL no-sample refusal did not name the default: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+
+# (b) each backend uses its own recorded p90; luna's 340MB p90 rises to the 512MB floor.
+rm -f -- "$store"
+for mb in 600 620 640 660 680 700 720 740 760 780; do record_peak zc "luna-zc-peak-$mb" "$mb"; done
+for mb in 300 320 340; do record_peak luna "luna-peak-$mb" "$mb"; done
+read -r estimate estimate_source <<< "$(worker_peak_mb zc)"
+if [[ "$estimate" == 740 && "$estimate_source" == measured ]]; then
+  printf 'PASS zc p90 of ten samples is the ninth: 740\n'
+else
+  printf 'FAIL zc estimate: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+read -r estimate estimate_source <<< "$(worker_peak_mb luna)"
+if [[ "$estimate" == 512 && "$estimate_source" == measured ]]; then
+  printf 'PASS luna keeps its own 340MB p90 raised to the 512MB floor\n'
+else
+  printf 'FAIL luna estimate: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+read -r estimate estimate_source <<< "$(worker_peak_mb)"
+if [[ "$estimate" == 740 && "$estimate_source" == measured ]]; then
+  printf 'PASS a backend-less ask takes the higher measured p90, 740 over the floored 512\n'
+else
+  printf 'FAIL backend-less estimate with samples: got %s %s\n' "$estimate" "$estimate_source"
+  failures=$((failures + 1))
+fi
+slice_room_set 700
+if box_has_room 0 zc; then
+  printf 'FAIL 700MB left under a zc p90 of 740 was admitted\n'
+  failures=$((failures + 1))
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 700MB left under memory.high < 740MB worker peak backend=zc source=measured' ]]; then
+  printf 'PASS zc refusal names its own measured p90\n'
+else
+  printf 'FAIL zc measured refusal: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+if box_has_room 0 luna; then
+  printf 'PASS luna admits at 700MB left with its own floored 512MB estimate\n'
+else
+  printf 'FAIL luna admits at 700MB left with its own estimate: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+
+# (c) an explicit LUNA_WORKER_PEAK_MB wins over recorded samples.
+if LUNA_WORKER_PEAK_MB=800 box_has_room 0 zc; then
+  printf 'FAIL explicit LUNA_WORKER_PEAK_MB=800 admits at 700MB left\n'
+  failures=$((failures + 1))
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 700MB left under memory.high < 800MB worker peak backend=zc source=set' ]]; then
+  printf 'PASS explicit LUNA_WORKER_PEAK_MB=800 wins over the zc samples\n'
+else
+  printf 'FAIL explicit-override refusal: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+
+# (d) the head acceptance for this row: 971MB left, zc p90 of 400 (512 after the floor), the gate admits.
+rm -f -- "$store"
+record_peak zc luna-zc-peak-400 400
+slice_room_set 971
+if box_has_room 0 zc; then
+  printf 'PASS 971MB left with a zc p90 of 400 admits an implement worker\n'
+else
+  printf 'FAIL 971MB left with a zc p90 of 400 refused: %s\n' "$BOX_ROOM_WHY"
+  failures=$((failures + 1))
+fi
+
+# (e) a missing memory.peak at scope end records nothing and changes no exit status.
+rm -f -- "$store"
+mkdir -p "$worker_slice/luna-ended.scope" # the cgroup dir may be reaped already, or lack memory.peak
+luna_record_scope_peak luna luna-ended
+record_rc=$?
+luna_record_scope_peak zc luna-gone
+if [[ "$record_rc" == 0 && ! -e "$store" ]]; then
+  printf 'PASS a missing memory.peak records nothing and keeps exit status 0\n'
+else
+  printf 'FAIL missing memory.peak: rc=%s store=%s\n' "$record_rc" "$([[ -e "$store" ]] && echo present || echo absent)"
+  failures=$((failures + 1))
+fi
+
 (( failures == 0 )) || exit 1

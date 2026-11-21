@@ -116,7 +116,7 @@ slice_budget_case() (
   cpu_busy() { echo 0; }
   echo $(( 2400 * 1048576 )) > "$sl/memory.current"
   if LUNA_PRIORITY=hotfix box_has_room 0; then fail 'a start with 672 MB left under the slice high was admitted'; fi
-  [[ "$BOX_ROOM_WHY" == 'worker slice 672MB left under memory.high < 1200MB worker peak' ]] || fail "slice reason: $BOX_ROOM_WHY"
+  [[ "$BOX_ROOM_WHY" == 'worker slice 672MB left under memory.high < 1200MB worker peak backend=- source=default' ]] || fail "slice reason: $BOX_ROOM_WHY"
   echo $(( 1000 * 1048576 )) > "$sl/memory.current"
   box_has_room 0 || fail "a start with 2072 MB left under the slice high was refused: $BOX_ROOM_WHY"
   echo max > "$sl/memory.high"
@@ -264,7 +264,8 @@ EOF
 live_gate_reload_case
 broken_live_gate_case
 for f in "$bin/luna" "$bin/zc"; do
-  grep -Fq 'if luna_waiter_has_room "$slots" "$wait_f" "$prio"; then' "$f" || fail "$(basename "$f") does not use ticket-ordered admission"
+  case "${f##*/}" in luna) gate_backend=luna ;; *) gate_backend=zc ;; esac
+  grep -Fq "if luna_waiter_has_room \"\$slots\" \"\$wait_f\" \"\$prio\" \"\$SECONDS\" $gate_backend; then" "$f" || fail "$(basename "$f") does not use ticket-ordered admission naming its backend"
   grep -Fq 'luna_reload_live_gate' "$f" || fail "$(basename "$f") does not reload the live gate"
   grep -Fq 'sleep "${LUNA_WAIT_SECONDS:-30}"' "$f" || fail "$(basename "$f") does not use the waiter sleep override"
 done
