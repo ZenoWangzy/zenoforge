@@ -486,8 +486,12 @@ gated_demote_unapproved() { # 门控 PR 已 ready 但单元不在 ready-to-merge
       and (.stage | IN("review-pending", "review", "rereview-pending", "rereview", "repair-pending", "repair", "blocked-external"))) | [.id, .branch, .stage] | @tsv' "$UNITS")
 }
 ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热修分支
-  local prs label prefixes hot num body
-  prs="$(tick_prs)" || { sleep 1; prs="$(tick_prs)" || return 1; }
+  local prs label prefixes hot num body upd file stale=false at
+  prs="$(tick_prs)" || { sleep 1; prs="$(tick_prs)" || {
+    # 活的 census 读不到：用 30 分钟内最近一次成功的 census；正文只从按 updatedAt 的文件缓存里取，缺一条就放行不得
+    local lg; lg="$(tick_census_last_good)" || return 1
+    at="${lg%%$'\n'*}"; prs="${lg#*$'\n'}"; stale=true
+  }; }
   label="$(hotfix_lane_label)"
   prefixes="$(hotfix_lane_branch_prefixes | jqf -Rsc 'split("\n") | map(select(length > 0))')"
   hot='[]'
@@ -496,11 +500,18 @@ ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热�
   if (( $(jqf -r 'length' <<<"$hot") > 0 )); then
     while IFS= read -r num; do
       [[ "$num" =~ ^[0-9]+$ ]] || continue
+      if [[ "$stale" == true ]]; then
+        upd="$(jqf -r --argjson n "$num" 'first(.[] | select(.number == $n) | .updatedAt) // empty' <<<"$prs")"
+        file="$(tick_pr_body_file "$num" "$upd")" && [[ -f "$file" ]] || return 1
+        prs="$(prs_attach_body "$num" "$(cat -- "$file")" <<<"$prs")" || return 1
+        continue
+      fi
       # 本 shell 直接调（$(...) 里的写入回不到缓存，同一 PR 的下一次读又是一次 gh pr view）；读缓存数组
       tick_pr_body "$num" >/dev/null || return 1 # 分类读不到不得放行（2026-11-02 fail-closed）
       prs="$(prs_attach_body "$num" "${TICK_PR_BODY[$num]}" <<<"$prs")" || return 1
     done < <(jqf -r --arg label "$label" --argjson prefixes "$prefixes" '[.[] as $pr | select(((($pr.labels // []) | any(.name == $label)) or any($prefixes[]; . as $p | ($pr.headRefName // "") | startswith($p))) | not) | $pr.number] | .[]' <<<"$prs")
   fi
+  [[ "$stale" != true ]] || say "ci admission: census unavailable, using census from $(date -u -d "@$at" '+%Y-%m-%dT%H:%M:%SZ')"
   jqf -c --arg label "$label" --argjson prefixes "$prefixes" --argjson hot "$hot" '
     [.[] as $pr
       | ([($pr.headRefName // "") | match("^agent/issue-(hf-)?([0-9]+)(-|$)").captures[1].string | tonumber]

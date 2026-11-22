@@ -25,7 +25,7 @@ cat > "$test_env_bin/gh" <<'SH'
 printf '%s %s\n' "${1:-}" "${2:-}" >> "$TEST_GH_CALLS"
 [[ "$1" != pr ]] || printf '%s\n' "$*" >> "$TEST_GH_ARGS"
 case "${1:-} ${2:-}" in
-  'pr list') [[ "${TEST_GH_LIST_FAIL:-false}" != true ]] || exit 1; cat "$TEST_PRS" ;;
+  'pr list') [[ "${TEST_GH_LIST_FAIL:-false}" != true ]] || { printf 'gh stub: pr list refused\n' >&2; exit 1; }; cat "$TEST_PRS" ;;
   'pr view')
     case "$*" in
       *'--json body'*) cat "$TEST_PR_BODY" ;;
@@ -219,13 +219,14 @@ test_footprint() {
 
 test_light_census() { # 轻量列表：字段不带 body/statusCheckRollup；60s 窗口文件跨进程复用；失败不落盘；正文按 PR 单取
   local sha=0123456789012345678901234567890123456789 lists
+  TICK_PR_BODY_FETCHES=0 # the per-process body cap counts earlier cases of this shell
   jq -n --arg sha "$sha" '[{number:7,headRefOid:$sha,headRefName:"branch-7",baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"MERGEABLE"}]' > "$TEST_PRS"
   tick_prs_changed
   : > "$TEST_GH_CALLS"; : > "$TEST_GH_ARGS"
   tick_prs_prime
   [[ -n "$TICK_PRS" ]] || fail 'the light list read failed'
   # the list call asks for the light fields only: no body, no statusCheckRollup
-  grep -Fxq 'pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision' "$TEST_GH_ARGS" \
+  grep -Fxq 'pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision,updatedAt' "$TEST_GH_ARGS" \
     || fail "the list call is not the light field set: $(cat "$TEST_GH_ARGS")"
   [[ -s "$A/.tick-prs-census.json" ]] || fail 'a successful list wrote no cross-process cache file'
   # a second reader process inside the 60 s window reuses the file and makes no list call
@@ -263,12 +264,84 @@ test_light_census() { # 轻量列表：字段不带 body/statusCheckRollup；60s
   [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 1 ]] || fail "ci_hotfix_branches fetched the body $(grep -c '^pr view$' "$TEST_GH_CALLS") times for one PR in two runs"
 }
 
+test_body_cache() { # 正文按 updatedAt 跨进程缓存；每进程上限；失败 census 的一行；最近一次成功 census 的热修分类
+  local sha=0123456789012345678901234567890123456789 path7 rc
+  export LOG="$test_env_root/body-cache.log"; : > "$LOG"
+  jq -n --arg sha "$sha" '[range(1;25) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"UNKNOWN",updatedAt:"2026-11-22T03:00:00Z"}]' > "$TEST_PRS"
+  # (a) two processes at the same updatedAt: one body fetch in total
+  tick_prs_changed; tick_prs_prime
+  TICK_PR_BODY=(); TICK_PR_BODY_LOADED=(); TICK_PR_BODY_FETCHES=0
+  : > "$TEST_GH_CALLS"
+  tick_pr_body 7 >/dev/null || fail 'the first body read failed'
+  (
+    TICK_PRS='' TICK_PR_STATE=() TICK_PR_CHECK_RUNS=() TICK_PR_BODY=() TICK_PR_BODY_LOADED=()
+    tick_prs_prime
+    tick_pr_body 7 > "$test_env_root/body2.out" || exit 3
+  ) || fail 'a second process could not read the cached body'
+  [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 1 ]] || fail "two processes at one updatedAt fetched the body $(grep -c '^pr view$' "$TEST_GH_CALLS") times"
+  [[ "$(cat "$test_env_root/body2.out")" == "$(cat "$TEST_PR_BODY")" ]] || fail 'the second process got another body'
+  # (b) a changed updatedAt is a new key: the body is fetched again
+  jq '(.[] | select(.number == 7) | .updatedAt) = "2026-11-22T04:00:00Z"' "$TEST_PRS" > "$test_env_root/prs-b.json" && mv "$test_env_root/prs-b.json" "$TEST_PRS"
+  tick_prs_changed; tick_prs_prime
+  TICK_PR_BODY=(); TICK_PR_BODY_LOADED=()
+  : > "$TEST_GH_CALLS"
+  tick_pr_body 7 >/dev/null || fail 'a changed updatedAt did not fetch the body'
+  [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 1 ]] || fail 'a changed updatedAt did not fetch the body once'
+  # (c) the cap: 20 misses per process; the 21st is refused with no gh call, one cap line
+  jq -n --arg sha "$sha" '[range(101;122) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"UNKNOWN",updatedAt:"2026-11-22T05:00:00Z"}]' > "$TEST_PRS"
+  tick_prs_changed; tick_prs_prime
+  TICK_PR_BODY=(); TICK_PR_BODY_LOADED=(); TICK_PR_BODY_FETCHES=0; TICK_PR_BODY_CAP_SAID=''
+  for n in $(seq 101 120); do tick_pr_body "$n" >/dev/null || fail "PR $n under the cap was refused"; done
+  : > "$TEST_GH_CALLS"
+  rc=0; tick_pr_body 121 >/dev/null || rc=$?
+  [[ "$rc" == 1 ]] || fail 'the 21st body fetch was not refused'
+  rc=0; tick_pr_body 121 >/dev/null || rc=$?
+  [[ ! -s "$TEST_GH_CALLS" ]] || fail "the refused body fetch called gh: $(cat "$TEST_GH_CALLS")"
+  [[ "$(grep -c 'pr body fetch cap reached cap=20' "$LOG")" == 1 ]] || fail "expected one cap line, log has: $(grep -c 'pr body fetch cap reached' "$LOG")"
+  # (d) A empty: no body file is written
+  (
+    A=; TICK_PRS='[{"number":31,"updatedAt":"2026-11-22T03:00:00Z"}]'; TICK_PR_BODY_FETCHES=0; TICK_PR_BODY_LOADED=(); TICK_PR_BODY=()
+    tick_pr_body 31 >/dev/null
+  ) || fail 'a body read with A empty failed'
+  ! compgen -G "$fixture/sup/autopi/.pr-body/31-*" >/dev/null || fail 'A empty wrote a body file'
+  # (e) a failed census: one line with the stub's first stderr line, however often it is asked
+  export TEST_GH_LIST_FAIL=true; TICK_CENSUS_ERR_SAID=''
+  tick_prs_changed; : > "$LOG"
+  tick_prs >/dev/null 2>&1 && fail 'a refused census was read'
+  tick_prs >/dev/null 2>&1 || true
+  unset TEST_GH_LIST_FAIL
+  [[ "$(grep -c 'tick census read failed' "$LOG")" == 1 ]] || fail "expected one census error line, log has: $(cat "$LOG")"
+  grep -Fq 'tick census read failed rc=1 err=gh stub: pr list refused' "$LOG" || fail "the census error line lacks the stub stderr: $(cat "$LOG")"
+  # (f) census down: the last good census (<= 30 min) classifies, its bodies only from the file cache
+  path7="$(tick_pr_body_file 7 2026-11-22T04:00:00Z)" || fail 'no body cache path for PR 7'
+  mkdir -p "$(dirname "$path7")"; printf 'fixture pr body\nRefs #77\n' > "$path7"
+  printf '%s\n%s' "$(( $(date +%s) - 600 ))" "$(jq -n '[{number:7,headRefOid:"0123456789012345678901234567890123456789",headRefName:"branch-7",baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"UNKNOWN",updatedAt:"2026-11-22T04:00:00Z"}]')" > "$A/.tick-prs-census.last-good.json"
+  TICK_HOTFIX_ISSUES='[77]'; TICK_HOTFIX_ISSUES_LOADED=true
+  export TEST_GH_LIST_FAIL=true; tick_prs_changed; : > "$TEST_GH_CALLS"; : > "$LOG"
+  rc=0; branches="$(ci_hotfix_branches)" || rc=$?
+  unset TEST_GH_LIST_FAIL
+  [[ "$rc" == 0 && "$branches" == '["branch-7"]' ]] || fail "a 10 min old census with a cached body classified $branches (rc $rc)"
+  grep -Fq 'ci admission: census unavailable, using census from ' "$LOG" || fail 'the last good census use was not logged'
+  [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 0 ]] || fail "the last good census read fetched a body: $(cat "$TEST_GH_CALLS")"
+  jq -n '[{number:7,headRefOid:"0123456789012345678901234567890123456789",headRefName:"branch-7",baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"UNKNOWN",updatedAt:"2026-11-22T04:00:00Z"}]' > "$test_env_root/lg.json"
+  printf '%s\n%s' "$(( $(date +%s) - 2400 ))" "$(cat "$test_env_root/lg.json")" > "$A/.tick-prs-census.last-good.json"
+  export TEST_GH_LIST_FAIL=true; tick_prs_changed
+  rc=0; ci_hotfix_branches >/dev/null || rc=$?
+  [[ "$rc" == 1 ]] || fail 'a 40 min old census classified'
+  printf '%s\n%s' "$(( $(date +%s) - 600 ))" "$(cat "$test_env_root/lg.json")" > "$A/.tick-prs-census.last-good.json"
+  rm -f -- "$path7"
+  tick_prs_changed; rc=0; ci_hotfix_branches >/dev/null || rc=$?
+  unset TEST_GH_LIST_FAIL
+  [[ "$rc" == 1 ]] || fail 'an uncached body classified from the last good census'
+}
+
 case "${1:-all}" in
   census) test_census ;;
+  body) test_body_cache ;;
   adopt) test_adopt ;;
   footprint) test_footprint ;;
   light) test_light_census ;;
-  all) test_census; test_adopt; test_footprint; test_light_census ;;
+  all) test_census; test_adopt; test_footprint; test_light_census; test_body_cache ;;
   *) fail "unknown test $1" ;;
 esac
 printf 'tick-census.test.sh: ok\n'
