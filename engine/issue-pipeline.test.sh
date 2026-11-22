@@ -2330,7 +2330,7 @@ assert_eq 'release walk deadline logs progress and still dispatches the collecte
 unset RELEASE_WALK_CLOCK_FILE
 # Same-failure hold: the last two finished batches failed on one line and scripts/release is unchanged (git stub
 # reports no diff), so the candidate is held before dispatch and logged once.
-printf '1700000000\tcandidate-sha\tfailed\trun-release: credential\n1700000000\tcandidate-sha\tfailed\trun-release: credential\n' > "$AGENT_HOME/release-batch-outcomes"
+printf '%s\tcandidate-sha\tfailed\trun-release: credential\n%s\tcandidate-sha\tfailed\trun-release: credential\n' "$(date +%s)" "$(date +%s)" > "$AGENT_HOME/release-batch-outcomes" # rows start now: the hold lapses 2 h after the last failed start
 assert_eq 'two same-line failures hold the release batch before dispatch' '0' \
   "$(run_release_selection '[{"number":910101}]' 910101 | grep -c '^dispatch:' || true)"
 assert_eq 'the same-failure hold logs one decision' '1' \
