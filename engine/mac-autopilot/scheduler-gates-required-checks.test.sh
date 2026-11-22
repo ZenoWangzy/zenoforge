@@ -279,4 +279,37 @@ SH
   grep -Fq 'merge skipped PR#11 (required checks without a real pass: required-pr-checks.json unreadable)' "$LOG" || fail 'unreadable required checks lack the reason'
 )
 
+# Same-family review READY is discarded through harvest_workers; the other-family READY is applied (real family functions).
+(
+  harvest_worker_alive() { return 1; }; harvest_scope_stop() { :; }
+  tick_prs_prime() { :; }; tick_prs_changed() { :; }; post_approved_status() { :; }
+  decision_log_gate_reason() { :; }; how_why_gate_reason() { :; }; incident_report_gate_reason() { :; }
+  family_report=family-review.md; family_log=family-review.worker.log
+  printf 'VERDICT: READY\n' > "$SUP/$family_report"; : > "$SUP/$family_log"
+  family_harvest() { # reviewer provider, model, effort
+    units "$(jq -cn --arg sha "$H2" '{units:[{id:"pr-family",pr:11,branch:"agent/issue-11",stage:"review",implement_identity:"claude:claude-haiku-5-5:high",history:[]}]}')"
+    jq -cn --arg report "$family_report" --arg log "$family_log" --arg sha "$H2" --arg p "$1" --arg m "$2" --arg e "$3" \
+      '{workers:[{pid:42424243,unit:"pr-family",type:"review",provider:$p,model:$m,effort:$e,log:$log,report:$report,sha:$sha,pr_head:$sha,workdir:"/nonexistent",started:"2026-11-17T00:00:00Z",no_output_check_after:1}]}' > "$WORKERS"
+    : > "$LOG"; harvest_workers || :
+  }
+  GH_HEAD="$H2"
+
+  family_harvest claude claude-sonnet-5-5 high
+  [[ "$(field pr-family '[.history[] | select(.stage=="review-approve")] | length')" == 0 \
+      && "$(field pr-family '.approved_sha // "none"')" == none \
+      && "$(field pr-family .stage)" == review-pending \
+      && "$(field pr-family '.reviewed_sha // "none"')" == none \
+      && "$(field pr-family '[.history[] | select(.stage=="review-same-family")] | length')" == 1 ]] \
+    || fail "same-family claude review approval was applied (stage=$(field pr-family .stage), approved=$(field pr-family '.approved_sha // "none"'), history=$(field pr-family '.history | map(.stage) | join(",")'), log=$(tail -n 5 "$LOG" | tr '\n' ';'))"
+  grep -Fq 'review-family verdict discarded unit=pr-family author=claude reviewer=claude' "$LOG" \
+    || fail 'the same-family discard line is missing from the scheduler log'
+
+  family_harvest zcode GLM-5.3 max
+  [[ "$(field pr-family '[.history[] | select(.stage=="review-approve")] | length')" == 1 \
+      && "$(field pr-family '[.history[] | select(.stage=="review-same-family")] | length')" == 0 \
+      && "$(field pr-family .stage)" == ready-to-merge ]] \
+    || fail "other-family glm review approval was not applied (stage=$(field pr-family .stage), history=$(field pr-family '.history | map(.stage) | join(",")'), log=$(tail -n 5 "$LOG" | tr '\n' ';'))"
+  ! grep -Fq 'review-family verdict discarded' "$LOG" || fail 'the other-family review was discarded as same-family'
+)
+
 echo 'scheduler-gates-required-checks.test.sh: PASS'
