@@ -270,9 +270,7 @@ printf 'ok - rule_entry returns non-zero when the unit is archived before the re
   FAKE_ISSUE_STATE=open; rule_entry issue-38 requeue u "" ""
   [ "$(stage issue-38)" = implement-pending ] && [ "$(jq -r '.units[]|select(.id=="issue-38")|.history[-1].stage' "$UNITS")" = supervisor-requeue ] || { echo "FAIL: cap-closed unit with a released hold did not requeue" >&2; exit 1; } # live-only
   refused issue-39 open -- '--recut'        # cap-closed, but its issue is on another hold
-  # row 1006: retired as obsolete (pre-dispatch b-linked-fix-merged) or its PR closed outside the pipeline, issue open and ready again:
-  # a ruling requeue reopens it (7408 7475 7289 7377 refused "use --recut", 7067 too, 2026-11-22); a delivered one stays refused (issue-31)
-  jq --argjson add "[$(cu 40 "$(hs hold-handoff obsolete hold-handoff obsolete)"),$(cu 41 "$(hs supervisor-requeue write-start delivered pr-closed)")]" '.units += $add' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS" # live-only
+  jq --argjson add "[$(cu 40 "$(hs hold-handoff obsolete hold-handoff obsolete)"),$(cu 41 "$(hs supervisor-requeue write-start delivered pr-closed)")]" '.units += $add' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
   for n in 40 41; do printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/$n.json"
     FAKE_ISSUE_STATE=open; rule_entry "issue-$n" requeue u "" ""
     [ "$(stage "issue-$n")" = implement-pending ] || { echo "FAIL: issue-$n (obsolete or pr-closed, issue ready) did not requeue" >&2; exit 1; }

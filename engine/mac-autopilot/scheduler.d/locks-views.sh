@@ -282,7 +282,7 @@ closed_unit_recut_open() { # id：0 = recut 或 arbitration cap（supervisor-clo
   last="$(unit_field "$1" '(.history // []) as $h | if any($h[]; .stage | IN("merged", "landed", "done")) then empty else ($h | map(.stage | select(. != "supervisor-cap-default")) | last // empty) end')"
   case "$last" in
     supervisor-cap-triage-recut|supervisor-budget-recut|supervisor-recut|supervisor-close) ;; # supervisor-close: the cap closed it, a ruling released its hold and the reopen must still work
-    obsolete|pr-closed) ;; # row 1006: retired as obsolete (#1435) or its PR closed outside the pipeline, yet the issue is open and ready again; only a ruling reopens these
+    obsolete|pr-closed) ;;
     hold-handoff|supervisor-requeue) jqf -e '(.recut_refused_at // "") != ""' <<<"$state" >/dev/null || return 1 ;; # a refused recut with no children, then only a handoff or requeue
     *) return 1 ;;
   esac
