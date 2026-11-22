@@ -22,6 +22,10 @@ const WEEK_ALERT_AT = Number(process.env.ZC_WEEK_ALERT_AT || 98); // below the s
 // Production shares this GLM account and falls back to paid DeepSeek when it runs out: factory ZCode keeps under a straight
 // line from 0% at the week start to WEEK_PACE% at the week reset, leaving the rest for production.
 const WEEK_PACE = Number(process.env.ZC_WEEK_PACE_PCT || 90);
+// The page reports whole points and the hold had no slack: 75 s into the week of 2026-11-21 a reading of 1% held ZCode, and at 3%
+// of the week (line 2.2%) the only other-family reviewer stood idle for hours. Hold only above the line plus this many points.
+// shortcut: 2 is head's interim value (2026-11-22), replace it once the weekly points one review costs are measured (queue row 951).
+const WEEK_PACE_MARGIN = 2;
 const WEEK_SECONDS = 7 * 86400;
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const resolveWeekCap = (env, now, emit = () => {}) => {
@@ -59,14 +63,17 @@ function appendHeldUnderPaceAlert(provider, held, weekPct, pacePct, reason, stat
 const weekPaceUntil = (pct, reset, now) => {
   if (!reset || !(WEEK_PACE > 0)) return 0;
   const start = reset - WEEK_SECONDS;
-  if (pct <= WEEK_PACE * (now - start) / WEEK_SECONDS) return 0;
-  return Math.min(reset, Math.ceil(start + pct / WEEK_PACE * WEEK_SECONDS)); // when the line reaches today's percentage
+  if (pct <= WEEK_PACE * (now - start) / WEEK_SECONDS + WEEK_PACE_MARGIN) return 0;
+  return Math.min(reset, Math.ceil(start + (pct - WEEK_PACE_MARGIN) / WEEK_PACE * WEEK_SECONDS)); // when the line plus the margin reaches today's percentage
 };
 if (process.argv[2] === '--self-test') {
   const r = 1_000_000_000, s = r - WEEK_SECONDS, assert = (c, m) => { if (!c) { console.error('FAIL', m); process.exit(1); } };
-  assert(weekPaceUntil(30, r, s + 7 * 3600) === Math.ceil(s + 30 / WEEK_PACE * WEEK_SECONDS), 'over the line holds until the line catches up');
+  assert(weekPaceUntil(30, r, s + 7 * 3600) === Math.ceil(s + (30 - WEEK_PACE_MARGIN) / WEEK_PACE * WEEK_SECONDS), 'over the line holds until the line plus the margin catches up');
   assert(weekPaceUntil(10, r, s + 3 * 86400) === 0, 'under the line does not hold');
-  assert(weekPaceUntil(95, r, r - 60) === r, 'over the pace at week end holds to the reset, never past it');
+  assert(weekPaceUntil(1, r, s + 75) === 0, 'a first whole-point reading 75 s into the week does not hold (2026-11-21 21:19:46Z)');
+  assert(weekPaceUntil(3, r, s + 4 * 3600) === 0, '3% four hours into the week is inside the margin (2026-11-22 01:15Z)');
+  assert(weekPaceUntil(5, r, s + 4 * 3600) === Math.ceil(s + 3 / WEEK_PACE * WEEK_SECONDS), 'above the margin holds until the line reaches the reading minus the margin');
+  assert(weekPaceUntil(100, r, r - 60) === r, 'over the pace at week end holds to the reset, never past it');
   assert(weekPaceUntil(30, null, s) === 0, 'a window that has not started never holds');
   const noUntilLogs = [];
   const noUntil = resolveWeekCap({ ZC_WEEK_CAP: '1' }, r, message => noUntilLogs.push(message));
