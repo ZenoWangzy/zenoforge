@@ -496,8 +496,9 @@ ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热�
   if (( $(jqf -r 'length' <<<"$hot") > 0 )); then
     while IFS= read -r num; do
       [[ "$num" =~ ^[0-9]+$ ]] || continue
-      body="$(tick_pr_body "$num")" || return 1 # 分类读不到不得放行（2026-11-02 fail-closed）
-      prs="$(prs_attach_body "$num" "$body" <<<"$prs")" || return 1
+      # 本 shell 直接调（$(...) 里的写入回不到缓存，同一 PR 的下一次读又是一次 gh pr view）；读缓存数组
+      tick_pr_body "$num" >/dev/null || return 1 # 分类读不到不得放行（2026-11-02 fail-closed）
+      prs="$(prs_attach_body "$num" "${TICK_PR_BODY[$num]}" <<<"$prs")" || return 1
     done < <(jqf -r --arg label "$label" --argjson prefixes "$prefixes" '[.[] as $pr | select(((($pr.labels // []) | any(.name == $label)) or any($prefixes[]; . as $p | ($pr.headRefName // "") | startswith($p))) | not) | $pr.number] | .[]' <<<"$prs")
   fi
   jqf -c --arg label "$label" --argjson prefixes "$prefixes" --argjson hot "$hot" '

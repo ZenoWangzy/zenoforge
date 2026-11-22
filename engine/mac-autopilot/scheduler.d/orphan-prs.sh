@@ -267,7 +267,9 @@ aged_pr_classify() { # 一个超龄候选的只读慢分类（gh issue view / gi
     # 轻量 census 不带 body：标题取 census 行，正文按需单读这一条（tick_pr_body，进程内缓存）。
     # 读不到、空、字面 "null" 都不开票、留到下一轮：绝不把 "null" 当意图写进新 ticket（row 893 round 2）。
     intent_title="$(jqf -r --argjson pr "$prn" '[.[] | select(.number == $pr) | .title] | first // empty' <<<"$pr_json")"
-    if ! intent_body="$(tick_pr_body "$prn" 2>/dev/null)" || [[ -z "$intent_body" || "$intent_body" == null ]]; then
+    # 本 shell 直接调，缓存才落得下来；$(...) 里的写入回不到进程缓存
+    tick_pr_body "$prn" >/dev/null 2>&1 && intent_body="${TICK_PR_BODY[$prn]}" || intent_body=""
+    if [[ -z "$intent_body" || "$intent_body" == null ]]; then
       say "aged PR#$prn: pr view failed; retry next round"; return 0
     fi
   fi

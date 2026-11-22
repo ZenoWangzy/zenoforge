@@ -464,7 +464,8 @@ register_new_prs() {
     (( n_registered >= CAP )) && break
     [[ "$draft" == "true" ]] && continue
     # 列表不再携带 body（轻量 census）：热修判定要读正文，按 PR 单取（进程内缓存），本拍读不到就留给下一拍
-    body="$(tick_pr_body "$pr_num" 2>/dev/null)" || { say "skip pr-$pr_num: PR body unreadable for hotfix classification"; continue; }
+    tick_pr_body "$pr_num" >/dev/null 2>&1 || { say "skip pr-$pr_num: PR body unreadable for hotfix classification"; continue; }
+    body="${TICK_PR_BODY[$pr_num]}" # 本 shell 直接调才写得进缓存
     body_file="$(scheduler_jq_arg_file "$body")" || continue
     pr_json="$(jqf -cn --argjson number "$pr_num" --arg branch "$branch" --rawfile body "$body_file" --argjson labels "$labels" \
       '{number:$number,headRefName:$branch,body:$body,labels:[$labels[] | {name:.}]}')"

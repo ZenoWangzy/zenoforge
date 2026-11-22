@@ -151,9 +151,10 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     # 标题/分支没提到 issue 才逐个读正文（列表不再携带 body）；一条读不到也按占用来挡，宁可少派不重派
     while IFS= read -r dispatch_pr; do
       [[ "$dispatch_pr" =~ ^[0-9]+$ ]] || continue
-      dispatch_body="$(tick_pr_body "$dispatch_pr" 2>/dev/null)" \
+      # 本 shell 直接调，缓存才落得下来（$(...) 里每个单元都会把所有 open PR 的正文重读一遍）
+      tick_pr_body "$dispatch_pr" >/dev/null 2>&1 \
         || { say "dispatch held unit=$unit reason=open-PR-for-issue"; return 1; }
-      if grep -qE "(^|[^0-9])#$issue([^0-9]|$)" <<<"$dispatch_body"; then
+      if grep -qE "(^|[^0-9])#$issue([^0-9]|$)" <<<"${TICK_PR_BODY[$dispatch_pr]}"; then
         say "dispatch held unit=$unit reason=open-PR-for-issue"
         return 1
       fi

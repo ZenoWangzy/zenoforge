@@ -255,6 +255,12 @@ test_light_census() { # 轻量列表：字段不带 body/statusCheckRollup；60s
   tick_pr_body 7 > /dev/null
   [[ "$(cat "$test_env_root/pr-body.out")" == "$(cat "$TEST_PR_BODY")" ]] || fail 'the body reader did not get the PR body'
   [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 1 ]] || fail "the body was fetched $(grep -c '^pr view$' "$TEST_GH_CALLS") times for one PR"
+  # the hotfix classifier reads the body of an unlabelled PR once per tick, however many times it runs in this shell
+  tick_prs_changed; tick_prs_prime
+  TICK_HOTFIX_ISSUES='[77]'; TICK_HOTFIX_ISSUES_LOADED=true
+  : > "$TEST_GH_CALLS"
+  ci_hotfix_branches > /dev/null; ci_hotfix_branches > /dev/null
+  [[ "$(grep -c '^pr view$' "$TEST_GH_CALLS")" == 1 ]] || fail "ci_hotfix_branches fetched the body $(grep -c '^pr view$' "$TEST_GH_CALLS") times for one PR in two runs"
 }
 
 case "${1:-all}" in
