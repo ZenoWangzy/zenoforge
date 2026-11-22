@@ -234,7 +234,7 @@ printf 'ok - rule_entry returns non-zero when the unit is archived before the re
     "$(cu 33 "$(hs supervisor-cap-triage-recut)")" \
     "$(cu 34 "$(hs supervisor-cap-triage-recut)")" \
     "$(cu 35 "$(hs supervisor-recut hold-handoff)")" \
-    "$(cu 36 "$(hs obsolete)")" \
+    "$(cu 36 "$(hs write-end)")" \
     "$(cu 37 "$(hs supervisor-cap-triage-recut)")" > "$test_env_root/sup2/autopi/units.json" # live-only
   source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
   scheduler_issue_state() { cat "$AGENT_HOME/state/$1.json"; }
@@ -260,7 +260,7 @@ printf 'ok - rule_entry returns non-zero when the unit is archived before the re
   refused issue-31 open -- '--recut'        # delivered: merged in its history
   refused issue-32 closed -- '--recut'      # issue closed
   refused issue-33 open -- '--recut'        # issue on a hold
-  refused issue-36 open -- '--recut'        # closed on purpose, no recut event
+  refused issue-36 open -- '--recut'        # closed with no recut, obsolete or PR-close event
   refused issue-37 open -- '--recut'        # the recut produced children
   refused issue-34 FAIL 'could not be read' # unreadable GitHub state: retry the ruling
   # the arbitration cap closed it (supervisor-close) and a ruling released the hold, but the reopen was lost (#6530): the same requeue reopens it
@@ -270,6 +270,13 @@ printf 'ok - rule_entry returns non-zero when the unit is archived before the re
   FAKE_ISSUE_STATE=open; rule_entry issue-38 requeue u "" ""
   [ "$(stage issue-38)" = implement-pending ] && [ "$(jq -r '.units[]|select(.id=="issue-38")|.history[-1].stage' "$UNITS")" = supervisor-requeue ] || { echo "FAIL: cap-closed unit with a released hold did not requeue" >&2; exit 1; } # live-only
   refused issue-39 open -- '--recut'        # cap-closed, but its issue is on another hold
+  # row 1006: retired as obsolete (pre-dispatch b-linked-fix-merged) or its PR closed outside the pipeline, issue open and ready again:
+  # a ruling requeue reopens it (7408 7475 7289 7377 refused "use --recut", 7067 too, 2026-11-22); a delivered one stays refused (issue-31)
+  jq --argjson add "[$(cu 40 "$(hs hold-handoff obsolete hold-handoff obsolete)"),$(cu 41 "$(hs supervisor-requeue write-start delivered pr-closed)")]" '.units += $add' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS" # live-only
+  for n in 40 41; do printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/$n.json"
+    FAKE_ISSUE_STATE=open; rule_entry "issue-$n" requeue u "" ""
+    [ "$(stage "issue-$n")" = implement-pending ] || { echo "FAIL: issue-$n (obsolete or pr-closed, issue ready) did not requeue" >&2; exit 1; }
+  done
   # the reroute refusal names the route that works
   FAKE_ISSUE_STATE=open; rc=0; rule_entry issue-32 reroute u "dead" "" > "$test_env_root/recut-reroute.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -q -- '--requeue' "$test_env_root/recut-reroute.out" && ! grep -q -- '--reroute' "$test_env_root/recut-reroute.out" || { echo "FAIL: reroute hint on a recut-closed unit" >&2; cat "$test_env_root/recut-reroute.out" >&2; exit 1; }
