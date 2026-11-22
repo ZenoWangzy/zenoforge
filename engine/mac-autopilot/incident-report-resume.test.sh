@@ -476,5 +476,16 @@ jqf -e '.units[0] | .stage == "repair-pending" and (has("parked_reason") | not) 
 jqf '.units[0].stage="parked"' "$UNITS" | write_state "$UNITS"
 report_gate_stale_recover
 [[ "$(jqf -r '.units[0].stage' "$UNITS")" == parked ]] || fail 'the stale-report recovery ran twice on one unit'
+[[ "$(jqf -r '.units[0].repair_hint // ""' "$UNITS")" == *'missing ## prior-art'*'Escalation reference: <URL>'* ]] \
+  || fail "the recovery did not leave the gate reason for the repair ($(jqf -r '.units[0].repair_hint' "$UNITS"))"
+# Row 977: the repair breaker parked it while the gate still failed: one more pass, then none.
+jqf '.units[0].parked_reason="repair-breaker" | .units[0].report_gate_fail={reason:"missing ## prior-art",n:1} | .units[0].repair_hint=null' "$UNITS" | write_state "$UNITS"
+report_gate_stale_recover
+jqf -e '.units[0] | .stage == "repair-pending" and ([.history[] | select(.stage == "report-gate-recovered")] | length) == 2
+  and (.repair_hint | contains("missing ## prior-art"))' "$UNITS" >/dev/null \
+  || fail "a breaker park with an open gate failure was not recovered once more ($(jqf -c '.units[0] | {stage,parked_reason}' "$UNITS"))"
+jqf '.units[0].stage="parked" | .units[0].parked_reason="repair-breaker" | .units[0].report_gate_fail={reason:"missing ## prior-art",n:1}' "$UNITS" | write_state "$UNITS"
+report_gate_stale_recover
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == parked ]] || fail 'the breaker-park recovery ran a third time'
 
 echo 'ok - incident report failures get at most one read-only same-session resume before review'
