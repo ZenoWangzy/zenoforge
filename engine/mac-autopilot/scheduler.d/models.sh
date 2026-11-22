@@ -282,6 +282,7 @@ unit_hard_escalated() { # unit JSON -> true after the two-repair cap or supervis
 
 # scheduler.sh runs once per tick; this process-local cache avoids repeating provider probes across units.
 declare -A IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+IMPLEMENT_DEFER_UNTIL=0; IMPLEMENT_DEFER_FAMILY="" # claude route: earliest end epoch of a timed hold on an other-family reviewer
 
 implement_route_review_identity_available() { # identity role author-family -> check route reviewability without starting a recovery probe
   local identity="$1" role="$2" author_family="$3" provider="${1%%:*}" model="${1#*:}"; model="${model%:*}"
@@ -306,8 +307,42 @@ implement_route_review_identity_available() { # identity role author-family -> c
   return 1
 }
 
+implement_review_hold_until() { # identity -> the end epoch of its provider's quota marker or cooldown while in force, else returns 1
+  local provider="${1%%:*}" now until="" cool e best=0
+  now="$(date +%s)"
+  case "$provider" in
+    codex) until="$(codex_unavailable_until 2>/dev/null || cat "$(_quota_marker_file codex)" 2>/dev/null || true)" ;;
+    zcode) until="$(cat "$(_quota_marker_file zcode)" 2>/dev/null || true)" ;;
+    *) return 1 ;;
+  esac
+  cool="$(jqf -r --arg p "$provider" '.[$p] // 0' "$COOLDOWN" 2>/dev/null || true)"
+  for e in "$until" "$cool"; do
+    [[ "$e" =~ ^[0-9]+$ ]] && (( e > now && e > best )) && best="$e"
+  done
+  (( best > 0 )) && printf '%s\n' "$best"
+}
+
+implement_claude_review_backlog() { # -> unfinished units whose current head is Claude-authored and waits on a review (the deferred route's cap)
+  local u author n=0
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    if author="$(unit_review_author_identity "$u" 2>/dev/null)" && [[ "$(review_identity_family "$author" 2>/dev/null)" == claude ]]; then n=$((n + 1)); fi
+  done < <(jqf -c '.units[] | select(.stage | IN("review-pending","rereview-pending","review","rereview","implement","repair"))' "$UNITS" 2>/dev/null)
+  printf '%s\n' "$n"
+}
+
+implement_claude_deferred_route() { # Claude may stay routed while a timed hold keeps its other-family reviewer out; the caller caches the answer per tick
+  local waiting cap
+  (( IMPLEMENT_DEFER_UNTIL > 0 )) || return 1
+  [[ "${MAX:-}" =~ ^[0-9]+$ ]] || return 1
+  cap=$(( MAX * 2 )); waiting="$(implement_claude_review_backlog)"
+  if (( waiting >= cap )); then IMPLEMENT_REVIEWER_REASON=deferred-review-cap; return 1; fi
+  say "implement-route deferred-review family=claude reviewer=$IMPLEMENT_DEFER_FAMILY until=$IMPLEMENT_DEFER_UNTIL waiting=$waiting/$cap"
+}
+
 implement_family_has_other_reviewer() { # family -> 0 when review dispatch can select another family now
-  local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason=""
+  local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason="" hold
+  IMPLEMENT_DEFER_UNTIL=0; IMPLEMENT_DEFER_FAMILY=""
   codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
   glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
   sonnet_identity="$(review_identity_for_model "$(model_tuple_field review_fallback 0)" "$(model_tuple_field review_fallback 1)" 2>/dev/null || true)"
@@ -327,6 +362,9 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
     if [[ "$candidate_family" == claude ]]; then candidate_role=review_fallback; [[ "$family" != claude && "$candidate" =~ ^claude:claude-(haiku|sonnet)- ]] || continue; fi
     if implement_route_review_identity_available "$candidate" "$candidate_role" "$family"; then return 0; fi
     reason="$IMPLEMENT_REVIEWER_REASON"; [[ -z "$first_reason" && -n "$reason" ]] && first_reason="${reason// /-}"
+    if [[ "$family" == claude && "$reason" == *hold ]] && hold="$(implement_review_hold_until "$candidate")"; then
+      if (( IMPLEMENT_DEFER_UNTIL == 0 || hold < IMPLEMENT_DEFER_UNTIL )); then IMPLEMENT_DEFER_UNTIL="$hold"; IMPLEMENT_DEFER_FAMILY="$candidate_family"; fi
+    fi
   done
   IMPLEMENT_REVIEWER_REASON="${first_reason:-review-config}"
   return 1
@@ -340,6 +378,7 @@ implement_route_family_reviewable() { # family -> log the skip and alert head-wa
     IMPLEMENT_ROUTE_REVIEWABILITY_CACHE[$family]=available
     IMPLEMENT_REVIEWER_REASON=available
   else
+    [[ "$family" == claude ]] && implement_claude_deferred_route && IMPLEMENT_REVIEWER_REASON=available
     IMPLEMENT_ROUTE_REVIEWABILITY_CACHE[$family]="${IMPLEMENT_REVIEWER_REASON:-review-config}"
   fi
   [[ "$IMPLEMENT_REVIEWER_REASON" == available ]] && return 0
