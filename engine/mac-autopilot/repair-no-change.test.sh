@@ -127,6 +127,10 @@ if dispatch_if_room issue-23 implement implement r.log r.md GPT-5 high "prompt" 
 retired_before_write issue-23 b-linked-fix-merged PR#3849
 dispatch_if_room issue-24 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex || fail 'an open issue with no merged fix did not dispatch'
 [[ "$(field issue-24 .stage)" == implement && "$(field issue-24 '[.history[] | select(.stage=="write-start")] | length')" == 1 ]] || fail "open issue did not reach write-start ($(field issue-24 '.history | tojson'))"
+# Row 1002: a ruling resumed issue-22 after its fix merged; the ruling asks for the work again, so it dispatches.
+jq '(.units[] | select(.id=="issue-22")) |= (.stage="implement-pending" | .hold_handoff_episode="ruling-2026-11-21T21:18:39Z")' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+dispatch_if_room issue-22 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex || fail 'a ruling-resumed unit with a merged linked fix was retired'
+[[ "$(field issue-22 .stage)" == implement ]] || fail "ruling-resumed unit did not dispatch ($(field issue-22 '.history | tojson'))"
 
 # 9. A repair that pushed an over-limit head is recut, not escalated to the supervisor (the harvest passes the repaired head to the recheck).
 source "$script_dir/scheduler.d/size-admission.sh"   # restore the real recheck over this file's no-op stub

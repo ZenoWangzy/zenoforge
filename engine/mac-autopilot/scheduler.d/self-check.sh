@@ -676,7 +676,7 @@ pre_dispatch_skip() { # unit-json → 0 when retired (one log line), 1 to dispat
   issue_state="${f[0]:-}"; state="${f[1]:-}"; closer="${f[2]:-}"
   if [[ "$issue_state" == CLOSED ]]; then
     reason=a-issue-closed; evidence="issue#$issue"
-  elif [[ -n "$closer" || "$state" == MERGED ]]; then
+  elif [[ -n "$closer" || "$state" == MERGED ]] && ! jqf -e '(.hold_handoff_episode // "") | startswith("ruling-")' <<<"$1" >/dev/null; then # row 1002: a resuming ruling asks for the work again
     reason=b-linked-fix-merged; evidence="issue#$issue"; [[ -z "$closer" ]] || evidence="PR#$closer"
   else
     return 1
