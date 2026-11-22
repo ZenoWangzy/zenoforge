@@ -419,6 +419,18 @@ pick_routed_implementer() { # unit sticky-provider -> PICK_* from the first rout
   return 1
 }
 
+# 11-21 (row 905): the dispatch hold runs before pick_implementer, so its zc backend ask (the zc measured memory peak)
+# rests on what is cheap and known pre-pick: the unit's sticky implement provider, or a Codex quota hold, which
+# pick_implementer below fails codex-assigned work over to zcode. Sticky Claude stays backend-less: it never leaves.
+codex_quota_held() { declare -F provider_quota_exhausted >/dev/null 2>&1 && provider_quota_exhausted codex; } # one lib call line for both readers (agent-lib-call ratchet)
+dispatch_known_zcode_start() { # unit-json -> 0 while the coming implement/repair start is known to run on zcode
+  local sticky=""
+  [[ -n "${1:-}" ]] && sticky="$(jqf -r '.implement_provider // empty' <<<"$1" 2>/dev/null || true)"
+  [[ "$sticky" == zcode ]] && return 0
+  [[ "$sticky" == claude ]] && return 1
+  codex_quota_held
+}
+
 pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
   local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum=0 status arbiter=false
   local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS=""
@@ -528,7 +540,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
     if pick_codex_work_identity "$u"; then PICK_REASON="$reason"; return 0; fi
     status="$(zcode_quota_status)"
     if implement_route_family_reviewable glm && pick_zcode_implementer "$u"; then
-      if provider_quota_exhausted codex; then reason=quota-fallback-codex-to-zcode
+      if codex_quota_held; then reason=quota-fallback-codex-to-zcode
       else reason=codex-unavailable-fallback-to-zcode; fi
       PICK_REASON="$reason"; return 0
     fi

@@ -3652,6 +3652,45 @@ rm -f "$host_meminfo"; room_for issue-9 implement "" true false || fail 'a host 
 unset LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_MIN LUNA_MAX LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET
 eval "$host_runs_fn"; eval "$host_cpu_fn"
 
+# Row 905 (part A): the dispatch hold's memory ask is backend-aware for a start already known to run on zcode — the
+# unit's sticky implement provider, or a Codex quota hold (pick_implementer fails codex-assigned work over to zcode) —
+# so the ask uses the zc measured peak (512 here after the floor) instead of the backend-less interim 800, while the
+# admission cache never answers one backend's ask with another's.
+zc_gate_meminfo="$fixture/zc-gate-meminfo"; zc_gate_psi="$fixture/zc-gate-psi"
+printf 'MemAvailable: 6291456 kB\n' > "$zc_gate_meminfo"
+printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$zc_gate_psi"
+zc_gate_slice="$fixture/zc-gate-slice"; rm -rf -- "$zc_gate_slice"; mkdir -p "$zc_gate_slice"
+printf '%s\n' 4294967296 > "$zc_gate_slice/memory.high" # 4096 MB high
+printf '%s\n' "$(( (4096 - 700) * 1048576 ))" > "$zc_gate_slice/memory.current" # 700 left: over the zc 512 peak, under the interim 800
+mkdir -p "$AGENT_HOME/locks"
+printf '%s\n' '{"backend":"zc","memory_peak_mb":400}' > "$AGENT_HOME/locks/execution-memory-peaks-backend.jsonl"
+units '{"units":[{"id":"issue-zc","stage":"implement-pending","history":[],"implement_provider":"zcode"},{"id":"issue-cl","stage":"implement-pending","history":[],"implement_provider":"claude"},{"id":"issue-9","stage":"implement-pending","history":[]}]}'
+LUNA_PROC_MEMINFO="$zc_gate_meminfo"; LUNA_PROC_PSI_MEMORY="$zc_gate_psi"; LUNA_WORKER_SLICE_DIR="$zc_gate_slice"
+LUNA_MIN=0 LUNA_MAX=10 LUNA_ADMIT_AVAIL_MB=3328 LUNA_CPU_TARGET=85
+rm -f "$LUNA_SLOTS"/wait-*; : > "$A/scheduler.log"
+room_for issue-zc implement "" true false || fail 'a sticky-zcode implement was held by the interim 800MB ask at 700MB left'
+room_for issue-zc repair "" true false || fail 'a sticky-zcode repair was held by the interim 800MB ask at 700MB left'
+room_for issue-9 implement "" true false && fail 'a provider-unknown implement passed the interim 800MB ask at 700MB left'
+grep -q 'skip dispatch unit=issue-9 priority=normal (host capacity: worker slice 700MB left under memory.high < 800MB worker peak backend=- source=interim)' "$A/scheduler.log" \
+  || fail 'the backend-less refusal did not name the interim peak'
+room_for issue-cl implement "" true false && fail 'a sticky-claude implement rode the Codex rule into the zc ask'
+printf '%s\n' "$(( $(date +%s) + 600 ))" > "$AGENT_HOME/codex-exhausted-until" # a Codex quota hold sends codex-assigned work to zcode
+room_for issue-9 implement "" true false || fail 'under a Codex quota hold an implement was held by the interim ask at 700MB left'
+room_for issue-cl implement "" true false && fail 'a sticky-claude implement rode the Codex hold into the zc ask'
+rm -f "$AGENT_HOME/codex-exhausted-until"
+# The admission cache keys on the backend: a backend-less hold must not answer a later zc ask, nor a zc admit a backend-less ask.
+TICK_DISPATCH_PENDING_ACTIVE=true; TICK_PRIORITY_ADMISSION_CACHE=()
+priority_admission_has_room normal 0 && fail 'a backend-less ask admitted at 700MB left under the interim 800'
+[[ "$BOX_ROOM_WHY" == *'backend=- source=interim' ]] || fail "backend-less hold reason: $BOX_ROOM_WHY"
+priority_admission_has_room normal 0 zc || fail 'the zc ask reused the backend-less hold'
+TICK_PRIORITY_ADMISSION_CACHE=()
+priority_admission_has_room normal 0 zc || fail 'the zc ask was refused at 700MB left with a 512MB peak'
+priority_admission_has_room normal 0 && fail 'the backend-less ask reused the zc admit'
+TICK_DISPATCH_PENDING_ACTIVE=false
+unset LUNA_PROC_MEMINFO LUNA_PROC_PSI_MEMORY LUNA_MIN LUNA_MAX LUNA_ADMIT_AVAIL_MB LUNA_CPU_TARGET
+LUNA_WORKER_SLICE_DIR="$fixture/no-slice"
+rm -f "$AGENT_HOME/locks/execution-memory-peaks-backend.jsonl"
+
 # factory_prs_only: sessions' PRs leave the ledger before any acting phase, and the orphan pass neither adopts nor closes them.
 cfg_saved="$CFG"; CFG="$(jq '.factory_prs_only=true' <<<"$CFG")"
 session_prs='[{"number":31,"labels":[],"headRefName":"agent/s","isDraft":false,"title":"s"},{"number":32,"labels":[{"name":"agent/ci-gated"}],"headRefName":"agent/issue-32","isDraft":true,"title":"f"},{"number":33,"labels":[{"name":"session-owned"}],"headRefName":"agent/issue-33","isDraft":false,"title":"c"},{"number":34,"labels":[],"headRefName":"agent/issue-34","isDraft":false,"title":"o"},{"number":35,"labels":[],"headRefName":"old","isDraft":false,"title":"i"}]'
