@@ -22,7 +22,8 @@ chmod +x "$test_env_root/bin/systemctl"
 export PATH="$test_env_root/bin:$PATH"
 export HARVEST_CGROUP_ROOT="$test_env_root/cgroup"
 scope=run-p4242-i1.scope
-procs="$HARVEST_CGROUP_ROOT/user.slice/user-$UID.slice/user@$UID.service/app.slice/$scope/cgroup.procs"
+# The real layout (worker-scope.sh --slice=zf-workers.slice, nested in zf.slice); an app.slice fixture hid row 986.
+procs="$HARVEST_CGROUP_ROOT/user.slice/user-$UID.slice/user@$UID.service/zf.slice/zf-workers.slice/$scope/cgroup.procs"
 mkdir -p "${procs%/*}"
 
 fail() { echo "harvest-scope-stop.test.sh: $*" >&2; exit 1; }

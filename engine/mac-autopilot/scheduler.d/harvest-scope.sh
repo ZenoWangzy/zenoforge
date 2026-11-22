@@ -6,7 +6,9 @@ harvest_scope_stop() { # worker JSON; called where harvest finishes the worker
   scope="$(jqf -r '.scope // empty' <<<"$w")"
   [[ "$scope" =~ ^run-p[1-9][0-9]*-i[^/]*\.scope$ ]] || return 0
   harvest_worker_alive "$w" && return 0
-  for f in "${HARVEST_CGROUP_ROOT:-/sys/fs/cgroup}"/user.slice/user-$UID.slice/user@$UID.service/*/"$scope"/cgroup.procs; do
+  # 11-22 (row 986): worker scopes sit two slices down (zf.slice/zf-workers.slice); a one-level glob never found them.
+  local base="${HARVEST_CGROUP_ROOT:-/sys/fs/cgroup}/user.slice/user-$UID.slice/user@$UID.service"
+  for f in "$base"/*/"$scope"/cgroup.procs "$base"/*/*/"$scope"/cgroup.procs; do
     [[ -r "$f" ]] && { procs_file="$f"; break; }
   done
   [[ -n "$procs_file" ]] || return 0 # the scope is already gone
