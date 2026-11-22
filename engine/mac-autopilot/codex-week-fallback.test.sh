@@ -78,6 +78,14 @@ pick_configured_model review '{}' && [[ "$PICK_PROVIDER" == codex ]] || fail 're
 pick_implementer "$sticky" && [[ "$PICK_PROVIDER" == zcode ]] || fail "Codex route did not fall back to ZCode at 98% ($PICK_PROVIDER)"
 pick_implementer '{"id":"c","implement_provider":"claude"}' || fail 'sticky Claude unit had no route at share 0'
 [[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == claude-share-off-zcode ]] || fail "sticky Claude went to $PICK_PROVIDER/$PICK_REASON"
+# Row 980: a day into the week the pace line is 95/7 + 2 = 15.6%; implementation above it moves to ZCode, reviews stay on Codex.
+week 30 $((NOW_EPOCH + 6 * 86400)); IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+pick_implementer "$sticky" && [[ "$PICK_PROVIDER" == zcode ]] || fail "Codex implement ran above the week pace line ($PICK_PROVIDER)"
+pick_configured_model review '{}' && [[ "$PICK_PROVIDER" == codex ]] || fail 'the week pace line moved review off Codex'
+CODEX_WEEK_PACE_PCT=0; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+pick_implementer "$sticky" && [[ "$PICK_PROVIDER" == codex ]] || fail "CODEX_WEEK_PACE_PCT=0 still paced ($PICK_PROVIDER)"
+unset CODEX_WEEK_PACE_PCT; week 10 $((NOW_EPOCH + 6 * 86400)); IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+pick_implementer "$sticky" && [[ "$PICK_PROVIDER" == codex ]] || fail "Codex implement paused under the week pace line ($PICK_PROVIDER)"
 week 100 $((NOW_EPOCH + 3600))
 pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit had no route at the wall'
 [[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == hard-fallback-zcode && "$PICK_HARD" == true ]] || fail "hard went to $PICK_PROVIDER/$PICK_REASON"

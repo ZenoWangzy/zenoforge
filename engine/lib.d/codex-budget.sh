@@ -386,6 +386,14 @@ codex_week_stopped() { # [stop percent]
   provider_quota_exhausted codex && return 0
   snapshot_week_at "${1:-${CODEX_WEEK_STOP_PCT:-101}}" "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}"
 }
+# Row 980 (founder 2026-11-22 「好好分配，不要提前用光」: Codex week 100% a day and a half before its reset): new Codex
+# implementation pauses while the week reading is above the pace line, 0 at the week start to CODEX_WEEK_PACE_PCT at the
+# reset plus zc-quota's 2-point margin. Reviews, triage and credits routes are untouched; 0 turns it off.
+codex_week_paced() {
+  command jq -e --argjson pace "${CODEX_WEEK_PACE_PCT:-95}" --argjson now "${NOW_EPOCH:-$(date +%s)}" '$pace > 0 and (.week_pct | type) == "number"
+    and (.week_reset // 0) > $now and .week_pct > $pace * ($now - (.week_reset - 604800)) / 604800 + 2' \
+    "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}" >/dev/null 2>&1
+}
 
 # Credits route: past the weekly hold, only the roles in CODEX_CREDITS_ROLES may run, until CODEX_CREDITS_CAP credits are
 # gone from CODEX_CREDITS_START_BALANCE. Unset or unreadable means closed. Every session log carries the account balance.

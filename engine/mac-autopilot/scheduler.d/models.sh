@@ -215,6 +215,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
   fi
   command -v codex >/dev/null 2>&1 || return 1
   codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-101}" && return 1
+  codex_week_paced && return 1 # row 980; the hotfix branch above is exempt
   cooling codex && return 1
   return 0
 }
