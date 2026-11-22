@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 fail() { printf 'comment-ratchet.test.sh: %s\n' "$*" >&2; exit 1; }
 
-real=$(node "$MODEL_POLICY_TEST_REPO/tools/comment-ratchet.mjs" 2>&1) || fail "current tree fails: $real"
+real=$(HOME="$test_host_home" node "$MODEL_POLICY_TEST_REPO/tools/comment-ratchet.mjs" 2>&1) || fail "current tree fails: $real"
 [[ $real == 'comment-ratchet ok' ]] || fail "current tree did not report success: $real"
 
 repo="$test_env_root/comment-ratchet"
