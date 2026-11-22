@@ -73,6 +73,7 @@ cat > "$AGENT_HOME/zcode" <<'Z'
 #!/usr/bin/env bash
 printf '%s\n' "${GH_TOKEN:-}${GITHUB_TOKEN:-}" > "$AGENT_HOME/zcode-token-seen"
 printf '%s\n' "${https_proxy-unset}" > "$AGENT_HOME/zcode-proxy-seen"
+case " $* " in *" --attach "*) echo attach ;; *) echo argv ;; esac > "$AGENT_HOME/zcode-prompt-mode"
 printf '%s\n' '```json' "$ZCODE_FAKE_REPLY" '```'
 Z
 chmod +x "$AGENT_HOME/zcode"; PATH="$AGENT_HOME:$PATH"
@@ -83,6 +84,11 @@ https_proxy='' ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$sc
 assert_eq "an empty proxy from systemd-run -E never reaches zcode" unset "$(cat "$AGENT_HOME/zcode-proxy-seen")"
 https_proxy=http://proxy.test:1 ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode >/dev/null
 assert_eq "a real proxy still reaches zcode" http://proxy.test:1 "$(cat "$AGENT_HOME/zcode-proxy-seen")"
+# 11-22 recut-6273: a 175 KB prompt as one argv died with E2BIG (exit 126) before zcode started.
+printf "%0200000d\n" 0 > "$prompt"
+assert_eq "a prompt over 128 KB still reaches zcode" false "$(ZCODE_FAKE_REPLY='{"children":[]}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode | jq -r .is_error)"
+assert_eq "a prompt over 128 KB goes as an attached file" attach "$(cat "$AGENT_HOME/zcode-prompt-mode")"
+: > "$prompt"
 assert_eq "a reply missing a required key fails closed" true "$(ZCODE_FAKE_REPLY='{"other":1}' run_zcode_json . "$GLM" 1 "$schema" "$prompt" hand-zcode | jq -r .is_error || true)"
 rm -f "$prompt" "$schema"
 
@@ -102,7 +108,7 @@ assert_true "every recorded failure reaches the lane check" grep -q 'model_polic
 
 # Every ZCode launch: new paths must strip too. stage-call.sh and bin/zc unset at the top of the script.
 for launch in engine/lib.d/model-calls.sh engine/mac-autopilot/scheduler.d/worker-command.sh engine/night/dispatch.sh; do
-  assert_true "$launch strips the token at launch" grep -Eq 'env -u GH_TOKEN -u GITHUB_TOKEN .*zcode_cmd.*-p |env -u GH_TOKEN -u GITHUB_TOKEN .*zcode -p ' "$SCRIPT_DIR/../$launch"
+  assert_true "$launch strips the token at launch" grep -Eq 'env -u GH_TOKEN -u GITHUB_TOKEN .*zcode_cmd.*(-p |"\$\{prompt_args)|env -u GH_TOKEN -u GITHUB_TOKEN .*zcode -p ' "$SCRIPT_DIR/../$launch"
 done
 for launch in engine/bin/zc engine/eval/stage-call.sh; do
   assert_true "$launch unsets the token" grep -Eq '^unset GH_TOKEN GITHUB_TOKEN$' "$SCRIPT_DIR/../$launch"
