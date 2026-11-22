@@ -722,10 +722,11 @@ run_zcode_json() {
   } > "$transcript"
   started_at="$(date +%s)"
   # systemd-run -E of an unset name passes it empty, and an empty lower-case proxy beats HTTPS_PROXY: the token POST then goes direct and dies.
-  local proxy_name; local -a empty_proxies=()
+  local proxy_name; local -a empty_proxies=() prompt_args=(-p "$(cat "$transcript")")
   for proxy_name in http_proxy https_proxy no_proxy; do [ -n "${!proxy_name-x}" ] || empty_proxies+=(-u "$proxy_name"); done
   # Same strip as run_codex_json: zcode has no sandbox, and the prompt carries ticket text.
-  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "${empty_proxies[@]}" "${zcode_cmd[@]}" -p "$(cat "$transcript")" \
+  (( $(wc -c < "$transcript") < 120000 )) || prompt_args=(-p "The attached file is your complete task input; follow it exactly." --attach "$transcript") # 11-22 recut-6273: an argv over 128 KB fails exec (E2BIG, exit 126)
+  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "${empty_proxies[@]}" "${zcode_cmd[@]}" "${prompt_args[@]}" \
     --cwd "$cwd" --mode yolo > "$out_file" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ "$status" -eq 124 ]; then
