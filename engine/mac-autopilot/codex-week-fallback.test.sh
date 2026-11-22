@@ -49,6 +49,14 @@ pick_implementer "$sticky" || fail 'sticky Codex repair stopped at the wall'
 pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit stopped at the wall'
 [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == hard-fallback-claude && "$PICK_HARD" == true ]] || fail "hard went to $PICK_PROVIDER/$PICK_REASON"
 
+(
+  model_policy_role_fields() { printf 'codex\tgpt-6-luna\tmax\t\n'; }; model_policy_model_allowed_for_role() { return 0; }
+  codex_credits_spent() { echo 100; }; CODEX_CREDITS_CAP=5000; CODEX_CREDITS_START_BALANCE=29582
+  CODEX_CREDITS_ROLES="implement"; pick_codex_work_identity '{"id":"credit-impl"}' || fail 'implement on credits was refused past the weekly hold'
+  [[ "$PICK_PROVIDER" == codex ]] || fail "credit implement went to $PICK_PROVIDER"
+  CODEX_CREDITS_ROLES="review arbiter"; if pick_codex_work_identity '{"id":"credit-impl"}'; then fail 'implement picked past the weekly hold without implement in the credit roles'; fi
+)
+
 CFG="$(jq '.models.implement_share.claude=0' <<<"$CFG")"
 if pick_implementer "$sticky"; then fail 'claude share 0 still routed to Claude'; fi
 CFG="$(jq '.models.implement_share.claude=50' <<<"$CFG")"
