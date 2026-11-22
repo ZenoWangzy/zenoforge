@@ -678,10 +678,10 @@ pre_dispatch_skip() { # unit-json → 0 when retired (one log line), 1 to dispat
     reason=a-issue-closed; evidence="issue#$issue"
   elif [[ -n "$closer" || "$state" == MERGED ]] && ! jqf -e '(.hold_handoff_episode // "") | startswith("ruling-")' <<<"$1" >/dev/null; then # row 1002: a resuming ruling asks for the work again
     reason=b-linked-fix-merged; evidence="issue#$issue"; [[ -z "$closer" ]] || evidence="PR#$closer"
-  else
-    return 1
-  fi
-  set_unit "$id" "$(hist obsolete "pre-dispatch $reason $evidence") | .stage=\"closed\""
+  else return 1; fi
+  if [[ "$reason" == b-* ]] && ! obsolete_issue_close "$issue" "pre-dispatch $reason $evidence"; then # row 1002: the issue closes with its unit (7447 stayed open); obsolete_close_retry retries
+    set_unit "$id" "$(hist obsolete-close-failed "pre-dispatch $reason $evidence") | .stage=\"parked\" | .parked_reason=\"obsolete-close-failed\" | .unpark_condition=\"the issue close succeeds\""
+  else set_unit "$id" "$(hist obsolete "pre-dispatch $reason $evidence") | .stage=\"closed\""; fi
   say "pre-dispatch skip unit=$id reason=$reason evidence=$evidence"
 }
 

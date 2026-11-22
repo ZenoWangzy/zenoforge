@@ -119,12 +119,19 @@ retired_before_write() { # unit reason evidence: retired as obsolete with no wri
     || fail "$1 was not retired before write-start ($(field "$1" '.history | tojson'))"
   [[ "$(grep -c "pre-dispatch skip unit=$1 reason=$2 evidence=$3\$" "$LOG")" == 1 ]] || fail "$1 lacks its one pre-dispatch log line for $2 ($3)"
 }
+obsolete_issue_close() { printf '%s %s\n' "$1" "$2" >> "$fixture/issue-closes"; } # row 1002: a b-retire closes its issue
 if dispatch_if_room issue-21 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex; then fail 'a unit with a closed issue was dispatched'; fi
 retired_before_write issue-21 a-issue-closed issue#21
 if dispatch_if_room issue-22 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex; then fail 'a unit whose fix merged was dispatched'; fi
 retired_before_write issue-22 b-linked-fix-merged issue#22
 if dispatch_if_room issue-23 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex; then fail 'a unit with a merged closing PR was dispatched'; fi
 retired_before_write issue-23 b-linked-fix-merged PR#3849
+[[ "$(cat "$fixture/issue-closes")" == $'22 pre-dispatch b-linked-fix-merged issue#22\n23 pre-dispatch b-linked-fix-merged PR#3849' ]] \
+  || fail "b-retired units must close their issues, and only those ($(cat "$fixture/issue-closes"))"
+obsolete_issue_close() { return 1; }
+jq '.units += [{"id":"issue-25","issue":23,"lane":"pr","stage":"implement-pending","history":[]}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+if dispatch_if_room issue-25 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex; then fail 'issue-25 was dispatched'; fi
+[[ "$(field issue-25 .stage)/$(field issue-25 .parked_reason)" == parked/obsolete-close-failed ]] || fail "a failed issue close must park for obsolete_close_retry ($(field issue-25 '.history | tojson'))"
 dispatch_if_room issue-24 implement implement r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex || fail 'an open issue with no merged fix did not dispatch'
 [[ "$(field issue-24 .stage)" == implement && "$(field issue-24 '[.history[] | select(.stage=="write-start")] | length')" == 1 ]] || fail "open issue did not reach write-start ($(field issue-24 '.history | tojson'))"
 # Row 1002: a ruling resumed issue-22 after its fix merged; the ruling asks for the work again, so it dispatches.
