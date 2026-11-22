@@ -93,16 +93,18 @@ decision_log_gate_reason() { # unit-json [implementation report] → missing or 
   [[ -n "${section//[[:space:]]/}" ]] || printf 'empty ## decision-log'
 }
 how_why_gate_reason() { # unit-json [implementation report] → missing/empty how or why reason, or missing why citation
-  local unit_json="$1" report="${2:-}" how_section why_section
+  # Row 949 (2026-11-21/22: 4 of 17 GLM-5.3 reports wrote "## how（触及代码目前如何工作）"): a heading may carry a note after
+  # the section name in parentheses or after a colon; the section name itself is still required.
+  local unit_json="$1" report="${2:-}" how_section why_section note='[[:space:]]*($|（|[(]|:|：)'
   [[ -n "$report" ]] || report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
   [[ -n "$report" ]] || { printf 'missing ## how and ## why (implementation report is unavailable)'; return 0; }
   [[ "$report" == /* ]] || report="$SUP/$report"
   [[ -s "$report" ]] || { printf 'missing ## how and ## why (implementation report is unavailable: %s)' "${report##*/}"; return 0; }
-  grep -qE '^## how[[:space:]]*$' "$report" || { printf 'missing ## how'; return 0; }
-  grep -qE '^## why[[:space:]]*$' "$report" || { printf 'missing ## why'; return 0; }
-  how_section="$(awk '/^## how[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  grep -qE "^## how$note" "$report" || { printf 'missing ## how'; return 0; }
+  grep -qE "^## why$note" "$report" || { printf 'missing ## why'; return 0; }
+  how_section="$(awk -v h="^## how$note" '$0 ~ h {inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
   [[ -n "${how_section//[[:space:]]/}" ]] || { printf 'empty ## how'; return 0; }
-  why_section="$(awk '/^## why[[:space:]]*$/{inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
+  why_section="$(awk -v h="^## why$note" '$0 ~ h {inside=1; next} /^##[[:space:]]/{inside=0} inside {print}' "$report")"
   [[ -n "${why_section//[[:space:]]/}" ]] || { printf 'empty ## why'; return 0; }
   grep -Eq '(^|[^[:xdigit:]])[[:xdigit:]]{7,}([^[:xdigit:]]|$)|#[0-9]+' <<<"$why_section" \
     || printf '## why lacks a commit SHA (7+ hex characters) or #N issue reference'

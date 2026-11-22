@@ -63,7 +63,7 @@ recover_local_ahead_head() { # id wt pr-head branch；返回 0 = 已推送，1 =
 }
 implement_report_sections() {
   cat <<'EOF'
-报告必须包含以下章节：
+报告必须包含以下章节（标题行只写章节名，例如单独一行 `## how`，说明写在标题下一行）：
 ## how
 说明触及代码目前如何工作。
 ## why
