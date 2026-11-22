@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 python3 -I - "$script_dir" "$test_env_root" <<'PY'
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import redirect_stderr
 import io
@@ -111,5 +111,62 @@ assert revert_metrics["details"]["delivery_unavailable"] == revert_unavailable, 
 assert revert_stderr.getvalue().splitlines() == [
     "node_health: delivery input reverts unavailable: timeout 20s"
 ], revert_stderr.getvalue()
+
+# Last good census: a refused issue list uses the stored rows, labelled with their fetch time, for 24 h only.
+store_root = test_root / "runtime-last-good"
+store_root.mkdir()
+store_path = str(store_root / health.delivery_diagnostics.LAST_GOOD)
+fake_bin = test_root / "fake-gh-census-bin"
+fake_bin.mkdir()
+fake_gh = fake_bin / "gh"
+fake_gh.write_text(
+    "#!/bin/sh\n"
+    "case \"$1 $2\" in\n"
+    "  \"issue list\") if [ -n \"$FAKE_GH_ISSUES_REFUSED\" ]; then echo 'rate limited' >&2; exit 75; fi\n"
+    "    echo '[{\"number\":101,\"createdAt\":\"2026-11-09T12:00:00Z\"}]' ;;\n"
+    "  \"api graphql\") echo '{\"data\":{\"search\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},"
+    "\"nodes\":[{\"number\":201,\"mergedAt\":\"2026-11-10T10:00:00Z\",\"mergeCommit\":{\"oid\":\"" + merge_sha + "\"}}]}}}' ;;\n"
+    "  *) exit 1 ;;\n"
+    "esac\n")
+fake_gh.chmod(0o755)
+
+def census(at, env, path=store_path):
+    unavailable, served, stderr = {}, {}, io.StringIO()
+    with mock.patch.dict(os.environ, {"PATH": str(fake_bin) + os.pathsep + os.environ["PATH"], **env}):
+        with redirect_stderr(stderr):
+            issues, prs = health.gh_delivery_rows(
+                "example-maintainer/example-repo", at, units=complete_inputs[0], release_events=complete_inputs[3],
+                delivery_unavailable=unavailable, last_good_path=path, served=served)
+    metrics = health.delivery_metrics(
+        complete_inputs[0], issues, prs, complete_inputs[3], [], at, "example-maintainer/example-repo",
+        reverted_merge_times={}, delivery_unavailable=unavailable, rows_from=served.get("rows_from"))
+    return metrics, stderr.getvalue().splitlines(), served
+
+fresh, fresh_stderr, fresh_served = census(now, {})
+saved = json.loads(Path(store_path).read_text())
+assert saved["at"] == "2026-11-13T22:24:25Z" and len(saved["issues"]) == 1 and len(saved["prs"]) == 1, saved
+assert fresh["values"]["delivery.revert_rate_30d_pct"] == 0.0 and fresh["values"]["delivery.unlinked_units_30d"] == 0, fresh
+assert fresh_stderr == [] and fresh_served == {} and fresh["details"]["rows_from"] is None, (fresh_stderr, fresh_served)
+
+refused, refused_stderr, refused_served = census(now, {"FAKE_GH_ISSUES_REFUSED": "1"})
+for metric_id in ("delivery.revert_rate_30d_pct", "delivery.unlinked_units_30d"):
+    assert refused["values"][metric_id] is not None and refused["values"][metric_id] == fresh["values"][metric_id], (metric_id, refused["values"])
+assert refused_served == {"rows_from": "2026-11-13T22:24Z"} and refused["details"]["rows_from"] == "2026-11-13T22:24Z", refused["details"]
+assert refused_stderr == [
+    "node_health: delivery input issues unavailable: rc 75: rate limited",
+    "node_health: delivery input issues unavailable: rc 75: rate limited; using rows from 2026-11-13T22:24Z",
+], refused_stderr
+assert json.loads(Path(store_path).read_text())["at"] == "2026-11-13T22:24:25Z"
+
+stale_at = now + timedelta(hours=25)
+stale, stale_stderr, stale_served = census(stale_at, {"FAKE_GH_ISSUES_REFUSED": "1"})
+assert stale["values"]["delivery.revert_rate_30d_pct"] is None and stale["values"]["delivery.unlinked_units_30d"] is None, stale["values"]
+assert health.status_of(stale["values"]["delivery.revert_rate_30d_pct"], *health.CRITERIA["delivery.revert_rate_30d_pct"][2:]) == "NO-DATA"
+assert stale_served == {} and stale_stderr == ["node_health: delivery input issues unavailable: rc 75: rate limited"], stale_stderr
+
+empty, empty_stderr, empty_served = census(now, {"FAKE_GH_ISSUES_REFUSED": "1"}, str(store_root / "absent.json"))
+assert empty["values"]["delivery.revert_rate_30d_pct"] is None and empty["values"]["delivery.unlinked_units_30d"] is None, empty["values"]
+assert empty_served == {} and len(empty_stderr) == 1, empty_stderr
+
 print("delivery no-data causes: PASS")
 PY
