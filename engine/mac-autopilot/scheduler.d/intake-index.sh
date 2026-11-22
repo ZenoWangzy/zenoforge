@@ -229,8 +229,11 @@ handoff_open_pr() { # issue → matching PR rows from this tick's single census
   ' <<<"${HANDOFF_PR_CENSUS:-[]}"
 }
 handoff_include_pr() { # fallback after a failed census: inspect only a known PR
-  local pr_number="$1" row
-  row="$(intake_gh_read pr view "$pr_number" --json number,headRefName,title,body,state,labels 2>/dev/null)" || row=""
+  local pr_number="$1" row rc=0
+  row="$(intake_gh_read pr view "$pr_number" --json number,headRefName,title,body,state,labels 2>/dev/null)" || { rc=$?; row=""; }
+  # rc 75 = the tick's read cap or the shared back-off refused the read before GitHub saw it: nothing is known, so no mark; the
+  # next tick reads again. Marking it held 15 PR units at hold-handoff for hours on 2026-11-22 (census down, cap 24 per tick).
+  (( rc != 75 )) || return 1
   if ! jqf -e --argjson pr "$pr_number" 'type=="object" and .number==$pr and (.headRefName|type)=="string" and (.state | IN("OPEN","CLOSED","MERGED")) and (.labels | type)=="array" and all(.labels[]; (.name | type)=="string")' <<<"$row" >/dev/null; then
     if [[ "${wait_ops_on:-}" == 1 ]]; then intake_op "$(printf '{"k":"lp1","pr":%s}' "$pr_number")" # inside a walk: a queued mark, applied in order
     else units_update --argjson pr "$pr_number" '.units |= map(if .pr == $pr then .hold_handoff_lookup_pending=true | .hold_handoff_waiting=true else . end)'; fi
