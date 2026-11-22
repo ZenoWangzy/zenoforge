@@ -162,6 +162,12 @@ grep -Fq 'no implementation family has an eligible other-family reviewer reason=
   UNAVAIL=claude; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
   pick_implementer '{"id":"routed-codex"}' && [[ "$PICK_PROVIDER" == codex && "$PICK_REASON" == routed-fallback-codex ]] \
     || fail "routed implement did not fall back to the next helper: $PICK_PROVIDER/$PICK_REASON"
+  UNAVAIL=claude; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=(); routing null "$now_real" 10
+  pick_implementer '{"id":"routed-glm"}' && [[ "$PICK_PROVIDER" == zcode ]] || fail "unreserved glm with more quota than Codex was not the implementer: $PICK_PROVIDER/$PICK_REASON"
+  jq '.families.glm.implement = false' "$R/model-routing.json" > "$R/r.tmp" && mv "$R/r.tmp" "$R/model-routing.json"; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
+  pick_implementer '{"id":"routed-glm-review-only"}' && [[ "$PICK_PROVIDER" == codex ]] || fail "glm with implement=false still implemented: $PICK_PROVIDER/$PICK_REASON"
+  got="$(review_model_for_implementer 4 codex:gpt-6-luna:max codex:gpt-6-luna:max zcode:GLM-5.3:max claude:claude-sonnet-5-5:high u4)" && [[ "$got" == zcode:GLM-5.3:max ]] \
+    || fail "glm with implement=false no longer reviews a Codex author: $got"
   UNAVAIL=""; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=(); routing "$RESERVED" "$now_real" 10
 
   # Reviewer for a Codex author with glm reserved: the routed Claude, as Sonnet.

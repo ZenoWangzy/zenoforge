@@ -31,6 +31,11 @@ routing_family_order() { # → usable families (claude|codex|glm), most week quo
   done < <(jq -r '.families | keys_unsorted[]' "$file" 2>/dev/null) | sort -s -k1,1gr | awk '{print $2}'
 }
 
+routing_implement_family_order() {
+  local name file; file="$(routing_file_path)"
+  routing_family_order | while IFS= read -r name; do jq -e --arg n "$name" '.families[$n].implement == false' "$file" >/dev/null 2>&1 || printf '%s\n' "$name"; done
+}
+
 routing_review_candidates() { # author-family codex-identity glm-identity sonnet-identity → reviewer identities: other routed families by quota, then Sonnet
   local author="$1" fam
   while IFS= read -r fam; do

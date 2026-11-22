@@ -400,7 +400,7 @@ claude_share_allowed() { # routed Claude is allowed by its quota order; otherwis
 pick_routed_implementer() { # unit sticky-provider -> PICK_* from the first routed family (most quota first) that runs and has a reviewer
   local u="$1" sticky="$2" fam
   local -a order=() ranked=()
-  mapfile -t order < <(routing_family_order | sed 's/^glm$/zcode/')
+  mapfile -t order < <(routing_implement_family_order | sed 's/^glm$/zcode/')
   if [[ -n "$sticky" && " ${order[*]} " == *" $sticky "* ]]; then # a repair stays on its provider while that provider is still routed
     ranked=("$sticky"); for fam in "${order[@]}"; do [[ "$fam" == "$sticky" ]] || ranked+=("$fam"); done; order=("${ranked[@]}")
   fi
