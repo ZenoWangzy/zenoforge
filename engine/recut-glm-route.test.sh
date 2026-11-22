@@ -29,6 +29,9 @@ dispatch() { echo "$1" > "$AGENT_HOME/dispatched"; }
 touch "$AGENT_HOME/supervisor-inbox"
 inbox_lines() { grep -c policy-route-held "$AGENT_HOME/supervisor-inbox" || true; }
 
+# Claude stays held in the cases below unless CLAUDE_HELD=0, so the GLM-only expectations do not depend on a claude CLI on PATH.
+eval "orig_$(declare -f provider_quota_exhausted)"
+provider_quota_exhausted() { if [ "$1" = claude ]; then [ "${CLAUDE_HELD:-1}" = 1 ]; else orig_provider_quota_exhausted "$@"; fi; }
 rm -f "$CODEX_EXHAUSTED_MARKER_FILE"
 glm_quota 10
 assert_eq "recut stays on Codex while Codex is open" "" "$(recut_glm_identity || true)"
@@ -49,6 +52,17 @@ assert_contains "the hold is logged" "$(cat "$AGENT_HOME/err")" 'recut route hel
 assert_eq "the hold reaches the supervisor" 1 "$(inbox_lines)"
 dispatch_policy_unit recut 910703 needs-recut 2>/dev/null || :
 assert_eq "one alert a day" 1 "$(inbox_lines)"
+
+# Head 2026-11-22 (founder 11-21 balance ruling): with Codex and GLM closed, recut takes Claude haiku; sonnet after a failed
+# haiku recut of that issue; a Claude hold closes it too.
+mkdir -p "$AGENT_HOME/claude-bin"; printf '#!/bin/sh\n' > "$AGENT_HOME/claude-bin/claude"; chmod +x "$AGENT_HOME/claude-bin/claude"
+PATH="$AGENT_HOME/claude-bin:$PATH" CLAUDE_HELD=0
+assert_contains "recut takes Claude haiku when Codex and GLM are closed" "$(recut_glm_identity 910705)" 'claude:claude-haiku-5-5'
+state_read() { echo '{"recut_claude_haiku_failed_at":"2026-11-22T05:00:00Z"}'; }
+assert_contains "a failed haiku recut moves that issue to sonnet" "$(recut_glm_identity 910705)" 'claude:claude-sonnet-5-5'
+state_read() { echo '{}'; }
+CLAUDE_HELD=1
+assert_eq "a Claude hold closes the fallback" "" "$(recut_glm_identity 910705 || true)"
 
 glm_quota 10
 status=0; dispatch_policy_unit implement 910704 ready-for-agent 2>/dev/null || status=$?
