@@ -19,7 +19,7 @@ git init -q -b main "$repo"
 git -C "$repo" config user.name test
 git -C "$repo" config user.email test@example.com
 cd "$repo"
-ratchet() { node tools/comment-ratchet.mjs "$@" 2>&1; }
+ratchet() { HOME="$test_host_home" node tools/comment-ratchet.mjs "$@" 2>&1; }
 
 printf 'cat <<EOF\n# not a comment\nEOF\n' > engine/heredoc.sh
 printf '# one\necho one\n' > engine/a.sh

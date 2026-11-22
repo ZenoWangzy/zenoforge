@@ -393,8 +393,8 @@ implement_route_family_reviewable() { # family -> log the skip and alert head-wa
   return 1
 }
 
-claude_share_allowed() { # routed Claude is allowed by its quota order; otherwise models.implement_share.claude must be set
-  routing_configured || [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]]
+claude_share_allowed() { # routed Claude is allowed by its quota order unless implement=false; otherwise models.implement_share.claude must be set
+  if routing_configured; then ( source "$SCHEDULER_AGENT_LIB" && ! routing_implement_off claude ); else [[ "$(jqf -r '.models.implement_share.claude // 0' <<<"$CFG")" != 0 ]]; fi
 }
 
 pick_routed_implementer() { # unit sticky-provider -> PICK_* from the first routed family (most quota first) that runs and has a reviewer
@@ -445,7 +445,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
         PICK_ROUTE_PROVIDER=claude; PICK_HARD=true; PICK_REASON=hard-fallback-claude
         return 0
       fi
-      if implement_route_family_reviewable glm && pick_zcode_implementer "$u"; then
+      if ( source "$SCHEDULER_AGENT_LIB" && ! routing_implement_off glm ) && implement_route_family_reviewable glm && pick_zcode_implementer "$u"; then
         PICK_ROUTE_PROVIDER=zcode; PICK_HARD=true; PICK_REASON=hard-fallback-zcode
         return 0
       fi

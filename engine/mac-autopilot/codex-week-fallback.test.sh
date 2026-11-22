@@ -14,6 +14,7 @@ export CODEX_WEEK_STOP_PCT=100 CODEX_IMPLEMENT_STOP_PCT=95
 source "$script_dir/scheduler.d/core.sh"
 source "$script_dir/../lib.d/codex-budget.sh" && source "$script_dir/../lib.d/model-policy.sh" && source "$script_dir/../lib.d/locks.sh"
 source "$script_dir/scheduler.d/models.sh"
+SCHEDULER_AGENT_LIB="$script_dir/../lib.sh"
 
 fail() { echo "not ok - $*" >&2; cat "$LOG" >&2; exit 1; }
 # Claude workers stop at 95 of the week until its reset; sessions keep the rest.
@@ -169,6 +170,14 @@ grep -Fq 'no implementation family has an eligible other-family reviewer reason=
   got="$(review_model_for_implementer 4 codex:gpt-6-luna:max codex:gpt-6-luna:max zcode:GLM-5.3:max claude:claude-sonnet-5-5:high u4)" && [[ "$got" == zcode:GLM-5.3:max ]] \
     || fail "glm with implement=false no longer reviews a Codex author: $got"
   UNAVAIL=""; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=(); routing "$RESERVED" "$now_real" 10
+  hard_implementer_fields() { PICK_PROVIDER=codex; PICK_MODEL=gpt-6-luna; PICK_EFFORT=max; }; provider_runtime_ready() { return 1; }
+  jq '.families.claude.implement = false' "$R/model-routing.json" > "$R/r.tmp" && mv "$R/r.tmp" "$R/model-routing.json"
+  pick_implementer '{"id":"hard-claude-off","hard_escalated":true}' && [[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == hard-fallback-zcode ]] \
+    || fail "hard escalation picked an implement=false family: $PICK_PROVIDER/$PICK_REASON"
+  jq 'del(.families.claude.implement)' "$R/model-routing.json" > "$R/r.tmp" && mv "$R/r.tmp" "$R/model-routing.json"
+  pick_implementer '{"id":"hard-claude-on","hard_escalated":true}' && [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == hard-fallback-claude ]] \
+    || fail "hard escalation without the implement field changed: $PICK_PROVIDER/$PICK_REASON"
+  routing "$RESERVED" "$now_real" 10
 
   # Reviewer for a Codex author with glm reserved: the routed Claude, as Sonnet.
   codex_id=codex:gpt-6-luna:max; glm_id=zcode:GLM-5.3:max; sonnet_id=claude:claude-sonnet-5-5:high

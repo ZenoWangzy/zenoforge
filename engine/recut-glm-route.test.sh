@@ -63,6 +63,13 @@ assert_contains "a failed haiku recut moves that issue to sonnet" "$(recut_glm_i
 state_read() { echo '{}'; }
 CLAUDE_HELD=1
 assert_eq "a Claude hold closes the fallback" "" "$(recut_glm_identity 910705 || true)"
+(
+  CLAUDE_HELD=0; routing_configured() { return 0; }; routing_family_order() { echo claude; }; routing_file_path() { echo "$AGENT_HOME/routing-off.json"; }
+  printf '{"families":{"claude":{"implement":false}}}' > "$AGENT_HOME/routing-off.json"
+  assert_eq "implement=false keeps Claude out of recut" "" "$(recut_glm_identity 910705 || true)"
+  printf '{"families":{"claude":{}}}' > "$AGENT_HOME/routing-off.json"
+  assert_contains "without the implement field recut still takes Claude" "$(recut_glm_identity 910705)" 'claude:claude-haiku-5-5'
+)
 
 glm_quota 10
 status=0; dispatch_policy_unit implement 910704 ready-for-agent 2>/dev/null || status=$?

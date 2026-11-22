@@ -36,6 +36,10 @@ routing_implement_family_order() {
   routing_family_order | while IFS= read -r name; do jq -e --arg n "$name" '.families[$n].implement == false' "$file" >/dev/null 2>&1 || printf '%s\n' "$name"; done
 }
 
+routing_implement_off() {
+  jq -e --arg n "$1" '.families[$n].implement == false' "$(routing_file_path)" >/dev/null 2>&1
+}
+
 routing_review_candidates() { # author-family codex-identity glm-identity sonnet-identity → reviewer identities: other routed families by quota, then Sonnet
   local author="$1" fam
   while IFS= read -r fam; do

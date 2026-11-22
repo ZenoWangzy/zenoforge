@@ -36,7 +36,7 @@ engine/mac-autopilot/scheduler.d/locks-views.sh 0
 engine/mac-autopilot/scheduler.d/merge-lane.sh 1
 engine/mac-autopilot/scheduler.d/merge-prep.sh 0
 engine/mac-autopilot/scheduler.d/merge-tree-sweep.sh 0
-engine/mac-autopilot/scheduler.d/models.sh 50
+engine/mac-autopilot/scheduler.d/models.sh 49
 engine/mac-autopilot/scheduler.d/no-human-wait.sh 1
 engine/mac-autopilot/scheduler.d/orphan-prs.sh 2
 engine/mac-autopilot/scheduler.d/park-label-sweep.sh 0

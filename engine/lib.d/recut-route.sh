@@ -7,7 +7,7 @@ recut_glm_identity() {
   local identity model
   codex_quota_exhausted "$(model_policy identity work)" || return 1
   if [ "$(zcode_quota_status)" = available ]; then model_policy identity hand-zcode; return; fi
-  ! declare -F routing_configured >/dev/null || ! routing_configured || routing_family_order | grep -qx claude || return 1
+  ! declare -F routing_configured >/dev/null || ! routing_configured || { routing_family_order | grep -qx claude && ! routing_implement_off claude; } || return 1
   identity="$(model_policy identity hand-claude)" || return 1
   [ -z "${1:-}" ] || ! state_read "$1" 2>/dev/null | jq -e '.recut_claude_haiku_failed_at' >/dev/null 2>&1 || identity="${identity/claude-haiku-5-5/claude-sonnet-5-5}"
   model="${identity#*:}"; model="${model%:*}"
