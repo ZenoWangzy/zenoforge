@@ -61,7 +61,7 @@ pass_refreshes() { # pending units -> refreshes in one full-tick pass, 3 of 8 sl
     isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"UNKNOWN",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
   jq -n --argjson n "$n" '{units:[range(0; $n) | {id:"issue-\(4900 + .)",stage:"review-pending",pr:(500 + .),branch:"agent/issue-\(4900 + .)",lane:"pr",title:"fixture review",history:[]}]}' > "$UNITS"
   jq -n '{workers:[range(1; 4) | {pid:(100000 + .),unit:("busy-" + tostring),type:"implement"}]}' > "$WORKERS"
-  LIVE_WORKER_CACHE_UNTIL=0; TICK_PRS=''; dispatch_calls=0
+  LIVE_WORKER_CACHE_UNTIL=0; tick_prs_changed; dispatch_calls=0
   : > "$REFRESHES"; : > "$LOG"
   dispatch_pending false
   [[ "$dispatch_calls" == "$n" ]] || fail "$n pending units: $dispatch_calls dispatched, expected $n"

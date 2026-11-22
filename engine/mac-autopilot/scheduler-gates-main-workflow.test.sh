@@ -62,7 +62,9 @@ gh() {
     SUITES_DISPATCHES=$((SUITES_DISPATCHES + 1)); return 0
   fi
   if [[ "$1" == api ]]; then
-    case "$2" in repos/*/*/commits/*/check-runs*) printf '%s\n' "$GH_CHECK_RUNS"; return 0 ;; esac
+    # GH_CHECK_RUNS 只答 main 两个 run head 的读取（main-red 分类）；PR 自己 head 的 check-runs
+    # 走下面包着的共享夹具（无表模式由 GH_CHECKS 转成 REST 行），否则 PR 会读到 main 的红行
+    case "$2" in repos/*/*/commits/"$red_sha"/check-runs*|repos/*/*/commits/"$green_sha"/check-runs*) printf '%s\n' "$GH_CHECK_RUNS"; return 0 ;; esac
   fi
   eval "${wf_gh_saved/gh ()/gh_wf ()}"; gh_wf "$@"
 }

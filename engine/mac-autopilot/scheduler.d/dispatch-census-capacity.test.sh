@@ -98,7 +98,7 @@ dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
 jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issue-4903",lane:"pr",title:"fixture review",history:[]}]}' > "$UNITS"
 write_workers 7
 : > "$GH_CALLS"; : > "$LOG"
-TICK_PRS=''
+tick_prs_changed
 dispatch_pending true
 [[ "$(cat "$GH_CALLS")" == 'pr list' ]] || fail "expected exactly one census read at 7/8, got: $(tr '\n' ';' < "$GH_CALLS")"
 [[ "$dispatch_calls" == 1 ]] || fail "admitted review candidate was not dispatched (calls=$dispatch_calls)"
@@ -145,7 +145,7 @@ gh() {
   esac
 }
 : > "$REVIEW_TARGET_CALLS"; dispatch_calls=0; : > "$GH_CALLS"; : > "$LOG"; : > "$A/.dispatch-why"
-TICK_PRS=''; dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); return 1; }
+tick_prs_changed; dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); return 1; }
 dispatch_pending true
 [[ "${#body_calls[@]}" == 0 ]] || fail "host-blocked implement rows read issue bodies: ${body_calls[*]}"
 ! grep -q '^issue view issue-491' "$GH_CALLS" || fail "host-blocked implement rows made per-issue GitHub reads: $(tr '\n' ';' < "$GH_CALLS")"
@@ -168,7 +168,7 @@ jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issu
   {id:"issue-4904",stage:"rereview-pending",pr:504,branch:"agent/issue-4904",lane:"pr",title:"fixture rereview",history:[]}]}' > "$UNITS"
 write_workers 7
 : > "$GH_CALLS"; : > "$LOG"
-TICK_PRS=''
+tick_prs_changed
 dispatch_pending true
 [[ "$dispatch_calls" == 0 ]] || fail "a CONFLICTING PR was dispatched to review (calls=$dispatch_calls)"
 [[ "$(sort "$GH_CALLS" | uniq -c | tr -s ' ' | tr '\n' ';')" == ' 1 pr list; 2 pr view;' ]] || fail "unexpected gh calls for two conflicts: $(tr '\n' ';' < "$GH_CALLS")"
@@ -183,7 +183,7 @@ jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issu
 # A refill near its 300s kill stops the walk and leaves the unit for the next refill; a full tick has no such limit.
 dispatch_calls=0
 : > "$GH_CALLS"; : > "$LOG"
-TICK_PRS=''
+tick_prs_changed
 dispatch_with_refill_start() {
   local TICK_REFILL_STARTED="$1"; shift
   dispatch_pending "$@"
@@ -300,7 +300,7 @@ CFG="$saved_cfg"; eval "$host_gate_saved"
     {id:"issue-4903",issue:4903,stage:"implement-pending",task:"fixture task",branch:"agent/issue-4903",lane:"pr",history:[]}]}' > "$UNITS"
   jq -n '{workers:[{pid:100001,unit:"issue-4899",type:"implement"},
     {pid:100002,unit:"busy-1",type:"implement"},{pid:100003,unit:"busy-2",type:"implement"},{pid:100004,unit:"busy-3",type:"implement"}]}' > "$WORKERS"
-  LIVE_WORKER_CACHE_UNTIL=0; TICK_LOCAL_REFILL=true; TICK_PRS=''
+  LIVE_WORKER_CACHE_UNTIL=0; TICK_LOCAL_REFILL=true; tick_prs_changed
   CFG="$(jq -c '.issue_intake.refill_max_footprint_candidates = 2' <<<"$CFG")"
   SIZE_ADMISSION_LINES=100; INTEGRATION_RULE=''; OPT_PREMISE_RULE=''; BLAST_RADIUS_RULE=''
   dispatch_order() { jqf -c '.units[] | select(.stage | test("-pending$"))' "$UNITS"; }
@@ -550,7 +550,7 @@ jq -e '.units[0] | .stage == "repair-pending" and .approved_sha == null and .his
 hint="$(human_feedback_block 505 2026-11-11T00:00:00Z)"
 [[ "$hint" == *"take approach B instead"* && "$hint" == *"use B here"* && "$hint" == *"https://example.test/c1"* ]] || fail "repair hint lacks the human feedback: $hint"
 [[ "$hint" != *"bot noise"* && "$hint" != *"bot line"* && "$hint" != *"agent note"* && "$hint" != *stale* ]] || fail "repair hint carries bot, engine or pre-dispatch feedback: $hint"
-TICK_PRS=''
+tick_prs_changed
 # Fail closed (#119): an unreadable review list skips the repair this tick. Dispatching without the feedback would write a
 # write-start that hides it from every later pass. Subshell: the room, pick and footprint stubs stay local to this case.
 (
@@ -579,7 +579,7 @@ TICK_PRS=''
   jq -e '.units[] | select(.id == "issue-4901") | .stage == "repair-pending" and ([.history[].stage] | index("write-start") == null)' "$UNITS" >/dev/null \
     || fail "unreadable feedback still wrote a write-start: $(jq -c '.units[] | select(.id == "issue-4901")' "$UNITS")"
 ) || exit 1
-TICK_PRS=''
+tick_prs_changed
 # Fail closed (#119): an unreadable review list leaves a CHANGES_REQUESTED ready unit where it is, approved_sha included, for the next tick.
 (
   jq -n --arg sha "$sha" '[{number:506,headRefOid:$sha,headRefName:"agent/issue-4911",baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",
@@ -593,7 +593,7 @@ TICK_PRS=''
     || fail "an unreadable review list moved or cleared a ready unit: $(cat "$UNITS")"
   grep -Fq 'human feedback unreadable, retry next tick' "$LOG" || fail "unreadable sweep feedback was not named in the log: $(cat "$LOG")"
 ) || exit 1
-TICK_PRS=''
+tick_prs_changed
 
 rm -f "$MAC_AUTOPILOT_RUNTIME_DIR/node-health.json"
 unset -f fresh_events fresh_rate

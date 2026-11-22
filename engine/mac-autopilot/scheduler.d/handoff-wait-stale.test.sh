@@ -71,4 +71,14 @@ jq -s '{units:.}' <(unit 5298 504 '[5298]') <(unit 2095 503 '[2095]') > "$UNITS"
 dispatch_pending true >/dev/null 2>&1 || true
 [[ "$(flag issue-5298)" == false ]] || fail "dispatch_pending left the stale flag"
 [[ "$(flag issue-2095)" == true ]] || fail "dispatch_pending cleared a live handoff wait"
+
+# A fallback PR read refused before GitHub (rc 75: read cap or back-off) marks nothing; a read GitHub failed still holds the unit.
+jq '.units += [{id:"issue-4005",stage:"review-pending",pr:509,lane:"pr",history:[]}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+pending() { jq -r --arg id "$1" '.units[] | select(.id == $id) | "\(.hold_handoff_lookup_pending // false) \(.hold_handoff_waiting // false)"' "$UNITS"; }
+intake_gh_read() { return 75; }
+! handoff_include_pr 509 || fail "refused read reported the PR as read"
+[[ "$(pending issue-4005)" == "false false" ]] || fail "refused read (rc 75) marked the unit: $(pending issue-4005)"
+intake_gh_read() { return 1; }
+! handoff_include_pr 509 || fail "failed read reported the PR as read"
+[[ "$(pending issue-4005)" == "true true" ]] || fail "failed read (rc 1) did not hold the unit: $(pending issue-4005)"
 echo 'handoff-wait-stale.test.sh: pass'

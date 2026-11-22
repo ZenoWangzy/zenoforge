@@ -33,6 +33,8 @@ hotfix_lane_label() { printf 'hotfix-lane\n'; }
 hotfix_issue_numbers() { return 0; }
 tick_prs_prime() { :; }
 tick_prs() { printf '[]\n'; }
+# the walk's own census read (intake keeps a body-carrying pr list; the light tick census has no body)
+intake_gh_read() { [[ "$1 $2" == 'pr list' ]] || return 1; printf '[]\n'; }
 # Rows come unsorted on purpose: the walk orders them by number.
 existing_handoff_candidates() { local n; for n in 3 1 5 2 4; do printf '%s\tpr\thandoff\t[]\n' "$n"; done; }
 # Each row reads its state file once or twice: record the row. Row #3 is slow on the first walk only, shown as a 100 s jump of the clock.
@@ -126,7 +128,7 @@ reads_5="$(walk_reads 5)"; reads_20="$(walk_reads 20)"
 
 # With only part of the PR census read, the rows' stale-wait clear and add are one ledger update at the end of the walk, with the per-row result.
 tick_prs() { return 1; }
-intake_gh_read() { return 1; }
+intake_gh_read() { return 1; } # the census read itself fails: the walk stays in census_partial mode
 jq -cn '{units: ([range(1;5) | {id:"issue-\(.)",issue:.,branch:"agent/issue-\(.)",stage:"blocked-external",pr:null}]
   + [{id:"issue-6",issue:6,branch:"agent/issue-6",stage:"blocked-external",pr:null,hold_handoff_wait_issues:[1],hold_handoff_waiting:true}])}' > "$UNITS"
 for n in 1 2 3 4; do printf '{"state":"ready-for-agent","scheduler_handoff":{"episode":"e%s"}}\n' "$n" > "$AGENT_HOME/state/$n.json"; done
@@ -159,7 +161,7 @@ stale_handoff_view() { # view issue row that is newer than the ledger but still 
   touch -d '2035-01-01T00:00:00Z' "$UNITS.view"
 }
 existing_handoff_candidates() { printf '%s\tpr\thandoff\t[]\n' "$handoff_issue"; }
-tick_prs() {
+intake_gh_read() { # the census read carries the handoff PR with its "Refs #9417" body line
   printf '%s\n' '[{"number":9418,"headRefName":"agent/issue-9417","title":"fixture","body":"Refs #9417","labels":[]}]'
 }
 handoff_fixture "$handoff_episode"

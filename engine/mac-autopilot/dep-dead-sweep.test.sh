@@ -35,6 +35,8 @@ gh() {
   case "$*" in
     *sub_issues*) [[ -z "$SUBS" ]] || printf '%s\n' "$SUBS"; return "$SUBS_RC" ;;
     *git/ref/heads/*) printf 'abcdef0123456789\n' ;;
+    # 列表不再带 body：正文按 PR 单取，从 PRS 夹具回放
+    *'--json body'*) jq -r --argjson n "$3" 'map(select(.number == $n))[0].body // ""' <<<"$PRS" ;;
   esac
 }
 alive() { dep_dead_sweep; [[ "$(field issue-20 .stage)" == blocked-external ]] || fail "$1: must stay blocked, got $(field issue-20 .stage)"; }
