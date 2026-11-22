@@ -93,6 +93,18 @@ res="$(field issue-9 '.history[-1].result')"
 run_repair "$H1" "$(jq -cn --arg h "$H1" --argjson rc "$RC" '$rc + [{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")},{stage:"repair-delivered",result:"x"}]')"
 [[ "$(field issue-9 .stage)" == repair-pending ]] || fail "a delivered run between must reset the count ($(field issue-9 .stage))"
 
+# Row 977 (11-22: 7606, 7619): an open report gate failure owns the stop, and a report-gate-recovered event starts a new count.
+breaker_case() { # history-json [extra unit fields json] -> stage after repair_breaker
+  jq -n --argjson h "$1" --argjson extra "${2:-{\}}" '{units:[({id:"issue-9",issue:9,pr:9,lane:"pr",stage:"repair-pending",history:$h} + $extra)]}' > "$UNITS"
+  repair_breaker issue-9 "$sup/repair-9.md" >/dev/null 2>&1 || :
+  field issue-9 .stage
+}
+[[ "$(breaker_case "$(nopush_hist "$H1" 2)")" == parked ]] || fail 'the breaker case fixture did not park two same-head no-push runs'
+[[ "$(breaker_case "$(nopush_hist "$H1" 2)" '{"report_gate_fail":{"reason":"missing ## why","n":1}}')" == repair-pending ]] \
+  || fail 'a no-push round with an open report gate failure tripped the repair breaker'
+[[ "$(breaker_case "$(jq -cn --argjson a "$(nopush_hist "$H1" 2)" --argjson b "$(nopush_hist "$H1" 1)" '$a + [{stage:"report-gate-recovered",result:"x"}] + $b')")" == repair-pending ]] \
+  || fail 'no-push runs before a report-gate-recovered event still counted'
+
 # 3. Admission: a package repair on a host with no container runtime still runs (PR CI runs the Dagger gate); logged and counted once per hold.
 missing() { grep -c 'repair-runtime-missing unit=issue-9' "$LOG" || true; }
 units_with() { jq -cn --argjson fp "$1" '{units:[{id:"issue-9",issue:9,pr:9,lane:"pr",stage:"repair-pending",footprint:$fp,history:[]}]}' > "$UNITS"; }
