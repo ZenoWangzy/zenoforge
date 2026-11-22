@@ -47,6 +47,8 @@ findings block, this file wins.
 4. **Maintainability**: blocking only with diff evidence, real impact, and a
    behavior-equivalent minimum fix that needs no unrelated refactor.
 
+For Standards, read the target repository's `docs/adr/index.md` if it exists; skip this step if not. Find the ADRs that relate to the diff and check the diff against each one's `Do not:` line. A violation is a finding with `rule` `Standards`, and its `summary` names the ADR file. Do not overturn an ADR's decision unless the diff also adds a superseding ADR.
+
 Only a P0/P1 finding introduced by the candidate and backed by a concrete,
 reachable failure path can block. Before reporting a blocker, reopen the cited
 code and rule, confirm it belongs to this diff, account for the relevant
