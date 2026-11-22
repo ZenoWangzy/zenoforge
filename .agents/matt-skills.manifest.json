@@ -1,7 +1,7 @@
 {
   "upstream": "https://github.com/mattpocock/skills",
-  "commit": "a496f5513d4a4cf889bc48e189e579f4b0bdf6aa",
-  "date": "2026-10-29T10:42:51Z",
+  "commit": "abeeaf95660ba9e8b7c753eb38f441ca707a8823",
+  "date": "2026-11-19T13:34:58Z",
   "files": [
     "LICENSE-mattpocock-skills",
     "ask-matt/PHASE-BOUNDARIES.md",
