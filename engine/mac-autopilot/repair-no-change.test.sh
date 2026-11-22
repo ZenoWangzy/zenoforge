@@ -52,6 +52,7 @@ run_repair() { # base-head-or-empty history-json [extra unit fields json] [workd
   jq -n --argjson h "$2" --argjson ws "$ws}" --argjson extra "${3:-{\}}" \
     '{units:[({id:"issue-9",issue:9,pr:9,lane:"pr",branch:"agent/issue-9",stage:"repair",history:($h + [$ws])} + $extra)]}' > "$UNITS"
   jq -n --arg dir "${4-$fixture/wt}" '{workers:[{pid:4242,unit:"issue-9",type:"repair",log:"none.log",report:"repair-9.md",workdir:$dir}]}' > "$WORKERS"
+  HARVEST_COLLECT=() HARVEST_REPAIR_CLS=() # one pass per case: the harvest caches a row's slow reads per process (#1363), and every case reuses pid 4242
   harvest_workers || true
 }
 nopush_hist() { jq -cn --arg h "$1" --argjson n "$2" '[range($n) | {stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}]'; }
