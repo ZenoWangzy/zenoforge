@@ -28,7 +28,6 @@ tick_prs_read() { # → open-PR census JSON；进程内未缓存时先看 60s �
   jqf -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || return 1
   if [[ -n "${A:-}" ]]; then # 只有成功的读取才落盘：失败的读不写文件，下一个进程自己再问
     tick_census_store "$A/.tick-prs-census.json" "$out"
-    tick_census_store "$A/.tick-prs-census.last-good.json" "$out"
     tick_pr_body_sweep "$out"
   fi
   printf '%s' "$out"
@@ -38,16 +37,6 @@ tick_census_store() { # $1 文件，$2 census JSON：写成 "epoch 行 + JSON"�
   if tmp="$(mktemp "$1.XXXXXX" 2>/dev/null)"; then
     if { date +%s; printf '%s' "$2"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null; then :; else rm -f -- "$tmp"; fi
   fi
-}
-tick_census_last_good() { # 最近一次成功的 census（至多 30 分钟）：输出 "epoch 行\nJSON"；过期、没有或格式错返回 1
-  local out at
-  [[ -n "${A:-}" ]] || return 1
-  out="$(cat "$A/.tick-prs-census.last-good.json" 2>/dev/null)" || return 1
-  at="${out%%$'\n'*}"
-  [[ "$at" =~ ^[0-9]+$ ]] && (( $(date +%s) - at <= 1800 )) || return 1
-  out="${out#*$'\n'}"
-  jqf -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || return 1
-  printf '%s\n%s' "$at" "$out"
 }
 tick_prs() {
   local errf="" rc=0
