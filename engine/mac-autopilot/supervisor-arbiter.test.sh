@@ -372,6 +372,21 @@ REASON: head 没问题
 REJECTED: park'
 [[ "$(field pr-615 .stage)" == parked ]] || fail "unsafe approve after a post-approval revert must be refused into parked, got $(field pr-615 .stage)"
 
+# Row 983 (7638): an approve ruling on a parked unit lands like the arbiter's APPROVE, with the same guards; on a unit in
+# flight it only records the ruling, as before.
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-7638",issue:7638,pr:7701,lane:"pr",stage:"parked",parked_reason:"supervisor-budget",unpark_condition:"a supervisor decision",
+  reviewed_sha:$sha,reviewed_pr_head:$sha,history:[{stage:"review-request-changes",result:"F2",at:"2026-11-22T05:07:24Z"}]}]}')"
+rule_entry pr-7638 approve 7075514567 || fail "the approve ruling must land"
+jq -e --arg sha "$SHA1" '.units[0] | .stage == "ready-to-merge" and .approved_sha == $sha and (has("parked_reason") | not) and .history[-1].stage == "supervisor-approve"' "$UNITS" >/dev/null \
+  || fail "an approve ruling on a parked unit must reach ready-to-merge at the reviewed head: $(jq -c '.units[0]' "$UNITS")"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-7639",pr:7639,lane:"pr",stage:"supervisor-review",main_red:true,reviewed_sha:$sha,reviewed_pr_head:$sha,history:[]}]}')"
+rule_entry pr-7639 approve 7075514568 || :
+[[ "$(field pr-7639 .stage)" == parked ]] || fail "an approve ruling must keep the main-red guard, got $(field pr-7639 .stage)"
+units "$(jq -cn --argjson sha "$SHA1" '{units:[{id:"pr-7640",pr:7640,lane:"pr",stage:"repair",reviewed_sha:$sha,reviewed_pr_head:$sha,history:[]}]}')"
+rule_entry pr-7640 approve 7075514569 || fail "an approve ruling on a unit in flight must still record"
+[[ "$(field pr-7640 .stage)" == repair && "$(field pr-7640 '.history[-1].stage')" == supervisor-approve ]] \
+  || fail "an approve ruling on a unit in flight must only record: $(jq -c '.units[0]' "$UNITS")"
+
 units "$(jq -cn '{units:[{id:"pr-616",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"non-product cannot push",at:"2026-10-27T00:00:00Z"}]}]}')"
 harvest_with_reply pr-616 'ACTION: park
 REASON: 策略性搁置，等产品决策
