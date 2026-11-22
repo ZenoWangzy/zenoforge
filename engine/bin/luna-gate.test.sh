@@ -119,6 +119,13 @@ slice_budget_case() (
   [[ "$BOX_ROOM_WHY" == 'worker slice 672MB left under memory.high < 800MB worker peak backend=- source=interim' ]] || fail "slice reason: $BOX_ROOM_WHY"
   echo $(( 1000 * 1048576 )) > "$sl/memory.current"
   box_has_room 0 || fail "a start with 2072 MB left under the slice high was refused: $BOX_ROOM_WHY"
+  # Row 987: page cache in memory.current does not count; anon+shmem from memory.stat does.
+  echo $(( 3000 * 1048576 )) > "$sl/memory.current"
+  printf 'anon %s\nfile %s\nshmem %s\n' $(( 100 * 1048576 )) $(( 2900 * 1048576 )) 0 > "$sl/memory.stat"
+  box_has_room 0 || fail "2900 MB of page cache refused a start: $BOX_ROOM_WHY"
+  printf 'anon %s\nfile 0\nshmem %s\n' $(( 2000 * 1048576 )) $(( 400 * 1048576 )) > "$sl/memory.stat"
+  if box_has_room 0; then fail 'anon+shmem 2400 MB (672 MB left) was admitted'; fi
+  rm -f "$sl/memory.stat"
   echo max > "$sl/memory.high"
   box_has_room 0 || fail 'memory.high=max must not refuse'
 )

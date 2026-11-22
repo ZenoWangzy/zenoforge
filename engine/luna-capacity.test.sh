@@ -183,7 +183,7 @@ else
   failures=$((failures + 1))
 fi
 
-# Per-backend worker peak (queue row 881): no samples keep the flat 1200; a backend's own recorded p90 replaces it
+# Per-backend worker peak (queue row 881): no samples keep the interim 800 (row 987, was a flat 1200); a backend's own recorded p90 replaces it
 # for that backend only; an explicit LUNA_WORKER_PEAK_MB wins; a missing memory.peak at scope end records nothing.
 store="$AGENT_HOME/locks/execution-memory-peaks-backend.jsonl"
 unset LUNA_WORKER_PEAK_MB
@@ -198,7 +198,7 @@ slice_room_set() { # <mb>: leave <mb> under the 10 GiB memory.high, no scopes ru
   printf '%s\n' "$(( (10240 - $1) * 1048576 ))" > "$worker_slice/memory.current"
 }
 
-# (a) no samples: a known backend keeps the flat 1200 default; a backend-less ask holds at the interim 800.
+# (a) no samples: a known backend falls to the interim 800 default (row 987); a backend-less ask holds at the interim 800.
 rm -f -- "$store"
 printf 'max 100000\n' > "$root/cgroup/zf.slice/cpu.max"
 slice_room_set 300
@@ -212,8 +212,8 @@ fi
 if box_has_room 0 zc; then
   printf 'FAIL no samples admits with only 300MB left under memory.high\n'
   failures=$((failures + 1))
-elif [[ "$BOX_ROOM_WHY" == 'worker slice 300MB left under memory.high < 1200MB worker peak backend=zc source=default' ]]; then
-  printf 'PASS no samples keeps the flat 1200MB peak as the default\n'
+elif [[ "$BOX_ROOM_WHY" == 'worker slice 300MB left under memory.high < 800MB worker peak backend=zc source=default' ]]; then
+  printf 'PASS no samples falls to the interim 800MB peak as the default\n'
 else
   printf 'FAIL no-sample refusal did not name the default: %s\n' "$BOX_ROOM_WHY"
   failures=$((failures + 1))

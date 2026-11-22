@@ -55,7 +55,10 @@ LUNA_WORKER_SLICE_DIR="${LUNA_WORKER_SLICE_DIR:-/sys/fs/cgroup/user.slice/user-$
 slice_room_mb() { # prints MB left under the worker slice's memory.high, or nothing when there is no bound to read
   local high cur
   high=$(cat "$LUNA_WORKER_SLICE_DIR/memory.high" 2>/dev/null) || return 0
-  cur=$(cat "$LUNA_WORKER_SLICE_DIR/memory.current" 2>/dev/null) || return 0
+  # 11-22 (row 987): memory.current counts page cache the kernel reclaims at memory.high; an orphan find held 1274 MB of
+  # file pages (anon 1.5 MB) and refused dispatch for 60 min. Count anon+shmem when memory.stat is there.
+  cur=$(awk '$1 == "anon" || $1 == "shmem" { s += $2; a = 1 } END { if (a) print s }' "$LUNA_WORKER_SLICE_DIR/memory.stat" 2>/dev/null)
+  [[ -n "$cur" ]] || cur=$(cat "$LUNA_WORKER_SLICE_DIR/memory.current" 2>/dev/null) || return 0
   [[ "$high" =~ ^[0-9]+$ && "$cur" =~ ^[0-9]+$ ]] || return 0
   echo $(( (high - cur) / 1048576 ))
 }
@@ -83,7 +86,7 @@ luna_backend_peak_p90() { # <backend>: that backend's p90 with the 512 MB floor,
 LUNA_NO_BACKEND_PEAK_MB=800
 LUNA_SCHED_PEAK_MIN_SAMPLES=5
 worker_peak_mb() { # <backend|->: prints "<mb> <set|measured|interim|default>"; explicit LUNA_WORKER_PEAK_MB wins, a known
-  # backend uses its own p90 with 1200 when it has no samples, and an ask with no backend (the scheduler's dispatch
+  # backend uses its own p90 with the interim peak when it has no samples, and an ask with no backend (the scheduler's dispatch
   # hold, which starts run-p workers) uses the sched p90 of recorded scheduler worker peaks once enough samples
   # exist, else the interim fixed peak
   local backend="${1:-}" p90="" samples=""
@@ -91,7 +94,7 @@ worker_peak_mb() { # <backend|->: prints "<mb> <set|measured|interim|default>"; 
   if [[ "$backend" == luna || "$backend" == zc ]]; then
     p90="$(luna_backend_peak_p90 "$backend")"
     if [[ -n "$p90" ]]; then printf '%s measured\n' "$p90"; return 0; fi
-    printf '1200 default\n'
+    printf '%s default\n' "$LUNA_NO_BACKEND_PEAK_MB" # row 987: 1200 held zc out with no zc sample at 1149 MB room
   else
     samples="$(luna_backend_peak_count sched)"
     if [[ "$samples" =~ ^[0-9]+$ && "$samples" -ge "$LUNA_SCHED_PEAK_MIN_SAMPLES" ]]; then
