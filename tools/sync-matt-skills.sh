@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Re-vendor Matt Pocock's skills (MIT, https://github.com/mattpocock/skills) into .agents/skills at one upstream commit.
 # Usage: tools/sync-matt-skills.sh [<full-sha|tag|branch>]    (default: main)
-# The skill set is the "skills" array of upstream .claude-plugin/plugin.json at that commit, the promoted set the upstream
-# plugin ships. Files are extracted byte-identical with git archive; .agents/matt-skills.manifest.json is rewritten and the
+# The skill set is every upstream skills/<bucket>/<name>/SKILL.md at that commit, all buckets except deprecated (founder
+# request 2026-11-22: install all upstream skills). Files are extracted byte-identical with git archive; .agents/matt-skills.manifest.json is rewritten and the
 # .claude/skills/<name> relative symlinks are recreated. Nothing here is hand-edited: re-run this script to change a pin.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,7 +19,7 @@ date=$(git -C "$tmp/up" show -s --format=%cI "$commit")
 mkdir "$tmp/src"
 git -C "$tmp/up" archive "$commit" | tar -x -C "$tmp/src"
 
-mapfile -t paths < <(jq -r '.skills[]' "$tmp/src/.claude-plugin/plugin.json")
+mapfile -t paths < <(find "$tmp/src/skills" -mindepth 2 -maxdepth 3 -name SKILL.md -printf 'skills/%P\n' | grep -v '/deprecated/' | sed 's|/SKILL.md$||' | LC_ALL=C sort)
 [ "${#paths[@]}" -gt 0 ] || { echo "sync-matt-skills: no skills in upstream plugin.json at $commit" >&2; exit 1; }
 for p in "${paths[@]}"; do
   [ -f "$tmp/src/$p/SKILL.md" ] || { echo "sync-matt-skills: $p has no SKILL.md at $commit" >&2; exit 1; }
