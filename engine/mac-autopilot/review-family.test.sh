@@ -320,6 +320,27 @@ rm -f "$(_quota_marker_file codex)"
 printf '%s\n' "$(($(date +%s) - 1))" > "$AGENT_HOME/codex-unavailable-until"
 codex_credits_open arbiter || fail 'an expired unavailable marker must keep credits open'
 rm -f "$AGENT_HOME/codex-unavailable-until"
+# Claude-authored review on credits: only while GLM is held; GLM-authored unchanged; codex-authored never.
+CODEX_CREDITS_ROLES="review arbiter"; CODEX_CREDITS_CAP=5000; CODEX_CREDITS_START_BALANCE=29582
+rm -f "$(_quota_marker_file codex)" "$AGENT_HOME/codex-unavailable-until"
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file codex)"
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file zcode)"
+balance 29000.5
+review_identity_available "codex:gpt-6-luna:max" review claude || fail '(a) a Claude author must get Codex credits while GLM is held'
+balance 24582
+if review_identity_available "codex:gpt-6-luna:max" review claude; then fail '(b) a Claude author must wait at the credits cap'; fi
+balance 29000.5
+rm -f "$(_quota_marker_file zcode)"; glm_quota 0
+if NOW_EPOCH="$(date +%s)" review_identity_available "codex:gpt-6-luna:max" review claude; then fail '(c) GLM available must keep credits off for a Claude author'; fi
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file zcode)"
+review_identity_available "codex:gpt-6-luna:max" review glm || fail '(d) a GLM author must keep credits under the cap'
+if review_identity_available "codex:gpt-6-luna:max" review codex; then fail '(e) a Codex author must never spend credits'; fi
+: > "$AGENT_HOME/codex-credits.log"
+claude_unit="$(unit_for claude-credit 'claude:claude-sonnet-5-5:high')"
+pick_review_for_unit "$claude_unit" || fail 'a Claude unit must get a Codex reviewer on credits while GLM is held'
+[[ "$PICK_PROVIDER" == codex ]] || fail "a Claude unit was reviewed by $PICK_PROVIDER on credits"
+[[ "$(grep -Fc $'\treview\tclaude-credit\t' "$AGENT_HOME/codex-credits.log")" == 1 ]] || fail 'a credit-funded Claude review must be logged once'
+rm -f "$(_quota_marker_file codex)" "$(_quota_marker_file zcode)" "$AGENT_HOME/codex-unavailable-until"
 CODEX_CREDITS_ROLES=""; CODEX_CREDITS_CAP=""; CODEX_CREDITS_START_BALANCE=""
 
 # GLM takes work up to the provider cap with no pacing, and a bad quota read closes the route.

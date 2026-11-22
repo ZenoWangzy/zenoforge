@@ -94,4 +94,22 @@ grep -Fq 'review-family verdict discarded unit=u-f author=claude reviewer=claude
 review_family_verdict "$unit_f" "zcode:GLM-5.3:max" READY || fail "(f) other-family READY discarded"
 review_family_verdict "$unit_f" "claude:claude-opus-4-7:high" NOT_READY || fail "(f) NOT_READY changed"
 
+# (g) Claude-authored unit, GLM held, Codex quota used up, credits under the cap: reviewable on credits, no deferred line.
+# (h) the same with credits at the cap: back to the deferred route, which waits for the GLM hold.
+export CODEX_SESSIONS_DIR="$A/sessions"; mkdir -p "$CODEX_SESSIONS_DIR"
+balance() { printf '{"payload":{"rate_limits":{"credits":{"has_credits":true,"balance":"%s"}}}}\n' "$1" > "$CODEX_SESSIONS_DIR/rollout-a.jsonl"; }
+CODEX_CREDITS_ROLES="review arbiter"; CODEX_CREDITS_CAP=5000; CODEX_CREDITS_START_BALANCE=29582
+write_units 3; reset_route; toggle_cli codex on; toggle_cli claude off; glm_quota_stale
+glm_until="$(future)"; printf '%s\n' "$glm_until" > "$ZCODE_EXHAUSTED_MARKER_FILE"; future > "$CODEX_EXHAUSTED_MARKER_FILE"
+balance 29000.5
+implement_route_family_reviewable claude || fail "(g) claude not reviewable on credits: $IMPLEMENT_REVIEWER_REASON"
+! grep -Fq 'deferred-review' "$LOG" || fail "(g) deferred line written while credits are open"
+! grep -Fq 'IMPLEMENT-ROUTE-UNREVIEWABLE' "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null || fail "(g) alert written"
+write_units 3; reset_route; toggle_cli codex on; toggle_cli claude off; glm_quota_stale
+glm_until="$(future)"; printf '%s\n' "$glm_until" > "$ZCODE_EXHAUSTED_MARKER_FILE"; printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$CODEX_EXHAUSTED_MARKER_FILE"
+balance 24582
+implement_route_family_reviewable claude || fail "(h) claude not deferred at the credits cap: $IMPLEMENT_REVIEWER_REASON"
+grep -Fq "implement-route deferred-review family=claude reviewer=glm until=$glm_until waiting=3/16" "$LOG" || fail "(h) deferred line missing at the credits cap"
+CODEX_CREDITS_ROLES=""; CODEX_CREDITS_CAP=""; CODEX_CREDITS_START_BALANCE=""
+
 echo 'ok - implement-route deferred review'
