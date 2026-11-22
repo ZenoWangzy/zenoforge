@@ -605,30 +605,29 @@ retire_landed_pr_units() {
   while IFS=$'\t' read -r id pr; do
     [[ -n "$id" ]] || continue
     scheduler_lock_yield_between_units || { rm -rf -- "$tmpdir"; return 1; }
-    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
-      && ! jqf -e --arg id "$id" --argjson pr "$pr" 'any(.units[]; .id==$id and .pr==$pr
-        and ((.stage | IN("closed","landed","merged","done","needs-human")) | not)
-        and (.hold_handoff_waiting // false) == false)' "$UNITS" >/dev/null; then
-      continue
-    fi
+    if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] && ! retire_row_current "$id" "$pr"; then continue; fi
     (( n < ${RETIRE_PR_CHECK_MAX:-10} )) || break
     n=$((n + 1))
-    state="$(pr_view "$pr" state)"
-    [[ -n "$state" ]] && TICK_PR_STATE["$pr"]="$state"
+    # Row 898: this unit's GitHub reads (PR state, mergeCommit, the closed-issue route) run in one lock-free
+    # window (lock-free-calls.sh); the write re-checks the row first, and the pure branch tests re-run under the lock.
+    slow_call_yield retire_landed_pr_units retire_unit_collect "$id" "$pr" || { rm -rf -- "$tmpdir"; return 1; }
+    retire_row_current "$id" "$pr" || { say "retire skip unit=$id PR#$pr: the unit changed while the ledger lock was released"; continue; }
+    state="$RETIRE_STATE"
     [[ "$state" == MERGED || "$state" == CLOSED ]] || continue
     [[ "$state" == MERGED ]] && state=merged || state=closed
     release_mark=.
     # A lane merge may start from concluded/pr-open; every other owner moves on only from ready-for-agent.
     if [[ "$state" == merged ]] && jqf -e --arg id "$id" 'any(.units[]; .id == $id and .stage == "ready-to-merge"
         and ((.approved_sha // "") != "") and (.hotpatch // false) == false and (.supervisor_owned // false) == false)' "$UNITS" >/dev/null; then
-      merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"
+      merge_sha="$RETIRE_MERGE_SHA"
+      [[ -n "$merge_sha" ]] || merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)" # not collected: the unit turned ready-to-merge inside the window
       release_mark="$(awaiting_release_mark "$pr")"
       [[ ! "$merge_sha" =~ $SHA_RE ]] || release_mark+=" | .merge_sha=$(js "$merge_sha")"
     elif [[ "$state" == merged ]]; then
       issue="$(unit_field "$id" .issue)"
       [[ "$issue" =~ ^[1-9][0-9]*$ ]] && release_mark="$(awaiting_release_mark "$pr") | .awaiting_release_ready_only=true"
     fi
-    [[ "$state" != closed ]] || closed_unit_issue_route "$id" pr-closed || continue
+    [[ "$state" != closed ]] || [[ "$RETIRE_ROUTE_RC" == 0 ]] || continue
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\" | $release_mark"
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
   done < "$rows_file"
@@ -795,3 +794,5 @@ ci_pr_free_slots() { # → online PR-capable runners minus runners with a job al
     printf '0\n'
   fi
 }
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/lock-free-calls.sh"

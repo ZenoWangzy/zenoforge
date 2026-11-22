@@ -102,6 +102,13 @@ release_scheduler_lock() {
     rm -rf -- "$SCHED_LOCK"
   fi
   lock_us_now; LOCK_HOLD_US=$((${LOCK_HOLD_US:-0} + LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US}))
+  # Row 898: the refill's own longest hold rides the REFILL-TIMEOUT line, so the line no longer blames only
+  # whoever held the lock at the deadline (16:43:31Z named a 39 s holder while the refill's own
+  # harvest_workers hold had already spent 133 s of its budget).
+  if [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US} > ${REFILL_OWN_HOLD_US:-0} )); then
+    REFILL_OWN_HOLD_US=$((LOCK_US - ${SCHED_LOCK_AT_US:-$LOCK_US}))
+    REFILL_OWN_HOLD_PHASE="${SCHED_LOCK_FROM_PHASE:-unknown}"
+  fi
   SCHED_LOCK_HELD=false
 }
 # A refill waits for the ledger lock only until its own deadline, like a lock_timeout under a statement deadline: the full tick holds the lock for
@@ -149,7 +156,7 @@ acquire_scheduler_lock_wait() { # $1: optional wait bound in seconds; past it th
       local holder holder_phase
       holder="$(cat "$SCHED_LOCK/pid" 2>/dev/null || true)"; holder="${holder:-none}"
       holder_phase="$h"
-      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): holder=$holder holder_phase=$holder_phase: the refill limit is near, the refill ends here and the next one resumes"
+      say "REFILL-TIMEOUT stop: ledger lock wait stopped at ${SECONDS}s in phase $(cat "$A/.refill-phase" 2>/dev/null || echo unknown): holder=$holder holder_phase=$holder_phase own_longest_hold=${REFILL_OWN_HOLD_PHASE:-none}:$(( ${REFILL_OWN_HOLD_US:-0} / 1000000 ))s: the refill limit is near, the refill ends here and the next one resumes"
       rc=1; break
     fi
     if [[ -n "${1:-}" ]] && (( SECONDS - t0 >= $1 )); then rc=1; break; fi

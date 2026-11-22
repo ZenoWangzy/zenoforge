@@ -15,6 +15,7 @@ scheduler="$script_dir/scheduler.sh"
 merge_lane="$script_dir/scheduler.d/merge-lane.sh"
 worker_command="$script_dir/scheduler.d/worker-command.sh"
 worker_harvest="$script_dir/scheduler.d/harvest-workers.sh"
+harvest_collect="$script_dir/scheduler.d/harvest-collect.sh"
 dispatch_lane="$script_dir/scheduler.d/dispatch.sh"
 scheduler_sources=("$scheduler" "$script_dir"/scheduler.d/*.sh)
 template="$script_dir/config.template.json"
@@ -43,7 +44,7 @@ fi
 grep -Fq 'gh pr merge "$pr" --squash' "$merge_lane"
 grep -Fq 'resume "$session_id" -m "$model"' "$worker_command"
 grep -Fq 'focus_mode' "$scheduler"
-grep -Fq 'session id: ' "$worker_harvest"
+grep -Fq 'session id: ' "$harvest_collect"
 grep -Fq 'mode=$CODEX_MODE' "$dispatch_lane"
 if grep -Eq '^[[:space:]]*spent\(\)' "${scheduler_sources[@]}"; then
   echo 'not ok - scheduler.test.sh: the old worker-log spend heuristic must stay removed' >&2

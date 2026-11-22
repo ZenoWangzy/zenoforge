@@ -16,6 +16,8 @@ launch_land() { # id pr sha title report log workdir reviewed-pr-head [issue]
   jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
   say "dispatch land pid=$pid unit=$1 PR#${2:-none} sha=$3"
 }
+declare -F slow_call_yield >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/lock-free-calls.sh"
+fast_land_clone_collect() { FAST_LAND_WT="$(ensure_clone "$1")"; return 0; } # row 898: the land clone runs with the ledger lock released
 fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-direct-main 自带 focused 检查与锁）
   local u id pr approved target head candidate reviewed_pr_head title wt rep
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
@@ -46,7 +48,14 @@ fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-dir
       set_unit "$id" "$(hist approval-stale "approved=${approved:-none} reviewed-pr-head=${reviewed_pr_head:-none} current-pr-head=$head candidate=$candidate") | .approved_sha=null | .stage=\"rereview-pending\""
       continue
     fi
-    wt="$(ensure_clone "$id")" || { say "fast-land unit=$id: clone unavailable"; continue; }
+    # Row 898: 落地克隆（git 拉取/建工作树）让开台账锁；重取后行仍是 ready-to-merge 且批准 head 未变才继续。
+    slow_call_yield fast_land_lane fast_land_clone_collect "$id" || return 1
+    if ! jqf -e --arg id "$id" --arg approved "$approved" 'any(.units[]; .id==$id and .stage=="ready-to-merge" and .approved_sha==$approved)' "$UNITS" >/dev/null; then
+      say "fast-land skip unit=$id: the unit changed while the ledger lock was released"
+      continue
+    fi
+    wt="$FAST_LAND_WT"
+    [[ -n "$wt" ]] || { say "fast-land unit=$id: clone unavailable"; continue; }
     title="$(jqf -r '.title // ""' <<<"$u")"; rep="land-${pr:-$id}-${TAG}.md"
     launch_land "$id" "$pr" "$approved" "$title" "$rep" "${rep%.md}.worker.log" "$wt" "$reviewed_pr_head" "$(jqf -r '.issue // empty' <<<"$u")"
     set_unit "$id" "$(hist land-issued "${pr:+PR#$pr }$approved") | .stage=\"landing\""

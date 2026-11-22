@@ -131,8 +131,8 @@ release_batch_outcome_settle() {
 release_batch_same_failure_hold() {
   (
     candidate="${1:-}"; anchor="${2:-}"
-    # Probe: a failure may be fixed outside the repository (2026-11-21 network failures), so after 6 h one batch runs again.
-    probe_after=21600
+    # Probe: a failure may be fixed outside the repository (2026-11-21 network failures), so after 2 h one batch runs again. Manual lift: delete $AGENT_HOME/release-batch-outcomes.
+    probe_after=7200
     re=$'^[0-9]+\t[^\t]+\t(pending|failed|ok)\t'
     [ -n "${AGENT_HOME:-}" ] && [ -n "$candidate" ] || exit 1
     file="$AGENT_HOME/release-batch-outcomes"
