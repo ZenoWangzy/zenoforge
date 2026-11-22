@@ -40,7 +40,7 @@ batch_ticket_return_ratchet() {
     fi
   done
   case_body="$(recut_case_body "$file")"
-  if ! grep -qE '^[[:space:]]*80\)' <<< "$case_body"; then
+  if ! grep -qE '^[[:space:]]*([0-9]+\|)*80(\|[0-9]+)*\)' <<< "$case_body"; then # 80) alone or in an alternation such as 78|80) (#1403)
     printf 'FAIL recut caller case on dispatch_policy_unit has no 80) arm; a spend skip would hit *)\n'
     fail=1
   fi
@@ -67,7 +67,7 @@ if ! grep -Fq 'FAIL dispatch_advisor_batch' "$fixture_dir/out.txt" || ! grep -Fq
 fi
 
 # Injected: the recut caller loses its 80) arm.
-sed '/^[[:space:]]*80) continue ;;$/d' "$pipeline" > "$fixture_dir/no-80.sh"
+sed -E '/^[[:space:]]*([0-9]+\|)*80(\|[0-9]+)*\) continue ;;$/d' "$pipeline" > "$fixture_dir/no-80.sh"
 if batch_ticket_return_ratchet "$fixture_dir/no-80.sh" > "$fixture_dir/out.txt" 2>&1; then
   printf 'batch-ticket-return-ratchet.test.sh: a recut case without 80) passed\n' >&2
   exit 1
