@@ -91,14 +91,13 @@ function countSh(text) {
   (function walk(node) {
     if (Array.isArray(node)) return node.forEach(walk);
     if (!node || typeof node !== 'object') return;
-    for (const [key, value] of Object.entries(node)) {
-      if (key !== 'Comments') { walk(value); continue; }
-      for (const c of value) {
-        const text = c.Text ?? '';
-        const shebang = text.startsWith('!') && c.Pos?.Offset === 0;
-        if (!shebang && !text.trimStart().startsWith('shellcheck ')) n++;
-      }
+    if ('Hash' in node) {
+      const text = node.Text ?? '';
+      const shebang = text.startsWith('!') && node.Pos?.Offset === 0;
+      if (!shebang && !text.trimStart().startsWith('shellcheck ')) n++;
+      return;
     }
+    Object.values(node).forEach(walk);
   })(JSON.parse(out));
   return n;
 }

@@ -43,7 +43,7 @@
 8	engine/check-commit-messages.sh
 6	engine/check-fruit-migration-order.mjs
 4	engine/check-gh-flags.sh
-2	engine/check-gh-flags.test.sh
+4	engine/check-gh-flags.test.sh
 1	engine/check-pipeline-lesson-window.sh
 9	engine/check-rulings-model-source.test.sh
 6	engine/check-rulings.sh
@@ -92,7 +92,7 @@
 4	engine/dispatch-load-guard.test.sh
 1	engine/doctor.sh
 1	engine/efficiency-metrics-sink.sh
-37	engine/engine-sync.sh
+38	engine/engine-sync.sh
 22	engine/engine-sync.test.sh
 4	engine/ensure-state-labels.test.sh
 3	engine/entry-symlink.test.sh
@@ -179,7 +179,7 @@
 2	engine/issue-pipeline-census-size.test.sh
 10	engine/issue-pipeline-maintenance-budget.test.sh
 40	engine/issue-pipeline-slices.sh
-506	engine/issue-pipeline.sh
+508	engine/issue-pipeline.sh
 101	engine/issue-pipeline.test.sh
 5	engine/issue-rest.test.sh
 33	engine/issue-transition-gh-retry.test.sh
@@ -197,7 +197,7 @@
 2	engine/land-queue-owner.test.sh
 7	engine/land-queue-recovery.test.sh
 1	engine/land-queue-state.sh
-38	engine/land-queue.sh
+39	engine/land-queue.sh
 8	engine/land-shared-append.sh
 7	engine/land-shared-append.test.sh
 3	engine/landed-incident-guards.test.sh
@@ -229,19 +229,19 @@
 134	engine/lib.d/guarded-write.sh
 39	engine/lib.d/hand-dependency.sh
 14	engine/lib.d/hold-rule.sh
-29	engine/lib.d/holds.sh
+30	engine/lib.d/holds.sh
 66	engine/lib.d/implement-gates.sh
 14	engine/lib.d/issue-rest.sh
 216	engine/lib.d/issue-state.sh
 97	engine/lib.d/locks.sh
-58	engine/lib.d/main-red-bisect.sh
+60	engine/lib.d/main-red-bisect.sh
 67	engine/lib.d/main-red.sh
 179	engine/lib.d/merge-lane.sh
 233	engine/lib.d/model-calls.sh
 1	engine/lib.d/model-calls.test.sh
 7	engine/lib.d/model-not-found-cache.bash
 40	engine/lib.d/model-policy-fallback.sh
-48	engine/lib.d/model-policy.sh
+49	engine/lib.d/model-policy.sh
 7	engine/lib.d/model-routing.sh
 32	engine/lib.d/model-units.sh
 25	engine/lib.d/open-pr-collision.sh
@@ -418,7 +418,7 @@
 10	engine/mac-autopilot/scheduler.d/acceptance.sh
 36	engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh
 8	engine/mac-autopilot/scheduler.d/ci-admission-slot-sync.test.sh
-58	engine/mac-autopilot/scheduler.d/ci-admission.sh
+59	engine/mac-autopilot/scheduler.d/ci-admission.sh
 9	engine/mac-autopilot/scheduler.d/ci-cancel-stale.test.sh
 2	engine/mac-autopilot/scheduler.d/ci-merge-admission-batch.test.sh
 6	engine/mac-autopilot/scheduler.d/ci-status-relabel.test.sh
@@ -458,7 +458,7 @@
 5	engine/mac-autopilot/scheduler.d/footprint-hotspot-expand.test.sh
 17	engine/mac-autopilot/scheduler.d/footprint-memo.sh
 9	engine/mac-autopilot/scheduler.d/footprint-scope-memo.test.sh
-102	engine/mac-autopilot/scheduler.d/footprint.sh
+103	engine/mac-autopilot/scheduler.d/footprint.sh
 51	engine/mac-autopilot/scheduler.d/handoff-rescue.test.sh
 4	engine/mac-autopilot/scheduler.d/handoff-wait-stale.test.sh
 22	engine/mac-autopilot/scheduler.d/harvest-collect.sh
@@ -472,7 +472,7 @@
 25	engine/mac-autopilot/scheduler.d/intake-index.sh
 8	engine/mac-autopilot/scheduler.d/intake-judge-station.sh
 16	engine/mac-autopilot/scheduler.d/intake-steps.sh
-79	engine/mac-autopilot/scheduler.d/intake.sh
+80	engine/mac-autopilot/scheduler.d/intake.sh
 20	engine/mac-autopilot/scheduler.d/land-lane.sh
 24	engine/mac-autopilot/scheduler.d/lib-bridge.sh
 12	engine/mac-autopilot/scheduler.d/lock-free-calls.sh
@@ -488,8 +488,8 @@
 15	engine/mac-autopilot/scheduler.d/merge-tree-sweep.sh
 19	engine/mac-autopilot/scheduler.d/merge-tree-sweep.test.sh
 65	engine/mac-autopilot/scheduler.d/models.sh
-36	engine/mac-autopilot/scheduler.d/no-human-wait.sh
-33	engine/mac-autopilot/scheduler.d/orphan-prs.sh
+37	engine/mac-autopilot/scheduler.d/no-human-wait.sh
+34	engine/mac-autopilot/scheduler.d/orphan-prs.sh
 15	engine/mac-autopilot/scheduler.d/park-label-sweep.sh
 12	engine/mac-autopilot/scheduler.d/pr-body.sh
 45	engine/mac-autopilot/scheduler.d/recut-reopen.sh
@@ -511,7 +511,7 @@
 13	engine/mac-autopilot/scheduler.d/stuck-workers.sh
 69	engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh
 1	engine/mac-autopilot/scheduler.d/supervisor-owned.sh
-31	engine/mac-autopilot/scheduler.d/tick-census.sh
+32	engine/mac-autopilot/scheduler.d/tick-census.sh
 10	engine/mac-autopilot/scheduler.d/tick-steps.sh
 1	engine/mac-autopilot/scheduler.d/unit-transition-log.sh
 128	engine/mac-autopilot/scheduler.d/units.sh
@@ -710,7 +710,7 @@
 99	engine/run-tick.test.sh
 58	engine/run-triage-batch.sh
 94	engine/run-triage-batch.test.sh
-263	engine/run-triage.sh
+267	engine/run-triage.sh
 86	engine/run-triage.test.sh
 4	engine/runtime-code-health.py
 3	engine/runtime-reload.sh
@@ -782,7 +782,7 @@
 15	engine/worker-write-guard.test.sh
 15	engine/worker-write-guard/node-guard.cjs
 11	engine/worktree-backlog-sweep.sh
-56	engine/worktree-lifecycle.sh
+57	engine/worktree-lifecycle.sh
 49	engine/worktree-lifecycle.test.sh
 6	engine/write-guard.sh
 18	engine/zcode-cli-resolver.test.sh
