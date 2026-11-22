@@ -1,30 +1,7 @@
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/ci-stuck-unqueued.sh"
 
-# 打开 PR census 的归一化：同名检查去重（--latest-checks）→ 以 PR 号为键的对象（head/draft/bucket 化的检查行与
-# ci 档位）。merge_candidates 的排序输入与 start.sh 的 pin 切换自检共用这一条链，自检跑的正是合并车道要用的管线。
-pr_census_by_number() { # stdin: gh pr list JSON → stdout: {"<pr>": {head,draft,checks,ci}}
-  node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks | jqf 'map({key: (.number | tostring), value: {head: .headRefOid, draft: .isDraft, mergeable: .mergeable, checks: [.statusCheckRollup[]? | {name: (.name // .context // ""), link: (.detailsUrl // .targetUrl // ""), started_at: (if .__typename == "CheckRun" then (.startedAt // .started_at // null) else (.createdAt // .created_at // null) end), bucket: (if .__typename == "StatusContext" then ((.state // "" | ascii_downcase) as $s | if $s == "success" then "pass" elif ($s == "failure" or $s == "error") then "fail" else "pending" end) elif (.status // "COMPLETED") != "COMPLETED" then "pending" else ((.conclusion // "" | ascii_downcase) as $c | if $c == "success" then "pass" elif $c == "neutral" then "skipping" elif $c == "cancelled" then "cancel" elif ($c | IN("failure", "timed_out", "action_required", "startup_failure")) then "fail" else "pending" end) end)}], ci: ([.statusCheckRollup[]? | if .__typename == "StatusContext" then (.state // "" | ascii_downcase) elif (.status // "COMPLETED") != "COMPLETED" then "pending" else (.conclusion // "" | ascii_downcase) end] | if any(.[]; IN("pending", "expected", "queued", "in_progress", "waiting", "requested")) then 2 elif any(.[]; IN("failure", "error", "cancelled", "timed_out", "action_required", "startup_failure")) then 1 else 0 end)}}) | from_entries'
-}
-tick_pr_check_census() { # full open-PR check rows, normalized once per tick from TICK_PRS
-  local prs
-  if [[ -z "$TICK_PR_CHECK_CENSUS" ]]; then
-    prs="$(tick_prs)" || return 1
-    TICK_PR_CHECK_CENSUS="$(printf '%s' "$prs" | pr_census_by_number)" || return 1
-    jqf -e 'type == "object"' <<<"$TICK_PR_CHECK_CENSUS" >/dev/null || { TICK_PR_CHECK_CENSUS=""; return 1; }
-  fi
-  printf '%s' "$TICK_PR_CHECK_CENSUS"
-}
-repair_check_rows() { # PR number → latest normalized check rows from the tick census
-  local pr="$1" census checks
-  census="$(tick_pr_check_census 2>/dev/null || true)"
-  if [[ -n "$census" ]] && jqf -e --arg pr "$pr" 'has($pr)' <<<"$census" >/dev/null; then
-    jqf -c --arg pr "$pr" '.[$pr].checks // []' <<<"$census"
-    return
-  fi
-  # gh exits nonzero when a check failed but still prints the rows; only empty output is a real gh failure.
-  checks="$(unset GH_TOKEN; gh pr checks "$pr" --json name,bucket,link 2>/dev/null)"; [[ -n "$checks" ]] || return 1
-  node "$HERE/../ci/pr-required-aggregate.mjs" --latest-checks <<<"$checks" 2>/dev/null
-}
+# 打开 PR census 的归一化与按需检查行在 tick-census.sh（pr_census_by_number / pr_census_checks_fill /
+# repair_check_rows）：列表不再携带 statusCheckRollup，检查行按候选的 head SHA 单独取。
 
 # 队头阻塞（2026-10-21 06:42）：车道每拍只看排序后的前 BATCH_MAX*3 个就绪单元（热修、critical、最老），82 个就绪里
 # 前 12 个全在等 CI 或被挡，排在 21–60 位的绿单元从来轮不到看。对 ready-to-merge PR 子集批量取检查汇总再排序：
@@ -34,14 +11,15 @@ repair_check_rows() { # PR number → latest normalized check rows from the tick
 merge_candidates() { # window → 就绪单元（每行一个 JSON）
   local rf prs_file bs="" bs_started=$SECONDS bs_t0=$SECONDS; rf="$(mktemp)" || return 0
   prs_file="$(mktemp)" || { rm -f -- "$rf"; return 0; }
-  # Use the same open-PR census, but normalize checks only for ready-to-merge PRs before sorting all candidates.
+  # Use the same light open-PR census for head/draft/mergeable, then fetch check rows per candidate head SHA
+  # (one REST check-runs call per SHA, deduped in-process) before sorting all candidates.
   jqf -c '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main") | .pr | tostring] | unique' "$UNITS" > "$prs_file" \
     || { rm -f -- "$rf" "$prs_file"; return 0; }
   bs+=" ready_ids=$((SECONDS - bs_t0))s"; bs_t0=$SECONDS
   if [[ "$(jqf -r 'length' "$prs_file")" == 0 ]]; then
     printf '{}\n' > "$rf"
   else
-    tick_prs | jqf --slurpfile prs "$prs_file" '[.[] | select((.number | tostring) as $n | $prs[0] | index($n) != null)]' | pr_census_by_number > "$rf"
+    tick_prs | jqf --slurpfile prs "$prs_file" '[.[] | select((.number | tostring) as $n | $prs[0] | index($n) != null)]' | pr_census_by_number | pr_census_checks_fill > "$rf"
   fi
   bs+=" census=$((SECONDS - bs_t0))s"; bs_t0=$SECONDS
   jqf -e 'type == "object"' "$rf" >/dev/null 2>&1 || echo '{}' > "$rf"
@@ -381,7 +359,7 @@ run_merge_lane_pass() {
     fi
   fi
 
-  # 候选的检查行取自 merge_candidates 那一次批量 gh pr list（census），不再逐个 gh pr checks；合并仍用 --match-head-commit 钉住 head。
+  # 候选的检查行由 merge_candidates 按各候选的 head SHA 单独取（tick_pr_check_runs，REST check-runs），不再随批量 gh pr list 下发；合并仍用 --match-head-commit 钉住 head。
   merge_refill_budget_spent candidate_build && return 0
   say "merge stage candidate_build start"
   tick_prs_prime

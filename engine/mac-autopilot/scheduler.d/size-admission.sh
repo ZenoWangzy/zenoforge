@@ -245,8 +245,80 @@ pr_create_failure_transient() { # gh output rc → true for retryable server/tra
   [[ "$rc" == 124 ]] && return 0
   grep -Eiq 'HTTP([[:space:]]|/[0-9.]+[[:space:]])5[0-9]{2}|GraphQL:[[:space:]]*Something went wrong|ECONNRESET|ETIMEDOUT|timeout|timed[[:space:]]+out|deadline exceeded' <<<"$output"
 }
+pr_create_backoff_refused() { # gh output rc → true when the shared GitHub back-off refused the call (rc 75 or its text), or a REST create met a PR that already exists (the next tick adopts it)
+  local output="${1:-}" rc="${2:-0}"
+  [[ "$rc" == 75 ]] && return 0
+  grep -Eiq 'rate-limit backoff active|secondary rate limit|API rate limit (already )?exceeded|pull request already exists' <<<"$output"
+}
+pr_open_held_expr() { # report-path → jq update that marks the PR open as owed; recover_orphans retries it without a worker; keeps the first since
+  printf '.pr_open_held={report:%s,since:%s}' "$(js "$1")" "$(js "${PR_OPEN_HELD_SINCE:-$STAMP}")"
+}
+pr_create_held() { # unit branch output report → keep the unit at implement for the next tick; escalate after 3 h of holds
+  local unit="$1" branch="$2" out="$3" expr latest
+  if [[ -n "${PR_OPEN_HELD_SINCE:-}" ]] && (( $(date -u -d "$STAMP" +%s) - $(date -u -d "$PR_OPEN_HELD_SINCE" +%s) > 10800 )); then
+    to_supervisor "$unit" "PR open held by GitHub back-off for 3 h on $branch: ${out:0:160}"
+    return 0
+  fi
+  # A tick is one process (the harvest station too, one pass per process): this resets by itself and caps recover_orphans at one refused call per tick.
+  PR_OPEN_REFUSED_THIS_TICK=true
+  say "unit $unit PR open held by GitHub back-off on $branch; retry next tick"
+  latest="$(unit_field "$unit" '.history[-1].stage // empty')"
+  expr="$(pr_open_held_expr "$4")"
+  [[ "$latest" == pr-create-held ]] || expr="$(hist pr-create-held "${out:0:120}") | $expr"
+  set_unit "$unit" "$expr"
+}
+pr_open_retry() { # unit → retry an owed PR open on the finished clone without a new worker (recover_orphans); the field is cleared first, a new hold writes it again
+  local unit="$1" report dir="$WT_ROOT/wt-$1" PR_OPEN_HELD_SINCE
+  report="$(unit_field "$unit" '.pr_open_held.report // empty')"
+  PR_OPEN_HELD_SINCE="$(unit_field "$unit" '.pr_open_held.since // empty')"
+  set_unit "$unit" 'del(.pr_open_held)'
+  if [[ ! -s "$report" || ! -d "$dir" ]]; then
+    to_supervisor "$unit" "PR open retry lost its report or clone on $(unit_field "$unit" .branch)"
+    return 0
+  fi
+  harvest_pr_implement "$unit" "$report"
+}
+pr_adopt_held_units() { # adopt the open PR of a PR-lane unit that has none (supervisor-review, parked, or implement with an owed PR open); the census only, no GitHub API call
+  local id branch row pr draft sha labelled remote cands
+  cands="$(jqf -r '.units[] | select(.lane == "pr" and (.branch // "") != "" and ((.pr // "") == "") and (.stage == "supervisor-review" or .stage == "parked" or (.stage == "implement" and .pr_open_held != null))) | "\(.id)\t\(.branch)"' "$UNITS")" || return 0
+  [[ -n "$cands" ]] || return 0
+  # recover_orphans runs in harvest-station and refill ticks that do not load the census; the light census (#1357) is shared through a 60 s file,
+  # so this prime is usually no GitHub call and happens only while a candidate exists. A failed read adopts nothing.
+  tick_prs_prime
+  [[ -n "${TICK_PRS:-}" ]] || return 0
+  while IFS=$'\t' read -r id branch; do
+    [[ -n "$id" ]] || continue
+    [[ "$(jqf -r --arg u "$id" '[.workers[] | select(.unit==$u and .harvested != true)] | length' "$WORKERS")" == 0 ]] || continue
+    row="$(jqf -r --arg b "$branch" --arg l "$GATED_LABEL" 'map(select(.headRefName == $b))[0] // empty | "\(.number) \(.isDraft) \(.headRefOid // "-") \(any(.labels[]?; .name == $l))"' <<<"$TICK_PRS" 2>/dev/null)" || continue
+    [[ -n "$row" ]] || continue
+    read -r pr draft sha labelled <<<"$row"
+    if [[ "$branch" =~ $GATED_BRANCH_RE && ( "$draft" != true || "$labelled" != true ) ]]; then
+      say "pr-adopt skipped unit=$id PR#$pr: condition 1 failed (a gated branch needs a draft PR labelled $GATED_LABEL)"; continue
+    fi
+    # git ls-remote against the scheduler's checkout: a git transport read of the branch head, not a GitHub API call.
+    remote="$(git -C "$ROOT" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
+    if [[ ! "$sha" =~ $SHA_RE || "$sha" != "$remote" ]]; then
+      say "pr-adopt skipped unit=$id PR#$pr: condition 2 failed (PR head ${sha:0:9} is not the branch head ${remote:0:9})"; continue
+    fi
+    # The .pr guard keeps the event at one per unit if the row changed since the read. Park fields (park_fields: parked_reason, unpark_condition), the cap-exhausted marks, the stale note and the owed-PR-open mark go.
+    set_unit "$id" "if (.pr // null) == null then ($(hist pr-adopted "adopted existing PR#$pr $sha") | .pr=$pr | .lane=\"pr\" | .stage=\"review-pending\" | del(.pr_open_held, .parked_reason, .unpark_condition, .cap_exhausted_mark, .cap_exhausted_by, .note)$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')) else . end" \
+      && say "unit $id adopted existing PR#$pr on $branch -> review-pending"
+  done <<<"$cands"
+}
+pr_create_rest() { # branch base title body → SCHED_PR_NUM/OUT/RC; the GraphQL back-off does not cover the REST pulls endpoint (transport.sh classes an api call without graphql as rest)
+  local gated=false out0="$SCHED_PR_OUT" rc0="$SCHED_PR_RC" args=(api "repos/{owner}/{repo}/pulls" -X POST --jq .number)
+  [[ "$1" =~ $GATED_BRANCH_RE ]] && gated=true && args+=(-F draft=true)
+  args+=(-f "title=$(scrub_closing_keywords <<<"$3")" -f "head=$1" -f "base=$2" -f "body=$(scrub_closing_keywords <<<"$4")")
+  if SCHED_PR_OUT="$(gh "${args[@]}" 2>&1)"; then SCHED_PR_RC=0; else SCHED_PR_RC=$?; fi
+  SCHED_PR_NUM="$(grep -xE '[0-9]+' <<<"$SCHED_PR_OUT" | tail -1)"
+  # An answer with neither a PR nor an error says nothing: the GraphQL refusal stands.
+  [[ -n "$SCHED_PR_NUM" || "$SCHED_PR_RC" != 0 ]] || { SCHED_PR_OUT="$out0"; SCHED_PR_RC="$rc0"; }
+  [[ -n "$SCHED_PR_NUM" && "$gated" == true ]] || return 0
+  gh api "repos/{owner}/{repo}/issues/$SCHED_PR_NUM/labels" -X POST -f "labels[]=$GATED_LABEL" >/dev/null 2>&1 || say "PR#$SCHED_PR_NUM created through REST as a draft without the $GATED_LABEL label"
+}
 harvest_pr_implement() { # unit report-path
-  local first issue branch dir head title pr out base local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc reason repeat
+  local first issue branch dir head title pr out base pr_title pr_body hold local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc reason repeat
+  local PR_OPEN_HELD_SINCE="${PR_OPEN_HELD_SINCE:-$(unit_field "$1" '.pr_open_held.since // empty')}" # the first hold's time: the 3 h bound counts from it, not from write-end
   first="$(grep -m1 -v '^[[:space:]]*$' "$2" 2>/dev/null)"
   issue="$(unit_field "$1" .issue)"; branch="$(unit_field "$1" .branch)"; dir="$WT_ROOT/wt-$1"
   local dep; dep="$(blocked_on_of "$2")"
@@ -343,14 +415,24 @@ harvest_pr_implement() { # unit report-path
   size_admission_recheck "$1" "$dir" "$branch" "on $branch" "$head" || return 0
   title="$(unit_field "$1" .title)"
   base="$(unit_field "$1" '.stacked_on_branch // "main"')"
-  scheduler_pr_open "$branch" "${title:-$1}${issue:+ (#$issue)}" "${issue:+Refs #$issue
+  pr_title="${title:-$1}${issue:+ (#$issue)}"
+  pr_body="${issue:+Refs #$issue
 
 }Implemented by the the product autopilot. Implementer report (first lines):
 
-$(head -40 "$2")" "$base"
+$(head -40 "$2")"
+  scheduler_pr_open "$branch" "$pr_title" "$pr_body" "$base"
   pr="$SCHED_PR_NUM"; out="$SCHED_PR_OUT"
+  # Only the GraphQL back-off refused the create: the REST pulls endpoint has its own marker, so try it once before holding.
+  if [[ ! "$pr" =~ ^[0-9]+$ && "${SCHED_PR_RC:-0}" == 75 && "$out" =~ graphql\ (rate-limit\ backoff\ active|secondary\ rate\ limit) ]]; then
+    pr_create_rest "$branch" "$base" "$pr_title" "$pr_body"
+    pr="$SCHED_PR_NUM"; out="$SCHED_PR_OUT"
+  fi
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     create_rc="${SCHED_PR_RC:-0}"
+    if pr_create_backoff_refused "$out" "$create_rc"; then
+      pr_create_held "$1" "$branch" "$out" "$2"; return 0
+    fi
     if [[ "${SCHED_PR_CREATE_ATTEMPTED:-false}" == true ]] && pr_create_failure_transient "$out" "$create_rc"; then
       create_error="$out"
       [[ -n "$create_error" ]] || create_error="gh pr create exited with rc=$create_rc"
@@ -370,7 +452,10 @@ $(head -40 "$2")" "$base"
         retry_count=$((retry_count + 1))
         retry_limit="$(jqf -r '.pr_create_retry_limit // 3' <<<"$CFG")"
         [[ "$retry_limit" =~ ^[1-9][0-9]*$ ]] || retry_limit=3
-        set_unit "$1" "$(hist pr-create-retry "$retry_count/$retry_limit: $create_error")"
+        hold=""
+        # The next tick retries on the finished clone through recover_orphans (pr_open_retry), not through a new implement worker.
+        (( retry_count >= retry_limit )) || { hold=" | $(pr_open_held_expr "$2")"; PR_OPEN_REFUSED_THIS_TICK=true; }
+        set_unit "$1" "$(hist pr-create-retry "$retry_count/$retry_limit: $create_error")$hold"
         if (( retry_count >= retry_limit )); then
           to_supervisor "$1" "could not open a PR for $branch after $retry_count transient failures: ${create_error:0:200}"
         else
@@ -383,7 +468,7 @@ $(head -40 "$2")" "$base"
       return 0
     fi
   fi
-  set_unit "$1" "$(hist pr-opened "PR#$pr $head") | .pr=$pr | .lane=\"pr\" | .stage=\"review-pending\"$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')"
+  set_unit "$1" "$(hist pr-opened "PR#$pr $head") | .pr=$pr | .lane=\"pr\" | .stage=\"review-pending\" | del(.pr_open_held)$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')"
   say "unit $1 implemented on $branch -> PR#$pr review-pending"
   # SPLIT 交付（#4482）：尺寸契约在派发简报里前置后，worker 交第一个可独立交付切片 +
   # SPLIT 首行声明剩余范围；切片 PR 进评审的同时，剩余范围落成续作票（needs-triage，

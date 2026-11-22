@@ -134,11 +134,13 @@ run_issue_intake_phases
 [[ "$(paste -sd, "$calls")" == 'census,load,phase register_new_issues' ]] || fail "a live station did not take the walk from the tick: $(paste -sd, "$calls")"
 unset -f phase intake_census_prime existing_walked_load
 
-# --- case 8: the census the walk and the tick prime comes from the tick's PR cache, whole, and clears the waiting lists. ---
+# --- case 8: the census the walk and the tick prime is intake's own body-carrying read (the light tick
+# census has no body, and the handoff indexes "Refs #N" claims from bodies), and a full read clears the waiting lists. ---
 source "$engine_dir/mac-autopilot/scheduler.d/intake.sh"
 source "$engine_dir/mac-autopilot/scheduler.d/existing-walk-station.sh"
 tick_prs_prime() { :; }
-tick_prs() { printf '%s\n' '[{"number":5,"headRefName":"agent/issue-5","title":"t","body":"b","labels":[],"isDraft":false}]'; }
+tick_prs() { printf '%s\n' '[{"number":5,"headRefName":"agent/issue-5","title":"t","labels":[],"isDraft":false}]'; }
+intake_gh_read() { [[ "$1 $2" == 'pr list' ]] || return 1; printf '%s\n' '[{"number":5,"headRefName":"agent/issue-5","title":"t","body":"b","labels":[]}]'; }
 HANDOFF_WAIT_PRS='[9]'; HANDOFF_PR_CENSUS=''; HANDOFF_CENSUS_PARTIAL=1
 intake_census_prime
 [[ "$HANDOFF_PR_CENSUS" == '[{"number":5,"headRefName":"agent/issue-5","title":"t","body":"b","labels":[]}]' && "$HANDOFF_CENSUS_PARTIAL" == 0 && "$HANDOFF_WAIT_PRS" == '[]' ]] \

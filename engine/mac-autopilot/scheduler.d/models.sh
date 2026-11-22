@@ -290,7 +290,7 @@ implement_route_review_identity_available() { # identity role author-family -> c
     model_policy_model_allowed_for_role "$model" "$role" || { IMPLEMENT_REVIEWER_REASON=policy-refused; return 1; }
     cooling codex && { IMPLEMENT_REVIEWER_REASON=codex-hold; return 1; }
     [[ -e "${CODEX_PROVIDER_PROBE_REQUIRED_FILE:-}" ]] && { IMPLEMENT_REVIEWER_REASON=codex-probe-required; return 1; }
-    if provider_quota_exhausted codex && { [[ "$author_family" != glm ]] || ! codex_credits_open review; }; then
+    if provider_quota_exhausted codex && ! codex_credits_review_open "$author_family"; then
       IMPLEMENT_REVIEWER_REASON=codex-hold
       return 1
     fi

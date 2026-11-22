@@ -28,7 +28,7 @@ command git -C "$gr" update-ref refs/remotes/origin/main "$g3"
 [[ "$(ROOT="$gr" gate_eval_sha | tr '\n' ' ')" == "$g3 $g2 $g1 " ]] || fail "gate chain did not walk past product commits: $(ROOT="$gr" gate_eval_sha | tr '\n' ' ')"
 
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { tick_prs_changed; local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 command_arg() { local flag="$1" i; for ((i=0; i<${#CODEX_COMMAND[@]}; i++)); do [[ "${CODEX_COMMAND[i]}" == "$flag" ]] && { printf '%s' "${CODEX_COMMAND[i + 1]:-}"; return 0; }; done; return 1; }
 
@@ -784,7 +784,6 @@ DISPATCHED=()
 stack_gh_real="$(declare -f gh)"; stack_pr_changed_real="$(declare -f tick_prs_changed)"
 stack_gated_label_real="$(declare -f ensure_gated_label)"
 ensure_gated_label() { :; }
-tick_prs_changed() { :; }
 gh() {
   case "$1 $2" in
     'pr list') if [[ "${STACK_PR_EXISTING:-0}" == 1 ]]; then echo '102 true'; else echo ''; fi ;;
@@ -792,7 +791,7 @@ gh() {
     'pr edit') printf '%s\n' "$*" >> "$fixture/stack-pr-edit.args" ;;
   esac
 }
-stack_tick_prs="$TICK_PRS"; TICK_PRS='' # the stub answers the live per-head lookup; a census left by an earlier case would answer instead
+stack_tick_prs="$TICK_PRS"; tick_prs_changed; tick_prs_changed() { :; } # the stub answers the live per-head lookup; a census (or the 60 s shared file) left by an earlier case would answer instead
 scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
 [[ "$SCHED_PR_NUM" == 102 && "$(cat "$fixture/stack-pr-create.args")" == *'--draft --label agent/ci-gated --base agent/issue-1'* ]] \
   || fail 'stacked unit PR did not target its predecessor branch'
@@ -1043,11 +1042,11 @@ units '{"units":[]}'; register_new_prs || :
 # One intake pass covers all new PRs in a tick; each pass takes minutes on the live queue.
 intake_saved="$(declare -f register_new_issues)"; intake_passes=0; register_new_issues() { intake_passes=$((intake_passes + 1)); }
 gh() { if [[ "$1 $2" == "pr list" ]]; then printf '[{"number":21,"headRefOid":"%s","headRefName":"feat/a","isDraft":false,"title":"a","labels":[]},{"number":22,"headRefOid":"%s","headRefName":"feat/b","isDraft":false,"title":"b","labels":[]}]\n' "$H1" "$H1"; else eval "$gh_reg_saved"; gh "$@"; fi; }
-TICK_PRS=""; HANDOFF_PR_CENSUS='[]'; units '{"units":[]}'; register_new_prs || :
+tick_prs_changed; HANDOFF_PR_CENSUS='[]'; units '{"units":[]}'; register_new_prs || :
 [[ "$intake_passes:$(jq '.units | length' "$UNITS")" == 1:2 ]] || fail "two new PRs need one intake pass ($intake_passes passes, $(jq '.units | length' "$UNITS") units)"
 unset HANDOFF_PR_CENSUS; eval "$intake_saved"
 gh() { if [[ "$1 $2" == "pr list" ]]; then printf '[{"number":9,"headRefOid":"%s","headRefName":"agent/issue-hf-9","isDraft":false,"title":"title","labels":[{"name":"hotfix"}]}]\n' "$H1"; else eval "${gh_reg_saved/gh ()/gh_g ()}"; gh_g "$@"; fi; }
-TICK_PRS=""; units '{"units":[]}'; register_new_prs || :
+tick_prs_changed; units '{"units":[]}'; register_new_prs || :
 [[ "$(jq '.units | length' "$UNITS")" == 0 ]] || fail 'hotfix PR was registered as a pipeline unit'
 # #4615: configured prefixes, PR labels, linked issue labels and automatic PR labels share is_hotfix_pr.
 # supervisor_owned marks this pack's hotfix lane as owned by the hotfix supervisor session (default off when absent).
@@ -1063,16 +1062,19 @@ grep -Fq 'MECH_REGISTRY_FILE="$(sched_mechanism_registry)" || { MECH_REGISTRY_FI
   || fail 'mechanism registry must resolve through sched_mechanism_registry'
 hotfix_list_calls="$fixture/hotfix-issue-list.calls"; : > "$hotfix_list_calls"
 hotfix_label_edits=()
+hotfix_reg_prs="$(jq -cn --arg sha "$H1" '[
+  {number:10,headRefOid:$sha,headRefName:"agent/issue-31-cells",isDraft:false,title:"branch linked",labels:[],body:""},
+  {number:11,headRefOid:$sha,headRefName:"feat/plain",isDraft:false,title:"body linked",labels:[],body:"work\n\nRefs #31"},
+  {number:12,headRefOid:$sha,headRefName:"hotfix/urgent",isDraft:false,title:"configured prefix",labels:[],body:""},
+  {number:13,headRefOid:$sha,headRefName:"agent/issue-hf-32",isDraft:false,title:"hf prefix",labels:[],body:""},
+  {number:14,headRefOid:$sha,headRefName:"feat/ordinary",isDraft:false,title:"ordinary",labels:[],body:"no association"},
+  {number:15,headRefOid:$sha,headRefName:"hotfix/label-write-fails",isDraft:false,title:"label write failure",labels:[],body:""}
+]')"
 gh() {
   if [[ "$1 $2" == "pr list" ]]; then
-    jq -cn --arg sha "$H1" '[
-      {number:10,headRefOid:$sha,headRefName:"agent/issue-31-cells",isDraft:false,title:"branch linked",labels:[],body:""},
-      {number:11,headRefOid:$sha,headRefName:"feat/plain",isDraft:false,title:"body linked",labels:[],body:"work\n\nRefs #31"},
-      {number:12,headRefOid:$sha,headRefName:"hotfix/urgent",isDraft:false,title:"configured prefix",labels:[],body:""},
-      {number:13,headRefOid:$sha,headRefName:"agent/issue-hf-32",isDraft:false,title:"hf prefix",labels:[],body:""},
-      {number:14,headRefOid:$sha,headRefName:"feat/ordinary",isDraft:false,title:"ordinary",labels:[],body:"no association"},
-      {number:15,headRefOid:$sha,headRefName:"hotfix/label-write-fails",isDraft:false,title:"label write failure",labels:[],body:""}
-    ]'
+    printf '%s\n' "$hotfix_reg_prs"
+  elif [[ "$1 $2" == "pr view" && "$*" == *'--json body'* ]]; then # the light census carries no body; registration reads it per PR
+    jq -r --argjson n "$3" 'first(.[] | select(.number == $n) | .body // "")' <<<"$hotfix_reg_prs"
   elif [[ "$1 $2" == "issue list" ]]; then
     printf '%s\n' "$*" >> "$hotfix_list_calls"
     [[ "$*" == *"--label hotfix"* && "$*" == *"--json number,labels"* ]] || fail "hotfix issue census ignored config or labels ($*)"
@@ -1082,7 +1084,7 @@ gh() {
     [[ "$3" != 15 ]]
   else eval "${gh_reg_saved/gh ()/gh_g ()}"; gh_g "$@"; fi
 }
-TICK_PRS=""; TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=false; units '{"units":[]}'; register_new_prs || :
+tick_prs_changed; TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=false; units '{"units":[]}'; register_new_prs || :
 [[ "$(jq -r '[.units[].id] | join(",")' "$UNITS")" == "pr-14" ]] || fail "hotfix PRs were registered or ordinary PR was skipped ($(jq -c '[.units[].id]' "$UNITS"))"
 [[ "${hotfix_label_edits[*]}" == "15:hotfix 13:hotfix 12:hotfix 11:hotfix 10:hotfix" ]] || fail "hotfix PRs were not auto-labeled (${hotfix_label_edits[*]:-none})"
 grep -Fq 'hotfix PR#15: could not add configured label hotfix' "$LOG" || fail 'hotfix label write failure was not recorded'
@@ -1100,7 +1102,7 @@ gh() {
   elif [[ "$1 $2" == "issue list" ]]; then printf '%s\n' "$*" >> "$hotfix_list_calls"; printf '[]\n'
   else eval "${gh_reg_saved/gh ()/gh_g ()}"; gh_g "$@"; fi
 }
-TICK_PRS=""; TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=false; units '{"units":[]}'; register_new_prs || :
+tick_prs_changed; TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=false; units '{"units":[]}'; register_new_prs || :
 [[ "$(jq '.units | length' "$UNITS")" == 0 && "${hotfix_label_edits[*]}" == "15:urgent-hotfix" && ! -s "$hotfix_list_calls" ]] \
   || fail "custom hotfix config did not classify and label PR before issue lookup (units=$(jq -c '.units' "$UNITS"), labels=${hotfix_label_edits[*]:-none}, issue_reads=$(wc -l < "$hotfix_list_calls"))"
 CFG="$(jq '.issue_intake.labels=["ready-for-agent"] | .issue_intake.product_labels=[]' <<<"$CFG")"
@@ -1505,6 +1507,8 @@ dispatch_pending || :
 [[ "$DISPATCH_PROMPT" == *"同一函数的兄弟出口也要枚举"*"各补一条回归测试"* ]] || fail 'repair prompt lacks the sibling-exit rule'
 
 # ---------- 合并门：批准必须等于当前 head，merge 带 --match-head-commit ----------
+# 每个用例重写 units 后先作废 census（进程内 + 60 s 共享文件）：前一个用例留下的文件会让
+# 新出现的 PR 在本窗口里查不到 head（同用例内 lane 自己的 invalidation 仍照旧）。
 MAIN_HEAD="$M1"
 gate_eval_sha() { printf '%s' "$M1"; }
 git() {
@@ -1535,8 +1539,9 @@ GH_CHECKS='[{"name":"Pipeline suites","bucket":"pass"}]'; GH_MERGES=(); run_merg
 # Pipeline PRs merge independently on their own checks: no batch, no merging state, no interim-run cancel.
 gh_int_saved="$(declare -f gh)"
 gh() {
-  if [[ "$1 $2 $3 $5" == "pr view 11 mergeCommit" ]]; then echo "$M1"
-  elif [[ "$1 $2 $3 $5" == "pr view 12 mergeCommit" ]]; then echo "$M2"
+  # ${n:-}：按 head 读 check-runs 的 api 调用只有 4 个参数，set -u 下裸 $5 会炸掉整个包装
+  if [[ "${1:-} ${2:-} ${3:-} ${5:-}" == "pr view 11 mergeCommit" ]]; then echo "$M1"
+  elif [[ "${1:-} ${2:-} ${3:-} ${5:-}" == "pr view 12 mergeCommit" ]]; then echo "$M2"
   else eval "${gh_int_saved/gh ()/gh_i ()}"; gh_i "$@"; fi
 }
 units "{\"units\":[{\"id\":\"pr-11\",\"pr\":11,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]},{\"id\":\"pr-12\",\"pr\":12,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
@@ -1721,16 +1726,26 @@ unset GH_CHECKS; eval "$gh_merge_stub"; GH_RERUNS=()
 
 # ---------- 队头阻塞：窗口里 CI 已出结论的单元排在还在跑的、被挡的前面 ----------
 gh_hol_saved="$(declare -f gh)"
-gh() { if [[ "$1 $2" == "pr list" && "$*" == *statusCheckRollup* ]]; then
-  jq -n --arg h "$H2" '[{number:31,headRefOid:$h,isDraft:false,statusCheckRollup:[{__typename:"CheckRun",status:"IN_PROGRESS"}]},{number:32,headRefOid:$h,isDraft:false,statusCheckRollup:[{__typename:"CheckRun",status:"COMPLETED",conclusion:"SUCCESS"}]},{number:33,headRefOid:$h,isDraft:false,statusCheckRollup:[{__typename:"CheckRun",status:"COMPLETED",conclusion:"FAILURE"}]}]'; else eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; fi; }
+H31="${H2:0:36}0031"; H32="${H2:0:36}0032"; H33="${H2:0:36}0033" # checks are per head now, so each PR needs its own head
+gh() { if [[ "$1 $2" == "pr list" ]]; then
+  jq -n --arg h31 "$H31" --arg h32 "$H32" --arg h33 "$H33" '[{number:31,headRefOid:$h31,isDraft:false},{number:32,headRefOid:$h32,isDraft:false},{number:33,headRefOid:$h33,isDraft:false}]'
+  elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H31/check-runs?per_page=100" ]]; then
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"in_progress","conclusion":null}]}'
+  elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H32/check-runs?per_page=100" ]]; then
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
+  elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H33/check-runs?per_page=100" ]]; then
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"failure"}]}'
+  else eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; fi; }
 units "{\"units\":[{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T01:00:00Z\"},{\"id\":\"pr-34\",\"pr\":34,\"stage\":\"ready-to-merge\",\"critical\":true,\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T00:00:00Z\"},{\"id\":\"pr-32\",\"pr\":32,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T03:00:00Z\"},{\"id\":\"pr-33\",\"pr\":33,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T02:00:00Z\"}]}"
 [[ "$(merge_candidates 3 | jq -r .id | tr '\n' ' ')" == "pr-34 pr-32 pr-33 " ]] || fail "merge window still blocked at the head of the line ($(merge_candidates 3 | jq -r .id | tr '\n' ' '))"
 # 候选带回批量列表里的 PR head，合并车道不再逐个 gh pr view；不在 open 列表里的（已合/已关）不带
-[[ "$(merge_candidates 4 | jq -r '"\(.id)=\(.pr_open_head // "none")"' | sort | tr '\n' ' ')" == "pr-31=$H2 pr-32=$H2 pr-33=$H2 pr-34=none " ]] || fail "merge candidates lack the bulk-listed PR head ($(merge_candidates 4 | jq -c '{id,pr_open_head}' | tr '\n' ' '))"
+[[ "$(merge_candidates 4 | jq -r '"\(.id)=\(.pr_open_head // "none")"' | sort | tr '\n' ' ')" == "pr-31=$H31 pr-32=$H32 pr-33=$H33 pr-34=none " ]] || fail "merge candidates lack the bulk-listed PR head ($(merge_candidates 4 | jq -c '{id,pr_open_head}' | tr '\n' ' '))"
 # 同一优先级和 CI 状态内先检查尚未检查的单元；轮转不能越过 critical 类。
 (
-  gh() { if [[ "$1 $2" == "pr list" && "$*" == *statusCheckRollup* ]]; then
-    jq -n --arg h "$H1" '[31,32,33] | map({number:., headRefOid:$h, isDraft:false, statusCheckRollup:[{__typename:"CheckRun",status:"COMPLETED",conclusion:"SUCCESS"}]})'
+  gh() { if [[ "$1 $2" == "pr list" ]]; then
+    jq -n --arg h "$H1" '[31,32,33] | map({number:., headRefOid:$h, isDraft:false})'
+    elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H1/check-runs?per_page=100" ]]; then
+    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
     else eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; fi; }
   units '{"units":[
     {"id":"pr-31","pr":31,"stage":"ready-to-merge","merge_checked_epoch":100,"ready_since":"2026-10-20T01:00:00Z"},
@@ -1751,7 +1766,22 @@ eval "$gh_hol_saved"
   [[ "$(merge_candidates 3 | jq -r '"\(.id)=\(.pr_open_draft)"' | sort | tr '\n' ' ')" == "pr-31=true pr-32=false pr-34=null " ]] \
     || fail "merge candidates lack the bulk-listed draft state ($(merge_candidates 3 | jq -c '{id,pr_open_draft}' | tr '\n' ' '))"
   : > "$CALLS"; merge_candidates 3 > /dev/null
-  [[ "$(wc -l < "$CALLS")" == 1 && "$(cat "$CALLS")" == "pr list --state open"* ]] || fail "draft state cost an extra provider call ($(tr '\n' '|' < "$CALLS"))"
+  [[ "$(wc -l < "$CALLS")" == 2 && "$(head -n1 "$CALLS")" == "pr list --state open"* && "$(tail -n1 "$CALLS")" == "api repos/{owner}/{repo}/commits/$H2/check-runs?per_page=100"* ]] \
+    || fail "draft state or per-head checks cost an extra provider call ($(tr '\n' '|' < "$CALLS"))"
+)
+
+# 检查行按 head SHA 单取后：一次 merge_candidates 只有 1 次轻量列表 + 每个不同 head 一次 check-runs 读取；
+# 红 / 未完成的行不合并（前面 red、pending、pass 各段已按结果断言），这里钉调用形状。
+(
+  GH_PR_TABLE="$fixture/checks-ondemand.json"; echo '[]' > "$GH_PR_TABLE"; : > "$GH_PR_CALLS"; : > "$GH_CHECK_RUNS_CALLS"
+  gh_pr_open 21 "$H1" false MERGEABLE agent/issue-21 '[{"__typename":"CheckRun","name":"Required CI gates","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  gh_pr_open 22 "$H1" false MERGEABLE agent/issue-22
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-21",pr:21,branch:"agent/issue-21",lane:"pr",stage:"ready-to-merge",approved_sha:$sha,history:[]},{id:"pr-22",pr:22,branch:"agent/issue-22",lane:"pr",stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
+  tick_prs_changed
+  merge_candidates 3 > /dev/null
+  [[ "$(grep -c '^pr list' "$GH_PR_CALLS")" == 1 ]] || fail "expected one light list, got $(grep -c '^pr list' "$GH_PR_CALLS")"
+  [[ "$(grep -cx "check-runs $H1" "$GH_CHECK_RUNS_CALLS")" == 1 ]] \
+    || fail "expected one check-runs read for the shared head, got $(tr '\n' ' ' < "$GH_CHECK_RUNS_CALLS")"
 )
 
 # ---------- 门控 draft 单元（draft-ci 09-12）：批准且占到名额才 ready；名额外留在 draft；repair 派出退回 draft ----------
@@ -1860,19 +1890,33 @@ unset GH_CHECKS
   CFG="$(jq '.batch_max=1' <<<"$CFG")"
   GH_RUNS='[]'
   GH_MERGES=(); GH_MERGE_SHA="$M2"; NOW_EPOCH=200000
+  # checks are per head now: each PR gets its own head, and pr view reports that head per PR
+  H71="${H2:0:36}0071"; H72="${H2:0:36}0072"; H73="${H2:0:36}0073"; H74="${H2:0:36}0074"
+  GH_PR_TABLE="$fixture/held-pipeline.json"; echo '[]' > "$GH_PR_TABLE"
+  gh_pr_open 71 "$H71" false MERGEABLE agent/issue-71 '[{"__typename":"CheckRun","name":"Pipeline suites","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  gh_pr_open 72 "$H72" false MERGEABLE agent/issue-72 '[{"__typename":"CheckRun","name":"Pipeline suites","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  gh_pr_open 73 "$H73" false MERGEABLE agent/issue-73 '[{"__typename":"CheckRun","name":"Pipeline suites","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  gh_pr_open 74 "$H74" false MERGEABLE agent/issue-74 '[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]'
   units "{\"units\":[
-    {\"id\":\"pr-71\",\"pr\":71,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":1,\"history\":[]},
-    {\"id\":\"pr-72\",\"pr\":72,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":2,\"history\":[]},
-    {\"id\":\"pr-73\",\"pr\":73,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":3,\"history\":[]},
-    {\"id\":\"pr-74\",\"pr\":74,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":4,\"history\":[]}] }"
+    {\"id\":\"pr-71\",\"pr\":71,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H71\",\"ready_since\":1,\"history\":[]},
+    {\"id\":\"pr-72\",\"pr\":72,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H72\",\"ready_since\":2,\"history\":[]},
+    {\"id\":\"pr-73\",\"pr\":73,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H73\",\"ready_since\":3,\"history\":[]},
+    {\"id\":\"pr-74\",\"pr\":74,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H74\",\"ready_since\":4,\"history\":[]}] }"
+  # the rule-diff check compares each candidate's fetched ref with the census head: answer it per PR, not with the shared GH_HEAD
+  git_held_prev="$(declare -f git)"
+  git() {
+    if [[ "${1:-}" == -C && "${3:-}" == rev-parse && "${5:-}" == refs/autopi/merge-candidates/* ]]; then
+      local pr_n="${5##*/}"; jq -r --argjson n "${pr_n%%^*}" '.[] | select(.number == $n) | .headRefOid' "$GH_PR_TABLE"
+    else eval "${git_held_prev/git ()/git_held_prev ()}"; git_held_prev "$@"; fi
+  }
   gh() {
-    if [[ "$1 $2" == 'pr checks' ]]; then
-      if [[ "$3" == 74 ]]; then echo '[{"name":"ci","bucket":"pass"}]'
-      else echo '[{"name":"Pipeline suites","bucket":"pass"}]'; fi
+    if [[ "$1 $2 ${5:-}" == 'pr view headRefOid' ]]; then # ${5:-}: gh api <url> --jq <expr> has only four args, set -u
+      case "$3" in 71) echo "$H71" ;; 72) echo "$H72" ;; 73) echo "$H73" ;; 74) echo "$H74" ;; esac
     else eval "${gh_merge_stub/gh ()/gh_fair ()}"; gh_fair "$@"; fi
   }
   run_merge_lane || :
   [[ ${#GH_MERGES[@]} == 0 ]] || fail 'bounded pipeline scan merged a held candidate'
+  grep -qF 'merge skipped PR#73 (touches pipeline paths; pipeline merges held)' "$LOG" || fail 'held pipeline candidates were not actually held (the check rows were not read)'
   NOW_EPOCH=$((NOW_EPOCH + 120))
   run_merge_lane || :
   [[ ${#GH_MERGES[@]} == 1 && "${GH_MERGES[0]}" == *'pr merge 74'* && "$(field pr-74 .stage)" == merged ]] || fail 'held pipeline candidates starved a later green product PR'
@@ -1882,7 +1926,7 @@ unset GH_CHECKS
 : > "$fixture/mergeable.calls"
 gh() {
   if [[ "$1 $2" == "pr merge" ]]; then return 1; fi
-  if [[ "$1 $2 $5" == "pr view mergeable" ]]; then echo x >> "$fixture/mergeable.calls"; (( $(wc -l < "$fixture/mergeable.calls") > 1 )) && echo CONFLICTING || echo UNKNOWN; return 0; fi
+  if [[ "$1 $2 ${5:-}" == "pr view mergeable" ]]; then echo x >> "$fixture/mergeable.calls"; (( $(wc -l < "$fixture/mergeable.calls") > 1 )) && echo CONFLICTING || echo UNKNOWN; return 0; fi
   eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
 }
 units "{\"units\":[{\"id\":\"pr-17\",\"pr\":17,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
@@ -1894,7 +1938,7 @@ run_merge_lane || :
 grep -qF 'merge skipped PR#17 (conflicts with main) -> repair-pending' "$LOG" || fail 'conflict found after a failed merge lost its log line'
 eval "$gh_merge_stub"
 # checks 永远 pending 是因为冲突（GitHub 不跑 CI）：不等合并失败，直接送修复（热修回迁 pr-3588）；热修/critical 排在合并车道最前
-gh() { if [[ "$1 $2 $5" == "pr view mergeable" ]]; then echo CONFLICTING; return 0; fi; eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; }
+gh() { if [[ "$1 $2 ${5:-}" == "pr view mergeable" ]]; then echo CONFLICTING; return 0; fi; eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; }
 GH_CHECKS='[{"name":"CI","bucket":"pending"}]'
 GH_MERGEABLE_STATE=CONFLICTING
 GH_PR_TABLE="$fixture/pr-18-pending.json"; echo '[]' > "$GH_PR_TABLE"
@@ -1912,12 +1956,13 @@ unset GH_CHECKS GH_PR_TABLE; eval "$gh_merge_stub"
 # 仍冲突、锁文件/迁移 PR、更新失败都照旧派修复。
 GH_HEAD_SAVED="${GH_HEAD:-}"; GH_HEAD="$H1"
 gh() {
-  case "$1 $2 $5" in
+  case "$1 $2 ${5:-}" in
     "pr view mergeable") echo CONFLICTING; return 0 ;;
     "pr view mergeable,headRefOid") echo "${GH_FRESH:-MERGEABLE $H1}"; return 0 ;;
     "pr view files") printf '%s\n' "${GH_PR_FILES:-packages/x/a.ts}"; return 0 ;;
   esac
-  if [[ "$1" == api ]]; then GH_API_CALLS+=("$*"); return "${GH_API_FAIL:-0}"; fi
+  # the per-head check-runs read is not a conflict-update call: it goes to the base stub
+  if [[ "$1" == api && "$2" != */check-runs* ]]; then GH_API_CALLS+=("$*"); return "${GH_API_FAIL:-0}"; fi
   eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
 }
 GH_CHECKS='[{"name":"CI","bucket":"pending"}]'
@@ -3002,7 +3047,7 @@ gh() {
     "pr merge") return 1 ;;
     "pr update-branch") GH_UPDATES+=("$*") ;;
     "api -X") GH_UPDATES+=("$*") ;;
-    "pr view") [[ "$5" == mergeable ]] && { echo "$GH_MERGEABLE"; return; }; eval "${gh_conf_stub/gh ()/gh_c ()}"; gh_c "$@" ;;
+    "pr view") [[ "${5:-}" == mergeable ]] && { echo "$GH_MERGEABLE"; return; }; eval "${gh_conf_stub/gh ()/gh_c ()}"; gh_c "$@" ;;
     *) eval "${gh_conf_stub/gh ()/gh_c ()}"; gh_c "$@" ;;
   esac
 }

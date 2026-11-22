@@ -82,6 +82,12 @@ tick_prs() { TICK_PRS="$(cat "$fixture/prs.json")"; printf '%s' "$TICK_PRS"; }
 gh() {
   case "$1 $2" in
     'pr merge') printf '%s\n' "$*" >> "$GH_MERGES_FILE"; return 0 ;;
+    # checks come per head SHA now: serve the fixture row's rollup as REST check-runs
+    'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
+      jq -c --arg h "$GH_HEAD" '[.[] | select(.headRefOid == $h)][0].statusCheckRollup // []
+        | {total_count: length, check_runs: map({name: (.name // ""), details_url: (.detailsUrl // ""), started_at: (.startedAt // null),
+            status: ((.status // "completed") | ascii_downcase), conclusion: (if (.conclusion // null) == null then null else (.conclusion | ascii_downcase) end)})}' "$fixture/prs.json" \
+        | jq -c '.check_runs // []' ;;
     'pr view')
       case "${5:-}" in
         mergeCommit) printf '%s\n' "$GH_MERGE_SHA" ;;
@@ -99,7 +105,7 @@ set_candidate() {
     > "$fixture/prs.json"
   jq -cn --arg id "$id" --argjson pr "$number" --arg branch "$branch" --arg head "$head" \
     '{units:[{id:$id,pr:$pr,branch:$branch,stage:"ready-to-merge",approved_sha:$head,history:[]}]}' > "$UNITS"
-  TICK_PRS=""; TICK_PR_CHECK_CENSUS=""; TICK_PR_STATE=()
+  tick_prs_changed
   : > "$GH_MERGES_FILE"
   : > "$LOG"
 }

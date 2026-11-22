@@ -416,6 +416,15 @@ codex_credits_open() { # role -> 0 while that role may spend credits
   return 1
 }
 
+codex_credits_review_open() { # author-family -> 0 when this review may run on Codex credits; a Claude author only while GLM is held
+  case "$1" in
+    glm) ;;
+    claude) if zcode_review_open; then return 1; fi ;;
+    *) return 1 ;;
+  esac
+  codex_credits_open review
+}
+
 codex_credits_log() { # role unit -> one line per credit-funded dispatch
   [[ -n "${CODEX_CREDITS_START_BALANCE:-}" ]] && provider_quota_exhausted codex || return 0
   printf '%s\t%s\t%s\tbalance=%s\tspent=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \

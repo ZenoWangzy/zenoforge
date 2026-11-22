@@ -104,7 +104,7 @@ start_silent_breaker() { # worker-type
 }
 
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
-  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census guard_env_word install_guard_path worker_exit_file
+  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census dispatch_pr dispatch_body guard_env_word install_guard_path worker_exit_file
   local -a launcher=() worker_env=() launch_command=()
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
@@ -143,11 +143,22 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
       && "${TICK_DISPATCH_LOCAL_REFILL:-false}" != true ]]; then
     pr_census="$(tick_prs)" || { say "dispatch held unit=$unit reason=open-PR-census-unknown"; return 1; }
     if jqf -e --arg issue "$issue" \
-        'any(.[]; (((.title // "") + " " + (.body // "") + " " + (.headRefName // "")) | test("(^|[^0-9])#" + $issue + "([^0-9]|$)")))' \
+        'any(.[]; (((.title // "") + " " + (.headRefName // "")) | test("(^|[^0-9])#" + $issue + "([^0-9]|$)")))' \
         <<<"$pr_census" >/dev/null; then
       say "dispatch held unit=$unit reason=open-PR-for-issue"
       return 1
     fi
+    # 标题/分支没提到 issue 才逐个读正文（列表不再携带 body）；一条读不到也按占用来挡，宁可少派不重派
+    while IFS= read -r dispatch_pr; do
+      [[ "$dispatch_pr" =~ ^[0-9]+$ ]] || continue
+      # 本 shell 直接调，缓存才落得下来（$(...) 里每个单元都会把所有 open PR 的正文重读一遍）
+      tick_pr_body "$dispatch_pr" >/dev/null 2>&1 \
+        || { say "dispatch held unit=$unit reason=open-PR-for-issue"; return 1; }
+      if grep -qE "(^|[^0-9])#$issue([^0-9]|$)" <<<"${TICK_PR_BODY[$dispatch_pr]}"; then
+        say "dispatch held unit=$unit reason=open-PR-for-issue"
+        return 1
+      fi
+    done < <(jqf -r '[.[].number] | .[]' <<<"$pr_census")
   fi
   if coord_scheduler_live_worker "$unit" "$issue"; then
     say "dispatch held unit=$unit reason=live-worker"

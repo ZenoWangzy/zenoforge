@@ -547,12 +547,18 @@ harvest_worker_alive() { # worker JSON; group survives its leader, and zombies c
 # 只看记录、不看进程：worker 在 harvest_workers 判活之后、本阶段之前退出（中间隔几十秒），按进程判会再派一个，
 # 下一拍又收割原报告，同一单元两条评审/修复链并行（pr-2350 01:30、热修 pr-3588 02:44）。死了未收割的记录交给下一拍收割。
 recover_orphans() {
-  local id st
-  while read -r id st; do
+  local id st held
+  pr_adopt_held_units # a unit whose branch already has its PR in the census goes to review at any of these stages, before the orphan sweep below
+  while read -r id st held; do
     [[ -z "$id" ]] && continue
     scheduler_lock_yield_between_units || return 1
     [[ "${SCHEDULER_LOCK_YIELDED:-false}" != true || "$(unit_field "$id" '.stage // empty')" == "$st" ]] || continue
     if [[ "$(jqf -r --arg u "$id" '[.workers[] | select(.unit==$u and .harvested != true)] | length' "$WORKERS")" == 0 ]]; then
+      if [[ "$st" == implement && "$held" == held ]]; then
+        # The implement worker finished and its branch is pushed: only the PR open is owed. A new worker would write the change again (4-6 min, 1-3 M tokens).
+        [[ "${PR_OPEN_REFUSED_THIS_TICK:-false}" == true ]] || pr_open_retry "$id"
+        continue
+      fi
       if [[ "$(unit_field "$id" '.self_fix_active // false')" == true ]]; then
         set_unit "$id" '.self_fix_active=false | .self_fix_pending=false | .stage=.self_check_return_stage'
       else
@@ -560,9 +566,10 @@ recover_orphans() {
       fi
       say "orphan-recover unit=$id ${st} -> ${st}-pending"
     fi
-  done < <(jqf -r '.units[] | select(.stage=="review" or .stage=="rereview" or .stage=="repair" or .stage=="implement") | "\(.id) \(.stage)"' "$UNITS")
+  done < <(jqf -r '.units[] | select(.stage=="review" or .stage=="rereview" or .stage=="repair" or .stage=="implement") | "\(.id) \(.stage) \(if .pr_open_held.report then "held" else "-" end)"' "$UNITS")
   scheduler_lock_yield_between_units || return 1
 }
+
 stuck_worker_progress_fp() { # worker-json → "<log字节>|<HEAD>|<工作区内容指纹>"
   local wd lg size head dirty path
   wd="$(jqf -r '.workdir // ""' <<<"$1")"; lg="$SUP/$(jqf -r .log <<<"$1")"
