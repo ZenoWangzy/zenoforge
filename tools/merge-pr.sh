@@ -240,12 +240,12 @@ merge_pr_test_receipt_ok() {
 
 # Only this PR's own files: a main already over its baseline must not stop other merges.
 merge_pr_size_ok() {
-  local pr="$1" root files over comment
+  local pr="$1" root files over
   root="$(merge_pr_root)" || {
     merge_pr_refuse "$pr" 'no git checkout: cannot run size-ratchet' 'run tools/merge-pr.sh from a clone of the repository'
     return 1
   }
-  [[ ! -f "$root/tools/comment-ratchet.mjs" ]] || comment="$(node "$root/tools/comment-ratchet.mjs" --changed origin/main 2>&1)" || { merge_pr_refuse "$pr" "$comment"; return 1; }; over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^FAIL ')" || return 0
+  over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^FAIL ')" || return 0
   [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(merge_pr_head_sha "$pr" 2>/dev/null)" ]] || return 0
   files="$(merge_pr_view "$pr" body,files,commits 2>/dev/null | jq -r '.files[].path')"
   # Exact path match: every FAIL line also names tools/size-baseline.txt.

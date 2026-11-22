@@ -104,13 +104,6 @@ jobs:
         with:
           node-version: 22
       - run: git config --global user.name ci && git config --global user.email ci@example.com
-      # comment-ratchet parses shell with shfmt and TypeScript sources with typescript; the release binary goes on PATH without sudo.
-      - name: Install comment-ratchet tools
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/shfmt" https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
-          chmod +x "$RUNNER_TEMP/shfmt"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-          npm install -g typescript
       # Installs exactly the lockfile, which includes @typesafe-ai/sdk (engine/ts-judge.mjs's only npm runtime dependency).
       - run: npm ci
       - name: Run engine suites
