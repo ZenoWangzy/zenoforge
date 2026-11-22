@@ -264,7 +264,7 @@ provider_runtime_ready() { # provider model [role] [unit JSON] -> runnable, poli
   [[ "$role" == production ]] || model_policy_model_allowed_for_role "$model" "$role" || return 1
   cooling "$provider" && return 1
   case "$provider" in
-    codex) codex_week_stopped && return 1; command -v codex >/dev/null 2>&1 ;;
+    codex) { codex_week_stopped && { [[ "$role" != production ]] || ! codex_credits_open implement; }; } && return 1; command -v codex >/dev/null 2>&1 ;;
     zcode)
       [[ "$(zcode_paced zcode_quota_status)" == available ]] || return 1
       zf_zcode_bin_argv >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"

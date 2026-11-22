@@ -56,6 +56,12 @@ pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit stopped a
   [[ "$PICK_PROVIDER" == codex ]] || fail "credit implement went to $PICK_PROVIDER"
   CODEX_CREDITS_ROLES="review arbiter"; if pick_codex_work_identity '{"id":"credit-impl"}'; then fail 'implement picked past the weekly hold without implement in the credit roles'; fi
 )
+(
+  codex_credits_spent() { echo 100; }; CODEX_CREDITS_CAP=5000; CODEX_CREDITS_START_BALANCE=29582
+  CODEX_CREDITS_ROLES="implement"; provider_runtime_ready codex gpt-6-luna production '{}' || fail 'hard codex refused past the weekly hold with implement in the credit roles'
+  CODEX_CREDITS_ROLES="review arbiter"; if provider_runtime_ready codex gpt-6-luna production '{}'; then fail 'hard codex picked past the weekly hold without implement in the credit roles'; fi
+  CODEX_CREDITS_ROLES="implement"; if provider_runtime_ready codex gpt-6-luna work '{}'; then fail 'work role got the implement credit route through provider_runtime_ready'; fi
+)
 
 CFG="$(jq '.models.implement_share.claude=0' <<<"$CFG")"
 if pick_implementer "$sticky"; then fail 'claude share 0 still routed to Claude'; fi
