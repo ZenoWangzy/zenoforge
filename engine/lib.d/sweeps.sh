@@ -91,8 +91,9 @@ outcomes_closed_state_reconciliation_snapshot() { # home repo recent-closed-json
     [[ "$local_state" == ready ]] && ready_ids+="$issue"$'\n'
   done < <(jq -c '.[]' <<< "$ready_json")
   ready_ids_json="$(jq -Rn '[inputs | select(test("^[1-9][0-9]*$")) | tonumber]' <<< "$ready_ids")" || return 1
-  jq -cn --argjson recent "$recent_json" --argjson ids "$ready_ids_json" --argjson stale "$ready_json" '
-    ($recent + [$stale[] | select(.number as $n | $ids | index($n))])
+  # Row 975: 1000 closed issues as one --argjson passed the kernel's per-argument limit ("Argument list too long").
+  jq -cn --slurpfile recent <(printf '%s' "$recent_json") --argjson ids "$ready_ids_json" --slurpfile stale <(printf '%s' "$ready_json") '
+    ($recent[0] + [$stale[0][] | select(.number as $n | $ids | index($n))])
     | group_by(.number) | map(last)
   '
 }
