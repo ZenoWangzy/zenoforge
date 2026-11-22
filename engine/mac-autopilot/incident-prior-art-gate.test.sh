@@ -78,6 +78,14 @@ printf '%s' "$with_how_why_citation" > "$report"
 [[ "$(incident_review_verdict "$ordinary_unit" READY "$report")" == READY ]] \
   || { echo 'not ok - READY review rejected a why section with a commit SHA citation' >&2; exit 1; }
 printf 'ok - READY review with a commit SHA in why is accepted\n'
+# Row 949: GLM-5.3 writes "## how（…）"; the annotated heading counts, an absent one still fails.
+printf '%s' $'## decision-log\nTried the gate.\n\n## how（触及代码目前如何工作）\nThe report gate checks reports.\n\n## why (history)\nCommit 97ed8be records the gate.\n' > "$report"
+[[ -z "$(how_why_gate_reason "$ordinary_unit" "$report")" ]] \
+  || { echo "not ok - an annotated how/why heading was rejected ($(how_why_gate_reason "$ordinary_unit" "$report"))" >&2; exit 1; }
+printf '%s' $'## decision-log\nTried the gate.\n\n## however\nnot a how section\n\n## why\nCommit 97ed8be.\n' > "$report"
+[[ "$(how_why_gate_reason "$ordinary_unit" "$report")" == 'missing ## how' ]] \
+  || { echo "not ok - a heading that only starts with how passed ($(how_why_gate_reason "$ordinary_unit" "$report"))" >&2; exit 1; }
+printf 'ok - annotated how/why headings pass; other headings do not\n'
 assert_case NOT_READY 'escalation note without a reference is rejected' "$incident_unit" \
   "$base_body"$'\n## prior-art\nClassic problem: incomplete incident postmortem.\nUncertain sources were escalated to advisor (CTO) and the head.\nSource: https://sre.google/workbook/postmortem-culture/\n' \
   'escalation reference'
