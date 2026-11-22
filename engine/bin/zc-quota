@@ -27,6 +27,23 @@ const WEEK_PACE = Number(process.env.ZC_WEEK_PACE_PCT || 90);
 // 2 is the head session's interim value (2026-11-22); queue row 951 replaces it once the weekly points one review costs are measured.
 const WEEK_PACE_MARGIN = 2;
 const WEEK_SECONDS = 7 * 86400;
+// Row 979 (founder 2026-11-22 06:31Z「好好分配，不要提前用光」): while Codex is at its week stop or Claude is over its own
+// week pace line, GLM carries the factory under a higher line (ZC_WEEK_PACE_YIELD_PCT); once both are back, WEEK_PACE again.
+const WEEK_PACE_YIELD = Number(process.env.ZC_WEEK_PACE_YIELD_PCT || 200);
+const AGENT_HOME = process.env.AGENT_HOME || `${HOME}/.zenoforge`;
+const CODEX_SNAPSHOT = process.env.CODEX_QUOTA_SNAPSHOT_FILE || `${AGENT_HOME}/codex-quota.json`;
+const CLAUDE_SNAPSHOT = process.env.CLAUDE_QUOTA_SNAPSHOT_FILE || `${AGENT_HOME}/claude-quota.json`;
+const CODEX_WEEK_STOP = Number(process.env.CODEX_WEEK_STOP_PCT || 100);
+const CLAUDE_WEEK_PACE = Number(process.env.CLAUDE_WEEK_PACE_PCT || 95);
+// snapshot {week_pct, week_reset}, now -> why GLM yields ('' when it does not); a passed week_reset is stale and never yields
+const yieldReason = (codex, claude, now) => {
+  const live = s => s && Number.isFinite(s.week_pct) && s.week_reset > now;
+  if (live(codex) && codex.week_pct >= CODEX_WEEK_STOP) return `codex week ${codex.week_pct}%`;
+  if (live(claude) && claude.week_pct > CLAUDE_WEEK_PACE * (now - (claude.week_reset - WEEK_SECONDS)) / WEEK_SECONDS + WEEK_PACE_MARGIN)
+    return `claude week ${claude.week_pct}% over its pace`;
+  return '';
+};
+const readSnapshot = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const resolveWeekCap = (env, now, emit = () => {}) => {
   const value = env.ZC_WEEK_CAP;
@@ -60,11 +77,11 @@ function appendHeldUnderPaceAlert(provider, held, weekPct, pacePct, reason, stat
   state.held_under_pace_alert_at = now;
 }
 // week percentage, week reset epoch, now epoch -> epoch until which ZCode holds, or 0 when under the line (or the window has not started)
-const weekPaceUntil = (pct, reset, now) => {
-  if (!reset || !(WEEK_PACE > 0)) return 0;
+const weekPaceUntil = (pct, reset, now, pace = WEEK_PACE) => {
+  if (!reset || !(pace > 0)) return 0;
   const start = reset - WEEK_SECONDS;
-  if (pct <= WEEK_PACE * (now - start) / WEEK_SECONDS + WEEK_PACE_MARGIN) return 0;
-  return Math.min(reset, Math.ceil(start + (pct - WEEK_PACE_MARGIN) / WEEK_PACE * WEEK_SECONDS)); // when the line plus the margin reaches today's percentage
+  if (pct <= pace * (now - start) / WEEK_SECONDS + WEEK_PACE_MARGIN) return 0;
+  return Math.min(reset, Math.ceil(start + (pct - WEEK_PACE_MARGIN) / pace * WEEK_SECONDS)); // when the line plus the margin reaches today's percentage
 };
 if (process.argv[2] === '--self-test') {
   const r = 1_000_000_000, s = r - WEEK_SECONDS, assert = (c, m) => { if (!c) { console.error('FAIL', m); process.exit(1); } };
@@ -75,6 +92,13 @@ if (process.argv[2] === '--self-test') {
   assert(weekPaceUntil(5, r, s + 4 * 3600) === Math.ceil(s + 3 / WEEK_PACE * WEEK_SECONDS), 'above the margin holds until the line reaches the reading minus the margin');
   assert(weekPaceUntil(100, r, r - 60) === r, 'over the pace at week end holds to the reset, never past it');
   assert(weekPaceUntil(30, null, s) === 0, 'a window that has not started never holds');
+  // Row 979, 2026-11-22 09:08Z readings: Codex 100% to its reset, Claude 64% about 1.6 days in.
+  const day = s + 86400;
+  assert(yieldReason({ week_pct: 100, week_reset: r }, null, day) === 'codex week 100%', 'Codex at its week stop yields');
+  assert(yieldReason({ week_pct: 100, week_reset: day - 1 }, null, day) === '', 'a Codex reading past its reset is stale and does not yield');
+  assert(yieldReason({ week_pct: 40, week_reset: r }, { week_pct: 30, week_reset: r }, day) === 'claude week 30% over its pace', 'Claude over its line yields');
+  assert(yieldReason({ week_pct: 40, week_reset: r }, { week_pct: 10, week_reset: r }, day) === '', 'both under their lines: no yield');
+  assert(weekPaceUntil(17, r, day, WEEK_PACE_YIELD) === 0 && weekPaceUntil(17, r, day) > 0, 'GLM 17% one day in holds at the base line, not at the yield line');
   const noUntilLogs = [];
   const noUntil = resolveWeekCap({ ZC_WEEK_CAP: '1' }, r, message => noUntilLogs.push(message));
   assert(noUntil.source === 'env-ignored-no-until' && !weekCapHolds(19, noUntil), 'a cap without UNTIL is ignored');
@@ -251,8 +275,10 @@ try {
   const now = Math.floor(Date.now() / 1000);
   const weekCap = weekCapAt(now);
   const marker = (() => { try { return Number(fs.readFileSync(MARKER, 'utf8').trim()); } catch { return 0; } })();
-  const paceUntil = weekPaceUntil(q.week_pct, q.week_reset, now);
-  q.week_pace_line = q.week_reset ? Math.round(WEEK_PACE * (now - (q.week_reset - WEEK_SECONDS)) / WEEK_SECONDS * 10) / 10 : null;
+  q.week_pace_yield = yieldReason(readSnapshot(CODEX_SNAPSHOT), readSnapshot(CLAUDE_SNAPSHOT), now);
+  const pace = q.week_pace_yield ? Math.max(WEEK_PACE, WEEK_PACE_YIELD) : WEEK_PACE;
+  const paceUntil = weekPaceUntil(q.week_pct, q.week_reset, now, pace);
+  q.week_pace_line = q.week_reset ? Math.round(pace * (now - (q.week_reset - WEEK_SECONDS)) / WEEK_SECONDS * 10) / 10 : null;
   const weekCapHold = weekCapHolds(q.week_pct, weekCap);
   const held = q.five_h_pct >= CAP_5H || weekCapHold || paceUntil;
   if (held) {
@@ -262,7 +288,7 @@ try {
     const until = Math.max(capUntil || 0, q.five_h_pct >= CAP_5H ? q.five_h_reset : 0, paceUntil);
     if (until > marker) fs.writeFileSync(MARKER, `${until}\n`);
     q.marker_written = Math.max(until, marker);
-    const why = paceUntil ? `week pace line ${q.week_pace_line}% of ${WEEK_PACE}%` : 'cap';
+    const why = paceUntil ? `week pace line ${q.week_pace_line}% of ${pace}%${q.week_pace_yield ? ` (yield: ${q.week_pace_yield})` : ''}` : 'cap';
     log(`hold ZCode until ${new Date(until * 1000).toISOString()}: 5h ${q.five_h_pct}% weekly ${q.week_pct}% (${why})`);
     appendHeldUnderPaceAlert('ZCODE', true, q.week_pct, q.week_pace_line, why, q, now, ALERT_FILE);
   } else if (prev.marker_written && marker === prev.marker_written && marker > now) {
