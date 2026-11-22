@@ -111,7 +111,8 @@ export CODEX_WEEK_STOP_PCT=100
 week() { jq -n --argjson p "$1" --argjson r "$(( $(date +%s) + 3600 ))" '{week_pct:$p,week_reset:$r}' > "$AGENT_HOME/codex-quota.json"; }
 
 # Over the stop: batch runner. Codex is never called; the haiku result applies through run-triage.sh --batch-result.
-week 100
+# Row 984: the factory Claude pause marker is set here too; it holds implement and repair, not haiku triage.
+week 100; echo $(( $(date +%s) + 3600 )) > "$AGENT_HOME/claude-exhausted-until"
 : > "$FAKE_CODEX_ARGS"; : > "$FAKE_CLAUDE_ARGS"; : > "$FAKE_GH_LOG"
 OUT="$(bash "$SCRIPT_DIR/run-triage-batch.sh" --scheduled 920101 2>&1)" || { echo "not ok - batch over the stop exits 0"; FAILED=1; }
 assert_eq "batch over the stop makes no Codex call" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
@@ -129,6 +130,14 @@ assert_contains "run-triage Claude call uses haiku and the triage schema" "$(cat
 assert_contains "run-triage Claude call is schema-constrained" "$(cat "$FAKE_CLAUDE_ARGS")" '--json-schema'
 assert_eq "run-triage haiku verdict is applied" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/920102.json")"
 assert_eq "run-triage records the Claude fresh token count on its spend row" 1200 "$(cat "$AGENT_HOME"/spend/*.log | awk -F'\t' '$2 == "triage" && $4 == 920102 { print $6 }')"
+
+# The Claude week stop (claude-quota.json at CLAUDE_WEEK_STOP_PCT) still stops haiku triage.
+jq -n --argjson r "$(( $(date +%s) + 3600 ))" '{week_pct:96,week_reset:$r}' > "$AGENT_HOME/claude-quota.json"
+: > "$FAKE_CODEX_ARGS"; : > "$FAKE_CLAUDE_ARGS"
+OUT="$(bash "$SCRIPT_DIR/run-triage-batch.sh" --scheduled 920104 2>&1)" || { echo "not ok - batch at the Claude week stop exits 0"; FAILED=1; }
+assert_eq "batch at the Claude week stop makes no Claude call" 0 "$(wc -l < "$FAKE_CLAUDE_ARGS" | tr -d ' ')"
+assert_contains "batch at the Claude week stop stays queued" "$OUT" 'Claude haiku unavailable; leaving batch queued'
+rm -f "$AGENT_HOME/claude-quota.json" "$AGENT_HOME/claude-exhausted-until"
 
 # Under the stop: Codex runs, Claude does not.
 week 50
