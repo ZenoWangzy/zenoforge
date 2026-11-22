@@ -85,7 +85,8 @@ pr_census_checks_fill() { # stdin: pr_census_by_number 的对象 → stdout: 每
   obj="$(cat)"
   while IFS=$'\t' read -r pr head; do
     [[ "$pr" =~ ^[0-9]+$ ]] || continue
-    if rows="$(tick_pr_check_runs "$head")"; then
+    # 在本 shell 调一次（写缓存）；$(...) 里的写入回不到这里，所以读缓存而不是再调一次
+    if tick_pr_check_runs "$head" >/dev/null 2>&1 && rows="${TICK_PR_CHECK_RUNS[$head]}"; then
       ci="$(jqf -r 'if any(.[]; .bucket == "pending") then 2 elif any(.[]; .bucket == "fail" or .bucket == "cancel") then 1 else 0 end' <<<"$rows")"
       # 检查行是整份 census 量级的载荷，走文件而不是 argv（--argjson checks "$rows" 这一形态会被
       # jq-arg-safety 按无界变量拦下）；--slurpfile 后 $checks 是 [rows]，取 [0]。

@@ -1890,15 +1890,21 @@ unset GH_CHECKS
   CFG="$(jq '.batch_max=1' <<<"$CFG")"
   GH_RUNS='[]'
   GH_MERGES=(); GH_MERGE_SHA="$M2"; NOW_EPOCH=200000
+  # checks are per head now: each PR gets its own head, and pr view reports that head per PR
+  H71="${H2:0:36}0071"; H72="${H2:0:36}0072"; H73="${H2:0:36}0073"; H74="${H2:0:36}0074"
+  GH_PR_TABLE="$fixture/held-pipeline.json"; echo '[]' > "$GH_PR_TABLE"
+  gh_pr_open 71 "$H71" false MERGEABLE agent/issue-71 '[{"__typename":"CheckRun","name":"Pipeline suites","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  gh_pr_open 72 "$H72" false MERGEABLE agent/issue-72 '[{"__typename":"CheckRun","name":"Pipeline suites","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  gh_pr_open 73 "$H73" false MERGEABLE agent/issue-73 '[{"__typename":"CheckRun","name":"Pipeline suites","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  gh_pr_open 74 "$H74" false MERGEABLE agent/issue-74 '[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]'
   units "{\"units\":[
-    {\"id\":\"pr-71\",\"pr\":71,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":1,\"history\":[]},
-    {\"id\":\"pr-72\",\"pr\":72,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":2,\"history\":[]},
-    {\"id\":\"pr-73\",\"pr\":73,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":3,\"history\":[]},
-    {\"id\":\"pr-74\",\"pr\":74,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":4,\"history\":[]}] }"
+    {\"id\":\"pr-71\",\"pr\":71,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H71\",\"ready_since\":1,\"history\":[]},
+    {\"id\":\"pr-72\",\"pr\":72,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H72\",\"ready_since\":2,\"history\":[]},
+    {\"id\":\"pr-73\",\"pr\":73,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H73\",\"ready_since\":3,\"history\":[]},
+    {\"id\":\"pr-74\",\"pr\":74,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H74\",\"ready_since\":4,\"history\":[]}] }"
   gh() {
-    if [[ "$1 $2" == 'pr checks' ]]; then
-      if [[ "$3" == 74 ]]; then echo '[{"name":"ci","bucket":"pass"}]'
-      else echo '[{"name":"Pipeline suites","bucket":"pass"}]'; fi
+    if [[ "$1 $2 $5" == 'pr view headRefOid' ]]; then
+      case "$3" in 71) echo "$H71" ;; 72) echo "$H72" ;; 73) echo "$H73" ;; 74) echo "$H74" ;; esac
     else eval "${gh_merge_stub/gh ()/gh_fair ()}"; gh_fair "$@"; fi
   }
   run_merge_lane || :

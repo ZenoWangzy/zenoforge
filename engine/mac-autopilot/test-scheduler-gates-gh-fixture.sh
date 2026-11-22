@@ -153,7 +153,7 @@ gh() {
       else
         jq -c '{total_count: length, check_runs: map({name: .name, details_url: (.link // ""), started_at: (.started_at // null),
             status: (if .bucket == "pending" then "in_progress" else "completed" end),
-            conclusion: ({pass: "success", fail: "failure", skipping: "skipped", neutral: "neutral", cancel: "cancelled"}[.bucket] // null)})}' <<<"${GH_CHECKS:-[]}" | jq -r "${cr_jq:-.}"
+            conclusion: ({pass: "success", fail: "failure", skipping: "skipped", neutral: "neutral", cancel: "cancelled"}[.bucket] // null)})}' <<<"${GH_CHECKS:-$GH_CHECKS_PASS}" | jq -r "${cr_jq:-.}"
       fi ;;
     # 一个 run 的 job 快照：[{status, runner_id}]（cd947d120 的共享缓存契约）
     "api repos/{owner}/{repo}/actions/runs/"*"/jobs"*)
