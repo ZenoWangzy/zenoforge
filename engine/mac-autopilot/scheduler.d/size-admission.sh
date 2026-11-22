@@ -245,6 +245,22 @@ pr_create_failure_transient() { # gh output rc → true for retryable server/tra
   [[ "$rc" == 124 ]] && return 0
   grep -Eiq 'HTTP([[:space:]]|/[0-9.]+[[:space:]])5[0-9]{2}|GraphQL:[[:space:]]*Something went wrong|ECONNRESET|ETIMEDOUT|timeout|timed[[:space:]]+out|deadline exceeded' <<<"$output"
 }
+pr_create_backoff_refused() { # gh output rc → true when the shared GitHub back-off refused the call (rc 75 or its text); no GitHub call was made
+  local output="${1:-}" rc="${2:-0}"
+  [[ "$rc" == 75 ]] && return 0
+  grep -Eiq 'rate-limit backoff active|secondary rate limit|API rate limit (already )?exceeded' <<<"$output"
+}
+pr_create_held() { # unit branch output → keep the unit at implement for the next tick; escalate after 3 h of holds
+  local unit="$1" branch="$2" out="$3" held_since latest
+  held_since="$(unit_field "$unit" '(.history // []) | [.[(([to_entries[] | select(.value.stage == "write-end") | .key] | last) // -1) + 1:][] | select(.stage == "pr-create-held") | .at] | .[0] // empty')"
+  if [[ -n "$held_since" ]] && (( $(date -u -d "$STAMP" +%s) - $(date -u -d "$held_since" +%s) > 10800 )); then
+    to_supervisor "$unit" "PR open held by GitHub back-off for 3 h on $branch: ${out:0:160}"
+    return 0
+  fi
+  say "unit $unit PR open held by GitHub back-off on $branch; retry next tick"
+  latest="$(unit_field "$unit" '.history[-1].stage // empty')"
+  [[ "$latest" == pr-create-held ]] || set_unit "$unit" "$(hist pr-create-held "${out:0:120}")"
+}
 harvest_pr_implement() { # unit report-path
   local first issue branch dir head title pr out base local_head ahead dirty push_out create_error create_rc retry_limit retry_count adopt_rc reason repeat
   first="$(grep -m1 -v '^[[:space:]]*$' "$2" 2>/dev/null)"
@@ -351,6 +367,9 @@ $(head -40 "$2")" "$base"
   pr="$SCHED_PR_NUM"; out="$SCHED_PR_OUT"
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     create_rc="${SCHED_PR_RC:-0}"
+    if pr_create_backoff_refused "$out" "$create_rc"; then
+      pr_create_held "$1" "$branch" "$out"; return 0
+    fi
     if [[ "${SCHED_PR_CREATE_ATTEMPTED:-false}" == true ]] && pr_create_failure_transient "$out" "$create_rc"; then
       create_error="$out"
       [[ -n "$create_error" ]] || create_error="gh pr create exited with rc=$create_rc"
