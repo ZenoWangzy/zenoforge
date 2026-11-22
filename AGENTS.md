@@ -4,6 +4,8 @@ Goal: an unattended, fully automatic, self-healing software factory. No human in
 
 A self-hosted software factory: coding agents take GitHub issues through triage, recut, implement, review, repair and merge. The engine is Bash, Node and Python under `engine/`; `docs/architecture.md` maps it.
 
+Factory terms are defined in `GLOSSARY.md`.
+
 ## Method: Matt skills
 
 Work here follows Matt Pocock's skills, vendored in `.agents/skills/` and entered through `/ask-matt`. Start there when unsure which one fits.
