@@ -116,7 +116,7 @@ post_land_mttr_detects() {
       ended="$(jq -r '.ended_at | try fromdateiso8601 catch 0' <<< "$run")"
       (( ended > landed )) || continue
       head="$(jq -r '.head_sha' <<< "$run")"
-      if [ -z "${ancestry[$culprit $head]:-}" ]; then
+      if [ -z "${ancestry["$culprit $head"]:-}" ]; then
         if git -C "$repo" merge-base --is-ancestor "$culprit" "$head" 2>/dev/null; then
           ancestry["$culprit $head"]=1
         else
