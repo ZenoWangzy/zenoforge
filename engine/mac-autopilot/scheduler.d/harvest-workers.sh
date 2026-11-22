@@ -547,18 +547,8 @@ harvest_worker_alive() { # worker JSON; group survives its leader, and zombies c
 # 只看记录、不看进程：worker 在 harvest_workers 判活之后、本阶段之前退出（中间隔几十秒），按进程判会再派一个，
 # 下一拍又收割原报告，同一单元两条评审/修复链并行（pr-2350 01:30、热修 pr-3588 02:44）。死了未收割的记录交给下一拍收割。
 recover_orphans() {
-  local id st held rep
-  # Units escalated by the pre-hold code for a refused PR open (issue-7619/7620/7644, 2026-11-22) return to the owed-PR-open retry, not to the arbiter:
-  # dispatch_supervisor_arbiters runs after recover_orphans in both tick paths of scheduler.sh. A new refusal never escalates, so delete this loop after 2026-11-29.
-  while read -r id rep; do
-    [[ -n "$id" && -s "$SUP/$rep" ]] || continue
-    [[ "$(jqf -r --arg u "$id" '[.workers[] | select(.unit==$u and .harvested != true)] | length' "$WORKERS")" == 0 ]] || continue
-    set_unit "$id" "$(hist pr-open-requeued "$rep") | .stage=\"implement\" | .pr_open_held={report:$(js "$SUP/$rep"),since:$(js "$STAMP")}" \
-      && say "pr-open-requeued unit=$id: escalated for a refused PR open; retried without a worker"
-  done < <(jqf -r --argjson now "$NOW_EPOCH" '.units[] | select(.stage == "supervisor-review" and .lane == "pr" and ((.pr // "") == "") and (.report // "") != "")
-    | select((.history // [])[-1] | .stage == "supervisor-escalated" and ((.at // "") | (try fromdateiso8601 catch 0)) > ($now - 21600)
-        and ((.result // "") | test("could not open a PR for .*(rate-limit backoff active|secondary rate limit)")))
-    | "\(.id) \(.report)"' "$UNITS")
+  local id st held
+  pr_adopt_held_units # a unit whose branch already has its PR in the census goes to review at any of these stages, before the orphan sweep below
   while read -r id st held; do
     [[ -z "$id" ]] && continue
     scheduler_lock_yield_between_units || return 1

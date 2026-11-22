@@ -278,6 +278,28 @@ pr_open_retry() { # unit → retry an owed PR open on the finished clone without
   fi
   harvest_pr_implement "$unit" "$report"
 }
+pr_adopt_held_units() { # adopt the open PR of a PR-lane unit that has none (supervisor-review, parked, or implement with an owed PR open); the census only, no GitHub API call
+  local id branch row pr draft sha labelled remote
+  [[ -n "${TICK_PRS:-}" ]] || return 0 # census not loaded: nothing to read, and this must not fetch it
+  while IFS=$'\t' read -r id branch; do
+    [[ -n "$id" ]] || continue
+    [[ "$(jqf -r --arg u "$id" '[.workers[] | select(.unit==$u and .harvested != true)] | length' "$WORKERS")" == 0 ]] || continue
+    row="$(jqf -r --arg b "$branch" --arg l "$GATED_LABEL" 'map(select(.headRefName == $b))[0] // empty | "\(.number) \(.isDraft) \(.headRefOid // "-") \(any(.labels[]?; .name == $l))"' <<<"$TICK_PRS" 2>/dev/null)" || continue
+    [[ -n "$row" ]] || continue
+    read -r pr draft sha labelled <<<"$row"
+    if [[ "$branch" =~ $GATED_BRANCH_RE && ( "$draft" != true || "$labelled" != true ) ]]; then
+      say "pr-adopt skipped unit=$id PR#$pr: condition 1 failed (a gated branch needs a draft PR labelled $GATED_LABEL)"; continue
+    fi
+    # git ls-remote against the scheduler's checkout: a git transport read of the branch head, not a GitHub API call.
+    remote="$(git -C "$ROOT" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}')"
+    if [[ ! "$sha" =~ $SHA_RE || "$sha" != "$remote" ]]; then
+      say "pr-adopt skipped unit=$id PR#$pr: condition 2 failed (PR head ${sha:0:9} is not the branch head ${remote:0:9})"; continue
+    fi
+    # The .pr guard keeps the event at one per unit if the row changed since the read. Park fields (park_fields: parked_reason, unpark_condition), the cap-exhausted marks, the stale note and the owed-PR-open mark go.
+    set_unit "$id" "if (.pr // null) == null then ($(hist pr-adopted "adopted existing PR#$pr $sha") | .pr=$pr | .lane=\"pr\" | .stage=\"review-pending\" | del(.pr_open_held, .parked_reason, .unpark_condition, .cap_exhausted_mark, .cap_exhausted_by, .note)$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')) else . end" \
+      && say "unit $id adopted existing PR#$pr on $branch -> review-pending"
+  done < <(jqf -r '.units[] | select(.lane == "pr" and (.branch // "") != "" and ((.pr // "") == "") and (.stage == "supervisor-review" or .stage == "parked" or (.stage == "implement" and .pr_open_held != null))) | "\(.id)\t\(.branch)"' "$UNITS")
+}
 pr_create_rest() { # branch base title body → SCHED_PR_NUM/OUT/RC; the GraphQL back-off does not cover the REST pulls endpoint (transport.sh classes an api call without graphql as rest)
   local gated=false out0="$SCHED_PR_OUT" rc0="$SCHED_PR_RC" args=(api "repos/{owner}/{repo}/pulls" -X POST --jq .number)
   [[ "$1" =~ $GATED_BRANCH_RE ]] && gated=true && args+=(-F draft=true)
