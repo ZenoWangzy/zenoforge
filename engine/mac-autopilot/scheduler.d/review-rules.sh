@@ -156,21 +156,27 @@ incident_report_harvest_target() { # unit-id worker-type unit-json worker-report
 }
 # 11-22 (row 972): units the stale-report gate escalated before it judged the repair's delivery (issue-7606 5 rounds, 7619,
 # 7644) go back through the gate once, on the fix note their last escalation names: one history event, no arbiter round.
+# Row 977: a recovered unit the repair breaker then parked while the gate still failed (the breaker counted report-only no-push
+# rounds) gets one more pass, on its unit report.
 report_gate_stale_recover() {
-  local id wr uj target next
+  local id wr uj target next reason hint
   while IFS=$'\t' read -r id wr; do
     [[ -n "$id" && -s "$SUP/$wr" ]] || continue
     uj="$(harvest_unit_snapshot "$id")"
     [[ -s "$SUP/$(jqf -r '.implementation_report // empty' <<<"$uj")" ]] || continue
     target="$(incident_report_harvest_target "$id" repair "$uj" "$wr" "$SUP/$wr")"
-    next=repair-pending; [[ -n "$(incident_report_reason "$uj" "$SUP/$target")" ]] || next=rereview-pending
-    set_unit "$id" "$(hist report-gate-recovered "gate re-run on $wr (judged $target): $next") | .stage=$(js "$next") | del(.report_gate_fail) | del(.parked_reason)" || continue
+    reason="$(incident_report_reason "$uj" "$SUP/$target")"; next=repair-pending; [[ -n "$reason" ]] || next=rereview-pending
+    [[ "$(jqf -r '.parked_reason // ""' <<<"$uj")" != repair-breaker ]] || reason="$(jqf -r '.report_gate_fail.reason' <<<"$uj")" # the gate's reason on the last delivery, not the stale pointer's
+    hint="The implementation report gate says: ${reason}. Complete the report sections only (no code change is needed for this); an escalation record from head or the advisor, if any, is in the issue comments: cite its URL as 'Escalation reference: <URL>'."
+    set_unit "$id" "$(hist report-gate-recovered "gate re-run on $wr (judged $target): $next") | .stage=$(js "$next") | del(.report_gate_fail) | del(.parked_reason)${reason:+ | .repair_hint=$(js "$hint")}" || continue
     say "report-gate-recover unit=$id report=$target -> $next"
   done < <(jqf -r '.units[] | select(.stage == "supervisor-review" or .stage == "parked")
-    | select(any(.history[]?; .stage == "report-gate-recovered") | not)
+    | ([.history[]? | select(.stage == "report-gate-recovered")] | length) as $k
     | ([.history[]? | select(.stage == "supervisor-escalated")] | last | .result // "") as $r
-    | select($r | test("^implementation report gate failed [0-9]+ times in a row with the same reason: .*; worker report [^)]+\\)$"))
-    | "\(.id)\t\($r | capture("; worker report (?<w>[^)]+)\\)$").w)"' "$UNITS" 2>/dev/null)
+    | if $k == 0 and ($r | test("^implementation report gate failed [0-9]+ times in a row with the same reason: .*; worker report [^)]+\\)$"))
+      then "\(.id)\t\($r | capture("; worker report (?<w>[^)]+)\\)$").w)"
+      elif $k == 1 and .parked_reason == "repair-breaker" and .report_gate_fail != null and (.implementation_report // "") != ""
+      then "\(.id)\t\(.implementation_report)" else empty end' "$UNITS" 2>/dev/null)
 }
 incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason

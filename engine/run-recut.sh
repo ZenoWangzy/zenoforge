@@ -69,14 +69,14 @@ fi
 # See lib.sh's gh()/_bounded_call_timed_out() comment: a bounded `gh` call
 # that times out here records env:network-timeout against this stage/$N.
 GH_ENV_FAULT_STAGE=recut
-MODEL_POLICY_IDENTITY="$(recut_glm_identity || model_policy dispatch-state-identity "$N" recut)"
+MODEL_POLICY_IDENTITY="$(recut_glm_identity "$N" || model_policy dispatch-state-identity "$N" recut)"
 RECUT_MODEL_ROLE=work
 MODEL_POLICY_STEP="$(state_read "$N" | jq -r 'if .model_policy.unit == "recut" then .model_policy.step // "work" else "work" end')"
 if model_config_fault_blocked "$(model_policy step-role "$MODEL_POLICY_STEP")" "$MODEL_POLICY_IDENTITY"; then
   echo "run-recut: model configuration fault remains for $MODEL_POLICY_IDENTITY" >&2
   exit 0
 fi
-case "$MODEL_POLICY_IDENTITY" in codex:*) ;; zcode:*) RECUT_MODEL_ROLE=hand-zcode ;; *) echo "run-recut: policy step is not a work role; advisor dispatch belongs to the batch runner" >&2; exit 78 ;; esac
+case "$MODEL_POLICY_IDENTITY" in codex:*) ;; zcode:*) RECUT_MODEL_ROLE=hand-zcode ;; claude:*) RECUT_MODEL_ROLE=hand-claude ;; *) echo "run-recut: policy step is not a work role; advisor dispatch belongs to the batch runner" >&2; exit 78 ;; esac
 
 # Ponytail: a ticket too big for one dispatch rarely needs more than a
 # handful of independently-implementable pieces to become small enough --
@@ -335,9 +335,14 @@ PROMPT_FILE="$(mktemp)"
 # trail; recut needs nothing beyond what triage already needs.
 set +e
 model_policy_mark_started "$N" recut
-OUTPUT="$(run_model_json "$WT" "$MODEL_POLICY_IDENTITY" 45 \
-  "$(zf_config_file prompts/recut.schema.json)" "$PROMPT_FILE" \
-  "$(zf_config_file prompts/agent-settings.json)" "$RECUT_MODEL_ROLE")"
+if [ "$RECUT_MODEL_ROLE" = hand-claude ]; then # same read-only Claude call as triage (lib.d/triage-claude.sh)
+  OUTPUT="$(run_claude_json "$WT" "$MODEL_POLICY_IDENTITY" 45 "$(zf_config_file prompts/recut.schema.json)" "$PROMPT_FILE" \
+    "$(zf_config_file prompts/agent-settings.json)")"
+else
+  OUTPUT="$(run_model_json "$WT" "$MODEL_POLICY_IDENTITY" 45 \
+    "$(zf_config_file prompts/recut.schema.json)" "$PROMPT_FILE" \
+    "$(zf_config_file prompts/agent-settings.json)" "$RECUT_MODEL_ROLE")"
+fi
 STATUS=$?
 set -e
 RECUT_TOKENS="$(jq -r '.tokens_used // empty' <<< "$OUTPUT" 2>/dev/null || true)"
@@ -375,6 +380,7 @@ if [ $STATUS -ne 0 ] || [ "$RECUT_MODEL_IS_ERROR" = "true" ]; then
   POLICY_STATUS="$STATUS"
   [ "$POLICY_STATUS" -ne 0 ] || POLICY_STATUS=1
   state_bump_attempts "$N"
+  [[ "$MODEL_POLICY_IDENTITY" != claude:claude-haiku* ]] || state_merge "$N" '.recut_claude_haiku_failed_at = (now | todate)' || true # the next recut of this issue uses sonnet
   pause_for_backoff "$N" "$OUTPUT" "$STATUS" 0 "$(provider_quota_provider_for_model "$MODEL_POLICY_IDENTITY")" "$MODEL_POLICY_IDENTITY" run-recut:recut || true
   FAILURE_DETAIL="Recut run failed (exit $STATUS); full output in $LOG_FILE"
   if [ -n "$RECUT_EMPTY_FIELDS" ]; then

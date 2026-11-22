@@ -44,6 +44,9 @@ findings block, this file wins.
    finding even when the underlying failure already existed on the base.
 3. **Standards**: the repository's own rules, then general good practice.
    Do not repeat formatting that stable tooling already enforces.
+   Check the diff against each related ADR's `Do not:` line (via
+   `docs/adr/index.md`); the `summary` names the ADR. Overturn an ADR only
+   with a superseding one.
 4. **Maintainability**: blocking only with diff evidence, real impact, and a
    behavior-equivalent minimum fix that needs no unrelated refactor.
 
@@ -81,9 +84,8 @@ A yes with unbounded cost is a finding; name the principle.
 Write exactly one standalone line: `VERDICT: READY`, `VERDICT: NOT_READY`, or
 `VERDICT: INPUT_INCOMPLETE`. The line must contain only that token and value:
 no bold or code formatting, no heading, no label prefix such as `结论：`, no
-trailing remark or second verdict value on the same line — the parser reads the
-value anchored right after `VERDICT:` and treats a second value on that line as
-a contradiction. `READY` means no candidate P0/P1 finding remains open.
+trailing remark or second verdict value on the same line. `READY` means no
+candidate P0/P1 finding remains open.
 Advisory, pre-existing, and unknown findings do not block. `NOT_READY`
 requires at least one such blocker; `INPUT_INCOMPLETE` means an essential scope
 input or a named prerequisite is unavailable. Older reports may still use

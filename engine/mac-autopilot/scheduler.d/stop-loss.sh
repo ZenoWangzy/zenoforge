@@ -524,9 +524,12 @@ REPAIR_BREAKER_RUNS="${REPAIR_BREAKER_RUNS:-2}"
 repair_breaker() { # unit report-file → parks the unit when its last repair runs all ended repair-no-push on the same head
   local u head n evidence result
   u="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  # Row 977 (11-22: 7606, 7619 parked 05:42Z): after a report-gate recovery a round whose only gap is the report pushes nothing
+  # by design; the report gate's same-reason count stops that loop, so the breaker leaves it alone; the recovery starts a new count.
+  [[ -z "$(jqf -r 'select(any(.history[]?; .stage == "report-gate-recovered")) | .report_gate_fail.reason // empty' <<<"$u")" ]] || return 0
   head="$(jqf -r '(.history // [])[-1] // {} | select(.stage == "repair-no-push") | (.result // "") | capture("^head (?<sha>[0-9a-f]{40}) unchanged").sha? // empty' <<<"$u" 2>/dev/null)"
   [[ "$head" =~ $SHA_RE ]] || return 0
-  n="$(jqf -r --arg r "head $head unchanged after repair" '[(.history // [])[] | select(.stage == "repair-no-push" or .stage == "repair-delivered")] | reverse
+  n="$(jqf -r --arg r "head $head unchanged after repair" '[(.history // [])[] | select(.stage == "repair-no-push" or .stage == "repair-delivered" or .stage == "report-gate-recovered")] | reverse
     | reduce .[] as $e ({n: 0, stop: false}; if .stop then . elif $e.stage == "repair-no-push" and $e.result == $r then .n += 1 else .stop = true end) | .n' <<<"$u")"
   [[ "$n" =~ ^[0-9]+$ ]] && (( n >= REPAIR_BREAKER_RUNS )) || return 0
   evidence="$(awk '/^```/ { fence = !fence; next } !fence && NF { last = $0 } END { print last }' "$2" 2>/dev/null | cut -c1-300)"
