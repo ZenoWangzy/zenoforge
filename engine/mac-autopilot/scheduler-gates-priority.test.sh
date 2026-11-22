@@ -21,7 +21,7 @@ gh_prio_saved="$(declare -f gh)"
 rm -f "$ph/cancelled"
 units "{\"units\":[{\"id\":\"linked-hotfix\",\"pr\":30,\"stage\":\"review-pending\",\"branch\":\"agent/issue-30\",\"history\":[]}]}"
 GH_PR_TABLE="$fixture/defer-linked-hotfix-prs.json"; printf '[{"number":30,"headRefName":"agent/issue-30","headRefOid":"%s","isDraft":false,"labels":[],"statusCheckRollup":[]} ]\n' "$H2" > "$GH_PR_TABLE"
-TICK_PRS=""; TICK_UNFINISHED="[$(run_json 76 queued agent/issue-30 "$H2" CI)]"
+tick_prs_changed; TICK_UNFINISHED="[$(run_json 76 queued agent/issue-30 "$H2" CI)]"
 hotfix_issues_saved="$TICK_HOTFIX_ISSUES"; hotfix_issues_loaded_saved="$TICK_HOTFIX_ISSUES_LOADED"
 TICK_HOTFIX_ISSUES='[30]'; TICK_HOTFIX_ISSUES_LOADED=true
 ( ROOT="$ph"; ci_defer_classified_test ) || fail 'draft defer errored on a linked hotfix PR'
@@ -35,7 +35,7 @@ units "{\"units\":[{\"id\":\"pr-21\",\"pr\":21,\"stage\":\"review-pending\",\"br
 GH_RUNS="[$(run_json 70 queued hp "$H2" CI),$(run_json 71 queued plain "$H1" CI)]"
 gh_census_saved="$(declare -f gh)"
 gh() { if [[ "$1 $2" == "pr list" ]]; then return 1; else eval "${gh_census_saved/gh ()/gh_f ()}"; gh_f "$@"; fi; }
-( ROOT="$ph"; TICK_PRS=""; ci_admission ) || fail 'ci_admission errored with an unavailable PR census'
+( ROOT="$ph"; tick_prs_changed; ci_admission ) || fail 'ci_admission errored with an unavailable PR census'
 [[ ! -s "$ph/cancelled" ]] || fail "controller cancelled runs without hotfix classification ($(tr '\n' ' ' < "$ph/cancelled"))"
 eval "$gh_census_saved"; GH_RUNS='[]'
 # ---------- 统一优先级与 FIFO：main-red > opt > normal；同级按 ready_since ----------
@@ -62,6 +62,8 @@ gh() { case "$1 $2" in
     return 0 ;;
   "pr list") cat "$GH_PR_TABLE" ;;
   "pr ready") if [[ "${4:-}" == "--undo" ]]; then gh_pr_ready "$3" --undo; else gh_pr_ready "$3"; fi ;;
+  # 轻量 census 后热修分类按 PR 单读正文：表里的 PR 都没有 Refs 正文，空正文即真实回答
+  "pr view") [[ "$*" == *'--json body'* ]] || { echo "unexpected gh in admission fixture: $*" >&2; return 97; } ;;
   "api repos/{owner}/{repo}/commits/"*"/status"*) echo 0 ;;
   "api repos/{owner}/{repo}/statuses/"*) echo "$*" >> "$GH_PR_CALLS" ;;
   "run list"*) echo '[]' ;;
@@ -89,7 +91,7 @@ units "$(jq -cn --arg h "$H1" '{units:[
   {id:"opt-late",pr:63,branch:"agent/issue-63",stage:"ready-to-merge",ci_priority:true,approved_sha:$h,ready_since:20,product_paths:true,history:[]},
   {id:"normal",pr:64,branch:"agent/issue-64",stage:"ready-to-merge",approved_sha:$h,ready_since:1,product_paths:true,history:[]}
 ]}')"
-( ROOT="$ph"; TICK_PRS=""; TICK_UNFINISHED='[]'; ci_wip_gate_test )
+( ROOT="$ph"; tick_prs_changed; TICK_UNFINISHED='[]'; ci_wip_gate_test )
 [[ "$(gh_pr_is_draft 61):$(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64)" == "false:true:true:true" ]] \
   || fail "main-red did not win the full slot over opt and normal ($(gh_pr_is_draft 61):$(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64))"
 jq -c 'map(.isDraft = true)' "$GH_PR_TABLE" > "$GH_PR_TABLE.tmp" && mv "$GH_PR_TABLE.tmp" "$GH_PR_TABLE"
@@ -98,7 +100,7 @@ units "$(jq -cn --arg h "$H1" '{units:[
   {id:"opt-late",pr:63,branch:"agent/issue-63",stage:"ready-to-merge",ci_priority:true,approved_sha:$h,ready_since:20,product_paths:true,history:[]},
   {id:"normal",pr:64,branch:"agent/issue-64",stage:"ready-to-merge",approved_sha:$h,ready_since:1,product_paths:true,history:[]}
 ]}')"
-( ROOT="$ph"; TICK_PRS=""; TICK_UNFINISHED='[]'; ci_wip_gate_test )
+( ROOT="$ph"; tick_prs_changed; TICK_UNFINISHED='[]'; ci_wip_gate_test )
 [[ "$(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64)" == "false:true:true" ]] \
   || fail "opt did not outrank normal or preserve same-level ready order ($(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64))"
 # 关联 issue 分类为 hotfix 的门控 PR 不占产品 WIP 名额，满额时仍立即 ready；它进入 review 后也不能被 demote 取消。
@@ -118,7 +120,7 @@ units "$(jq -cn --arg h "$H1" '{units:[
   {id:"normal",pr:66,branch:"agent/issue-66",stage:"ready-to-merge",approved_sha:$h,ready_since:1,product_paths:true,history:[]},
   {id:"prefixed-hotfix",pr:67,branch:"hotfix/urgent",stage:"ready-to-merge",approved_sha:$h,ready_since:2,product_paths:true,history:[]}
 ]}')"
-( ROOT="$ph"; TICK_PRS=""; TICK_UNFINISHED='[]'; ci_admission_test )
+( ROOT="$ph"; tick_prs_changed; TICK_UNFINISHED='[]'; ci_admission_test )
 [[ "$(gh_pr_is_draft 65):$(gh_pr_is_draft 66):$(gh_pr_is_draft 67)" == "false:false:false" ]] \
   || fail "linked or configured-prefix hotfix did not start outside the full normal WIP slot ($(gh_pr_is_draft 65):$(gh_pr_is_draft 66):$(gh_pr_is_draft 67))"
 [[ "$(grep '^pr ready ' "$GH_PR_CALLS" | tr '\n' ' ')" == "pr ready 65 pr ready 67 pr ready 66 " ]] \
@@ -129,7 +131,7 @@ units "$(jq -cn --arg h "$H1" '{units:[
   {id:"prefixed-hotfix",pr:67,branch:"hotfix/urgent",stage:"review-pending",history:[]}
 ]}')"
 : > "$GH_PR_CALLS"
-( ROOT="$ph"; TICK_PRS=""; TICK_UNFINISHED='[]'; ci_admission_test )
+( ROOT="$ph"; tick_prs_changed; TICK_UNFINISHED='[]'; ci_admission_test )
 [[ "$(gh_pr_is_draft 65):$(gh_pr_is_draft 67)" == "false:false" ]] \
   && ! grep -Eq 'pr ready (65|67) --undo' "$GH_PR_CALLS" \
   || fail "linked or configured-prefix hotfix was demoted and its CI cancelled ($(cat "$GH_PR_CALLS" 2>/dev/null | tr '\n' '|'))"
@@ -138,7 +140,7 @@ CFG="$CFG_RANK_SAVED"
 TICK_HOTFIX_ISSUES="$hotfix_issues_saved"; TICK_HOTFIX_ISSUES_LOADED="$hotfix_issues_loaded_saved"
 eval "$pr_behind_rank_saved"
 unset GH_PR_TABLE
-TICK_PRS=""; TICK_UNFINISHED=""
+tick_prs_changed; TICK_UNFINISHED=""
 eval "$gh_prio_saved"; GH_RUNS='[]'; GH_RERUNS=()
 
 echo 'scheduler-gates-priority.test.sh: PASS'

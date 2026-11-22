@@ -446,10 +446,10 @@ label_hotfix_pr() { # PR number, currently known label names
 }
 register_new_prs() {
   [[ "$(jqf -r .auto_dispatch_new_prs <<<"$CFG")" == "true" ]] || return 0
-  local CAP="${MAX_PENDING_REVIEWS:-12}" n_registered=0 pr sha pr_head target branch draft title labels pr_num critical u wt rep lane body64 body body_file pr_json new_row
+  local CAP="${MAX_PENDING_REVIEWS:-12}" n_registered=0 pr sha pr_head target branch draft title labels pr_num critical u wt rep lane body body_file pr_json new_row
   local -a new_rows=()
   tick_prs_prime
-  while IFS=$'\t' read -r pr sha branch draft title labels body64; do
+  while IFS=$'\t' read -r pr sha branch draft title labels; do
     scheduler_lock_yield_between_units || return 1
     tick_prs_prime
     if [[ "${SCHEDULER_LOCK_YIELDED:-false}" == true ]] \
@@ -463,7 +463,9 @@ register_new_prs() {
     (( pr_num > 0 )) || { say "skip non-positive PR number from gh pr list"; continue; }
     (( n_registered >= CAP )) && break
     [[ "$draft" == "true" ]] && continue
-    body="$(jqf -nr --arg body64 "$body64" '$body64 | @base64d')" || body=""
+    # 列表不再携带 body（轻量 census）：热修判定要读正文，按 PR 单取（进程内缓存），本拍读不到就留给下一拍
+    tick_pr_body "$pr_num" >/dev/null 2>&1 || { say "skip pr-$pr_num: PR body unreadable for hotfix classification"; continue; }
+    body="${TICK_PR_BODY[$pr_num]}" # 本 shell 直接调才写得进缓存
     body_file="$(scheduler_jq_arg_file "$body")" || continue
     pr_json="$(jqf -cn --argjson number "$pr_num" --arg branch "$branch" --rawfile body "$body_file" --argjson labels "$labels" \
       '{number:$number,headRefName:$branch,body:$body,labels:[$labels[] | {name:.}]}')"
@@ -489,7 +491,7 @@ register_new_prs() {
       if [[ "${HANDOFF_CENSUS_PARTIAL:-0}" == 1 ]]; then handoff_include_pr "$pr_num" || continue; fi
     fi
     new_rows+=("$pr_num"$'\t'"$branch"$'\t'"$title")
-  done < <(tick_prs | jqf -r 'sort_by(-.number) | .[0:15] | .[] | "\(.number)\t\(.headRefOid)\t\(.headRefName)\t\(.isDraft)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | @json)\t\((.body // "") | @base64)"' 2>/dev/null)
+  done < <(tick_prs | jqf -r 'sort_by(-.number) | .[0:15] | .[] | "\(.number)\t\(.headRefOid)\t\(.headRefName)\t\(.isDraft)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | @json)"' 2>/dev/null)
   scheduler_lock_yield_between_units || return 1
   # One intake pass sees every new unit. A pass takes minutes, and running one per PR took 531s of a tick with 3 new PRs.
   (( ${#new_rows[@]} == 0 )) || [[ -z "${HANDOFF_PR_CENSUS:-}" ]] || register_new_issues 1 reuse

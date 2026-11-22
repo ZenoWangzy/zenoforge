@@ -2,9 +2,9 @@
 # repair_check_rows keeps the rows gh prints when it exits nonzero for a failed check, and fails on empty gh output.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/test-env.sh"
-d=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
-eval "$(sed -n '/^repair_check_rows() {/,/^}/p' "$d/merge-lane.sh")"
-HERE=$(cd "$d/.." && pwd); jqf() { jq "$@"; }; tick_pr_check_census() { return 1; }
+d=$(cd "$(dirname "$0")" && pwd); t="$test_env_root/rcr"; mkdir -p "$t"; trap 'rm -rf -- "$test_env_root"' EXIT
+eval "$(sed -n '/^repair_check_rows() {/,/^}/p' "$d/tick-census.sh")"
+HERE=$(cd "$d/.." && pwd); jqf() { jq "$@"; }; SHA_RE='^[0-9a-f]{40}$'; tick_prs_prime() { :; }
 cat > "$t/gh" <<'STUB'
 #!/usr/bin/env bash
 [[ -n ${ROWS-} ]] && printf '%s\n' "$ROWS"; exit 8

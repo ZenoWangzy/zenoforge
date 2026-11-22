@@ -20,6 +20,8 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
       end' <<<"$rows" >/dev/null || return 1
   jqf -e --slurpfile w "$A/workers.json" 'map(.id) as $ids | all($w[0].workers[]; .harvested == true or (.unit as $u | ($ids | index($u)) == null))' <<<"$rows" >/dev/null || return 1
   prs="$(tick_prs)" || return 1
+  # 判死要确认没有 open PR 提到 #<dep>。轻量列表不带 body：该子句对无 body 的行为空（同旧列表对无 body 行），
+  # 编号/分支两道排除与 sub-issue、活 worker 检查照旧；不按 PR 单读正文——那会让一次判死随 open PR 数放大。
   jqf -e --slurpfile rows <(printf '%s' "$rows") --arg d "$dep" '
     ($rows[0] | map(.pr)) as $own | ($rows[0] | map(.branch) + ["agent/issue-" + $d]) as $heads
     | all(.[]; (.number as $n | $own | index($n)) == null and (.headRefName as $h | $heads | index($h)) == null

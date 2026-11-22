@@ -1,3 +1,4 @@
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/tick-census.sh"
 ci_failed_steps() { # head -> failed step names of each failed run's listed attempt
   local run r attempt runs runs_json jobs
   runs_json="$(gh_run_list_cached --commit "$1")" && runs="$(jqf -r '.[] | select(.conclusion=="failure") | [(.databaseId|tostring),((.attempt // 1)|tostring)] | join(":")' <<<"$runs_json")" || return 1
@@ -484,33 +485,22 @@ gated_demote_unapproved() { # 门控 PR 已 ready 但单元不在 ready-to-merge
       and ((.branch // "") as $br | $hotfix[0] | index($br) == null) and (.branch // "") != ""
       and (.stage | IN("review-pending", "review", "rereview-pending", "rereview", "repair-pending", "repair", "blocked-external"))) | [.id, .branch, .stage] | @tsv' "$UNITS")
 }
-tick_prs() {
-  [[ -n "$TICK_PRS" ]] || TICK_PRS="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,body,statusCheckRollup,mergeable,createdAt,reviewDecision 2>/dev/null)" || { TICK_PRS=""; return 1; }
-  jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null || { TICK_PRS=""; return 1; }
-  printf '%s' "$TICK_PRS"
-}
-tick_prs_prime() { [[ -n "$TICK_PRS" ]] || tick_prs >/dev/null 2>&1 || true; }
-tick_prs_changed() { TICK_PRS=""; TICK_PR_CHECK_CENSUS=""; TICK_PR_STATE=(); }
-tick_prs_set_draft() { # PR ready/draft writes do not change its census identity or checks
-  [[ -n "$TICK_PRS" ]] || return 0
-  local updated
-  updated="$(jqf --argjson pr "$1" --argjson draft "$2" 'map(if .number==$pr then .isDraft=$draft else . end)' <<<"$TICK_PRS")" || { tick_prs_changed; return 0; }
-  TICK_PRS="$updated"
-  TICK_PR_CHECK_CENSUS=""
-}
-tick_prs_add_label() { # mirror a successful label write in the current tick's PR census
-  [[ -n "$TICK_PRS" ]] || return 0
-  local updated
-  updated="$(jqf --argjson pr "$1" --arg label "$2" 'map(if .number==$pr then .labels=((.labels // []) + [{name:$label}] | unique_by(.name)) else . end)' <<<"$TICK_PRS")" || { tick_prs_changed; return 0; }
-  TICK_PRS="$updated"
-}
 ci_hotfix_branches() { # → 当前 open PR 中由 #4615 分类器识别的热修分支
-  local prs label prefixes hot
+  local prs label prefixes hot num body
   prs="$(tick_prs)" || { sleep 1; prs="$(tick_prs)" || return 1; }
   label="$(hotfix_lane_label)"
   prefixes="$(hotfix_lane_branch_prefixes | jqf -Rsc 'split("\n") | map(select(length > 0))')"
   hot='[]'
   hotfix_issue_numbers >/dev/null && hot="$TICK_HOTFIX_ISSUES"
+  # 正文关联（refs #n → 热修 issue）只有在有热修 issue 开着时才可能命中：标签/前缀已命中的 PR 与无热修 issue 的拍都不取正文
+  if (( $(jqf -r 'length' <<<"$hot") > 0 )); then
+    while IFS= read -r num; do
+      [[ "$num" =~ ^[0-9]+$ ]] || continue
+      # 本 shell 直接调（$(...) 里的写入回不到缓存，同一 PR 的下一次读又是一次 gh pr view）；读缓存数组
+      tick_pr_body "$num" >/dev/null || return 1 # 分类读不到不得放行（2026-11-02 fail-closed）
+      prs="$(prs_attach_body "$num" "${TICK_PR_BODY[$num]}" <<<"$prs")" || return 1
+    done < <(jqf -r --arg label "$label" --argjson prefixes "$prefixes" '[.[] as $pr | select(((($pr.labels // []) | any(.name == $label)) or any($prefixes[]; . as $p | ($pr.headRefName // "") | startswith($p))) | not) | $pr.number] | .[]' <<<"$prs")
+  fi
   jqf -c --arg label "$label" --argjson prefixes "$prefixes" --argjson hot "$hot" '
     [.[] as $pr
       | ([($pr.headRefName // "") | match("^agent/issue-(hf-)?([0-9]+)(-|$)").captures[1].string | tonumber]

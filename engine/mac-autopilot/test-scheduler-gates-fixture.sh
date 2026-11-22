@@ -63,9 +63,10 @@ self_check_before_review() { return 0; }
 # Scheduler gate cases use synthetic SHAs without real diffs; this fixture
 # models them as changes that do not affect prompt-evaluation stages.
 decision_eval_stages() { printf '\n'; }
-# A real tick caches the open-PR census and drops it when the scheduler changes a PR; these fixtures edit the PR table between calls, so every read starts empty.
+# A real tick caches the open-PR census and drops it when the scheduler changes a PR; these fixtures edit the PR table
+# between calls, so every read starts empty (the 60 s cross-process census file and the per-process caches included).
 tick_prs_real_def="$(declare -f tick_prs)"; eval "${tick_prs_real_def/tick_prs ()/tick_prs_real ()}"
-tick_prs() { TICK_PRS=""; tick_prs_real; }
+tick_prs() { tick_prs_changed; tick_prs_real; }
 # The reproduction worker is detached and slow; the older red-main fixtures below do not exercise it.
 main_red_real="$(declare -f main_red_attribution)"
 main_red_attribution() { MAIN_RED_REVERTED=0; MAIN_RED_PENDING=0; }
