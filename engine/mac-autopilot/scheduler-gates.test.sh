@@ -1902,13 +1902,21 @@ unset GH_CHECKS
     {\"id\":\"pr-72\",\"pr\":72,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H72\",\"ready_since\":2,\"history\":[]},
     {\"id\":\"pr-73\",\"pr\":73,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H73\",\"ready_since\":3,\"history\":[]},
     {\"id\":\"pr-74\",\"pr\":74,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H74\",\"ready_since\":4,\"history\":[]}] }"
+  # the rule-diff check compares each candidate's fetched ref with the census head: answer it per PR, not with the shared GH_HEAD
+  git_held_prev="$(declare -f git)"
+  git() {
+    if [[ "${1:-}" == -C && "${3:-}" == rev-parse && "${5:-}" == refs/autopi/merge-candidates/* ]]; then
+      local pr_n="${5##*/}"; jq -r --argjson n "${pr_n%%^*}" '.[] | select(.number == $n) | .headRefOid' "$GH_PR_TABLE"
+    else eval "${git_held_prev/git ()/git_held_prev ()}"; git_held_prev "$@"; fi
+  }
   gh() {
-    if [[ "$1 $2 $5" == 'pr view headRefOid' ]]; then
+    if [[ "$1 $2 ${5:-}" == 'pr view headRefOid' ]]; then # ${5:-}: gh api <url> --jq <expr> has only four args, set -u
       case "$3" in 71) echo "$H71" ;; 72) echo "$H72" ;; 73) echo "$H73" ;; 74) echo "$H74" ;; esac
     else eval "${gh_merge_stub/gh ()/gh_fair ()}"; gh_fair "$@"; fi
   }
   run_merge_lane || :
   [[ ${#GH_MERGES[@]} == 0 ]] || fail 'bounded pipeline scan merged a held candidate'
+  grep -qF 'merge skipped PR#73 (touches pipeline paths; pipeline merges held)' "$LOG" || fail 'held pipeline candidates were not actually held (the check rows were not read)'
   NOW_EPOCH=$((NOW_EPOCH + 120))
   run_merge_lane || :
   [[ ${#GH_MERGES[@]} == 1 && "${GH_MERGES[0]}" == *'pr merge 74'* && "$(field pr-74 .stage)" == merged ]] || fail 'held pipeline candidates starved a later green product PR'
@@ -1918,7 +1926,7 @@ unset GH_CHECKS
 : > "$fixture/mergeable.calls"
 gh() {
   if [[ "$1 $2" == "pr merge" ]]; then return 1; fi
-  if [[ "$1 $2 $5" == "pr view mergeable" ]]; then echo x >> "$fixture/mergeable.calls"; (( $(wc -l < "$fixture/mergeable.calls") > 1 )) && echo CONFLICTING || echo UNKNOWN; return 0; fi
+  if [[ "$1 $2 ${5:-}" == "pr view mergeable" ]]; then echo x >> "$fixture/mergeable.calls"; (( $(wc -l < "$fixture/mergeable.calls") > 1 )) && echo CONFLICTING || echo UNKNOWN; return 0; fi
   eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
 }
 units "{\"units\":[{\"id\":\"pr-17\",\"pr\":17,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
@@ -1930,7 +1938,7 @@ run_merge_lane || :
 grep -qF 'merge skipped PR#17 (conflicts with main) -> repair-pending' "$LOG" || fail 'conflict found after a failed merge lost its log line'
 eval "$gh_merge_stub"
 # checks 永远 pending 是因为冲突（GitHub 不跑 CI）：不等合并失败，直接送修复（热修回迁 pr-3588）；热修/critical 排在合并车道最前
-gh() { if [[ "$1 $2 $5" == "pr view mergeable" ]]; then echo CONFLICTING; return 0; fi; eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; }
+gh() { if [[ "$1 $2 ${5:-}" == "pr view mergeable" ]]; then echo CONFLICTING; return 0; fi; eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; }
 GH_CHECKS='[{"name":"CI","bucket":"pending"}]'
 GH_MERGEABLE_STATE=CONFLICTING
 GH_PR_TABLE="$fixture/pr-18-pending.json"; echo '[]' > "$GH_PR_TABLE"
@@ -1948,12 +1956,13 @@ unset GH_CHECKS GH_PR_TABLE; eval "$gh_merge_stub"
 # 仍冲突、锁文件/迁移 PR、更新失败都照旧派修复。
 GH_HEAD_SAVED="${GH_HEAD:-}"; GH_HEAD="$H1"
 gh() {
-  case "$1 $2 $5" in
+  case "$1 $2 ${5:-}" in
     "pr view mergeable") echo CONFLICTING; return 0 ;;
     "pr view mergeable,headRefOid") echo "${GH_FRESH:-MERGEABLE $H1}"; return 0 ;;
     "pr view files") printf '%s\n' "${GH_PR_FILES:-packages/x/a.ts}"; return 0 ;;
   esac
-  if [[ "$1" == api ]]; then GH_API_CALLS+=("$*"); return "${GH_API_FAIL:-0}"; fi
+  # the per-head check-runs read is not a conflict-update call: it goes to the base stub
+  if [[ "$1" == api && "$2" != */check-runs* ]]; then GH_API_CALLS+=("$*"); return "${GH_API_FAIL:-0}"; fi
   eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
 }
 GH_CHECKS='[{"name":"CI","bucket":"pending"}]'
@@ -3038,7 +3047,7 @@ gh() {
     "pr merge") return 1 ;;
     "pr update-branch") GH_UPDATES+=("$*") ;;
     "api -X") GH_UPDATES+=("$*") ;;
-    "pr view") [[ "$5" == mergeable ]] && { echo "$GH_MERGEABLE"; return; }; eval "${gh_conf_stub/gh ()/gh_c ()}"; gh_c "$@" ;;
+    "pr view") [[ "${5:-}" == mergeable ]] && { echo "$GH_MERGEABLE"; return; }; eval "${gh_conf_stub/gh ()/gh_c ()}"; gh_c "$@" ;;
     *) eval "${gh_conf_stub/gh ()/gh_c ()}"; gh_c "$@" ;;
   esac
 }
