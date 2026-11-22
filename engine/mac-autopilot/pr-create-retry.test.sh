@@ -396,6 +396,15 @@ printf '{"units":[%s]}\n' "$(adopt_unit r2-n parked)" > "$UNITS"
 TICK_PRS=""; : > "$GH_CALLS"
 tick
 [[ "$(field r2-n .stage)" == parked && "$(ev r2-n pr-adopted)" == 0 && ! -s "$GH_CALLS" ]] || fail 'adoption acted or called GitHub without a loaded census'
+# (o) a tick that has not loaded the census primes it once while a candidate exists, then adopts; with no candidate it does not prime.
+tick_prs_prime() { printf 'prime\n' >> "$GH_CALLS"; TICK_PRS="$(census_row agent/issue-r2-n 7691 true "$(origin_head agent/issue-r2-n)" true | jq -sc .)"; }
+TICK_PRS=""; : > "$GH_CALLS"
+recover_orphans || :
+[[ "$(field r2-n .stage)" == review-pending && "$(field r2-n .pr)" == 7691 && "$(grep -c '^prime$' "$GH_CALLS")" == 1 ]] || fail "a candidate did not prime the census and adopt ($(field r2-n .stage), primes=$(grep -c '^prime$' "$GH_CALLS"))"
+TICK_PRS=""; : > "$GH_CALLS"
+recover_orphans || :
+[[ ! -s "$GH_CALLS" ]] || fail 'the census was primed with no candidate left'
+tick_prs_prime() { :; }
 
 # (h) the older cases above ran unchanged except that case e of round 1 now carries its first hold time in .pr_open_held.since.
 echo 'pr-create-retry.test.sh: PASS'

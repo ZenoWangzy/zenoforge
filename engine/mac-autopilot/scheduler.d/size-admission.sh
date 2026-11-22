@@ -279,8 +279,13 @@ pr_open_retry() { # unit → retry an owed PR open on the finished clone without
   harvest_pr_implement "$unit" "$report"
 }
 pr_adopt_held_units() { # adopt the open PR of a PR-lane unit that has none (supervisor-review, parked, or implement with an owed PR open); the census only, no GitHub API call
-  local id branch row pr draft sha labelled remote
-  [[ -n "${TICK_PRS:-}" ]] || return 0 # census not loaded: nothing to read, and this must not fetch it
+  local id branch row pr draft sha labelled remote cands
+  cands="$(jqf -r '.units[] | select(.lane == "pr" and (.branch // "") != "" and ((.pr // "") == "") and (.stage == "supervisor-review" or .stage == "parked" or (.stage == "implement" and .pr_open_held != null))) | "\(.id)\t\(.branch)"' "$UNITS")" || return 0
+  [[ -n "$cands" ]] || return 0
+  # recover_orphans runs in harvest-station and refill ticks that do not load the census; the light census (#1357) is shared through a 60 s file,
+  # so this prime is usually no GitHub call and happens only while a candidate exists. A failed read adopts nothing.
+  tick_prs_prime
+  [[ -n "${TICK_PRS:-}" ]] || return 0
   while IFS=$'\t' read -r id branch; do
     [[ -n "$id" ]] || continue
     [[ "$(jqf -r --arg u "$id" '[.workers[] | select(.unit==$u and .harvested != true)] | length' "$WORKERS")" == 0 ]] || continue
@@ -298,7 +303,7 @@ pr_adopt_held_units() { # adopt the open PR of a PR-lane unit that has none (sup
     # The .pr guard keeps the event at one per unit if the row changed since the read. Park fields (park_fields: parked_reason, unpark_condition), the cap-exhausted marks, the stale note and the owed-PR-open mark go.
     set_unit "$id" "if (.pr // null) == null then ($(hist pr-adopted "adopted existing PR#$pr $sha") | .pr=$pr | .lane=\"pr\" | .stage=\"review-pending\" | del(.pr_open_held, .parked_reason, .unpark_condition, .cap_exhausted_mark, .cap_exhausted_by, .note)$([[ "$branch" =~ $GATED_BRANCH_RE ]] && printf ' | .gated=true')) else . end" \
       && say "unit $id adopted existing PR#$pr on $branch -> review-pending"
-  done < <(jqf -r '.units[] | select(.lane == "pr" and (.branch // "") != "" and ((.pr // "") == "") and (.stage == "supervisor-review" or .stage == "parked" or (.stage == "implement" and .pr_open_held != null))) | "\(.id)\t\(.branch)"' "$UNITS")
+  done <<<"$cands"
 }
 pr_create_rest() { # branch base title body → SCHED_PR_NUM/OUT/RC; the GraphQL back-off does not cover the REST pulls endpoint (transport.sh classes an api call without graphql as rest)
   local gated=false out0="$SCHED_PR_OUT" rc0="$SCHED_PR_RC" args=(api "repos/{owner}/{repo}/pulls" -X POST --jq .number)
