@@ -2034,6 +2034,20 @@ assert_eq 'recut scheduler leaves a deferred candidate queued without a policy f
 # 2026-11-18 (row 579): a per-ticket spend skip or route failure (status 80) is not a policy fault.
 assert_eq 'recut scheduler skips a spend-budget candidate without a policy fault' \
   'slots:1' "$(run_recut_admission_caller 80)"
+# 2026-11-22: #6273's refused conclusion (status 81) broke the loop as a policy fault and quarantined recut.
+run_recut_conclude_refused() (
+  local dispatch_status=0 next_recut recut_slots=2 dispatched=""
+  dispatch_policy_unit() { [ "$2" != 910101 ] || return 81; dispatched="$dispatched $2"; }
+  record_env_fault() { printf 'fault:%s\n' "$1"; }
+  record_implement_decision() { printf 'decision:%s:%s\n' "$1" "$3"; }
+  for next_recut in 910101 910102; do
+    eval "$(sed -n '/    if dispatch_policy_unit recut "\$next_recut" needs-recut; then/,/      esac/p' "$PIPELINE_SRC")
+    fi"
+  done
+  printf 'slots:%s dispatched:%s\n' "$recut_slots" "$dispatched"
+)
+assert_eq 'recut scheduler skips a refused conclusion and dispatches the next ticket' \
+  $'decision:910101:conclude-refused\nslots:1 dispatched: 910102' "$(run_recut_conclude_refused)"
 run_refresh_admission_case() (
   local launch_status="$1" status=0
   REPO_DIR="$SCRIPT_DIR/.." ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf

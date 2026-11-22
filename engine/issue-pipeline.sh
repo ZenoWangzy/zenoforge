@@ -1008,7 +1008,7 @@ dispatch_policy_unit() {
         state_merge "$n" ".model_policy.step = \"conclude\" | .model_policy.skipped_steps = ((.model_policy.skipped_steps // []) + [$skipped_patch]) | .model_policy.failure.transition = \"conclude\" | .model_policy.failure.reason = (.model_policy.failure.reason // \"The legacy production step is not present in the active model policy\")" || return 1
         local terminal_reason
         terminal_reason="$(state_read "$n" | jq -r '.model_policy.failure.reason')"
-        conclude_run "$n" not-completed "Configured model escalation exhausted: $terminal_reason" || return 1
+        conclude_run "$n" not-completed "Configured model escalation exhausted: $terminal_reason" || return 81 # refused: per-ticket skip (11-22 #6273 as a policy fault quarantined recut)
         return 78
       fi
       ;;
@@ -1022,7 +1022,7 @@ dispatch_policy_unit() {
       else
         terminal_reason="Configured model escalation exhausted: $terminal_reason"
       fi
-      conclude_run "$n" not-completed "$terminal_reason" || return 1
+      conclude_run "$n" not-completed "$terminal_reason" || return 81
       return 78
       ;;
   esac
@@ -2939,13 +2939,13 @@ if [ "$recut_slots" -gt 0 ]; then
       dispatch_status=$?
       case "$dispatch_status" in
         75) break ;;
-        78) continue ;;
-        80) continue ;;
+        78|80) continue ;;
         79)
           record_implement_decision "$next_recut" skipped roadmap-parent \
             "路线图父级挂接失败；保留在 needs-recut 队列，后续 tick 重试" "#$next_recut"
           continue
           ;;
+        81) record_implement_decision "$next_recut" skipped conclude-refused "conclude_run refused; other tickets dispatch" "#$next_recut"; continue ;;
         74) record_implement_decision "$next_recut" skipped model-capacity-hold \
           "recut role model is at capacity; dispatch deferred without attempt" "$next_recut"; continue ;;
         77) break ;;
