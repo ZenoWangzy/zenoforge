@@ -166,6 +166,7 @@ report_gate_stale_recover() {
     [[ -s "$SUP/$(jqf -r '.implementation_report // empty' <<<"$uj")" ]] || continue
     target="$(incident_report_harvest_target "$id" repair "$uj" "$wr" "$SUP/$wr")"
     reason="$(incident_report_reason "$uj" "$SUP/$target")"; next=repair-pending; [[ -n "$reason" ]] || next=rereview-pending
+    [[ "$(jqf -r '.parked_reason // ""' <<<"$uj")" != repair-breaker ]] || reason="$(jqf -r '.report_gate_fail.reason' <<<"$uj")" # the gate's reason on the last delivery, not the stale pointer's
     hint="The implementation report gate says: ${reason}. Complete the report sections only (no code change is needed for this); an escalation record from head or the advisor, if any, is in the issue comments: cite its URL as 'Escalation reference: <URL>'."
     set_unit "$id" "$(hist report-gate-recovered "gate re-run on $wr (judged $target): $next") | .stage=$(js "$next") | del(.report_gate_fail) | del(.parked_reason)${reason:+ | .repair_hint=$(js "$hint")}" || continue
     say "report-gate-recover unit=$id report=$target -> $next"

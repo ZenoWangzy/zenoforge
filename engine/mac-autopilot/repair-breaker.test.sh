@@ -100,8 +100,8 @@ breaker_case() { # history-json [extra unit fields json] -> stage after repair_b
   field issue-9 .stage
 }
 [[ "$(breaker_case "$(nopush_hist "$H1" 2)")" == parked ]] || fail 'the breaker case fixture did not park two same-head no-push runs'
-[[ "$(breaker_case "$(nopush_hist "$H1" 2)" '{"report_gate_fail":{"reason":"missing ## why","n":1}}')" == repair-pending ]] \
-  || fail 'a no-push round with an open report gate failure tripped the repair breaker'
+[[ "$(breaker_case "$(jq -cn --argjson a "$(nopush_hist "$H1" 2)" '[{stage:"report-gate-recovered",result:"x"}] + $a')" '{"report_gate_fail":{"reason":"missing ## why","n":1}}')" == repair-pending ]] \
+  || fail 'a no-push round with an open report gate failure after a recovery tripped the repair breaker'
 [[ "$(breaker_case "$(jq -cn --argjson a "$(nopush_hist "$H1" 2)" --argjson b "$(nopush_hist "$H1" 1)" '$a + [{stage:"report-gate-recovered",result:"x"}] + $b')")" == repair-pending ]] \
   || fail 'no-push runs before a report-gate-recovered event still counted'
 
