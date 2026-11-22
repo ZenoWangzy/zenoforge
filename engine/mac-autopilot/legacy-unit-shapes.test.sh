@@ -60,7 +60,7 @@ real_set_unit="$(declare -f set_unit)"
 set_unit() { say "set_unit forced failure for legacy-unit-shapes test"; return 1; }
 supervisor_apply_cap_verdict pr-3576-seed "$rep2" RULE || true
 eval "$real_set_unit"
-grep -Fq 'cap triage unit=pr-3576-seed: RULE NOT applied (set_unit failed)' "$LOG" \
+grep -Fq 'cap triage unit=pr-3576-seed: RULE NOT applied (set_unit failed rc=1 ' "$LOG" \
   || fail "a failed RULE set_unit must log NOT applied"
 if grep -Fq 'RULE -> repair-pending' "$LOG"; then
   fail "a failed RULE set_unit must not be logged as applied"
