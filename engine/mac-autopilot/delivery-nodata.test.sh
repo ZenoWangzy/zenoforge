@@ -147,11 +147,17 @@ saved = json.loads(Path(store_path).read_text())
 assert saved["at"] == "2026-11-13T22:24:25Z" and len(saved["issues"]) == 1 and len(saved["prs"]) == 1, saved
 assert fresh["values"]["delivery.revert_rate_30d_pct"] == 0.0 and fresh["values"]["delivery.unlinked_units_30d"] == 0, fresh
 assert fresh_stderr == [] and fresh_served == {} and fresh["details"]["rows_from"] is None, (fresh_stderr, fresh_served)
+assert not any(health.delivery_diagnostics.data_at(mid, fresh["details"]["rows_from"]) for mid in fresh["values"]), "fresh rows carry no data time"
 
 refused, refused_stderr, refused_served = census(now, {"FAKE_GH_ISSUES_REFUSED": "1"})
 for metric_id in ("delivery.revert_rate_30d_pct", "delivery.unlinked_units_30d"):
     assert refused["values"][metric_id] is not None and refused["values"][metric_id] == fresh["values"][metric_id], (metric_id, refused["values"])
 assert refused_served == {"rows_from": "2026-11-13T22:24Z"} and refused["details"]["rows_from"] == "2026-11-13T22:24Z", refused["details"]
+refused_data_at = {mid: health.delivery_diagnostics.data_at(mid, refused["details"]["rows_from"]) for mid in refused["values"] if mid.startswith("delivery.")}
+assert refused_data_at["delivery.revert_rate_30d_pct"] == {"data_at": "2026-11-13T22:24Z"}, refused_data_at
+assert refused_data_at["delivery.unlinked_units_30d"] == {"data_at": "2026-11-13T22:24Z"}, refused_data_at
+assert all(value == {"data_at": "2026-11-13T22:24Z"} for value in refused_data_at.values()), refused_data_at
+assert health.delivery_diagnostics.data_at("host.github_net_failures_per_hour", refused["details"]["rows_from"]) == {}, "non-delivery rows get no data time"
 assert refused_stderr == [
     "node_health: delivery input issues unavailable: rc 75: rate limited",
     "node_health: delivery input issues unavailable: rc 75: rate limited; using rows from 2026-11-13T22:24Z",
@@ -163,10 +169,12 @@ stale, stale_stderr, stale_served = census(stale_at, {"FAKE_GH_ISSUES_REFUSED": 
 assert stale["values"]["delivery.revert_rate_30d_pct"] is None and stale["values"]["delivery.unlinked_units_30d"] is None, stale["values"]
 assert health.status_of(stale["values"]["delivery.revert_rate_30d_pct"], *health.CRITERIA["delivery.revert_rate_30d_pct"][2:]) == "NO-DATA"
 assert stale_served == {} and stale_stderr == ["node_health: delivery input issues unavailable: rc 75: rate limited"], stale_stderr
+assert not any(health.delivery_diagnostics.data_at(mid, stale["details"]["rows_from"]) for mid in stale["values"]), "a stale store must not date any row"
 
 empty, empty_stderr, empty_served = census(now, {"FAKE_GH_ISSUES_REFUSED": "1"}, str(store_root / "absent.json"))
 assert empty["values"]["delivery.revert_rate_30d_pct"] is None and empty["values"]["delivery.unlinked_units_30d"] is None, empty["values"]
 assert empty_served == {} and len(empty_stderr) == 1, empty_stderr
+assert not any(health.delivery_diagnostics.data_at(mid, empty["details"]["rows_from"]) for mid in empty["values"]), "no store, no data time"
 
 print("delivery no-data causes: PASS")
 PY

@@ -1519,7 +1519,7 @@ def main():
     if args.json:
         sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"; scorecard_metrics = [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
             "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status, "source": SOURCE.get(mid, ""),
-            "sample_n": sample_counts.get(mid), "standard_basis": standard_bases.get(mid), **short_windows[mid], **({"detail": fork_detail} if mid == "host.fork_rate_root_max" else {"detail": f"rows from {delivery['details']['rows_from']}"} if mid in ("delivery.revert_rate_30d_pct", "delivery.unlinked_units_30d") and delivery["details"]["rows_from"] else {})}
+            "sample_n": sample_counts.get(mid), "standard_basis": standard_bases.get(mid), **short_windows[mid], **({"detail": fork_detail} if mid == "host.fork_rate_root_max" else delivery_diagnostics.data_at(mid, delivery["details"]["rows_from"]))}
             for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),

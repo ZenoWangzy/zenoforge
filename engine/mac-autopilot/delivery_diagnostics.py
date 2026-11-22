@@ -147,3 +147,8 @@ def last_good_rows(rows, now, path, unavailable, served):
     if served is not None:
         served["rows_from"] = label
     return rows["issues"], rows["prs"]
+
+
+def data_at(metric_id, rows_from):
+    """Scorecard field dating a delivery row computed from stored GitHub rows."""
+    return {"data_at": rows_from} if metric_id.startswith("delivery.") and rows_from else {}
