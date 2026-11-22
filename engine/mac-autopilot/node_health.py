@@ -983,7 +983,7 @@ def _record_delivery_unavailable(name, reason, details):
         print(f"node_health: delivery input {name} unavailable: {reason}", file=sys.stderr)
 
 
-def gh_delivery_rows(repo, now, units=None, release_events=None, delivery_unavailable=None):
+def gh_delivery_rows(repo, now, units=None, release_events=None, delivery_unavailable=None, last_good_path=None, served=None):
     """Fetch issue creation times and recent merged-PR review activity for delivery metrics."""
     delivery_unavailable = delivery_unavailable if delivery_unavailable is not None else {}
     note = lambda name, reason: _record_delivery_unavailable(name, reason, delivery_unavailable)
@@ -1025,7 +1025,7 @@ def gh_delivery_rows(repo, now, units=None, release_events=None, delivery_unavai
                 rows[key] = None
             elif rows[key] is not None:
                 rows[key].append(row)
-    return rows["issues"], rows["prs"]
+    return delivery_diagnostics.last_good_rows(rows, now, last_good_path, delivery_unavailable, served)
 
 
 def _gh_json(command, timeout, on_unavailable=None):
@@ -1068,14 +1068,14 @@ def git_revert_times(root, tip="HEAD", delivery_unavailable=None):
 
 
 def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo="",
-                     reverted_merge_times=None, window_hours=None, delivery_unavailable=None):
+                     reverted_merge_times=None, window_hours=None, delivery_unavailable=None, rows_from=None):
     """Join recorded issue/unit/PR/merge/release IDs and summarize the last 7/30 days."""
     since_7d, since_30d = (now - timedelta(hours=window_hours),) * 2 if window_hours else (now - timedelta(days=7), now - timedelta(days=30))
     values = {key: None for key in CRITERIA if key.startswith("delivery.")}
     details = {
         "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
         "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None, "lead_time_samples_7d": None, "lead_time_samples_30d": None,
-        "delivery_unavailable": dict(delivery_unavailable or {}),
+        "delivery_unavailable": dict(delivery_unavailable or {}), "rows_from": rows_from,
     }
 
     accepted = []
@@ -1379,13 +1379,14 @@ def main():
     log = os.path.join(a, "scheduler.log")
     log_rows, future_stamped = ledger_history.scheduler_log_lines(log, now)
     release_events = ledger_history.release_acceptances(a, now=now, scheduler_rows=log_rows)
-    delivery_unavailable = {}
-    issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events, delivery_unavailable)
+    delivery_unavailable, delivery_served = {}, {}
+    issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events, delivery_unavailable,
+                                           os.path.join(a, delivery_diagnostics.LAST_GOOD), delivery_served)
     incidents = load_prod_incidents(agent_home)
     repo_root = revert_root(a, here)
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main", delivery_unavailable)
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times,
-                                delivery_unavailable=delivery_unavailable); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")}); sample_counts["delivery.unverified_merge_30d_pct"] = delivery["details"].get("stamped_merged_units_30d")
+                                delivery_unavailable=delivery_unavailable, rows_from=delivery_served.get("rows_from")); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")}); sample_counts["delivery.unverified_merge_30d_pct"] = delivery["details"].get("stamped_merged_units_30d")
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
     metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); SOURCE.update(live_delivery.SOURCE); merge_metrics, merge_details = merge_wait.collect(repo, now, here, merge_wait.gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
@@ -1518,7 +1519,7 @@ def main():
     if args.json:
         sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"; scorecard_metrics = [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
             "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status, "source": SOURCE.get(mid, ""),
-            "sample_n": sample_counts.get(mid), "standard_basis": standard_bases.get(mid), **short_windows[mid], **({"detail": fork_detail} if mid == "host.fork_rate_root_max" else {})}
+            "sample_n": sample_counts.get(mid), "standard_basis": standard_bases.get(mid), **short_windows[mid], **({"detail": fork_detail} if mid == "host.fork_rate_root_max" else delivery_diagnostics.data_at(mid, delivery["details"]["rows_from"]))}
             for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),

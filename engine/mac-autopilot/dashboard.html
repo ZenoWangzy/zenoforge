@@ -564,8 +564,8 @@ function bullet(o) {
   const pct = x => Math.max(0, Math.min(100, 100 * x / top));
   const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
   const v = o.value==null ? null : Number(o.value), nl = !String(o.label||"").trim();
-  const short = (o.long_status ? ` · 长窗 ${o.long_status}` : "") + (o.status==="LOW-N" && o.sample_n!=null ? ` · n=${o.sample_n}` : "") + (Object.prototype.hasOwnProperty.call(o,"value_1h") ? ` · ${o.value_1h==null?"短窗无数据":`${o.short_window||"1h"} ${num(o.value_1h)} ${o.trend_1h?`${o.trend_1h.direction==="up"?"↑":o.trend_1h.direction==="down"?"↓":"→"}${o.trend_1h.delta>0?"+":""}${num(o.trend_1h.delta)}`:"趋势无数据"}`}` : "");
-  const tip = [o.label, o.desc, o.meaning, o.standard_basis, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
+  const short = (o.long_status ? ` · 长窗 ${o.long_status}` : "") + (o.status==="LOW-N" && o.sample_n!=null ? ` · n=${o.sample_n}` : "") + (Object.prototype.hasOwnProperty.call(o,"value_1h") ? ` · ${o.value_1h==null?"短窗无数据":`${o.short_window||"1h"} ${num(o.value_1h)} ${o.trend_1h?`${o.trend_1h.direction==="up"?"↑":o.trend_1h.direction==="down"?"↓":"→"}${o.trend_1h.delta>0?"+":""}${num(o.trend_1h.delta)}`:"趋势无数据"}`}` : "") + (o.data_at ? ` · 数据截至 ${esc(o.data_at)}` : "");
+  const tip = [o.label, o.desc, o.meaning, o.standard_basis, o.data_at ? `GitHub 读取被挡，沿用 ${o.data_at} 的数据` : null, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
   return `<div class="bul zr s-${s}${nl?" nl":""}" data-tip="${esc(tip)}">${nl?"":`<i class="ad s-${s}"></i><span class="bul-l">${esc(o.label)}</span>`}
     <span class="a-t">${zones.filter(z=>pct(z[1])>pct(z[0])).map(z=>`<i class="z-${z[2]}" style="left:${pct(z[0])}%;width:${pct(z[1])-pct(z[0])}%"></i>`).join("")}${v==null?"":`<b style="left:${Math.min(pct(v),99)}%"></b>`}</span>
     <span class="bul-v"><b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}${short}</small></span></div>`;
@@ -644,7 +644,7 @@ const isTrendMetric = m => String(m.id||"").includes("_30d");
 const metricStatus = m => m.status==="STANDARD-INVALID" || m.status==="LOW-N" ? m.status : Object.prototype.hasOwnProperty.call(m,"value_1h") ? judge(m.value_1h,m) : m.status;
 const modMetrics = (D, mod) => nodeMetrics(D).filter(m => !isTrendMetric(m) && (ID_MOD[m.id] || NODE_MOD[m.node]) === mod);
 const bNode = m => { const lb = LABELS[m.id] || [/[\u4e00-\u9fff]/.test(m.desc || "") ? m.desc : ((PLAIN[m.id] || [])[0] || firstSentence(m.meaning) || m.desc), ""];
-  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, value_1h:m.value_1h, trend_1h:m.trend_1h, short_window:m.short_window, long_status:m.status, sample_n:m.sample_n, standard_basis:m.standard_basis, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:metricStatus(m), desc:m.desc, meaning:m.meaning, source:m.source}); };
+  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, value_1h:m.value_1h, trend_1h:m.trend_1h, short_window:m.short_window, long_status:m.status, sample_n:m.sample_n, standard_basis:m.standard_basis, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:metricStatus(m), desc:m.desc, meaning:m.meaning, source:m.source, data_at:m.data_at}); };
 const FR = D => D.front || {};
 // 指标行列表：异常、警告、无数据的行直接显示，正常的折成一行
 const isOk = h => /^<div class="bul zr s-ok/.test(h);
