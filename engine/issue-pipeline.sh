@@ -1029,7 +1029,7 @@ dispatch_policy_unit() {
   role="$(model_policy step-role "$step")" || return 76
   identity="$(model_policy dispatch-identity "$role")" || return 76
   glm_identity=""
-  [ "$unit" != recut ] || glm_identity="$(recut_glm_identity)" || glm_identity=""
+  [ "$unit" != recut ] || glm_identity="$(recut_glm_identity "$n")" || glm_identity=""
   if [ -n "$glm_identity" ]; then
     identity="$glm_identity"
   else
