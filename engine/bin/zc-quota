@@ -24,7 +24,7 @@ const WEEK_ALERT_AT = Number(process.env.ZC_WEEK_ALERT_AT || 98); // below the s
 const WEEK_PACE = Number(process.env.ZC_WEEK_PACE_PCT || 90);
 // The page reports whole points and the hold had no slack: 75 s into the week of 2026-11-21 a reading of 1% held ZCode, and at 3%
 // of the week (line 2.2%) the only other-family reviewer stood idle for hours. Hold only above the line plus this many points.
-// shortcut: 2 is head's interim value (2026-11-22), replace it once the weekly points one review costs are measured (queue row 951).
+// 2 is the head session's interim value (2026-11-22); queue row 951 replaces it once the weekly points one review costs are measured.
 const WEEK_PACE_MARGIN = 2;
 const WEEK_SECONDS = 7 * 86400;
 const log = (...a) => console.log(new Date().toISOString(), ...a);
