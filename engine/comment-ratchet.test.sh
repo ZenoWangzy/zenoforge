@@ -13,6 +13,7 @@ fi
 
 repo="$test_env_root/comment-ratchet"
 mkdir -p "$repo/tools" "$repo/engine"
+[[ ! -d "$MODEL_POLICY_TEST_REPO/node_modules" ]] || ln -s "$MODEL_POLICY_TEST_REPO/node_modules" "$repo/node_modules"
 cp "$MODEL_POLICY_TEST_REPO/tools/comment-ratchet.mjs" "$repo/tools/"
 git init -q -b main "$repo"
 git -C "$repo" config user.name test

@@ -27,8 +27,8 @@
 9	engine/batch-units-slice.test.sh
 4	engine/bin/drive-train.sh
 7	engine/bin/install-guard.test.sh
-37	engine/bin/luna-capacity.sh
-20	engine/bin/luna-gate.test.sh
+40	engine/bin/luna-capacity.sh
+21	engine/bin/luna-gate.test.sh
 4	engine/bin/luna-wf.mjs
 11	engine/bin/quota-tab.test.mjs
 11	engine/bin/worker-remote.py
@@ -56,7 +56,7 @@
 3	engine/ci-toolchain-preflight.mjs
 2	engine/ci-toolchain-preflight.test.mjs
 32	engine/ci/pr-required-aggregate.mjs
-1	engine/closed-state-reconcile.test.sh
+2	engine/closed-state-reconcile.test.sh
 8	engine/closing-keyword-gate.sh
 3	engine/closing-keyword-gate.test.sh
 5	engine/closing-keywords.sh
@@ -219,7 +219,7 @@
 53	engine/lib.d/briefs.sh
 90	engine/lib.d/ci-checks.sh
 5	engine/lib.d/closed-ready-sweep.sh
-92	engine/lib.d/codex-budget.sh
+95	engine/lib.d/codex-budget.sh
 5	engine/lib.d/codex-mcp.sh
 60	engine/lib.d/conclude-run.sh
 200	engine/lib.d/dispatch-gates.sh
@@ -255,9 +255,9 @@
 126	engine/lib.d/selection-scope.sh
 14	engine/lib.d/spend-budget.sh
 42	engine/lib.d/supervisor-inbox.sh
-96	engine/lib.d/sweeps.sh
+97	engine/lib.d/sweeps.sh
 118	engine/lib.d/transport.sh
-12	engine/lib.d/triage-claude.sh
+14	engine/lib.d/triage-claude.sh
 27	engine/lib.d/triage-default.sh
 43	engine/lib.d/triage-solo.sh
 6	engine/lib.d/worker-output-cap.sh
@@ -286,7 +286,7 @@
 11	engine/mac-autopilot/claude-implement-harvest.test.sh
 4	engine/mac-autopilot/cleanup-preserve-cache.test.sh
 6	engine/mac-autopilot/cleanup-trim-bound.test.sh
-13	engine/mac-autopilot/codex-week-fallback.test.sh
+14	engine/mac-autopilot/codex-week-fallback.test.sh
 8	engine/mac-autopilot/config-reconcile.sh
 4	engine/mac-autopilot/config_paths.py
 8	engine/mac-autopilot/daemon-self-check.sh
@@ -317,7 +317,7 @@
 53	engine/mac-autopilot/gen_dashboard.py
 3	engine/mac-autopilot/handoff-scan.test.sh
 22	engine/mac-autopilot/harvest-late-report.test.sh
-7	engine/mac-autopilot/harvest-scope-stop.test.sh
+8	engine/mac-autopilot/harvest-scope-stop.test.sh
 1	engine/mac-autopilot/harvest_health.py
 8	engine/mac-autopilot/health_report.py
 8	engine/mac-autopilot/health_report.test.sh
@@ -325,7 +325,7 @@
 16	engine/mac-autopilot/implement-no-push-recovery.test.sh
 2	engine/mac-autopilot/incident-fingerprint.sh
 1	engine/mac-autopilot/incident-fingerprint.test.sh
-6	engine/mac-autopilot/incident-prior-art-gate.test.sh
+7	engine/mac-autopilot/incident-prior-art-gate.test.sh
 28	engine/mac-autopilot/incident-report-resume.test.sh
 10	engine/mac-autopilot/incident-report-self-check.test.sh
 5	engine/mac-autopilot/incident-rule-label.test.sh
@@ -378,7 +378,7 @@
 1	engine/mac-autopilot/release_deps_health.py
 2	engine/mac-autopilot/reliability-cap.test.sh
 15	engine/mac-autopilot/repair-breaker.test.sh
-23	engine/mac-autopilot/repair-no-change.test.sh
+25	engine/mac-autopilot/repair-no-change.test.sh
 1	engine/mac-autopilot/repair-trigger.test.sh
 9	engine/mac-autopilot/report-gate-reask.test.sh
 6	engine/mac-autopilot/report-gate-repeat.test.sh
@@ -462,7 +462,7 @@
 51	engine/mac-autopilot/scheduler.d/handoff-rescue.test.sh
 4	engine/mac-autopilot/scheduler.d/handoff-wait-stale.test.sh
 22	engine/mac-autopilot/scheduler.d/harvest-collect.sh
-5	engine/mac-autopilot/scheduler.d/harvest-scope.sh
+6	engine/mac-autopilot/scheduler.d/harvest-scope.sh
 26	engine/mac-autopilot/scheduler.d/harvest-station.sh
 23	engine/mac-autopilot/scheduler.d/harvest-station.test.sh
 70	engine/mac-autopilot/scheduler.d/harvest-workers.sh
@@ -479,7 +479,7 @@
 16	engine/mac-autopilot/scheduler.d/locks-views-empty-pid.test.sh
 6	engine/mac-autopilot/scheduler.d/locks-views-term.test.sh
 6	engine/mac-autopilot/scheduler.d/locks-views-trap.test.sh
-74	engine/mac-autopilot/scheduler.d/locks-views.sh
+81	engine/mac-autopilot/scheduler.d/locks-views.sh
 4	engine/mac-autopilot/scheduler.d/main-red-optional-file.test.sh
 17	engine/mac-autopilot/scheduler.d/merge-census-latest.test.sh
 112	engine/mac-autopilot/scheduler.d/merge-lane.sh
@@ -487,8 +487,8 @@
 1	engine/mac-autopilot/scheduler.d/merge-result-check.test.sh
 15	engine/mac-autopilot/scheduler.d/merge-tree-sweep.sh
 19	engine/mac-autopilot/scheduler.d/merge-tree-sweep.test.sh
-64	engine/mac-autopilot/scheduler.d/models.sh
-28	engine/mac-autopilot/scheduler.d/no-human-wait.sh
+65	engine/mac-autopilot/scheduler.d/models.sh
+36	engine/mac-autopilot/scheduler.d/no-human-wait.sh
 33	engine/mac-autopilot/scheduler.d/orphan-prs.sh
 15	engine/mac-autopilot/scheduler.d/park-label-sweep.sh
 12	engine/mac-autopilot/scheduler.d/pr-body.sh
@@ -500,8 +500,8 @@
 1	engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
 58	engine/mac-autopilot/scheduler.d/reports.sh
 10	engine/mac-autopilot/scheduler.d/review-fixes.sh
-73	engine/mac-autopilot/scheduler.d/review-rules.sh
-65	engine/mac-autopilot/scheduler.d/self-check.sh
+75	engine/mac-autopilot/scheduler.d/review-rules.sh
+67	engine/mac-autopilot/scheduler.d/self-check.sh
 94	engine/mac-autopilot/scheduler.d/size-admission.sh
 12	engine/mac-autopilot/scheduler.d/size-recut-cap.test.sh
 14	engine/mac-autopilot/scheduler.d/size-recuts.sh
@@ -509,7 +509,7 @@
 12	engine/mac-autopilot/scheduler.d/start-silent-breaker.test.sh
 107	engine/mac-autopilot/scheduler.d/stop-loss.sh
 13	engine/mac-autopilot/scheduler.d/stuck-workers.sh
-71	engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh
+69	engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh
 1	engine/mac-autopilot/scheduler.d/supervisor-owned.sh
 31	engine/mac-autopilot/scheduler.d/tick-census.sh
 10	engine/mac-autopilot/scheduler.d/tick-steps.sh
@@ -536,7 +536,7 @@
 9	engine/mac-autopilot/station_standards.py
 37	engine/mac-autopilot/stuck-worker-disposition.test.sh
 11	engine/mac-autopilot/supervisor-arbiter-claude-route.test.sh
-145	engine/mac-autopilot/supervisor-arbiter.test.sh
+149	engine/mac-autopilot/supervisor-arbiter.test.sh
 2	engine/mac-autopilot/test-env.sh
 19	engine/mac-autopilot/test-scheduler-gates-fixture.sh
 23	engine/mac-autopilot/test-scheduler-gates-gh-fixture.sh
@@ -767,7 +767,7 @@
 4	engine/tick-speed.test.sh
 5	engine/ticket-progress.sh
 35	engine/ticket-progress.test.sh
-9	engine/triage-claude-fallback.test.sh
+11	engine/triage-claude-fallback.test.sh
 7	engine/triage-dispatch-first.test.sh
 4	engine/ts-judge.mjs
 3	engine/ts-judge.sh
@@ -795,7 +795,7 @@
 2	tools/pin-fail-triage.sh
 28	tools/pin-vecta.sh
 35	tools/pin-vecta.test.sh
-37	tools/quick-land.sh
+38	tools/quick-land.sh
 9	tools/run-engine-tests.sh
 3	tools/shortcut-ratchet.sh
 5	tools/size-ratchet.sh
