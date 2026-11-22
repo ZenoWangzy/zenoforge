@@ -127,6 +127,10 @@ case "$1 ${2:-}" in
       echo "run-triage-batch.test: fake gh issue view #$n fails (view $view_count >= $fail_from)" >&2
       exit 1
     fi
+    if [ -f "${FAKE_GH_LOG}.view-error.$n" ]; then
+      cat "${FAKE_GH_LOG}.view-error.$n" >&2
+      exit 1
+    fi
     # Queue row 919 fixture: hold one issue's apply-time reread (view >= 2)
     # while the gate file exists; the marker tells the test the batch is
     # inside that view, mid-apply. The cap keeps a lost test from hanging.
@@ -1155,6 +1159,39 @@ for template in "$SCRIPT_DIR"/prompts/*.md; do
   assert_eq "prompt template $name is within its byte budget" true \
     "$([ -n "$budget" ] && [ "$bytes" -le "$budget" ] && echo true || echo false)"
 done
+
+# Issue read through gh_issue_view_or_wait. The 404 case runs first: the 403 case starts
+# gh()'s shared graphql hold, which refuses every later issue read in this AGENT_HOME.
+fault_rows() { awk -F '\t' -v n="$1" '$3 == n && $4 == "env:gh-api"' "$AGENT_HOME"/env-faults/*.log 2>/dev/null; }
+: > "$FAKE_CODEX_OUTPUT"
+: > "$FAKE_CODEX_ARGS"
+jq -n '[911583] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+echo '[]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+printf 'HTTP 404: Not Found\n' > "${FAKE_GH_LOG}.view-error.911583"
+set +e
+NOT_FOUND_OUTPUT="$(ZF_TRIAGE_TICK_ID=not-found-911583 bash "$BATCH_SRC" --scheduled 911583 2>&1)"
+NOT_FOUND_STATUS=$?
+set -e
+assert_eq "404 read failure does not fail the batch" 0 "$NOT_FOUND_STATUS"
+assert_eq "404 read failure records one env:gh-api fault" 1 "$(fault_rows 911583 | wc -l | tr -d ' ')"
+assert_contains "404 env fault carries gh's detail line" "$(fault_rows 911583)" 'HTTP 404: Not Found'
+assert_contains "404 read failure keeps the snapshot-failed line" "$NOT_FOUND_OUTPUT" 'run-triage-batch: #911583 issue snapshot failed; other issues continue'
+
+# Secondary rate limit on the read: held by the shared back-off, no fault, batch goes on.
+: > "$FAKE_CODEX_OUTPUT"
+: > "$FAKE_CODEX_ARGS"
+jq -n '[911581, 911582] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
+printf 'HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.\n' > "${FAKE_GH_LOG}.view-error.911581"
+set +e
+HELD_OUTPUT="$(ZF_TRIAGE_TICK_ID=held-911581 bash "$BATCH_SRC" --scheduled 911581 911582 2>&1)"
+HELD_STATUS=$?
+set -e
+assert_eq "held read does not fail the batch" 0 "$HELD_STATUS"
+assert_contains "held read is left queued with its own line" "$HELD_OUTPUT" 'run-triage-batch: #911581 issue read held by GitHub back-off; left queued'
+assert_eq "held read records no env:gh-api fault" 0 "$(fault_rows 911581 | wc -l | tr -d ' ')"
+assert_contains "batch loop reaches the next issue after a held read" "$HELD_OUTPUT" 'run-triage-batch: #911582 issue read held by GitHub back-off; left queued'
 
 if [ "$FAILED" -ne 0 ]; then
   exit 1
