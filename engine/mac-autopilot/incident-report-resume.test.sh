@@ -464,4 +464,17 @@ if build_codex_command repair claude-haiku-5-5 high issue-71001 'report-only pro
   fail 'read-only Claude continuation accepted a different session id'
 fi
 
+# Row 972: a unit the stale-report gate escalated goes back through the gate once on the fix note its escalation names.
+write_unit "$stale_report_name"
+jqf --arg w "$partial_fix_name" '.units[0].stage="parked" | .units[0].parked_reason="supervisor-arbitration-cap" | .units[0].report_gate_fail={reason:"missing ## decision-log",n:5}
+  | .units[0].history=[{stage:"supervisor-escalated",result:("implementation report gate failed 5 times in a row with the same reason: missing ## decision-log (report impl-71001-stale.md; worker report " + $w + ")")}]' \
+  "$UNITS" | write_state "$UNITS"
+report_gate_stale_recover
+jqf -e '.units[0] | .stage == "repair-pending" and (has("parked_reason") | not) and (has("report_gate_fail") | not)
+  and ([.history[] | select(.stage == "report-gate-recovered")] | length) == 1' "$UNITS" >/dev/null \
+  || fail "a stale-report escalation was not sent back through the gate once ($(jqf -c '.units[0] | {stage,parked_reason,h:[.history[].stage]}' "$UNITS"))"
+jqf '.units[0].stage="parked"' "$UNITS" | write_state "$UNITS"
+report_gate_stale_recover
+[[ "$(jqf -r '.units[0].stage' "$UNITS")" == parked ]] || fail 'the stale-report recovery ran twice on one unit'
+
 echo 'ok - incident report failures get at most one read-only same-session resume before review'
