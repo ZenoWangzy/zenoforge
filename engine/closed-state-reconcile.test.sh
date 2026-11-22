@@ -53,6 +53,14 @@ jq -e 'length == 1 and .[0].number == 5310 and .[0].state == "CLOSED"' <<< "$clo
 outcomes_reconcile_closed_states "$AGENT_HOME" "$closed_state_snapshot"
 [[ "$(state_read 5310 | jq -r .state)" == concluded ]]
 echo 'ok - closed ready-for-agent issues reconcile from the closed-label sweep'
+
+# Row 975: a closed-issue list over the kernel's 128 KiB per-argument limit still builds the snapshot.
+gh_q() { jq -cn --arg l "$(printf 'x%.0s' {1..600})" '[range(9000; 9300) | {number: ., state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-10-12T12:00:00Z", labels: [{name: $l}]}]'; }
+big_recent="$(gh_q | jq -c '.[0:250]')"
+(( ${#big_recent} > 131072 )) || { echo "fixture too small: ${#big_recent}" >&2; exit 1; }
+closed_state_snapshot="$(outcomes_closed_state_reconciliation_snapshot "$AGENT_HOME" "$REPO" "$big_recent" '2026-11-08T00:00:00Z')"
+jq -e 'length == 250' <<< "$closed_state_snapshot" >/dev/null
+echo 'ok - a closed-issue list over 128 KiB builds the snapshot'
 unset -f gh_q
 
 state_merge 5307 '{"state":"on-hold","hold":{"kind":"supervisor-inbox","reason":"protected owner decision"}}'
