@@ -140,16 +140,17 @@ incident_report_harvest_target() { # unit-id worker-type unit-json worker-report
   local unit="$1" wtype="$2" unit_json="$3" worker_report="$4" worker_report_path="$5" report="$4" merged
   [[ "$wtype" == repair ]] || { printf '%s' "$report"; return 0; }
   report="$(jqf -r --arg n "$worker_report" '.implementation_report // $n' <<<"$unit_json")"
-  if [[ "$worker_report" != "$report" ]] \
-    && [[ -n "$(incident_report_reason "$unit_json" "$SUP/$report")" ]] \
-    && [[ -z "$(incident_report_reason "$unit_json" "$worker_report_path")" ]]; then
+  # 11-22 (issue-7606 5 rounds, 7619, 7644): a fix note was merged only when it passed the gate alone, so a partial fix
+  # note was never read and every round failed on the stale unit report. The gate now judges this repair's delivery
+  # (fix note + unit report); the unit pointer still moves only when that passes.
+  if [[ "$worker_report" != "$report" ]] && [[ -n "$(incident_report_reason "$unit_json" "$SUP/$report")" ]]; then
     merged="$(incident_report_merge_adopted "$report" "$worker_report" "$worker_report_path")" || merged=""
-    if [[ -n "$merged" ]] && [[ -z "$(incident_report_reason "$unit_json" "$SUP/$merged")" ]] \
-      && set_unit "$unit" ".implementation_report=$(js "$merged")"; then
+    [[ -n "$merged" ]] || { printf '%s' "$report"; return 0; }
+    if [[ -z "$(incident_report_reason "$unit_json" "$SUP/$merged")" ]] && set_unit "$unit" ".implementation_report=$(js "$merged")"; then
       say "report adopted unit=$unit from=$worker_report"
-      printf '%s' "$merged"
-      return 0
     fi
+    printf '%s' "$merged"
+    return 0
   fi
   printf '%s' "$report"
 }

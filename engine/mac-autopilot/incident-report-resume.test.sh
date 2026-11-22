@@ -351,6 +351,24 @@ harvest_workers || :
 [[ "$RESUME_DISPATCHES" == $((before_resumes + 1)) && "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$missing_report_name" ]] \
   || fail "a repair that fixed nothing was not still gated on the unit report (resumes=$RESUME_DISPATCHES report=$(jqf -r '.units[0].implementation_report' "$UNITS"))"
 
+# 11-22 (issue-7606): a stale unit report with no sections and a fix note that adds all but prior-art: the gate judges the
+# delivery (missing prior-art), not the stale report alone (missing decision-log, 5 rounds in a row).
+stale_report_name=impl-71001-stale.md
+printf 'The background wait finished. It was only a timer.\n' > "$sup/$stale_report_name"
+partial_fix_name=impl-71001-fix-partial.md
+sed '/^VERDICT:/d' "$missing_report" > "$sup/$partial_fix_name"
+write_unit "$stale_report_name"
+jqf '.units[0].pr=71001 | .units[0].stage="repair"' "$UNITS" | write_state "$UNITS"
+write_worker repair "$partial_fix_name" impl-71001-fix-partial.worker.log
+printf 'tokens used\n1,020\nAdded the sections.\n' > "$sup/impl-71001-fix-partial.worker.log"
+harvest_workers || :
+[[ "$(jqf -r '.units[0].report_gate_fail.reason' "$UNITS")" == *'missing ## prior-art'* ]] \
+  || fail "the gate did not judge the repair's delivered report (reason=$(jqf -r '.units[0].report_gate_fail.reason' "$UNITS"))"
+[[ "$(jqf -r '.units[0].implementation_report' "$UNITS")" == "$stale_report_name" ]] \
+  || fail 'a delivery that still fails the gate moved the unit report pointer'
+[[ "$LAST_PROMPT" == *'The persisted state was selected incorrectly.'* ]] \
+  || fail 'the report-only continuation did not carry the delivered fix note'
+
 how_why_report_name=impl-71001-how-why.md
 cat > "$sup/$how_why_report_name" <<'REPORT'
 ## decision-log
