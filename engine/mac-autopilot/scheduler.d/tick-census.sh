@@ -4,8 +4,10 @@
 # （tick_pr_body），成功的一次列表写进 $A 下的缓存文件，别的 station 进程 60s 内直接复用，不再各问 GitHub。
 # 读不到、格式错一律"不可用"（返回 1），调用方本拍不据此决策；自己改了 PR 后 tick_prs_changed 清掉重来。
 declare -gA TICK_PR_BODY=() TICK_PR_BODY_LOADED=() TICK_PR_CHECK_RUNS=()
+declare -gi TICK_PR_BODY_FETCHES=0 # 本进程真正走 GitHub 的正文读取次数（缓存命中不计），受 pr_body_fetch_cap 限制
+TICK_PR_BODY_CAP_SAID='' TICK_CENSUS_ERR_SAID=''
 tick_prs_read() { # → open-PR census JSON；进程内未缓存时先看 60s 窗口文件，再问 GitHub
-  local f out now tmp
+  local f out now err rc
   if [[ -n "${A:-}" ]]; then
     f="$A/.tick-prs-census.json"
     if out="$(cat "$f" 2>/dev/null)" && [[ "${out%%$'\n'*}" =~ ^[0-9]+$ ]] \
@@ -15,18 +17,39 @@ tick_prs_read() { # → open-PR census JSON；进程内未缓存时先看 60s �
       return 0
     fi
   fi
-  out="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision 2>/dev/null)" || return 1
+  err="$(mktemp 2>/dev/null)" || err=""
+  out="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision,updatedAt 2>"${err:-/dev/null}")" || {
+    rc=$?
+    printf 'tick census read failed rc=%s err=%s\n' "$rc" "$(head -n1 "$err" 2>/dev/null | cut -c1-200)" >&2
+    [[ -z "$err" ]] || rm -f -- "$err"
+    return 1
+  }
+  [[ -z "$err" ]] || rm -f -- "$err"
   jqf -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || return 1
   if [[ -n "${A:-}" ]]; then # 只有成功的读取才落盘：失败的读不写文件，下一个进程自己再问
-    f="$A/.tick-prs-census.json"
-    if tmp="$(mktemp "$A/.tick-prs-census.XXXXXX" 2>/dev/null)"; then
-      if { date +%s; printf '%s' "$out"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then :; else rm -f -- "$tmp"; fi
-    fi
+    tick_census_store "$A/.tick-prs-census.json" "$out"
+    tick_pr_body_sweep "$out"
   fi
   printf '%s' "$out"
 }
+tick_census_store() { # $1 文件，$2 census JSON：写成 "epoch 行 + JSON"，tmp + mv 原子替换
+  local tmp
+  if tmp="$(mktemp "$1.XXXXXX" 2>/dev/null)"; then
+    if { date +%s; printf '%s' "$2"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null; then :; else rm -f -- "$tmp"; fi
+  fi
+}
 tick_prs() {
-  [[ -n "$TICK_PRS" ]] || TICK_PRS="$(tick_prs_read)" || { TICK_PRS=""; return 1; }
+  local errf="" rc=0
+  if [[ -z "$TICK_PRS" ]]; then
+    errf="$(mktemp 2>/dev/null)" || errf=""
+    TICK_PRS="$(tick_prs_read 2>"${errf:-/dev/null}")" || rc=$?
+    # 失败的读只在本进程第一次记一行（tick_prs_read 的 stderr 第一行；它在子 shell 里跑，记行必须在这里）
+    if (( rc )) && [[ -n "$errf" && -s "$errf" && -z "${TICK_CENSUS_ERR_SAID:-}" ]]; then
+      say "$(head -n1 "$errf")"; TICK_CENSUS_ERR_SAID=1
+    fi
+    [[ -z "$errf" ]] || rm -f -- "$errf"
+    (( rc == 0 )) || { TICK_PRS=""; return 1; }
+  fi
   jqf -e 'type == "array"' <<<"$TICK_PRS" >/dev/null || { TICK_PRS=""; return 1; }
   printf '%s' "$TICK_PRS"
 }
@@ -47,12 +70,40 @@ tick_prs_add_label() { # mirror a successful label write in the current tick's P
   updated="$(jqf --argjson pr "$1" --arg label "$2" 'map(if .number==$pr then .labels=((.labels // []) + [{name:$label}] | unique_by(.name)) else . end)' <<<"$TICK_PRS")" || { tick_prs_changed; return 0; }
   TICK_PRS="$updated"
 }
-tick_pr_body() { # PR number → body 正文；一个进程一个 PR 只取一次，读不到返回 1
-  local body
-  [[ "$1" =~ ^[0-9]+$ ]] || return 1
-  if [[ -n "${TICK_PR_BODY_LOADED[$1]:-}" ]]; then printf '%s' "${TICK_PR_BODY[$1]}"; return 0; fi
-  body="$(gh pr view "$1" --json body --jq '.body // ""' 2>/dev/null)" || return 1
-  TICK_PR_BODY_LOADED[$1]=1; TICK_PR_BODY[$1]="$body"
+tick_pr_body_file() { # PR 号 + updatedAt → 正文缓存文件名（$A/.pr-body/<n>-<updatedAt 去符号>）；没有 A 或 updatedAt 返回 1
+  local key="${2//[^0-9A-Za-z]/}"
+  [[ -n "${A:-}" && -n "$key" ]] || return 1
+  printf '%s/.pr-body/%s-%s' "$A" "$1" "$key"
+}
+tick_pr_body_sweep() { # 成功的一次 census 之后：删掉 census 里已没有的 PR，或正文已换了 updatedAt 的旧缓存
+  local keep f
+  keep="$(jqf -r '.[] | "\(.number)-\(.updatedAt // "" | gsub("[^0-9A-Za-z]"; ""))"' <<<"$1" 2>/dev/null)" || return 0
+  for f in "$A"/.pr-body/*; do
+    [[ -e "$f" ]] || continue
+    grep -qxF -- "${f##*/}" <<<"$keep" || rm -f -- "$f"
+  done
+}
+tick_pr_body() { # PR number → body 正文：进程内缓存 → 按 updatedAt 的文件缓存 → GitHub（每进程有上限）；读不到返回 1
+  local body n="$1" updated file cap tmp
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  if [[ -n "${TICK_PR_BODY_LOADED[$n]:-}" ]]; then printf '%s' "${TICK_PR_BODY[$n]}"; return 0; fi
+  updated="$(jqf -r --argjson n "$n" 'first(.[] | select(.number == $n) | .updatedAt) // empty' <<<"${TICK_PRS:-[]}" 2>/dev/null)"
+  if file="$(tick_pr_body_file "$n" "$updated")" && [[ -f "$file" ]]; then
+    body="$(cat -- "$file")"; TICK_PR_BODY_LOADED[$n]=1; TICK_PR_BODY[$n]="$body"
+    printf '%s' "$body"; return 0
+  fi
+  cap="$(jqf -r '.pr_body_fetch_cap // 20' <<<"${CFG:-"{}"}" 2>/dev/null)"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=20
+  if (( TICK_PR_BODY_FETCHES >= cap )); then
+    [[ -n "${TICK_PR_BODY_CAP_SAID:-}" ]] || { say "pr body fetch cap reached cap=$cap"; TICK_PR_BODY_CAP_SAID=1; }
+    return 1
+  fi
+  TICK_PR_BODY_FETCHES=$((TICK_PR_BODY_FETCHES + 1))
+  body="$(gh pr view "$n" --json body --jq '.body // ""' 2>/dev/null)" || return 1
+  TICK_PR_BODY_LOADED[$n]=1; TICK_PR_BODY[$n]="$body"
+  if file="$(tick_pr_body_file "$n" "$updated")"; then # 写文件失败只是没有缓存，不影响本次读取
+    mkdir -p -- "${file%/*}" 2>/dev/null && tmp="$(mktemp "${file%/*}/.XXXXXX" 2>/dev/null)" \
+      && { printf '%s' "$body" > "$tmp" && mv -f "$tmp" "$file" 2>/dev/null || rm -f -- "$tmp"; }
+  fi
   printf '%s' "$body"
 }
 prs_attach_body() { # stdin: census rows, $1 PR 号, $2 正文 → 该 PR 的 .body 补上（正文走 --rawfile，绕开 jqf 的 64KiB argv 上限）
