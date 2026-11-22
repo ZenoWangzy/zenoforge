@@ -120,12 +120,17 @@ for n in "${BATCH_IDS[@]}"; do
   fi
 
   ISSUE_JSON=""
-  if ! ISSUE_JSON="$(timeout 30s gh issue view "$n" --repo "$REPO" \
-      --json number,title,body,author,comments,createdAt,updatedAt,labels,state 2>&1)"; then
-    record_env_fault env:gh-api triage "$n" "gh issue view failed or timed out before batch prompt assembly" || true
+  # GH_CALL_TIMEOUT_SEC=30 keeps the old 30 s bound per gh() attempt (gh() defaults to 60 s).
+  ISSUE_JSON="$(GH_CALL_TIMEOUT_SEC=30 gh_issue_view_or_wait triage-batch "$n" "$REPO" \
+      number,title,body,author,comments,createdAt,updatedAt,labels,state)" || {
+    if gh_backoff_refusal "$?"; then
+      echo "run-triage-batch: #$n issue read held by GitHub back-off; left queued" >&2
+      continue
+    fi
+    record_env_fault env:gh-api triage "$n" "$ISSUE_JSON" || true
     echo "run-triage-batch: #$n issue snapshot failed; other issues continue" >&2
     continue
-  fi
+  }
   LABEL_OK="$(jq -r '[.labels[]?.name] | any(. == "needs-triage" or . == "ready-for-agent")' <<< "$ISSUE_JSON")"
   if [ "$LABEL_OK" != "true" ]; then
     echo "run-triage-batch: #$n no longer has a selectable triage label; leaving it queued" >&2

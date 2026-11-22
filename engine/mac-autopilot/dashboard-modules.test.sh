@@ -135,6 +135,14 @@ const sampledOverview = load(sampledBreach);
 sampledOverview.ctx.__dash.renderModule("overview");
 if (!sampledOverview.els.view.innerHTML.includes("(n=1)") || !sampledOverview.els.view.innerHTML.includes("长窗 UNHEALTHY"))
   throw new Error("overview hides a low-sample count beside an unhealthy breach");
+// A row computed from stored GitHub rows says so: the data time shows in the row's text and its tooltip.
+const storedRows = {generated:new Date().toISOString(), standards:{metrics:[{
+  id:"delivery.unlinked_units_30d", node:"delivery", desc:"unlinked units", meaning:"unlinked",
+  value:0, healthy:0, unhealthy:1, higher_is_better:false, status:"OK", data_at:"2026-11-13T22:24Z"
+}]}};
+const storedHealth = load(storedRows).ctx.__dash.MODULES.find(m=>m.id==="health").render(storedRows);
+if (!storedHealth.includes("数据截至 2026-11-13T22:24Z") || !storedHealth.includes("沿用 2026-11-13T22:24Z 的数据"))
+  throw new Error("health row hides the data time of rows read from the stored census");
 
 // 2. 每一块都"数据不可用"：分支都能画，且带原因
 const broken = {front: {errors: {stages: "HTTP 502", advisor: "lib.sh missing", advisor_loop: "units.json unreadable", triage: "ledger gone", release: "git failed"}}};

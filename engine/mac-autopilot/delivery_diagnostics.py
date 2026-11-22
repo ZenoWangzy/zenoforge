@@ -1,10 +1,15 @@
 """Failure reasons for delivery census inputs used by node_health."""
 
 import json
+import os
 import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+LAST_GOOD = "delivery-rows-last-good.json"  # next to node-health.json; the last complete issue and PR census
+MAX_AGE = timedelta(hours=24)
 
 
 def _error_text(stderr):
@@ -94,3 +99,56 @@ def git_revert_times(root, tip="HEAD", on_unavailable=None):
             if merge_sha not in reverted or at > reverted[merge_sha]:
                 reverted[merge_sha] = at
     return reverted
+
+
+def _save_rows(path, now, rows):
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w") as out:
+            json.dump({"at": f"{now.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}", "issues": rows["issues"],
+                       "prs": rows["prs"]}, out)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _load_rows(path, now):
+    """(fetch time, rows) of the last complete census when it is under 24 h old and well formed, else None."""
+    try:
+        with open(path) as src:
+            saved = json.load(src)
+        at = datetime.strptime(saved["at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        rows = {"issues": saved["issues"], "prs": saved["prs"]}
+        if (all(isinstance(rows[name], list) and all(isinstance(row, dict) for row in rows[name]) for name in rows)
+                and timedelta(0) <= now - at < MAX_AGE):
+            return at, rows
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def last_good_rows(rows, now, path, unavailable, served):
+    """Store a complete census; a refused list falls back to the stored one and is labelled with its fetch time."""
+    if not path:
+        return rows["issues"], rows["prs"]
+    if rows["issues"] is not None and rows["prs"] is not None:
+        _save_rows(path, now, rows)
+        return rows["issues"], rows["prs"]
+    loaded = _load_rows(path, now)
+    if loaded is None:
+        return rows["issues"], rows["prs"]
+    at, stored = loaded
+    label = f"{at:%Y-%m-%dT%H:%MZ}"
+    for name in ("issues", "prs"):
+        if rows[name] is None:
+            rows[name] = stored[name]
+            print(f"node_health: delivery input {name} unavailable: {unavailable.get(name, 'unknown')}; "
+                  f"using rows from {label}", file=sys.stderr)
+    if served is not None:
+        served["rows_from"] = label
+    return rows["issues"], rows["prs"]
+
+
+def data_at(metric_id, rows_from):
+    """Scorecard field dating a delivery row computed from stored GitHub rows."""
+    return {"data_at": rows_from} if metric_id.startswith("delivery.") and rows_from else {}

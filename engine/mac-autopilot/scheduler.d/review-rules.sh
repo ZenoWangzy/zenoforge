@@ -480,3 +480,20 @@ unit_head() { # id pr lane branch → candidate SHA (compatibility helper)
   target="$(unit_review_target "$1" "$2" "$3" "$4")" || return 1
   printf '%s' "${target#* }"
 }
+
+# A READY from a reviewer of the author's own family is never applied (queue row 942): the unit goes back for an other-family review.
+review_family_verdict() { # unit JSON, reviewer identity, verdict -> 1 when a same-family READY is discarded, else 0
+  local unit="$1" reviewer="$2" verdict="$3" id author author_family reviewer_family
+  [[ "$verdict" == READY ]] || return 0
+  id="$(jqf -r '.id // empty' <<<"$unit")"
+  author="$(unit_review_author_identity "$unit" 2>/dev/null || true)"
+  author_family="$(review_identity_family "$author" 2>/dev/null || true)"
+  [[ -n "$author_family" ]] || return 0
+  reviewer_family="$(review_identity_family "$reviewer" 2>/dev/null || true)"
+  if [[ "$reviewer_family" == "$author_family" || ( "$author_family" == claude && -z "$reviewer_family" ) ]]; then
+    say "review-family verdict discarded unit=$id author=$author_family reviewer=${reviewer_family:-unknown}"
+    set_unit "$id" "$(hist review-same-family "author=$author_family reviewer=${reviewer_family:-unknown}") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
+    return 1
+  fi
+  return 0
+}
