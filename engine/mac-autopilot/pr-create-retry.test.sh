@@ -342,26 +342,69 @@ tick
   || fail "the third 5xx did not escalate ($(field r2-f .stage), retries=$(retry_count r2-f))"
 no_orphan_redo r2-f
 
-# (g) units the old code escalated for a refused PR open come back to the owed-PR-open retry; others stay.
-GH_GQL=refused GH_REST=refused
-refused_reason='could not open a PR for agent/issue-7644: gh: graphql rate-limit backoff active until epoch=1795309393 (rc 75)'
-esc_unit() { # id reason age-seconds
-  jq -cn --arg id "$1" --arg reason "$2" --arg at "$(date -u -d "@$(( $(date -u +%s) - $3 ))" +%Y-%m-%dT%H:%M:%SZ)" \
-    '{id:$id,issue:2200,title:"escalated",branch:("agent/"+$id),lane:"pr",stage:"supervisor-review",report:("impl-"+$id+".md"),history:[{stage:"write-end",result:"[]",at:$at},{stage:"supervisor-escalated",result:$reason,at:$at}]}'
+# (i-n) a unit with no .pr whose branch already has its PR in the census is adopted at supervisor-review, parked or implement-with-owed-PR-open.
+git -C "$ROOT" init -q 2>/dev/null || :
+git -C "$ROOT" remote get-url origin >/dev/null 2>&1 || git -C "$ROOT" remote add origin "$origin"
+origin_head() { git -C "$origin" rev-parse "refs/heads/$1"; }
+census_row() { # branch number draft head labelled
+  jq -cn --arg b "$1" --argjson n "$2" --argjson d "$3" --arg sha "$4" --argjson lab "$5" \
+    '{headRefName:$b,number:$n,isDraft:$d,headRefOid:$sha,labels:(if $lab then [{name:"agent/ci-gated"}] else [] end)}'
 }
-for u in r2-ga r2-gb r2-gc r2-gd; do prepare_branch "$u" "agent/$u"; printf 'implementation delivered\n' > "$sup/impl-$u.md"; done
-printf '{"units":[%s,%s,%s,%s]}\n' "$(esc_unit r2-ga "$refused_reason" 7200)" "$(esc_unit r2-gb "$refused_reason" 25200)" \
-  "$(esc_unit r2-gc 'could not open a PR for agent/r2-gc: GraphQL: Resource not accessible by integration' 7200)" "$(esc_unit r2-gd "$refused_reason" 7200)" > "$UNITS"
-jq -cn '{workers:[{pid:4399,unit:"r2-gd",type:"supervise",log:"none.log",report:"arbiter.md",harvested:false}]}' > "$WORKERS"
+adopt_unit() { # id stage [extra-json]; the branch is agent/issue-<id> (gated)
+  jq -cn --arg id "$1" --arg st "$2" --argjson extra "${3:-{\}}" '{id:$id,issue:2300,title:"adopt",branch:("agent/issue-"+$id),lane:"pr",stage:$st,history:[]} + $extra'
+}
+for u in r2-i r2-j r2-k1 r2-k2 r2-l r2-m r2-n; do prepare_branch "$u" "agent/issue-$u"; done
+prepare_branch r2-k3 agent/r2-k3
+parked_extra='{"parked_reason":"supervisor-park","unpark_condition":"a ruling","note":"supervisor repeat guard could not complete the recut route","cap_exhausted_mark":"x","history":[{"stage":"supervisor-park","result":"x","at":"2026-11-22T01:00:00Z"}]}'
+gate_extra='{"note":"implementation report gate failed 2 times in a row","history":[{"stage":"supervisor-escalated","result":"implementation report gate failed 2 times in a row","at":"2026-11-22T01:00:00Z"},{"stage":"hold-applied","result":"on-hold by head","at":"2026-11-22T01:30:00Z"}]}'
+echo '{"workers":[]}' > "$WORKERS"
+printf '{"units":[%s,%s,%s,%s,%s,%s]}\n' "$(adopt_unit r2-i parked "$parked_extra")" "$(adopt_unit r2-j supervisor-review "$gate_extra")" \
+  "$(adopt_unit r2-k1 parked)" "$(adopt_unit r2-k2 parked)" "$(jq -cn '{id:"r2-k3",issue:2300,title:"adopt",branch:"agent/r2-k3",lane:"pr",stage:"parked",history:[]}')" "$(adopt_unit r2-l parked)" > "$UNITS"
+TICK_PRS="$(jq -cn --argjson i "$(census_row agent/issue-r2-i 7684 true "$(origin_head agent/issue-r2-i)" true)" --argjson j "$(census_row agent/issue-r2-j 7685 true "$(origin_head agent/issue-r2-j)" true)" \
+  --argjson k1 "$(census_row agent/issue-r2-k1 7686 false "$(origin_head agent/issue-r2-k1)" true)" --argjson k2 "$(census_row agent/issue-r2-k2 7687 true "$(origin_head agent/issue-r2-k2)" false)" \
+  --argjson k3 "$(census_row agent/r2-k3 7688 false "$(origin_head agent/r2-k3)" false)" --argjson l "$(census_row agent/issue-r2-l 7689 true aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa true)" '[$i,$j,$k1,$k2,$k3,$l]')"
 : > "$GH_CALLS"
+tick
+tick # the second tick must not adopt again: exactly one pr-adopted event
+# (i) parked unit, (j) supervisor-review unit whose last event is not the escalation: adopted, no park field left, no GitHub call.
+for u in r2-i r2-j; do
+  [[ "$(field $u .stage)" == review-pending && "$(field $u .lane)" == pr && "$(field $u .gated)" == true && "$(ev $u pr-adopted)" == 1 ]] \
+    || fail "unit $u was not adopted exactly once ($(field $u .stage), events=$(ev $u pr-adopted))"
+  [[ "$(field $u '[.parked_reason,.unpark_condition,.note,.cap_exhausted_mark,.pr_open_held] | map(select(. != null)) | length')" == 0 ]] || fail "adopted unit $u kept park fields: $(field $u 'del(.history) | tojson')"
+done
+[[ "$(field r2-i .pr)" == 7684 && "$(field r2-j .pr)" == 7685 ]] || fail 'the adopted unit got the wrong PR number'
+[[ "$(field r2-i '.history[-1].result')" == "adopted existing PR#7684 $(origin_head agent/issue-r2-i)" ]] || fail "the pr-adopted result is wrong: $(field r2-i '.history[-1].result')"
+[[ ! -s "$GH_CALLS" ]] || fail "adoption made a GitHub call: $(cat "$GH_CALLS")"
+# (k) a gated branch needs a draft PR with the gate label; the condition is logged; a non-gated branch needs neither.
+for u in r2-k1 r2-k2; do
+  [[ "$(field $u .stage)" == parked && "$(ev $u pr-adopted)" == 0 && "$(field $u '.pr // "none"')" == none ]] || fail "unit $u was adopted although condition 1 fails"
+  grep -qF "pr-adopt skipped unit=$u PR#" "$LOG" && grep -F "pr-adopt skipped unit=$u PR#" "$LOG" | grep -qF 'condition 1' || fail "unit $u: no condition-1 log line"
+done
+[[ "$(field r2-k3 .stage)" == review-pending && "$(field r2-k3 .pr)" == 7688 ]] || fail 'a non-gated branch needs neither the draft state nor the label'
+# (l) the PR head is not the branch head: left alone, condition 2 logged.
+[[ "$(field r2-l .stage)" == parked && "$(ev r2-l pr-adopted)" == 0 ]] && grep -F 'pr-adopt skipped unit=r2-l PR#7689' "$LOG" | grep -qF 'condition 2' || fail 'a PR at another head was adopted or not logged'
+# (m) a live worker of any type: not adopted.
+printf '{"units":[%s]}\n' "$(adopt_unit r2-m parked)" > "$UNITS"
+jq -cn '{workers:[{pid:4398,unit:"r2-m",type:"supervise",log:"none.log",report:"arbiter.md",harvested:false}]}' > "$WORKERS"
+TICK_PRS="$(census_row agent/issue-r2-m 7690 true "$(origin_head agent/issue-r2-m)" true | jq -sc .)"
 unset PR_OPEN_REFUSED_THIS_TICK
 recover_orphans || :
-[[ "$(field r2-ga .stage)" == implement && "$(ev r2-ga pr-open-requeued)" == 1 && -n "$(field r2-ga '.pr_open_held.report')" && "$(ev r2-ga supervisor-escalated)" == 1 ]] \
-  || fail "the unit escalated 2 h ago for the back-off was not requeued ($(field r2-ga .stage), requeued=$(ev r2-ga pr-open-requeued))"
-for u in r2-gb r2-gc r2-gd; do
-  [[ "$(field "$u" .stage)" == supervisor-review && "$(ev "$u" pr-open-requeued)" == 0 ]] || fail "unit $u must stay at supervisor-review"
-done
-no_orphan_redo r2-ga
+[[ "$(field r2-m .stage)" == parked && "$(ev r2-m pr-adopted)" == 0 ]] || fail 'a unit with a live worker was adopted'
+# (n) the census is not loaded: nothing happens and no GitHub call is made.
+echo '{"workers":[]}' > "$WORKERS"
+printf '{"units":[%s]}\n' "$(adopt_unit r2-n parked)" > "$UNITS"
+TICK_PRS=""; : > "$GH_CALLS"
+tick
+[[ "$(field r2-n .stage)" == parked && "$(ev r2-n pr-adopted)" == 0 && ! -s "$GH_CALLS" ]] || fail 'adoption acted or called GitHub without a loaded census'
+# (o) a tick that has not loaded the census primes it once while a candidate exists, then adopts; with no candidate it does not prime.
+tick_prs_prime() { printf 'prime\n' >> "$GH_CALLS"; TICK_PRS="$(census_row agent/issue-r2-n 7691 true "$(origin_head agent/issue-r2-n)" true | jq -sc .)"; }
+TICK_PRS=""; : > "$GH_CALLS"
+recover_orphans || :
+[[ "$(field r2-n .stage)" == review-pending && "$(field r2-n .pr)" == 7691 && "$(grep -c '^prime$' "$GH_CALLS")" == 1 ]] || fail "a candidate did not prime the census and adopt ($(field r2-n .stage), primes=$(grep -c '^prime$' "$GH_CALLS"))"
+TICK_PRS=""; : > "$GH_CALLS"
+recover_orphans || :
+[[ ! -s "$GH_CALLS" ]] || fail 'the census was primed with no candidate left'
+tick_prs_prime() { :; }
 
 # (h) the older cases above ran unchanged except that case e of round 1 now carries its first hold time in .pr_open_held.since.
 echo 'pr-create-retry.test.sh: PASS'
