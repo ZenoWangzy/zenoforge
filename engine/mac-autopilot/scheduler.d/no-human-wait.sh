@@ -3,9 +3,9 @@
 # 失败记 NOT applied，决策文本追加进该单元的报告文件（显式路径或 .supervise_report；都没有时落 alerts），
 # 单元留在原 stage，由 cap-triage 的重试标记（supervisor-arbitration-cap）下一拍重试。
 cap_set_unit() { # id verb decision-text report-path jq_update_expression
-  local id="$1" verb="$2" text="$3" rep="$4" keep
-  if set_unit "$id" "$5"; then return 0; fi
-  say "cap triage unit=$id: $verb NOT applied (set_unit failed)"
+  local id="$1" verb="$2" text="$3" rep="$4" keep rc=0
+  set_unit "$id" "$5" || rc=$?; (( rc )) || return 0 # row 978: 7278 and 7381 logged no cause; rc 3 = no row, cas_stale = a harvest read went stale
+  say "cap triage unit=$id: $verb NOT applied (set_unit failed rc=$rc cas_stale=${HARVEST_CAS_STALE:-false})"
   keep="$rep"
   [[ -n "$keep" ]] || keep="$SUP/$(unit_field "$id" '.supervise_report // empty')"
   if [[ -n "$keep" && "$keep" != "$SUP/" && -d "${keep%/*}" ]]; then
@@ -32,7 +32,35 @@ supervisor_arbiter_live_candidate() { # stale unit-json → id<TAB>current candi
   [[ -n "$candidate_unit" && "$candidate_unit" != null ]] || return 1
   jqf -e '(.stage == "supervisor-review" or .stage == "parked") and (.hold_handoff_waiting // false)==false and (.supervisor_owned // false)==false' <<<"$candidate_unit" >/dev/null || return 1
   supervisor_no_change_waiting "$candidate_unit" && return 1 # row 613: a repeated NO-CHANGE waits for a ruling; no arbiter run, no requeue
+  supervisor_issue_hold_wait "$candidate_id" "$candidate_unit" && return 1 # row 978: alerts once, closes the unit after the wait
   printf '%s\t%s\n' "$candidate_id" "$candidate_unit"
+}
+# Row 978 (2026-11-22: 6977, 7278 and 7381 waited at the arbiter cap until head ruled, 6977 for 3.6 days): their issues sat on a
+# recut-loop hold, and supervisor_cap_default returns 0 on an on-hold issue with no log. An arbiter run there can only answer
+# RECUT, which the hold refuses (7278 got two runs after its hold). So a unit whose issue is on a recut-loop hold, or on any hold
+# once the unit is capped, gets no run: one alert (supervisor inbox and head-watch) names the hold, and SUPERVISOR_CAP_WAIT_S
+# later with no head ruling the unit closes; the hold stays and reopens the work when it expires or a ruling releases it.
+supervisor_issue_hold_wait() { # id unit-json → 0 while the unit waits on its issue's hold
+  local id="$1" u="$2" issue raw key since now="${NOW_EPOCH:-$(date +%s)}"
+  supervisor_arbiter_owner_ruling_pending "$u" && return 1
+  issue="$(jqf -r '.issue // empty' <<<"$u")"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
+  raw="$(scheduler_issue_state "$issue" 2>/dev/null)" || return 1
+  jqf -e --argjson runs "$(supervisor_arbiter_lifetime_runs "$u")" --argjson cap "$SUPERVISOR_ARBITER_UNIT_CAP" \
+    '.state == "on-hold" and (.hold.kind == "recut-loop" or $runs >= $cap)' <<<"$raw" >/dev/null || return 1
+  key="$(jqf -r '.hold | "holder=\(.holder // "?") kind=\(.kind // "?") expires=\(.expires_at // "?")"' <<<"$raw")"
+  if [[ "$(jqf -r '.hold_wait.key // empty' <<<"$u")" != "$key" ]]; then
+    set_unit "$id" ".hold_wait={key:$(js "$key"),since:$now}" || return 0
+    say "supervisor hold wait unit=$id issue=#$issue $key: no arbiter run; the unit closes in ${SUPERVISOR_CAP_WAIT_S}s without a head ruling"
+    ( source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "hold-wait:$id:$key" "hold-wait unit=$id issue=#$issue $key: no arbiter run; the unit closes in 6 h without a head ruling, the hold stays" ) \
+      || say "supervisor hold wait unit=$id: inbox alert not delivered"
+    mkdir -p "$AGENT_HOME/logs" && printf '%s SUPERVISOR-HOLD-WAIT unit=%s issue=#%s %s\n' "$STAMP" "$id" "$issue" "$key" >> "$AGENT_HOME/logs/head-watch.alerts"
+    return 0
+  fi
+  since="$(jqf -r '.hold_wait.since // 0' <<<"$u")"
+  (( now - since >= SUPERVISOR_CAP_WAIT_S )) || return 0
+  cap_set_unit "$id" close "issue #$issue on hold ($key)" "" "$(hist supervisor-close "issue #$issue stayed on hold ($key) for ${SUPERVISOR_CAP_WAIT_S}s with no arbiter run and no head ruling; unit closed, the hold reopens the work") | .stage=\"closed\" | del(.parked_reason, .unpark_condition, .hold_wait)" \
+    && say "supervisor hold wait unit=$id: closed; the hold on #$issue stays"
+  return 0
 }
 # At the lifetime cap with no ruling, head gets SUPERVISOR_CAP_WAIT_S from the last run; then one default decision (the recut route once), and a second cap closes durably.
 SUPERVISOR_CAP_WAIT_S=21600

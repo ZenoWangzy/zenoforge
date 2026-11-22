@@ -1540,4 +1540,26 @@ harvest_supervisor_arbiter "$(jq -cn '{pid:99999996,unit:"pr-640",type:"supervis
 [[ "$(field pr-640 .tokens)" == 143 ]] || fail "a Claude arbiter run must count its fresh tokens on the unit, got $(field pr-640 .tokens)"
 grep -q '^ACTION: requeue$' "$sup/supervise-pr-640-claude.md" || fail "a Claude arbiter answer must become the report: $(cat "$sup/supervise-pr-640-claude.md" 2>/dev/null)"
 
+# Row 978 (6977, 7278, 7381): an issue on a recut-loop hold gets no arbiter run; one alert names the hold; the unit closes
+# SUPERVISOR_CAP_WAIT_S later with no ruling. A capped unit on any other hold kind waits the same way instead of in silence.
+hold_alerts="$AGENT_HOME/logs/head-watch.alerts"; mkdir -p "${hold_alerts%/*}"; : > "$hold_alerts"; : > "$route2"
+scheduler_issue_state() { printf '{"state":"on-hold","hold":{"holder":"supervisor","kind":"%s","expires_at":"2026-11-28T18:01:58Z"}}\n' "${HOLD_KIND:-recut-loop}"; }
+hold_tick() { SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters; }
+default_unit issue-7381 7381 '{}' '[]' 2
+hold_tick; hold_tick
+! jq -e 'any(.workers[]; .unit=="issue-7381")' "$WORKERS" >/dev/null || fail "an issue on a recut-loop hold must cost no arbiter run"
+[[ "$(grep -c 'SUPERVISOR-HOLD-WAIT unit=issue-7381 issue=#7381 holder=supervisor kind=recut-loop expires=2026-11-28T18:01:58Z' "$hold_alerts")" == 1 ]] \
+  || fail "the hold wait must alert head-watch once: $(cat "$hold_alerts")"
+[[ "$(field issue-7381 .stage)" == supervisor-review ]] || fail "inside the wait the unit must stay: $(jq -c '.units[0]' "$UNITS")"
+jq '.units[0].hold_wait.since -= 21600' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+hold_tick
+[[ "$(field issue-7381 .stage)" == closed && "$(field issue-7381 '.history[-1].stage')" == supervisor-close ]] \
+  || fail "the hold wait must close the unit after SUPERVISOR_CAP_WAIT_S: $(jq -c '.units[0]' "$UNITS")"
+HOLD_KIND=manual; default_unit issue-7382 7382 '{}' '[]' 4
+hold_tick
+grep -q 'SUPERVISOR-HOLD-WAIT unit=issue-7382 issue=#7382 holder=supervisor kind=manual' "$hold_alerts" \
+  && [[ "$(field issue-7382 .stage)" == supervisor-review && ! -s "$route2" ]] \
+  || fail "a capped unit on a hold must alert and wait, not take a default: $(jq -c '.units[0]' "$UNITS") route=$(cat "$route2")"
+unset HOLD_KIND
+
 echo 'supervisor-arbiter.test.sh: all assertions passed'
