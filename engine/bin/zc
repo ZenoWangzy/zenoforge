@@ -89,11 +89,14 @@ trap 'exit 129' HUP
 cpu_weight="${AGENT_WORKER_CPU_WEIGHT:-10}"
 if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight="${ZF_WORKER_REMOTE_CPU_WEIGHT:-20}"
 elif [[ "${LUNA_PRIORITY:-}" == hotfix ]]; then cpu_weight=1000; fi
+# 11-22: one argv over 128 KB fails exec (E2BIG, exit 126); zcode reads a large prompt as an attached file.
+prompt_args=(--prompt "$(<"$prompt")")
+(( $(wc -c < "$prompt") < 120000 )) || prompt_args=(--prompt "The attached file is your complete task input; follow it exactly." --attach "$prompt")
 systemd_args=(--user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
 TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)" \
   systemd-run "${systemd_args[@]}" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   "${zcode_cmd[@]}" \
-  --prompt "$(<"$prompt")" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
+  "${prompt_args[@]}" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
 zpid=$!; echo "$zpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
 # Sample the scope's memory.peak while it lives: systemd reaps the cgroup the moment the run ends (11-21: four
