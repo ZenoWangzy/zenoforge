@@ -549,6 +549,7 @@ harvest_worker_alive() { # worker JSON; group survives its leader, and zombies c
 recover_orphans() {
   local id st held
   pr_adopt_held_units # a unit whose branch already has its PR in the census goes to review at any of these stages, before the orphan sweep below
+  report_gate_stale_recover # row 972: once per unit, back through the gate on its last delivered fix note
   while read -r id st held; do
     [[ -z "$id" ]] && continue
     scheduler_lock_yield_between_units || return 1

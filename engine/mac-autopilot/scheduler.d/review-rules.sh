@@ -140,18 +140,37 @@ incident_report_harvest_target() { # unit-id worker-type unit-json worker-report
   local unit="$1" wtype="$2" unit_json="$3" worker_report="$4" worker_report_path="$5" report="$4" merged
   [[ "$wtype" == repair ]] || { printf '%s' "$report"; return 0; }
   report="$(jqf -r --arg n "$worker_report" '.implementation_report // $n' <<<"$unit_json")"
-  if [[ "$worker_report" != "$report" ]] \
-    && [[ -n "$(incident_report_reason "$unit_json" "$SUP/$report")" ]] \
-    && [[ -z "$(incident_report_reason "$unit_json" "$worker_report_path")" ]]; then
+  # 11-22 (issue-7606 5 rounds, 7619, 7644): a fix note was merged only when it passed the gate alone, so a partial fix
+  # note was never read and every round failed on the stale unit report. The gate now judges this repair's delivery
+  # (fix note + unit report); the unit pointer still moves only when that passes.
+  if [[ "$worker_report" != "$report" ]] && [[ -n "$(incident_report_reason "$unit_json" "$SUP/$report")" ]]; then
     merged="$(incident_report_merge_adopted "$report" "$worker_report" "$worker_report_path")" || merged=""
-    if [[ -n "$merged" ]] && [[ -z "$(incident_report_reason "$unit_json" "$SUP/$merged")" ]] \
-      && set_unit "$unit" ".implementation_report=$(js "$merged")"; then
+    [[ -n "$merged" ]] || { printf '%s' "$report"; return 0; }
+    if [[ -z "$(incident_report_reason "$unit_json" "$SUP/$merged")" ]] && set_unit "$unit" ".implementation_report=$(js "$merged")"; then
       say "report adopted unit=$unit from=$worker_report"
-      printf '%s' "$merged"
-      return 0
     fi
+    printf '%s' "$merged"
+    return 0
   fi
   printf '%s' "$report"
+}
+# 11-22 (row 972): units the stale-report gate escalated before it judged the repair's delivery (issue-7606 5 rounds, 7619,
+# 7644) go back through the gate once, on the fix note their last escalation names: one history event, no arbiter round.
+report_gate_stale_recover() {
+  local id wr uj target next
+  while IFS=$'\t' read -r id wr; do
+    [[ -n "$id" && -s "$SUP/$wr" ]] || continue
+    uj="$(harvest_unit_snapshot "$id")"
+    [[ -s "$SUP/$(jqf -r '.implementation_report // empty' <<<"$uj")" ]] || continue
+    target="$(incident_report_harvest_target "$id" repair "$uj" "$wr" "$SUP/$wr")"
+    next=repair-pending; [[ -n "$(incident_report_reason "$uj" "$SUP/$target")" ]] || next=rereview-pending
+    set_unit "$id" "$(hist report-gate-recovered "gate re-run on $wr (judged $target): $next") | .stage=$(js "$next") | del(.report_gate_fail) | del(.parked_reason)" || continue
+    say "report-gate-recover unit=$id report=$target -> $next"
+  done < <(jqf -r '.units[] | select(.stage == "supervisor-review" or .stage == "parked")
+    | select(any(.history[]?; .stage == "report-gate-recovered") | not)
+    | ([.history[]? | select(.stage == "supervisor-escalated")] | last | .result // "") as $r
+    | select($r | test("^implementation report gate failed [0-9]+ times in a row with the same reason: .*; worker report [^)]+\\)$"))
+    | "\(.id)\t\($r | capture("; worker report (?<w>[^)]+)\\)$").w)"' "$UNITS" 2>/dev/null)
 }
 incident_review_verdict() { # unit READY|other [implementation report] → READY or forced NOT_READY
   local unit_json="$1" verdict="$2" report="${3:-}" reason
