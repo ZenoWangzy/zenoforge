@@ -282,6 +282,7 @@ closed_unit_recut_open() { # id：0 = recut 或 arbitration cap（supervisor-clo
   last="$(unit_field "$1" '(.history // []) as $h | if any($h[]; .stage | IN("merged", "landed", "done")) then empty else ($h | map(.stage | select(. != "supervisor-cap-default")) | last // empty) end')"
   case "$last" in
     supervisor-cap-triage-recut|supervisor-budget-recut|supervisor-recut|supervisor-close) ;; # supervisor-close: the cap closed it, a ruling released its hold and the reopen must still work
+    obsolete|pr-closed) ;;
     hold-handoff|supervisor-requeue) jqf -e '(.recut_refused_at // "") != ""' <<<"$state" >/dev/null || return 1 ;; # a refused recut with no children, then only a handoff or requeue
     *) return 1 ;;
   esac
@@ -302,7 +303,7 @@ closed_unit_refusal() { # id [rc]：已关闭单元的拒绝语只指向本环�
   [[ -n "$rc" ]] || { rc=0; closed_unit_route "$1" || rc=$?; }
   case "$rc" in
     0) echo "rule: $1 is closed but its issue is on a stop-loss hold; use --requeue" >&2 ;;
-    3) echo "rule: $1 was closed by a recut and its issue is open and ready-for-agent; use --requeue" >&2 ;;
+    3) echo "rule: $1 was closed by a recut, an obsolete retirement or an outside PR close and its issue is open and ready-for-agent; use --requeue" >&2 ;;
     2) echo "rule: $1 is closed and its GitHub issue state could not be read; retry the ruling" >&2 ;;
     *) echo "rule: $1 is closed; use --recut to route its issue to recut" >&2 ;;
   esac
