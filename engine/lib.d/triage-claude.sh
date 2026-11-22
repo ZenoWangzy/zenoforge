@@ -7,8 +7,10 @@ triage_claude_identity() {
   local identity model
   identity="$(model_policy identity triage-haiku)" || return 1
   model="${identity#*:}"; model="${model%:*}"
+  # Row 984 (2026-11-22 06:33Z-07:25Z: six triage batches "leaving batch queued"): the claude-exhausted-until marker pauses factory
+  # implement and repair work; cheap haiku triage and intake stop only at the Claude week stop.
   model_policy_model_allowed_for_role "$model" triage-haiku \
-    && command -v claude >/dev/null 2>&1 && ! provider_quota_exhausted claude \
+    && command -v claude >/dev/null 2>&1 && ! snapshot_week_at "${CLAUDE_WEEK_STOP_PCT:-95}" "${CLAUDE_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/claude-quota.json}" \
     && printf '%s\n' "$identity"
 }
 
