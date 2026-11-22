@@ -841,7 +841,7 @@ review_identity_available() {
   if declare -F cooling >/dev/null 2>&1 && cooling "$provider"; then return 1; fi
   case "$provider" in
     codex)
-      if codex_quota_exhausted "$identity"; then [[ "${3:-}" == glm ]] && codex_credits_open review || return 1; fi
+      if codex_quota_exhausted "$identity"; then codex_credits_review_open "${3:-}" || return 1; fi
       codex_probe_ok || return 1
       command -v codex >/dev/null 2>&1
       ;;
