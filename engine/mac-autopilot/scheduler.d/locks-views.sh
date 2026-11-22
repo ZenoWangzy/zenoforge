@@ -308,6 +308,33 @@ closed_unit_refusal() { # id [rc]：已关闭单元的拒绝语只指向本环�
   esac
 }
 
+# The arbiter's APPROVE, and (row 983) an approve ruling on a parked or supervisor-review unit: the handoff and main-red guards,
+# then ready-to-merge at the reviewed head pair, or one fresh review when there is no pair. 7638 (2026-11-22): an approve ruling
+# only recorded an event, the next arbiter run requeued the unit to repair, and an unchanged PR stalled behind the repair breaker.
+supervisor_approve_unit() { # id decision-json [log prefix]
+  local id="$1" decision="$2" via="${3:-supervisor arbitration}" u reviewed_sha reviewed_pr_head
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  # f11 基线实测 2 次危险 approve（记录里有 main-red/回滚证据仍 approve）：确定性挡板，不靠 prompt 自律。
+  if jqf -e '(.handoff_worktree_sha != null and .handoff_worktree_applied != true) or (.handoff_start_sha != null and .handoff_start_applied != true) or (.handoff_integration_sha != null and .handoff_delivery_verified_sha == null)' <<<"$u" >/dev/null; then
+    set_unit "$id" "$(hist supervisor-park "approve refused: preserved handoff work has not been transferred" "$decision") | .stage=\"parked\" | .note=$(js "approve refused: preserved handoff work has not been transferred") | $(park_fields handoff-not-transferred 'the preserved work is transferred')"
+    say "$via unit=$id: approve refused until the handoff is transferred -> parked"
+  elif [[ "$(jqf -r '.main_red // false' <<<"$u")" == true ]] \
+     || jqf -e '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage=="review-approve") | .key] | max // -1) as $i | any($h[($i + 1):][]; .stage == "merge-reverted")' <<<"$u" >/dev/null; then
+    set_unit "$id" "$(hist supervisor-park "approve refused: record shows main-red or post-approval revert evidence" "$decision") | .stage=\"parked\" | .note=$(js "approve refused by the main-red/revert guard") | $(park_fields main-red-guard 'main of this repo is green again')"
+    say "$via unit=$id: approve refused by the main-red/revert guard -> parked"
+  else
+    reviewed_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"; reviewed_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
+    if [[ "$reviewed_sha" =~ $SHA_RE && "$reviewed_pr_head" =~ $SHA_RE ]]; then
+      set_unit "$id" "$(hist supervisor-approve "$reviewed_sha" "$decision") | .approved_sha=$(js "$reviewed_sha") | .ready_since=(.ready_since // ${NOW_EPOCH:-$(date +%s)}) | .stage=\"ready-to-merge\" | del(.parked_reason, .unpark_condition)"
+      post_approved_status "$id" "$reviewed_pr_head"
+      say "$via unit=$id: approve -> ready-to-merge at $reviewed_sha"
+    else
+      # 没有已评审的 head 对：不盲批，交给一次完整评审绑定 head 后再合并。
+      set_unit "$id" "$(hist supervisor-approve "no reviewed head pair; routed to a fresh review" "$decision") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\" | del(.parked_reason, .unpark_condition)"
+      say "$via unit=$id: approve without a reviewed head -> fresh review"
+    fi
+  fi
+}
 rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready ref [guidance] [blocker] [size-waiver max_lines] [comment author]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
   [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
@@ -360,6 +387,8 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
              if [[ "$rc" == 0 || "$rc" == 3 ]]; then SUPERVISOR_REQUEUE_PATCH="$patch" supervisor_requeue_unit "$1" requeue "supervisor ruling $3: ${4:-see ruling}" null; else closed_unit_refusal "$1" "$rc"; return 1; fi ;; # the stop-loss ruling reopens the issue and releases its hold, the recut route (rc 3) requeues a recut-closed unit; rc 2 never requeues
            *) echo "rule: $1 is in $stage; use --reroute to move it" >&2; return 1 ;;
          esac
+       elif [[ "$2" == approve && "$(unit_field "$1" .stage)" =~ ^(parked|supervisor-review)$ ]]; then # row 983: lands like the arbiter's APPROVE
+         supervisor_approve_unit "$1" "$(decision_entry 'Supervisor ruling: approve' "supervisor ruling via hold.sh --rule: $3" "$3" '[]' supervisor)" "supervisor ruling"
        else
          set_unit "$1" "$(hist "supervisor-$2" "supervisor ruling via hold.sh --rule: $3")"
        fi ;;

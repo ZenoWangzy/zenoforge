@@ -424,28 +424,7 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
       guidance="$(supervisor_section_of "$rep" GUIDANCE | head -c 4000)"
       [[ -n "${guidance//[[:space:]]/}" ]] || guidance="$reason"
       supervisor_requeue_unit "$id" "$action" "$guidance" "$decision" ;;
-    approve)
-      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
-      # f11 基线实测 2 次危险 approve（记录里有 main-red/回滚证据仍 approve）：确定性挡板，不靠 prompt 自律。
-      if jqf -e '(.handoff_worktree_sha != null and .handoff_worktree_applied != true) or (.handoff_start_sha != null and .handoff_start_applied != true) or (.handoff_integration_sha != null and .handoff_delivery_verified_sha == null)' <<<"$u" >/dev/null; then
-        set_unit "$id" "$(hist supervisor-park "approve refused: preserved handoff work has not been transferred" "$decision") | .stage=\"parked\" | .note=$(js "approve refused: preserved handoff work has not been transferred") | $(park_fields handoff-not-transferred 'the preserved work is transferred')"
-        say "supervisor arbitration unit=$id: approve refused until the handoff is transferred -> parked"
-      elif [[ "$(jqf -r '.main_red // false' <<<"$u")" == true ]] \
-         || jqf -e '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage=="review-approve") | .key] | max // -1) as $i | any($h[($i + 1):][]; .stage == "merge-reverted")' <<<"$u" >/dev/null; then
-        set_unit "$id" "$(hist supervisor-park "approve refused: record shows main-red or post-approval revert evidence" "$decision") | .stage=\"parked\" | .note=$(js "approve refused by the main-red/revert guard") | $(park_fields main-red-guard 'main of this repo is green again')"
-        say "supervisor arbitration unit=$id: approve refused by the main-red/revert guard -> parked"
-      else
-        reviewed_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"; reviewed_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
-        if [[ "$reviewed_sha" =~ $SHA_RE && "$reviewed_pr_head" =~ $SHA_RE ]]; then
-          set_unit "$id" "$(hist supervisor-approve "$reviewed_sha" "$decision") | .approved_sha=$(js "$reviewed_sha") | .ready_since=(.ready_since // $NOW_EPOCH) | .stage=\"ready-to-merge\""
-          post_approved_status "$id" "$reviewed_pr_head"
-          say "supervisor arbitration unit=$id: approve -> ready-to-merge at $reviewed_sha"
-        else
-          # 没有已评审的 head 对：不盲批，交给一次完整评审绑定 head 后再合并。
-          set_unit "$id" "$(hist supervisor-approve "no reviewed head pair; routed to a fresh review" "$decision") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
-          say "supervisor arbitration unit=$id: approve without a reviewed head -> fresh review"
-        fi
-      fi ;;
+    approve) supervisor_approve_unit "$id" "$decision" ;;
     park)
       supervisor_park_verdict "$id" "${reason:-parked by supervisor arbitration}" "$decision"
       say "supervisor arbitration unit=$id: park" ;;
