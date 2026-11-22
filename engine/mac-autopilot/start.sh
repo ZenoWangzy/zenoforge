@@ -111,7 +111,7 @@ pin_scheduler_self_check() { # version-dir → 0 = 该 pin 可以切 live
   ( cd "$MAC_AUTOPILOT_ROOT" && AUTOPI_TEST_LIBRARY_ONLY=true bash -c '
       set -o pipefail
       source "$1/scheduler.sh"   # $HERE 落在新 pin 内，census 链用的 aggregate/jqf 都是 pin 里的这份
-      tick_prs | pr_census_by_number | jqf -e "type == \"object\"" >/dev/null
+      A= tick_prs | pr_census_by_number | jqf -e "type == \"object\"" >/dev/null # A empty: a live read, not the 60 s shared census file (it passed a failed read, main red 2026-11-22)
     ' _ "$code" ) || { echo "pin self-check: live merge census unusable in $1" >&2; return 1; }
 }
 # 0 = 两个已解析的 mac-autopilot 目录跑的是同一份 engine 内容。版本目录旁的 BUILD-INFO zenoforge_sha 标识
