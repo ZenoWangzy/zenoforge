@@ -179,7 +179,7 @@
 2	engine/issue-pipeline-census-size.test.sh
 10	engine/issue-pipeline-maintenance-budget.test.sh
 40	engine/issue-pipeline-slices.sh
-508	engine/issue-pipeline.sh
+501	engine/issue-pipeline.sh
 101	engine/issue-pipeline.test.sh
 5	engine/issue-rest.test.sh
 33	engine/issue-transition-gh-retry.test.sh
@@ -259,7 +259,7 @@
 118	engine/lib.d/transport.sh
 14	engine/lib.d/triage-claude.sh
 27	engine/lib.d/triage-default.sh
-43	engine/lib.d/triage-solo.sh
+39	engine/lib.d/triage-solo.sh
 6	engine/lib.d/worker-output-cap.sh
 4	engine/lib.d/worker-remote-handoff.sh
 63	engine/lib.d/worktree.sh
