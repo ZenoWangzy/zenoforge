@@ -28,13 +28,19 @@ try {
   const pages = await (await fetch(`${CDP}/json/list`)).json();
   // A tab another session turned into a chat (10-31: the advisor reused it) is theirs now; open a fresh one.
   // Match by id, not URL: the usage page redirects to chatgpt.com/, and a URL match opened a new tab every run (24 in 2h).
+  const isUsagePage = p => p.type === 'page' && /^https:\/\/chatgpt\.com\/settings\/usage(?:[/?#]|$)/.test(p.url);
   let page = pages.find(p => p.type === 'page' && p.id === book.tab_id && !/chatgpt\.com\/c\//.test(p.url));
   if (!page) {
-    page = await (await fetch(`${CDP}/json/new?${PAGE}`, { method: 'PUT' })).json();
+    page = pages.find(isUsagePage);
+    if (!page) {
+      page = await (await fetch(`${CDP}/json/new?${PAGE}`, { method: 'PUT' })).json();
+      log('opened ChatGPT usage tab in the shared Chrome');
+    }
     book.tab_id = page.id;
     fs.writeFileSync(BOOK, JSON.stringify(book) + '\n');  // saved now, so a failed read does not leak another tab
-    log('opened ChatGPT usage tab in the shared Chrome');
   }
+  for (const duplicate of pages.filter(p => isUsagePage(p) && p.id !== page.id))
+    await fetch(`${CDP}/json/close/${duplicate.id}`);
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   let id = 0; const waits = new Map(); let hits = [];
   const call = (method, params = {}) => new Promise((r, reject) => {
