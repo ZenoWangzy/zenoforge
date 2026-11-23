@@ -446,7 +446,7 @@ snapshot_week_at() { # stop percent, quota snapshot
 
 
 zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted|unknown
-  local file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}"
+  local station="${1:-}" file="${ZCODE_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/zc-quota.json}"
   local max_age="${ZCODE_QUOTA_MAX_AGE_SECONDS:-${ZC_QUOTA_MAX_AGE_SECONDS:-}}" now read_at freshness
   [[ -r "$file" ]] || { printf 'unknown\n'; return 0; }
   freshness="$(command jq -r '.freshness // empty' "$file" 2>/dev/null || true)"
@@ -458,7 +458,9 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted
     printf 'unknown\n'
     return 0
   fi
-  if provider_quota_exhausted zcode; then
+  if [[ -n "$station" ]]; then
+    if quota_marker_blocks zcode "$station" >/dev/null; then printf 'exhausted\n'; return 0; fi
+  elif provider_quota_exhausted zcode; then
     printf 'exhausted\n'
     return 0
   fi
@@ -471,7 +473,7 @@ zcode_quota_status() { # fresh snapshot and active marker -> available|exhausted
 }
 
 zcode_review_open() { # a review is a GLM start: held by the marker, paced, or closed when the quota read is missing or stale
-  ! provider_quota_exhausted zcode && [ "$(zcode_quota_status)" = available ]
+  [ "$(zcode_quota_status review)" = available ]
 }
 
 provider_quota_provider_for_model() {

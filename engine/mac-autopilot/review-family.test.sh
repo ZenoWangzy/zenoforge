@@ -46,6 +46,10 @@ unset AUTOPI_TEST_LIBRARY_ONLY
 fail() { echo "review-family.test.sh: $*" >&2; exit 1; }
 set_config() { jq "$1" "$script_dir/config.template.json" > "$autopi/config.json"; CFG="$(cat "$autopi/config.json")"; }
 set_policy() { jq "$1" "$repo_root/engine/model-policy.default.json" > "$MODEL_POLICY_FILE"; }
+set_review_scope() {
+  printf '{"quota_marker_scope":{"%s":{"review":"%s"}}}\n' "$1" "$2" > "$AGENT_HOME/model-routing.json"
+  CFG="$(jq -c --arg file "$AGENT_HOME/model-routing.json" '.models.routing_file = $file' <<<"$CFG")"
+}
 unit_for() {
   local id="$1" author="$2"
   jq -cn --arg id "$id" --arg author "$author" \
@@ -400,6 +404,29 @@ marker="$(_quota_marker_file zcode)"
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$marker"
 if pace_review '[]'; then fail 'the hold marker must still hold a review'; fi
 rm -f "$marker"
+
+rm -f "$CODEX_PROVIDER_PROBE_REQUIRED_FILE" "$AGENT_HOME/codex-unavailable-until"
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file codex)"
+set_review_scope codex allow
+review_identity_available "codex:gpt-6-luna:max" review codex || fail 'a Codex marker with review allowed by scope must keep the reviewer available'
+set_review_scope codex block
+if review_identity_available "codex:gpt-6-luna:max" review codex; then fail 'a Codex marker with review blocked by scope must refuse the reviewer'; fi
+set_review_scope codex allow
+implement_route_review_identity_available "codex:gpt-6-luna:max" review codex || fail 'an implement route must respect an allowed Codex review scope'
+
+set_policy '.allow_roles.sonnet=["review_fallback"]'
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file claude)"
+set_review_scope claude allow
+review_identity_available "claude:claude-sonnet-5-5:high" review_fallback codex || fail 'a Claude marker with review allowed by scope must keep the reviewer available'
+set_review_scope claude block
+if review_identity_available "claude:claude-sonnet-5-5:high" review_fallback codex; then fail 'a Claude marker with review blocked by scope must refuse the reviewer'; fi
+
+glm_quota 0
+printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file zcode)"
+set_review_scope zcode allow
+NOW_EPOCH="$(date +%s)" review_identity_available "zcode:GLM-5.3:max" review codex || fail 'a ZCode marker with review allowed by scope must keep the reviewer available'
+set_review_scope zcode block
+if NOW_EPOCH="$(date +%s)" review_identity_available "zcode:GLM-5.3:max" review codex; then fail 'a ZCode marker with review blocked by scope must refuse the reviewer'; fi
 
 echo 'PASS review family dispatch, fallback, wait, alert, and role policy'
 
