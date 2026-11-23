@@ -683,7 +683,7 @@ pre_dispatch_skip() { # unit-json → 0 when retired (one log line), 1 to dispat
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
-  local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint lesson_brief write_start_filter repair_head trigger \
+  local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint footprint_summary lesson_brief write_start_filter repair_head trigger \
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
@@ -745,7 +745,8 @@ $(tail -80 "$check_output" 2>/dev/null)"
     else
       footprint="$(unit_field "$1" '.footprint // []')"
     fi
-    write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint")"
+    footprint_summary="$(jqf -c '{count:length,first_paths:.[0:5]}' <<<"$footprint")" || return 1
+    write_start_filter="$(STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" hist write-start "$footprint_summary")"
     write_start_filter+=" | .history[-1].work_type=$(js "$3") | .history[-1].provider=$(js "$provider") | .history[-1].hard_escalation=$hard_escalation"
     write_start_filter+=" | $(dispatch_attempt_fields "$4" "$6" "$unit_json")"
     if [[ "$3" == repair ]]; then
@@ -778,8 +779,8 @@ $(tail -80 "$check_output" 2>/dev/null)"
     # at the fresh admission check after that work was already done (05:10:42Z
     # tick: 6 of 8 clone_preparations were wasted on footprint-blocked units).
     if [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]]; then
-      TICK_ACTIVE_FOOTPRINTS="$(jqf -c --arg id "$1" --argjson footprint "$footprint" \
-        'map(select(.id != $id)) + [{id:$id,footprint:$footprint}]' <<<"$TICK_ACTIVE_FOOTPRINTS")" \
+      TICK_ACTIVE_FOOTPRINTS="$(printf '%s\n' "$TICK_ACTIVE_FOOTPRINTS" "$footprint" | jqf -cs --arg id "$1" \
+        '.[0] as $active | .[1] as $footprint | ($active | map(select(.id != $id))) + [{id:$id,footprint:$footprint}]')" \
         && footprint_merge_changed_owners || :
     fi
   fi

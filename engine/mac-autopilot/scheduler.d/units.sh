@@ -209,8 +209,8 @@ unit_retries() { # unit stage → 历史里该 stage 出现次数；verdict-miss
 }
 hist() {
   local entry
-  entry="$(jqf -cn --arg stage "$1" --arg result "${2:-}" --arg at "$STAMP" --argjson decision "${3:-null}" \
-    '{stage:$stage,result:$result,at:$at} + (if $decision == null then {} else {decision:$decision} end)')"
+  entry="$(jqf -scR --arg stage "$1" --arg at "$STAMP" --argjson decision "${3:-null}" \
+    '{stage:$stage,result:.[0:-1],at:$at} + (if $decision == null then {} else {decision:$decision} end)' <<<"${2:-}")" || return $?
   # A recut or park event names the attempt before it: the unit's latest write-start (null before any launch).
   case "$1" in
     *recut*|*park*) echo ".history += [$entry + {attempt: ((.history // []) | map(select(.stage == \"write-start\")) | last | .attempt // null)}]" ;;
