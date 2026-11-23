@@ -150,10 +150,19 @@ enforce_autonomy_gate() {
 # A state file that DOES carry both keys is "measured" regardless of
 # whether the values are admissible -- that judgment is enforce_autonomy_
 # gate's job, not this function's; garbage values there already fail closed.
+triage_ready_priority_missing_issue_ids() {
+  jq -r '
+    .[]
+    | select(all(.labels[]?; ((.name? // .) // "") | startswith("priority:") | not))
+    | .number
+  ' <<< "$1"
+}
+
 triage_unmeasured_issue_ids() {
   python3 -c '
 import json, pathlib, sys
 states = pathlib.Path(sys.argv[1])
+priority_missing = set(sys.argv[2].split())
 for issue in sys.stdin.read().split():
     if not issue.isdecimal() or int(issue) <= 0:
         continue
@@ -172,9 +181,16 @@ for issue in sys.stdin.read().split():
     if state.get("state") == "awaiting-release" and state.get("deploy_state") == "pending" \
             and (state.get("run") or {}).get("outcome") == "merged":
         continue
-    if not ("risk_class" in state and "level" in state):
+    if issue in priority_missing or not ("risk_class" in state and "level" in state):
         print(issue)
-' "$STATE_DIR" <<< "$1"
+' "$STATE_DIR" "${2:-}" <<< "$1"
+}
+
+triage_ready_issue_ids() {
+  local ordered_ids="$1" issue_json="$2" priority_missing_ids
+  priority_missing_ids="$(triage_ready_priority_missing_issue_ids "$issue_json")" || return 1
+  READY_PRIORITY_MISSING_IDS="$priority_missing_ids"
+  READY_MEASURE_IDS="$(triage_unmeasured_issue_ids "$ordered_ids" "$priority_missing_ids")" || return 1
 }
 
 
@@ -187,6 +203,18 @@ triage_classification_status() {
   else
     echo unmeasured
   fi
+}
+
+triage_priority_missing() {
+  jq -e 'all(.labels[]?; ((.name? // .) // "") | startswith("priority:") | not)' <<< "$1" >/dev/null 2>&1
+}
+
+triage_ready_snapshot_is_stale() {
+  local issue_json="$1" state_path="$2"
+  jq -e 'any(.labels[]?; .name == "ready-for-agent")' <<< "$issue_json" >/dev/null 2>&1 \
+    && ! jq -e '.advisor_admission_measure_only == true' "$state_path" >/dev/null 2>&1 \
+    && [ "$(triage_classification_status "$state_path")" != "unmeasured" ] \
+    && ! triage_priority_missing "$issue_json"
 }
 
 

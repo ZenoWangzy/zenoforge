@@ -2502,7 +2502,7 @@ elif ! READY_MEASURE_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS
   echo "issue-pipeline: could not order ready-for-agent measurement candidates; skipping triage measurement this tick" >&2
 fi
 if [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
-  READY_MEASURE_IDS="$(triage_unmeasured_issue_ids "$READY_MEASURE_IDS")" || return 1
+  triage_ready_issue_ids "$READY_MEASURE_IDS" "$READY_MEASURE_JSON" || return 1
   READY_MEASURE_IDS="$(while IFS= read -r next_measure; do
     [ -n "$next_measure" ] || continue
     if hand_agent_issue_is_live_owned "$next_measure"; then
@@ -2519,7 +2519,7 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; 
       echo "issue-pipeline: triage measurement selection reached the slice deadline with ${#TRIAGE_BATCH_IDS[@]} issue(s) selected" >&2
       break
     fi
-    if [ "$(triage_classification_status "$(state_file "$next_measure")")" != "unmeasured" ]; then triage_skip already_measured; continue; fi
+    if [ "$(triage_classification_status "$(state_file "$next_measure")")" != "unmeasured" ] && [[ " ${READY_PRIORITY_MISSING_IDS:-} " != *" $next_measure "* ]]; then triage_skip already_measured; continue; fi
     if hand_agent_issue_is_live_owned "$next_measure"; then
       record_hand_owned_decision triage "$next_measure"
       triage_skip hand_owned

@@ -478,7 +478,10 @@ intake_priority_triage() {
   else
     judge_rc=$?
     rm -f -- "$issue_file"
-    (( judge_rc == 75 )) && return 75
+    if (( judge_rc == 75 )); then
+      printf 'intake-priority: deferred issue=#%s reason=priority missing classifier=deferred\n' "$issue_number" >&2
+      return 75
+    fi
     echo "intake-priority: no adopted answer for issue #$issue_number" >&2
     return 0
   fi

@@ -136,9 +136,7 @@ for n in "${BATCH_IDS[@]}"; do
     echo "run-triage-batch: #$n no longer has a selectable triage label; leaving it queued" >&2
     continue
   fi
-  if jq -e '[.labels[]?.name] | index("ready-for-agent") != null' <<< "$ISSUE_JSON" >/dev/null 2>&1 \
-    && ! jq -e '.advisor_admission_measure_only == true' "$(state_file "$n")" >/dev/null 2>&1 \
-    && [ "$(triage_classification_status "$(state_file "$n")")" != "unmeasured" ]; then
+  if triage_ready_snapshot_is_stale "$ISSUE_JSON" "$(state_file "$n")"; then
     echo "run-triage-batch: #$n already has a triage measurement; skipping stale snapshot" >&2
     continue
   fi

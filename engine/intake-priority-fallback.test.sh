@@ -213,6 +213,7 @@ jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
 jq -n --argjson reset "$(( $(date +%s) + 3600 ))" '{week_pct:95,week_reset:$reset}' > "$CLAUDE_QUOTA_SNAPSHOT_FILE"
 printf '%s\n' fallback > "$FALLBACK_JUDGE_MODE"
 : > "$FALLBACK_CLAUDE_LOG"
+: > "$FALLBACK_GH_WRITES"
 rc=0
 bash "$SCRIPT_DIR/intake-priority.sh" triage 9101 ready-for-agent "$REPO" < "$test_root/issue.json" > "$test_root/k.out" 2>&1 || rc=$?
 [[ "$rc" == 75 ]] || fail "(k) a held Claude fallback returned rc=$rc: $(cat "$test_root/k.out")"
@@ -220,7 +221,10 @@ grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=claude-held
   || fail "(k) the held fallback reason was missing: $(cat "$test_root/k.out")"
 grep -Fq 'intake-priority: deferred issue=#9101 reason=claude-held' "$test_root/k.out" \
   || fail "(k) the deferral line was missing: $(cat "$test_root/k.out")"
+grep -Fq 'intake-priority: deferred issue=#9101 reason=priority missing classifier=deferred' "$test_root/k.out" \
+  || fail "(k) the missing-priority reason was missing: $(cat "$test_root/k.out")"
 [[ ! -s "$FALLBACK_CLAUDE_LOG" ]] || fail '(k) Claude ran while its provider was held'
+[[ ! -s "$FALLBACK_GH_WRITES" ]] || fail '(k) a classifier hold assigned a default priority or route'
 export ZF_INTAKE_PRIORITY_SCRIPT="$SCRIPT_DIR/intake-priority.sh"
 CONSUMED_CANDIDATES=0
 intake_judge_station_consume_candidate() { CONSUMED_CANDIDATES=$((CONSUMED_CANDIDATES + 1)); }
