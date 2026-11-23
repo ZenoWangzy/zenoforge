@@ -620,7 +620,7 @@ elif [ "$ENFORCED_STATE" != "$STATE" ]; then
 
 $BRIEF"
   STATE="needs-advisor" ADVISOR_ROUTE_REASON=autonomy_gate
-elif [ "$STATE" = "ready-for-human" ] || [ "$STATE" = "needs-owner" ]; then
+elif [ "$ADVISOR_REASON" != none ] || [ "$STATE" = "ready-for-human" ] || [ "$STATE" = "needs-owner" ]; then
   # 2026-09-15: both are abolished human-decision terminals. 2026-11-06: the
   # advisor sees one only for an advisor_reason call, otherwise the default
   # runs it (triage_route_model_verdict, lib.d/triage-default.sh).

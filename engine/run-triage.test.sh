@@ -522,7 +522,7 @@ assert_not_contains "precut triage prompt stops before parent appendix" "$PROMPT
 unset FAKE_GH_PARENT_ISSUE_NUMBER FAKE_GH_PARENT_ISSUE_BODY
 
 # --- precut, admissible measurement: straight to the standard rung --------
-export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1)"
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1 "" security)"
 run_once "$PRECUT_BODY"
 assert_eq "precut + admissible measurement: exits 0" "0" "$RUN_STATUS"
 assert_contains "...label is ready-for-agent" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
@@ -648,16 +648,16 @@ assert_contains "...the implementer decides the open point" "$GH_LOG_CONTENT" "t
 assert_eq "...state.precut is false for a raw report" "false" "$(echo "$STATE_CONTENT" | jq -r '.precut')"
 assert_not_contains "...the model was NOT told it is precut" "$PROMPT_CONTENT" "agent-ready by construction"
 
-export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L1 "" irreversible)"
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1 "" security)"
 export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 run_once "$RAW_BODY"
-assert_eq "raw + model ready-for-human, advisor_reason=irreversible: exits 0" "0" "$RUN_STATUS"
-assert_contains "...scheduler.log records one advisor-route line with a fixed reason code" "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=model_verdict_human outcome=routed"
+assert_eq "raw + model ready-for-agent, advisor_reason=security: exits 0" "0" "$RUN_STATUS"
+assert_contains "ready-for-agent uses the ready-for-human route reason" "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=model_verdict_human outcome=routed"
 assert_eq "...exactly one advisor-route line" "1" "$(grep -c ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null || true)"
 unset MAC_AUTOPILOT_RUNTIME_DIR
 assert_contains "...label is needs-advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
-assert_not_contains "...never ready-for-human" "$GH_LOG_CONTENT" "--add-label ready-for-human"
-assert_contains "...the comment names the advisor-only reason" "$GH_LOG_CONTENT" "irreversible"
+assert_eq "ready-for-agent with an advisor-only reason persists needs-advisor" "needs-advisor" "$(echo "$STATE_CONTENT" | jq -r '.state')"
+assert_contains "...the comment names the advisor-only reason" "$GH_LOG_CONTENT" "security"
 assert_contains "...the comment says why the advisor decides" "$GH_LOG_CONTENT" "Routed to the advisor instead of a human"
 
 # The default still passes through the autonomy gate: a P1/L3 measurement the
@@ -805,7 +805,7 @@ unset MAC_AUTOPILOT_RUNTIME_DIR
 
 # Issue 2040: an advisor-admitted episode is measure-only even when triage
 # returns ready-for-human and its L2 freshness check remains blocked.
-export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L2)"
+export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-human P1 L2 "" security)"
 run_once "$RAW_BODY" testuser 0 0 0 "" 1 0 "" 1
 assert_eq "2040 advisor admission + blocked L2 measurement exits 0" "0" "$RUN_STATUS"
 assert_contains "2040 keeps the admitted ready-for-agent label" "$GH_LOG_CONTENT" "--add-label ready-for-agent"
