@@ -9,6 +9,7 @@ UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 unit_name=""
 state_stage="$stage"
 issue_ids=()
+claim_owner=""
 case "$stage" in
   implement|triage|recut)
     [ "$#" -eq 2 ] || { echo "record-unit-result: expected one issue number" >&2; exit 64; }
@@ -19,7 +20,13 @@ case "$stage" in
     [ "$#" -ge 2 ] || { echo "record-unit-result: expected batch issue numbers" >&2; exit 64; }
     state_stage=triage
     unit_name="${UNIT_PREFIX_TRANSIENT}-triage-batch.service"
-    issue_ids=("${@:2}")
+    if [[ ! "${2:-}" =~ ^[0-9]+$ ]]; then
+      claim_owner="$2"
+      issue_ids=("${@:3}")
+    else
+      issue_ids=("${@:2}")
+    fi
+    [ "${#issue_ids[@]}" -gt 0 ] || { echo "record-unit-result: expected batch issue numbers" >&2; exit 64; }
     ;;
   *) echo "record-unit-result: unsupported stage: $stage" >&2; exit 64 ;;
 esac
@@ -42,4 +49,15 @@ done
 
 if [ "$stage" = implement ]; then
   node "$SCRIPT_DIR/night/attempt-terminal.mjs" terminal "${issue_ids[0]}"
+fi
+if [ "$stage" = triage-batch ] && [ "${ZF_AGENT_TEST_MODE:-0}" != 1 ]; then
+  if [ -n "$claim_owner" ] && ! coord_release_many "$claim_owner" "${issue_ids[@]}"; then
+    echo "record-unit-result: triage batch issue claims could not be released" >&2
+  fi
+  systemd-run --user --unit="${UNIT_PREFIX_TRANSIENT}-triage-event-${BASHPID:-$$}" --on-active=1s --collect \
+    -p RestartForceExitStatus=75 -p RestartSec=1s -p StartLimitIntervalSec=0 \
+    -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY \
+    -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
+    "$SCRIPT_DIR/issue-pipeline.sh" --stage triage-event \
+    || echo "record-unit-result: could not start the triage event pass" >&2
 fi

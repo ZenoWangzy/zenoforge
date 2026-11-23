@@ -57,7 +57,7 @@ pipeline_lock_acquired() { # a tick that got the lock ends the episode
 # The stage's lock, taken once before any decision. Tick stages share LOCK_FILE (a slice inherits its parent's
 # fd 9); the delegated release slice excludes only another release run, via RELEASE_STAGE_LOCK_FILE.
 pipeline_acquire_lock() {
-  local RELEASE_STAGE_LOCK_FILE="${RELEASE_STAGE_LOCK_FILE:-$AGENT_HOME/release-stage.lock}"
+  local RELEASE_STAGE_LOCK_FILE="${RELEASE_STAGE_LOCK_FILE:-$AGENT_HOME/release-stage.lock}" TRIAGE_LOCK_FD
   if [ "$PIPELINE_STAGE" = release ] && [ "${ZF_RELEASE_TRAIN_DELEGATE:-0}" = 1 ]; then
     exec {RELEASE_LOCK_FD}>"$RELEASE_STAGE_LOCK_FILE" # not fd 9: a slice's inherited tick lock stays open
     # A bare -n attempt exited 0 silently and the train logged "delegated" (2026-10-22).
@@ -67,6 +67,15 @@ pipeline_acquire_lock() {
     }
     return 0
   fi
+  if [ "$PIPELINE_STAGE" = triage ]; then
+    exec {TRIAGE_LOCK_FD}>"$AGENT_HOME/triage-stage.lock"
+    if ! flock -n "$TRIAGE_LOCK_FD"; then
+      echo "issue-pipeline: triage pass skipped, lock busy file=$AGENT_HOME/triage-stage.lock" >&2
+      exec {TRIAGE_LOCK_FD}>&-
+      exit 75
+    fi
+  fi
+  [ "${EVENT_TRIAGE:-0}" = 1 ] && return 0
   if [ -z "${ZF_PIPELINE_SLICE_TICK:-}" ]; then exec 9>"$LOCK_FILE"; fi
   if flock -n 9; then
     [ -n "${ZF_PIPELINE_SLICE_TICK:-}" ] || pipeline_lock_acquired
