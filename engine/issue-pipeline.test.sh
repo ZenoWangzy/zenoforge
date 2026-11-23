@@ -1271,7 +1271,7 @@ lock_release() { kill "$HOLDER_PID" 2>/dev/null || true; wait "$HOLDER_PID" 2>/d
 alert_count() { [ -f "$RELEASE_LOCK_T/alerts" ] || { echo 0; return; }; grep -c "^$1|" "$RELEASE_LOCK_T/alerts" || true; }
 
 lock_hold release 1
-RELEASE_HOLDS_TICK_OUT="$(lock_run triage 0)"
+RELEASE_HOLDS_TICK_OUT="$(lock_run implement 0)"
 assert_cond "a release stage holding its lock does not stop a tick stage from getting the tick lock" \
   "$([[ "$RELEASE_HOLDS_TICK_OUT" == *got-lock*rc=0 ]] && echo 1 || echo 0)"
 RELEASE_TWICE_OUT="$(lock_run release 1)"
@@ -1281,25 +1281,25 @@ lock_release
 assert_cond "the release lock is free again once the first run ends" \
   "$([[ "$(lock_run release 1)" == *got-lock*rc=0 ]] && echo 1 || echo 0)"
 
-lock_hold triage 0
-SKIP_OUT_1="$(lock_run triage 0)"
+lock_hold implement 0
+SKIP_OUT_1="$(lock_run implement 0)"
 assert_cond "a skipped tick logs the skip and names the lock file" \
   "$([[ "$SKIP_OUT_1" == *"tick skipped, lock busy"*"file=$RELEASE_LOCK_T/lock consecutive=1"*rc=0 ]] && echo 1 || echo 0)"
-lock_run triage 0 >/dev/null
+lock_run implement 0 >/dev/null
 assert_eq "two consecutive skips raise no alert" 0 "$(alert_count tick-outage)"
-lock_run triage 0 >/dev/null
+lock_run implement 0 >/dev/null
 assert_eq "the third consecutive skip alerts" 1 "$(alert_count tick-outage)"
-lock_run triage 0 >/dev/null
+lock_run implement 0 >/dev/null
 assert_eq "later skips of the same episode stay quiet" 1 "$(alert_count tick-outage)"
-REFILL_OUT="$(lock_run triage 0 EVENT_REFILL=1)"
+REFILL_OUT="$(lock_run implement 0 EVENT_REFILL=1)"
 assert_cond "a refill event keeps exit 75 and does not count as a skipped tick" \
   "$([[ "$REFILL_OUT" == *rc=75 && "$(cat "$RELEASE_LOCK_T/pipeline-lock-skip-count")" = 4 ]] && echo 1 || echo 0)"
 lock_release
-RESET_OUT="$(lock_run triage 0)"
+RESET_OUT="$(lock_run implement 0)"
 assert_cond "a tick that gets the lock resets the skip counter and records recovery once" \
   "$([[ "$RESET_OUT" == *got-lock*rc=0 && ! -e "$RELEASE_LOCK_T/pipeline-lock-skip-count" && ! -e "$RELEASE_LOCK_T/pipeline-lock-skip-alerted" ]] && [ "$(alert_count tick-recovery)" = 1 ] && echo 1 || echo 0)"
-lock_hold triage 0
-lock_run triage 0 >/dev/null
+lock_hold implement 0
+lock_run implement 0 >/dev/null
 assert_cond "after a reset the next episode counts from one" \
   "$([ "$(cat "$RELEASE_LOCK_T/pipeline-lock-skip-count")" = 1 ] && echo 1 || echo 0)"
 # The slice runner's own flock skips the same way.
@@ -1519,7 +1519,7 @@ FIRST_TRIAGE_BATCH="$(run_fake_triage_batch_dispatch 0 6G)"
 assert_contains "first triage batch keeps default 4G MemoryMax" \
   "$FIRST_TRIAGE_BATCH" 'MemoryMax=4G'
 assert_contains "triage batch stop hook receives every issue id" \
-  "$FIRST_TRIAGE_BATCH" "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch 990104"
+  "$FIRST_TRIAGE_BATCH" "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch fixture-owner 990104"
 RETRY_TRIAGE_BATCH="$(run_fake_triage_batch_dispatch 1 7G)"
 assert_contains "OOM triage batch retries at configured larger cap" \
   "$RETRY_TRIAGE_BATCH" 'MemoryMax=7G'

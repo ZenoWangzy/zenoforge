@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf -- "$TMP"' EXIT
 CALLS="$TMP/calls"; : > "$CALLS"
 FAILED=0
+TRIAGE_QUEUE='[{"number":11,"createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"needs-triage"}]},{"number":12,"createdAt":"2026-01-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"founder-test"}]}]'
 assert_eq() { if [ "$2" = "$3" ]; then echo "ok - $1"; else echo "not ok - $1 (expected [$2], got [$3])"; FAILED=1; fi; }
 
 # The real run_intake_dispatch, with every collaborator stubbed.
@@ -22,9 +23,9 @@ ensure_issue_roadmap_parent_for_dispatch() { echo "ensure $1" >> "$CALLS"; }
 state_read() { echo '{}'; }; triage_unmeasured_issue_ids() { :; }; triage_classification_status() { echo measured; }
 dispatch_gitnexus_refresh() { :; }
 dispatch_triage_batch() { echo "dispatch $*" >> "$CALLS"; }
-gh() { # needs-triage snapshot: #11 plain, #12 founder-test (ranks first from its label)
+gh() {
   if [[ "$*" == *needs-triage* ]]; then
-    echo '[{"number":11,"createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"needs-triage"}]},{"number":12,"createdAt":"2026-01-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"founder-test"}]}]'
+    echo "$TRIAGE_QUEUE"
   else echo '[]'; fi
 }
 # A slow, failing admit loop and label step: they must run after dispatch and cannot block it.
@@ -60,6 +61,10 @@ is_on_hold() { return 1; }
 assert_eq "empty batch dispatches nothing" 0 "$(grep -c '^dispatch' "$CALLS" || true)"
 grep -q 'triage batch empty: needs_triage=2 ordered=2 selectable=2 .*batch_active=0 .*skips=on_hold:2' "$TMP/err" && ok=1 || ok=0
 assert_eq "empty batch line counts each skip reason" 1 "$ok"
+: > "$CALLS"; TRIAGE_QUEUE='[]'
+run_intake_dispatch 2> "$TMP/err" || true
+assert_eq "empty needs-triage snapshot dispatches nothing" 0 "$(grep -c '^dispatch' "$CALLS" || true)"
+: > "$CALLS"; TRIAGE_QUEUE='[{"number":11,"createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"needs-triage"}]},{"number":12,"createdAt":"2026-01-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"founder-test"}]}]'
 : > "$CALLS"; stage_dispatch_allowed() { return 1; }
 run_intake_dispatch 2> "$TMP/err" || true
 stage_dispatch_allowed() { return 0; }

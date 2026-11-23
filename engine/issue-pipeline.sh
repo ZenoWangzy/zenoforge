@@ -281,7 +281,7 @@ pipeline_batch_claim_keep() { # renew every member after the batch transient uni
 }
 PIPELINE_STAGE=""
 EVENT_REFILL=0
-EVENT_REFILL_STATUS=0
+EVENT_TRIAGE=0
 if [ "$#" = 0 ]; then
   run_pipeline_slices "$0"
   exit $?
@@ -289,7 +289,7 @@ fi
 if [ "$#" = 2 ] && [ "$1" = --stage ]; then
   case "$2" in
     ready-refill) PIPELINE_STAGE=implement; EVENT_REFILL=1 ;;
-    fastlane|triage|advisor|recut|implement|release|maintenance) PIPELINE_STAGE="$2" ;;
+    fastlane|triage|advisor|recut|implement|release|maintenance|triage-event) PIPELINE_STAGE="${2/triage-event/triage}"; [ "$2" != triage-event ] || EVENT_TRIAGE=1 ;;
     *) echo 'issue-pipeline: invalid stage' >&2; exit 2 ;; esac
 else
   echo 'issue-pipeline: expected --stage <stage>' >&2; exit 2
@@ -921,7 +921,7 @@ dispatch_triage_batch() {
     [ "$oom_count" -le 0 ] || memory_max="${AGENT_UNIT_MEMORY_RETRY_MAX:-6G}"
   done
   memory_args=(-p "MemoryMax=$memory_max")
-  result_args=(-p "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch ${issue_ids[*]}")
+  result_args=(-p "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch $claim_owner ${issue_ids[*]}")
   if [ "$DRY_RUN" != "1" ]; then
     mkdir -p "$AGENT_HOME"
     active_tmp="$AGENT_HOME/triage-batch-active-dispatch-$$.json"

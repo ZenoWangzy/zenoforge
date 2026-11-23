@@ -768,7 +768,7 @@
 5	engine/ticket-progress.sh
 35	engine/ticket-progress.test.sh
 11	engine/triage-claude-fallback.test.sh
-7	engine/triage-dispatch-first.test.sh
+6	engine/triage-dispatch-first.test.sh
 4	engine/ts-judge.mjs
 3	engine/ts-judge.sh
 5	engine/unitgen.py
