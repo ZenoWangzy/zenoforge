@@ -69,6 +69,5 @@ engine/syntax-only-landing.test.sh
 engine/test-env-exit.test.sh
 engine/tests/fix-forward-release-helper.test.sh
 engine/tests/release-runner.test.sh
-engine/ticket-progress.test.sh
 engine/tick-refuse-guard.test.sh
 engine/web-advisor-provider-job.test.sh
