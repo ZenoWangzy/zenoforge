@@ -83,7 +83,7 @@ for hook in "$root"/hooks/*; do
 for kind in missing broken invalid; do
   config="$work/$kind"; [ "$kind" != broken ] || ln -s "$work/absent" "$config" 2>/dev/null || :
   rc=0; ZF_SUPERVISOR_CONFIG="$config" node "$hook" < /dev/null > "$work/out" 2> "$work/err" || rc=$?
-  [ "$rc" = 1 ]; grep -q '^zenoforge supervisor: config unavailable: ' "$work/err"; [ "$(wc -l < "$work/err")" = 1 ]
+  [ "$rc" = 1 ]; grep -q '^zenoforge supervisor: config unavailable; tried: ' "$work/err"; [ "$(wc -l < "$work/err")" = 1 ]
  done
 done
 printf 'newer\n' > "$HOME/old"

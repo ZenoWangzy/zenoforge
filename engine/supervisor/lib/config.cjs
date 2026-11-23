@@ -3,9 +3,16 @@ const os = require('os');
 const path = require('path');
 const expand = p => p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
 const file = expand(process.env.ZF_SUPERVISOR_CONFIG || '~/.zenoforge/supervisor/config.json');
+const fallbacks = [expand('~/.vecta-agent/checkout/.zenoforge/supervisor/config.json')];
 let config;
-try { config = JSON.parse(fs.readFileSync(file, 'utf8')); }
-catch (error) { process.stderr.write(`zenoforge supervisor: config unavailable: ${file} (${error.message.replace(/\s*\n\s*/g, ' ')})\n`); process.exit(1); }
+const tried = [];
+for (const candidate of [file, ...fallbacks]) {
+  try { config = JSON.parse(fs.readFileSync(candidate, 'utf8')); }
+  catch (error) { tried.push(`${candidate} (${error.message.replace(/\s*\n\s*/g, ' ')})`); continue; }
+  if (candidate !== file) process.stderr.write(`zenoforge supervisor: warning: config fallback in use: ${candidate} (main ${file} unavailable)\n`);
+  break;
+}
+if (!config) { process.stderr.write(`zenoforge supervisor: config unavailable; tried: ${tried.join('; ')}\n`); process.exit(1); }
 const watchDefaults = {
   ready_stuck_minutes: 60,
   no_output_hours: 3,
