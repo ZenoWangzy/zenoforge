@@ -1032,7 +1032,7 @@ def front_triage_panel(now, backlog):
     batches = sorted(glob.glob(os.path.join(AGENT_HOME, "logs", "triage-triage-batch-*.log")))
     batch_stamp = re.search(r"-(\d{8}T\d{6}Z)-", os.path.basename(batches[-1])) if batches else None
     batch_at = (datetime.strptime(batch_stamp.group(1), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")) if batch_stamp else None
-    running = front_unit_active(f"{UNIT_PREFIX_TRANSIENT}-triage-batch.service")
+    running = front_unit_active(f"{UNIT_PREFIX_TRANSIENT}-triage-batch*.service")
     idle_min = None if last is None else round((now - last) / 60)
     if backlog == 0:  # 没有积压就没有"该出活而没出活"，两条都不判
         front_na.update(("triage.last_done_age_min", "triage.done_today"))
