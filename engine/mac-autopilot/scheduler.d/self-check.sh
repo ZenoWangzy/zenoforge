@@ -274,11 +274,9 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
   if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
       && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then
+    if [[ "$(jqf -r '.self_check_status // empty' <<<"$u")" == red ]]; then self_check_red_to_repair "$id" "$(jqf -r '.self_check_output // empty' <<<"$u")"; return 1; fi
     # No fetched main ref can establish staleness; self_check_run requires one before it runs.
-    if [[ "$(jqf -r '.self_check_status // empty' <<<"$u")" == red ]] || self_check_main_fresh "$dir" "$sha" \
-      || ! git -C "$dir" rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null 2>&1; then
-      return 0
-    fi
+    if self_check_main_fresh "$dir" "$sha" || ! git -C "$dir" rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null 2>&1; then return 0; fi
   fi
   out="$SUP/self-check-$id-$sha-$(jqf -r '.self_check_fixes // 0' <<<"$u")-$TAG.log"; result="$out.result"
   config_base=origin/main
@@ -346,6 +344,8 @@ self_check_failure_class() { # log → short class of the first failure line
     *) printf 'self-check failure\n' ;;
   esac
 }
+self_check_red_to_repair() { local hint="The deterministic self-check failed. Full output from $2:"$'\n'"$(cat "$2" 2>/dev/null || true)"
+  set_unit "$1" ".self_fix_pending=false | .self_fix_active=false | .approved_sha=null | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=$(js "$hint") | .stage=\"repair-pending\""; }
 self_check_harvest() {
   local id pid out start status fixes sid model verification_json verification_update reason_update checked_head
   while IFS=$'\t' read -r id pid out start; do
@@ -382,11 +382,8 @@ self_check_harvest() {
     [[ "$status" == red ]] || continue
     fixes="$(unit_field "$id" '.self_check_fixes // 0')"
     sid="$(unit_field "$id" '.session_ids.repair')"; model="$(unit_field "$id" .implement_model)"
-    if (( fixes < 2 )) && [[ "$sid" =~ $SESSION_RE && -n "$model" && "$model" != claude-* ]]; then
-      set_unit "$id" '.self_fix_pending=true'
-    else
-      say "self-check red unit=$id: normal review with failure attached (fixes=$fixes, original session=${sid:-unavailable})"
-    fi
+    if (( fixes < 2 )) && [[ "$sid" =~ $SESSION_RE && -n "$model" && "$model" != claude-* ]]; then set_unit "$id" '.self_fix_pending=true'
+    else self_check_red_to_repair "$id" "$out"; say "self-check red unit=$id: routed to repair (fixes=$fixes, original session=${sid:-unavailable})"; fi
   done < <(jqf -r '.units[] | select(.self_check_pid!=null) | [.id,.self_check_pid,.self_check_output,(.self_check_start // "")] | @tsv' "$UNITS")
   scheduler_lock_yield_between_units || return 1
 }
@@ -408,7 +405,7 @@ self_fix_dispatch() { # unit JSON; keep its selected provider/session unless quo
     deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic，通过后交付原分支。"
   fi
   failure="实现后的确定性自检失败。完整输出：$out
-$(tail -100 "$out")"
+$(cat "$out")"
   prompt="实现后的确定性自检失败，尚未派出评审。这是原实现会话的自修复，保持原任务范围，修复下列失败，不弱化断言。$failure
 在当前隔离 clone ${dir}、原分支 $branch 修复；$deliver 禁止 merge PR、部署或修改 GitHub 状态。把修复和验证证据写到 $SUP/${rep}，然后结束，流水线会重跑同一自检。
 $(matt_method_rule "$dir")"

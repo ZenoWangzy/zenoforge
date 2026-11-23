@@ -238,6 +238,7 @@ no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approv
   local u="$1" pr head rows approved=false
   pr="$(jqf -r '.pr // empty' <<<"$u")"
   [[ "$pr" =~ ^[0-9]+$ ]] || return 0
+  [[ "$(jqf -r '.self_check_status // empty' <<<"$u")" != red ]] || return 0
   # A handoff (hold episode or handoff worktree/ref) must be integrated by the repair worker first.
   [[ "$(jqf -r '[.hold_handoff_episode, .handoff_start_ref, .handoff_worktree_sha] | map(select(. != null and . != "")) | length' <<<"$u")" == 0 ]] || return 0
   [[ ! "$(jqf -r '.history[-1].stage // ""' <<<"$u")" =~ ^(land-failed|merge-reverted|merge-conflict|precheck-red|ci-red|ci-test-red)$ ]] || return 0

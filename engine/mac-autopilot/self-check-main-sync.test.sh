@@ -129,8 +129,8 @@ ROOT="$clean"
 before="$(ls "$SUP" | wc -l)"
 : > "$unit_writes"
 rc=0; self_check_before_review reuse-unit "$clean_head" "$clean" "$(reuse_unit red "$clean_head")" || rc=$?
-[[ "$rc" == 0 ]] || fail "stale head with stored red for the same sha was not reused (rc=$rc)"
-[[ ! -s "$unit_writes" ]] || fail 'reused red still wrote unit state'
+[[ "$rc" == 1 ]] || fail "stored red for the same sha did not stop review dispatch (rc=$rc)"
+grep -Fq 'repair-pending' "$unit_writes" || fail 'stored red for the same sha was not routed to repair'
 [[ "$(ls "$SUP" | wc -l)" == "$before" ]] || fail 'reused red started a new self-check log'
 rc=0; self_check_before_review reuse-unit "$clean_head" "$clean" "$(reuse_unit pass "$clean_head")" || rc=$?
 wait
