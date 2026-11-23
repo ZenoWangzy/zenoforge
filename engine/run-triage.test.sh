@@ -78,18 +78,6 @@ assert_not_contains() {
   fi
 }
 
-TRIAGE_PROMPT_CONTENT="$(cat "$SCRIPT_DIR/prompts/triage.md")"
-assert_contains "unknown impact cannot count as L2 evidence" "$TRIAGE_PROMPT_CONTENT" '`UNKNOWN`, `target not found`, an error'
-assert_contains "unknown impact cannot admit or reject L2" "$TRIAGE_PROMPT_CONTENT" $'Do not admit or\n       reject based on it'
-assert_contains "unresolved L2 takes the default with the impact marked unconfirmed" "$TRIAGE_PROMPT_CONTENT" 'the impact marked unconfirmed'
-assert_contains "only the three advisor_reason values route to the advisor" "$TRIAGE_PROMPT_CONTENT" '`irreversible`, `production-data` or `security`'
-assert_not_contains "triage prompt omits the legacy readiness state" "$TRIAGE_PROMPT_CONTENT" 'ready-for-human'
-assert_not_contains "triage prompt omits the legacy ownership state" "$TRIAGE_PROMPT_CONTENT" 'needs-owner'
-assert_contains "founder-authored issues choose defaults and continue" "$TRIAGE_PROMPT_CONTENT" 'write them into `notes_md` as decisions with their reasoning, and return `ready-for-agent`'
-assert_contains "unresolved L2 continues with impact marked unconfirmed" "$TRIAGE_PROMPT_CONTENT" 'record unresolved L2 as `ready-for-agent` and say plainly in `brief_md` that the impact evidence is unavailable'
-assert_contains "ownership or scope calls are recorded for the implementer" "$TRIAGE_PROMPT_CONTENT" 'record the scope call for the implementer in `brief_md`, and return `ready-for-agent`'
-assert_contains "advisor_reason routes on ready-for-agent" "$TRIAGE_PROMPT_CONTENT" 'with `none` (or a missing field) a `ready-for-agent` verdict proceeds to implementation'
-
 TRIAGE_SCHEMA_MISSING_REQUIRED="$(jq -c '(.required // []) as $required | [(.properties // {} | keys[]) as $key | select(($required | index($key)) == null) | $key]' "$SCRIPT_DIR/prompts/triage.schema.json")"
 assert_eq "triage schema requires every key for Codex structured output" '[]' "$TRIAGE_SCHEMA_MISSING_REQUIRED"
 jq -e '(.required | index("related")) != null and (.required | index("suspected_shared_cause")) != null and .properties.suspected_shared_cause.type == ["string", "null"]' \

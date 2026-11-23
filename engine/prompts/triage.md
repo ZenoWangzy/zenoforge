@@ -64,9 +64,8 @@ you cannot tell what kind of issue this is.
   5; the agent brief (durable behaviour and interfaces, testable acceptance
   criteria, explicit out of scope) is step 6. The labels are the skill's
   roles: `bug`/`enhancement` and `needs-triage`, `needs-info`,
-  `ready-for-agent`, `ready-for-human`, `wontfix`; the engine adds
-  `needs-owner`, `duplicate`, `finish-first`, and the existing
-  `awaiting-release` state for verified merged deliveries.
+  `ready-for-agent`, `wontfix`; the engine adds `duplicate`, `finish-first`,
+  and `awaiting-release` for verified merged deliveries.
 - **Unattended.** Where the skill says to ask the maintainer, wait for
   direction, grill, post a comment, apply a label, close an issue or write
   `.out-of-scope/`, do not: nobody answers and the wrapper does all of that
@@ -172,13 +171,14 @@ you cannot tell what kind of issue this is.
      data. `security` — credentials, authorization or access boundaries, or a
      vulnerability. Everything else — engineering shape, module ownership,
      scope, an unconfirmed impact reading — is the implementer's to decide:
-     return `none`. The wrapper routes only those three values to the
-     advisor; with `none` (or a missing field) a `ready-for-human` or
-     `needs-owner` verdict proceeds to implementation, the autonomy gate
-     over `risk_class`/`level`/phase still applies, and the implementer
-     decides the open point and records the choice in the PR. Never set one
-     of the three merely to escalate a question you could not answer from
-     the code — that is what `needs-info` and the defaults are for.
+     return `none`. The wrapper honors those three values on every model
+     verdict, including `ready-for-agent`; they route the issue to the
+     advisor. With `none` (or a missing field) a `ready-for-agent` verdict
+     proceeds through the wrapper's autonomy gate, and the implementer
+     decides any open engineering or scope point and records the choice in
+     the PR. Never set one of the three merely to escalate a question you
+     could not answer from the code — that is what `needs-info` and the
+     defaults are for.
    - `expected_packages`: repository path prefixes the implementer will likely
      touch. Despite the field name, this is also the merge gate's path scope:
      include package roots and non-package roots such as `.github/workflows`,
@@ -222,24 +222,21 @@ you cannot tell what kind of issue this is.
      is external even when a repository helper exists; it is also `L4` under
      the level rule above.
 
-5. **Decide the state.** There are exactly seven valid values. "Still needs
+5. **Decide the state.** There are exactly six valid values. "Still needs
    triage" is never one of them — if you genuinely cannot decide, that is
    `needs-info` with a specific, answerable question, not a punt.
 
-   **First: is the reporter the owner?** The issue JSON below carries
+   **Founder-authored issues have no one left to ask.** The issue JSON below carries
    `author.login`. When that is the same person who runs this pipeline,
    `needs-info` is not an available state for this issue — there is no second
    party left to ask, and the questions you would send go to the person who
    already delegated the decision. An owner who answers a second round with
    "you decide" has made a decision, not given a non-answer, and asking again
-   is the failure. For an owner-authored issue, pick the defaults yourself,
+   is the failure. For a founder-authored issue, pick the defaults
+   yourself,
    write them into `notes_md` as decisions with their reasoning, and return
-   `ready-for-human`. The wrapper enforces this independently, so returning
-   `needs-info` here only produces a worse version of the same outcome.
-   (`ready-for-human` is only the schema's state name: the wrapper never
-   parks it on a human — `advisor_reason` one of the three values above
-   sends it to the advisor, anything else proceeds to implementation with
-   the open point left to the implementer.)
+   `ready-for-agent`. This rule applies even at P0/L0. The wrapper still
+   applies its autonomy gate and honors any `advisor_reason` value.
 
    **Reporter-decision priority.** The reporter only ever answers business
    questions — never engineering ones. Before writing a `needs-info`
@@ -252,11 +249,11 @@ you cannot tell what kind of issue this is.
      things that live in someone's head and nowhere in the code. When the
      only real blocker is one of these — a missing requirement, an ambiguous
      acceptance criterion, which of several real-world behaviors is correct —
-     that is `needs-info`, not `ready-for-human`, even when
+     that is `needs-info`, even when
      `risk_class`/`level` would already put the issue outside the current
-     phase's autonomy set. Ask first; the level/risk exclusion still applies
-     once the reporter answers and the issue is re-triaged — say so plainly
-     in `notes_md` rather than implying an answer triggers immediate
+     phase's autonomy set. Ask first; the wrapper applies the level/risk
+     gate after the reporter answers and the issue is re-triaged — say so
+     plainly in `notes_md` rather than implying an answer triggers immediate
      automation it won't.
    - **Never ask the reporter an engineering-shape question**: which schema
      or data model to adopt, how to split fields, which module or component
@@ -273,9 +270,6 @@ you cannot tell what kind of issue this is.
        you expect — only that supplier's blueberries for that one day? If one
        of those three conditions doesn't match, do you want an error, or a
        looser search that tells you which condition it relaxed?"
-   - `ready-for-human` is for a blocker only a human **implementer** can
-     resolve; the reporter answering a question can't move that kind forward.
-
    **One-round batching.** Every `needs-info` comment tries to close the whole
    loop in a single reply, never one question per round. One round is the
    target, two is the hard cap. Before writing `notes_md`:
@@ -299,34 +293,34 @@ you cannot tell what kind of issue this is.
      makes the batch worse, not more complete, because it spends the
      reporter's one reply on something that cost you nothing to check.
 
-   - `ready-for-agent` only when **all** hold: evidence from step 3 holds,
-     `risk_class` is P0 or P1, the phase-gated level rule below is satisfied,
-     no `.out-of-scope/` match, and nothing already in flight for this.
-     The owner-authored issue/PR rule above takes precedence over this
-     eligibility check: owner-authored intake is `ready-for-human` even at
-     P0/L0.
+   - `ready-for-agent` means the issue has enough evidence to proceed through
+     the wrapper; it does not mean the issue passes autonomous admission.
+     Return it when the issue should be acted on and no reporter-only
+     decision, duplicate, in-flight delivery, or rejection blocks it. For
+     ownership or scope ambiguity, choose a reasonable default, record the
+     scope call for the implementer in `brief_md`, and return
+     `ready-for-agent`. The wrapper applies the risk, level, phase and
+     `advisor_reason` gates independently.
 
-     **Phase-gated level rule.** This run's `AGENT_PHASE` is given above this
-     prompt (`2` or `3`).
-     - At phase 2: `level` must be `L0` or `L1`. `L2` always goes to
-       `ready-for-human` (the wrapper's autonomy gate still refuses phase-2
-       L2 admission, so the advisor reviews it), regardless of how low-risk
-       it otherwise looks.
-     - At phase 3: `L0`/`L1` qualify as at phase 2, and `L2` additionally
-       qualifies only when each affected TypeScript/JavaScript symbol has a
+     **Autonomy gate for phase and level.** This run's `AGENT_PHASE` is given
+     above this prompt (`2` or `3`).
+     - At phase 2: `level` must be `L0` or `L1` for autonomous admission.
+       `L2` is outside that phase's admission set; still return
+       `ready-for-agent` and state in `brief_md` that its impact is
+       unconfirmed. The wrapper's autonomy gate handles the route.
+     - At phase 3: `L0`/`L1` qualify for autonomous admission as at phase 2,
+       and `L2` additionally qualifies only when each affected
+       TypeScript/JavaScript symbol has a
        confirmed-fresh `gitnexus impact --direction upstream` result below
        `HIGH`/`CRITICAL`; record each command and result in `brief_md`.
        `UNKNOWN`, `target not found`, an error, an unsupported symbol (such as
        Bash), or a missing result carries no impact evidence. Do not admit or
        reject based on it, and never treat it as `LOW` or use it alone to
-       choose `wontfix`: record unresolved L2 as `ready-for-human` and say
-       plainly in `brief_md` that the impact evidence is unavailable. In this
-       schema, request that verdict with `ready-for-human`; use
-       `ready-for-agent` only with confirmed-fresh, supported-symbol impact
-       evidence. Unresolved impact alone no longer routes to the advisor: the
-       wrapper's default sends the ticket to implementation with the impact
-       marked unconfirmed, so leave `advisor_reason` at `none` unless one of
-       its three values applies on the work's own merits.
+       choose `wontfix`: record unresolved L2 as `ready-for-agent` and say
+       plainly in `brief_md` that the impact evidence is unavailable. The
+       wrapper's autonomy gate handles admission; unresolved impact alone
+       does not set `advisor_reason`, which stays `none` unless one of its
+       three values applies on the work's own merits.
 
        **Run it exactly like this, one flat command per symbol:**
        `gitnexus impact <Symbol> --direction upstream --repo <the GitNexus
@@ -366,23 +360,14 @@ you cannot tell what kind of issue this is.
          fault such as a memory floor, a remote build/transfer failure, or
          lock contention; not a problem with this ticket), treat the impact
          as unavailable for L2. Do not admit or reject from that reading:
-         record unresolved L2 as `ready-for-human` and quote the wrapper's
-         reason in `brief_md`, leaving `advisor_reason` at `none` — the
-         wrapper's default proceeds with the impact marked unconfirmed, and
-         only `irreversible`, `production-data` or `security` sends it to
-         the advisor.
-     - `L3`/`L4` never qualify for `ready-for-agent` at any phase.
-   - `ready-for-human`: never a human park. The wrapper converts it:
-     `advisor_reason` `irreversible`, `production-data` or `security` routes
-     to the advisor; anything else proceeds to implementation, the autonomy
-     gate over `risk_class`/`level`/phase still applies, and the implementer
-     decides the open point. Same evidence rigor as `ready-for-agent`, but it
-     failed the level rule above, or it needs an implementer's judgment call
-     about the codebase, external access, or manual testing — something the
-     reporter cannot resolve just by answering a question. Say which, in
-     `brief_md`. If what's actually missing is the reporter's own
-     product/design decision, that's `needs-info` instead (see "Reporter-
-     decision priority" above), never this.
+         record unresolved L2 as `ready-for-agent` and say plainly in
+         `brief_md` that the impact evidence is unavailable; quote the
+         wrapper's reason there when present. The wrapper applies its
+         autonomy gate, and only `irreversible`, `production-data` or
+         `security` sends an otherwise in-scope issue to the advisor.
+     - `L3`/`L4` remain outside autonomous admission. Return
+       `ready-for-agent` when the issue should proceed, and let the wrapper
+       apply the level gate.
    - `needs-info`: evidence is missing, reproduction failed twice, **or the
      blocker is a decision only the reporter can make** — a business fact
      among real alternatives, a missing requirement, an ambiguous expectation.
@@ -393,13 +378,6 @@ you cannot tell what kind of issue this is.
      found in `brief_md` — that stays the full engineering record. Then write
      `notes_md` as the plain-language version of the same question(s),
      following the "Who reads `notes_md`" rules in step 7 below.
-   - `needs-owner`: the ambiguity isn't technical, it's ownership or scope —
-     nobody has decided whether the product should even do this, or who decides.
-     Say what decision is missing in `notes_md`. The wrapper treats it exactly
-     like `ready-for-human`: only `advisor_reason` `irreversible`,
-     `production-data` or `security` goes to the advisor, otherwise the
-     default proceeds to implementation and the implementer records the
-     scope call in the PR.
    - `duplicate`: another issue (open or closed) already tracks and fully
      covers every requested behavior and acceptance condition for this
      missing deliverable. A related symptom, shared files, or adjacent fix is
@@ -435,7 +413,7 @@ you cannot tell what kind of issue this is.
      enhancement must say why in `notes_md`, in plain words; the wrapper is
      responsible for `.out-of-scope/` bookkeeping, not you.
 
-6. **Write `brief_md`.** For `ready-for-agent`/`ready-for-human`, write an
+6. **Write `brief_md`.** For `ready-for-agent`, write an
    agent brief with these sections: Category, Summary, User outcome, Current
    behavior, Desired behavior, Key interfaces, Acceptance criteria, Out of
    scope — named by symbol/type/contract throughout. Acceptance criteria must
@@ -452,14 +430,15 @@ you cannot tell what kind of issue this is.
    Restate rather than copy the reporter's phrasing. Use the smallest
    reproduction supported by the issue or your code-path evidence; do not
    invent input or observed behavior. For an enhancement, describe the current
-   behavior as the actual result. For `needs-owner`,
-   `duplicate`, `finish-first`, `awaiting-release`, or `wontfix`, `brief_md` may be a short
-   rationale instead of the full template.
+   behavior as the actual result. For `duplicate`, `finish-first`,
+   `awaiting-release`, or `wontfix`, `brief_md` may be a short rationale
+   instead of the full template.
 
 7. **`notes_md`** carries the Triage Notes body for `needs-info`, the pointer
-   to the original issue for `duplicate`, or the rationale for
-   `wontfix`/`ready-for-human`/`needs-owner`/`finish-first`/`awaiting-release`. Leave it `""` when
-   the chosen state doesn't need it (e.g. `ready-for-agent`).
+   to the original issue for `duplicate`, the rationale for
+   `wontfix`/`finish-first`/`awaiting-release`, or founder-authored default
+   decisions even when the state is `ready-for-agent`. Leave it `""` when the
+   chosen state doesn't need it.
 
    **Who reads `notes_md`.** Unlike `brief_md` — which stays the full
    engineering record, read by other agents off the GitHub comment, and keeps
@@ -490,11 +469,9 @@ you cannot tell what kind of issue this is.
      it — that proof belongs in `brief_md`. The wrapper checks this mechanically
      and downgrades a `needs-info` that fails it.
    - **No pipeline vocabulary.** Never write `triage`, `P0`/`P1`/`P2`,
-     `L0`-`L4`, `phase`, `ready-for-agent`, `ready-for-human`, `needs-info`,
-     `risk_class`, or `level`. If one of these determines what happens next,
-     say that plainly ("this change needs an engineer and will not start
-     automatically" — not "L2/P2 goes to ready-for-human, so it won't be
-     ready-for-agent").
+     `L0`-`L4`, `phase`, `ready-for-agent`, `needs-info`, `risk_class`, or
+     `level`. If one of these determines what happens next, say that plainly
+     ("this change needs an engineer and will not start automatically").
    - **Same language as the reporter, all the way through.** Write the
      entire thing — every option and every default, not just a closing line
      — in the language the issue body/comments are written in. Do not switch
