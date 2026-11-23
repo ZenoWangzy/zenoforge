@@ -6,14 +6,14 @@
 #            renumber script owns. Take main's journal, re-append this PR's own new entries, then the pack's renumber hook
 #            (pack_rebase_hook) assigns the next free number; without that hook nothing is resolved. Any other
 #            migrations/ journal is not resolved: a merged journal whose files nobody renumbered is the 2026-11 schema-parity shape.
-#   union    one-line-per-entry append-only lists (lessons/CATALOG.md): keep both sides' lines (git merge-file --union).
+#   union    one-line-per-entry append-only lists (lessons/CATALOG.md, docs/adr/index.md): keep both sides' lines (git merge-file --union).
 #            lessons/RULES.md stays out: its entries span lines and a union there could drop or split a lesson.
 # The result is a merge commit (no rebase, no force) pushed with a lease on the observed head; the approval is cleared.
 # shortcut: a text resolver proves nothing about semantics, so the new head is re-reviewed and CI runs again; upgrade when
 # one of these files gets a structural merge driver in the target repo.
 # Bounds: first conflict goes to repair as before (CONFLICT_AUTO_MIN_PRIOR=1), at most CONFLICT_AUTO_MAX resolutions per
 # unit, a failed attempt falls through to repair at once and leaves the clone at the observed head.
-CONFLICT_UNION_RE="${CONFLICT_UNION_RE:-(^|/)lessons/CATALOG\.md$}"
+CONFLICT_UNION_RE="${CONFLICT_UNION_RE:-(^|/)(lessons/CATALOG\.md|docs/adr/index\.md)$}"
 CONFLICT_AUTO_MIN_PRIOR="${CONFLICT_AUTO_MIN_PRIOR:-1}"
 CONFLICT_AUTO_MAX="${CONFLICT_AUTO_MAX:-3}"
 

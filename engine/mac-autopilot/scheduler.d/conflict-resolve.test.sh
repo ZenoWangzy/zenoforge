@@ -33,12 +33,13 @@ journal() { # entries as "tag" args, idx from 0
 command git init -q -b main "$source_repo"
 # The target configures one migration directory (the one its renumber hook owns); a second, root migrations/ journal is not renumbered.
 mig=packs/fruit/migrations
-mkdir -p "$source_repo/$mig/meta" "$source_repo/migrations/meta" "$source_repo/lessons"
+mkdir -p "$source_repo/$mig/meta" "$source_repo/migrations/meta" "$source_repo/lessons" "$source_repo/docs/adr"
 journal 0001_a 0002_b > "$source_repo/$mig/meta/_journal.json"
 journal 0001_a 0002_b > "$source_repo/migrations/meta/_journal.json"
 echo 'select 1;' > "$source_repo/$mig/0001_a.sql"; echo 'select 2;' > "$source_repo/$mig/0002_b.sql"
 echo 'select 1;' > "$source_repo/migrations/0001_a.sql"; echo 'select 2;' > "$source_repo/migrations/0002_b.sql"
 printf '# Catalog\n\nApplies: [V1](RULES.md#v1); full: ./full/one.md\n' > "$source_repo/lessons/CATALOG.md"
+printf '| ADR | Title |\n| --- | --- |\n| [0001](0001-example.md) | Existing decision |\n' > "$source_repo/docs/adr/index.md"
 printf 'one\ntwo\nthree\n' > "$source_repo/shared.txt"
 g add -A; g commit -qm base
 base="$(g rev-parse HEAD)"
@@ -51,6 +52,7 @@ pr_branch() { # branch migration-tag catalog-line shared-line [migration dir]: o
   fi
   [[ -z "$3" ]] || printf '%s\n' "$3" >> "$source_repo/lessons/CATALOG.md"
   [[ -z "$4" ]] || printf '%s\n' "$4" > "$source_repo/shared.txt"
+  [[ -z "${6:-}" ]] || printf '%s\n' "$6" >> "$source_repo/docs/adr/index.md"
   g add -A; g commit -qm "$1"; g checkout -q main
 }
 pr_branch agent/issue-901 0003_pr 'Applies: [V9](RULES.md#v9); full: ./full/pr.md' ''   # hot files only
@@ -59,18 +61,20 @@ pr_branch agent/issue-903 0003_pr '' 'pr side'                                  
 pr_branch agent/issue-904 0003_pr 'Applies: [V9](RULES.md#v9); full: ./full/pr.md' ''   # same shape as 901
 pr_branch agent/issue-905 0003_pr 'Applies: [V9](RULES.md#v9); full: ./full/pr.md' ''
 pr_branch agent/issue-906 0003_pr '' '' migrations                                           # root journal only: not the renumbered directory
+pr_branch agent/issue-907 '' '' '' "$mig" '| [0003](0003-pr.md) | PR decision |'
 # main merged another PR's migration 0003 and catalog line, and edited shared.txt
 for d in "$mig" migrations; do
   echo 'select 3;' > "$source_repo/$d/0003_main.sql"
   journal 0001_a 0002_b 0003_main > "$source_repo/$d/meta/_journal.json"
 done
 printf 'Applies: [V8](RULES.md#v8); full: ./full/main.md\n' >> "$source_repo/lessons/CATALOG.md"
+printf '| [0002](0002-main.md) | Main decision |\n' >> "$source_repo/docs/adr/index.md"
 printf 'main side\ntwo\nthree\n' > "$source_repo/shared.txt"
 g add -A; g commit -qm main-moves
 command git init -q --bare -b main "$remote"
 g push -q "$remote" main
 command git clone -q "$remote" "$root"
-for n in 901 902 903 904 905 906; do
+for n in 901 902 903 904 905 906 907; do
   # As on GitHub: the PR head is on the remote under refs/pull/N/head, and the clone starts without it.
   command git --git-dir="$remote" fetch -q "$source_repo" "agent/issue-$n:refs/heads/agent/issue-$n" "agent/issue-$n:refs/pull/$n/head"
 done
@@ -160,4 +164,12 @@ reset "$(unit 906)"
 conflict 906
 [[ "$(stage_of 906)" == repair-pending && "$(count 906 merge-conflict)" == 2 && "$ensure_calls" == 0 && "$hook_calls" == 0 ]] || fail "a root migrations/ journal conflict must go to repair: stage=$(stage_of 906)"
 [[ "$(remote_head 906)" == "$(head_of 906)" ]] || fail 'a root journal conflict must not push'
+
+reset "$(unit 907)"
+[[ "$(conflict_hot_class docs/adr/index.md)" == union ]] || fail 'the ADR index must use the union class'
+conflict 907
+[[ "$(stage_of 907)" == rereview-pending ]] || fail 'an ADR index conflict must be union-resolved'
+new="$(remote_head 907)"
+[[ "$(r show "$new:docs/adr/index.md" | grep -Fxc '| [0002](0002-main.md) | Main decision |')" == 1 ]] || fail 'the merged ADR index must keep main’s row'
+[[ "$(r show "$new:docs/adr/index.md" | grep -Fxc '| [0003](0003-pr.md) | PR decision |')" == 1 ]] || fail 'the merged ADR index must keep the PR’s row'
 echo 'conflict-resolve.test.sh: ok'
