@@ -32,6 +32,34 @@ model_forbidden_by_policy() { return 1; }
 model_policy_model_allowed_for_role() { [[ "$2" == review || "$2" == review_fallback ]]; }
 zcode_quota_status() { echo unknown; }
 pick_zcode_implementer() { return 1; }
+SCOPE_ROUTING_FILE="$A/quota-routing.json"
+scope_cell() { printf '{"quota_marker_scope":{"%s":{"implement":"%s"}}}\n' "$1" "$2" > "$SCOPE_ROUTING_FILE"; }
+(
+  routing_file_path() { printf '%s' "$SCOPE_ROUTING_FILE"; }
+  model_policy_role_fields() { printf 'claude\tclaude-sonnet-5-5\thigh\t\n'; }
+  model_policy_model_allowed_for_role() { return 0; }
+  cooling() { return 1; }
+  provider_quota_exhausted() {
+    if [[ "$1" == claude ]]; then [[ -f "$CLAUDE_EXHAUSTED_MARKER_FILE" ]] && (( $(<"$CLAUDE_EXHAUSTED_MARKER_FILE") > $(date +%s) ))
+    else [[ "$1" == codex && -f "$CODEX_EXHAUSTED_MARKER_FILE" ]] && (( $(<"$CODEX_EXHAUSTED_MARKER_FILE") > NOW_EPOCH )); fi
+  }
+  printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CLAUDE_EXHAUSTED_MARKER_FILE"
+  scope_cell claude block
+  if pick_claude_implementer; then fail 'Claude implement ignored the default marker scope'; fi
+  scope_cell claude allow
+  pick_claude_implementer || fail 'Claude implement ignored the scope allow override'
+)
+(
+  routing_file_path() { printf '%s' "$SCOPE_ROUTING_FILE"; }
+  cooling() { return 1; }
+  provider_quota_exhausted() { [[ "$1" == claude && -f "$CLAUDE_EXHAUSTED_MARKER_FILE" ]] && (( $(<"$CLAUDE_EXHAUSTED_MARKER_FILE") > $(date +%s) )); }
+  printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CLAUDE_EXHAUSTED_MARKER_FILE"
+  scope_cell claude block
+  if provider_runtime_ready claude claude-sonnet-5-5 production '{}'; then fail 'Claude runtime ignored the default marker scope'; fi
+  scope_cell claude allow
+  provider_runtime_ready claude claude-sonnet-5-5 production '{}' || fail 'Claude runtime ignored the scope allow override'
+)
+rm -f "$CLAUDE_EXHAUSTED_MARKER_FILE" "$CLAUDE_QUOTA_SNAPSHOT_FILE" "$SCOPE_ROUTING_FILE"
 pick_claude_implementer() { PICK_PROVIDER=claude; PICK_MODEL=claude-sonnet-5-5; PICK_EFFORT=high; PICK_HARD=false; }
 codex() { :; }
 claude() { :; }
@@ -40,6 +68,36 @@ CFG='{"models":{"review":["gpt-6-luna","max"],"review_fallback":["claude-sonnet-
 export SCHED_MODEL_POLICY_JSON='{}' MODEL_POLICY_DEFAULT="$script_dir/../model-policy.default.json"
 week() { jq -n --argjson p "$1" --argjson r "$2" '{week_pct:$p,week_reset:$r}' > "$CODEX_QUOTA_SNAPSHOT_FILE"; }
 sticky='{"id":"u","implement_provider":"codex","implement_route_provider":"codex"}'
+(
+  routing_file_path() { printf '%s' "$SCOPE_ROUTING_FILE"; }
+  printf '%s\n' "$((NOW_EPOCH + 3600))" > "$CODEX_EXHAUSTED_MARKER_FILE"
+  scope_cell codex block
+  codex_quota_held || fail 'Codex implement marker did not select the zcode dispatch backend'
+  dispatch_known_zcode_start '{}' || fail 'Codex implement marker did not select a zcode start'
+  scope_cell codex allow
+  if codex_quota_held; then fail 'Codex implement dispatch backend ignored the scope allow override'; fi
+  if dispatch_known_zcode_start '{}'; then fail 'Codex implement start ignored the scope allow override'; fi
+)
+rm -f "$CODEX_EXHAUSTED_MARKER_FILE" "$CLAUDE_EXHAUSTED_MARKER_FILE" "$CLAUDE_QUOTA_SNAPSHOT_FILE" "$SCOPE_ROUTING_FILE"
+(
+  routing_file_path() { printf '%s' "$SCOPE_ROUTING_FILE"; }
+  routing_configured() { return 1; }
+  model_policy_role_fields() { printf 'codex\tgpt-6-luna\tmax\t\n'; }
+  model_policy_model_allowed_for_role() { return 0; }
+  implement_route_family_reviewable() { return 0; }
+  pick_zcode_implementer() { PICK_PROVIDER=zcode; PICK_MODEL=GLM-5.3; PICK_EFFORT=max; PICK_HARD=false; }
+  codex_week_paced() { return 1; }
+  CFG='{"models":{"implement_share":{"claude":0,"codex":100,"zcode":0}}}'
+  week 0 $((NOW_EPOCH + 3600))
+  printf '%s\n' "$((NOW_EPOCH + 3600))" > "$CODEX_EXHAUSTED_MARKER_FILE"
+  scope_cell codex block
+  pick_implementer '{"id":"codex-marker-route","implement_provider":"codex"}' || fail 'Codex marker did not route a fallback implementer'
+  [[ "$PICK_PROVIDER" == zcode ]] || fail "Codex marker fallback picked $PICK_PROVIDER"
+  scope_cell codex allow
+  pick_implementer '{"id":"codex-marker-override","implement_provider":"codex"}' || fail 'Codex implement did not run under the scope allow override'
+  [[ "$PICK_PROVIDER" == codex ]] || fail "Codex implement scope override picked $PICK_PROVIDER"
+)
+rm -f "$CODEX_EXHAUSTED_MARKER_FILE" "$CODEX_QUOTA_SNAPSHOT_FILE" "$SCOPE_ROUTING_FILE"
 
 week 100 $((NOW_EPOCH + 3600))
 pick_configured_model review '{}' || fail 'review had no model at the wall'
