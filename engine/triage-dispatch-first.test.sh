@@ -21,7 +21,8 @@ eval "$(sed -n '/^run_intake_dispatch() {/,/^if \[\[ "\$PIPELINE_STAGE" == triag
 gh_call_now_ms() { echo $(( ${EPOCHREALTIME/./} / 1000 )); }
 profile_mark() { :; }; profile_finish() { :; }
 REPO=test/repo; PIPELINE_STAGE=triage; ROADMAP_ORDER_ENABLED=false; PIPELINE_SYSTEM_LABELS_JSON='[]'; TRIAGE_CAP=5
-cap_slots_remaining() { echo 5; }; stage_unit_count() { echo 0; }; stage_unit_active() { return 1; }
+TRIAGE_BATCH_CONCURRENCY="${AGENT_TRIAGE_BATCH_CONCURRENCY:-2}"
+cap_slots_remaining() { echo 5; }; stage_unit_count() { echo 0; }; triage_batch_unit_count() { echo 0; }; stage_unit_active() { return 1; }
 hand_agent_issue_is_live_owned() { return 1; }; is_on_hold() { return 1; }
 issue_model_failure_backoff_remaining() { echo 0; }; triage_retry_deferred() { return 1; }
 pipeline_triage_skip_inflight() { return 1; }; stage_dispatch_allowed() { return 0; }
