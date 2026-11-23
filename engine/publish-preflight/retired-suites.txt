@@ -1,1 +1,2 @@
 mac-autopilot/fork-churn.test.sh reverted with #1304 by 8569341 (2026-11-21); compared against origin/main and could not pass on main
+gh-conditional-get.test.sh reverted with #1484 by 865754d5 (#1486, 2026-11-23); returns with the #1444 redo (worker zf1444)
