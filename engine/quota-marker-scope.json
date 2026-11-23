@@ -1,0 +1,26 @@
+{
+  "claude": {
+    "implement": "block",
+    "review": "block",
+    "triage": "allow",
+    "intake": "allow",
+    "recut": "block",
+    "owner_session": "allow"
+  },
+  "codex": {
+    "implement": "block",
+    "review": "block",
+    "triage": "allow",
+    "intake": "allow",
+    "recut": "block",
+    "owner_session": "block"
+  },
+  "zcode": {
+    "implement": "block",
+    "review": "block",
+    "triage": "allow",
+    "intake": "allow",
+    "recut": "block",
+    "owner_session": "allow"
+  }
+}
