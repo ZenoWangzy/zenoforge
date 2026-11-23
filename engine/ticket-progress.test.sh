@@ -5,7 +5,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 root_tmp="$(mktemp -d)"
 tmp="$root_tmp"
-trap 'rm -rf -- "$root_tmp"' EXIT
+trap 'rm -rf -- "$root_tmp" "$test_env_root"' EXIT
 now="$(date -u +%s)"
 health="$tmp/health"
 printf 'triage OK fixture\nadvisor OK fixture\nimplement OK fixture\ndeploy OK fixture\nacceptance OK fixture\n' > "$health"
