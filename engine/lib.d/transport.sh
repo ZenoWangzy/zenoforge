@@ -220,8 +220,46 @@ gh_rate_limit_handle_failure() {
 }
 
 
+_gh_api_conditional_call() {
+  local attempt_timeout="$1" stderr_file="$2" cache_file="$3" cache_key="$4"
+  local cached_key="" etag="" response_file response status code body cache_tmp
+  shift 4
+  response_file="$(mktemp)" || return 1
+  if [[ -r "$cache_file" ]]; then
+    IFS= read -r cached_key < "$cache_file" || cached_key=""
+    [[ "$cached_key" != "$cache_key" ]] || etag="$(sed -n '2p' "$cache_file")"
+  fi
+  local -a cond=(--include)
+  [[ -z "$etag" ]] || cond+=(--header "If-None-Match: $etag")
+  if command timeout --kill-after=5s "${attempt_timeout}s" gh "$@" "${cond[@]}" >"$response_file" 2>"$stderr_file"; then status=0; else status=$?; fi
+  response="$(cat "$response_file"; rm -f -- "$response_file"; printf '\001')"
+  response="${response%$'\001'}"; response="${response//$'\r'/}"
+  code="${response%%$'\n'*}"; code="${code#* }"; code="${code%% *}"
+  body="$(printf '%s' "$response" | sed -e '1,/^$/d'; printf '\001')"; body="${body%$'\001'}"
+  if [[ "$code" == 304 && "$cached_key" == "$cache_key" && -n "$etag" ]]; then
+    sed -e '1,3d' "$cache_file"
+    : > "$stderr_file"
+    return 0
+  fi
+  etag="$(printf '%s' "$response" | sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p' | head -1)"
+  if [[ "$status" == 0 && "$code" == 200 ]]; then
+    if [[ -n "$etag" ]]; then
+      cache_tmp="$(mktemp "$cache_file.XXXXXX" 2>/dev/null)" || cache_tmp=""
+      if [[ -n "$cache_tmp" ]]; then
+        { printf '%s\n%s\n\n' "$cache_key" "$etag"; printf '%s' "$body"; } > "$cache_tmp" \
+          && mv -f -- "$cache_tmp" "$cache_file" || rm -f -- "$cache_tmp"
+      fi
+    elif [[ "$cached_key" == "$cache_key" ]]; then
+      rm -f -- "$cache_file"
+    fi
+  fi
+  printf '%s' "$body"
+  return "$status"
+}
+
 gh() {
-  local status attempt retry_read=0 stderr_file stderr i api_method="" api_fields=0 arg attempt_timeout
+  local status attempt retry_read=0 api_get=0 api_paginate=0 api_include=0 api_conditional_header=0 api_conditional_get=0
+  local api_cache_dir="" api_cache_key="" api_cache_hash="" api_cache_file="" stderr_file stderr i api_method="" api_fields=0 arg attempt_timeout
   local max_attempts="${ZF_GH_RETRY_MAX_ATTEMPTS:-3}" base_backoff="${ZF_GH_RETRY_BACKOFF_SECONDS:-2}" retry_delay
   local profile_source="" profile_function="" profile_line=0 profile_started_us="" profile_ended_us
   local api_class args=("$@")
@@ -280,6 +318,12 @@ gh() {
             ;;
           --method=*|-X=*) api_method="${arg#*=}" ;;
           -X?*) api_method="${arg#-X}" ;;
+          --paginate) api_paginate=1 ;;
+          -i|--include|--verbose) api_include=1 ;;
+          -H|--header)
+            i=$((i + 1))
+            case "${args[$i]:-}" in [Ii][Ff]-[Nn][Oo][Nn][Ee]-[Mm][Aa][Tt][Cc][Hh]:*) api_conditional_header=1 ;; esac
+            ;;
           -f|--field|-F|--raw-field|--input)
             api_fields=1
             i=$((i + 1))
@@ -289,9 +333,22 @@ gh() {
       done
       if [ "${api_method^^}" = GET ] || { [ -z "$api_method" ] && [ "$api_fields" -eq 0 ]; }; then
         retry_read=1
+        [[ "${args[1]:-}" == graphql ]] || api_get=1
       fi
       ;;
   esac
+
+  if [[ "$api_get" == 1 && "$api_paginate" == 0 && "$api_include" == 0 && "$api_conditional_header" == 0 ]]; then
+    api_cache_dir="${AGENT_HOME:-${TMPDIR:-/tmp}/zenoforge-agent}/state/gh-api-etag"
+    if mkdir -p -- "$api_cache_dir" 2>/dev/null; then
+      printf -v api_cache_key '%q ' "${args[@]}"
+      api_cache_hash="$(printf '%s' "$api_cache_key" | sha256sum 2>/dev/null)" || api_cache_hash="$(printf '%s' "$api_cache_key" | shasum -a 256 2>/dev/null)" || api_cache_hash=""; api_cache_hash="${api_cache_hash%% *}"
+      if [[ "$api_cache_hash" =~ ^[[:xdigit:]]{64}$ ]]; then
+        api_cache_file="$api_cache_dir/$api_cache_hash.response"
+        api_conditional_get=1
+      fi
+    fi
+  fi
 
   if [[ "$max_attempts" =~ ^[0-9]+$ ]]; then
     max_attempts="${max_attempts#"${max_attempts%%[!0]*}"}"
@@ -369,7 +426,14 @@ gh() {
     }
     : > "$stderr_file"
     [ -z "$profile_started_us" ] || profile_started_us="${EPOCHREALTIME/./}"
-    if command timeout --kill-after=5s "${attempt_timeout}s" gh "$@" 2>"$stderr_file"; then
+    if [ "$api_conditional_get" = 1 ]; then
+      if _gh_api_conditional_call "$attempt_timeout" "$stderr_file" "$api_cache_file" "$api_cache_key" "${args[@]}"; then status=0; else status=$?; fi
+    elif command timeout --kill-after=5s "${attempt_timeout}s" gh "$@" 2>"$stderr_file"; then
+      status=0
+    else
+      status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
       if [ -n "$profile_started_us" ]; then
         profile_ended_us="${EPOCHREALTIME/./}"
         _call_profile_record gh "$profile_started_us" "$profile_ended_us" 0 \
@@ -378,13 +442,11 @@ gh() {
       cat "$stderr_file" >&2
       rm -f "$stderr_file"
       return 0
-    else
-      status=$?
-      if [ -n "$profile_started_us" ]; then
-        profile_ended_us="${EPOCHREALTIME/./}"
-        _call_profile_record gh "$profile_started_us" "$profile_ended_us" "$status" \
-          "$profile_source" "$profile_function" "$profile_line" "${args[@]}"
-      fi
+    fi
+    if [ -n "$profile_started_us" ]; then
+      profile_ended_us="${EPOCHREALTIME/./}"
+      _call_profile_record gh "$profile_started_us" "$profile_ended_us" "$status" \
+        "$profile_source" "$profile_function" "$profile_line" "${args[@]}"
     fi
     stderr="$(cat "$stderr_file")"
     if gh_rate_limit_handle_failure "$api_class" "$stderr"; then
