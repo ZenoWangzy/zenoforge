@@ -841,7 +841,7 @@ review_identity_available() {
   if declare -F cooling >/dev/null 2>&1 && cooling "$provider"; then return 1; fi
   case "$provider" in
     codex)
-      if codex_quota_exhausted "$identity"; then codex_credits_review_open "${3:-}" || return 1; fi
+      if codex_quota_exhausted "$identity" && quota_marker_blocks codex review >/dev/null; then codex_credits_review_open "${3:-}" || return 1; fi
       codex_probe_ok || return 1
       command -v codex >/dev/null 2>&1
       ;;
@@ -850,7 +850,7 @@ review_identity_available() {
       zf_zcode_bin_argv >/dev/null 2>&1 || return 1
       zcode_provider_config_model_matches "$identity"
       ;;
-    claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
+    claude) ! quota_marker_blocks claude review >/dev/null && command -v claude >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
 }
