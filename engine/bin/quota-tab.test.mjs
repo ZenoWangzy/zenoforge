@@ -142,6 +142,34 @@ const usageTab = port => [{ id: 'read', type: 'page', url: 'https://bigmodel.cn/
 const codexUsageTab = port => [{ id: 'read', type: 'page', url: 'https://chatgpt.com/settings/usage',
   webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` }];
 
+test('Codex adopts an existing usage page when its booked target id is gone', async () => {
+  const adopted = await run('codex-quota', port => [{ id: 'usage', type: 'page', url: 'https://chatgpt.com/settings/usage',
+    webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` }], {}, { windows: [
+    { limit_window_seconds: 604800, used_percent: 14, reset_at: 1800000000 },
+  ] });
+  assert.equal(adopted.code, 0, adopted.out);
+  assert.ok(!adopted.seen.some(s => s.startsWith('PUT /json/new')), adopted.seen.join());
+  assert.equal(JSON.parse(fs.readFileSync(path.join(adopted.home, '.zenoforge/codex-quota-state.json'), 'utf8')).tab_id, 'usage');
+});
+
+test('Codex closes duplicate usage pages and leaves chats and other sites alone', async () => {
+  const pages = port => [
+    { id: 'kept', type: 'page', url: 'https://chatgpt.com/settings/usage', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` },
+    { id: 'duplicate', type: 'page', url: 'https://chatgpt.com/settings/usage', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` },
+    { id: 'chat', type: 'page', url: 'https://chatgpt.com/c/conversation', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` },
+    { id: 'other', type: 'page', url: 'https://not-chatgpt.com/settings/usage', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/tab` },
+  ];
+  const deduplicated = await run('codex-quota', pages, {}, { windows: [
+    { limit_window_seconds: 604800, used_percent: 14, reset_at: 1800000000 },
+  ] });
+  assert.equal(deduplicated.code, 0, deduplicated.out);
+  assert.ok(deduplicated.seen.includes('GET /json/close/duplicate'), deduplicated.seen.join());
+  assert.ok(!deduplicated.seen.some(s => s === 'GET /json/close/kept'), deduplicated.seen.join());
+  assert.ok(!deduplicated.seen.some(s => s === 'GET /json/close/chat'), deduplicated.seen.join());
+  assert.ok(!deduplicated.seen.some(s => s === 'GET /json/close/other'), deduplicated.seen.join());
+  assert.equal(JSON.parse(fs.readFileSync(path.join(deduplicated.home, '.zenoforge/codex-quota-state.json'), 'utf8')).tab_id, 'kept');
+});
+
 const monthlyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-monthly-'));
 const monthly = await run('codex-quota', codexUsageTab, {}, { home: monthlyHome, windows: [
   { limit_window_seconds: 2592000, used_percent: 62, reset_at: 1800000000 },
