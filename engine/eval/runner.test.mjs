@@ -349,7 +349,7 @@ test('engine eval defaults to invented public cases when no target config or pac
     });
     assert.equal(child.status, 0, child.stderr);
     const loaded = JSON.parse(child.stdout);
-    assert.equal(loaded.cases.length, 3);
+    assert.equal(loaded.cases.length, 6);
     assert.ok(loaded.cases.every((item) => item.issue?.title && item.issue?.body));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
