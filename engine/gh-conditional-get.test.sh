@@ -44,6 +44,9 @@ case "$GH_FAKE_MODE" in
   initial) respond 200 '"v1"' '{"value":"one"}' ;;
   not-modified) respond 304 '' '' ;;
   replace) respond 200 '"v2"' '{"value":"two"}' ;;
+  stub-sensitive)
+    if [[ -n "$conditional" ]]; then respond 304 '' ''; else respond 200 '"v2"' '{"value":"two"}'; fi
+    ;;
   write)
     if [[ -n "$conditional" ]]; then respond 304 '' ''; else respond 200 '"write"' "{\"method\":\"$method\"}"; fi
     ;;
@@ -57,6 +60,15 @@ chmod +x "$test_root/bin/gh"
 export PATH="$test_root/bin:$PATH" ZF_ENGINE_DIR="$engine_dir" ZF_REPO_DIR="$repo_dir"
 source "$engine_dir/lib.sh"
 
+stub_response="$(gh api repos/example/repo/stub-mode)"
+[[ "$stub_response" == '{"value":"one"}' ]] || { echo "gh-conditional-get.test.sh: unexpected stub-mode first body: $stub_response" >&2; exit 1; }
+export GH_FAKE_MODE=stub-sensitive
+stub_response="$(gh api repos/example/repo/stub-mode)"
+[[ "$stub_response" == '{"value":"two"}' ]] || { echo "gh-conditional-get.test.sh: test-mode cache used a stub response: $stub_response" >&2; exit 1; }
+grep -Fqx 'GET||0|stub-sensitive' "$GH_CALLS" || { echo 'gh-conditional-get.test.sh: test mode sent a conditional request to the stub' >&2; exit 1; }
+
+unset ZF_AGENT_TEST_MODE
+export GH_FAKE_MODE=initial
 endpoint='repos/example/repo/items'
 first="$(gh api "$endpoint")"
 [[ "$first" == '{"value":"one"}' ]] || { echo "gh-conditional-get.test.sh: unexpected first body: $first" >&2; exit 1; }

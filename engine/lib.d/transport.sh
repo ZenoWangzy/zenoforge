@@ -338,7 +338,7 @@ gh() {
       ;;
   esac
 
-  if [[ "$api_get" == 1 && "$api_paginate" == 0 && "$api_include" == 0 && "$api_conditional_header" == 0 ]]; then
+  if [[ "$api_get" == 1 && "$api_paginate" == 0 && "$api_include" == 0 && "$api_conditional_header" == 0 && "${ZF_AGENT_TEST_MODE:-0}" != 1 ]]; then
     api_cache_dir="${AGENT_HOME:-${TMPDIR:-/tmp}/zenoforge-agent}/state/gh-api-etag"
     if mkdir -p -- "$api_cache_dir" 2>/dev/null; then
       printf -v api_cache_key '%q ' "${args[@]}"
