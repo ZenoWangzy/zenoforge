@@ -32,6 +32,7 @@ model_forbidden_by_policy() { return 1; }
 model_policy_model_allowed_for_role() { [[ "$2" == review || "$2" == review_fallback ]]; }
 zcode_quota_status() { echo unknown; }
 pick_zcode_implementer() { return 1; }
+claude() { :; }
 SCOPE_ROUTING_FILE="$A/quota-routing.json"
 scope_cell() { printf '{"quota_marker_scope":{"%s":{"implement":"%s"}}}\n' "$1" "$2" > "$SCOPE_ROUTING_FILE"; }
 (
@@ -62,7 +63,6 @@ scope_cell() { printf '{"quota_marker_scope":{"%s":{"implement":"%s"}}}\n' "$1" 
 rm -f "$CLAUDE_EXHAUSTED_MARKER_FILE" "$CLAUDE_QUOTA_SNAPSHOT_FILE" "$SCOPE_ROUTING_FILE"
 pick_claude_implementer() { PICK_PROVIDER=claude; PICK_MODEL=claude-sonnet-5-5; PICK_EFFORT=high; PICK_HARD=false; }
 codex() { :; }
-claude() { :; }
 codex_probe_ok() { return 0; }
 CFG='{"models":{"review":["gpt-6-luna","max"],"review_fallback":["claude-sonnet-5-5","high"],"implement":["gpt-6-luna","max"],"implement_share":{"claude":50,"codex":50,"zcode":0},"hard":{"provider":"codex","model":"gpt-6.1-terra","effort":"high"}}}'
 export SCHED_MODEL_POLICY_JSON='{}' MODEL_POLICY_DEFAULT="$script_dir/../model-policy.default.json"
