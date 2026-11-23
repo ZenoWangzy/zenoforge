@@ -279,9 +279,7 @@ jq -n '[
 jq -n --argjson retry "$(( $(date +%s) + 600 ))" '{triage_retry_after_epoch:$retry}' > "$AGENT_HOME/state/910307.json"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 ZF_TRIAGE_TICK_ID=multi-ticket-9103
-ZF_TRIAGE_BATCH_ID=multi-ticket-9103
-jq -n '{issues:[910399]}' > "$AGENT_HOME/triage-batch-active-unrelated.json"
-export ZF_TRIAGE_TICK_ID ZF_TRIAGE_BATCH_ID
+export ZF_TRIAGE_TICK_ID
 
 set +e
 RUN_OUTPUT="$(bash "$BATCH_SRC" --scheduled 910301 910302 910303 910304 2>&1)"
@@ -330,10 +328,6 @@ assert_contains "batch log stores average tokens per issue" "$MULTI_BATCH_LOG" '
 assert_contains "batch log stores selectable count before apply" "$MULTI_BATCH_LOG" 'needs_triage_selectable_before=4'
 assert_contains "batch log stores selectable count after apply" "$MULTI_BATCH_LOG" 'needs_triage_selectable_after=1'
 assert_contains "batch log stores selectable count delta" "$MULTI_BATCH_LOG" 'needs_triage_selectable_delta=-3'
-assert_eq "batch wrapper removes only its own active marker" false \
-  "$(test -e "$AGENT_HOME/triage-batch-active-multi-ticket-9103.json" && echo true || echo false)"
-assert_eq "batch wrapper preserves another batch marker" true \
-  "$(test -e "$AGENT_HOME/triage-batch-active-unrelated.json" && echo true || echo false)"
 assert_eq "successful batch leaves no worktree behind" 0 "$(find "$HOME/wt" -maxdepth 1 -type d -name 'triage-batch-run-*' | wc -l | tr -d ' ')"
 
 # One issue per call provides directly comparable single-ticket token baseline.
@@ -347,7 +341,7 @@ SINGLE_BATCH_LOG="$(cat "$AGENT_HOME/logs/triage-single-ticket-910310.log")"
 assert_contains "single-ticket baseline log has sample size one" "$SINGLE_BATCH_LOG" 'issue_sample_size=1'
 assert_contains "single-ticket baseline records its token count" "$SINGLE_BATCH_LOG" 'tokens_used=12345'
 assert_contains "single-ticket baseline average equals call total" "$SINGLE_BATCH_LOG" 'average_tokens_per_issue=12345.00'
-unset ZF_TRIAGE_TICK_ID ZF_TRIAGE_BATCH_ID
+unset ZF_TRIAGE_TICK_ID
 
 # Oversize issue text is cut in the prompt with a pointer to the full thread;
 # a short issue in the same batch passes through unchanged.

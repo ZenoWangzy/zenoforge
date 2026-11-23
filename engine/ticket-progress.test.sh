@@ -321,20 +321,16 @@ printf 'triage OK fixture\nadvisor OK fixture\n' > "$health"
 old_at="$(date -u -d "@$((now - 45 * 60))" +%Y-%m-%dT%H:%M:%SZ)"
 add_event 2220 "$((now - 45 * 60))" needs-triage needs-advisor advance true
 add_event 2221 "$((now - 45 * 60))" untracked needs-triage advance true
-add_event 2222 "$((now - 45 * 60))" untracked needs-triage advance true
 jq -n --arg at "$old_at" '[
   {number:2220,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-advisor"},{name:"founder-test"}]},
-  {number:2221,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"},{name:"founder-test"}]},
-  {number:2222,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"},{name:"founder-test"}]}]' > "$issue_file"
+  {number:2221,state:"OPEN",createdAt:$at,updatedAt:$at,labels:[{name:"needs-triage"},{name:"founder-test"}]}]' > "$issue_file"
 jq -n '{job:{job_id:"advisor-batch-7",members:[{issue:2220}]}}' > "$tmp/home/advisor-batch.json"
-jq -n '{issues:[2221]}' > "$tmp/home/triage-batch-active-fixture-one.json"
-jq -n '{issues:[2222]}' > "$tmp/home/triage-batch-active-fixture-two.json"
+jq -n '{issues:[2221]}' > "$tmp/home/triage-batch-active.json"
 cat > "$tmp/bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
   *is-active*zf-web-advisor-provider-advisor-batch-7.service*) [ -f "$BATCH_UNITS_UP" ] ;;
-  *list-units*zf-triage-batch-fixture-one.service*) [ -f "$BATCH_UNITS_UP" ] && echo 'zf-triage-batch-fixture-one.service loaded active running x'; exit 0 ;;
-  *list-units*zf-triage-batch-fixture-two.service*) [ -f "$BATCH_UNITS_UP" ] && echo 'zf-triage-batch-fixture-two.service loaded active running x'; exit 0 ;;
+  *list-units*zf-triage-batch.service*) [ -f "$BATCH_UNITS_UP" ] && echo 'zf-triage-batch.service loaded active running x'; exit 0 ;;
   *) exit 3 ;;
 esac
 STUB
@@ -347,7 +343,6 @@ touch "$tmp/units-up"
 run_batch_eval >/dev/null
 test "$(jq -r '.tickets["2220"].verdict' "$tmp/home/state/ticket-stage-status.json")" = WAITING
 test "$(jq -r '.tickets["2221"].verdict' "$tmp/home/state/ticket-stage-status.json")" = WAITING
-test "$(jq -r '.tickets["2222"].verdict' "$tmp/home/state/ticket-stage-status.json")" = WAITING
 test ! -s "$tmp/home/supervisor-inbox"
 rm -f "$tmp/units-up"
 run_batch_eval >/dev/null

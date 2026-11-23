@@ -295,34 +295,16 @@ triage_single_unit_active() {
 }
 
 
-triage_batch_unit_count() {
-  local batch_id="${1:-}" prefix="${UNIT_PREFIX_TRANSIENT}-triage-batch" pattern out
-  if [ -n "$batch_id" ]; then
-    [[ "$batch_id" =~ ^[A-Za-z0-9._-]+$ ]] || return 2
-    pattern="$prefix-$batch_id.service"
-  else
-    pattern="$prefix*.service"
-  fi
-  if ! out="$(systemctl --user list-units --no-legend --plain "$pattern" 2>&1)"; then
-    echo "triage_batch_unit_count: systemctl --user list-units could not be queried -- treating batch occupancy as FULL (fail-closed): $out" >&2
-    echo 999999999
+triage_batch_unit_active() {
+  local out
+  if ! out="$(systemctl --user list-units --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-triage-batch.service" 2>&1)"; then
+    if [ -n "$out" ]; then
+      echo "triage_batch_unit_active: systemctl --user list-units could not be queried -- treating batch as ACTIVE (fail-closed): $out" >&2
+      return 0
+    fi
     return 1
   fi
-  if [ -n "$batch_id" ]; then
-    printf '%s\n' "$out" | awk -v unit="$prefix-$batch_id.service" '$1 == unit { count++ } END { print count + 0 }'
-  else
-    printf '%s\n' "$out" | awk -v prefix="$prefix" '$1 == prefix ".service" || index($1, prefix "-") == 1 { count++ } END { print count + 0 }'
-  fi
-}
-
-
-triage_batch_unit_active() {
-  local count
-  if count="$(triage_batch_unit_count "${1:-}")"; then
-    [ "$count" -gt 0 ]
-  else
-    return 0
-  fi
+  printf '%s\n' "$out" | awk -v unit="${UNIT_PREFIX_TRANSIENT}-triage-batch.service" '$1 == unit { found=1 } END { exit !found }'
 }
 
 
@@ -365,20 +347,10 @@ stage_unit_active() {
 # only authoritative while the batch unit is active; a killed run cannot leave
 # tickets stuck behind a stale marker.
 triage_batch_issue_active() {
-  local n="$1" marker marker_name batch_id
-  for marker in "$AGENT_HOME"/triage-batch-active*.json; do
-    [ -f "$marker" ] || continue
-    jq -e --argjson n "$n" 'any(.issues[]?; . == $n)' "$marker" >/dev/null 2>&1 || continue
-    marker_name="${marker##*/}"
-    if [ "$marker_name" = triage-batch-active.json ]; then
-      triage_batch_unit_active && return 0
-    else
-      batch_id="${marker_name#triage-batch-active-}"
-      batch_id="${batch_id%.json}"
-      triage_batch_unit_active "$batch_id" && return 0
-    fi
-  done
-  return 1
+  local n="$1" marker="$AGENT_HOME/triage-batch-active.json"
+  [ -f "$marker" ] || return 1
+  jq -e --argjson n "$n" 'any(.issues[]?; . == $n)' "$marker" >/dev/null 2>&1 || return 1
+  triage_batch_unit_active
 }
 
 
