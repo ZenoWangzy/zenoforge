@@ -32,8 +32,24 @@ routing_family_order() { # → usable families (claude|codex|glm), most week quo
 }
 
 routing_implement_family_order() {
-  local name file; file="$(routing_file_path)"
-  routing_family_order | while IFS= read -r name; do jq -e --arg n "$name" '.families[$n].implement == false' "$file" >/dev/null 2>&1 || printf '%s\n' "$name"; done
+  local name file usable priority quota
+  file="$(routing_file_path)"
+  [[ -n "$file" ]] || return 0
+  priority="$(jq -c 'if (.pool_priority | type) == "object" then (.pool_priority.implement // ["codex","glm","claude"]) else (.implement_order // []) end' "$file" 2>/dev/null)" || return 0
+  usable="$(routing_family_order | while IFS= read -r name; do
+    quota="$(jq -r --arg n "$name" '.families[$n].quota_file // "/dev/null"' "$file" 2>/dev/null)"
+    jq -e --arg n "$name" --rawfile quota "${quota/#\~/$HOME}" '
+      .families[$n].implement == false or
+      ((.pool_priority | type) == "object" and ($n == "claude" or $n == "glm") and
+        ((($quota | fromjson? | .week_pct) // 0) >= (.pool_priority.factory_stop_pct // 85)))
+    ' "$file" >/dev/null 2>&1 || printf '%s\n' "$name"
+  done)"
+  jq -nr --arg order "$usable" --argjson priority "$priority" '
+    ($order | split("\n") | map(select(. != ""))) as $order
+    | ($priority | map(select(. as $name | $order | index($name) != null))) as $listed
+    | ($order | map(select(. as $name | $priority | index($name) == null)))
+    | $listed + . | .[]
+  '
 }
 
 routing_implement_off() {
