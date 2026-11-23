@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# quota-scope: print the quota marker scope table, one line per cell:
+#   <marker> <station> blocked <reason> | <marker> <station> allowed
+# markers: claude codex zcode; stations: implement review triage intake recut owner_session.
+# A marker that is held right now reports its live cause (claude.week_stop, claude.exhausted,
+# codex, zcode); a marker that is not held reports the bare entry, so all 18 cells always print
+# and the output is the table the engine would apply while each marker is set.
+# Usage: quota-scope
+# The default table is engine/quota-marker-scope.json; a routing file (models.routing_file in the
+# engine config) with a quota_marker_scope key overrides it one cell at a time.
+set -euo pipefail
+B="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=../lib.sh
+source "$B/lib.sh"
+for marker in claude codex zcode; do
+  cause="$(quota_marker_cause "$marker" 2>/dev/null || true)"
+  [[ -n "$cause" ]] || cause="$marker"
+  for station in implement review triage intake recut owner_session; do
+    if reason="$(_quota_scope_decision "$cause" "$station")"; then
+      printf '%s %s blocked %s\n' "$marker" "$station" "$reason"
+    else
+      printf '%s %s allowed\n' "$marker" "$station"
+    fi
+  done
+done

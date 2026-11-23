@@ -98,6 +98,7 @@ fi
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-policy.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/model-policy-fallback.sh"; model_policy_default_fallback "$_AGENT_LIB_DIR/model-policy.default.json"
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/quota-scope.sh"
 # shellcheck source=./dispatch-load-guard.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/dispatch-load-guard.sh"
 # Read-only policy probes set this before sourcing so library initialization
