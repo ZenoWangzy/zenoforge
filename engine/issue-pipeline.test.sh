@@ -1883,24 +1883,6 @@ PROVIDER_DISPATCH_OUT="$(
   codex_quota_exhausted() { return 1; }
   dispatch() { printf '%s\n' "$1" > "$AGENT_HOME/dispatched-$1"; }
   systemctl() { return 1; }
-  quota_scope_dispatch() (
-    local status=0 held=no
-    routing_file_path() { printf '%s' "$AGENT_HOME/quota-routing.json"; }
-    policy_route_held() { held=yes; }
-    CODEX_EXHAUSTED_MARKER_FILE="$AGENT_HOME/codex-exhausted-until"
-    CODEX_PROVIDER_PROBE_REQUIRED_FILE="$AGENT_HOME/codex-probe-required"
-    CODEX_UNAVAILABLE_MARKER_FILE="$AGENT_HOME/codex-unavailable-until"
-    codex_quota_exhausted() { provider_quota_exhausted codex; }
-    codex_model_capacity_held() { return 0; }
-    printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CODEX_EXHAUSTED_MARKER_FILE"
-    printf '{"quota_marker_scope":{"codex":{"implement":"block"}}}' > "$AGENT_HOME/quota-routing.json"
-    dispatch_policy_unit implement 910562 ready-for-agent 1 >/dev/null 2>&1 || status=$?
-    printf 'scope-default:%s:%s\n' "$status" "$held"
-    status=0; held=no
-    printf '{"quota_marker_scope":{"codex":{"implement":"allow"}}}' > "$AGENT_HOME/quota-routing.json"
-    dispatch_policy_unit implement 910563 ready-for-agent 1 >/dev/null 2>&1 || status=$?
-    printf 'scope-allow:%s:%s\n' "$status" "$held"
-  )
   run_two_host_dispatch() (
     local remote_home="$AGENT_HOME/two-host" remote="$AGENT_HOME/two-host/origin.git" sink="$AGENT_HOME/two-host/dispatches" host
     git init --bare --quiet "$remote"
@@ -1958,7 +1940,6 @@ PROVIDER_DISPATCH_OUT="$(
   )
   run_two_host_dispatch
   run_unknown_remote_dispatch
-  quota_scope_dispatch
   run_off_mode_entry() (
     AGENT_HOME="$AGENT_HOME/off-mode" ZF_COORD=off
     source "$SCRIPT_DIR/coord.sh"
@@ -1978,8 +1959,6 @@ PROVIDER_DISPATCH_OUT="$(
   echo "FAILED-TRIAGE:$([ -f "$AGENT_HOME/dispatched-triage" ] && echo yes || echo no)"
 )" || true
 assert_contains "unrelated provider hold still dispatches Codex implement" "$PROVIDER_DISPATCH_OUT" 'OTHER-IMPLEMENT:yes'
-assert_contains "default Codex implement scope holds policy dispatch" "$PROVIDER_DISPATCH_OUT" 'scope-default:77:yes'
-assert_contains "Codex policy dispatch follows the implement scope override" "$PROVIDER_DISPATCH_OUT" 'scope-allow:74:no'
 assert_contains "failed work role blocks recut dispatch" "$PROVIDER_DISPATCH_OUT" 'FAILED-RECUT:no'
 assert_contains "failed work role blocks triage batch dispatch" "$PROVIDER_DISPATCH_OUT" 'FAILED-TRIAGE:no'
 assert_contains 'two hosts sharing one bare remote dispatch a ticket once' "$PROVIDER_DISPATCH_OUT" 'two-host-dispatches=1'

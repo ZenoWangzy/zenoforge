@@ -487,7 +487,7 @@
 1	engine/mac-autopilot/scheduler.d/merge-result-check.test.sh
 15	engine/mac-autopilot/scheduler.d/merge-tree-sweep.sh
 19	engine/mac-autopilot/scheduler.d/merge-tree-sweep.test.sh
-64	engine/mac-autopilot/scheduler.d/models.sh
+65	engine/mac-autopilot/scheduler.d/models.sh
 37	engine/mac-autopilot/scheduler.d/no-human-wait.sh
 34	engine/mac-autopilot/scheduler.d/orphan-prs.sh
 15	engine/mac-autopilot/scheduler.d/park-label-sweep.sh
