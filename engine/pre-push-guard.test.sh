@@ -4,8 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 root="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 guard="$root/engine/pre-push-guard.sh"
-tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+tmp="$test_env_root"
 
 repo="$tmp/repo"
 remote="$tmp/origin.git"
@@ -231,4 +230,70 @@ else
   echo 'not ok - dispatcher does not invoke hook installer' >&2
   exit 1
 fi
+
+source "$root/engine/mac-autopilot/scheduler.d/size-admission.sh"
+SIZE_ADMISSION_LINES=800
+size_repo="$tmp/size-repo"
+size_remote="$tmp/size-origin.git"
+mkdir -p "$size_repo/engine/mac-autopilot/scheduler.d"
+git init -q --initial-branch=main "$size_repo"
+git -C "$size_repo" config user.name 'Push Guard Size Test'
+git -C "$size_repo" config user.email 'push-guard-size@example.test'
+cp "$guard" "$size_repo/engine/pre-push-guard.sh"
+cp "$root/engine/install-pre-push-guard.sh" "$size_repo/engine/install-pre-push-guard.sh"
+cp "$root/engine/mac-autopilot/scheduler.d/size-admission.sh" "$size_repo/engine/mac-autopilot/scheduler.d/size-admission.sh"
+printf 'base\n' > "$size_repo/base.txt"
+git -C "$size_repo" add .
+git -C "$size_repo" commit -qm base
+git init -q --bare --initial-branch=main "$size_remote"
+git -C "$size_repo" remote add origin "$size_remote"
+git -C "$size_repo" push -q origin main
+source "$root/engine/mac-autopilot/scheduler.d/worker-command.sh"
+source "$root/engine/mac-autopilot/scheduler.d/clones.sh"
+jqf() { command jq "$@"; }
+say() { :; }
+: > "$tmp/product-lane-skills"
+setup_size_worker() {
+  local id="$1" branch="$2" unit_json="$3"
+  local ROOT="$size_repo" WT_ROOT="$tmp/size-workers" UNITS="$tmp/size-units.json"
+  local MAIN_HEAD="$(git -C "$size_repo" rev-parse HEAD)" SHA_RE='^[0-9a-f]{40,64}$'
+  local STAMP=test TAG=test ZF_REPO=example/zenoforge ZF_PACK_REL=engine
+  local CFG='{"size_admission":{}}' SIZE_ADMISSION_LINES=800 PRODUCT_LANE_SKILLS="$tmp/product-lane-skills"
+  printf '%s\n' "$(jqf -cn --argjson unit "$unit_json" '{units:[$unit]}')" > "$UNITS"
+  ensure_clone "$id" "$branch"
+}
+size_worker="$(setup_size_worker issue-801 agent/issue-801 '{"id":"issue-801","lane":"pr"}')"
+mkdir -p "$size_worker/src"
+awk 'BEGIN { for (i = 0; i < 801; i++) print "line" }' > "$size_worker/src/change.ts"
+git -C "$size_worker" add src/change.ts
+git -C "$size_worker" commit -qm oversized
+size_count="$(changed_lines_in_checkout "$size_worker" main)"
+[[ "$size_count" == 801 ]] || { echo "not ok - size admission counted $size_count lines instead of 801" >&2; exit 1; }
+if size_output="$(git -C "$size_worker" push origin agent/issue-801 2>&1)"; then
+  echo 'not ok - 801-line worker push passed' >&2
+  exit 1
+fi
+grep -Fq 'SPLIT' <<<"$size_output" || { printf '%s\n' "$size_output" >&2; echo 'not ok - size refusal omitted SPLIT' >&2; exit 1; }
+grep -Fq "$size_count changed lines" <<<"$size_output" || { printf '%s\n' "$size_output" >&2; echo 'not ok - push check count differed from changed_lines_in_checkout' >&2; exit 1; }
+echo 'ok - worker push refuses 801 changed lines, reports SPLIT, and uses changed_lines_in_checkout count'
+
+awk 'BEGIN { for (i = 0; i < 800; i++) print "line" }' > "$size_worker/src/change.ts"
+git -C "$size_worker" add src/change.ts
+git -C "$size_worker" commit -qm 'trim to admitted size'
+if ! git -C "$size_worker" push -q origin agent/issue-801; then
+  echo 'not ok - 800-line worker push was refused' >&2
+  exit 1
+fi
+echo 'ok - worker push admits 800 changed lines'
+
+size_waived_worker="$(setup_size_worker issue-802 agent/issue-802 '{"id":"issue-802","lane":"pr","size_waiver":{"max_lines":1000}}')"
+mkdir -p "$size_waived_worker/src"
+awk 'BEGIN { for (i = 0; i < 801; i++) print "line" }' > "$size_waived_worker/src/change.ts"
+git -C "$size_waived_worker" add src/change.ts
+git -C "$size_waived_worker" commit -qm 'waived size'
+if ! git -C "$size_waived_worker" push -q origin agent/issue-802; then
+  echo 'not ok - waived 801-line worker push was refused' >&2
+  exit 1
+fi
+echo 'ok - worker push admits an 801-line diff with the unit size waiver'
 
