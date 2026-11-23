@@ -225,6 +225,26 @@ gh() {
   local max_attempts="${ZF_GH_RETRY_MAX_ATTEMPTS:-3}" base_backoff="${ZF_GH_RETRY_BACKOFF_SECONDS:-2}" retry_delay
   local profile_source="" profile_function="" profile_line=0 profile_started_us="" profile_ended_us
   local api_class args=("$@")
+  local caller_index=1 caller_source caller_line ZF_GH_CALLER
+  while [[ "${FUNCNAME[$caller_index]:-}" == main_gh || "${FUNCNAME[$caller_index]:-}" == guarded_write ]]; do
+    caller_index=$((caller_index + 1))
+  done
+  caller_source="${BASH_SOURCE[$caller_index]:-unknown}"
+  caller_line="${BASH_LINENO[$((caller_index - 1))]:-0}"
+  caller_source="${caller_source#./}"
+  if [[ -n "${ZF_ENGINE_DIR:-}" && "$caller_source" == "${ZF_ENGINE_DIR%/}/"* ]]; then
+    caller_source="engine/${caller_source#"${ZF_ENGINE_DIR%/}/"}"
+  elif [[ -n "${ZF_REPO_DIR:-}" && "$caller_source" == "${ZF_REPO_DIR%/}/engine/"* ]]; then
+    caller_source="${caller_source#"${ZF_REPO_DIR%/}/"}"
+  else
+    case "$caller_source" in
+      engine/*) ;;
+      */engine/*) caller_source="engine/${caller_source#*/engine/}" ;;
+      *) caller_source="${caller_source##*/}" ;;
+    esac
+  fi
+  ZF_GH_CALLER="${caller_source}:${caller_line}"
+  export ZF_GH_CALLER
   if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
