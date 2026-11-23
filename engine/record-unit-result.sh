@@ -19,12 +19,19 @@ case "$stage" in
   triage-batch)
     [ "$#" -ge 2 ] || { echo "record-unit-result: expected batch issue numbers" >&2; exit 64; }
     state_stage=triage
-    unit_name="${UNIT_PREFIX_TRANSIENT}-triage-batch.service"
-    if [[ ! "${2:-}" =~ ^[0-9]+$ ]]; then
-      claim_owner="$2"
-      issue_ids=("${@:3}")
-    else
+    if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+      unit_name="${UNIT_PREFIX_TRANSIENT}-triage-batch.service"
       issue_ids=("${@:2}")
+    else
+      claim_owner="$2"
+      shift 2
+      unit_name="${UNIT_PREFIX_TRANSIENT}-triage-batch.service"
+      if [ "${1:-}" = --unit ]; then
+        [ "$#" -ge 3 ] || { echo "record-unit-result: expected batch unit name and issue numbers" >&2; exit 64; }
+        unit_name="$2"
+        shift 2
+      fi
+      issue_ids=("$@")
     fi
     [ "${#issue_ids[@]}" -gt 0 ] || { echo "record-unit-result: expected batch issue numbers" >&2; exit 64; }
     ;;

@@ -39,13 +39,10 @@ triage_flagged_selection() {
   return 1
 }
 
-# triage_solo_candidate_dispatch -- after both selection loops: the remembered
-# solo candidate runs alone only when no unflagged issue was selected and a
-# slot is free, so triage_slots above 0 means no batch unit is active. Always
-# returns 0; a candidate whose roadmap placement fails is skipped, not run.
 triage_solo_candidate_dispatch() {
   [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ] || return 0
   [ -n "${TRIAGE_SOLO_CANDIDATE:-}" ] || return 0
+  [ "${TRIAGE_BATCH_SLOTS:-0}" -gt 0 ] || return 0
   [ "$triage_slots" -gt 0 ] || return 0
   if ! ensure_issue_roadmap_parent_for_dispatch "$TRIAGE_SOLO_CANDIDATE" "$TRIAGE_SOLO_CANDIDATE_LABEL"; then
     triage_skip roadmap_parent

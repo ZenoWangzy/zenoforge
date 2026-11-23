@@ -151,7 +151,7 @@ SH
 cat > "$f/bin/systemctl" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
-  *zf-triage-batch.service*) echo "zf-triage-batch.service loaded active running triage" ;;
+  *zf-triage-batch*.service*) echo "zf-triage-batch-fixture loaded active running triage" ;;
   *zf-web-advisor-provider-*) echo "zf-web-advisor-provider-advisor-batch-J1.service loaded active running advisor" ;;
 esac
 SH

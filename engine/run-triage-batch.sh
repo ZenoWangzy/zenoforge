@@ -15,6 +15,11 @@ source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 source "$SCRIPT_DIR/night/hand-agent-watchdog.sh"
 TRIAGE_TICK_ID="${ZF_TRIAGE_TICK_ID:-triage-batch-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+TRIAGE_BATCH_ID="${ZF_TRIAGE_BATCH_ID:-}"
+if [ -n "$TRIAGE_BATCH_ID" ] && ! [[ "$TRIAGE_BATCH_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "run-triage-batch: invalid batch ID" >&2
+  exit 2
+fi
 
 BATCH_CAP="${AGENT_TRIAGE_CAP:-8}"
 if ! [[ "$BATCH_CAP" =~ ^[1-9][0-9]*$ ]]; then
@@ -68,16 +73,10 @@ triage_needs_queue_selectable_count() {
   printf '%s\n' "$count"
 }
 
-BATCH_LOCK_FD=""
-if ! try_lock_nonblocking "$AGENT_HOME/triage-batch.lock" BATCH_LOCK_FD; then
-  echo "run-triage-batch: another batch wrapper is active; leaving issues queued" >&2
-  exit 0
-fi
-
 SCRATCH_DIR=""
 WT=""
 CODEX_BUDGET_RESERVATION_ID=""
-ACTIVE_FILE="$AGENT_HOME/triage-batch-active.json"
+ACTIVE_FILE="$AGENT_HOME/triage-batch-active${TRIAGE_BATCH_ID:+-$TRIAGE_BATCH_ID}.json"
 cleanup() {
   codex_budget_release "${CODEX_BUDGET_RESERVATION_ID:-}" || true
   rm -f "$ACTIVE_FILE"
@@ -85,7 +84,6 @@ cleanup() {
   if [ -n "$WT" ] && ! worktree_lifecycle_finish "$WT" "$REPO_DIR"; then
     echo "run-triage-batch: shared finalizer kept or could not remove worktree: $WT" >&2
   fi
-  [ -n "$BATCH_LOCK_FD" ] && unlock_fd "$BATCH_LOCK_FD"
 }
 trap cleanup EXIT
 
@@ -483,7 +481,7 @@ if ! git -C "$REPO_DIR" worktree add -q "$WT" origin/main; then
 fi
 # The agent reads skills from the new origin/main worktree, so resolve paths there.
 { matt_skills_note "$WT" ask-matt triage; cat "$PROMPT_FILE"; } > "$PROMPT_FILE.matt" && mv "$PROMPT_FILE.matt" "$PROMPT_FILE"
-ACTIVE_TMP="$AGENT_HOME/triage-batch-active-$$.json"
+ACTIVE_TMP="$AGENT_HOME/.triage-batch-active${TRIAGE_BATCH_ID:+-$TRIAGE_BATCH_ID}-$$.tmp"
 jq -n --argjson issues "$(printf '%s\n' "${INCLUDED_IDS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" \
   '{issues:$issues}' > "$ACTIVE_TMP"
 mv "$ACTIVE_TMP" "$ACTIVE_FILE"
