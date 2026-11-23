@@ -45,6 +45,79 @@ out="$(jqf -r '.units[0].self_check_output' "$UNITS")"
 grep -q '^incident report check failed: missing ## prior-art' "$out" || fail "self-check output does not name the report failure: $(cat "$out")"
 [[ "$(jqf -r '.units[0].history[-1].reason // empty' "$UNITS")" == 'incident report check failed' ]] || fail 'self-check history lacks the failure class'
 
+write_unit_without_resume() {
+  jqf -cn --arg report "$1" \
+    '{units:[{id:"issue-71003",issue:71003,lane:"pr",pr:71003,branch:"agent/issue-71003",stage:"review-pending",labels:["bug"],implementation_report:$report,history:[]}]}' > "$UNITS"
+}
+write_unit_without_resume "$bad"
+self_check_before_review issue-71003 "$sha" "$fixture/repo" || true
+wait
+self_check_harvest
+self_check_output="$(jqf -r '.units[0].self_check_output' "$UNITS")"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red ]] || fail 'report failure without a reusable session was not red'
+
+MAX=4; IMPLEMENT_CAP=2; REPAIR_DISPATCH_CAP=2; FOCUS_MODE=all
+LOOP_TOTAL_ROUNDS=4; LOOP_BREAKER_ROUNDS=4; ADVISOR_ROUNDS=4; STARTED_WIP_LIMIT=100
+TICK_DISPATCH_LOCAL_REFILL=false; TICK_FOOTPRINT_CACHE=(); TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_ACTIVE_FOOTPRINTS='[]'
+LUNA_PROC_MEMINFO="$fixture/no-meminfo"
+declare -A TICK_FOOTPRINT_CACHE=()
+DISPATCHED_TYPE=""; DISPATCHED_PROMPT=""
+self_check_fixture_sha="$sha"
+real_dispatch_if_room="$(declare -f dispatch_if_room)"
+dispatch_order() { printf 'WIP_COUNT=0\n%s\n' "$(jqf -c '.units[]' "$UNITS")"; }
+dispatch_live_prime() { :; }
+tick_prs_changed() { :; }
+dispatch_capacity_free() { return 0; }
+tick_prs_prime() { :; }
+ready_changes_requested_sweep() { :; }
+dispatch_why_load() { :; }
+advisor_harvest() { :; }
+footprint_waiters_revalidate() { :; }
+paused_midrun() { return 1; }
+unit_blocked_run_dep() { return 1; }
+token_spend_gate() { return 0; }
+ticket_budget_reason() { :; }
+live_workers() { echo 0; }
+live_by_type() { echo 0; }
+room_for() { return 0; }
+pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; PICK_PROVIDER=codex; PICK_HARD=false; PICK_REASON=configured; PICK_ROUTE_PROVIDER=codex; }
+pre_dispatch_pr_admission() { return 0; }
+footprint_room() { return 0; }
+ensure_clone() { printf '%s' "$fixture/repo"; }
+resume_handoff_integration() { return 0; }
+human_feedback_block() { :; }
+subject_of() { printf 'fixture PR %s' "$1"; }
+matt_method_rule() { :; }
+decision_scope() { :; }
+sweep_rule() { :; }
+supervisor_rule() { :; }
+dispatch_if_room() { DISPATCHED_TYPE="$3"; DISPATCHED_PROMPT="$8"; return 0; }
+unit_review_target() { printf '%s %s' "$self_check_fixture_sha" "$self_check_fixture_sha"; }
+verify_handoff_delivery() { return 0; }
+review_conflict_to_repair() { return 1; }
+checkout_pr_head() { return 0; }
+review_prompt() { printf 'fixture review prompt'; }
+review_inputs_rule() { :; }
+arbiter_rule() { :; }
+hotpatch_rule() { :; }
+ci_red_evidence_rule() { :; }
+footprint_convoy_alert() { return 0; }
+dispatch_pending || true
+[[ "$DISPATCHED_TYPE" == repair ]] || fail "red report dispatched as $DISPATCHED_TYPE instead of repair"
+[[ "$DISPATCHED_PROMPT" == *"$(cat "$self_check_output")"* ]] || fail 'repair brief did not carry the full self-check output verbatim'
+[[ "$(jqf '[.units[0].history[] | select(.stage=="review-request-changes")] | length' "$UNITS")" == 0 ]] || fail 'a red self-check consumed a review round'
+eval "$real_dispatch_if_room"
+jqf '.units[0].stage="review-pending" | .units[0].self_fix_pending=false | .units[0].self_check_lane="pr"' "$UNITS" > "$UNITS.n" && mv "$UNITS.n" "$UNITS"
+red_review_base="$(tick_pr_base 71003 || true)"
+jqf --arg base "$red_review_base" '.units[0].self_check_base=$base' "$UNITS" > "$UNITS.n" && mv "$UNITS.n" "$UNITS"
+DISPATCH_CALLS=0
+dispatch() { DISPATCH_CALLS=$((DISPATCH_CALLS + 1)); return 0; }
+incident_worker_prompt() { printf '%s' "$3"; }
+pr_body_refresh() { :; }
+red_review_unit="$(jqf -c '.units[0]' "$UNITS")"
+dispatch_if_room issue-71003 review review review.log review.md model high prompt "$self_check_fixture_sha" "$fixture/repo" "" "" "$red_review_unit" false codex false configured codex || true
+[[ "$DISPATCH_CALLS" == 0 && "$(jqf -r '.units[0].stage' "$UNITS")" == repair-pending ]] || fail "a cached red self-check reached review dispatch (calls=$DISPATCH_CALLS stage=$(jqf -r '.units[0].stage' "$UNITS"))"
+
 decision_missing=impl-71002-decision-missing.md
 printf '## Summary\nTried and verified.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$sup/$decision_missing"
 [[ "$(run_self_check "$decision_missing")" == red && "$(self_check_runs)" == 0 ]] || fail 'a report missing decision-log reached the checks instead of self-fix'
@@ -85,7 +158,10 @@ captured=''
 room_for() { return 0; }
 pick() { PICK_MODEL=gpt-6-luna; PICK_EFFORT=high; PICK_PROVIDER=codex; PICK_HARD=false; PICK_REASON=configured; PICK_ROUTE_PROVIDER=codex; }
 dispatch_if_room() { captured="$8"; return 0; }
-[[ "$(run_self_check "$bad")" == red ]] || fail 'second failing run was not red'
+self_check_result="$(run_self_check "$bad")"
+[[ "$self_check_result" == red ]] || fail "second failing run was $self_check_result: $(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+self_fix_output="$(jqf -r '.units[0].self_check_output' "$UNITS")"
+for n in {1..120}; do printf -v marker 'self-check-output-line-%03d' "$n"; printf '%s\n' "$marker" >> "$self_fix_output"; done
 command git -C "$fixture/repo" init -q -b main 2>/dev/null || true
 command git -C "$fixture/repo" config user.name t; command git -C "$fixture/repo" config user.email t@example.invalid
 command git -C "$fixture/repo" commit --allow-empty -qm base 2>/dev/null || true
@@ -93,6 +169,7 @@ command git -C "$fixture/repo" branch -f agent/issue-71002 HEAD
 self_fix_dispatch "$(jqf -c '.units[0]' "$UNITS")" || fail 'self-fix did not dispatch'
 [[ "$captured" == *'事故报告结构检查'* && "$captured" == *'incident report check failed'* ]] || fail 'self-fix prompt lacks the incident report instruction'
 [[ "$captured" == *"$sup/$bad"* ]] || fail 'self-fix prompt does not name the report to edit in place'
+[[ "$captured" == *'self-check-output-line-001'* && "$captured" == *'self-check-output-line-120'* ]] || fail 'self-fix prompt truncated the self-check output'
 
 how_why_bad=impl-71002-how-why-bad.md
 printf '## decision-log\nTried the fix and verified the report gate.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nThis rule preserves report quality.\n\n## root-cause\nx\n\n## recurrence-guard\nkind: test\n\n## prior-art\nSource: https://example.invalid/ref\n' > "$sup/$how_why_bad"
