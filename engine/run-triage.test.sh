@@ -652,11 +652,11 @@ export FAKE_TRIAGE_STRUCTURED="$(verdict ready-for-agent P1 L1 "" security)"
 export MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"; TMP_DIRS+=("$MAC_AUTOPILOT_RUNTIME_DIR"); echo '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 run_once "$RAW_BODY"
 assert_eq "raw + model ready-for-agent, advisor_reason=security: exits 0" "0" "$RUN_STATUS"
-assert_contains "...scheduler.log records one advisor-route line with a fixed reason code" "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=model_verdict_human outcome=routed"
+assert_contains "ready-for-agent uses the ready-for-human route reason" "$(grep -E ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null)" "advisor-route issue=#$N reason=model_verdict_human outcome=routed"
 assert_eq "...exactly one advisor-route line" "1" "$(grep -c ' advisor-route ' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 2>/dev/null || true)"
 unset MAC_AUTOPILOT_RUNTIME_DIR
 assert_contains "...label is needs-advisor" "$GH_LOG_CONTENT" "--add-label needs-advisor"
-assert_not_contains "...never ready-for-human" "$GH_LOG_CONTENT" "--add-label ready-for-human"
+assert_eq "ready-for-agent with an advisor-only reason persists needs-advisor" "needs-advisor" "$(echo "$STATE_CONTENT" | jq -r '.state')"
 assert_contains "...the comment names the advisor-only reason" "$GH_LOG_CONTENT" "security"
 assert_contains "...the comment says why the advisor decides" "$GH_LOG_CONTENT" "Routed to the advisor instead of a human"
 
