@@ -1,4 +1,5 @@
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/model-not-found-cache.bash"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)/quota-scope.sh"
 
 unit_is_critical() {
   jqf -r 'if .critical == true then "true" else "false" end' <<<"$1"
@@ -185,7 +186,7 @@ pick_claude_implementer() { # hand-claude policy identity -> PICK_* unless the C
   [[ "$provider" == claude ]] || return 1
   model_policy_model_allowed_for_role "$model" hand-claude || return 1
   command -v claude >/dev/null 2>&1 || return 1
-  provider_quota_exhausted claude && return 1
+  quota_marker_blocks claude implement >/dev/null && return 1
   cooling claude && return 1
   PICK_PROVIDER=claude  # own line: the source scan flags a forbidden family name beside a model assignment
   PICK_MODEL="$model"; PICK_EFFORT="$effort"; PICK_HARD=false; PICK_SERVICE_TIER=""
@@ -198,7 +199,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
   if jqf -e 'any(.labels[]?; . == "hotfix")' <<<"$1" >/dev/null 2>&1; then
     if pick_configured_model implement "$1" && [[ "$PICK_PROVIDER" == codex ]]; then
       command -v codex >/dev/null 2>&1 || return 1
-      codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-101}" && return 1
+      quota_marker_blocks codex implement >/dev/null && return 1
       cooling codex && return 1
       return 0
     fi
@@ -214,7 +215,7 @@ pick_codex_work_identity() { # work policy role, with legacy models.implement as
     [[ "$PICK_PROVIDER" == codex ]] || return 1
   fi
   command -v codex >/dev/null 2>&1 || return 1
-  { codex_week_stopped "${CODEX_IMPLEMENT_STOP_PCT:-101}" || codex_week_paced; } && ! codex_credits_open implement && return 1 # row 980 pace line; the hotfix branch above is exempt
+  { quota_marker_blocks codex implement >/dev/null || snapshot_week_at "${CODEX_IMPLEMENT_STOP_PCT:-101}" "${CODEX_QUOTA_SNAPSHOT_FILE:-${AGENT_HOME:-$HOME/.zenoforge}/codex-quota.json}" || codex_week_paced; } && ! codex_credits_open implement && return 1 # row 980 pace line; the hotfix branch above is exempt
   cooling codex && return 1
   return 0
 }
@@ -269,7 +270,7 @@ provider_runtime_ready() { # provider model [role] [unit JSON] -> runnable, poli
       [[ "$(zcode_paced zcode_quota_status)" == available ]] || return 1
       zf_zcode_bin_argv >/dev/null 2>&1 && zcode_provider_config_model_matches "zcode:$model:${PICK_EFFORT:-max}"
       ;;
-    claude) ! provider_quota_exhausted claude && command -v claude >/dev/null 2>&1 ;;
+    claude) ! quota_marker_blocks claude implement >/dev/null && command -v claude >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -422,7 +423,7 @@ pick_routed_implementer() { # unit sticky-provider -> PICK_* from the first rout
 # 11-21 (row 905): the dispatch hold runs before pick_implementer, so its zc backend ask (the zc measured memory peak)
 # rests on what is cheap and known pre-pick: the unit's sticky implement provider, or a Codex quota hold, which
 # pick_implementer below fails codex-assigned work over to zcode. Sticky Claude stays backend-less: it never leaves.
-codex_quota_held() { declare -F provider_quota_exhausted >/dev/null 2>&1 && provider_quota_exhausted codex; } # one lib call line for both readers (agent-lib-call ratchet)
+codex_quota_held() { quota_marker_blocks codex implement >/dev/null; }
 dispatch_known_zcode_start() { # unit-json -> 0 while the coming implement/repair start is known to run on zcode
   local sticky=""
   [[ -n "${1:-}" ]] && sticky="$(jqf -r '.implement_provider // empty' <<<"$1" 2>/dev/null || true)"
