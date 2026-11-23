@@ -54,12 +54,15 @@ fi
     sub="$sub ${2:-}"
   fi
   unit="$(sed -n 's#.*/\([^/]*\.\(service\|scope\)\)$#\1#p' /proc/self/cgroup 2>/dev/null | tail -1)"
-  caller="" p=$PPID
-  for _ in 1 2 3 4 5 6; do
-    caller="$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -m1 -E '\.(sh|py|mjs|cjs)$')" && [ -n "$caller" ] && break
-    p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [ "${p:-1}" -gt 1 ] || break
-  done
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "${caller##*/}" "$sub" "$endpoint" "$rc" \
+  caller="${ZF_GH_CALLER:-}" p=$PPID
+  if [[ -z "$caller" ]]; then
+    for _ in 1 2 3 4 5 6; do
+      caller="$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -m1 -E '\.(sh|py|mjs|cjs)$')" && [ -n "$caller" ] && break
+      p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [ "${p:-1}" -gt 1 ] || break
+    done
+    caller="${caller##*/}"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "$caller" "$sub" "$endpoint" "$rc" \
     "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" "$error_class" >> "$log"
 } 2>/dev/null
 exit "$rc"
