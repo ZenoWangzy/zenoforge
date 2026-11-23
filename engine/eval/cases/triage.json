@@ -69,6 +69,49 @@
         "estimated_changed_lines": 18,
         "external_deliverable": { "required": false, "location": "", "reason": "" }
       }
+    },
+    {
+      "id": "founder-authored-p0-l0",
+      "baseSha": "146e7087bc5353b92261a1c496f286893bc26b2b",
+      "issue": {
+        "number": 900004,
+        "title": "Restore production sign-in after a configuration regression",
+        "body": "Invented example: all users are currently unable to sign in because an existing runtime feature flag was accidentally disabled. Turn that flag back on, preserving the current authentication behavior.",
+        "author": { "login": "ZenoWangzy" }
+      },
+      "expected": {
+        "state": "ready-for-agent",
+        "risk_class": "P0",
+        "level": "L0",
+        "advisor_reason": "none"
+      }
+    },
+    {
+      "id": "unresolved-l2-impact",
+      "baseSha": "146e7087bc5353b92261a1c496f286893bc26b2b",
+      "issue": {
+        "number": 900005,
+        "title": "Keep workspace settings in sync across panels",
+        "body": "Invented example: changing a workspace preference should update every settings panel that displays it. The shared TypeScript symbol SettingsController.updatePreferences is affected, but its upstream impact is unconfirmed."
+      },
+      "expected": {
+        "state": "ready-for-agent",
+        "level": "L2",
+        "advisor_reason": "none"
+      }
+    },
+    {
+      "id": "security-routes-with-ready-for-agent",
+      "baseSha": "146e7087bc5353b92261a1c496f286893bc26b2b",
+      "issue": {
+        "number": 900006,
+        "title": "Verify workspace membership before exporting records",
+        "body": "Invented example: the workspace export endpoint accepts a caller-supplied workspace_id and returns records without checking the caller's membership. Add the missing tenant authorization check while preserving valid exports."
+      },
+      "expected": {
+        "state": "ready-for-agent",
+        "advisor_reason": "security"
+      }
     }
   ]
 }

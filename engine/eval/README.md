@@ -202,9 +202,12 @@ median and sum unknown.
   exactly; package order is immaterial. For a required external deliverable,
   require the same target path and a nonempty reason while allowing equivalent
   wording. When no external work is required, compare all three fields exactly.
-  The raw schema's ready-for-human spelling maps to the wrapper's
-  needs-advisor route; it does not mean a human needs to implement the ticket. The graph is explicitly unconfirmed for historical
-  code. Gold annotations use recorded classifications where applicable and the current
+  The wrapper still accepts legacy `ready-for-human` and `needs-owner`
+  outputs from existing config overrides and routes them through the
+  `advisor_reason` and autonomy gates; a defaulted verdict becomes
+  `ready-for-agent` when the gate admits it. The graph is explicitly
+  unconfirmed for historical code. Gold annotations use recorded
+  classifications where applicable and the current
   risk rules (1417 is adjudicated P2 for persisted draft/history writes), plus the
   known delivered scope under the risk/level tables otherwise. Triage size
   measurements are described in [Triage size estimation](#triage-size-estimation).

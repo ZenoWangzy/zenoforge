@@ -78,13 +78,6 @@ assert_not_contains() {
   fi
 }
 
-TRIAGE_PROMPT_CONTENT="$(cat "$SCRIPT_DIR/prompts/triage.md")"
-assert_contains "unknown impact cannot count as L2 evidence" "$TRIAGE_PROMPT_CONTENT" '`UNKNOWN`, `target not found`, an error'
-assert_contains "unknown impact cannot admit or reject L2" "$TRIAGE_PROMPT_CONTENT" $'Do not admit or\n       reject based on it'
-assert_contains "unresolved L2 takes the default with the impact marked unconfirmed" "$TRIAGE_PROMPT_CONTENT" 'the impact marked unconfirmed'
-assert_contains "only the three advisor_reason values route to the advisor" "$TRIAGE_PROMPT_CONTENT" '`irreversible`, `production-data` or `security`'
-assert_contains "the prompt names the advisor_reason gate for ready-for-human" "$TRIAGE_PROMPT_CONTENT" 'never a human park'
-
 TRIAGE_SCHEMA_MISSING_REQUIRED="$(jq -c '(.required // []) as $required | [(.properties // {} | keys[]) as $key | select(($required | index($key)) == null) | $key]' "$SCRIPT_DIR/prompts/triage.schema.json")"
 assert_eq "triage schema requires every key for Codex structured output" '[]' "$TRIAGE_SCHEMA_MISSING_REQUIRED"
 jq -e '(.required | index("related")) != null and (.required | index("suspected_shared_cause")) != null and .properties.suspected_shared_cause.type == ["string", "null"]' \
