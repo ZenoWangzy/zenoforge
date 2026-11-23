@@ -13,7 +13,7 @@ cp "$SCRIPT_DIR/prompts/triage.md" "$ZF_CONFIG_ROOT/prompts/triage.md"
 printf '\nCONFIG_TRIAGE_BATCH_PROMPT_OVERRIDE\n' >> "$ZF_CONFIG_ROOT/prompts/triage.md"
 cp "$SCRIPT_DIR/prompts/triage.schema.json" "$ZF_CONFIG_ROOT/prompts/triage.schema.json"
 cp "$SCRIPT_DIR/prompts/agent-settings.json" "$ZF_CONFIG_ROOT/prompts/agent-settings.json"
-export ZF_CONFIG_ROOT
+export ZF_CONFIG_ROOT; unset MAC_AUTOPILOT_RUNTIME_DIR
 export AGENT_HOME="$TEST_ROOT/agent"
 export ZF_REPO_DIR="$TEST_ROOT/repo"
 export REPO="test/repo"

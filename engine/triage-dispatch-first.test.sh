@@ -6,7 +6,9 @@ TMP="$(mktemp -d)"; trap 'rm -rf -- "$TMP" "$test_env_root"' EXIT
 CALLS="${TRIAGE_EVENT_CALLS:-$TMP/calls}"
 [ "${1:-}" = --event-runner-only ] || : > "$CALLS"
 export CALLS
+unset MAC_AUTOPILOT_RUNTIME_DIR
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.d/triage-filter.sh"
 FAILED=0
 if [ "${1:-}" != --event-runner-only ]; then
   TRIAGE_QUEUE='[{"number":11,"createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"needs-triage"}]},{"number":12,"createdAt":"2026-01-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"founder-test"}]}]'
@@ -75,6 +77,20 @@ assert_eq "empty batch line counts each skip reason" 1 "$ok"
 : > "$CALLS"; TRIAGE_QUEUE='[]'
 run_intake_dispatch 2> "$TMP/err" || true
 assert_eq "empty needs-triage snapshot dispatches nothing" 0 "$(grep -c '^dispatch' "$CALLS" || true)"
+
+mkdir -p "$AGENT_HOME/state" "$TMP/triage-runtime"
+jq -n --argjson until "$(( $(date +%s) + 3600 ))" '{model_failure_backoff:{until_epoch:$until}}' > "$AGENT_HOME/state/1004.json"
+jq -n --argjson until "$(( $(date +%s) + 3600 ))" '{triage_retry_after_epoch:$until}' > "$AGENT_HOME/state/1005.json"
+jq -n '{units:[{id:"issue-805",issue:805,stage:"implement-pending"}]}' > "$TMP/triage-runtime/units.json"
+echo '{"workers":[]}' > "$TMP/triage-runtime/workers.json"
+jq '.switches["roadmap-order"] = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
+export MODEL_POLICY_FILE="$AGENT_HOME/model-policy.json" MAC_AUTOPILOT_RUNTIME_DIR="$TMP/triage-runtime"
+TRIAGE_QUEUE="$(cat "$SCRIPT_DIR/mac-autopilot/triage-fixture.json")"
+export TRIAGE_QUEUE
+: > "$CALLS"
+run_intake_dispatch 2> "$TMP/err" || true
+assert_eq "dispatcher uses the shared triage eligibility set" 'dispatch 1000 1006' "$(grep '^dispatch' "$CALLS")"
+
 : > "$CALLS"; TRIAGE_QUEUE='[{"number":11,"createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"needs-triage"}]},{"number":12,"createdAt":"2026-01-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"founder-test"}]}]'
 : > "$CALLS"; stage_dispatch_allowed() { return 1; }
 run_intake_dispatch 2> "$TMP/err" || true

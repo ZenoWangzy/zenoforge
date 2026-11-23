@@ -38,6 +38,7 @@ IMPLEMENT_RECENT_SKIP_SECONDS=600
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.d/triage-filter.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 source "$SCRIPT_DIR/hand-completion-refill.sh"
 source "$SCRIPT_DIR/lib.d/release-walk.sh"
@@ -2356,6 +2357,7 @@ TRIAGE_SELECT_CUT=0
 TRIAGE_SELECT_RESERVE="${ZF_TRIAGE_SELECT_RESERVE_SECONDS:-20}"
 [[ "$TRIAGE_SELECT_RESERVE" =~ ^[0-9]+$ ]] || TRIAGE_SELECT_RESERVE=20
 NEEDS_TRIAGE_JSON='[]'
+NEEDS_TRIAGE_FILTERED_JSON='[]'
 READY_MEASURE_JSON='[]'
 # Dispatch comes first (2026-11-05: admit and founder-test labelling spent the
 # slice and the 120s kill landed before any batch). The snapshot below reads
@@ -2365,31 +2367,20 @@ if ! NEEDS_TRIAGE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label need
     --json number,createdAt,labels,author,title,body)"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
   echo "issue-pipeline: needs-triage candidate snapshot failed; skipping triage dispatch this tick" >&2
+elif ! NEEDS_TRIAGE_FILTERED_JSON="$(triage_filter_issues_json "$NEEDS_TRIAGE_JSON")"; then
+  TRIAGE_CANDIDATE_QUERY_FAILED=1
+  echo "issue-pipeline: needs-triage eligibility filter failed; skipping triage dispatch this tick" >&2
 # `focus` leads legacy queues only; roadmap mode follows tree order with the standing overrides.
 elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
   echo "issue-pipeline: roadmap tree unavailable; skipping triage dispatch this tick" >&2
 elif [ "$ROADMAP_ORDER_ENABLED" = true ]; then
-  ROADMAP_TRIAGE_CANDIDATES="$(jq -c --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" \
-    '[.[] | select((any(.labels[]?; .name as $name | (($lane_labels + ["session-owned"]) | index($name)) != null)) | not)]' <<< "$NEEDS_TRIAGE_JSON")"
+  ROADMAP_TRIAGE_CANDIDATES="$NEEDS_TRIAGE_FILTERED_JSON"
   NEEDS_TRIAGE_IDS="$(roadmap_order_candidates "$ROADMAP_TREE_JSON" "$ROADMAP_TRIAGE_CANDIDATES" '[]' false)" || { # classifying starts nothing: intake holds a declared blocker
     TRIAGE_CANDIDATE_QUERY_FAILED=1
     echo "issue-pipeline: could not order needs-triage candidates by roadmap; skipping dispatch" >&2
   }
-elif ! NEEDS_TRIAGE_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" '
-    sort_by([
-      (if any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null) then 1 else 0 end),
-      (if any(.labels[]?; .name == "focus") then 0 else 1 end),
-      (if any(.labels[]?; .name == "bug") and any(.labels[]?; .name == "priority:top") then 0 else 1 end),
-      (if any(.labels[]?; .name == "founder-test") then 0 else 1 end),
-      (if any(.labels[]?; .name == "priority:top") then 0 else 1 end),
-      (if any(.labels[]?; .name == "critical-path") then 0 else 1 end),
-      (if any(.labels[]?; .name == "legacy") then 1 else 0 end),
-      .createdAt
-    ])
-    | map(select((any(.labels[]?; .name as $label_name | (($lane_labels + ["session-owned"]) | index($label_name)) != null)) | not))
-    | .[].number
-  ' <<< "$NEEDS_TRIAGE_JSON")"; then
+elif ! NEEDS_TRIAGE_IDS="$(triage_order_legacy_candidates "$NEEDS_TRIAGE_FILTERED_JSON")"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
   echo "issue-pipeline: could not order needs-triage candidates; skipping triage dispatch this tick" >&2
 fi

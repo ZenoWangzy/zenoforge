@@ -848,8 +848,7 @@ def front_cache_get(now, max_age):
     return (cached, age) if 0 <= age < max_age else (None, None)
 
 def front_cache_has_triage_split(cached):
-    return any(isinstance(stage, dict) and stage.get("label") == "needs-triage"
-               and isinstance(stage.get("excluded"), list) for stage in cached.get("stages") or [])
+    return triage_split.cache_has_filter(cached)
 
 def front_github_stages(now):
     cached, age = front_cache_get(now, FRONT_CACHE_SECONDS)
@@ -898,8 +897,8 @@ def front_stage_rows(now, front):
         oldest, count = s.get("oldest"), s.get("count")
         idle = 0 if count == 0 else front_hours_since(epoch_of(oldest.get("updated_at") or "") if oldest else None, now)
         rows.append({"label": label, "name": name, "count": count, "oldest": oldest, "idle_hours": idle, "items": s.get("items") or [], "excluded": s.get("excluded")})
-        front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning, "GitHub GraphQL：该标签的开放 issue 数")
-        front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时", "该阶段里最久没动的那张票，距上次更新多久（label 变化或评论都会刷新，是时间下限）。" + meaning, "GitHub GraphQL：该标签下 updatedAt 最早的 issue")
+        front_std(f"stage.{label}.count", f"{name}（{label}）数量", c_ok, c_bad, False, "个", meaning, triage_split.count_source(label))
+        front_std(f"stage.{label}.idle_hours", f"{name}最久滞留", i_ok, i_bad, False, "小时", "该阶段里最久没动的那张票，距上次更新多久（label 变化或评论都会刷新，是时间下限）。" + meaning, triage_split.idle_source(label))
         front_values[f"stage.{label}.count"] = count; front_values[f"stage.{label}.idle_hours"] = idle
     dashboard_ready_queue.add_front_data(front, now, by_label.get("ready-for-agent", {}).get("count"), FRONT_STAGES, FRONT_CACHE_PATH, ROOT, front_run, front_error, FRONT_CACHE_SECONDS, FRONT_STALE_SECONDS, units, read_json, AGENT_HOME, front_std, front_values)
     return rows, counts, meta
