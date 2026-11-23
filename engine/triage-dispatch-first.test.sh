@@ -2,10 +2,16 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TMP="$(mktemp -d)"; trap 'rm -rf -- "$TMP"' EXIT
-CALLS="$TMP/calls"; : > "$CALLS"
+TMP="$(mktemp -d)"; trap 'rm -rf -- "$TMP" "$test_env_root"' EXIT
+CALLS="${TRIAGE_EVENT_CALLS:-$TMP/calls}"
+[ "${1:-}" = --event-runner-only ] || : > "$CALLS"
+export CALLS
+source "$SCRIPT_DIR/lib.sh"
 FAILED=0
-TRIAGE_QUEUE='[{"number":11,"createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"needs-triage"}]},{"number":12,"createdAt":"2026-01-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"founder-test"}]}]'
+if [ "${1:-}" != --event-runner-only ]; then
+  TRIAGE_QUEUE='[{"number":11,"createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"needs-triage"}]},{"number":12,"createdAt":"2026-01-02T00:00:00Z","labels":[{"name":"needs-triage"},{"name":"founder-test"}]}]'
+fi
+export TRIAGE_QUEUE
 assert_eq() { if [ "$2" = "$3" ]; then echo "ok - $1"; else echo "not ok - $1 (expected [$2], got [$3])"; FAILED=1; fi; }
 
 # The real run_intake_dispatch, with every collaborator stubbed.
@@ -31,6 +37,11 @@ gh() {
 # A slow, failing admit loop and label step: they must run after dispatch and cannot block it.
 intake_admit_unlabeled_issues() { echo admit >> "$CALLS"; sleep 1; return 1; }
 label_maintainer_test_candidates() { echo label >> "$CALLS"; sleep 1; return 1; }
+
+if [ "${1:-}" = --event-runner-only ]; then
+  run_intake_dispatch 2> "$TMP/err" || true
+  exit 0
+fi
 
 run_intake_dispatch 2> "$TMP/err" || true
 assert_eq "dispatch runs before admit and founder-test labelling" "dispatch 12 11|admit|label" \
@@ -70,5 +81,34 @@ run_intake_dispatch 2> "$TMP/err" || true
 stage_dispatch_allowed() { return 0; }
 grep -q 'triage batch empty: .*skips=quarantine:1' "$TMP/err" && ok=1 || ok=0
 assert_eq "empty batch line names a quarantine stop" 1 "$ok"
+
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/systemd-run" <<'SH'
+#!/usr/bin/env bash
+[[ "$*" == *"--stage triage-event"* ]] || exit 2
+bash "$TRIAGE_EVENT_FIXTURE" --event-runner-only
+SH
+chmod +x "$TMP/bin/systemd-run"
+PATH="$TMP/bin:$PATH"
+TRIAGE_EVENT_FIXTURE="$SCRIPT_DIR/triage-dispatch-first.test.sh"
+TRIAGE_EVENT_CALLS="$CALLS"
+export PATH TRIAGE_EVENT_FIXTURE TRIAGE_EVENT_CALLS
+unset ZF_AGENT_TEST_MODE
+TRIAGE_EVENT_OWNER=fixture-triage-event
+TRIAGE_EVENT_ISSUE=13
+coord_acquire "$(coord_issue_key "$TRIAGE_EVENT_ISSUE")" "$TRIAGE_EVENT_OWNER" systemd-worker \
+  "$TRIAGE_EVENT_ISSUE" zf-triage-batch triage-batch || exit 1
+: > "$CALLS"
+SERVICE_RESULT=success EXIT_CODE=exited EXIT_STATUS=0 \
+  "$SCRIPT_DIR/record-unit-result.sh" triage-batch "$TRIAGE_EVENT_OWNER" "$TRIAGE_EVENT_ISSUE"
+assert_eq "a completed batch event dispatches remaining triage candidates" 'dispatch 12 11' \
+  "$(grep '^dispatch' "$CALLS" | head -n 1)"
+
+TRIAGE_QUEUE='[]'
+export TRIAGE_QUEUE
+: > "$CALLS"
+bash "$TRIAGE_EVENT_FIXTURE" --event-runner-only
+assert_eq "an event pass dispatches nothing when no candidates remain" 0 \
+  "$(grep -c '^dispatch' "$CALLS" || true)"
 
 [ "$FAILED" -eq 0 ] && echo "ALL PASSED" || { echo FAILURES; exit 1; }

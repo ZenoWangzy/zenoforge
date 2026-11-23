@@ -44,8 +44,8 @@ tick_pid=$!
 for _ in {1..100}; do [ -e "$TMP/tick-ready" ] && break; sleep 0.01; done
 event_busy_status=0
 AGENT_HOME="$AGENT_HOME" LOCK_FILE="$LOCK_FILE" PIPELINE_STAGE=triage EVENT_TRIAGE=1 \
-  bash -c 'source "$1"; pipeline_acquire_lock' _ "$SCRIPT_DIR/issue-pipeline-slices.sh" >/dev/null 2>&1 \
-  || event_busy_status=$?
+  bash -c 'source "$1"; pipeline_acquire_lock' _ "$SCRIPT_DIR/issue-pipeline-slices.sh" \
+  >/dev/null 2>&1 || event_busy_status=$?
 assert_eq "event pass exits when the tick owns the triage lock" 75 "$event_busy_status"
 wait "$tick_pid"
 
@@ -86,5 +86,8 @@ claim_after="$(jq -r '.owner // empty' "$AGENT_HOME/coord/claims/issue-$ISSUE.js
 assert_eq "batch stop hook releases its issue claim" '' "$claim_after"
 assert_eq "batch stop hook starts one delayed triage event" 1 "$(grep -cF -- '--on-active=1s' "$SYSTEMD_RUN_LOG" || true)"
 assert_eq "batch stop hook launches the triage event stage" 1 "$(grep -cF -- '--stage triage-event' "$SYSTEMD_RUN_LOG" || true)"
+assert_eq "batch stop hook retries only a lock-busy event" 1 "$(grep -cF -- '-p RestartForceExitStatus=75' "$SYSTEMD_RUN_LOG" || true)"
+assert_eq "batch stop hook retries the event after one second" 1 "$(grep -cF -- '-p RestartSec=1s' "$SYSTEMD_RUN_LOG" || true)"
+assert_eq "batch stop hook allows retries until the triage lock is free" 1 "$(grep -cF -- '-p StartLimitIntervalSec=0' "$SYSTEMD_RUN_LOG" || true)"
 
 [ "$FAILED" -eq 0 ] && echo "ALL PASSED" || { echo FAILURES; exit 1; }
