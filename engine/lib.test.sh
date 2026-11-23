@@ -3707,10 +3707,11 @@ cat > "$TRACKER_RECUT_BIN/gh" <<'EOF'
 echo "gh $*" >> "$TRACKER_RECUT_GH_LOG"
 if [ "$1" = api ]; then
   case "${TRACKER_RECUT_SUB:-empty}" in
-    empty) echo '[]' ;;
-    open) echo '[{"number":8802,"state":"open","closed_at":null,"labels":[]}]' ;;
+    empty) body='[]' ;;
+    open) body='[{"number":8802,"state":"open","closed_at":null,"labels":[]}]' ;;
     *) exit 1 ;;
   esac
+  if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
 elif [ "$1" = issue ] && [ "$2" = view ]; then printf '%s\n' '{"number":1,"labels":[],"body":"","comments":[]}'; fi
 exit 0
 EOF
@@ -3904,13 +3905,15 @@ EF_BIN="$(mktemp -d)"
 cat > "$EF_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 # `.name // .login` contains ".login" too -- match the name query first.
+body=''
 case "$*" in
-  *"issue list"*) echo "601" ;;
-  *".name"*) echo "Test Name" ;;
-  *".login"*) echo "test-login" ;;
-  *".id"*) echo "424242" ;;
-  *) echo "" ;;
+  *"issue list"*) body="601" ;;
+  *".name"*) body="Test Name" ;;
+  *".login"*) body="test-login" ;;
+  *".id"*) body="424242" ;;
+  *) body="" ;;
 esac
+if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
 EOF
 chmod +x "$EF_BIN/gh"
 # This fixture exercises a still-broken Docker environment.  A runner with
@@ -6704,6 +6707,12 @@ git -C "$PIPELINE_CLOSE_FIXTURE/repo" update-ref refs/remotes/origin/main "$PIPE
 cat > "$PIPELINE_CLOSE_FIXTURE/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PIPELINE_GH_LOG"
+api_include=0
+for arg in "$@"; do [[ "$arg" != --include ]] || api_include=1; done
+api_response() {
+  if [ "$api_include" = 1 ]; then printf 'HTTP/1.1 200 OK\n\n'; fi
+  printf '%s\n' "$1"
+}
 if [ "$1" = issue ] && [ "$2" = comment ]; then
   args=("$@")
   for ((i = 0; i < ${#args[@]}; i++)); do
@@ -6727,22 +6736,23 @@ fi
 if [ "$1" = api ] && [[ "${2:-}" == repos/test/repo/pulls/* ]]; then
   pr_number="${2##*/}"
   case "$pr_number" in
-    991005) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_LINKED_SHA" ;;
-    991006) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
-    991007) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
-    991010) printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}\n' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA" ;;
+    991005) body="$(printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}' "$pr_number" "$PIPELINE_CLOSE_LINKED_SHA")" ;;
+    991006) body="$(printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merge_commit_sha":"%s"}' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA")" ;;
+    991007) body="$(printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA")" ;;
+    991010) body="$(printf '{"number":%s,"merged":true,"base":{"ref":"main"},"merged_at":"2026-10-12T18:01:06Z","merge_commit_sha":"%s"}' "$pr_number" "$PIPELINE_CLOSE_UNLINKED_SHA")" ;;
   esac
+  api_response "$body"
 fi
 if [ "$1" = api ] && [[ "${2:-}" == repos/test/repo/issues/*/sub_issues?per_page=100 ]]; then
   issue_number="${2#repos/test/repo/issues/}"
   issue_number="${issue_number%%/*}"
   if [ "$issue_number" = 991007 ]; then
-    printf '%s\n' '[{"number":991009,"state":"open","closed_at":null,"labels":[]}]'
+    api_response '[{"number":991009,"state":"open","closed_at":null,"labels":[]}]'
   else
-    printf '%s\n' '[]'
+    api_response '[]'
   fi
 fi
-if [ "$1" = api ] && [[ " $* " == *"/comments?"* ]]; then printf '[[]]\n'; fi
+if [ "$1" = api ] && [[ " $* " == *"/comments?"* ]]; then api_response '[[]]'; fi
 EOF
 chmod +x "$PIPELINE_CLOSE_FIXTURE/bin/gh"
 PIPELINE_GH_LOG="$PIPELINE_CLOSE_FIXTURE/gh.log"

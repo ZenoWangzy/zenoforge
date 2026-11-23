@@ -7,8 +7,9 @@ export ZF_REPO=test/repo ZF_REPO_DIR="$MODEL_POLICY_TEST_REPO" AGENT_DRY_RUN=0
 source "$SCRIPT_DIR/lib.sh"
 cat > "$test_env_bin/gh" <<'EOT'
 #!/usr/bin/env bash
-[ "$1:$2" = api:repos/test/repo/issues/comments/7 ] && echo '{"issue_url":"https://api.github.com/repos/test/repo/issues/5","author_association":"NONE","html_url":"u"}' && exit 0
-exit 64
+[[ "$1:${2:-}" == api:repos/test/repo/issues/comments/7 ]] || exit 64
+body='{"issue_url":"https://api.github.com/repos/test/repo/issues/5","author_association":"NONE","html_url":"u"}'
+if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
 EOT
 chmod +x "$test_env_bin/gh"
 mkdir -p "$AGENT_HOME/state"
@@ -52,7 +53,8 @@ EOT
   cat > "$fixture_bin/gh" <<'EOT'
 #!/usr/bin/env bash
 [[ "$1:${2:-}" == api:repos/test/repo/issues/comments/9 ]] || exit 64
-printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/7","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/7#issuecomment-9","body":"requeue"}'
+body='{"issue_url":"https://api.github.com/repos/test/repo/issues/7","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/7#issuecomment-9","body":"requeue"}'
+if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
 EOT
   chmod +x "$fixture_engine/mac-autopilot/scheduler.sh" "$fixture_bin/gh"
   PATH="$fixture_bin:$PATH"
@@ -86,7 +88,8 @@ case "${2:-}" in
   repos/test/repo/issues/comments/10) a=NONE ;;
   *) exit 64 ;;
 esac
-printf '%s\n' "{\"issue_url\":\"https://api.github.com/repos/test/repo/issues/7\",\"author_association\":\"$a\",\"html_url\":\"https://github.com/test/repo/issues/7#issuecomment-9\",\"body\":\"requeue\"}"
+body="{\"issue_url\":\"https://api.github.com/repos/test/repo/issues/7\",\"author_association\":\"$a\",\"html_url\":\"https://github.com/test/repo/issues/7#issuecomment-9\",\"body\":\"requeue\"}"
+if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
 EOT
   unset HOLD_RULE_FAKE_FAIL
   release_calls="$test_env_root/hold-rule-release.calls"
@@ -334,7 +337,8 @@ EOT
   cat > "$fb/gh" <<'EOT'
 #!/usr/bin/env bash
 [[ "$1:${2:-}" == api:repos/test/repo/issues/comments/9 ]] || exit 64
-printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/8","author_association":"OWNER","user":{"login":"head-owner"},"html_url":"https://github.com/test/repo/issues/8#issuecomment-9","body":"whole ticket"}'
+body='{"issue_url":"https://api.github.com/repos/test/repo/issues/8","author_association":"OWNER","user":{"login":"head-owner"},"html_url":"https://github.com/test/repo/issues/8#issuecomment-9","body":"whole ticket"}'
+if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
 EOT
   chmod +x "$fe/mac-autopilot/scheduler.sh" "$fb/gh"; PATH="$fb:$PATH"; _AGENT_LIB_DIR="$fe"
   printf '%s\n' '{"state":"ready-for-agent"}' > "$AGENT_HOME/state/8.json"
@@ -445,8 +449,9 @@ case " $* " in
     ;;
 esac
 case "$*" in
-  'api repos/test/repo/issues/comments/9')
-    printf '%s\n' '{"issue_url":"https://api.github.com/repos/test/repo/issues/7","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/7#issuecomment-9","body":"supersede the old snapshot"}'
+  *'api repos/test/repo/issues/comments/9'*)
+    body='{"issue_url":"https://api.github.com/repos/test/repo/issues/7","author_association":"OWNER","html_url":"https://github.com/test/repo/issues/7#issuecomment-9","body":"supersede the old snapshot"}'
+    if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
     ;;
   'pr view 12 --json headRefOid --jq .headRefOid') printf '%s\n' "$SUPERSEDE_HEAD" ;;
   *) exit 64 ;;

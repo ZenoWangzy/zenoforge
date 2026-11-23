@@ -35,7 +35,6 @@ engine/mac-autopilot/scheduler.d/jqf-argv-growth.test.sh
 engine/mac-autopilot/scheduler.d/locks-views-trap.test.sh
 engine/mac-autopilot/station-standards.test.sh
 engine/main-ci-red-scope.test.sh
-engine/main-release-ready-cache.test.sh
 engine/night/authorization-readonly.test.sh
 engine/night/demo-ledger-daily.test.sh
 engine/night/efficiency-metrics-events.test.sh
