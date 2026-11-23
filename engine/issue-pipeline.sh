@@ -1047,7 +1047,7 @@ dispatch_policy_unit() {
       record_env_fault env:codex-provider-recovery-probe "$unit" "$n" "Codex provider recovery probe did not pass; model-policy dispatch held" "" "" 0
       return 77
     fi
-    if codex_quota_exhausted "$identity"; then
+    if codex_quota_exhausted "$identity" && { ! provider_quota_exhausted codex || quota_marker_blocks codex implement >/dev/null; }; then
       policy_route_held "$unit" "$role/$identity" codex-exhausted
       return 77
     fi
