@@ -3,7 +3,6 @@ const os = require('os');
 const path = require('path');
 const expand = p => p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
 const file = expand(process.env.ZF_SUPERVISOR_CONFIG || '~/.zenoforge/supervisor/config.json');
-// fallback: the VectA checkout copy, used when the main link is broken (e.g. after a root rebuild)
 const fallbacks = [expand('~/.vecta-agent/checkout/.zenoforge/supervisor/config.json')];
 let config;
 const tried = [];
