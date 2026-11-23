@@ -67,14 +67,39 @@ clone_dirty_recovery() { # id dir want → 0 走原有 stash / 2 已恢复（跳
   return 2
 }
 
+configure_worker_push_size_admission() {
+  local dir="$1" unit_json="$2" pack_rel="${ZF_PACK_REL:-engine}" base_branch limit exempt=false installer hooks_dir
+  [[ -f "$dir/$pack_rel/mac-autopilot/scheduler.d/size-admission.sh" ]] || return 0
+  declare -F size_admission_limit_for >/dev/null || source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/size-admission.sh"
+  local CFG="${CFG:-}" SIZE_ADMISSION_LINES="${SIZE_ADMISSION_LINES:-800}"
+  [[ -n "$CFG" ]] || CFG='{}'
+  limit="$(size_admission_limit_for "$unit_json")" || return 1
+  base_branch="$(jqf -r 'if .stacked_on_released == true then "main" else (.stacked_on_branch // "main") end' <<<"$unit_json")" || return 1
+  git -C "$dir" check-ref-format --branch "$base_branch" >/dev/null 2>&1 || return 1
+  size_admission_exempt_unit "$unit_json" && exempt=true
+  git -C "$dir" config --local zenoforge.size-admission.limit "$limit" \
+    && git -C "$dir" config --local zenoforge.size-admission.base-branch "$base_branch" \
+    && git -C "$dir" config --local zenoforge.size-admission.exempt "$exempt" || return 1
+  [[ -z "${ZF_REPO:-}" ]] || git -C "$dir" config --local zenoforge.repo "$ZF_REPO" || return 1
+  installer="$ROOT/$pack_rel/install-pre-push-guard.sh"
+  [[ -f "$installer" ]] || return 1
+  bash "$installer" "$dir" --worker || return 1
+  hooks_dir="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [[ "$hooks_dir" == /* ]] || hooks_dir="$dir/$hooks_dir"
+  hooks_dir="$(cd -- "$hooks_dir" 2>/dev/null && pwd -P)" || return 1
+  [[ "$(git -C "$dir" config --local --get core.hooksPath 2>/dev/null)" == "$hooks_dir/hooks" \
+    && -x "$hooks_dir/hooks/pre-push" ]]
+}
+
 ensure_clone_impl() { # id [branch] [require_remote] [branch-head-sha] [base-branch] [base-sha] [local-only]
-  local id="$1" branch="${2:-}" require_remote="${3:-0}" want="${4:-}" base_branch="${5:-}" base_sha="${6:-}" local_only="${7:-false}" dir="$WT_ROOT/wt-$1" origin_url fresh=0 base_ref branch_ref_ok=0 branch_head recovery=0
+  local id="$1" branch="${2:-}" require_remote="${3:-0}" want="${4:-}" base_branch="${5:-}" base_sha="${6:-}" local_only="${7:-false}" dir="$WT_ROOT/wt-$1" origin_url fresh=0 base_ref branch_ref_ok=0 branch_head recovery=0 unit_json
   origin_url="$(git -C "$ROOT" remote get-url origin 2>/dev/null)" || return 1
+  unit_json="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS" 2>/dev/null)" || return 1
   if [[ ! -d "$dir/.git" ]]; then
     # 产品车道的新 clone 只留固定技能清单：技能列表占每次调用静态前缀的 16%，13-16 个技能之外从不被碰。
     # 只在创建时决定、之后绝不改动活 clone，续会话因此不会丢历史里点名的技能。
     local sparse=()
-    [[ "$(unit_lane_class "$(jqf -c --arg id "$id" '.units[] | select(.id==$id)' "$UNITS" 2>/dev/null)")" == product ]] \
+    [[ "$(unit_lane_class "$unit_json")" == product ]] \
       && grep -q '^\.agents/skills/' "$PRODUCT_LANE_SKILLS" 2>/dev/null && sparse=(--sparse)
     mkdir -p "$WT_ROOT" && git clone -q ${sparse[@]+"${sparse[@]}"} "$ROOT" "$dir" && git -C "$dir" remote set-url origin "$origin_url" \
       && { [[ -z "${sparse[*]:-}" ]] || product_lane_sparse "$dir"; } \
@@ -157,6 +182,7 @@ ensure_clone_impl() { # id [branch] [require_remote] [branch-head-sha] [base-bra
       git -C "$dir" checkout -q -B "$branch" refs/remotes/origin/main || return 1
     fi
   fi
+  configure_worker_push_size_admission "$dir" "$unit_json" || return 1
   printf '%s' "$dir"
 }
 

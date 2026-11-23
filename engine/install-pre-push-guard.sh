@@ -12,6 +12,7 @@ common_dir="$(cd -- "$common_dir" 2>/dev/null && pwd -P)" || exit 0
 hook="$common_dir/hooks/pre-push"
 log_file="${ZF_PUSH_GUARD_LOG:-${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}/night/night.log}"
 script="$(realpath -m -- "${BASH_SOURCE[0]}")"
+worker_install="${2:-}"
 tmp="$(mktemp -d 2>/dev/null || true)"
 [[ -n "$tmp" ]] || exit 0
 trap 'rm -rf -- "$tmp"' EXIT
@@ -36,7 +37,7 @@ disable_drifted_hook() {
 pack_rel="${ZF_PACK_REL:-engine}"
 # A published engine copy is transformed and cannot match the target repository blob byte for byte.
 # The target copy still has to match origin/main before it may install that repository's hook.
-if [[ -n "${ZF_ENGINE_DIR:-}" && "$script" != "$repo/$pack_rel/install-pre-push-guard.sh" \
+if [[ "$worker_install" != --worker && -n "${ZF_ENGINE_DIR:-}" && "$script" != "$repo/$pack_rel/install-pre-push-guard.sh" \
     && "$script" == "$(realpath -m -- "$ZF_ENGINE_DIR/install-pre-push-guard.sh")" ]]; then
   script="$repo/$pack_rel/install-pre-push-guard.sh"
 fi
@@ -48,7 +49,7 @@ if ! git -C "$repo" show "origin/main:$pack_rel/install-pre-push-guard.sh" > "$m
   exit 0
 fi
 if ! git -C "$repo" show "origin/main:$pack_rel/pre-push-guard.sh" > "$main_guard" 2>/dev/null \
-  || ! cmp -s -- "$repo/$pack_rel/pre-push-guard.sh" "$main_guard"; then
+  || { [[ "$worker_install" != --worker ]] && ! cmp -s -- "$repo/$pack_rel/pre-push-guard.sh" "$main_guard"; }; then
   disable_drifted_hook guard-not-on-origin-main
   exit 0
 fi
@@ -69,4 +70,7 @@ if [[ ! -e "$hook" && ! -L "$hook" ]]; then
     rm -f -- "$install_tmp"
     log_drift hook-install-failed
   fi
+fi
+if [[ "$worker_install" == --worker ]]; then
+  git -C "$repo" config --local core.hooksPath "$common_dir/hooks" || exit 1
 fi

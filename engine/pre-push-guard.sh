@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-repo="${ZF_REPO:?ZF_REPO is not set}"
+repo="${ZF_REPO:-$(git config --get zenoforge.repo 2>/dev/null || true)}"
 agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}"
 log_file="${ZF_PUSH_GUARD_LOG:-$agent_home/night/night.log}"
 receipts_file=""
@@ -139,7 +139,34 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
   [[ "$branch" == agent/issue-* || "$branch" == hand/* || "$branch" == hand-* ]] || continue
-  [[ "$local_sha" =~ ^0+$ || "$remote_sha" =~ ^0+$ ]] && continue
+  [[ "$local_sha" =~ ^0+$ ]] && continue
+
+  size_limit="$(git config --get zenoforge.size-admission.limit 2>/dev/null || true)"
+  size_exempt="$(git config --get zenoforge.size-admission.exempt 2>/dev/null || true)"
+  if [[ -n "$size_limit" && "$size_exempt" != true ]]; then
+    size_base="$(git config --get zenoforge.size-admission.base-branch 2>/dev/null || true)"
+    size_pack_rel="${ZF_PACK_REL:-engine}"
+    size_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    size_helper="$(mktemp 2>/dev/null || true)"
+    if [[ ! "$size_limit" =~ ^[1-9][0-9]*$ || -z "$size_base" || -z "$size_root" || -z "$size_helper" ]] \
+      || ! git show "origin/main:$size_pack_rel/mac-autopilot/scheduler.d/size-admission.sh" > "$size_helper" 2>/dev/null; then
+      [[ -z "$size_helper" ]] || rm -f -- "$size_helper"
+      printf 'Push refused: size admission could not load its trusted counter. SPLIT: keep the branch within its admitted size.\n' >&2
+      refuse size-admission-unavailable "$branch" "$local_sha" "$remote_sha" ""
+    fi
+    size_count="$(source "$size_helper"; changed_lines_in_checkout "$size_root" "$size_base")"
+    rm -f -- "$size_helper"
+    if [[ ! "$size_count" =~ ^[0-9]+$ ]]; then
+      printf 'Push refused: size admission could not count changed lines. SPLIT: keep the branch within its admitted size.\n' >&2
+      refuse size-admission-unavailable "$branch" "$local_sha" "$remote_sha" ""
+    fi
+    if (( size_count > size_limit )); then
+      printf 'Push refused: %s changed lines exceed the %s line limit. SPLIT: keep the first complete slice and leave the remainder for a follow-up unit.\n' \
+        "$size_count" "$size_limit" >&2
+      refuse size-admission-exceeded "$branch" "$local_sha" "$remote_sha" "" "$size_count/$size_limit"
+    fi
+  fi
+  [[ "$remote_sha" =~ ^0+$ ]] && continue
 
   override_reason="${ZF_PUSH_GUARD_OVERRIDE_REASON:-}"
   if [[ -n "$override_reason" && "$override_reason" != conflict-sweeper-conflicting-pr \
