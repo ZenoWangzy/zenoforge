@@ -8,13 +8,13 @@ Factory terms are defined in `GLOSSARY.md`.
 
 ## Method: Matt skills
 
-Work here follows Matt Pocock's skills, vendored in `.agents/skills/` and entered through `/ask-matt`. Start there when unsure which one fits.
+Work here follows Matt Pocock's skills, vendored in `.agents/skills/`, with pstack (`engine/vendor/pstack`) and ub-mode (`engine/vendor/ub-mode`). `/ask-zeno` routes over all of them: start there. `/ask-matt` is the detail map of the Matt family.
 
 - A new idea or an unclear request: `/grill-with-docs`, then `/to-spec`, `/to-tickets`, and `/implement` per ticket, which drives `/tdd` one red-green slice at a time.
 - A bug, flake or regression: `/diagnosing-bugs`. A command that goes red on the bug comes before the fix.
 - A change ready for review: `/code-review` against a fixed point (Standards and Spec).
 - A pull request body: `/pr`.
-- A problem you cannot name, one that came back, or a design with no precedent here: `engine/skills/solve/SKILL.md`. It finds the known problem and the existing solution, then routes to Matt skills, pstack and ub-mode.
+- A problem you cannot name, one that came back, or a design with no precedent here: `/solve`, which finds the known problem and the existing solution first.
 - A raw issue nobody has shaped: `/triage`. Tickets from `/to-tickets` are already agent-ready.
 
 The engine's own stages use the same skills (`docs/architecture.md`, "Method: Matt skills"). The skill files are MIT and byte-identical to upstream: change the pin with `tools/sync-matt-skills.sh <commit>`, never by hand (`THIRD_PARTY_NOTICES.md`).
