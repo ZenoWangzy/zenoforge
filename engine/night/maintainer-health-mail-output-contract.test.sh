@@ -161,13 +161,19 @@ import sys
 class Tables(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.tables, self.table, self.row, self.cell = [], None, None, None
+        self.tables, self.table, self.row, self.cell, self.fixed_width_cells = [], None, None, None, 0
     def handle_starttag(self, tag, attrs):
+        if tag == "td":
+            cell_attrs = dict(attrs)
+            if cell_attrs.get("width") and "width:" in cell_attrs.get("style", ""):
+                self.fixed_width_cells += 1
         if tag == "table":
             self.table = []
         elif self.table is not None and tag == "tr":
             self.row = []
         elif self.row is not None and tag in ("th", "td"):
+            if self.cell is not None:
+                raise AssertionError("nested table cell")
             self.cell = ""
     def handle_data(self, data):
         if self.cell is not None:
@@ -185,6 +191,7 @@ class Tables(HTMLParser):
 
 tables = Tables()
 tables.feed(sys.argv[1])
+assert tables.fixed_width_cells > 0
 comparison = next((table for table in tables.tables
                    if table and table[0] == ["项目", "今天", "昨天", "上周同日"]), None)
 assert comparison is not None and ["合入", "3", "2", "4"] in comparison
@@ -197,7 +204,7 @@ else
   echo 'not ok - the verdict precedes the anomaly table' >&2
   exit 1
 fi
-assert_contains 'the station chart uses HTML bars' "$html" 'width:240px;height:12px'
+assert_contains 'the station bar width reflects its value share' "$html" 'width:53.8%;background:'
 assert_contains 'passing station bars are blue' "$html" 'background:#3064b4'
 assert_contains 'off-standard station bars are orange' "$html" 'background:#e19123'
 assert_contains 'failing station bars are red' "$html" 'background:#cd4141'

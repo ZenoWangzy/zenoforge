@@ -104,21 +104,25 @@ parts = ["<!doctype html><html><body style=\"font-family:Arial,sans-serif;color:
 esc = lambda value: html.escape(str(value), quote=True)
 number = lambda value: str(int(value)) if float(value).is_integer() else f"{value:.1f}"
 money = lambda value: f"{value:.2f}"
-def table(headers, rows):
+def table(headers, rows, bar_column=None):
     out=["<table style=\"border-collapse:collapse;width:100%;margin:10px 0\"><thead><tr>"]
-    out += ["<th style=\"text-align:left;border-bottom:1px solid #cbd5e1;padding:6px\">"+esc(h)+"</th>" for h in headers]
+    out += ["<th"+(" width=\"240\" style=\"width:240px;" if index==bar_column else " style=\"")+"text-align:left;border-bottom:1px solid #cbd5e1;padding:6px\">"+esc(h)+"</th>" for index,h in enumerate(headers)]
     out.append("</tr></thead><tbody>")
     for row in rows:
-        out.append("<tr>"+"".join("<td style=\"border-bottom:1px solid #e2e8f0;padding:6px\">"+str(cell)+"</td>" for cell in row)+"</tr>")
+        cells=[]
+        for index,cell in enumerate(row):
+            width=" width=\"240\" style=\"width:240px;" if index==bar_column else " style=\""
+            cells.append("<td"+width+"border-bottom:1px solid #e2e8f0;padding:6px\">"+str(cell)+"</td>")
+        out.append("<tr>"+"".join(cells)+"</tr>")
     return "".join(out+["</tbody></table>"])
 blue, orange, red = "#3064b4", "#e19123", "#cd4141"
 valid_number = lambda value: isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value)
 show = lambda value: esc(number(value)) if valid_number(value) else ""
 def bar(value, maximum, color):
     share = max(0,min(1,value/maximum)) if maximum > 0 else 0
-    return "<td width=\"240\" style=\"width:240px;padding:6px\"><div style=\"width:240px;height:12px;background:#e2e8f0\"><div style=\"height:12px;width:"+str(round(share*100,1))+"%;background:"+color+"\"></div></div></td>"
+    return "<div style=\"width:100%;height:12px;background:#e2e8f0\"><div style=\"height:12px;width:"+str(round(share*100,1))+"%;background:"+color+"\"></div></div>"
 def chart_table(rows):
-    return table(["项目","对比条","数值"],rows)
+    return table(["项目","对比条","数值"],rows,1)
 def standard_share(value, healthy, higher):
     return value/healthy if higher else (1 if value <= 0 else healthy/value)
 def status_color(status):
