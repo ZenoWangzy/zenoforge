@@ -3,7 +3,7 @@ self_check_main_fresh() { # clone head [main-sha] → whether the head contains 
   [[ -n "$main" ]] || main="$(git -C "$1" rev-parse --verify refs/remotes/origin/main^{commit} 2>/dev/null)" || return 1
   git -C "$1" merge-base --is-ancestor "$main" "$2" 2>/dev/null
 }
-self_check_deferred_count() { jqf -r --arg id "$1" --arg sha "$2" 'def entry_sha: .sha // ((.result // "") | (try capture("self-check-.*-(?<sha>[0-9a-f]{40})-[0-9]+-").sha catch "")); ([.units[] | select(.id==$id) | (.history // [])][0] // []) | reverse | reduce .[] as $entry ({count:0,stopped:false}; if .stopped then . elif $entry.stage=="self-check-deferred" and ($entry | entry_sha)==$sha then .count+=1 else .stopped=true end) | .count' "$UNITS"; }
+self_check_deferred_count() { jqf -r --arg id "$1" --arg sha "$2" 'def entry_sha: .sha // ((.result // "") | (try capture("self-check-.*-(?<sha>[0-9a-f]{40})-[0-9]+-").sha catch "")); ([.units[] | select(.id==$id) | (.history // [])][0] // []) | reverse | reduce .[] as $entry ({count:0,stopped:false}; if .stopped then . elif $entry.stage=="self-check-deferred" and ($entry | entry_sha)==$sha then if $entry.defer_rc==125 then .count+=1 elif $entry.defer_rc==75 then . else .stopped=true end else .stopped=true end) | .count' "$UNITS"; }
 self_check_run() (
   set -o pipefail
   local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source runner_path
@@ -322,7 +322,7 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
       rc=$?
       # 75 (cihost admission queue) and 125 (transfer/setup) are not verdicts.
       if (( rc == 76 )); then printf 'conflict\n' > "$result"
-      elif (( rc == 75 || rc == 125 )); then printf 'defer\n' > "$result"
+      elif (( rc == 75 || rc == 125 )); then printf '%s\n' "$rc" > "$result.rc"; printf 'defer\n' > "$result"
       else printf 'red\n' > "$result"; fi
     fi
     [[ -z "$config_temp" ]] || rm -f "$config_temp"
@@ -350,7 +350,7 @@ self_check_failure_class() { # log → short class of the first failure line
 self_check_red_to_repair() { local hint="The deterministic self-check failed. Full output from $2:"$'\n'"$(cat "$2" 2>/dev/null || true)"
   set_unit "$1" ".self_fix_pending=false | .self_fix_active=false | .approved_sha=null | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=$(js "$hint") | .stage=\"repair-pending\""; }
 self_check_harvest() {
-  local id pid out start status fixes sid model verification_json verification_update reason_update checked_head sha
+  local id pid out start status fixes sid model verification_json verification_update reason_update checked_head sha defer_rc defer_rc_update
   while IFS=$'\t' read -r id pid out start; do
     scheduler_lock_yield_between_units || return 1
     [[ "${SCHEDULER_LOCK_YIELDED:-false}" != true \
@@ -365,8 +365,7 @@ self_check_harvest() {
       continue
     fi
     status="$(cat "$out.result")"; reason_update=""
-    if [[ "$status" == defer ]]; then sha="$(unit_field "$id" '.self_check_sha // empty')"; if (( $(self_check_deferred_count "$id" "$sha") < 3 )); then say "self-check deferred unit=$id: cihost admission or setup; rerun next tick"; set_unit "$id" "$(hist self-check-deferred "$out") | .history[-1].sha=$(js "$sha") | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"; continue; fi
-      status=red; reason_update=" | .history[-1].reason=$(js "self-check retry limit reached after 3 consecutive deferrals for sha=$sha")"; printf 'self-check retry limit reached after 3 consecutive deferrals for sha=%s\n' "$sha" >> "$out"; say "self-check red unit=$id: self-check retry limit reached after 3 consecutive deferrals for sha=$sha"
+    if [[ "$status" == defer ]]; then sha="$(unit_field "$id" '.self_check_sha // empty')"; defer_rc="$(cat "$out.result.rc" 2>/dev/null || true)"; if [[ "$defer_rc" == 125 ]] && (( $(self_check_deferred_count "$id" "$sha") >= 3 )); then status=red; reason_update=" | .history[-1].reason=$(js "self-check retry limit reached after 3 rc 125 deferrals for sha=$sha")"; printf 'self-check retry limit reached after 3 rc 125 deferrals for sha=%s\n' "$sha" >> "$out"; say "self-check red unit=$id: self-check retry limit reached after 3 rc 125 deferrals for sha=$sha"; else defer_rc_update=""; [[ "$defer_rc" != 125 ]] || defer_rc_update=' | .history[-1].defer_rc=125'; [[ "$defer_rc" != 75 ]] || defer_rc_update=' | .history[-1].defer_rc=75'; say "self-check deferred unit=$id: rc=$defer_rc; rerun next tick"; set_unit "$id" "$(hist self-check-deferred "$out") | .history[-1].sha=$(js "$sha")$defer_rc_update | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"; continue; fi
     fi
     if [[ "$status" == conflict ]]; then
       set_unit "$id" 'del(.self_check_pid, .self_check_start) | .self_check_status="conflict"'

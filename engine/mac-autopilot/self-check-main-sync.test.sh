@@ -166,27 +166,35 @@ scheduler_lock_yield_between_units() { SCHEDULER_LOCK_YIELDED=false; }
 retry_id=retry-unit
 retry_sha="$clean_head"
 old_sha=1111111111111111111111111111111111111111
-retry_history="$(jqf -cn --arg id "$retry_id" --arg old "$old_sha" --arg sha "$retry_sha" '[{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$old+"-0-old.log")},{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$sha+"-0-old1.log")},{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$sha+"-0-old2.log")}]')"
+retry_history="$(jqf -cn --arg id "$retry_id" --arg old "$old_sha" --arg sha "$retry_sha" '[{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$old+"-0-old.log")},{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$sha+"-0-old1.log"),defer_rc:125},{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$sha+"-0-old2.log"),defer_rc:125}]')"
 jqf -cn --arg id "$retry_id" --arg sha "$retry_sha" --argjson history "$retry_history" \
   '{units:[{id:$id,stage:"review-pending",self_check_pid:1,self_check_start:"test",self_check_output:"",self_check_sha:$sha,self_check_fixes:2,history:$history}]}' > "$UNITS"
 defer_attempt() {
-  local attempt="$1" out
+  local attempt="$1" rc="${2:-125}" out
   out="$SUP/self-check-$retry_id-$retry_sha-0-$STAMP-$attempt.log"
-  printf 'self-check main sync: refused candidate head mismatch\n' > "$out"
+  if [[ "$rc" == 125 ]]; then printf 'self-check main sync: refused candidate head mismatch\n' > "$out"; else printf 'mypc admission: memory below minimum\n' > "$out"; fi
   printf 'defer\n' > "$out.result"
+  printf '%s\n' "$rc" > "$out.result.rc"
   printf '%s\n' "$retry_sha" > "$out.head"
   jqf --arg out "$out" --arg sha "$retry_sha" --argjson pid "$attempt" \
     '(.units[0].self_check_pid=$pid | .units[0].self_check_start="test" | .units[0].self_check_output=$out | .units[0].self_check_sha=$sha | .units[0].self_check_status=null)' \
     "$UNITS" > "$UNITS.tmp"
   mv "$UNITS.tmp" "$UNITS"
 }
-defer_attempt 1
+defer_attempt 1 125
 self_check_harvest
-[[ "$(jqf -r '.units[0].history[-1].stage' "$UNITS")" == self-check-deferred ]] || fail 'third same-SHA defer escalated before the limit'
-defer_attempt 2
+[[ "$(jqf -r '.units[0].history[-1].stage' "$UNITS")" == self-check-deferred ]] || fail 'third same-SHA rc125 defer escalated before the limit'
+defer_attempt 2 125
 self_check_harvest
-jqf -e --arg sha "$retry_sha" '.units[0] as $u | $u.history[-1].stage == "self-check-red" and $u.history[-1].reason == ("self-check retry limit reached after 3 consecutive deferrals for sha="+$sha) and $u.self_check_status == "red" and $u.stage == "repair-pending" and ($u.repair_hint | contains("retry limit reached"))' "$UNITS" >/dev/null \
-  || fail 'fourth same-SHA defer did not become a reasoned red self-check routed to repair'
+jqf -e --arg sha "$retry_sha" '.units[0] as $u | $u.history[-1].stage == "self-check-red" and $u.history[-1].reason == ("self-check retry limit reached after 3 rc 125 deferrals for sha="+$sha) and $u.self_check_status == "red" and $u.stage == "repair-pending" and ($u.repair_hint | contains("retry limit reached"))' "$UNITS" >/dev/null \
+  || fail 'fourth same-SHA rc125 defer did not become a reasoned red self-check routed to repair'
+jqf -cn --arg id "$retry_id" --arg sha "$retry_sha" '{units:[{id:$id,stage:"review-pending",self_check_sha:$sha,self_check_fixes:2,history:[]}]}' > "$UNITS"
+for attempt in 3 4 5 6; do
+  defer_attempt "$attempt" 75
+  self_check_harvest
+done
+jqf -e '.units[0] | .stage == "review-pending" and (.history | length == 4 and all(.[]; .stage == "self-check-deferred" and .defer_rc == 75)) and (.self_check_status == null)' "$UNITS" >/dev/null \
+  || fail 'repeated rc75 admission defers escalated or were counted as rc125 failures'
 
 # A stored red verdict for the same head is reused even when the head is behind main; other verdicts still restart.
 TAG=20261121T000000Z
