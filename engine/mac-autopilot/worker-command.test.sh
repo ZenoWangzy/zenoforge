@@ -208,11 +208,38 @@ build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$
 
 # Codex repair resumes the recorded thread up to the repair cutoff (20M cumulative raw), goes cold above it.
 codex_sid=223e4567-e89b-12d3-a456-426614174000
-unit_field() { case "$2" in .sessions.repair*) printf '{"id":"%s","provider":"codex","model":"gpt-6-luna"}' "$codex_sid" ;; *) printf false ;; esac; }
-session_file_for_id() { printf '/dev/null'; }
+TEST_SELF_FIX=false
+unit_field() { case "$2" in .sessions.repair*) printf '{"id":"%s","provider":"codex","model":"gpt-6-luna"}' "$codex_sid" ;; .self_fix_active*) printf '%s' "$TEST_SELF_FIX" ;; *) printf false ;; esac; }
+codex_session_file="$test_env_root/codex-session.jsonl"
+session_file_for_id() { printf '%s\n' "$codex_session_file"; }
 session_usage_for_id() { printf '{"input_tokens":%s,"cached_input_tokens":0,"output_tokens":0,"raw":%s}' "$repair_raw" "$repair_raw"; }
 session_tokens_for_id() { printf '%s' "$repair_raw"; }
 repair_raw=12000000
+CFG='{"models":[["gpt-6-luna","max","default"]]}'
+for stored_tier in priority fast; do
+  printf '{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"%s"}}}\n' "$stored_tier" > "$codex_session_file"
+  build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail "codex repair with stored $stored_tier tier was refused"
+  [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == "stored-service-tier-$stored_tier" && "${CODEX_COMMAND[1]}" != resume ]] \
+    || fail "codex repair resumed a stored $stored_tier tier ($CODEX_MODE/$CODEX_PATH_REASON)"
+done
+printf '%s\n%s\n' \
+  '{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}' \
+  '{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}' > "$codex_session_file"
+build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail 'codex repair with latest default tier was refused'
+[[ "$CODEX_MODE" == resume && "$CODEX_PATH_REASON" == same-provider-model ]] || fail 'codex repair ignored the newest thread service tier'
+printf '{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}\n' > "$codex_session_file"
+session_role() { printf review; }
+printf '%s\n' "{\"units\":[{\"id\":\"review-1\",\"session_ids\":{\"review\":\"$codex_sid\"}}]}" > "$UNITS"
+build_codex_command rereview gpt-6-luna max review-1 'rereview prompt' || fail 'codex rereview with stored priority tier was refused'
+[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == stored-service-tier-priority && "${CODEX_COMMAND[1]}" != resume ]] \
+  || fail "codex rereview resumed stored priority tier ($CODEX_MODE/$CODEX_PATH_REASON)"
+TEST_SELF_FIX=true
+build_codex_command repair gpt-6-luna max implement-1 'cold' 'self-fix failure' || fail 'codex self-fix with stored priority tier was refused'
+[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == stored-service-tier-priority ]] \
+  || fail 'codex self-fix did not cold-start away from stored priority tier'
+TEST_SELF_FIX=false
+printf '%s\n' '{"units":[{"id":"implement-1"},{"id":"review-1"}]}' > "$UNITS"
+printf '%s\n' '{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}' > "$codex_session_file"
 build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail 'codex repair at 12M raw was refused'
 [[ "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$codex_sid" ]] || fail "codex repair at 12M raw went cold ($CODEX_MODE/$CODEX_PATH_REASON)"
 repair_raw=21000000

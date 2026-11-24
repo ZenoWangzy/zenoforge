@@ -61,6 +61,11 @@ worker_rules() { # unit-json type provider
 
 claude_session_file_for_id() { compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/$1.jsonl" | head -n1; }
 
+codex_session_service_tier() {
+  [[ -r "$1" ]] || return 0
+  jqf -r 'select(.payload.type == "thread_settings_applied") | .payload.thread_settings.service_tier // empty' "$1" 2>/dev/null | tail -n 1 || true
+}
+
 # Claude 实现 worker 的工具面：只写自己的工作目录，只推单元分支（direct-main 车道完全不推，与 Codex 实现提示一致）。
 # 2026-11-18：允许 git rm/mv，因为 VectA 6942 的改号 0222 没法删旧文件（只动 worker 自己 repo 的 tracked 文件，不放行裸 rm/mv）。
 # 没有 OS 沙箱：这是权限规则，不是隔离；测试运行器仍会执行 worker 写的代码（Codex 实现同样是 danger-full-access，见 SECURITY.md）。
@@ -126,7 +131,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
 
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" usage prompt_arg role tier self_fix prior config_arg review_allowed_tools claude_cli_tools zcode_mode=yolo
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" session_file="" stored_service_tier="" usage prompt_arg role tier self_fix prior config_arg review_allowed_tools claude_cli_tools zcode_mode=yolo
   local -a tier_args=() codex_config_args=() zcode_cmd=()
   local output_tokens
   CODEX_MODE=fresh
@@ -198,11 +203,14 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     session_id="$(jqf -r '.id // empty' <<<"$prior")"
     CODEX_PATH_REASON=no-recorded-session
     if [[ "$session_id" =~ $SESSION_RE ]]; then
+      [[ "$report_only" != true || "$session_id" == "$expected_session_id" ]] || return 1
+      session_file="$(session_file_for_id "$session_id")"
+      stored_service_tier="$(codex_session_service_tier "$session_file")"
       if [[ "$(jqf -r '.provider // empty' <<<"$prior")" != codex ]]; then
         CODEX_PATH_REASON=provider-changed
       elif [[ "$(jqf -r '.model // empty' <<<"$prior")" != "$model" ]]; then
         CODEX_PATH_REASON=model-changed
-      elif [[ -z "$(session_file_for_id "$session_id")" ]]; then
+      elif [[ -z "$session_file" ]]; then
         CODEX_PATH_REASON=session-files-missing
       elif [[ -z "$failure" ]]; then
         CODEX_PATH_REASON=no-new-failure
@@ -211,6 +219,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
       elif [[ "$self_fix" != true ]] && ! { usage="$(session_tokens_for_id "$session_id")"; [[ "$usage" =~ ^[0-9]+$ ]] && (( usage < ${REPAIR_RESUME_MAX_RAW:-20000000} )); }; then
         # Repair cutoff on cumulative raw (cached input counts, so it is no context size). 2026-11-05..08: 93 cold repairs after the old 8M cutoff cost 208k fresh each; resumes at 8-20M cost 116k. A self-fix always continues.
         CODEX_PATH_REASON=session-too-large
+      elif [[ "$stored_service_tier" == priority || "$stored_service_tier" == fast ]]; then
+        CODEX_PATH_REASON="stored-service-tier-$stored_service_tier"
       else
         CODEX_MODE=resume
         CODEX_PATH_REASON=same-provider-model
@@ -226,16 +236,20 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   fi
   # A report-only continuation must not silently become a fresh repair run when
   # its existing Codex session is missing, too large, or otherwise unusable.
-  [[ "$report_only" != true ]] || return 1
+  [[ "$report_only" != true || "$CODEX_PATH_REASON" == stored-service-tier-* ]] || return 1
   if [[ "$type" == "rereview" ]]; then
     role="$(session_role "$type")"
     session_id="$(jqf -r --arg id "$unit" --arg role "$role" '[.units[] | select(.id==$id) | .session_ids[$role] // empty][0] // empty' "$UNITS")"
     if [[ "$session_id" =~ $SESSION_RE ]]; then
+      session_file="$(session_file_for_id "$session_id")"
+      stored_service_tier="$(codex_session_service_tier "$session_file")"
       local snapshot; snapshot="$(session_usage_for_id "$session_id")"
       usage="$(jqf -r 'if .==null then empty else .raw end' <<<"$snapshot")"
       # 阈值比累计 raw（input+output），不比 fresh：9M raw 而 fresh 只有 0.3M 的会话仍要冷启动；按 fresh 比会让
       # 500 个可续的修复派发里 464 个改成续会话。
-      if [[ "$self_fix" == true ]] || { [[ "$usage" =~ ^[0-9]+$ ]] && (( usage < 8000000 )); }; then
+      if [[ "$stored_service_tier" == priority || "$stored_service_tier" == fast ]]; then
+        CODEX_PATH_REASON="stored-service-tier-$stored_service_tier"
+      elif [[ "$self_fix" == true ]] || { [[ "$usage" =~ ^[0-9]+$ ]] && (( usage < 8000000 )); }; then
         CODEX_MODE=resume
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$snapshot"
@@ -248,7 +262,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     fi
   fi
   # A deterministic self-fix must never silently switch to a fresh worker.
-  [[ "$self_fix" == true ]] && return 1
+  [[ "$self_fix" != true || "$CODEX_PATH_REASON" == stored-service-tier-* ]] || return 1
   # --json（两种模式一致）：stdout 变为 JSONL 事件流（thread.started / turn.completed 用量），worker 日志即事件源，
   # 回收时由 usage_reader 落进原生事件库；人类可读输出只在非 --json 模式存在，legacy 日志的页脚解析保留给旧 worker。
   CODEX_COMMAND=("${CODEX_FRESH_COMMAND[@]}")
