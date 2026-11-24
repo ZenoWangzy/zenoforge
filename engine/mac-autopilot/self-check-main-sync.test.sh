@@ -88,6 +88,42 @@ grep -Fq 'self-check main sync: merged clean' <<<"$clean_output" \
   || fail 'clean main merge outcome was not logged'
 grep -Fq 'run build' "$PNPM_LOG" || fail 'clean main merge did not continue to builds'
 
+run_direct_main_sync() {
+  local name="$1" remove_branch="$2" dir origin head main output rc=0 branch
+  local -a fixture=()
+  mapfile -t fixture < <(make_repo "$name" false)
+  dir="${fixture[0]}"; origin="${fixture[1]}"; head="${fixture[2]}"; main="${fixture[3]}"; branch="agent/$name"
+  git -C "$dir" checkout -q --detach "$head"
+  [[ "$remove_branch" != true ]] || git -C "$dir" branch -D "$branch" >/dev/null
+  ROOT="$dir"
+  : > "$PNPM_LOG"
+  if output="$(self_check_run "$dir" "$head" direct-main '' "$name-unit" "$branch" '' 2>&1)"; then :; else rc=$?; fi
+  [[ "$rc" == 0 ]] || { printf '%s\n' "$output" >&2; fail "detached direct-main self-check returned $rc for $name"; }
+  git -C "$dir" merge-base --is-ancestor "$main" HEAD || fail "detached direct-main worktree did not merge main for $name"
+  [[ "$(git -C "$dir" symbolic-ref --quiet --short HEAD)" == "$branch" ]] || fail "detached direct-main worktree did not attach $branch"
+  [[ "$(git -C "$dir" rev-parse "refs/heads/$branch")" == "$(git -C "$dir" rev-parse HEAD)" ]] || fail "direct-main branch did not advance for $name"
+  [[ "$(git --git-dir="$origin" rev-parse "refs/heads/$branch")" == "$head" ]] || fail "direct-main self-check unexpectedly pushed $branch"
+  grep -Fq 'self-check main sync: merged clean' <<<"$output" || fail "direct-main merge outcome was not logged for $name"
+}
+
+run_direct_main_sync direct-present false
+run_direct_main_sync direct-absent true
+
+mapfile -t moved_repo < <(make_repo moved false)
+moved="${moved_repo[0]}"
+moved_head="${moved_repo[2]}"
+git -C "$moved" checkout -q --detach "$moved_head"
+git -C "$moved" commit -q --allow-empty -m moved-candidate
+actual_head="$(git -C "$moved" rev-parse HEAD)"
+ROOT="$moved"
+moved_output=""
+moved_rc=0
+if moved_output="$(self_check_run "$moved" "$moved_head" direct-main '' moved-unit agent/moved '' 2>&1)"; then :; else moved_rc=$?; fi
+[[ "$moved_rc" == 125 ]] || { printf '%s\n' "$moved_output" >&2; fail "changed detached head was accepted (rc=$moved_rc)"; }
+grep -Fq "self-check main sync: refused candidate head mismatch expected=$moved_head actual=$actual_head" <<<"$moved_output" \
+  || fail 'rc 125 did not name the candidate head mismatch'
+[[ "$(git -C "$moved" rev-parse HEAD)" == "$actual_head" ]] || fail 'refusing a changed head moved the worktree'
+
 mapfile -t conflict_repo < <(make_repo conflict true)
 conflict="${conflict_repo[0]}"
 conflict_head="${conflict_repo[2]}"
@@ -111,12 +147,51 @@ grep -Fq "conflict-unit|202|self-check: conflicts with main before builds|$confl
 [[ -z "$(git -C "$conflict" ls-files -u)" ]] || fail 'conflict left unmerged paths in the unit worktree'
 [[ "$(git -C "$conflict" rev-parse origin/main)" == "$conflict_main" ]] || fail 'conflict fixture main moved unexpectedly'
 
+UNITS="$test_env_root/self-check-units.json"
+STAMP=20261124T000000Z
+SHA_RE='^[0-9a-f]{40}$'
+say() { :; }
+js() { command jq -Rn --arg v "$1" '$v'; }
+unit_field() { jqf -r --arg id "$1" "([.units[] | select(.id==\$id) | ($2 // empty)][0] // empty)" "$UNITS"; }
+set_unit() {
+  jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" > "$UNITS.tmp"
+  mv "$UNITS.tmp" "$UNITS"
+}
+hist() {
+  local entry
+  entry="$(jqf -scR --arg stage "$1" --arg at "$STAMP" '{stage:$stage,result:.[0:-1],at:$at}' <<<"${2:-}")"
+  printf '.history += [%s]' "$entry"
+}
+scheduler_lock_yield_between_units() { SCHEDULER_LOCK_YIELDED=false; }
+retry_id=retry-unit
+retry_sha="$clean_head"
+old_sha=1111111111111111111111111111111111111111
+retry_history="$(jqf -cn --arg id "$retry_id" --arg old "$old_sha" --arg sha "$retry_sha" '[{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$old+"-0-old.log")},{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$sha+"-0-old1.log")},{stage:"self-check-deferred",result:("self-check-"+$id+"-"+$sha+"-0-old2.log")}]')"
+jqf -cn --arg id "$retry_id" --arg sha "$retry_sha" --argjson history "$retry_history" \
+  '{units:[{id:$id,stage:"review-pending",self_check_pid:1,self_check_start:"test",self_check_output:"",self_check_sha:$sha,self_check_fixes:2,history:$history}]}' > "$UNITS"
+defer_attempt() {
+  local attempt="$1" out
+  out="$SUP/self-check-$retry_id-$retry_sha-0-$STAMP-$attempt.log"
+  printf 'self-check main sync: refused candidate head mismatch\n' > "$out"
+  printf 'defer\n' > "$out.result"
+  printf '%s\n' "$retry_sha" > "$out.head"
+  jqf --arg out "$out" --arg sha "$retry_sha" --argjson pid "$attempt" \
+    '(.units[0].self_check_pid=$pid | .units[0].self_check_start="test" | .units[0].self_check_output=$out | .units[0].self_check_sha=$sha | .units[0].self_check_status=null)' \
+    "$UNITS" > "$UNITS.tmp"
+  mv "$UNITS.tmp" "$UNITS"
+}
+defer_attempt 1
+self_check_harvest
+[[ "$(jqf -r '.units[0].history[-1].stage' "$UNITS")" == self-check-deferred ]] || fail 'third same-SHA defer escalated before the limit'
+defer_attempt 2
+self_check_harvest
+jqf -e --arg sha "$retry_sha" '.units[0] as $u | $u.history[-1].stage == "self-check-red" and $u.history[-1].reason == ("self-check retry limit reached after 3 consecutive deferrals for sha="+$sha) and $u.self_check_status == "red" and $u.stage == "repair-pending" and ($u.repair_hint | contains("retry limit reached"))' "$UNITS" >/dev/null \
+  || fail 'fourth same-SHA defer did not become a reasoned red self-check routed to repair'
+
 # A stored red verdict for the same head is reused even when the head is behind main; other verdicts still restart.
 TAG=20261121T000000Z
 unit_writes="$test_env_root/unit-writes"
 set_unit() { printf '%s\n' "$2" >> "$unit_writes"; }
-say() { :; }
-js() { command jq -Rn --arg v "$1" '$v'; }
 pid_start() { echo 1; }
 decision_log_gate_reason() { :; }
 how_why_gate_reason() { :; }
