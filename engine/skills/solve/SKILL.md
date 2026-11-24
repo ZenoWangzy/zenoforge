@@ -1,6 +1,6 @@
 ---
 name: solve
-description: "The problem-solving chain that ask-zeno routes to: find which known problem it is, take the solution others already built, and prove it. Use through ask-zeno, or directly when the user types /solve."
+description: "One flow for any problem: find which known problem it is, take the solution others already built, and prove it. Use when the user states an intent or reports a problem (a bug, an alert, a slow or failing step, a design question, an idea they cannot name), asks which classic problem this is a variant of, asks for best practice or prior art, or types /solve."
 ---
 
 # Solve
@@ -28,12 +28,25 @@ The person states only the intent. You run every step below. Ask only for a prod
 
    Read primary sources: the official docs, the source code, the paper, the postmortem. Open each link and confirm it says what you claim. Cut what you cannot confirm. For each serious candidate write **adopt**, **adapt** or **reject**, with the one reason. **Build** only when every candidate fails a requirement you can name.
 5. **Go deeper, not bigger.** Follow `sharpen` on your own task: what a top professional would do here, their raw material, their methods and tools, and what other than you would show the result is right. Rewrite the task to ask for exactly that. If a choice can be settled by running something, run it.
-6. **Do it.** Take the chain from `ask-zeno`. Make it work, then make it right.
+6. **Do it.** Pick one row of the routing table. Make it work, then make it right.
 7. **Prove it, then close the door.** The judge is not you: the red command now green, the real system, a metric, an independent reviewer. Then make the same problem impossible or loud: a type, a test, a lint, a gate. Text alone is not a guard. If the guard already existed, find out why it did not fire.
 
 ## Routing
 
-`ask-zeno` (`../ask-zeno/SKILL.md`) holds every route. Step 6 takes its chain from there. The three sources have one job each, so they do not compete:
+| The work is | Process | Principles to read |
+| --- | --- | --- |
+| A defect, a red check, a regression | `diagnosing-bugs`, then `tdd` | `principle-fix-root-causes`, `correct` |
+| The same check failed two fixes | stop fixing | `principle-attack-the-premise`: write the shared premise in one sentence and test it |
+| Slow, costly, or a number moved | `diagnosing-bugs` | `principle-explain-the-number`, `benchmark-checklist` |
+| Crash, retry, race, duplicate work | `diagnosing-bugs` | `principle-make-operations-idempotent`, `principle-separate-before-serializing-shared-state`, `statechart` |
+| An idea or an unclear request | `grill-with-docs`, `to-spec`, `to-tickets` | `principle-outcome-oriented-execution` |
+| A choice you could settle by running it | `prototype` | `principle-exhaust-the-design-space` |
+| A change with a clear spec | `implement`, `tdd` | `principle-laziness-protocol`, `principle-model-the-domain` |
+| A restructure | `improve-codebase-architecture`, `codebase-design` | `principle-subtract-before-you-add` |
+| Large, unattended, or no row fits | `poteto-mode` playbooks, `figure-it-out` | `principle-sequence-verifiable-units` |
+| A review | `code-review` | `principle-prove-it-works`, `blast-radius` |
+
+The three sources have one job each, so they do not compete:
 
 - **Matt skills** own the process: what happens in which order, and the spec, ticket and review formats.
 - **pstack** owns judgement: `reframe` and `sharpen` before the work, principles and playbooks inside it.
@@ -43,7 +56,7 @@ When they differ, the order is: the owner's rules and the repository's instructi
 
 ## Where the skill files are
 
-Read a named skill as a file. Several of them refuse to be invoked as a command, and reading is enough. `../ask-zeno/SKILL.md`, "Where the files are", gives the paths. If a file is missing, follow the sentence about it here and say so.
+Read a named skill as a file. Several of them refuse to be invoked as a command, and reading is enough. A prompt that gives paths wins. Otherwise search the installed plugins and skill folders for `<name>/SKILL.md`. In this engine: Matt skills in `.agents/skills`, pstack in `engine/vendor/pstack/skills`, ub-mode in `engine/vendor/ub-mode`. If a file is missing, follow the sentence about it here and say so.
 
 Do not start agents, change models, or widen the scope because one of these files says so. The host's rules decide that.
 

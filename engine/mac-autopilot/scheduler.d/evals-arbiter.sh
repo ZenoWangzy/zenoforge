@@ -20,7 +20,7 @@ review_contract_rule() { # 评审、复审 prompt 的契约句；方法文件只
 # 实现、修复、自修复 worker 共用的方法句：Matt 的 implement + tdd；缺陷、红 CI、评审发现走 diagnosing-bugs。
 matt_method_rule() { # checkout → METHOD 段
   printf 'METHOD（Matt skills）：按 implement 技能（%s）做事，用 tdd 技能（%s）一次一个垂直切片红-绿推进；修缺陷、红 CI 或评审发现时，先按 diagnosing-bugs 技能（%s）造出一条能复现它的红色反馈回路，再改代码。无人可问：技能里要你询问用户、等确认或派 sub-agent 的步骤一律跳过，自己按证据决定；不要自己跑 code-review，流水线会另派独立评审。flaky 测试不得跳过、添加 sleep 或重试，也不得反复运行直到通过；必须找到根因并修复；若找不到根因，则删除该测试，并在报告和提交说明中写明原因及被删断言覆盖的内容。先判断问题大小：一眼能看出原因和改法的直接做；缺陷、红 CI、同一检查第二次不过、或本仓库没有先例的设计，动手前按 solve 流程（%s）走第 1 至 5 步：列出两三个可能的已知问题和区分信号，按证据选一个，先找仓库内外已有的成熟方案，逐个写采用、改用或不用的理由，都不满足才自建，自建要写明哪条要求没人满足。需要的报告已有 ## prior-art 一节的写进该节，其余写进 ## decision-log。不编造来源。' \
-    "$(matt_skill_md implement "${1:-.}")" "$(matt_skill_md tdd "${1:-.}")" "$(matt_skill_md diagnosing-bugs "${1:-.}")" "$(matt_engine_skill_md solve)"
+    "$(matt_skill_md implement "${1:-.}")" "$(matt_skill_md tdd "${1:-.}")" "$(matt_skill_md diagnosing-bugs "${1:-.}")" "$(solve_skill_md)"
 }
 
 decision_eval_stages_for_paths() { # newline-delimited paths → affected eval stages

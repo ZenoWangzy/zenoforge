@@ -36,3 +36,6 @@ matt_skills_note() {
 # pstack_skill_md <name> -> absolute path of a vendored pstack skill (vendor/pstack, see its UPSTREAM file).
 _PSTACK_SKILLS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/vendor/pstack/skills"
 pstack_skill_md() { printf '%s/%s/SKILL.md\n' "$_PSTACK_SKILLS_DIR" "$1"; }
+
+_ZF_SKILLS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/skills"
+solve_skill_md() { printf '%s/solve/SKILL.md\n' "$_ZF_SKILLS_DIR"; }

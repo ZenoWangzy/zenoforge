@@ -31,7 +31,7 @@ incident_match_line() { # issue/unit JSON, configured labels JSON → the line n
 incident_rule_text() { # canonical requirements shared across implementation, review, arbiter and hotfix prompts
   cat <<EOF
 INCIDENT_RULE
-For an incident unit (its issue has a label in the configured incident.labels set), use $(pstack_skill_md principle-fix-root-causes) to find the first place the system went wrong, and $(pstack_skill_md correct) to make the recurrence structurally impossible. Before choosing a fix, run steps 1 to 5 of $(matt_engine_skill_md solve): name the two or three known problems this could be and the sign that separates them, then adopt or adapt a solution that already exists. Build one only when every candidate fails a requirement you name in \`## prior-art\`.
+For an incident unit (its issue has a label in the configured incident.labels set), use $(pstack_skill_md principle-fix-root-causes) to find the first place the system went wrong, and $(pstack_skill_md correct) to make the recurrence structurally impossible. Before choosing a fix, run steps 1 to 5 of $(solve_skill_md): name the two or three known problems this could be and the sign that separates them, then adopt or adapt a solution that already exists. Build one only when every candidate fails a requirement you name in \`## prior-art\`.
 
 The implementation or repair report must contain:
 - A section headed exactly \`## root-cause\`, giving the first place the system went wrong, backed by the actual original log line and a repository file:line.
