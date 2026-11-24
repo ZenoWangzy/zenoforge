@@ -13,16 +13,5 @@ triage_needs_queue_selectable_count() {
 }
 
 triage_order_legacy_candidates() {
-  jq -r '
-    sort_by([
-      (if any(.labels[]?; .name == "focus") then 0 else 1 end),
-      (if any(.labels[]?; .name == "bug") and any(.labels[]?; .name == "priority:top") then 0 else 1 end),
-      (if any(.labels[]?; .name == "founder-test") then 0 else 1 end),
-      (if any(.labels[]?; .name == "priority:top") then 0 else 1 end),
-      (if any(.labels[]?; .name == "critical-path") then 0 else 1 end),
-      (if any(.labels[]?; .name == "legacy") then 1 else 0 end),
-      .createdAt
-    ])
-    | .[].number
-  ' <<< "$1"
+  jq -r --argjson eligible "$1" "$2"
 }

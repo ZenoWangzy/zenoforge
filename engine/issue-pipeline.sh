@@ -2380,7 +2380,12 @@ elif [ "$ROADMAP_ORDER_ENABLED" = true ]; then
     TRIAGE_CANDIDATE_QUERY_FAILED=1
     echo "issue-pipeline: could not order needs-triage candidates by roadmap; skipping dispatch" >&2
   }
-elif ! NEEDS_TRIAGE_IDS="$(triage_order_legacy_candidates "$NEEDS_TRIAGE_FILTERED_JSON")"; then
+elif ! NEEDS_TRIAGE_IDS="$(triage_order_legacy_candidates "$NEEDS_TRIAGE_FILTERED_JSON" '
+    def has_label($name): any(.labels[]?; .name == $name);
+    ($eligible | map(.number | tostring) | map({(.): true}) | add // {}) as $eligible_by_number
+    | map(select($eligible_by_number[(.number | tostring)]))
+    | sort_by([(if has_label("focus") then 0 else 1 end), (if has_label("bug") and has_label("priority:top") then 0 else 1 end), (if has_label("founder-test") then 0 else 1 end), (if has_label("priority:top") then 0 else 1 end), (if has_label("critical-path") then 0 else 1 end), (if has_label("legacy") then 1 else 0 end), .createdAt])
+    | .[].number' <<< "$NEEDS_TRIAGE_JSON")"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
   echo "issue-pipeline: could not order needs-triage candidates; skipping triage dispatch this tick" >&2
 fi
