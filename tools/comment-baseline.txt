@@ -607,7 +607,7 @@
 23	engine/night/main-ci-recovery.sh
 4	engine/night/maintainer-health-mail-idempotency.test.sh
 3	engine/night/maintainer-health-mail-incident.test.sh
-7	engine/night/maintainer-health-mail-output-contract.test.sh
+5	engine/night/maintainer-health-mail-output-contract.test.sh
 72	engine/night/maintainer-health-mail.sh
 34	engine/night/maintainer-health-mail.test.sh
 9	engine/night/night-test-progress.mjs
@@ -624,7 +624,7 @@
 19	engine/night/owner-report-daily.test.sh
 17	engine/night/owner-report-ladder.sh
 9	engine/night/owner-report-output.test.sh
-16	engine/night/owner-report-render.sh
+14	engine/night/owner-report-render.sh
 1	engine/night/pipeline-codex-pid.test.sh
 40	engine/night/post-land-mttr.sh
 3	engine/night/prod-errors-readonly.sh
@@ -637,7 +637,7 @@
 5	engine/night/prompt-observer-low-score.test.sh
 3	engine/night/prompt-observer-report.test.sh
 3	engine/no-pack-rulings-reader.test.sh
-434	engine/notify.sh
+433	engine/notify.sh
 186	engine/notify.test.sh
 2	engine/open-pr-snapshot.py
 22	engine/optimistic-merge.test.sh
