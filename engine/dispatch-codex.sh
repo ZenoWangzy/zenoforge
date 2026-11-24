@@ -283,7 +283,7 @@ dispatch_owner_session() {
   identity="codex:$model:$effort"
   fallback_identity="$(jq -r --arg role "$role" '.roles[$role].fallback_identity // empty' "$MODEL_POLICY_FILE")"
   service_tier="$(model_policy tier "$identity")" || return 1
-  [ -z "$service_tier" ] || service_tier_args=(--config "service_tier=\"$service_tier\"")
+  service_tier_args=(--config "service_tier=\"${service_tier:-default}\"")
   provider="${identity%%:*}"
   if [ "$provider" != codex ] || { [ "$identity" != "$primary_identity" ] && [ "$identity" != "$fallback_identity" ]; }; then
     echo "$SCRIPT_NAME: refusing owner session: supplied model/effort does not match policy role '$role' ($identity)" >&2
@@ -454,8 +454,7 @@ case "$KIND" in
 esac
 IDENTITY="$(model_policy dispatch-identity "$ROLE")"
 SERVICE_TIER="$(model_policy tier "$IDENTITY")"
-SERVICE_TIER_ARGS=()
-[ -z "$SERVICE_TIER" ] || SERVICE_TIER_ARGS=(--config "service_tier=\"$SERVICE_TIER\"")
+SERVICE_TIER_ARGS=(--config "service_tier=\"${SERVICE_TIER:-default}\"")
 IFS=: read -r PROVIDER MODEL EFFORT <<< "$IDENTITY"
 [ "$PROVIDER" = codex ] || die "policy role $ROLE is not a Codex role"
 

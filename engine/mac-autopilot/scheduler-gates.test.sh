@@ -3278,6 +3278,22 @@ claude_reviewer_case
 build_codex_command implement gpt-6-luna max fix-1 'implement prompt'
 [[ "${CODEX_COMMAND[0]}" == codex && "$WORKER_STDOUT_REPORT" == 0 && " ${CODEX_COMMAND[*]} " == *' --config service_tier="fast" '* ]] || fail "codex service tier missing: ${CODEX_COMMAND[*]}"
 [[ " ${CODEX_COMMAND[*]} " == *" -c shell_environment_policy.inherit=all "* ]] || fail 'codex workers would lose the proxy env (L44)'
+(
+  PICK_SERVICE_TIER=""
+  CFG='{"models":[["gpt-6-luna","max"]]}'
+  codex_sid=223e4567-e89b-12d3-a456-426614174000
+  UNITS="$fixture/resume-tier-units.json"
+  printf '{"units":[{"id":"tier-resume","sessions":{"repair":{"id":"%s","provider":"codex","model":"gpt-6-luna"}}}]}' "$codex_sid" > "$UNITS"
+  unit_field() { case "$2" in .sessions.repair*) printf '{"id":"%s","provider":"codex","model":"gpt-6-luna"}' "$codex_sid" ;; *) printf false ;; esac; }
+  worker_rules() { :; }
+  last_review_side_failed() { return 1; }
+  session_file_for_id() { printf '/dev/null'; }
+  session_usage_for_id() { printf '{"input_tokens":12000000,"cached_input_tokens":0,"output_tokens":0,"raw":12000000}'; }
+  session_tokens_for_id() { printf '12000000'; }
+  build_codex_command repair gpt-6-luna max tier-resume 'repair prompt' || fail 'Codex resume with no configured tier was refused'
+  [[ "$CODEX_MODE" == resume && " ${CODEX_COMMAND[*]} " == *' --config service_tier="default" '* ]] \
+    || fail "Codex resume without a configured tier omitted the default service tier: ${CODEX_COMMAND[*]}"
+)
 units '{"units":[{"id":"pr-70","pr":70,"stage":"repair-pending","session_ids":{"repair":"11111111-2222-3333-4444-555555555555"}}]}'
 build_codex_command repair gpt-6-luna max pr-70 'p'
 [[ " ${CODEX_COMMAND[*]} " == *" -c shell_environment_policy.inherit=all "* ]] || fail 'codex command lost proxy env policy'

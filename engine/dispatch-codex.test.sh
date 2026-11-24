@@ -933,7 +933,7 @@ assert_contains "production fake Codex args include final stdin selector" "$(cat
 assert_contains "production uses the policy model" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<$PRODUCTION_MODEL>"
 assert_contains "production uses policy effort" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<model_reasoning_effort=\"$PRODUCTION_EFFORT\">"
 assert_eq "production policy has no service tier" "" "$PRODUCTION_SERVICE_TIER"
-assert_not_contains "production dispatch omits service tier" "service_tier=" "$FAKE_CODEX_ARGS_FILE"
+assert_contains "production dispatch defaults empty service tier" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<service_tier=\"default\">"
 assert_contains "delivery passes sandbox selector" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<-s>"
 assert_contains "delivery passes danger-full-access" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<danger-full-access>"
 assert_contains "delivery passes network config selector" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<-c>"
