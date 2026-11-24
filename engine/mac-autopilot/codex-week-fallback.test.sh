@@ -104,7 +104,7 @@ pick_configured_model review '{}' || fail 'review had no model at the wall'
 [[ "$PICK_PROVIDER" == claude ]] || fail "review stayed on $PICK_PROVIDER at the wall"
 pick_implementer "$sticky" || fail 'sticky Codex repair stopped at the wall'
 [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == quota-fallback-to-claude ]] || fail "repair went to $PICK_PROVIDER/$PICK_REASON"
-pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit stopped at the wall'
+pick_implementer '{"id":"h","history":[{"stage":"hard-escalation"}]}' || fail 'hard unit stopped at the wall'
 [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == hard-fallback-claude && "$PICK_HARD" == true ]] || fail "hard went to $PICK_PROVIDER/$PICK_REASON"
 
 (
@@ -160,7 +160,7 @@ pick_implementer "$sticky" && [[ "$PICK_PROVIDER" == codex ]] || fail "CODEX_WEE
 unset CODEX_WEEK_PACE_PCT; week 10 $((NOW_EPOCH + 6 * 86400)); IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=()
 pick_implementer "$sticky" && [[ "$PICK_PROVIDER" == codex ]] || fail "Codex implement paused under the week pace line ($PICK_PROVIDER)"
 week 100 $((NOW_EPOCH + 3600))
-pick_implementer '{"id":"h","hard_escalated":true}' || fail 'hard unit had no route at the wall'
+pick_implementer '{"id":"h","history":[{"stage":"hard-escalation"}]}' || fail 'hard unit had no route at the wall'
 [[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == hard-fallback-zcode && "$PICK_HARD" == true ]] || fail "hard went to $PICK_PROVIDER/$PICK_REASON"
 if pick_configured_model review '{}'; then fail 'review had a model at the wall with no fallback'; fi
 
@@ -244,10 +244,10 @@ grep -Fq 'no implementation family has an eligible other-family reviewer reason=
   UNAVAIL=""; IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=(); routing "$RESERVED" "$now_real" 10
   hard_implementer_fields() { PICK_PROVIDER=codex; PICK_MODEL=gpt-6-luna; PICK_EFFORT=max; }; provider_runtime_ready() { return 1; }
   jq '.families.claude.implement = false' "$R/model-routing.json" > "$R/r.tmp" && mv "$R/r.tmp" "$R/model-routing.json"
-  pick_implementer '{"id":"hard-claude-off","hard_escalated":true}' && [[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == hard-fallback-zcode ]] \
+  pick_implementer '{"id":"hard-claude-off","history":[{"stage":"hard-escalation"}]}' && [[ "$PICK_PROVIDER" == zcode && "$PICK_REASON" == hard-fallback-zcode ]] \
     || fail "hard escalation picked an implement=false family: $PICK_PROVIDER/$PICK_REASON"
   jq 'del(.families.claude.implement)' "$R/model-routing.json" > "$R/r.tmp" && mv "$R/r.tmp" "$R/model-routing.json"
-  pick_implementer '{"id":"hard-claude-on","hard_escalated":true}' && [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == hard-fallback-claude ]] \
+  pick_implementer '{"id":"hard-claude-on","history":[{"stage":"hard-escalation"}]}' && [[ "$PICK_PROVIDER" == claude && "$PICK_REASON" == hard-fallback-claude ]] \
     || fail "hard escalation without the implement field changed: $PICK_PROVIDER/$PICK_REASON"
   routing "$RESERVED" "$now_real" 10
 

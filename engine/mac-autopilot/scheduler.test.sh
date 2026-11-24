@@ -6532,11 +6532,21 @@ sched_case_glm_share_hard_after_two_failed_repairs() {
   local unit u selected
   unit='issue-6351'
   command jq -n --arg id "$unit" '{units:[{id:$id,issue:6351,stage:"repair-pending",history:[
+    {stage:"advisor-ruling"},
     {stage:"write-start",work_type:"repair",provider:"codex",hard_escalation:false},
     {stage:"repair-delivered"},{stage:"review-request-changes"},
     {stage:"write-start",work_type:"repair",provider:"codex",hard_escalation:false},
     {stage:"repair-delivered"},{stage:"review-request-changes"}
   ]}]}' > "$UNITS"
+  u="$(command jq -c '.units[0] | .history |= map(select(.stage != "advisor-ruling"))' "$UNITS")"
+  if repair_cap_admission "$unit" "$u"; then echo 'not ok - scheduler.test.sh: two failed repairs reached the hard tier without a plan' >&2; exit 1; fi
+  [[ "$(command jq -r '[.units[0].history[] | select(.stage == "hard-escalation")] | length' "$UNITS")" == 0 ]] \
+    || { echo 'not ok - scheduler.test.sh: an unplanned unit was hard-escalated' >&2; exit 1; }
+  pick implement '{"id":"issue-6352","issue":6352,"stage":"repair-pending","hard_escalated":true,"history":[{"stage":"supervisor-arbiter"},{"stage":"supervisor-requeue"}]}' \
+    || { echo 'not ok - scheduler.test.sh: an arbitrated unit had no implementer' >&2; exit 1; }
+  [[ "$PICK_HARD" == false && "$PICK_MODEL" != gpt-6.1-terra ]] \
+    || { echo "not ok - scheduler.test.sh: arbitration alone picked the hard identity ($PICK_MODEL)" >&2; exit 1; }
+  command jq '.units[0].stage="repair-pending"' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
   u="$(command jq -c '.units[0]' "$UNITS")"
   repair_cap_admission "$unit" "$u" \
     || { echo 'not ok - scheduler.test.sh: two failed repairs blocked the hard-tier attempt' >&2; exit 1; }
