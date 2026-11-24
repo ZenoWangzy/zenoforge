@@ -735,9 +735,9 @@ model_policy_scan_sources() {
       echo "model_policy: hardcoded model identity appears in $file" >&2
       return 1
     fi
-  # bin/ (the worker launchers luna, terra, worker in a packaged engine) names concrete models on purpose.
+  # bin/ (the worker launchers luna, terra, worker in a packaged engine) names concrete models on purpose. vendor/pstack/agents is upstream text that the engine never launches.
   done < <(
-    find "$script_dir" -type f ! -name '*.test.*' ! -path "$script_dir/bin/*" -print0
+    find "$script_dir" -type f ! -name '*.test.*' ! -path "$script_dir/bin/*" ! -path "$script_dir/vendor/pstack/agents/*" -print0
     for file in "$rulings_file" "$incident_guards_file"; do
       [[ -n "$file" && "$file" != "$script_dir/"* && -f "$file" ]] && printf '%s\0' "$file"
     done
