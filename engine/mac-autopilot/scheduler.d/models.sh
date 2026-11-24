@@ -275,9 +275,8 @@ provider_runtime_ready() { # provider model [role] [unit JSON] -> runnable, poli
   esac
 }
 
-unit_hard_escalated() { # unit JSON -> true after the two-repair cap or supervisor arbiter
-  command jq -e '(.hard_escalated // false) == true
-    or any((.history // [])[]?; .stage == "hard-escalation" or .stage == "supervisor-arbiter" or .stage == "supervisor-arbiter-round")' \
+unit_hard_escalated() { # unit JSON -> true after the two-repair cap
+  command jq -e 'any((.history // [])[]?; .stage == "hard-escalation")' \
     <<<"$1" >/dev/null 2>&1
 }
 
@@ -433,13 +432,12 @@ dispatch_known_zcode_start() { # unit-json -> 0 while the coming implement/repai
 }
 
 pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota failover
-  local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum=0 status arbiter=false
+  local u="$1" assigned actual preferred reason issue hash bucket zcode_share claude_share codex_share sum=0 status
   local route_start route_candidate route_share selected="" IMPLEMENT_ROUTE_SKIPS=""
   local -a route_order=(zcode claude codex)
   if unit_hard_escalated "$u"; then
     hard_implementer_fields || { say "no hard implementation identity available"; return 1; }
     actual="$PICK_PROVIDER"
-    [[ "$(command jq -r '.hard_escalated // false' <<<"$u")" == true ]] || arbiter=true
     implement_route_family_reviewable "$actual" && provider_runtime_ready "$actual" "$PICK_MODEL" production "$u" || {
       if claude_share_allowed \
           && implement_route_family_reviewable claude && pick_claude_implementer; then
@@ -454,7 +452,7 @@ pick_implementer() { # unit JSON -> deterministic sticky assignment plus quota f
       return 1
     }
     PICK_ROUTE_PROVIDER="$actual"; PICK_HARD=true
-    if [[ "$arbiter" == true ]]; then PICK_REASON=supervisor-arbiter-hard; else PICK_REASON=hard-production; fi
+    PICK_REASON=hard-production
     return 0
   fi
 

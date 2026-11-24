@@ -78,14 +78,14 @@ chmod +x "$fixture/bin/claude"
 CFG="$(jq '.models.hard=null | .models.implement_hotfix=["gpt-6.1-terra","high"]
   | .models.review_fallback=["claude-sonnet-5-5","high"]' "$template")"
 cache="$WORKER_SCRATCH_ROOT/luna/model-not-found.cache"; rm -f "$cache"
-pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'hard repair has no configured model without a cache'
+pick_implementer '{"id":"terra-hard-repair","history":[{"stage":"hard-escalation"}]}' || fail 'hard repair has no configured model without a cache'
 [[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "hard repair changed its configured model without a cache ($PICK_MODEL/$PICK_EFFORT)"
 printf 'gpt-6.1-terra\t%s\n' "$(( $(date +%s) + 86400 ))" > "$cache"
-pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'cached hard repair model was not selectable'
+pick_implementer '{"id":"terra-hard-repair","history":[{"stage":"hard-escalation"}]}' || fail 'cached hard repair model was not selectable'
 [[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == max ]] || fail "cached terra hard repair must use luna max ($PICK_MODEL/$PICK_EFFORT)"
 grep -Fq 'model-not-found cache swap hard-tier from=gpt-6.1-terra to=gpt-6-luna effort=max' "$LOG" || fail 'hard repair cache swap was not logged'
 printf 'gpt-6.1-terra\t%s\n' "$(( $(date +%s) - 1 ))" > "$cache"
-pick_implementer '{"id":"terra-hard-repair","hard_escalated":true}' || fail 'expired hard repair cache blocked the configured model'
+pick_implementer '{"id":"terra-hard-repair","history":[{"stage":"hard-escalation"}]}' || fail 'expired hard repair cache blocked the configured model'
 [[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "expired cache must restore the configured terra tuple ($PICK_MODEL/$PICK_EFFORT)"
 rm -f "$cache"
 printf '%s\n' '{"error":{"code":"model_not_found"}}' > "$sup/terra.worker.log"
