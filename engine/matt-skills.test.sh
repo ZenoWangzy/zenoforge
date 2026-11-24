@@ -33,15 +33,20 @@ for entry in run-triage.sh:ask-matt run-triage-batch.sh:ask-matt run-recut.sh:to
   grep -Eq "matt_skills_note .*\b$skill\b" "$SCRIPT_DIR/$script" || fail "$script must name Matt skill $skill in its prompt"
   [[ -f "$engine_skills/$skill/SKILL.md" ]] || fail "Matt skill $skill for $script is not vendored"
 done
-solve="$(solve_skill_md)"
-[[ -f "$solve" ]] || fail "the engine must ship the solve flow"
+solve="$(matt_engine_skill_md solve)" router="$(matt_engine_skill_md ask-zeno)"
+[[ -f "$solve" && -f "$router" ]] || fail "the engine must ship solve and ask-zeno"
+router_named="$(grep -oE '`[a-z][a-z-]+`' "$router" | tr -d '`' | sort -u)"
+vendored="$({ for d in "$engine_skills"/*/ "$SCRIPT_DIR"/vendor/pstack/skills/*/; do [[ ! -f "$d/SKILL.md" ]] || basename "$d"; done; echo ub-mode; } | sort -u)"
+(( $(wc -l <<<"$vendored") >= 90 )) || fail "the vendored skills were not found"
 [[ -f "$SCRIPT_DIR/vendor/ub-mode/SKILL.md" ]] || fail "ub-mode must be vendored"
-mapfile -t named < <(awk '/^## Routing/{on=1; next} /^## |^The three sources/{on=0} on' "$solve" | grep -oE '`[a-z][a-z-]+`' | tr -d '`' | sort -u)
-(( ${#named[@]} >= 20 )) || fail "the solve routing table was not parsed (${#named[@]} skills)"
-for name in "${named[@]}" reframe sharpen; do
-  [[ -f "$engine_skills/$name/SKILL.md" || -f "$(pstack_skill_md "$name")" ]] || fail "solve names skill $name, which is not vendored"
+unknown="$(comm -23 <(printf '%s\n' "$router_named") <(printf '%s\n' "$vendored"))"
+[[ -z "$unknown" ]] || fail "ask-zeno names skills that are not vendored: $(paste -sd' ' <<<"$unknown")"
+unrouted="$(comm -13 <(printf '%s\n' "$router_named") <(printf '%s\n' "$vendored") | grep -vE '^(principle-|ask-zeno$)' || true)"
+[[ -z "$unrouted" ]] || fail "vendored skills with no route in .agents/skills/ask-zeno/SKILL.md: $(paste -sd' ' <<<"$unrouted")"
+for rel in ../solve/SKILL.md ../tdd/SKILL.md ../../../engine/vendor/pstack/skills/reframe/SKILL.md ../../../engine/vendor/ub-mode/SKILL.md; do
+  [[ -f "${router%/*}/$rel" ]] || fail "ask-zeno's path $rel does not resolve"
 done
 rule="$(bash -c 'source "$1/incident-rule.sh"; incident_rule_text' _ "$SCRIPT_DIR")"
 [[ "$rule" == *"$solve"* ]] || fail "the incident rule must point at the solve flow"
-grep -Fq 'solve_skill_md' "$SCRIPT_DIR/mac-autopilot/scheduler.d/evals-arbiter.sh" || fail "the worker method rule must point at the solve flow"
+grep -Fq 'matt_engine_skill_md solve' "$SCRIPT_DIR/mac-autopilot/scheduler.d/evals-arbiter.sh" || fail "the worker method rule must point at the solve flow"
 echo 'matt-skills.test.sh: PASS'
