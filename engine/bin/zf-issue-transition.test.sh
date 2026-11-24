@@ -52,13 +52,19 @@ if [ "${1:-}" = label ] && [ "${2:-}" = list ]; then
   exit 0
 fi
 if [ "${1:-}" = api ]; then
+  api_include=0
+  if [[ " $* " == *" --include "* ]]; then api_include=1; fi
+  api_json() {
+    if [ "$api_include" = 1 ]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$1"; else printf '%s\n' "$1"; fi
+  }
   case "$*" in
-    *issues/5336/sub_issues*) printf '[{"number":5338,"state":"closed","closed_at":"2026-11-10T00:00:00Z","labels":[]} ]\n'; exit 0 ;;
+    *issues/5336/sub_issues*) api_json '[{"number":5338,"state":"closed","closed_at":"2026-11-10T00:00:00Z","labels":[]}]'; exit 0 ;;
     *issues/5337/sub_issues*) printf 'fixture sub-issue read failed\n' >&2; exit 1 ;;
-    *sub_issues*) printf '[]\n'; exit 0 ;;
-    */issues/[0-9]*) # issue_rest_view: the state file of `gh issue view --json state`, REST-shaped
-      n="${2##*/}"; st="$(cat "${ZF_GH_LIVE_LABELS:?}/$n.state" 2>/dev/null || echo CLOSED)"
-      printf '{"number":%s,"title":"t","body":"","state":"%s","labels":[]}\n' "$n" "$(printf '%s' "$st" | tr 'A-Z' 'a-z')"; exit 0 ;;
+    *sub_issues*) api_json '[]'; exit 0 ;;
+    */issues/[0-9]*)
+      n="${2##*/}"; [ "${ZF_GH_UNREADABLE_ISSUE:-}" != "$n" ] || { printf 'fixture issue read failed\n' >&2; exit 1; }
+      st="$(cat "${ZF_GH_LIVE_LABELS:?}/$n.state" 2>/dev/null || echo CLOSED)"
+      api_json "$(printf '{"number":%s,"title":"t","body":"","state":"%s","labels":[]}' "$n" "$(printf '%s' "$st" | tr 'A-Z' 'a-z')")"; exit 0 ;;
   esac
   printf 'unexpected gh api call: %s\n' "$*" >&2
   exit 1
@@ -259,6 +265,47 @@ bash "$CLI" 5323 needs-triage supervisor-batch >/dev/null 2>"$err" || refuse_rc=
 rm -f "$LIVE_LABELS_DIR/stale-on-hold"
 echo 'ok - a lagging on-hold snapshot does not refuse a live-unheld issue'
 
+live_labels 1271 tracker
+seed_state 1271 '{"state":"tracker","recut_children":[7069]}'
+printf 'CLOSED\n' > "$LIVE_LABELS_DIR/7069.state"
+: > "$GH_LOG"
+if ! out="$(bash "$CLI" 1271 ready-for-agent pipeline-requeue 2>"$err")"; then
+  cat "$err" >&2
+  fail 'a tracker with only closed recorded children could not return to ready-for-agent'
+fi
+[ "$out" = 'transition #1271 tracker -> ready-for-agent (reason=pipeline-requeue)' ] \
+  || fail "unexpected stale tracker transition line: $out"
+grep -Fq 'issue_transition: cleared stale tracker_parent on #1271' "$err" \
+  || fail "stale tracker clear line missing: $(cat "$err")"
+[ "$(jq -r '.state' "$AGENT_HOME/state/1271.json")" = ready-for-agent ] \
+  || fail 'closed-child tracker did not reach ready-for-agent'
+
+live_labels 1272 tracker
+seed_state 1272 '{"state":"tracker","recut_children":[7072]}'
+printf 'OPEN\n' > "$LIVE_LABELS_DIR/7072.state"
+: > "$GH_LOG"
+refuse_rc=0
+bash "$CLI" 1272 ready-for-agent pipeline-requeue >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'a tracker with an open recorded child reached ready-for-agent'
+grep -Fq 'issue_transition: refused tracker parent #1272 -> active state ready-for-agent' "$err" \
+  || fail "open-child tracker refusal line missing: $(cat "$err")"
+[ "$(jq -r '.state' "$AGENT_HOME/state/1272.json")" = tracker ] \
+  || fail 'open-child tracker state changed after refusal'
+[ "$(edit_count 1272)" -eq 0 ] || fail 'open-child tracker refusal wrote labels'
+
+live_labels 1273 tracker
+seed_state 1273 '{"state":"tracker","recut_children":[7073]}'
+: > "$GH_LOG"
+refuse_rc=0
+ZF_GH_UNREADABLE_ISSUE=7073 bash "$CLI" 1273 ready-for-agent pipeline-requeue >/dev/null 2>"$err" || refuse_rc=$?
+[ "$refuse_rc" -ne 0 ] || fail 'a tracker with an unreadable recorded child reached ready-for-agent'
+grep -Fq 'issue_transition: refused tracker parent #1273 -> active state ready-for-agent' "$err" \
+  || fail "unreadable-child tracker refusal line missing: $(cat "$err")"
+[ "$(jq -r '.state' "$AGENT_HOME/state/1273.json")" = tracker ] \
+  || fail 'unreadable-child tracker state changed after refusal'
+[ "$(edit_count 1273)" -eq 0 ] || fail 'unreadable-child tracker refusal wrote labels'
+echo 'ok - stale trackers return to work only after every child is verified closed'
+
 # A state=tracker leaf can return to triage or dispatch, and a merged leaf can
 # enter release state. The same transition guard keeps a tracker with an open
 # recut child out of active lanes.
@@ -297,31 +344,19 @@ grep -Fq -- '--add-label awaiting-release' "$GH_LOG" || fail 'release transition
 live_labels 5336 tracker
 seed_state 5336 '{"state":"tracker","tracker_parent":true,"recut_children":[]}'
 : > "$GH_LOG"
-refuse_rc=0
-bash "$CLI" 5336 ready-for-agent pipeline-requeue >/dev/null 2>"$err" || refuse_rc=$?
-[ "$refuse_rc" -ne 0 ] || fail 'tracker with a closed native sub-issue re-entered ready-for-agent'
-grep -Fq 'issue_transition: refused tracker parent #5336 -> active state ready-for-agent' "$err" \
-  || fail "closed native sub-issue refusal line missing: $(cat "$err")"
-[ "$(jq -r '.state' "$AGENT_HOME/state/5336.json")" = tracker ] \
-  || fail 'closed native sub-issue tracker state changed after refusal'
-[ "$(edit_count 5336)" -eq 0 ] || fail 'closed native sub-issue refusal wrote labels'
-echo 'ok - a closed native sub-issue keeps its tracker parent parked'
+if ! out="$(bash "$CLI" 5336 ready-for-agent pipeline-requeue 2>"$err")"; then
+  cat "$err" >&2
+  fail 'a tracker with only a closed native sub-issue could not return to ready-for-agent'
+fi
+[ "$out" = 'transition #5336 tracker -> ready-for-agent (reason=pipeline-requeue)' ] \
+  || fail "unexpected closed native sub-issue transition line: $out"
+[ "$(jq -r '.state' "$AGENT_HOME/state/5336.json")" = ready-for-agent ] \
+  || fail 'closed native sub-issue tracker did not reach ready-for-agent'
+[ "$(edit_count 5336)" -eq 1 ] || fail 'closed native sub-issue transition did not write labels'
 
-# Tracker parents with closed children can enter release state, but stay out of
-# every other active lane. A parent with an open child stays in tracker.
 live_labels 5332 tracker
 seed_state 5332 '{"state":"tracker","tracker_parent":true,"recut_children":[5335],"run":{"outcome":"merged","evidence":{"pr_number":"5332"}},"deploy_state":"pending"}'
 printf 'CLOSED\n' > "$LIVE_LABELS_DIR/5335.state"
-: > "$GH_LOG"
-refuse_rc=0
-bash "$CLI" 5332 ready-for-agent pipeline-requeue >/dev/null 2>"$err" || refuse_rc=$?
-[ "$refuse_rc" -ne 0 ] || fail 'closed-child tracker re-entered ready-for-agent'
-grep -Fq 'issue_transition: refused tracker parent #5332 -> active state ready-for-agent' "$err" \
-  || fail "closed-child tracker dispatch refusal line missing: $(cat "$err")"
-[ "$(jq -r '.state' "$AGENT_HOME/state/5332.json")" = tracker ] \
-  || fail 'closed-child tracker state changed after ready-for-agent refusal'
-[ "$(edit_count 5332)" -eq 0 ] || fail 'closed-child tracker refusal wrote labels'
-
 : > "$GH_LOG"
 if ! out="$(bash "$CLI" 5332 awaiting-release merged-pr 2>"$err")"; then
   cat "$err" >&2
@@ -333,8 +368,7 @@ fi
   || fail 'closed-child tracker did not enter awaiting-release'
 [ "$(jq -r '.tracker_parent // false' "$AGENT_HOME/state/5332.json")" = false ] \
   || fail 'closed-child tracker kept the tracker parent flag after release transition'
-grep -Fq -- '--remove-label tracker' "$GH_LOG" || fail 'release transition did not remove the tracker label'
-grep -Fq -- '--add-label awaiting-release' "$GH_LOG" || fail 'release transition did not add the awaiting-release label'
+[ "$(edit_count 5332)" -eq 1 ] || fail 'closed-child tracker transition did not write labels'
 
 live_labels 5334 tracker
 seed_state 5334 '{"state":"tracker","tracker_parent":true,"recut_children":[5335]}'
@@ -348,7 +382,7 @@ grep -Fq 'issue_transition: refused tracker parent #5334 -> active state needs-t
 [ "$(jq -r '.state' "$AGENT_HOME/state/5334.json")" = tracker ] \
   || fail 'open-child tracker state changed after refusal'
 [ "$(edit_count 5334)" -eq 0 ] || fail 'open-child tracker refusal wrote labels'
-echo 'ok - childless trackers return to work or release, while a tracker with an open child stays parked'
+echo 'ok - trackers with verified-closed children return to work, while open-child trackers stay parked'
 
 live_labels 5337 tracker
 seed_state 5337 '{"state":"tracker","tracker_parent":true,"recut_children":[]}'

@@ -35,7 +35,7 @@
 5	engine/bin/worker-stop.test.sh
 32	engine/bin/worker.test.sh
 1	engine/bin/zc-quota.test.sh
-42	engine/bin/zf-issue-transition.test.sh
+40	engine/bin/zf-issue-transition.test.sh
 16	engine/blind-rerun-gate.test.sh
 2	engine/call-profile.sh
 16	engine/cdp-page-registry.cjs
@@ -248,7 +248,7 @@
 21	engine/lib.d/pipeline-system.sh
 74	engine/lib.d/quarantine.sh
 6	engine/lib.d/recut-route.sh
-151	engine/lib.d/recut.sh
+147	engine/lib.d/recut.sh
 80	engine/lib.d/release-close.sh
 30	engine/lib.d/release-walk.sh
 72	engine/lib.d/route-advisor.sh

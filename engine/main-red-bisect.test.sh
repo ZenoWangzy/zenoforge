@@ -87,20 +87,27 @@ cat > "$FAKE_BIN/gh" <<'GH'
 state="${FAKE_GH_STATE:?}"
 printf '%s\n' "$*" >> "$state/calls.log"
 api_path=""
+api_include=0
+for arg in "$@"; do [[ "$arg" != --include ]] || api_include=1; done
+api_response() {
+  if [ "$api_include" = 1 ]; then printf 'HTTP/1.1 200 OK\n\n'; fi
+  printf '%s\n' "$1"
+}
 if [ "${1:-}" = api ]; then
   for arg in "$@"; do case "$arg" in repos/*) api_path="$arg"; break ;; esac; done
 fi
 if [ "${1:-}" = api ]; then
   case "$api_path" in
-    repos/*/actions/workflows/ci.yml/runs?*) cat "$state/completed-runs.json" ;;
-    repos/*/actions/workflows/pipeline-suites.yml/runs?*) cat "$state/pipeline-suites-runs.json" ;;
+    repos/*/actions/workflows/ci.yml/runs?*) body="$(cat "$state/completed-runs.json")" ;;
+    repos/*/actions/workflows/pipeline-suites.yml/runs?*) body="$(cat "$state/pipeline-suites-runs.json")" ;;
     repos/*/actions/runs?head_sha=*)
       sha="${api_path#*head_sha=}"; sha="${sha%%&*}"
-      jq -cn --argjson runs "$(cat "$state/per-sha-runs.json")" --arg sha "$sha" \
-        '{workflow_runs: ($runs[$sha] // [])}'
+      body="$(jq -cn --argjson runs "$(cat "$state/per-sha-runs.json")" --arg sha "$sha" \
+        '{workflow_runs: ($runs[$sha] // [])}')"
       ;;
-    *) printf '{}\n' ;;
+    *) body='{}' ;;
   esac
+  api_response "$body"
   exit 0
 fi
 case "${1:-} ${2:-}" in

@@ -30,7 +30,7 @@ assert_false() {
 }
 
 TEST_DIR="$(mktemp -d)"
-trap 'rm -rf -- "$TEST_DIR"' EXIT
+trap 'rm -rf -- "$TEST_DIR" "$test_env_root"' EXIT
 mkdir -p "$TEST_DIR/bin"
 cat > "$TEST_DIR/bin/date" <<'EOF'
 #!/usr/bin/env bash
@@ -54,11 +54,16 @@ EOF
 cat > "$TEST_DIR/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+api_include=0
+if [[ " $* " == *" --include "* ]]; then api_include=1; fi
+api_response() {
+  if [ "$api_include" = 1 ]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$1"; else printf '%s\n' "$1"; fi
+}
 if [[ "$*" == *"/actions/runs/990401/jobs?"* ]]; then
-  printf '%s\n' '{"total_count":1,"jobs":[{"name":"Postsubmit validate","conclusion":"failure"}]}'
+  api_response '{"total_count":1,"jobs":[{"name":"Postsubmit validate","conclusion":"failure"}]}'
   exit 0
 elif [[ "$*" == *"/commits?sha=main"* ]]; then
-  printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  api_response 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   exit 0
 elif [[ "${1:-} ${2:-}" == 'run view' ]]; then
   case "${MAIN_FIXTURE_RUN_JOBS:-capacity}" in
@@ -67,7 +72,7 @@ elif [[ "${1:-} ${2:-}" == 'run view' ]]; then
     capacity-source-ran) jobs='[{"databaseId":990411,"conclusion":"failure","steps":[{"name":"Ensure CI runner has capacity before dependency install","conclusion":"failure"},{"name":"Run touched package gates in Dagger","conclusion":"success"}]}]' ;;
     *) jobs='[]' ;;
   esac
-  jq -cn --arg head "${MAIN_FIXTURE_HEAD_SHA:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" --argjson jobs "$jobs" '{headSha:$head,status:"completed",conclusion:"failure",jobs:$jobs}'
+  api_response "$(jq -cn --arg head "${MAIN_FIXTURE_HEAD_SHA:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" --argjson jobs "$jobs" '{headSha:$head,status:"completed",conclusion:"failure",jobs:$jobs}')"
   exit 0
 elif [[ "${1:-} ${2:-}" == 'pr view' ]]; then
   printf '%s\n' '{"baseRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false}'
@@ -103,34 +108,35 @@ if [[ "$args" == *'-H Cache-Control: no-cache'* && "$args" == *'-H Pragma: no-ca
   printf '%s\n' "$cache_key" >> "$CACHE_KEY_LOG"
   case "${MAIN_RELEASE_FIXTURE:-success}" in
     success|failure)
-      jq -cn --arg conclusion "${MAIN_RELEASE_FIXTURE:-success}" \
-        '{workflow_runs:[{event:"push",id:990401,status:"completed",conclusion:$conclusion,created_at:"2026-10-10T00:00:00Z"}]}' ;;
+      body="$(jq -cn --arg conclusion "${MAIN_RELEASE_FIXTURE:-success}" \
+        '{workflow_runs:[{event:"push",id:990401,status:"completed",conclusion:$conclusion,created_at:"2026-10-10T00:00:00Z"}]}')" ;;
     manual-success|manual-failure)
-      jq -cn --arg conclusion "${MAIN_RELEASE_FIXTURE#manual-}" \
+      body="$(jq -cn --arg conclusion "${MAIN_RELEASE_FIXTURE#manual-}" \
         '{workflow_runs:[{id:990401,event:"push",status:"completed",conclusion:"success",created_at:"2026-10-10T00:00:00Z"},
           {id:990406,event:"workflow_dispatch",status:"completed",conclusion:$conclusion,created_at:"2026-10-12T00:00:00Z"},
-          {id:990407,event:"pull_request",status:"completed",conclusion:"success",created_at:"2026-10-12T01:00:00Z"}]}' ;;
+          {id:990407,event:"pull_request",status:"completed",conclusion:"success",created_at:"2026-10-12T01:00:00Z"}]}')" ;;
     in_progress)
-      printf '%s\n' '{"workflow_runs":[{"id":990402,"event":"push","status":"in_progress","conclusion":null}]}' ;;
+      body='{"workflow_runs":[{"id":990402,"event":"push","status":"in_progress","conclusion":null}]}' ;;
     pending-failure|pending-success|cancelled-failure|cancelled-success)
-      jq -cn --arg conclusion "${MAIN_RELEASE_FIXTURE##*-}" \
+      body="$(jq -cn --arg conclusion "${MAIN_RELEASE_FIXTURE##*-}" \
         '{workflow_runs:[
           {event:"push",id:990404,status:"queued",conclusion:null,created_at:"2026-10-12T03:00:00Z"},
           {event:"push",id:990403,status:"in_progress",conclusion:null,created_at:"2026-10-12T02:00:00Z"},
           {event:"push",id:990402,status:"completed",conclusion:"cancelled",created_at:"2026-10-12T01:00:00Z"},
-          {event:"push",id:990401,status:"completed",conclusion:$conclusion,created_at:"2026-10-10T00:00:00Z"}]}' ;;
+          {event:"push",id:990401,status:"completed",conclusion:$conclusion,created_at:"2026-10-10T00:00:00Z"}]}')" ;;
     cancelled-only)
-      printf '%s\n' '{"workflow_runs":[{"event":"push","status":"completed","conclusion":"cancelled"}]}' ;;
+      body='{"workflow_runs":[{"event":"push","status":"completed","conclusion":"cancelled"}]}' ;;
     empty)
-      printf '%s\n' '{"workflow_runs":[]}' ;;
+      body='{"workflow_runs":[]}' ;;
     invalid)
-      printf '%s\n' '{"workflow_runs":{}}' ;;
+      body='{"workflow_runs":{}}' ;;
     error) echo 'simulated GitHub API error' >&2; exit 1 ;;
     *) exit 3 ;;
   esac
+  api_response "$body"
 else
   # A stable URL without a moving created bound can replay an old failure.
-  printf '{"workflow_runs":[{"event":"push","status":"completed","conclusion":"failure"}]}\n'
+  api_response '{"workflow_runs":[{"event":"push","status":"completed","conclusion":"failure"}]}'
 fi
 EOF
 chmod +x "$TEST_DIR/bin/gh"
