@@ -187,7 +187,7 @@ jq -e '.errors == {}
   and (.stages[0].idle_hours > 24 and .stages[0].oldest.number == 9)
   and (.stages[1].idle_hours == 0) and (.stages[2].idle_hours > 1.9 and .stages[2].idle_hours < 2.2)
   and .github.cached == false' <<<"$out" >/dev/null || fail "stage rows wrong: $(jq -c '{errors, stages, github}' <<<"$out")"
-jq -e '(.stages[0].excluded | map({key, name, count}) == [{"key":"roadmap","name":"路线图排序","count":1},{"key":"system","name":"系统通道","count":99}])
+jq -e '(.stages[0].excluded | map({key, name, count}) == [{"key":"session_owned","name":"会话持有","count":0},{"key":"system","name":"系统通道","count":99},{"key":"roadmap","name":"路线图排序","count":1},{"key":"on_hold","name":"暂停中","count":0},{"key":"model_backoff","name":"模型退避","count":0},{"key":"retry_deferred","name":"等待刷新","count":0},{"key":"scheduler_inflight","name":"调度器处理中","count":0}])
   and (.stages[0].excluded | all(.tooltip | contains("不计入待分诊")))' <<<"$out" >/dev/null \
   || fail "excluded triage figures wrong: $(jq -c '.stages[0] | {count, oldest, excluded}' <<<"$out")"
 # triage_split.py: with roadmap-order off, a roadmap-labelled ticket is eligible again
@@ -198,13 +198,25 @@ field = t.graphql_stage_fields([("needs-triage",)])
 expected = "a0:issues(states:OPEN,labels:[\"needs-triage\"],first:100,orderBy:{field:UPDATED_AT,direction:ASC}){totalCount nodes{number title createdAt updatedAt labels(first:100){nodes{name}}} pageInfo{endCursor hasNextPage}}"
 assert field == expected, field
 row = t.stage("needs-triage", {"totalCount": 1, "nodes": [{"number": 10, "updatedAt": "2025-12-01T00:00:00Z", "labels": {"nodes": [{"name": "needs-triage"}, {"name": "roadmap"}]}}]})
-assert row["count"] == 1 and row["excluded"][0]["count"] == 0 and row["excluded"][1]["count"] == 0, row
+assert row["count"] == 1 and all(item["count"] == 0 for item in row["excluded"]), row
 ' || fail 'roadmap switch off did not count the roadmap ticket as eligible'
 ZF_PIPELINE_ROADMAP_SWITCH=true MODEL_POLICY_FILE="$f/model-policy-off.json" PYTHONPATH="$script_dir" python3 -c '
 import triage_split as t
 row = t.stage("needs-triage", {"totalCount": 1, "nodes": [{"number": 10, "updatedAt": "2025-12-01T00:00:00Z", "labels": {"nodes": [{"name": "needs-triage"}, {"name": "roadmap"}]}}]})
-assert row["count"] == 0 and row["excluded"][0]["count"] == 1, row
+assert row["count"] == 0 and {item["key"]: item["count"] for item in row["excluded"]}["roadmap"] == 1, row
 ' || fail 'pipeline roadmap override did not take precedence over model-policy'
+mkdir -p "$AGENT_HOME/state"
+jq -n --argjson until "$(( $(date +%s) + 3600 ))" '{model_failure_backoff:{until_epoch:$until}}' > "$AGENT_HOME/state/1004.json"
+jq -n --argjson until "$(( $(date +%s) + 3600 ))" '{triage_retry_after_epoch:$until}' > "$AGENT_HOME/state/1005.json"
+PYTHONPATH="$script_dir" python3 - "$script_dir/triage-fixture.json" <<'PY' || fail 'dashboard triage count did not use the shared eligibility filter'
+import json, sys, triage_split as t
+issues = json.load(open(sys.argv[1], encoding="utf-8"))
+nodes = [{**issue, "labels": {"nodes": issue["labels"]}} for issue in issues]
+row = t.stage("needs-triage", {"totalCount": len(nodes), "nodes": nodes})
+counts = {item["key"]: item["count"] for item in row["excluded"]}
+assert row["count"] == 2, row
+assert counts == {"session_owned": 1, "system": 1, "on_hold": 1, "model_backoff": 1, "retry_deferred": 1, "scheduler_inflight": 1, "roadmap": 0}, counts
+PY
 jq -e '.search_counts.issues_open == 128 and .search_counts.issues_closed == 31
   and .search_counts.prs_open == 2 and .search_counts.prs_merged == 3 and .search_counts.prs_closed_unmerged == 4
   and .search_counts.stages["needs-triage"] == 102 and .search_counts.stages["awaiting-release"] == 5' <<<"$out" >/dev/null \
@@ -262,9 +274,9 @@ run
 front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9 and .search_counts.issues_open == 128' >/dev/null || fail "cached run not marked cached"
 
 # A pre-split cache must be refreshed instead of restoring its raw needs-triage count.
-jq '(.github.stages) |= map(if .label == "needs-triage" then del(.excluded) else . end)' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
+jq '(.github.stages) |= map(if .label == "needs-triage" then .excluded |= map(select(.key != "session_owned")) else . end)' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
 run
-front | jq -e '.github.cached == false and .stages[0].count == 2 and (.stages[0].excluded | length == 2)' >/dev/null \
+front | jq -e '.github.cached == false and .stages[0].count == 2 and (.stages[0].excluded | length == 7)' >/dev/null \
   || fail "pre-split cache kept the raw needs-triage count: $(front | jq -c '{github, stage: .stages[0]}')"
 [[ "$(wc -l < "$FAKE_GH_LOG")" == 7 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
 

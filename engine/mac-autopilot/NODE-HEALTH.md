@@ -338,7 +338,7 @@ minutes), not yet from a month of data. Change the number here and in the code t
 
 | Number | Healthy | Unhealthy | Source |
 |---|---|---|---|
-| `stage.needs-triage.count` / `.idle_hours` | ≤ 10 / ≤ 6 h | ≥ 30 / ≥ 24 h | GitHub GraphQL, open issues per label; idle = oldest `updatedAt` |
+| `stage.needs-triage.count` / `.idle_hours` | ≤ 10 / ≤ 6 h | ≥ 30 / ≥ 24 h | triageable count and oldest `updatedAt` from `triage_split.filter_issues` over the GitHub GraphQL snapshot, issue state in `AGENT_HOME`, scheduler `units.json`, and active triage batch markers; labelled-but-excluded issues are measured by first matching reason without bounds |
 | `stage.finish-first.count` / `.idle_hours` | ≤ 20 / ≤ 48 h | ≥ 50 / ≥ 120 h | same |
 | `stage.needs-info.count` / `.idle_hours` | ≤ 10 / ≤ 72 h | ≥ 30 / ≥ 168 h | same |
 | `stage.needs-advisor.count` / `.idle_hours` | ≤ 10 / ≤ 12 h | ≥ 30 / ≥ 48 h | same |

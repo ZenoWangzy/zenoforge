@@ -10,6 +10,7 @@ done
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.d/triage-filter.sh"
 # shellcheck source=./lib.d/triage-solo.sh
 source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
@@ -44,36 +45,11 @@ if [ "$DEFERRED_BY_CAP" -gt 0 ]; then
 fi
 [ "${#BATCH_IDS[@]}" -gt 0 ] || exit 0
 
-triage_needs_queue_selectable_count() {
-  local queue_json lane_labels queue_rows n maintainer_test count=0 now
-  now="$(date +%s)"
-  queue_json="$(timeout 30s gh issue list --repo "$REPO" --limit 1000 --label needs-triage --state open --json number,labels)" || return 1
-  jq -e 'type == "array"' <<< "$queue_json" >/dev/null 2>&1 || return 1
-  lane_labels="$(pipeline_system_issue_labels_json)" || return 1
-  queue_rows="$(jq -r --argjson lane_labels "$lane_labels" '
-    .[]
-    | select(any(.labels[]?.name; . == "on-hold") | not)
-    | select(any(.labels[]?.name; . as $name | ($lane_labels | index($name)) != null) | not)
-    | [.number, (any(.labels[]?; .name == "founder-test") | tostring)]
-    | @tsv
-  ' <<< "$queue_json")" || return 1
-  while IFS=$'\t' read -r n maintainer_test; do
-    [ -n "$n" ] || continue
-    [ "$(issue_model_failure_backoff_remaining "$n" "$now")" -gt 0 ] && continue
-    if [ "$maintainer_test" != true ] && triage_retry_deferred "$n" "$now"; then
-      continue
-    fi
-    count=$((count + 1))
-  done <<< "$queue_rows"
-  printf '%s\n' "$count"
-}
-
 BATCH_LOCK_FD=""
 if ! try_lock_nonblocking "$AGENT_HOME/triage-batch.lock" BATCH_LOCK_FD; then
   echo "run-triage-batch: another batch wrapper is active; leaving issues queued" >&2
   exit 0
 fi
-
 SCRATCH_DIR=""
 WT=""
 CODEX_BUDGET_RESERVATION_ID=""
