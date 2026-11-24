@@ -5,7 +5,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "fork_rate.test.sh: $*" >&2; exit 1; }
 python3 - "$script_dir" "$test_env_root" <<'FORK_RATE' || fail 'process-tree fork-rate sampling failed'
-import json, os, shutil, sys
+import json, os, shutil, subprocess, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1]); import node_health as n; import fork_rate
 base = Path(sys.argv[2]) / "fork-rate"
@@ -93,5 +93,22 @@ assert "non-systemd (session-a, 800): 60.0/s" in detail, detail
 for i in range(6):
     assert f"service-{i}.service (worker-{i}, {200 + i}): 30.0/s" in detail, detail
 assert "total_rate: 240.0/s" in detail and "unattributed: 0.0/s (0%)" in detail, detail
+cli = base / "cli"; proc = cli / "proc"; runtime = cli / ".scratch-supervisor" / "autopi"
+runtime.mkdir(parents=True)
+write_proc(proc, 70000, [manager, root])
+state = runtime / "node-health-fork-rate-state.json"
+state.write_text(json.dumps({"sampled_at": time.time() - 11, "processes": 10000,
+                             "pids": [manager[0], root[0]]}))
+fake_bin = cli / "bin"; fake_bin.mkdir(); (fake_bin / "gh").symlink_to("/bin/false")
+env = dict(os.environ, NODE_HEALTH_PROC_ROOT=str(proc), ZF_REPO="", PATH=str(fake_bin) + os.pathsep + os.environ["PATH"])
+done = subprocess.run(
+    [sys.executable, str(Path(sys.argv[1]) / "node_health.py"), "--runtime", str(runtime),
+     "--audit", str(cli / "audit.jsonl"), "--main-red-dir", str(cli / "main-red"),
+     "--now", "2026-10-19T12:00:00Z", "--json", str(runtime / "node-health.json")],
+    env=env, capture_output=True, text=True)
+assert done.returncode == 0, done.stderr
+scorecard = json.loads((runtime / "node-health.json").read_text())
+fork_row = next(row for row in scorecard["metrics"] if row["id"] == "host.fork_rate_root_max")
+assert fork_row["value"] > 50 and fork_row["status"] == "UNHEALTHY", fork_row
 print("fork_rate attribution, stale sample, exited PID, and first-sample NO-DATA: PASS")
 FORK_RATE

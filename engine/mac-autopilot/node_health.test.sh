@@ -661,6 +661,7 @@ for i in 1 2 3 4; do echo 'worktree-lifecycle: origin fetch timed out (exit 124)
 echo 'git fetch: timed out after 60s: git -C /x fetch origin main -- treated as an environment fault, not a verdict'
 echo 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout'
 echo 'unrelated: Post "https://example.com/x": net/http: TLS handshake timeout'
+printf '\377\n'
 STUB
 chmod +x "$a/journalctl"
 python3 - "$script_dir" "$a" <<'CHECK' || fail 'GitHub network failures per hour miscounted'
@@ -1546,6 +1547,17 @@ flowrun "$missing" --json "$missing/node-health.json" >/dev/null
 jq -e '([.metrics[] | select(.id == "intake.oldest_never_started_rfa_hours")][0] | .value == null and .status == "NO-DATA")
   and ([.metrics[] | select(.id == "supervisor.oldest_review_hours")][0] | .value == null and .status == "NO-DATA")' "$missing/node-health.json" >/dev/null \
   || fail "missing age inputs must be NO-DATA, not zero: $(jq -c '[.metrics[] | select(.id | endswith("oldest_review_hours") or endswith("oldest_never_started_rfa_hours"))]' "$missing/node-health.json")"
+python3 - "$script_dir" "$ages" "$cache_at" <<'PY'
+import datetime, json, os, sys
+sys.path.insert(0, sys.argv[1])
+import flow_unstarted_health as health
+runtime = sys.argv[2]
+now = datetime.datetime.fromtimestamp(int(sys.argv[3]), datetime.timezone.utc)
+json.dump({"schema": 4, "created_at": int(sys.argv[3]), "rows": ""}, open(os.path.join(runtime, "intake-candidates.json"), "w"))
+json.dump({"units": []}, open(os.path.join(runtime, "units.json"), "w"))
+assert health.oldest_ready_age(runtime, [], now, True) == 0.0
+assert health.oldest_review_age([], now, True) == 0.0
+PY
 # 无积压（全部终态且在窗口前）：合入速率不计值，不读成 0
 ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"
 printf '{"units":[{"id":"pr-31","stage":"merged","history":[{"stage":"created","at":"2026-10-18T10:00:00Z"},{"stage":"merged","at":"2026-10-18T11:00:00Z"}]}]}' > "$sa/units.json"
