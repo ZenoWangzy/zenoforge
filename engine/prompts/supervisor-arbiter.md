@@ -28,7 +28,7 @@ before any fix) with a regression test written test-first (`tdd`); for a review
 dispute, the axis of the finding, Standards or Spec, as `code-review` defines
 them. After two fixes failed the same check, the GUIDANCE opens with the
 premise they shared, one other known problem it could be, the sign that tells
-them apart, and an order to test that first. A `needs-info` QUESTION is one business question,
+them apart; test that first. A `needs-info` QUESTION is one business question,
 the same test `triage` applies before it asks a reporter.
 
 ## Decision rules (in order; the first match stops)
