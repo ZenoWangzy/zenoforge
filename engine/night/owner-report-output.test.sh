@@ -91,6 +91,7 @@ chart_facts="$(owner_report_compare "$chart_input" "$home" "$now" '')"
 [[ "$(jq -r '.charts.station_series[] | select(.key == "implement") | .points | length' <<< "$chart_facts")" == 3 ]] || fail 'the station chart exposes its available seven-day points'
 [[ "$(jq -r '.charts.model_spend[] | select(.model == "glm:test") | .tokens' <<< "$chart_facts")" == 2000 ]] || fail 'the comparison exposes per-model spend for charts'
 [[ "$(jq -r '.charts.causes[] | select(.line == "station:merge") | .owner' <<< "$chart_facts")" == '合入环节' ]] || fail 'structured chart causes retain their owner'
+[[ "$(jq -r '.charts.anomalies[] | select(.line == "station:merge") | .owner_key' <<< "$chart_facts")" == 'flow.merge_rate_per_hour' ]] || fail 'anomaly facts identify their shared owner-map key'
 printf 'ok - owner report facts provide station trends, model spend and owned causes\n'
 
 # A failed read drops its lines: neither a zero nor a stale number is printed.

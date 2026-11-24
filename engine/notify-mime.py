@@ -2,7 +2,7 @@ import base64, json, re
 import sys
 from email.message import EmailMessage
 
-to_addr, subject, body_path, issue_marker, mailer_id, html_path, images_path = sys.argv[1:8]
+to_addr, subject, body_path, issue_marker, mailer_id, html_path, images_path, attachment_path = sys.argv[1:9]
 def read_text(path):
     with open(path, encoding="utf-8", newline="") as handle:
         return handle.read()
@@ -28,4 +28,7 @@ if html_body:
         data = base64.b64decode(image.get("data", ""), validate=True)
         if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 2_000_000: raise ValueError("invalid PNG")
         html_part.add_related(data, maintype="image", subtype="png", cid="<"+cid+">", filename=image.get("filename", cid+".png"), disposition="inline")
+if attachment_path:
+    with open(attachment_path, encoding="utf-8") as handle:
+        msg.add_attachment(handle.read(), subtype="plain", filename="decision-log-review.txt")
 sys.stdout.write(base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii"))

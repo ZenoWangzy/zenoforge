@@ -869,7 +869,7 @@ maintainer_health_mail_contract_inbox() {
 }
 
 maintainer_health_mail_deliver() {
-  local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" facts="${7:-}" claim home contract_errors isolated row key reason rendered="" html_body="" images="[]"
+  local ledger="$1" now="$2" slot="$3" subject="$4" body="$5" events="$6" facts="${7:-}" claim home contract_errors isolated row key reason rendered="" html_body="" images="[]" attachment_file=""
   home="${ledger%/night/founder-health-mail.json}"
   if ! contract_errors="$(maintainer_health_mail_output_contract "$body" "$now")"; then
     isolated="$(maintainer_health_mail_output_contract "$body" "$now" isolate-lines)" || return 1
@@ -895,10 +895,20 @@ maintainer_health_mail_deliver() {
   fi
   claim="$(maintainer_health_mail_claim_digest "$ledger" "$slot" "$now" "$events")" || return 1
   [ "$claim" = reserved ] || return 0
-  if notify_maintainer_health "$subject" "$body" "$html_body" "$images"; then
+  if [ -n "$rendered" ] && [ "$(jq -r '(.attachments // []) | length' <<< "$rendered")" -gt 0 ]; then
+    attachment_file="$(mktemp)" || { maintainer_health_mail_release_digest "$ledger" "$slot" >/dev/null || true; return 1; }
+    if ! jq -r '.attachments[0].content // empty' <<< "$rendered" > "$attachment_file"; then
+      rm -f -- "$attachment_file"
+      maintainer_health_mail_release_digest "$ledger" "$slot" >/dev/null || true
+      return 1
+    fi
+  fi
+  if notify_maintainer_health "$subject" "$body" "$html_body" "$images" "$attachment_file"; then
+    [ -z "$attachment_file" ] || rm -f -- "$attachment_file"
     maintainer_health_mail_mark_sent "$ledger" "$now"
     return $?
   fi
+  [ -z "$attachment_file" ] || rm -f -- "$attachment_file"
   if [ "${NOTIFY_LAST_SEND_RETRY_SAFE:-0}" = 1 ]; then
     maintainer_health_mail_release_digest "$ledger" "$slot" >/dev/null || return 1
   fi
