@@ -88,8 +88,12 @@ you cannot tell what kind of issue this is.
    look at `git log --oneline -30 origin/main` in the worktree instead) for
    something that already closes this.
 
-3. **Get evidence.** Do not recommend any state other than `needs-info`
-   without evidence: either a local reproduction (a failing test or command,
+3. **Name the problem, then get evidence.** When the report could describe more
+   than one problem, write the two or three it could be, each with the one known
+   term that names it and the sign that would separate it from the others. Use
+   the evidence below to pick one, and put the term and the sign in `brief_md`
+   so the ticket asks for one problem only. Skip this when only one fits.
+   Do not recommend any state other than `needs-info` without evidence: either a local reproduction (a failing test or command,
    with its actual output) or a code-path proof that names symbols — function,
    type, or route names. Try to reproduce at most twice; on the second
    failure, or if the report is too thin to attempt, `state` is `needs-info`.

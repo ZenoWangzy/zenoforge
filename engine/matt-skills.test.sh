@@ -33,4 +33,15 @@ for entry in run-triage.sh:ask-matt run-triage-batch.sh:ask-matt run-recut.sh:to
   grep -Eq "matt_skills_note .*\b$skill\b" "$SCRIPT_DIR/$script" || fail "$script must name Matt skill $skill in its prompt"
   [[ -f "$engine_skills/$skill/SKILL.md" ]] || fail "Matt skill $skill for $script is not vendored"
 done
+solve="$(solve_skill_md)"
+[[ -f "$solve" ]] || fail "the engine must ship the solve flow"
+[[ -f "$SCRIPT_DIR/vendor/ub-mode/SKILL.md" ]] || fail "ub-mode must be vendored"
+mapfile -t named < <(awk '/^## Routing/{on=1; next} /^## |^The three sources/{on=0} on' "$solve" | grep -oE '`[a-z][a-z-]+`' | tr -d '`' | sort -u)
+(( ${#named[@]} >= 20 )) || fail "the solve routing table was not parsed (${#named[@]} skills)"
+for name in "${named[@]}" reframe sharpen; do
+  [[ -f "$engine_skills/$name/SKILL.md" || -f "$(pstack_skill_md "$name")" ]] || fail "solve names skill $name, which is not vendored"
+done
+rule="$(bash -c 'source "$1/incident-rule.sh"; incident_rule_text' _ "$SCRIPT_DIR")"
+[[ "$rule" == *"$solve"* ]] || fail "the incident rule must point at the solve flow"
+grep -Fq 'solve_skill_md' "$SCRIPT_DIR/mac-autopilot/scheduler.d/evals-arbiter.sh" || fail "the worker method rule must point at the solve flow"
 echo 'matt-skills.test.sh: PASS'
