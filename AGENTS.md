@@ -14,6 +14,7 @@ Work here follows Matt Pocock's skills, vendored in `.agents/skills/` and entere
 - A bug, flake or regression: `/diagnosing-bugs`. A command that goes red on the bug comes before the fix.
 - A change ready for review: `/code-review` against a fixed point (Standards and Spec).
 - A pull request body: `/pr`.
+- A problem you cannot name, one that came back, or a design with no precedent here: `engine/skills/solve/SKILL.md`. It finds the known problem and the existing solution, then routes to Matt skills, pstack and ub-mode.
 - A raw issue nobody has shaped: `/triage`. Tickets from `/to-tickets` are already agent-ready.
 
 The engine's own stages use the same skills (`docs/architecture.md`, "Method: Matt skills"). The skill files are MIT and byte-identical to upstream: change the pin with `tools/sync-matt-skills.sh <commit>`, never by hand (`THIRD_PARTY_NOTICES.md`).

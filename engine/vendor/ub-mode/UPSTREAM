@@ -1,0 +1,7 @@
+repo: https://github.com/unclebob/ub-mode
+sha: 3da62bf3fcfd2034de41f30d920d2739e566171f
+commit_date: 2026-11-02
+license: MIT (LICENSE)
+vendored: 2026-11-24
+included: SKILL.md LICENSE
+upgrade: copy the included files at the new sha, update this file, review with git diff
