@@ -475,10 +475,9 @@ markdown_to_html_email() {
   printf '%s' "$body" | python3 -c "$MD_TO_HTML_PY" 2>/dev/null
 }
 
-# build_gmail_raw_message <to> <subject> <plain> <issue> [mailer-id [html [images-json]]]
 # Pure stdlib RFC822 builder; images are {cid,filename,data} rows with base64 PNG data.
 build_gmail_raw_message() {
-  local to_addr="$1" subject="$2" body="$3" issue_marker="$4" mailer_id="${5:-fixture}" html_body="${6:-}" images_json="${7:-[]}"
+  local to_addr="$1" subject="$2" body="$3" issue_marker="$4" mailer_id="${5:-fixture}" html_body="${6:-}" images_json="${7:-[]}" text_attachment_file="${8:-}"
   local body_file html_file images_file encoded=""
   [ -n "$html_body" ] || html_body="$(markdown_to_html_email "$body")" || return 1
   [ -n "$html_body" ] || return 1
@@ -487,7 +486,7 @@ build_gmail_raw_message() {
   html_file="$(mktemp)" || { rm -f "$body_file"; return 1; }
   images_file="$(mktemp)" || { rm -f "$body_file" "$html_file"; return 1; }
   if printf '%s' "$body" > "$body_file" && printf '%s' "$html_body" > "$html_file" && printf '%s' "$images_json" > "$images_file"; then
-    encoded="$(python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/notify-mime.py" "$to_addr" "$subject" "$body_file" "$issue_marker" "$mailer_id" "$html_file" "$images_file" 2>/dev/null)"
+    encoded="$(python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/notify-mime.py" "$to_addr" "$subject" "$body_file" "$issue_marker" "$mailer_id" "$html_file" "$images_file" "$text_attachment_file" 2>/dev/null)"
   fi
   rm -f "$body_file" "$html_file" "$images_file"
   printf '%s' "$encoded"
@@ -505,11 +504,12 @@ _send_email_logged() {
   # Before the request is issued, every failure proves Gmail received nothing.
   NOTIFY_LAST_SEND_RETRY_SAFE=1
   shift 5
-  local html_body="" images_json="[]"
+  local html_body="" images_json="[]" text_attachment_file=""
   while (($#)); do
     case "$1" in
       --html-body) (($# >= 2)) || return 1; html_body="$2"; shift 2 ;;
       --inline-images) (($# >= 2)) || return 1; images_json="$2"; shift 2 ;;
+      --text-attachment) (($# >= 2)) || return 1; text_attachment_file="$2"; shift 2 ;;
       *) break ;;
     esac
   done
@@ -591,7 +591,7 @@ $body" >&2
 
   to_header="$(printf '%s,' "${recipients[@]}")"
   to_header="${to_header%,}"
-  encoded="$(build_gmail_raw_message "$to_header" "$subject" "$body" "$issue_marker" "$NOTIFY_MAILER_ID" "$html_body" "$images_json")"
+  encoded="$(build_gmail_raw_message "$to_header" "$subject" "$body" "$issue_marker" "$NOTIFY_MAILER_ID" "$html_body" "$images_json" "$text_attachment_file")"
   if [ -z "$encoded" ]; then
     notify_log_send "$issue_marker" "$subject" failed transport "${recipients[@]}" || true
     if [ "$mode" = strict ]; then
@@ -1694,7 +1694,8 @@ https://github.com/$repo/issues/$issue"
 
 # Health mail is strict and founder-only.
 notify_maintainer_health() {
-  local subject="$1" body="$2" html_body="${3:-}" images_json="${4:-[]}" maintainer
+  local subject="$1" body="$2" html_body="${3:-}" images_json="${4:-[]}" text_attachment_file="${5:-}" maintainer
+  local -a attachment_args=()
   NOTIFY_LAST_SEND_RETRY_SAFE=1
   maintainer="$(_maintainer_email)"
   notify_test_write_guard || return 1
@@ -1702,8 +1703,9 @@ notify_maintainer_health() {
     notify_log_send "" "$subject" failed no-recipients
     return 1
   fi
-  if [ -n "$html_body" ] || [ "$images_json" != '[]' ]; then
-    _send_email_logged strict "$subject" "$body" "" health --html-body "$html_body" --inline-images "$images_json" "$maintainer" >/dev/null 2>/dev/null
+  [ -z "$text_attachment_file" ] || attachment_args+=(--text-attachment "$text_attachment_file")
+  if [ -n "$html_body" ] || [ "$images_json" != '[]' ] || [ -n "$text_attachment_file" ]; then
+    _send_email_logged strict "$subject" "$body" "" health --html-body "$html_body" --inline-images "$images_json" "${attachment_args[@]}" "$maintainer" >/dev/null 2>/dev/null
   else
     send_email_strict "$subject" "$body" --maintainer-kind health "$maintainer" >/dev/null 2>/dev/null
   fi

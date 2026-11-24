@@ -45,7 +45,6 @@ engine/night/outcomes-audit.test.sh
 engine/night/outcomes-pagination-budget.test.sh
 engine/night/outcomes-reconciliation.test.sh
 engine/night/owner-report-daily.test.sh
-engine/night/owner-report-output.test.sh
 engine/night/prod-errors-readonly.test.sh
 engine/night/production-tenant-marker-readonly.test.sh
 engine/owner-stop-request.test.sh

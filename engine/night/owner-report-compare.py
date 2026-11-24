@@ -456,15 +456,15 @@ def compare(facts, directory, now, repo, owners_path):
     station_standards, anomalies, station_series = [], [], []
     days = [(today - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
     history = {day: read_snapshot(directory, day) for day in days[:-1]}
-    for key, name, _, unit, _ in STATIONS:
+    for key, name, metric, unit, _ in STATIONS:
         row = stations.get(key)
         if not row or not is_number(row.get("value")) or not is_number(row.get("healthy")):
             continue
-        standard = {"key": key, "name": name, "value": row["value"], "healthy": row["healthy"],
+        standard = {"key": key, "name": name, "owner_key": metric, "value": row["value"], "healthy": row["healthy"],
                     "higher": row["higher"], "unit": unit, "status": row.get("status")}
         station_standards.append(standard)
         if row.get("status") in ("WARN", "UNHEALTHY"):
-            anomalies.append({"line": "station:" + key, "label": name, "value": row["value"], "standard": row["healthy"],
+            anomalies.append({"line": "station:" + key, "owner_key": metric, "label": name, "value": row["value"], "standard": row["healthy"],
                               "unit": unit, **cause_owner(owners, "station:" + key, now, worker, subjects)})
         points = []
         for day in days:

@@ -94,15 +94,54 @@ assert_contains 'isolation keeps the readable neighbour' "$cleaned" '做完（�
 maintainer_health_mail_output_contract "$cleaned" "$now"
 echo 'ok - isolated report still passes the contract'
 
-# The rendered HTML leads with the verdict and anomaly table, and only embeds charts
-# backed by numeric compare facts. These assertions fail if the structured renderer is absent.
 html_facts='{"report_day":"11-07","window":{"end":1794052800},"conclusion":{"reason":"做完 2 个、正式上线 1 个、等上线 3 个；没有告警"},"compare":{"charts":{"anomalies":[{"label":"合入","value":3.5,"standard":6.5,"unit":"个/小时","owner":"合入环节","cause":"原因未查明"}],"station_standards":[{"key":"merge","name":"合入","value":3.5,"healthy":6.5,"higher":true,"unit":"个/小时","status":"WARN"}],"period_comparison":{"periods":[{"key":"today","label":"今天"},{"key":"yesterday","label":"昨天"},{"key":"last_week","label":"上周同日"}],"metrics":[{"label":"合入","unit":"个","points":[{"period":"today","value":3},{"period":"yesterday","value":2},{"period":"last_week","value":4}]},{"label":"做完","unit":"个","points":[{"period":"today","value":2},{"period":"yesterday","value":1},{"period":"last_week","value":3}]},{"label":"正式上线","unit":"个","points":[{"period":"today","value":1},{"period":"yesterday","value":0},{"period":"last_week","value":2}]}]},"station_series":[{"key":"merge","name":"合入","unit":"个/小时","healthy":6.5,"higher":true,"points":[{"day":"2026-11-01","value":2},{"day":"2026-11-06","value":4},{"day":"2026-11-07","value":3.5}]}],"model_spend":[{"model":"codex:test","tokens":1000,"money_usd":0.25},{"model":"glm:test","tokens":2000,"money_usd":0.5}],"causes":[{"line":"station:merge","label":"合入","owner":"合入环节","cause":"原因未查明"}]}}}'
+html_facts="$(jq -c '.compare.charts.anomalies[0].owner_key="flow.merge_rate_per_hour" | .compare.charts.anomalies += [{label:"发布",value:2,standard:3,unit:"小时",owner_key:"release.hours_waiting",owner:"不应使用",cause:"不应使用事实字段"}] | .compare.charts.station_standards[0].owner_key="flow.merge_rate_per_hour"' <<< "$html_facts")"
+html_facts="$(jq -c '.compare.charts.station_standards += [{key:"implement",name:"写代码",value:5,healthy:6,higher:true,unit:"次",status:"UNHEALTHY"},{key:"review",name:"评审",value:6,healthy:5,higher:true,unit:"次",status:"OK"}]' <<< "$html_facts")"
+ZF_ANOMALY_OWNERS_FILE="$TMPDIR/anomaly-owners.json"
+printf '%s\n' '{"flow.merge_rate_per_hour":{"owner":"合入环节","cause":"合入速度低于目标"}}' > "$ZF_ANOMALY_OWNERS_FILE"
+export ZF_ANOMALY_OWNERS_FILE
 if ! declare -F maintainer_health_mail_build_html >/dev/null; then
   echo 'not ok - the owner report has a structured HTML renderer' >&2
   exit 1
 fi
 rendered="$(maintainer_health_mail_build_html "$html_facts" "$golden_body")"
 html="$(jq -r '.html' <<< "$rendered")"
+large_agent_home="$AGENT_HOME/large-render"
+large_flags="$large_agent_home/checkout/.scratch-supervisor/decision-log-flags.jsonl"
+mkdir -p "$(dirname "$large_flags")"
+python3 - "$large_flags" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    for index in range(1200):
+        json.dump({"entry": f"Worker note {index:04}: " + "raw worker decision " * 6,
+                   "reason": "Rejected because the patch had no independent check."}, output)
+        output.write("\n")
+PY
+large_render="$(maintainer_health_mail_build_html "$html_facts" "$golden_body" "$large_agent_home")"
+large_html_file="$TMPDIR/large-owner-report.html"
+jq -r '.html' <<< "$large_render" > "$large_html_file"
+python3 - "$large_html_file" <<'PY'
+import sys
+
+html = open(sys.argv[1], encoding="utf-8").read()
+if len(html.encode("utf-8")) >= 90000:
+    raise SystemExit(f"decision-log report is {len(html.encode('utf-8'))} bytes")
+if html.index("异常情况") > html.index("决策日志复核"):
+    raise SystemExit("decision-log section does not follow the anomaly section")
+if html.index("</body>") < html.index("决策日志复核"):
+    raise SystemExit("decision-log section is outside the HTML body")
+if "<img" in html:
+    raise SystemExit("HTML chart image remains")
+if html.count("<li>") != 10 or "Worker note 0010:" in html:
+    raise SystemExit("decision-log section does not stop at ten entries")
+if "决策日志复核（1200 条）" not in html:
+    raise SystemExit("decision-log section does not show the total")
+PY
+large_attachment="$TMPDIR/decision-log-review.txt"
+jq -r '.attachments[0].content' <<< "$large_render" > "$large_attachment"
+assert_eq 'the text attachment keeps all decision-log flags' '1200' "$(grep -c '^第[0-9][0-9]*条$' "$large_attachment")"
 assert_contains 'HTML starts with the verdict' "$html" '一句话结论'
 assert_contains 'the anomaly table names its five columns' "$html" '项目'
 assert_contains 'the anomaly table includes its current value' "$html" '现值'
@@ -114,7 +153,7 @@ assert_contains 'the anomaly row uses its compare fact standard' "$html" '6.5 �
 assert_contains 'the model table uses the named model fact' "$html" 'codex:test'
 assert_contains 'the model table uses its token fact' "$html" '1000'
 assert_contains 'the model table uses its cost fact' "$html" '0.25'
-assert_contains 'the daily chart explains its period colors' "$html" '蓝色为今天，绿色为昨天，橙色为上周同日'
+assert_contains 'the daily chart explains its period colors' "$html" '今天为蓝色，昨天和上周同日为橙色'
 python3 - "$html" <<'PY'
 from html.parser import HTMLParser
 import sys
@@ -122,13 +161,19 @@ import sys
 class Tables(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.tables, self.table, self.row, self.cell = [], None, None, None
+        self.tables, self.table, self.row, self.cell, self.fixed_width_cells = [], None, None, None, 0
     def handle_starttag(self, tag, attrs):
+        if tag == "td":
+            cell_attrs = dict(attrs)
+            if cell_attrs.get("width") and "width:" in cell_attrs.get("style", ""):
+                self.fixed_width_cells += 1
         if tag == "table":
             self.table = []
         elif self.table is not None and tag == "tr":
             self.row = []
         elif self.row is not None and tag in ("th", "td"):
+            if self.cell is not None:
+                raise AssertionError("nested table cell")
             self.cell = ""
     def handle_data(self, data):
         if self.cell is not None:
@@ -146,12 +191,12 @@ class Tables(HTMLParser):
 
 tables = Tables()
 tables.feed(sys.argv[1])
+assert tables.fixed_width_cells > 0
 comparison = next((table for table in tables.tables
                    if table and table[0] == ["项目", "今天", "昨天", "上周同日"]), None)
 assert comparison is not None and ["合入", "3", "2", "4"] in comparison
 print("ok - the daily comparison shows merge counts for the three periods")
 PY
-assert_not_contains 'the daily comparison does not label a rate as a merge count' "$html" '合入速度'
 assert_contains 'the model chart explains its two measures' "$html" '蓝色为令牌用量，橙色为已记录的调用金额'
 if python3 -c 'import sys; s=sys.argv[1]; assert s.index("一句话结论") < s.index("<h2>异常情况</h2>") < s.index("<table")' "$html"; then
   echo 'ok - the verdict precedes the anomaly table'
@@ -159,46 +204,24 @@ else
   echo 'not ok - the verdict precedes the anomaly table' >&2
   exit 1
 fi
-assert_contains 'the station chart uses an inline CID' "$html" 'cid:owner-station-standard'
-assert_contains 'the daily comparison chart uses an inline CID' "$html" 'cid:owner-daily-comparison'
-assert_contains 'the seven-day chart uses an inline CID' "$html" 'cid:owner-station-trend'
-assert_contains 'the model spend chart uses an inline CID' "$html" 'cid:owner-model-spend'
-assert_contains 'untraced causes are stated without a guess' "$html" '原因未查明'
-assert_eq 'all four chart images are attached' '4' "$(jq '.images | length' <<< "$rendered")"
+assert_contains 'the station bar width reflects its value share' "$html" 'width:53.8%;background:'
+assert_contains 'passing station bars are blue' "$html" 'background:#3064b4'
+assert_contains 'off-standard station bars are orange' "$html" 'background:#e19123'
+assert_contains 'failing station bars are red' "$html" 'background:#cd4141'
+assert_contains 'the anomaly owner is read from the shared owner map' "$html" '合入环节'
+assert_contains 'the anomaly cause is read from the shared owner map' "$html" '合入速度低于目标'
+assert_not_contains 'a missing owner-map key ignores owner facts' "$html" '不应使用'
+assert_contains 'an unregistered anomaly states its missing cause' "$html" '原因未查明'
+assert_contains 'an unregistered anomaly states its missing owner' "$html" '未登记'
+assert_eq 'HTML charts need no inline image attachments' '0' "$(jq '.images | length' <<< "$rendered")"
 empty_render="$(maintainer_health_mail_build_html '{"conclusion":{"reason":"产出记录读取失败"},"compare":{"charts":{}}}' '一句话结论：产出记录读取失败。')"
 assert_eq 'unread chart sources do not produce placeholder images' '0' "$(jq '.images | length' <<< "$empty_render")"
 unpriced_render="$(maintainer_health_mail_build_html '{"conclusion":{"reason":"产出记录读取失败"},"compare":{"charts":{"model_spend":[{"model":"glm:test","tokens":2000}]}}}' '一句话结论：产出记录读取失败。')"
 unpriced_html="$(jq -r '.html' <<< "$unpriced_render")"
 assert_contains 'an unpriced model still has a token chart' "$unpriced_html" 'glm:test'
 assert_not_contains 'an unknown model cost is not rendered as zero' "$unpriced_html" '0.00'
-assert_eq 'known tokens still produce a model chart when its cost is unreadable' '1' "$(jq '.images | length' <<< "$unpriced_render")"
-python3 - "$unpriced_render" <<'PY'
-import base64
-import json
-import struct
-import sys
-import zlib
-
-images = json.loads(sys.argv[1])["images"]
-png = base64.b64decode(next(image["data"] for image in images if image["cid"] == "owner-model-spend"))
-offset, compressed = 8, bytearray()
-while offset < len(png):
-    size = struct.unpack(">I", png[offset:offset + 4])[0]
-    kind = png[offset + 4:offset + 8]
-    data = png[offset + 8:offset + 8 + size]
-    if kind == b"IHDR":
-        width, height = struct.unpack(">II", data[:8])
-    elif kind == b"IDAT":
-        compressed.extend(data)
-    offset += size + 12
-pixels = zlib.decompress(compressed)
-stride = width * 3
-orange = bytes((225, 145, 35))
-assert all(all(row[x:x + 3] != orange for x in range(0, stride, 3))
-           for y in range(height)
-           for row in [pixels[y * (stride + 1) + 1:y * (stride + 1) + 1 + stride]])
-print("ok - unreadable model cost has no orange zero-value bar")
-PY
+assert_contains 'known tokens still produce an HTML model bar when cost is unreadable' "$unpriced_html" '模型 glm:test（令牌）'
+assert_eq 'HTML model charts need no inline image attachment' '0' "$(jq '.images | length' <<< "$unpriced_render")"
 
 # The shared pre-send gate accepts the same report through the strict sender.
 source "$SCRIPT_DIR/../notify.sh"
@@ -239,21 +262,48 @@ assert message['X-Zenoforge-Agent-Mailer'] == 'zf-pipeline-v1'
 assert message['X-Zenoforge-Agent-Mailer-ID'] == '100-200-301'
 print('ok - owner report MIME carries origin and notify.log correlation headers')
 PY
+printf '完整决策记录\n完整原因\n' > "$TMPDIR/decision-attachment.txt"
+attachment_mail="$(build_gmail_raw_message 'maintainer-recipient' '工厂日报 11-07：上线 2 个需求，有 1 件事等你' "$golden_body" '' '100-200-301' '<p>日报</p>' '[]' "$TMPDIR/decision-attachment.txt")"
+python3 - "$attachment_mail" <<'PY'
+import base64
+import sys
+from email import policy
+from email.parser import BytesParser
+
+message = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(sys.argv[1]))
+attachment = next(part for part in message.iter_attachments() if part.get_filename() == "decision-log-review.txt")
+assert attachment.get_content() == "完整决策记录\n完整原因\n"
+print("ok - full decision log is a UTF-8 text attachment")
+PY
+notify_args="$TMPDIR/health-notify-args"
+(
+  _maintainer_email() { printf 'maintainer@example.invalid'; }
+  notify_test_write_guard() { :; }
+  _send_email_logged() { printf '%s\n' "$@" > "$notify_args"; }
+  notify_maintainer_health '工厂日报 11-07：上线 2 个需求，有 1 件事等你' "$golden_body" '<p>日报</p>' '[]' "$TMPDIR/decision-attachment.txt"
+)
+assert_contains 'health mail forwards the attachment path to the MIME builder' "$(cat "$notify_args")" '--text-attachment'
+assert_contains 'health mail forwards the exact attachment file' "$(cat "$notify_args")" "$TMPDIR/decision-attachment.txt"
 
 # deliver() isolates a poisoned line, marks it reported, and still sends once.
 sent=0
+sent_attachment="$AGENT_HOME/sent-attachment.txt"
 export DRY_RUN=0
 notify_maintainer_health() {
   sent=$((sent + 1))
   printf '%s\n' "$2" > "$AGENT_HOME/sent-body"
+  [ -z "${5:-}" ] || cp -- "$5" "$sent_attachment"
 }
+mkdir -p "$AGENT_HOME/checkout/.scratch-supervisor"
+printf '%s\n' '{"entry":"test entry","reason":"test reason"}' > "$AGENT_HOME/checkout/.scratch-supervisor/decision-log-flags.jsonl"
 ledger="$AGENT_HOME/night/founder-health-mail.json"
 maintainer_health_mail_ensure_ledger "$ledger" "$now"
 maintainer_health_mail_deliver "$ledger" "$now" 20261108 '工厂日报 11-07：上线 2 个需求，有 1 件事等你' \
   "$golden_body
-- 内部诊断：deploy STUCK detail=x=y" '[{"key":"fixture:change","created_at":1794067200}]'
+- 内部诊断：deploy STUCK detail=x=y" '[{"key":"fixture:change","created_at":1794067200}]' "$html_facts"
 assert_eq 'one owner report send' '1' "$sent"
 assert_not_contains 'the poisoned line never reaches transport' "$(cat "$AGENT_HOME/sent-body")" 'detail=x=y'
 assert_contains 'the readable report survives isolation' "$(cat "$AGENT_HOME/sent-body")" '做完（已合入主线）'
+assert_contains 'delivery passes the text attachment through to the mailer' "$(cat "$sent_attachment")" 'test entry'
 maintainer_health_mail_output_contract "$(cat "$AGENT_HOME/sent-body")" "$now"
 echo 'ALL PASS'
