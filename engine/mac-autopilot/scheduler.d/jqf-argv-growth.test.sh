@@ -6,7 +6,7 @@ here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 engine="$(cd -- "$here/../.." && pwd -P)"
 repo="$(cd -- "$engine/.." && pwd -P)"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 
 source "$here/core.sh"
 LOG="$tmp/jqf.log"
@@ -53,6 +53,62 @@ export REQUIRED_PR_CHECKS_FILE="$fixture/required-pr-checks.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 printf '%s\n' '{"required":[],"current_regression":"","legacy_regression":[]}' > "$REQUIRED_PR_CHECKS_FILE"
 source "$engine/mac-autopilot/scheduler.sh"
+
+large_history_result="$(python3 -c 'print("r" * 70000, end="")')"
+large_hist_filter="$(hist write-start "$large_history_result")" \
+  || { echo 'not ok - hist rejected a 70 KiB result'; exit 1; }
+printf '%s\n' "$large_hist_filter" > "$tmp/hist-filter.jq"
+jqf -f "$tmp/hist-filter.jq" <<< '{"history":[]}' > "$tmp/hist-result.json" \
+  || { echo 'not ok - hist emitted an invalid filter for a 70 KiB result'; exit 1; }
+large_hist_len="$(jqf -r '.history[-1].result | length' "$tmp/hist-result.json")"
+[[ "$large_hist_len" == 70000 ]] || { echo "not ok - hist result length is $large_hist_len"; exit 1; }
+echo 'ok - hist preserves a 70 KiB result through jqf'
+
+(
+  python3 - "$UNITS" <<'PY'
+import json, sys
+footprint = [f"packages/large/{i:04d}/" + "x" * 100 for i in range(800)]
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"units": [{"id": "large-footprint", "stage": "implement-pending", "footprint": footprint}]}, f)
+    f.write("\n")
+PY
+  large_footprint="$(jq -c '.units[0].footprint' "$UNITS")"
+  large_footprint_bytes="$(printf '%s' "$large_footprint" | wc -c | tr -d ' ')"
+  (( large_footprint_bytes > 65536 )) || { echo "not ok - dispatch footprint fixture is only $large_footprint_bytes bytes"; exit 1; }
+  TICK_FOOTPRINT_CACHE[large-footprint]="$large_footprint"
+  TICK_ACTIVE_FOOTPRINTS='[]'
+  TICK_ACTIVE_FOOTPRINTS_VALID=true
+  refill_stopped() { return 1; }
+  incident_worker_prompt() { printf '%s' "$3"; }
+  pre_dispatch_skip() { return 1; }
+  room_for() { return 0; }
+  size_admission_write_start() { return 0; }
+  footprint_recurrence_brief() { :; }
+  dispatch() { return 0; }
+  dispatch_why_clear() { :; }
+  dispatch_attempt_fields() { printf '.history[-1].attempt=null'; }
+  footprint_merge_changed_owners() { :; }
+  unit_json="$(jqf -c '.units[0]' "$UNITS")"
+  if dispatch_if_room large-footprint implement implement impl.log impl.md model high prompt \
+    '' "$fixture/repo" '' '' "$unit_json" true codex false configured codex; then
+    :
+  else
+    dispatch_rc=$?
+    echo "not ok - dispatch_if_room failed with a large footprint (rc=$dispatch_rc)"
+    cat "$LOG"
+    exit 1
+  fi
+  printf '%s\n' "$TICK_ACTIVE_FOOTPRINTS" > "$tmp/large-active-footprints.json"
+  jq -e --arg id large-footprint --slurpfile expected "$UNITS" \
+    'map(select(.id == $id))[0].footprint == $expected[0].units[0].footprint' \
+    "$tmp/large-active-footprints.json" >/dev/null \
+    || { echo 'not ok - dispatch_if_room lost the large footprint'; exit 1; }
+  jq -c '{count:length,first_paths:.[0:5]}' <<<"$large_footprint" > "$tmp/large-summary.json"
+  jq -e --slurpfile expected "$tmp/large-summary.json" \
+    '.units[0].history[-1].result | fromjson == $expected[0]' "$UNITS" >/dev/null \
+    || { echo 'not ok - write-start history did not use a compact footprint summary'; exit 1; }
+  echo "ok - dispatch_if_room keeps a ${large_footprint_bytes}-byte footprint off argv and records a compact summary"
+)
 
 python3 - "$UNITS" <<'PY'
 import json, sys
