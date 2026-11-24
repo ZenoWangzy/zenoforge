@@ -17,8 +17,8 @@ CRITERIA = {
     REVIEW: ("supervisor", "oldest unit currently in supervisor-review, hours", 4, 4.1, False),
 }
 MEANING = {
-    READY: "最老的开放 ready-for-agent 工单（账本里没有开工记录），按 GitHub 创建时间计龄；24 小时以内健康，超过 24 小时不健康。",
-    REVIEW: "当前处于 supervisor-review 的工作单中，按单元历史的最后事件时间计量该阶段时长；4 小时以内健康，超过 4 小时不健康。",
+    READY: "最老的开放 ready-for-agent 工单（账本里没有开工记录），按 GitHub 创建时间计龄；没有符合条件的工单时为 0；24 小时以内健康，超过 24 小时不健康。",
+    REVIEW: "当前处于 supervisor-review 的工作单中，按单元历史的最后事件时间计量该阶段时长；队列为空时为 0；4 小时以内健康，超过 4 小时不健康。",
 }
 SOURCE = {
     READY: "fresh (≤10 min) intake-candidates.json rows and embedded issue createdAt, excluding issues with a units.json / units-archive.json start event; no GitHub call",
@@ -134,7 +134,7 @@ def oldest_ready_age(runtime, units, now, ledger_ok):
         if age is None:
             return None
         oldest = age if oldest is None else max(oldest, age)
-    return oldest
+    return oldest if oldest is not None else 0.0
 
 
 def oldest_review_age(units, now, ledger_ok):
@@ -157,7 +157,7 @@ def oldest_review_age(units, now, ledger_ok):
         if age is None:
             return None
         ages.append(age)
-    return max(ages) if ages else None
+    return max(ages) if ages else 0.0
 
 
 def collect(runtime, units, now, ledger_ok):

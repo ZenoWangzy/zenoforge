@@ -185,7 +185,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_h
     "host.prereqs_missing": "WSL 主机上流水线依赖的服务（测试库、代理等）有几个没响应。非 0 时看体检输出里列出的名字；10-17 重装后这些缺失要几天后才以浪费的形式暴露。",
     "host.github_net_failures_per_hour": "每小时连不上 GitHub 的次数（fetch 最终失败、API TLS 握手超时）。WSL 上 GitHub 只能走 egress 代理，单元缺代理就静默超时：10-22 三个定时单元没有代理 drop-in，6 小时约 1,600 次，没有任何数字显示。",
     "engine.follow_lag_hours": "live 引擎没跟上 example HEAD:scripts 的小时数。converge 导出、构建或自检失败时开始计时，跟上后清零。高 = 落地了但没上线。",
-    "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。", "host.fork_rate_root_max": "同一个用户 systemd 服务树每秒创建的进程数；明细列出速率最高的根进程（均高于 20/s）。",
+    "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。", "host.fork_rate_root_max": "用户 systemd 进程树或未归属宿主进程每秒创建速率的较大值；明细列出高于 20/s 的根进程和未归属比例。",
     "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
     "flow.merge_rate_per_hour": "过去 24 小时内 merged/landed 的工厂单元数（不含人工 PR 与账本外的 PR）÷ 24，对照实测标准：健康 ≥ 3/h，不健康 ≤ 1.5/h。窗口里没有在制品也没进单（无积压）时不计值。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
@@ -253,7 +253,7 @@ SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_heal
     "host.prereqs_missing": "host-prereqs.json 里每项每次体检做一次 TCP 连接或 HTTP 200 探测",
     "host.github_net_failures_per_hour": "journalctl --user 窗口内的最终失败行（origin fetch failed、git fetch: timed out after、api.github.com TLS handshake timeout）÷ 小时；没有 journal（Mac）为空",
     "engine.follow_lag_hours": "engine-sync converge 失败时写入的 $AGENT_HOME/engine-versions/.lag-since（epoch 秒），成功跟上即删除；没有该文件记 0",
-    "host.stale_worktrees": "ZF_WORKTREE_ROOT（默认 ~/wt）下每个工作目录的 .git 链接文件建立时间早于 2 小时的个数；没有该目录（Mac）为空", "host.fork_rate_root_max": "/proc/stat 的 processes 差值；新增 PID 沿 PPID 回溯到用户 systemd 管理器下的最老进程，unit 来自 /proc/<pid>/cgroup",
+    "host.stale_worktrees": "ZF_WORKTREE_ROOT（默认 ~/wt）下每个工作目录的 .git 链接文件建立时间早于 2 小时的个数；没有该目录（Mac）为空", "host.fork_rate_root_max": "/proc/stat 的 processes 差值；新增 PID 沿 PPID 回溯到用户 systemd 管理器下的最老进程，unit 来自 /proc/<pid>/cgroup；分值和状态都取最高根速率与未归属速率的较大值",
     "intake.closed_units_open_issues": "intake-candidates.json 的候选行里，单元全部处于终态且交接 episode 已消费的 issue 数；没有候选快照时为空",
     "flow.merge_rate_per_hour": "units.json 与 units-archive.json 的 merged/landed 事件 ÷ 24 h；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
@@ -697,7 +697,7 @@ def github_net_failures_per_hour(since, now):
     try:
         out = subprocess.run([os.environ.get("NODE_HEALTH_JOURNALCTL") or "journalctl", "--user", "--no-pager", "-o", "cat",
                               "--since", since.strftime(fmt), "--until", now.strftime(fmt)],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, errors="replace", timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
     hours = (now - since).total_seconds() / 3600
@@ -1401,7 +1401,7 @@ def main():
     host_missing = host_prereqs_missing(); host_missing = None if host_missing is None else host_missing + zcode_bin_missing()
     metrics["host.prereqs_missing"] = None if host_missing is None else len(host_missing)
     metrics["host.github_net_failures_per_hour"] = github_net_failures_per_hour(since, now)
-    metrics["host.stale_worktrees"] = stale_worktrees(now); fork_value, fork_detail, metrics["host.fork_rate_root_max"] = fork_rate.sample(args.json or os.path.join(a, "node-health.json"))
+    metrics["host.stale_worktrees"] = stale_worktrees(now); _, fork_detail, metrics["host.fork_rate_root_max"] = fork_rate.sample(args.json or os.path.join(a, "node-health.json"))
     closed_open = ledger_history.closed_units_open_issues(a, agent_home, units)
     metrics["intake.closed_units_open_issues"] = None if closed_open is None else len(closed_open); metrics["intake.laneless_open_issues"] = intake_laneless_health.open_laneless_count(a, repo, now, _gh_json, agent_home)
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
@@ -1493,7 +1493,7 @@ def main():
     except OSError:
         metrics["pipeline.orphan_prs"] = None
 
-    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = health_standards.pause_idle(score(metrics, criteria, sample_counts, minimums, invalid_standards), line_holds.pause_state(agent_home)); metrics["host.fork_rate_root_max"] = fork_value; rows = [(node, mid, desc, fork_value if mid == "host.fork_rate_root_max" else v, healthy, unhealthy, higher, status) for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
+    short_windows = metric_windows.fill(metrics, short_windows, criteria, SOURCE, args.hours); rows = health_standards.pause_idle(score(metrics, criteria, sample_counts, minimums, invalid_standards), line_holds.pause_state(agent_home))
     future_note = f" future_stamped={future_stamped}" if future_stamped else ""
     print(f"node health {now:%Y-%m-%dT%H:%MZ} window={args.hours:g}h tokens={tokens} runs={len(runs)}{future_note}")
     print(f"  {'node':<12} {'metric':<48} {'value':>7}  healthy  unhealthy  status")
