@@ -26,10 +26,9 @@ for a unit that keeps failing names the method for the next round:
 `diagnosing-bugs` (a command that already goes red on this exact failure comes
 before any fix) with a regression test written test-first (`tdd`); for a review
 dispute, the axis of the finding, Standards or Spec, as `code-review` defines
-them. When two fixes failed the same check, the GUIDANCE first writes, in one
-sentence, the premise both fixes shared, names one or two other known problems
-it could be with the sign that separates each, and tells the worker to test
-that premise before it edits. A `needs-info` QUESTION is one business question,
+them. After two fixes failed the same check, the GUIDANCE opens with the
+premise they shared, one other known problem it could be, the sign that tells
+them apart, and an order to test that first. A `needs-info` QUESTION is one business question,
 the same test `triage` applies before it asks a reporter.
 
 ## Decision rules (in order; the first match stops)
