@@ -23,7 +23,7 @@ Stop at the first line that fits.
 
 | The situation | Chain |
 | --- | --- |
-| The same problem came back, or two fixes failed the same check | **Fix**, starting at `principle-attack-the-premise` |
+| The same problem came back, or two fixes failed the same check | **Fix**, with `principle-attack-the-premise` read before `solve` |
 | The person cannot name what they want, or asks which classic problem or best practice applies | **Name** |
 | Something is broken, red, slow, costly, or an alert fired | **Fix** |
 | A spec or ticket already exists | **Deliver** |
@@ -41,10 +41,10 @@ Stop at the first line that fits.
 
 Skills in order. A skill in brackets is used only when its condition holds.
 
-- **Name:** `solve` steps 1 to 5, which run `reframe` then `sharpen`. Then return to step 1 with the new words. This is also the way in when a problem has no precedent in this repo.
+- **Name:** `solve` steps 1 to 5, which run `reframe` then `sharpen`. Then choose a row in step 1 again, once, with the new words. This is also the way in when a problem has no precedent in this repo.
 - **Fix:** `solve`, with `diagnosing-bugs` for the red command, `principle-fix-root-causes` for the cause, `tdd` for the regression test, `correct` so it cannot return, `retro` when it went badly. [a number is the symptom: `principle-explain-the-number`, `benchmark-checklist`] [crash, retry, race or duplicate work: `principle-make-operations-idempotent`, `statechart`] [risky paths: `blast-radius`].
 - **Build:** [no precedent: **Name** first] `grill-with-docs`, `to-spec`, `to-tickets`, then **Deliver**. [no working directory: `grill-me`] [a choice you can settle by running it: `prototype`] [the answer is in someone else's head: `to-questionnaire`] [types and module shape matter: `architect` with `codebase-design`]. When nobody is there to interview, decide from evidence and write the decision down.
-- **Deliver:** `implement` per ticket, or `implement-spec` for a whole spec. Inside each change: `tdd`, in the order of `ub-mode` (make it work, make it right, practice), with `typescript-best-practices` for TypeScript. Then **Judge**, then `pr`.
+- **Deliver:** `implement` per ticket, or `implement-spec` for a whole spec. Inside each change: `tdd`, in the order of `ub-mode` (make it work, make it right, practice), with `typescript-best-practices` for TypeScript. Then **Judge**, then `pr`, both always for a change that will land.
 - **Chart:** `wayfinder`, then **Build** at `to-spec`. [unattended, needs an audit trail: `figure-it-out` with `show-me-your-work`].
 - **Intake:** `triage`, then **Deliver**. Tickets from `to-tickets` skip triage.
 - **Reshape:** `improve-codebase-architecture`, `codebase-design`, `principle-subtract-before-you-add`, then `to-spec` or `implement`. [comments to remove: `delete-comment`].
@@ -90,4 +90,4 @@ A prompt that gives paths wins. Otherwise start from the real path of this file,
 - pstack: `../../../engine/vendor/pstack/skills/<name>/SKILL.md`
 - ub-mode: `../../../engine/vendor/ub-mode/SKILL.md`
 
-If a file is missing, say so and follow its line here.
+A name that is not in the first place is in the second. If a file is missing in both, say so and follow its line here.
