@@ -3,10 +3,11 @@ self_check_main_fresh() { # clone head [main-sha] → whether the head contains 
   [[ -n "$main" ]] || main="$(git -C "$1" rev-parse --verify refs/remotes/origin/main^{commit} 2>/dev/null)" || return 1
   git -C "$1" merge-base --is-ancestor "$main" "$2" 2>/dev/null
 }
+self_check_deferred_count() { jqf -r --arg id "$1" --arg sha "$2" 'def entry_sha: .sha // ((.result // "") | (try capture("self-check-.*-(?<sha>[0-9a-f]{40})-[0-9]+-").sha catch "")); ([.units[] | select(.id==$id) | (.history // [])][0] // []) | reverse | reduce .[] as $entry ({count:0,stopped:false}; if .stopped then . elif $entry.stage=="self-check-deferred" and ($entry | entry_sha)==$sha then .count+=1 else .stopped=true end) | .count' "$UNITS"; }
 self_check_run() (
   set -o pipefail
   local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source runner_path
-  local unit_id="${5:-}" branch="${6:-}" pr="${7:-}" main_head merge_rc
+  local unit_id="${5:-}" branch="${6:-}" pr="${7:-}" main_head merge_rc checked_head branch_head
   local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
   local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
   local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg test_started
@@ -20,8 +21,10 @@ self_check_run() (
   if self_check_main_fresh "$dir" "$sha" "$main_head"; then
     echo "self-check main sync: already fresh head=$sha main=$main_head"
   else
-    [[ -n "$branch" ]] || branch="$(git symbolic-ref --quiet --short HEAD)" || return 1
-    [[ "$(git symbolic-ref --quiet --short HEAD)" == "$branch" && "$(git rev-parse HEAD)" == "$sha" ]] || return 125
+    checked_head="$(git rev-parse HEAD)"; branch="${branch:-$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)}"; branch_head="$(git rev-parse -q --verify "refs/heads/$branch^{commit}" 2>/dev/null || true)"
+    [[ "$checked_head" == "$sha" ]] || { echo "self-check main sync: refused candidate head mismatch expected=$sha actual=$checked_head"; return 125; }
+    [[ -n "$branch" && "$branch" != main ]] && git check-ref-format --branch "$branch" >/dev/null 2>&1 || { echo "self-check main sync: refused invalid candidate branch branch=${branch:-missing}"; return 125; }
+    if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$branch" ]]; then [[ -z "$branch_head" || "$branch_head" == "$sha" ]] || { echo "self-check main sync: refused branch mismatch branch=$branch expected=$sha actual=$branch_head"; return 125; }; git checkout -q -B "$branch" "$sha" || { echo "self-check main sync: branch attachment failed branch=$branch sha=$sha"; return 125; }; fi
     if git merge --no-edit "$main_head"; then
       sha="$(git rev-parse HEAD)" || return 1
       if [[ "$lane" == pr ]]; then
@@ -347,7 +350,7 @@ self_check_failure_class() { # log → short class of the first failure line
 self_check_red_to_repair() { local hint="The deterministic self-check failed. Full output from $2:"$'\n'"$(cat "$2" 2>/dev/null || true)"
   set_unit "$1" ".self_fix_pending=false | .self_fix_active=false | .approved_sha=null | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=$(js "$hint") | .stage=\"repair-pending\""; }
 self_check_harvest() {
-  local id pid out start status fixes sid model verification_json verification_update reason_update checked_head
+  local id pid out start status fixes sid model verification_json verification_update reason_update checked_head sha
   while IFS=$'\t' read -r id pid out start; do
     scheduler_lock_yield_between_units || return 1
     [[ "${SCHEDULER_LOCK_YIELDED:-false}" != true \
@@ -361,11 +364,9 @@ self_check_harvest() {
       set_unit "$id" "$(hist self-check-interrupted "$out") | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"
       continue
     fi
-    status="$(cat "$out.result")"
-    if [[ "$status" == defer ]]; then
-      say "self-check deferred unit=$id: cihost admission or setup; rerun next tick"
-      set_unit "$id" "$(hist self-check-deferred "$out") | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"
-      continue
+    status="$(cat "$out.result")"; reason_update=""
+    if [[ "$status" == defer ]]; then sha="$(unit_field "$id" '.self_check_sha // empty')"; if (( $(self_check_deferred_count "$id" "$sha") < 3 )); then say "self-check deferred unit=$id: cihost admission or setup; rerun next tick"; set_unit "$id" "$(hist self-check-deferred "$out") | .history[-1].sha=$(js "$sha") | del(.self_check_pid, .self_check_start, .self_check_sha, .self_check_status)"; continue; fi
+      status=red; reason_update=" | .history[-1].reason=$(js "self-check retry limit reached after 3 consecutive deferrals for sha=$sha")"; printf 'self-check retry limit reached after 3 consecutive deferrals for sha=%s\n' "$sha" >> "$out"; say "self-check red unit=$id: self-check retry limit reached after 3 consecutive deferrals for sha=$sha"
     fi
     if [[ "$status" == conflict ]]; then
       set_unit "$id" 'del(.self_check_pid, .self_check_start) | .self_check_status="conflict"'
@@ -375,7 +376,7 @@ self_check_harvest() {
     if [[ "$status" == pass && -s "$out.verification.json" ]] && verification_json="$(jq -c . "$out.verification.json" 2>/dev/null)"; then
       verification_update=" | .verification=$verification_json"
     fi
-    reason_update=""; [[ "$status" != red ]] || reason_update=" | .history[-1].reason=$(js "$(self_check_failure_class "$out")")"
+    [[ "$status" != red || -n "$reason_update" ]] || reason_update=" | .history[-1].reason=$(js "$(self_check_failure_class "$out")")"
     checked_head="$(cat "$out.head" 2>/dev/null || true)"
     [[ "$checked_head" =~ $SHA_RE ]] || checked_head="$(unit_field "$id" '.self_check_sha // empty')"
     set_unit "$id" "$(hist "self-check-$status" "$out") | del(.self_check_pid, .self_check_start) | .self_check_sha=$(js "$checked_head") | .self_check_status=$(js "$status")$verification_update$reason_update"
