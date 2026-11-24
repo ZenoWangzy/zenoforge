@@ -182,8 +182,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     return 0
   fi
   tier="$(jqf -r --arg m "$model" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
-  [[ -n "$tier" ]] || tier="${PICK_SERVICE_TIER:-}"
-  [[ -n "$tier" ]] && tier_args=(--config "service_tier=\"$tier\"")
+  [[ -n "$tier" ]] || tier="${PICK_SERVICE_TIER:-default}"
+  tier_args=(--config "service_tier=\"$tier\"")
   while IFS= read -r config_arg; do codex_config_args+=("$config_arg"); done < <(codex_mcp_disable_args)
   codex_config_args+=("${CODEX_PLUGINS_OFF_ARGS[@]}")
   # Every codex type gets the cap; implement keeps its older, tighter 8000.
