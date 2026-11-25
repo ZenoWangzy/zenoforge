@@ -38,6 +38,7 @@ WHY_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(?:why|problem|背景|为什�
                          re.IGNORECASE | re.MULTILINE)
 WHY_SETEXT_HEADING = re.compile(r"^[ \t]{0,3}(?:why|problem|背景|为什么)[ \t]*\n[ \t]{0,3}(?:=+|-+)[ \t]*$",
                                 re.IGNORECASE | re.MULTILINE)
+FENCE_START = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 BODY_ISSUE_REF = re.compile(r"\b(?:refs|fixes|closes|part\s+of|slice\s+of)\s*:?\s+#([1-9][0-9]*)\b", re.IGNORECASE)
 TITLE_ISSUE_REF = re.compile(r"\(#([1-9][0-9]*)\)")
 REVERT_TITLE = re.compile(r'^\s*Revert\s+".*\(#([1-9][0-9]*)\)"\s*$', re.IGNORECASE)
@@ -269,6 +270,28 @@ def issue_refs(pr):
     return refs
 
 
+def has_why_heading(body):
+    visible_lines = []
+    fence = None
+    for line in body.splitlines():
+        if fence:
+            char, size = fence
+            if re.fullmatch(rf" {{0,3}}{re.escape(char)}{{{size},}}[ \t]*", line):
+                fence = None
+            visible_lines.append("")
+            continue
+        opening = FENCE_START.fullmatch(line)
+        if opening:
+            marker, info = opening.groups()
+            if marker[0] != "`" or "`" not in info:
+                fence = (marker[0], len(marker))
+                visible_lines.append("")
+                continue
+        visible_lines.append(line)
+    visible_body = "\n".join(visible_lines)
+    return bool(WHY_HEADING.search(visible_body) or WHY_SETEXT_HEADING.search(visible_body))
+
+
 def read_comments(repo, issue_number, merged_at, fixture_dir):
     if fixture_dir:
         rows = read_json(Path(fixture_dir) / "comments" / f"{issue_number}.json")
@@ -300,7 +323,7 @@ def has_why_in_ancestry(issue, issues_by_number):
         if number in seen:
             raise ReadFailed("issue parent tree contains a cycle")
         seen.add(number)
-        if WHY_HEADING.search(current["body"]) or WHY_SETEXT_HEADING.search(current["body"]):
+        if has_why_heading(current["body"]):
             return True
         parent_number = current["parent"]
         if parent_number is None:
