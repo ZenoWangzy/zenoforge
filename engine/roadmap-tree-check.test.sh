@@ -72,7 +72,7 @@ has_line 'roadmap-tree-check: findings=1'
 
 fixture clean
 jq -n '[
-  {number:1,title:"Roadmap",body:"## Why\nProject intent.",state:"OPEN",labels:["roadmap"],parent:null},
+  {number:1,title:"Roadmap",body:"Why\n---\nProject intent.",state:"OPEN",labels:["roadmap"],parent:null},
   {number:2,title:"Theme",body:"## Problem\nA problem.",state:"OPEN",labels:["roadmap-theme"],parent:{number:1}},
   {number:3,title:"Leaf",body:"No local why.",state:"OPEN",labels:[],parent:{number:2}}
 ]' > "$tmp/clean/issues.json"
