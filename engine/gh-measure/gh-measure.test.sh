@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "gh-measure.test.sh: $*" >&2; exit 1; }
-t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
+t="$(mktemp -d)"; trap 'rm -rf -- "$t" "$test_env_root"' EXIT
 cat > "$t/real-gh" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
@@ -53,6 +53,16 @@ python_caller="$(tail -1 "$t/calls.tsv" | cut -f3)"
 python_source="$(sed -n "${BASH_REMATCH[1]}p" "$dir/../mac-autopilot/delivery_diagnostics.py")"
 [[ "$python_source" == *"gh_caller.run_gh("* ]] || fail "Python caller line did not point to the GitHub call: $python_caller"
 echo 'ok - Python GitHub call logs its own file and line'
+
+cat > "$t/outside-caller.py" <<'PY'
+import gh_caller
+gh_caller.run_gh(["gh", "pr", "view", "4061"], capture_output=True, text=True)
+PY
+PYTHONPATH="$(dirname "$dir")/mac-autopilot" PATH="$dir/bin:$PATH" python3 "$t/outside-caller.py" \
+  || fail 'out-of-repository Python caller did not reach gh'
+outside_caller="$(tail -1 "$t/calls.tsv" | cut -f3)"
+[ "$outside_caller" = 'outside-caller.py:2' ] || fail "out-of-repository caller was not reduced to its file name: $outside_caller"
+echo 'ok - out-of-repository Python caller logs its file name and line'
 
 # Header and field values are not endpoints; error classes distinguish 304, secondary and primary limits.
 for kind in not-modified secondary rate; do

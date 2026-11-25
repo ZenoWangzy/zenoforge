@@ -30,7 +30,7 @@ assert_eq() {
 }
 
 FIXTURES="$(mktemp -d)"
-trap 'rm -rf -- "$FIXTURES"' EXIT
+trap 'rm -rf -- "$FIXTURES" "$test_env_root"' EXIT
 RUNTIME="$FIXTURES/autopi"
 mkdir -p "$RUNTIME"
 export MAC_AUTOPILOT_RUNTIME_DIR="$RUNTIME"

@@ -9,7 +9,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def run_gh(command, caller_frame=None, **options):
     frame = caller_frame or inspect.currentframe().f_back
     try:
-        source = Path(frame.f_code.co_filename).resolve().relative_to(REPO_ROOT).as_posix()
+        filename = Path(frame.f_code.co_filename)
+        try:
+            source = filename.resolve().relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            source = filename.name
         caller = f"{source}:{frame.f_lineno}"
     finally:
         del frame
