@@ -34,6 +34,30 @@ for issue in 3449 3413; do
   [[ "$SUPERVISOR_HOLD_OWNER_DETAIL" == *land-queue*00000000000000000549* ]]
   route_pipeline_fastlane_issue "$issue" '{"labels":[]}' test
 done
+ensure_issue_roadmap_parent_for_dispatch() { return 0; }
+stage_unit_active() { return 1; }
+coord_issue_live_worker() { return 1; }
+issue_body_mentions_product_scope() { return 1; }
+label_writes="$AGENT_HOME/label-writes"
+guarded_write() { printf '%s\n' "$*" >> "$label_writes"; }
+triage_key=issue-910806
+triage_owner=triage-owner-910806
+triage_claim_status=0
+coord_acquire "$triage_key" "$triage_owner" systemd-worker 910806 zf-triage-batch triage-batch || triage_claim_status=$?
+[[ "$triage_claim_status" == 0 ]] || { echo "FAIL could not hold triage claim status=$triage_claim_status" >&2; exit 1; }
+fastlane_status=0
+route_pipeline_fastlane_issue 910806 \
+  '{"number":910806,"title":"Path-only fixture","body":"Fix engine/lib.sh","comments":[],"labels":[],"state":"OPEN"}' \
+  'held by triage' 2> "$AGENT_HOME/fastlane-held.log" || fastlane_status=$?
+[[ "$fastlane_status" == 1 ]] || { echo "FAIL fastlane status=$fastlane_status with triage claim" >&2; exit 1; }
+[[ ! -e "$label_writes" ]] || { echo 'FAIL fastlane changed labels on a triage-owned issue' >&2; exit 1; }
+triage_owned_status=0
+coord_assert_owned "$triage_key" "$triage_owner" >/dev/null || triage_owned_status=$?
+[[ "$triage_owned_status" == 0 ]] || { echo "FAIL triage claim lost status=$triage_owned_status" >&2; exit 1; }
+triage_release_status=0
+coord_release "$triage_key" "$triage_owner" >/dev/null || triage_release_status=$?
+[[ "$triage_release_status" == 0 ]] || { echo "FAIL could not release triage claim status=$triage_release_status" >&2; exit 1; }
+echo 'ok - fastlane skips label write when triage owns the issue'
 [[ ! -e "$AGENT_HOME/dispatch" && ! -e "$AGENT_HOME/supervisor-inbox" && ! -e "$AGENT_HOME/holds" ]]
 assert_owner 344 none
 assert_owner 341 none

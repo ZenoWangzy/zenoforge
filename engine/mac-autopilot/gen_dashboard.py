@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split, intake_laneless_health, traffic_trend
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split, intake_laneless_health, traffic_trend, gh_caller
 import ledger_history
 from config_paths import zf_config_file
 
@@ -284,7 +284,7 @@ def tokens_of(log):
 
 def gh(args):
     try:
-        return json.loads(subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60).stdout or "[]")
+        return json.loads(gh_caller.run_gh(["gh", *args], capture_output=True, text=True, timeout=60).stdout or "[]")
     except Exception:
         return []
 
@@ -584,14 +584,14 @@ def record_reconciliation():
                     "reconciled": True},
     }
     try:
-        created = subprocess.run(["gh", "api", f"repos/{DEPLOYMENT_REPO}/deployments", "--input", "-"],
+        created = gh_caller.run_gh(["gh", "api", f"repos/{DEPLOYMENT_REPO}/deployments", "--input", "-"],
                                 input=json.dumps(body), capture_output=True, text=True, timeout=35)
         if created.returncode != 0:
             raise RuntimeError((created.stderr or "create failed").strip()[:200])
         deployment_id = json.loads(created.stdout or "{}").get("id")
         if not isinstance(deployment_id, int):
             raise RuntimeError("create returned no deployment id")
-        status = subprocess.run(["gh", "api", f"repos/{DEPLOYMENT_REPO}/deployments/{deployment_id}/statuses",
+        status = gh_caller.run_gh(["gh", "api", f"repos/{DEPLOYMENT_REPO}/deployments/{deployment_id}/statuses",
                                  "-f", "state=success", "-f", "environment=production",
                                  "-f", "description=reconciled production state"],
                                 capture_output=True, text=True, timeout=35)
@@ -794,7 +794,7 @@ def front_hours_since(epoch, now):
     return None if epoch is None else round(max(0, now - epoch) / 3600, 1)
 
 def front_run(argv, timeout, **kw):
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **kw)
+    proc = gh_caller.run_gh(argv, caller_frame=sys._getframe(1), capture_output=True, text=True, timeout=timeout, **kw) if argv and argv[0] == "gh" else subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **kw)
     if proc.returncode != 0:
         raise RuntimeError(f"{argv[0]} exit {proc.returncode}: " + ((proc.stderr or "").strip().splitlines() or [""])[-1][:200])
     return proc.stdout

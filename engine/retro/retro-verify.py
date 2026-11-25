@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mac-autopilot"))
+import gh_caller
 import retro
 
 WINDOW = 10
@@ -70,7 +72,7 @@ def count_category(root, out_dir, category, session_keys, merged_at, before):
 
 
 def merged_at(repo, issue):
-    result = subprocess.run(
+    result = gh_caller.run_gh(
         ["gh", "issue", "view", str(issue), "--repo", repo,
          "--json", "closedByPullRequestsReferences"],
         check=True, capture_output=True, text=True,
@@ -83,7 +85,7 @@ def merged_at(repo, issue):
     # Retro implementation PRs say "Refs #N" and do not close the issue, so they never
     # appear in closedByPullRequestsReferences. Search merged PR bodies the same way
     # engine/factory/feeder.sh and issue-pipeline.sh search open ones.
-    result = subprocess.run(
+    result = gh_caller.run_gh(
         ["gh", "pr", "list", "--repo", repo, "--state", "merged",
          "--search", f'"Refs #{issue}" in:body', "--json", "mergedAt"],
         check=True, capture_output=True, text=True,
@@ -114,7 +116,7 @@ def issue_comment(repo, issue, body):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as body_file:
             body_file.write(body)
-        subprocess.run(
+        gh_caller.run_gh(
             ["gh", "issue", "comment", str(issue), "--repo", repo, "--body-file", body_path],
             check=True,
         )

@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import gh_caller
 
 
 PR_QUERY = (
@@ -79,7 +80,7 @@ def gh_prs(repo, lower_bound):
         if after:
             command += ["-f", f"after={after}"]
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=15)
+            result = gh_caller.run_gh(command, capture_output=True, text=True, check=False, timeout=15)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise EvidenceUnavailable("GitHub merged PR query timed out or could not start") from error
         if result.returncode != 0:

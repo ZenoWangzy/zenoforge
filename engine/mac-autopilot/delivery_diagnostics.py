@@ -7,6 +7,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
+import gh_caller
 
 LAST_GOOD = "delivery-rows-last-good.json"  # next to node-health.json; the last complete issue and PR census
 MAX_AGE = timedelta(hours=24)
@@ -23,7 +24,7 @@ def gh_json(command, timeout, on_unavailable=None):
             on_unavailable(reason)
 
     try:
-        result = subprocess.run(["gh", *command], capture_output=True, text=True, timeout=timeout)
+        result = gh_caller.run_gh(["gh", *command], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         unavailable(f"timeout {timeout:g}s")
         return None

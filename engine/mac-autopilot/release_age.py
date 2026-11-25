@@ -11,6 +11,7 @@ CLI: `python3 release_age.py` prints "<deploy time> <sha>" for the same source, 
 """
 import json, os, subprocess, sys
 from datetime import datetime, timezone
+import gh_caller
 
 METRIC = "release.hours_since_release"
 CRITERIA = {METRIC: ("release", "hours since production last changed (formal or hand release)", 2, 4, False)}
@@ -41,7 +42,7 @@ def _reader_records(repo, reader):
 def _deployment_list(repo):
     """All production deployment records (no statuses), newest first, or None when unreadable."""
     try:
-        done = subprocess.run(["gh", "api", f"repos/{repo}/deployments?environment=production&per_page=100"],
+        done = gh_caller.run_gh(["gh", "api", f"repos/{repo}/deployments?environment=production&per_page=100"],
                               capture_output=True, text=True, timeout=120)
         records = json.loads(done.stdout or "[]") if done.returncode == 0 else None
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -51,7 +52,7 @@ def _deployment_list(repo):
 
 def _commit_at(repo, sha):
     try:
-        done = subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"],
+        done = gh_caller.run_gh(["gh", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"],
                               capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return None

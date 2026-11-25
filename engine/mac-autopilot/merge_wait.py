@@ -5,6 +5,7 @@ import re
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
+import gh_caller
 
 WINDOW_HOURS = 24
 PAGES = 40  # 25 PRs a page (50 and 100 hit GitHub 504s, measured 2026-11-13); past 1,000 the read is NO-DATA, not cut short
@@ -40,7 +41,7 @@ def failure_kind(text):
 def gh_graphql(command, timeout):
     """Run gh for this row and preserve the failure kind for its details."""
     try:
-        result = subprocess.run(["gh", *command], capture_output=True, text=True, timeout=timeout)
+        result = gh_caller.run_gh(["gh", *command], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return {"gh_failure": "timeout"}
     except OSError:

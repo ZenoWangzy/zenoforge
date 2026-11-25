@@ -15,6 +15,7 @@ import argparse, importlib.util, json, os, re, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 import ledger_history
+import gh_caller
 from node_health import LARGE_PR_WINDOW_DAYS, is_test_path, size_window_units
 
 PR_EVENTS = ("pull_request", "pull_request_target")
@@ -30,7 +31,7 @@ def ts(value):
 
 
 def gh_json(path):
-    done = subprocess.run(["gh", "api", "--paginate", "--slurp", path], capture_output=True, text=True, timeout=300)
+    done = gh_caller.run_gh(["gh", "api", "--paginate", "--slurp", path], capture_output=True, text=True, timeout=300)
     if done.returncode != 0:
         raise RuntimeError(done.stderr.strip()[:200])
     return json.loads(done.stdout)
