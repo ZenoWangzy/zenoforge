@@ -121,7 +121,8 @@ has_no_line 'STATE-BEHIND #17:'
 has_line 'roadmap-tree-check: findings=1'
 
 fixture failed-read
-printf '{"broken":\n' > "$tmp/failed-read/issues.json"
+jq -n '[{number:1,title:"Incomplete",state:"OPEN",labels:[]}]' > "$tmp/failed-read/issues.json"
+printf '[]\n' > "$tmp/failed-read/pull-requests.json"
 run_check failed-read
 has_rc 2
 [[ ! -s "$check_out" ]] || fail "failed read printed findings: $(cat "$check_out")"
