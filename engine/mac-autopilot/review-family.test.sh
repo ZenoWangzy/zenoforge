@@ -413,6 +413,9 @@ set_review_scope codex block
 if review_identity_available "codex:gpt-6-luna:max" review codex; then fail 'a Codex marker with review blocked by scope must refuse the reviewer'; fi
 set_review_scope codex allow
 implement_route_review_identity_available "codex:gpt-6-luna:max" review codex || fail 'an implement route must respect an allowed Codex review scope'
+set_review_scope codex block
+if implement_route_review_identity_available "codex:gpt-6-luna:max" review codex; then fail 'an implement route must refuse a reviewer blocked by Codex review scope'; fi
+[[ "$IMPLEMENT_REVIEWER_REASON" == codex-hold ]] || fail "a Codex review scope block must report codex-hold, got ${IMPLEMENT_REVIEWER_REASON:-empty}"
 
 set_policy '.allow_roles.sonnet=["review_fallback"]'
 printf '%s\n' "$(($(date +%s) + 3600))" > "$(_quota_marker_file claude)"
