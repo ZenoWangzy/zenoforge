@@ -97,7 +97,7 @@ jq -n --arg base "$base_sha" --arg live "$live_sha" --arg outside "$outside_sha"
 ]' > "$tmp/state/issues.json"
 jq -n --arg base "$base_sha" --arg live "$live_sha" --arg outside "$outside_sha" '[
   {number:100,title:"Change thing (#10)",body:"",state:"MERGED",mergedAt:"2026-11-01T00:00:00Z",mergeCommit:{oid:$base}},
-  {number:101,title:"Revert \"Change thing (#100)\"",body:"",state:"MERGED",mergedAt:"2026-11-02T00:00:00Z",mergeCommit:{oid:$live}},
+  {number:101,title:"Revert \"Change thing (#100)\"",body:"Refs #10",state:"MERGED",mergedAt:"2026-11-02T00:00:00Z",mergeCommit:{oid:$live}},
   {number:102,title:"Reland delivery",body:"Refs #11",state:"MERGED",mergedAt:"2026-11-03T00:00:00Z",mergeCommit:{oid:$live}},
   {number:103,title:"Delivered open work",body:"Fixes #12",state:"MERGED",mergedAt:"2026-11-04T00:00:00Z",mergeCommit:{oid:$base}},
   {number:104,title:"In progress",body:"Refs #12",state:"OPEN",mergedAt:null,mergeCommit:null},
