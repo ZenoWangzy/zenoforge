@@ -360,12 +360,14 @@ def analyze(issues, prs, git_dir, live_commit, repo, fixture_dir):
 
     pr_by_number = {pr["number"]: pr for pr in prs}
     reverted = set()
-    for pr in prs:
+    merged_reverts = (pr for pr in prs if pr["state"] == "MERGED" and REVERT_TITLE.fullmatch(pr["title"]))
+    for pr in sorted(merged_reverts, key=lambda row: row["merged_at"], reverse=True):
+        if pr["number"] in reverted:
+            continue
         match = REVERT_TITLE.fullmatch(pr["title"])
-        if match and pr["state"] == "MERGED":
-            original = pr_by_number.get(int(match.group(1)))
-            if original and original["state"] == "MERGED" and pr["merged_at"] > original["merged_at"]:
-                reverted.add(original["number"])
+        original = pr_by_number.get(int(match.group(1)))
+        if original and original["state"] == "MERGED" and pr["merged_at"] > original["merged_at"]:
+            reverted.add(original["number"])
 
     merged_for_issue = {}
     open_for_issue = set()
