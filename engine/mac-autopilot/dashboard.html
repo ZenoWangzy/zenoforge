@@ -666,8 +666,9 @@ const units = D => D.units || [];
 const unitsIn = (D, stages) => units(D).filter(u => stages.includes(u.stage));
 const liveWorkers = D => (D.workers||[]).filter(w => w.alive);
 // 新鲜度：bell.sh 在 dashboard.data.js 超过 900 秒没刷新时报警；生成器与 tick 无关，600 秒内算健康（loop.sh 每 300 秒起一次 --views dashboard，跑一次约 90 秒，最旧约 400 秒）
-const freshness = D => { const age = D.generated ? (Date.now() - new Date(D.generated).getTime())/1000 : null;
-  return {age, s: age==null ? "none" : age<=600 ? "ok" : age<900 ? "warn" : "bad"}; };
+const freshness = D => { const age = D.generated ? (Date.now() - new Date(D.generated).getTime())/1000 : null, s = age==null ? "none" : age<=600 ? "ok" : age<900 ? "warn" : "bad";
+  return {age, s, display_s: D.standards?.paused && s === "bad" ? "none" : s}; };
+const workerNowS = (D, nowMs = Date.now()) => { const epoch = Number((D.live_workers || {}).generated_epoch); return freshness(D).s === "bad" ? Number.isFinite(epoch) && epoch > 0 ? epoch : null : Math.floor(nowMs / 1000); };
 const scorecardFreshness = (D, STD) => {
   const sampledAt = STD.generated_at || STD.generated;
   const age = sampledAt ? (Date.now() - new Date(sampledAt).getTime())/1000 : null;
@@ -680,7 +681,6 @@ const scorecardFreshness = (D, STD) => {
   return {sampledAt, age, interval, staleAfter, stale: age!=null && age>=staleAfter};
 };
 
-/* ============ 模块 ============ */
 // 1. 入口与分诊（前段：收单 → triage → advisor → 实现队列 的收单与分诊部分）
 const INTAKE_STAGES = ["needs-triage","finish-first","needs-info","needs-recut","ready-for-agent"], TICKET_TOTAL_STAGES = [["needs-triage","待分诊标签"],["finish-first","先等已有 PR"],["needs-info","等提单人回复"],["needs-advisor","待顾问裁决"],["needs-recut","待拆票"],["ready-for-agent","待实现队列"],["awaiting-release","已合并等发布"],["awaiting-pipeline-sync","直落等入库"]], REQ_TOTAL_STAGES = ["提出","热修生效","进 main","上线","真人验收"];
 function sumIntake(D) {
@@ -1253,7 +1253,7 @@ function lwGrouped(items) { const m = {}; items.forEach(w => (m[lwGroup(w)] = m[
 function livePanel(D) {
   const L = D.live_workers;
   if (!L || L.error || !Array.isArray(L.items)) return panel("workers", "员工", emptyMsg("员工清单不可用"));
-  const nowS = Math.floor(Date.now()/1000);
+  const nowS = workerNowS(D);
   const ld = L.load5, psi = L.cpu_psi_avg60, mem = L.mem_avail_mb, ps = psi==null?"none":psi>PSI_BAD?"bad":"ok";
   const gauges = lwGauge("CPU", psi==null?0:psi/(PSI_BAD*2), ps, `load ${ld==null?"—":ld.toFixed(1)} · PSI ${psi==null?"none":psi.toFixed(1)}`)
     + lwGauge("内存", mem==null?0:mem/16384, mem==null?"none":mem<2048?"bad":mem<4096?"warn":"ok", mem==null?"—":(mem/1024).toFixed(1)+"G");
@@ -1410,7 +1410,7 @@ const WAIT_TXT = {ok:"工作中", warn:"等待 ≥5 分", bad:"等待 ≥30 分"
 const PSI_BAD = 60, MEM_BAD_MB = 2048, MEM_WARN_MB = 4096;
 // 员工状态的唯一口径：总览卡与问题清单共用。s = 用时状态与日志状态里较差的一个
 function workerState(w, nowS) {
-  const typ = w.typical_s || 1800, el = w.started_epoch ? Math.max(0, nowS - w.started_epoch) : null;
+  const typ = w.typical_s || 1800, el = w.started_epoch && nowS != null ? Math.max(0, nowS - w.started_epoch) : null;
   const t = el == null ? "none" : el <= typ ? "ok" : el <= 2*typ ? "warn" : "bad";
   return {el, typ, t, h: sk(w.health), s: worst([t, w.health])};
 }
@@ -1435,8 +1435,8 @@ const ovWho = (items, key) => [...new Set(items.map(key))].join("、");
 // 问题清单：纯函数，输入看板数据，输出按严重度排好的行 {s, kind, who, what, val, rule, mod|href, act}
 const PB_ORDER = ["wait", "long", "paused", "stale", "ci", "cpu-pressure", "mem", "mech", "budget", "queue", "slot"];
 function problems(D, nowMs = Date.now()) {
-  const rows = [], nowS = Math.floor(nowMs / 1000), F = FR(D), STD = D.standards || {}, T = D.totals || {}, S = D.summary || {};
-  const add = r => rows.push(r);
+  const rows = [], nowS = workerNowS(D, nowMs), F = FR(D), STD = D.standards || {}, T = D.totals || {}, S = D.summary || {};
+  const add = r => { if (STD.paused && (r.kind === "queue" || r.kind === "slot")) r.s = "none"; rows.push(r); };
   const L = D.live_workers, LW = L && Array.isArray(L.items) ? L.items : [];
   const st = LW.map(w => ({w, ...workerState(w, nowS)}));
   const waiting = st.filter(x => x.h === "bad" || x.h === "warn");
@@ -1449,9 +1449,9 @@ function problems(D, nowMs = Date.now()) {
     add({s: bad ? "bad" : "warn", kind: "long", who: ovWho(longer, x => (OWN[x.w.owner] || [x.w.owner])[0]), what: "员工用时超标", val: fDur(top.el),
       rule: `典型 ${fDur(top.typ)}（估）× ${bad ? 2 : 1}`, href: "#ov-workers", act: "查看", tip: `${longer.length} 位超过典型用时；典型用时是固定估值，不是历史中位数`}); }
   const pause = STD.paused;
-  if (pause) add({s: "bad", kind: "paused", who: "调度", what: "流水线已暂停", val: pause.since ? utc(pause.since) : "—", rule: pause.reason || "原因未知", mod: "health", act: "查看"});
+  if (pause) add({s: "none", kind: "paused", who: "调度", what: "流水线已暂停", val: pause.since ? utc(pause.since) : "—", rule: pause.reason || "原因未知", mod: "health", act: "查看"});
   const f = freshness(D);
-  if (f.s === "bad") add({s: "bad", kind: "stale", who: "看板", what: "数据过期", val: fDur(Math.round(f.age)), rule: "≥ 15 分", mod: "host", act: "查看"});
+  if (f.s === "bad") add({s: f.display_s, kind: "stale", who: "看板", what: "数据过期", val: fDur(Math.round(f.age)), rule: "≥ 15 分", mod: "host", act: "查看"});
   for (const [nm, v] of [["CI", T.ci], ["套件", T.suites]]) { const c = ciWord(v);
     if (c.st === "bad" || c.st === "warn") add({s: c.st, kind: "ci", who: "CI", what: `主线 ${nm}`, val: c.txt, rule: c.run ? "新一轮进行中" : "最近完成的 run", mod: "ci", act: "查看"}); }
   for (const [k, sd] of Object.entries(ciStd(D))) { const v = ((D.ci_live || {}).values || {})[k];
@@ -1484,16 +1484,15 @@ function hk(icon, label, vis, st, mod, tip, sub = "") {
   return `<button class="hk s-${st}" type="button" data-m="${mod}"${tip ? ` data-tip="${esc(tip)}"` : ""}><div class="hk-l">${ic(icon)}${esc(label)}</div>${vis}${sub ? `<div class="hk-s">${sub}</div>` : ""}</button>`;
 }
 function vOverview(D) {
-  const f = freshness(D), STD = D.standards || {}, ms = nodeMetrics(D), S = D.summary || {}, T = D.totals || {}, F = FR(D), nowS = Math.floor(Date.now() / 1000);
+  const f = freshness(D), STD = D.standards || {}, ms = nodeMetrics(D), S = D.summary || {}, T = D.totals || {}, F = FR(D), nowS = workerNowS(D);
   const {bad, warn} = metricStatusGroups(ms), rows = problems(D);
   const LWok = !!(D.live_workers && Array.isArray(D.live_workers.items)), LW = LWok ? D.live_workers.items : [], LWM = lwGrouped(LW), L = D.live_workers || {};
-  const metricVs = f.s === "bad" || STD.paused || bad.length ? "bad" : warn.length ? "warn" : "ok";
+  const metricVs = bad.length ? "bad" : warn.length ? "warn" : "ok";
   // A NO-DATA metric never reads as OK: with nothing red or amber the verdict is 无数据 and the count shows.
   const nNoData = ms.filter(m => m.status === "NO-DATA").length;
-  const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]);
-  const vs = vsRaw === "ok" && nNoData ? "none" : vsRaw;
+  const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]), vs = STD.paused ? worst(rows.map(r => r.s)) : vsRaw === "ok" && nNoData ? "none" : vsRaw;
   const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.filter(r => r.s === "warn").length;
-  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${{ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("bad", "已暂停") : ""}${f.s === "bad" ? stChip("bad", "数据过期") : ""}</span></div>`;
+  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${STD.paused ? "已暂停" : {ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("none", "已暂停") : ""}${f.s === "bad" ? stChip(f.display_s, "数据过期") : ""}</span></div>`;
   // 数 1 员工
   const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, wst = LW.map(w => workerState(w, nowS)), waitN = wst.filter(x => x.h === "bad" || x.h === "warn").length;
   const slots = `<div class="slots" data-tip="产线 ${np} / 上限 ${cap}">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i < np ? "on" : ""}"></i>`).join("")}</div>`;
@@ -1560,7 +1559,7 @@ function sumReqs(D) { const R = D.founder_reqs;
   return {s: blocked ? "warn" : "ok", v: R.items.length, l: blocked ? `未完成，${blocked} 条有卡点` : "未完成需求"}; }
 function vRoi(D) { return `<div class="stack16">${roiLinePanel(D)}${archivePanel(D)}${trendPanel(D)}</div>`; }
 function sumRoi(D) { const F = D.factory, n = F && Array.isArray(F.archive) ? F.archive.length : null; return {s:"none", v: n==null ? "—" : n, l:"最近完成"}; }
-function sumOverview(D) { const f = freshness(D); return {s: f.s, v: f.age==null ? "—" : fDur(Math.round(f.age)), l: "数据新鲜度"}; }
+function sumOverview(D) { const f = freshness(D); return {s: f.display_s, v: f.age==null ? "—" : fDur(Math.round(f.age)), l: "数据新鲜度"}; }
 
 const MODULES = [
   {id:"overview", nm:"总览", en:"Overview", icon:"overview", render:vOverview, sum:sumOverview},
@@ -1643,8 +1642,7 @@ function renderModule(id) {
     const badges = [["bad", a.bad], ["warn", a.warn]].filter(([, n]) => n).map(([s, n]) => `<span class="nv-n s-${s}">${n}</span>`).join("");
     return `<button class="nv ${x.id===m.id?"on":""}" type="button" data-m="${x.id}" title="${esc(labels.length ? x.nm + "，" + labels.join("，") : x.nm)}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span>${badges}</button>`; }).join(""));
   morph(document.getElementById("title"), `${ic(m.icon)}${esc(m.nm)}<small>${esc(m.en)}</small>`);
-  const f = freshness(D);
-  const STD = D.standards || {}, sample = scorecardFreshness(D, STD);
+  const STD = D.standards || {}, f = freshness(D), sample = scorecardFreshness(D, STD);
   const sampleStatus = sample.age==null ? "none" : sample.stale ? "bad" : "ok";
   const sampleLabel = sample.age==null ? "健康评分暂无样本" : sample.stale ? "健康评分已过期" : `健康评分 ${fDur(Math.round(sample.age))}前`;
   const commit = STD.source_commit ? String(STD.source_commit).slice(0,12) : "未知";
@@ -1652,7 +1650,7 @@ function renderModule(id) {
   const pauseLabel = pause ? `流水线暂停，${pause.since ? utc(pause.since) : "时间未知"}，${pause.reason || "原因未知"}`
     : Object.prototype.hasOwnProperty.call(STD, "paused") ? "流水线运行中" : "流水线状态未知";
   const pipelineStatus = pause ? "warn" : Object.prototype.hasOwnProperty.call(STD, "paused") ? "ok" : "none";
-  morph(document.getElementById("fresh"), `<span class="chip s-${f.s}" data-tip="看板数据生成于 ${esc(utc(D.generated))}\n每 30 秒自动刷新">${ic(f.s==="ok"?"clock":f.s)}${f.age==null?"—":fDur(Math.round(f.age))+"前"}</span><span class="chip s-${sampleStatus}" data-tip="评分采样于 ${esc(utc(sample.sampledAt))}，每个调度拍采样">${ic(sampleStatus==="ok"?"clock":sampleStatus)}${sampleLabel}${sample.sampledAt?`，${esc(utc(sample.sampledAt))}`:""}</span><span class="sub">运行版本 <code>${esc(commit)}</code></span><span class="chip s-${pipelineStatus}" data-tip="PAUSE 开始于 ${esc(pause&&pause.since?utc(pause.since):"—")}">${esc(pauseLabel)}</span>`);
+  morph(document.getElementById("fresh"), `<span class="chip s-${f.display_s}" data-tip="看板数据生成于 ${esc(utc(D.generated))}\n每 30 秒自动刷新">${ic(f.display_s==="ok"?"clock":f.display_s)}${f.age==null?"—":fDur(Math.round(f.age))+"前"}</span><span class="chip s-${sampleStatus}" data-tip="评分采样于 ${esc(utc(sample.sampledAt))}，每个调度拍采样">${ic(sampleStatus==="ok"?"clock":sampleStatus)}${sampleLabel}${sample.sampledAt?`，${esc(utc(sample.sampledAt))}`:""}</span><span class="sub">运行版本 <code>${esc(commit)}</code></span><span class="chip s-${pipelineStatus}" data-tip="PAUSE 开始于 ${esc(pause&&pause.since?utc(pause.since):"—")}">${esc(pauseLabel)}</span>`);
   try { morph(view, m.render(D)); }
   catch (e) { view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">此模块渲染出错</b><div class="sub">${esc(e && e.stack || e)}</div></div></div>`; }
   document.title = `${m.nm}，Zenoforge`;

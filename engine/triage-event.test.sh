@@ -87,6 +87,7 @@ assert_eq "batch stop hook releases its issue claim" '' "$claim_after"
 assert_eq "batch stop hook starts one delayed triage event" 1 "$(grep -cF -- '--on-active=1s' "$SYSTEMD_RUN_LOG" || true)"
 assert_eq "batch stop hook launches the triage event stage" 1 "$(grep -cF -- '--stage triage-event' "$SYSTEMD_RUN_LOG" || true)"
 assert_eq "batch stop hook retries only a lock-busy event" 1 "$(grep -cF -- '-p RestartForceExitStatus=75' "$SYSTEMD_RUN_LOG" || true)"
+assert_eq "batch stop hook skips triage when the agent home PAUSE file exists" 1 "$(grep -Fq -- "-p ExecCondition=/usr/bin/test ! -e \"$AGENT_HOME/PAUSE\"" "$SYSTEMD_RUN_LOG" && echo 1 || echo 0)"
 assert_eq "batch stop hook retries the event after one second" 1 "$(grep -cF -- '-p RestartSec=1s' "$SYSTEMD_RUN_LOG" || true)"
 assert_eq "batch stop hook allows retries until the triage lock is free" 1 "$(grep -cF -- '-p StartLimitIntervalSec=0' "$SYSTEMD_RUN_LOG" || true)"
 
