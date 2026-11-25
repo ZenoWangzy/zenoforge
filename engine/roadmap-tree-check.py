@@ -34,7 +34,10 @@ query($owner:String!, $name:String!, $endCursor:String, $pageSize:Int!) {
   }
 }
 """
-WHY_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(?:why|problem|背景|为什么)\s*#*\s*$", re.IGNORECASE | re.MULTILINE)
+WHY_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(?:why|problem|背景|为什么)[ \t]*#*[ \t]*$",
+                         re.IGNORECASE | re.MULTILINE)
+WHY_SETEXT_HEADING = re.compile(r"^[ \t]{0,3}(?:why|problem|背景|为什么)[ \t]*\n[ \t]{0,3}(?:=+|-+)[ \t]*$",
+                                re.IGNORECASE | re.MULTILINE)
 BODY_ISSUE_REF = re.compile(r"\b(?:refs|fixes|closes|part\s+of|slice\s+of)\s*:?\s+#([1-9][0-9]*)\b", re.IGNORECASE)
 TITLE_ISSUE_REF = re.compile(r"\(#([1-9][0-9]*)\)")
 REVERT_TITLE = re.compile(r'^\s*Revert\s+".*\(#([1-9][0-9]*)\)"\s*$', re.IGNORECASE)
@@ -297,7 +300,7 @@ def has_why_in_ancestry(issue, issues_by_number):
         if number in seen:
             raise ReadFailed("issue parent tree contains a cycle")
         seen.add(number)
-        if WHY_HEADING.search(current["body"]):
+        if WHY_HEADING.search(current["body"]) or WHY_SETEXT_HEADING.search(current["body"]):
             return True
         parent_number = current["parent"]
         if parent_number is None:
