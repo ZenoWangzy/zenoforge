@@ -268,9 +268,10 @@ def commit_is_ancestor(git_dir, commit, live_commit, cache):
 
 
 def issue_refs(pr):
+    if REVERT_TITLE.fullmatch(pr["title"]):
+        return set()
     refs = {int(match) for match in BODY_ISSUE_REF.findall(pr["body"])}
-    if not REVERT_TITLE.fullmatch(pr["title"]):
-        refs.update(int(match) for match in TITLE_ISSUE_REF.findall(pr["title"]))
+    refs.update(int(match) for match in TITLE_ISSUE_REF.findall(pr["title"]))
     return refs
 
 
