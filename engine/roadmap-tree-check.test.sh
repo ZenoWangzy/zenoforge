@@ -93,7 +93,8 @@ jq -n --arg base "$base_sha" --arg live "$live_sha" --arg outside "$outside_sha"
   {number:14,title:"Not live",body:"",state:"OPEN",labels:[],parent:{number:1}},
   {number:15,title:"Roadmap container",body:"",state:"OPEN",labels:["roadmap-theme"],parent:{number:1}},
   {number:17,title:"Parent with open child",body:"",state:"OPEN",labels:[],parent:{number:1}},
-  {number:18,title:"Open child",body:"",state:"OPEN",labels:[],parent:{number:17}}
+  {number:18,title:"Open child",body:"",state:"OPEN",labels:[],parent:{number:17}},
+  {number:19,title:"Revert undone",body:"",state:"OPEN",labels:[],parent:{number:1}}
 ]' > "$tmp/state/issues.json"
 jq -n --arg base "$base_sha" --arg live "$live_sha" --arg outside "$outside_sha" '[
   {number:100,title:"Change thing (#10)",body:"",state:"MERGED",mergedAt:"2026-11-01T00:00:00Z",mergeCommit:{oid:$base}},
@@ -104,21 +105,26 @@ jq -n --arg base "$base_sha" --arg live "$live_sha" --arg outside "$outside_sha"
   {number:105,title:"Delivered then discussed",body:"Closes #13",state:"MERGED",mergedAt:"2026-11-05T00:00:00Z",mergeCommit:{oid:$base}},
   {number:106,title:"Not live yet",body:"Refs #14",state:"MERGED",mergedAt:"2026-11-05T00:00:00Z",mergeCommit:{oid:$outside}},
   {number:107,title:"Roadmap container PR",body:"Refs #15",state:"MERGED",mergedAt:"2026-11-05T00:00:00Z",mergeCommit:{oid:$base}},
-  {number:108,title:"Parent with open child PR",body:"Refs #17",state:"MERGED",mergedAt:"2026-11-05T00:00:00Z",mergeCommit:{oid:$base}}
+  {number:108,title:"Parent with open child PR",body:"Refs #17",state:"MERGED",mergedAt:"2026-11-05T00:00:00Z",mergeCommit:{oid:$base}},
+  {number:109,title:"Original delivery (#19)",body:"",state:"MERGED",mergedAt:"2026-11-06T00:00:00Z",mergeCommit:{oid:$base}},
+  {number:110,title:"Revert \"Original delivery (#109)\"",body:"",state:"MERGED",mergedAt:"2026-11-07T00:00:00Z",mergeCommit:{oid:$live}},
+  {number:111,title:"Revert \"Revert thing (#110)\"",body:"",state:"MERGED",mergedAt:"2026-11-08T00:00:00Z",mergeCommit:{oid:$live}}
 ]' > "$tmp/state/pull-requests.json"
 printf '[]\n' > "$tmp/state/comments/10.json"
 printf '[]\n' > "$tmp/state/comments/11.json"
+printf '[]\n' > "$tmp/state/comments/19.json"
 printf '[{"created_at":"2026-11-06T00:00:00Z"}]\n' > "$tmp/state/comments/13.json"
 run_check state
 has_rc 1
 has_line 'STATE-BEHIND #11: Re-landed delivery'
+has_line 'STATE-BEHIND #19: Revert undone'
 has_no_line 'STATE-BEHIND #10:'
 has_no_line 'STATE-BEHIND #12:'
 has_no_line 'STATE-BEHIND #13:'
 has_no_line 'STATE-BEHIND #14:'
 has_no_line 'STATE-BEHIND #15:'
 has_no_line 'STATE-BEHIND #17:'
-has_line 'roadmap-tree-check: findings=1'
+has_line 'roadmap-tree-check: findings=2'
 
 fixture failed-read
 jq -n '[{number:1,title:"Incomplete",state:"OPEN",labels:[]}]' > "$tmp/failed-read/issues.json"
