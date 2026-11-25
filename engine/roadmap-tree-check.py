@@ -129,6 +129,8 @@ def normalize_issues(rows, graphql=False):
     for row in rows:
         if not isinstance(row, dict) or not valid_number(row.get("number")):
             raise ReadFailed("issue list contains an invalid issue")
+        if "body" not in row or "parent" not in row:
+            raise ReadFailed("issue list is missing required fields")
         number = row["number"]
         if number in seen:
             raise ReadFailed("issue pagination contains a duplicate issue")
@@ -182,6 +184,8 @@ def normalize_pull_requests(rows):
     for row in rows:
         if not isinstance(row, dict) or not valid_number(row.get("number")):
             raise ReadFailed("pull request list contains an invalid pull request")
+        if any(key not in row for key in ("body", "mergedAt", "mergeCommit")):
+            raise ReadFailed("pull request list is missing required fields")
         number = row["number"]
         if number in seen:
             raise ReadFailed("pull request pagination contains a duplicate pull request")
@@ -303,7 +307,7 @@ def read_comments(repo, issue_number, merged_at, fixture_dir):
             "gh", "api", "--paginate", "--slurp", "--method", "GET",
             f"repos/{repo}/issues/{issue_number}/comments", "-f", "per_page=100", "-f", f"since={since}",
         ], f"issue comments for #{issue_number}", timeout=120)
-        if not isinstance(response, list) or any(not isinstance(page, list) for page in response):
+        if not isinstance(response, list) or not response or any(not isinstance(page, list) for page in response):
             raise ReadFailed(f"issue comments for #{issue_number} are invalid")
         rows = [comment for page in response for comment in page]
     newer = False
