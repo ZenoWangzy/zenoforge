@@ -119,8 +119,31 @@ if (!dash.MODULES[0].render({...stalePaused, standards: calm.standards}).include
 const pausedBad = {...stalePaused, live_workers: {...stalePaused.live_workers, cpu_psi_avg60: 75}};
 eq("real bad row stays bad during pause", dash.problems(pausedBad, now).filter(r => ["paused", "stale", "cpu-pressure"].includes(r.kind)).map(({kind, s}) => [kind, s]),
   [["cpu-pressure", "bad"], ["paused", "none"], ["stale", "none"]]);
-if (!dash.MODULES[0].render(pausedBad).includes('<div class="ov-vd s-bad"'))
+if (!dash.MODULES[0].render(pausedBad).includes('<div class="ov-vd s-bad"') || !dash.MODULES[0].render(pausedBad).includes("<b>已暂停</b>"))
   throw new Error("a real bad row must keep the overview bad during pause");
+const unpausedBad = {...pausedBad, standards: calm.standards};
+if (!dash.MODULES[0].render(unpausedBad).includes('<div class="ov-vd s-bad"') || !dash.MODULES[0].render(unpausedBad).includes("<b>异常</b>"))
+  throw new Error("the same bad data without pause must keep the overview abnormal");
+
+const pausedQueues = {...stalePaused, units: [unit("pending", "implement-pending", 30)],
+  front: {stages: [
+    {label: "needs-triage", name: "待分诊", count: 62, idle_hours: 591, items: []},
+    {label: "needs-advisor", name: "待顾问裁决", count: 12, idle_hours: 591, items: []},
+    {label: "ready-for-agent", name: "待实现总量", count: 8, idle_hours: 591, items: []}],
+    standards: {"stage.needs-triage.count": {unhealthy: 50}, "stage.needs-advisor.count": {unhealthy: 5}, "stage.ready-for-agent.count": {unhealthy: 5}},
+    status: {"stage.needs-triage.count": "UNHEALTHY", "stage.needs-advisor.count": "UNHEALTHY", "stage.ready-for-agent.count": "UNHEALTHY"}},
+  standards: {...stalePaused.standards, metrics: [
+    {id: "release.hours_since_release", node: "release", value: 8, healthy: 2, unhealthy: 4, higher_is_better: false, status: "UNHEALTHY"},
+    {id: "release.merged_not_live", node: "release", value: 3, healthy: 0, unhealthy: 1, higher_is_better: false, status: "UNHEALTHY"}]}};
+const pqRows = dash.problems(pausedQueues, now);
+eq("paused queues and slot stay listed but neutral", pqRows.filter(r => ["queue", "slot"].includes(r.kind)).map(({kind, s}) => [kind, s]),
+  [["queue", "none"], ["queue", "none"], ["queue", "none"], ["slot", "none"]]);
+const pqHtml = dash.MODULES[0].render(pausedQueues);
+if (!pqHtml.includes('<div class="ov-vd s-none"') || !pqHtml.includes("<b>已暂停</b>") || !pqHtml.includes("2 项异常"))
+  throw new Error("paused queue load and unhealthy metrics must leave a neutral 已暂停 verdict and retain metric counts");
+const unpausedQueues = {...pausedQueues, standards: {...pausedQueues.standards, paused: null}};
+if (!dash.MODULES[0].render(unpausedQueues).includes("<b>异常</b>"))
+  throw new Error("the same queue and metric data without pause must be abnormal");
 console.log("attention ok");
 JS
 echo "dashboard-attention.test.sh: PASS"

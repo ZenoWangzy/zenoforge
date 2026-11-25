@@ -1436,7 +1436,7 @@ const ovWho = (items, key) => [...new Set(items.map(key))].join("、");
 const PB_ORDER = ["wait", "long", "paused", "stale", "ci", "cpu-pressure", "mem", "mech", "budget", "queue", "slot"];
 function problems(D, nowMs = Date.now()) {
   const rows = [], nowS = workerNowS(D, nowMs), F = FR(D), STD = D.standards || {}, T = D.totals || {}, S = D.summary || {};
-  const add = r => rows.push(r);
+  const add = r => { if (STD.paused && (r.kind === "queue" || r.kind === "slot")) r.s = "none"; rows.push(r); };
   const L = D.live_workers, LW = L && Array.isArray(L.items) ? L.items : [];
   const st = LW.map(w => ({w, ...workerState(w, nowS)}));
   const waiting = st.filter(x => x.h === "bad" || x.h === "warn");
@@ -1490,10 +1490,9 @@ function vOverview(D) {
   const metricVs = bad.length ? "bad" : warn.length ? "warn" : "ok";
   // A NO-DATA metric never reads as OK: with nothing red or amber the verdict is 无数据 and the count shows.
   const nNoData = ms.filter(m => m.status === "NO-DATA").length;
-  const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]), pausedClean = STD.paused && !bad.length && !rows.some(r => r.s === "bad");
-  const vs = pausedClean && vsRaw === "ok" ? "none" : vsRaw === "ok" && nNoData ? "none" : vsRaw;
+  const vsRaw = f.age == null && !ms.length && !LWok ? "none" : worst([metricVs, ...rows.map(r => r.s)]), vs = STD.paused ? worst(rows.map(r => r.s)) : vsRaw === "ok" && nNoData ? "none" : vsRaw;
   const nBad = rows.filter(r => r.s === "bad").length, nWarn = rows.filter(r => r.s === "warn").length;
-  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${pausedClean ? "已暂停" : {ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("none", "已暂停") : ""}${f.s === "bad" ? stChip(f.display_s, "数据过期") : ""}</span></div>`;
+  const verdict = `<div class="ov-vd s-${vs}" data-m="health">${bigIcon(vs)}<b>${STD.paused ? "已暂停" : {ok:"正常", warn:"需留意", bad:"异常", none:"无数据"}[vs]}</b><span class="aside">${nBad ? stChip("bad", `${nBad} 项要处理`) : ""}${nWarn ? stChip("warn", `${nWarn} 项需留意`) : ""}${nNoData ? stChip("none", `${nNoData} 项无数据`) : ""}${STD.paused ? stChip("none", "已暂停") : ""}${f.s === "bad" ? stChip(f.display_s, "数据过期") : ""}</span></div>`;
   // 数 1 员工
   const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, wst = LW.map(w => workerState(w, nowS)), waitN = wst.filter(x => x.h === "bad" || x.h === "warn").length;
   const slots = `<div class="slots" data-tip="产线 ${np} / 上限 ${cap}">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i < np ? "on" : ""}"></i>`).join("")}</div>`;
