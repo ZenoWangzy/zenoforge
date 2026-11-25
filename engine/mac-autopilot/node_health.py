@@ -26,7 +26,7 @@ import release_batch
 import release_retained
 import station_standards
 import pr_census
-import delivery_diagnostics
+import delivery_diagnostics, gh_caller
 import watch_alerts
 import health_standards
 import worker_cost
@@ -908,7 +908,7 @@ def ledger_metrics(units, since, now, window_hours=None, sample_counts=None):
 def advisor_answer_age_hours(agent_home, repo, now):
     """Dead-man: age of the newest successful advisor job, only while tickets wait for it. Queue via REST (GraphQL was NO-DATA, #1038)."""
     try:
-        result = subprocess.run(["gh", "api", f"repos/{repo}/issues?labels=needs-advisor&state=open&per_page=100"], capture_output=True, text=True, timeout=60)
+        result = gh_caller.run_gh(["gh", "api", f"repos/{repo}/issues?labels=needs-advisor&state=open&per_page=100"], capture_output=True, text=True, timeout=60)
         items = json.loads(result.stdout or "[]") if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, ValueError):
         items = None
@@ -959,7 +959,7 @@ def gated_agent_pr_share(repo):
     try:
         # REST, not `gh pr list`: GraphQL is the rate-limited surface (#1038). node_health has no UNREADABLE state for
         # other metrics, so a gh failure stays None (NO-DATA) as before.
-        result = subprocess.run(
+        result = gh_caller.run_gh(
             ["gh", "api", f"repos/{repo}/pulls?state=open&per_page=100", "--paginate",
              "--jq", ".[] | {ref: .head.ref, labels: [.labels[].name]}"], capture_output=True, text=True)
         if result.returncode != 0:
@@ -1236,7 +1236,7 @@ def file_issues(a, rows, now):
                 "close it here instead of repairing per metric. Changing this metric's definition or bounds "
                 "is a fix only when the metric itself is proven wrong, with that evidence in the PR. "
                 "Close this issue when the metric is back to OK.")
-        found = subprocess.run(["gh", "issue", "list", "--state", "all", "--search", f'"{title}" in:title',
+        found = gh_caller.run_gh(["gh", "issue", "list", "--state", "all", "--search", f'"{title}" in:title',
                                 "--json", "number,title,state,closedAt"], capture_output=True, text=True)
         try:
             matches = sorted((i for i in json.loads(found.stdout or "[]") if i.get("title") == title),
@@ -1253,7 +1253,7 @@ def file_issues(a, rows, now):
             # re-filing would recreate the per-metric symptom loop this triage closed.
             continue
         if number:
-            done = subprocess.run(["gh", "issue", "comment", str(number), "--body", body], capture_output=True)
+            done = gh_caller.run_gh(["gh", "issue", "comment", str(number), "--body", body], capture_output=True)
         else:
             repo_root = Path(os.environ.get("MAC_AUTOPILOT_ROOT") or Path(__file__).resolve().parents[2])
             roadmap_helper = repo_root / "engine" / "roadmap-issue-create.sh"

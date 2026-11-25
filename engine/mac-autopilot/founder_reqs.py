@@ -3,6 +3,7 @@ with the founder's words (rulings.json references, else the issue title), a stag
 acceptance advance (never an agent's note), owner, blocker and the time the stage was established.
 A stage change appends one supervisor-inbox line; engine/supervisor/watch/pipe-watch.sh forwards it to a supervisor session (founder-req is in watch.inbox_events). Nothing per-requirement reaches the founder."""
 import calendar, json, os, re, subprocess, time
+import gh_caller
 
 LABELS = ("founder-test", "hotfix", "focus")
 STAGES = ["提出", "热修生效", "进 main", "上线", "真人验收"]  # 上线 also = held by a release-retained deploy
@@ -155,7 +156,7 @@ def _write_cache(cache_path, cache):
 def _search_rows(repo, cache_path):
     """The label search (capped at ISSUE_LIMIT by gh); a stale cache beats nothing."""
     try:
-        out = subprocess.run(["gh", "issue", "list", *(["--repo", repo] if repo else []), "--state", "all", "--limit", str(ISSUE_LIMIT), "--json", "number,title,state,labels",
+        out = gh_caller.run_gh(["gh", "issue", "list", *(["--repo", repo] if repo else []), "--state", "all", "--limit", str(ISSUE_LIMIT), "--json", "number,title,state,labels",
                               "--search", "label:" + ",".join(LABELS) + " sort:updated-desc"], capture_output=True, text=True, timeout=60)
         if out.returncode: raise RuntimeError(out.stderr[-200:])
         rows = json.loads(out.stdout)
@@ -177,7 +178,7 @@ def _fetch_by_number(repo, numbers):
             owner, name = repo.split("/", 1)
             query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
             try:
-                out = subprocess.run(["gh", "api", "graphql", "-f", "query=" + query], capture_output=True, text=True, timeout=60)
+                out = gh_caller.run_gh(["gh", "api", "graphql", "-f", "query=" + query], capture_output=True, text=True, timeout=60)
                 data = json.loads(out.stdout).get("data", {}).get("repository") or {}
             except Exception:
                 continue
@@ -188,7 +189,7 @@ def _fetch_by_number(repo, numbers):
         return rows
     for n in numbers:
         try:
-            out = subprocess.run(["gh", "issue", "view", str(n), "--json", "number,title,state,labels"], capture_output=True, text=True, timeout=60)
+            out = gh_caller.run_gh(["gh", "issue", "view", str(n), "--json", "number,title,state,labels"], capture_output=True, text=True, timeout=60)
             if out.returncode == 0: rows.append(json.loads(out.stdout))
         except Exception:
             pass

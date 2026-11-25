@@ -17,6 +17,7 @@ from pathlib import Path
 
 import roi_ledger
 from config_paths import zf_config_file
+import gh_caller
 
 
 PRICE_FILE = zf_config_file("state/roi-prices.json") or (
@@ -170,7 +171,7 @@ def _issue_created(repo, cutoff, timeout=30):
 
     def run(command):
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            result = gh_caller.run_gh(command, capture_output=True, text=True, timeout=timeout)
             return json.loads(result.stdout or "null") if result.returncode == 0 else None
         except (OSError, subprocess.TimeoutExpired, ValueError):
             return None

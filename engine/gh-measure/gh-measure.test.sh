@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "gh-measure.test.sh: $*" >&2; exit 1; }
-t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
+t="$(mktemp -d)"; trap 'rm -rf -- "$t" "$test_env_root"' EXIT
 cat > "$t/real-gh" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
@@ -43,6 +43,27 @@ row="$(tail -1 "$t/calls.tsv")"
 "$dir/bin/gh" pr view 12 --json state < /dev/null > /dev/null || true
 [ "$(tail -1 "$t/calls.tsv" | cut -f4,5,8)" = $'pr view\t\tother' ] || fail "subcommand not recorded: $(tail -1 "$t/calls.tsv")"
 
+PYTHONPATH="$(dirname "$dir")/mac-autopilot" PATH="$dir/bin:$PATH" python3 - <<'PY'
+import delivery_diagnostics
+delivery_diagnostics.gh_json(["api", "repos/o/r/issues/4061/python-caller"], 10)
+PY
+python_caller="$(tail -1 "$t/calls.tsv" | cut -f3)"
+[[ "$python_caller" =~ ^engine/mac-autopilot/delivery_diagnostics\.py:([0-9]+)$ ]] \
+  || fail "Python GitHub call logged the wrong caller: $python_caller"
+python_source="$(sed -n "${BASH_REMATCH[1]}p" "$dir/../mac-autopilot/delivery_diagnostics.py")"
+[[ "$python_source" == *"gh_caller.run_gh("* ]] || fail "Python caller line did not point to the GitHub call: $python_caller"
+echo 'ok - Python GitHub call logs its own file and line'
+
+cat > "$t/outside-caller.py" <<'PY'
+import gh_caller
+gh_caller.run_gh(["gh", "pr", "view", "4061"], capture_output=True, text=True)
+PY
+PYTHONPATH="$(dirname "$dir")/mac-autopilot" PATH="$dir/bin:$PATH" python3 "$t/outside-caller.py" \
+  || fail 'out-of-repository Python caller did not reach gh'
+outside_caller="$(tail -1 "$t/calls.tsv" | cut -f3)"
+[ "$outside_caller" = 'outside-caller.py:2' ] || fail "out-of-repository caller was not reduced to its file name: $outside_caller"
+echo 'ok - out-of-repository Python caller logs its file name and line'
+
 # Header and field values are not endpoints; error classes distinguish 304, secondary and primary limits.
 for kind in not-modified secondary rate; do
   args=(-H 'If-None-Match: W/"etag/path"' -f 'field=/secret' -F 'raw=/private')
@@ -65,7 +86,7 @@ kill -TERM "$shim"; wait "$shim" || true
 [ "$(tail -1 "$t/calls.tsv" | cut -f4,8)" = $'hang \tother' ] || fail 'a killed call was not logged'
 
 summary="$(python3 "$dir/summary.py" "$t/calls.tsv")"
-grep -q '^8 gh calls .*failed 7 (87.5%)' <<< "$summary" || fail "summary did not count rows and ignore the 304: $summary"
+grep -q '^10 gh calls .*failed 9 (90.0%)' <<< "$summary" || fail "summary did not count rows and ignore the 304: $summary"
 # Spike pass: a site failing >=50% this hour after a clean day alerts; a noisy-before site and a healthy busy site do not.
 now=1800000000; ts() { date -u -d "@$1" +%FT%TZ; }
 : > "$t/spike.tsv"

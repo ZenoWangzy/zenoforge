@@ -5,7 +5,6 @@ engine/check-rulings.test.sh
 engine/closing-keyword-gate.test.sh
 engine/codex-usage-budget.test.sh
 engine/entry-symlink.test.sh
-engine/gh-measure/gh-measure.test.sh
 engine/gitnexus-refresh-target.test.sh
 engine/gitnexus-refresh-window.test.sh
 engine/gitnexus-wrapper.test.sh
@@ -65,5 +64,4 @@ engine/syntax-only-landing.test.sh
 engine/test-env-exit.test.sh
 engine/tests/fix-forward-release-helper.test.sh
 engine/tests/release-runner.test.sh
-engine/tick-refuse-guard.test.sh
 engine/web-advisor-provider-job.test.sh

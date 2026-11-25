@@ -10,6 +10,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "mac-autopilot"))
+import gh_caller
+
 IDENTITY = "number headRefOid updatedAt"
 PAGE_INFO = "pageInfo { hasNextPage endCursor }"
 DEFAULT_GRAPHQL_REQUEST_BUDGET = 120
@@ -69,7 +72,7 @@ class Snapshot:
         query = "query { repository(owner:" + json.dumps(owner) + ",name:" + json.dumps(name) + ") { " + fields + " } }"
         self.request_count += 1
         try:
-            result = subprocess.run(["gh", "api", "graphql", "-f", "query=" + query],
+            result = gh_caller.run_gh(["gh", "api", "graphql", "-f", "query=" + query],
                                     capture_output=True, text=True, timeout=20)
         except subprocess.TimeoutExpired:
             raise
