@@ -86,7 +86,7 @@ kill -TERM "$shim"; wait "$shim" || true
 [ "$(tail -1 "$t/calls.tsv" | cut -f4,8)" = $'hang \tother' ] || fail 'a killed call was not logged'
 
 summary="$(python3 "$dir/summary.py" "$t/calls.tsv")"
-grep -q '^9 gh calls .*failed 8 (88.9%)' <<< "$summary" || fail "summary did not count rows and ignore the 304: $summary"
+grep -q '^10 gh calls .*failed 9 (90.0%)' <<< "$summary" || fail "summary did not count rows and ignore the 304: $summary"
 # Spike pass: a site failing >=50% this hour after a clean day alerts; a noisy-before site and a healthy busy site do not.
 now=1800000000; ts() { date -u -d "@$1" +%FT%TZ; }
 : > "$t/spike.tsv"
