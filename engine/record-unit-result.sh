@@ -56,6 +56,7 @@ if [ "$stage" = triage-batch ] && [ "${ZF_AGENT_TEST_MODE:-0}" != 1 ]; then
   fi
   systemd-run --user --unit="${UNIT_PREFIX_TRANSIENT}-triage-event-${BASHPID:-$$}" --on-active=1s --collect \
     -p RestartForceExitStatus=75 -p RestartSec=1s -p StartLimitIntervalSec=0 \
+    -p "ExecCondition=/usr/bin/test ! -e \"$AGENT_HOME/PAUSE\"" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY \
     -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
     "$SCRIPT_DIR/issue-pipeline.sh" --stage triage-event \

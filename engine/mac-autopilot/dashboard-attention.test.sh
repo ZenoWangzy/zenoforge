@@ -96,6 +96,31 @@ const waitOnly = {...calm, front: {stages: [{label: "needs-info", name: "等提�
 if (dash.problems(waitOnly, now).length !== 1) throw new Error("needs-info item must produce one waiting row");
 const woHtml = dash.MODULES[0].render(waitOnly);
 if (!woHtml.includes('class="ov-vd s-ok"') || woHtml.includes("需留意")) throw new Error("waiting rows must not turn the verdict into 需留意 or add a warn chip");
+
+const snapshotS = nowS - 1200;
+const stalePaused = {...calm, generated: new Date(snapshotS * 1000).toISOString(),
+  live_workers: {...calm.live_workers, generated_epoch: snapshotS, items: [w("pipeline", "implement", 3000, 2400, "ok")]},
+  standards: {...calm.standards, paused: {since: new Date(snapshotS * 1000).toISOString(), reason: "operator pause"}}};
+const pausedRows = dash.problems(stalePaused, now);
+eq("paused stale rows stay visible and neutral", pausedRows.map(({kind, s}) => [kind, s]), [["paused", "none"], ["stale", "none"]]);
+eq("paused stale overview summary is neutral", dash.MODULES[0].sum(stalePaused).s, "none");
+const pausedHtml = dash.MODULES[0].render(stalePaused);
+if (!pausedHtml.includes("<b>已暂停</b>") || /class="ov-vd s-bad"|class="pb s-bad"/.test(pausedHtml))
+  throw new Error("a stale paused snapshot must read 已暂停 without red rows");
+if (!pausedHtml.includes('class="hk s-ok" type="button" data-m="workers"') ||
+    !pausedHtml.includes('<span class="lw-el s-ok">30 分</span>') || /class="lwc [^"]*w-(warn|bad)/.test(pausedHtml))
+  throw new Error("a stale paused snapshot must freeze worker state and age at the live_workers timestamp");
+
+const staleRows = dash.problems({...stalePaused, standards: calm.standards}, now);
+eq("stale snapshot without pause stays bad", staleRows.filter(r => r.kind === "stale").map(r => r.s), ["bad"]);
+if (!dash.MODULES[0].render({...stalePaused, standards: calm.standards}).includes('<div class="ov-vd s-bad"'))
+  throw new Error("a stale snapshot without pause must keep the overview bad");
+
+const pausedBad = {...stalePaused, live_workers: {...stalePaused.live_workers, cpu_psi_avg60: 75}};
+eq("real bad row stays bad during pause", dash.problems(pausedBad, now).filter(r => ["paused", "stale", "cpu-pressure"].includes(r.kind)).map(({kind, s}) => [kind, s]),
+  [["cpu-pressure", "bad"], ["paused", "none"], ["stale", "none"]]);
+if (!dash.MODULES[0].render(pausedBad).includes('<div class="ov-vd s-bad"'))
+  throw new Error("a real bad row must keep the overview bad during pause");
 console.log("attention ok");
 JS
 echo "dashboard-attention.test.sh: PASS"
