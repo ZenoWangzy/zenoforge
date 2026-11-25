@@ -49,7 +49,7 @@ has_line 'roadmap-tree-check: findings=1'
 
 fixture no-why
 jq -n '[
-  {number:1,title:"Roadmap",body:"",state:"CLOSED",labels:["roadmap"],parent:null},
+  {number:1,title:"Roadmap",body:"```markdown\n## Why\nProblem\n---\n```",state:"CLOSED",labels:["roadmap"],parent:null},
   {number:2,title:"Needs context",body:"No heading here.",state:"OPEN",labels:[],parent:{number:1}}
 ]' > "$tmp/no-why/issues.json"
 printf '[]\n' > "$tmp/no-why/pull-requests.json"
