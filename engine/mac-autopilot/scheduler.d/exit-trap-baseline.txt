@@ -58,7 +58,6 @@ engine/state-json-merge.test.sh
 engine/state-merge-concurrency.test.sh
 engine/supervise-exceptions.test.sh
 engine/sweep-merges.test.sh
-engine/sweep-unlabeled-issues.test.sh
 engine/syntax-only-landing.test.sh
 engine/test-env-exit.test.sh
 engine/tests/fix-forward-release-helper.test.sh

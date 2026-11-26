@@ -4,7 +4,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_HOME="$(mktemp -d)"
-trap 'rm -rf -- "$TEST_HOME"' EXIT
 export AGENT_HOME="$TEST_HOME/agent" REPO=test/repo
 export FAKE_ISSUES_FILE="$TEST_HOME/issues.json" FAKE_GH_LOG="$TEST_HOME/gh.log"
 export FAIL_STATE_MERGE_FILE="$TEST_HOME/fail-state-merge"
@@ -106,7 +105,14 @@ if [[ "$1 $2" == 'issue view' ]]; then
   elif [[ "$query" == ".state" ]]; then
     jq -r --argjson n "$number" '.[] | select(.number == $n) | .state' "$FAKE_ISSUES_FILE"
   else
-    jq -c --argjson n "$number" '.[] | select(.number == $n) | {number,state,labels,title:(.title // ""),body:(.body // ""),author:(.author // {login:"other"}),comments:(.comments // [])}' "$FAKE_ISSUES_FILE"
+    issue_json="$(jq -c --argjson n "$number" '.[] | select(.number == $n) | {number,state,labels,title:(.title // ""),body:(.body // ""),author:(.author // {login:"other"}),comments:(.comments // [])}' "$FAKE_ISSUES_FILE")"
+    if [[ "$number" == "${FAKE_INTAKE_TRACKER_RACE_NUMBER:-}" ]]; then
+      printf '%s\n' '{"state":"tracker","tracker_parent":true}' > "$AGENT_HOME/state/$number.json"
+      jq --argjson n "$number" 'map(if .number == $n then .labels += [{"name":"tracker"}] else . end)' \
+        "$FAKE_ISSUES_FILE" >"$FAKE_ISSUES_FILE.tmp"
+      mv "$FAKE_ISSUES_FILE.tmp" "$FAKE_ISSUES_FILE"
+    fi
+    printf '%s\n' "$issue_json"
   fi
   exit 0
 fi
@@ -518,6 +524,34 @@ assert_eq "admit loop left later candidates for the next tick" "needs-triage" \
 assert_eq "admit loop stopped before the last candidate" "" \
   "$(jq -r '.[] | select(.number == 7199) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
 unset ZF_GH_CALL_DEADLINE_EPOCH_MS
+unset FAKE_CLOCK_BASE
+gh_call_now_ms() {
+  local realtime="${EPOCHREALTIME/./}"
+  [[ "$realtime" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$((realtime / 1000))"
+}
+
+cat >"$FAKE_ISSUES_FILE" <<JSON
+[{"number":8301,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[]}]
+JSON
+export FAKE_INTAKE_TRACKER_RACE_NUMBER=8301
+if intake_admit_unlabeled_issues >"$TEST_HOME/intake-race.log" 2>&1; then race_status=0; else race_status=$?; fi
+unset FAKE_INTAKE_TRACKER_RACE_NUMBER
+assert_eq "an issue changed to tracker after the fresh read is treated as a deferral" 0 "$race_status"
+assert_eq "another writer's tracker state is preserved" "tracker" \
+  "$(jq -r '.[] | select(.number == 8301) | [.labels[].name] | join(",")' "$FAKE_ISSUES_FILE")"
+assert_eq "a changed tracker is not reported as an admission failure" 0 \
+  "$(grep -c 'could not admit #8301' "$TEST_HOME/intake-race.log" || true)"
+
+cat >"$FAKE_ISSUES_FILE" <<JSON
+[{"number":8302,"state":"OPEN","createdAt":"$old_unlabeled_iso","labels":[]}]
+JSON
+FAIL_ISSUE_EDIT_NUMBER=8302
+if intake_admit_unlabeled_issues >"$TEST_HOME/intake-failure.log" 2>&1; then failure_status=0; else failure_status=$?; fi
+FAIL_ISSUE_EDIT_NUMBER=""
+assert_eq "a failed transition remains an incomplete admission" 1 "$failure_status"
+assert_contains "a still-eligible issue is reported as a transition failure" \
+  "$(cat "$TEST_HOME/intake-failure.log")" 'could not admit #8302 to needs-triage; retrying next tick'
 
 # 2026-11-05: one failed founder-test label write returned 1 from
 # label_maintainer_test_candidates, so triage skipped dispatch for every issue.
