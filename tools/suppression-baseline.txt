@@ -1,0 +1,14 @@
+# suppression-ratchet baseline: count<TAB>file<TAB>directive; lower counts only.
+1	engine/check-gh-flags.sh	shellcheck disable=SC2086
+1	engine/deploy-culprit.sh	shellcheck disable=SC2153
+1	engine/land-queue.sh	shellcheck disable=SC1090
+2	engine/lib-model-policy.test.sh	shellcheck disable=SC2016
+1	engine/mac-autopilot/usage_reader.test.py	noqa: E402
+5	engine/mac-autopilot/worker_cost.test.py	noqa: E402
+2	engine/pr-ci-gate-paths.test.sh	shellcheck disable=SC2254
+1	engine/supervise-exceptions.test.sh	shellcheck disable=SC2016
+2	engine/supervise-exceptions.test.sh	shellcheck disable=SC2034
+4	engine/vendor/pstack/skills/poteto-mode/scripts/watch-pr/types.compile.ts	@ts-expect-error
+1	tools/main-red-revert.test.sh	shellcheck disable=SC1091
+1	tools/quick-land.sh	shellcheck disable=SC2048,SC2086
+1	tools/run-engine-tests.test.sh	shellcheck disable=SC1091

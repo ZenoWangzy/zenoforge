@@ -245,7 +245,7 @@ merge_pr_size_ok() {
     merge_pr_refuse "$pr" 'no git checkout: cannot run size-ratchet' 'run tools/merge-pr.sh from a clone of the repository'
     return 1
   }
-  [[ ! -f "$root/tools/comment-ratchet.mjs" ]] || comment="$(node "$root/tools/comment-ratchet.mjs" --changed origin/main 2>&1)" || { merge_pr_refuse "$pr" "$comment"; return 1; }; over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^REFUSAL found=')" || return 0
+  [[ ! -f "$root/tools/comment-ratchet.mjs" ]] || comment="$(node "$root/tools/comment-ratchet.mjs" --changed origin/main 2>&1)" || { merge_pr_refuse "$pr" "$comment"; return 1; }; [[ ! -f "$root/tools/suppression-ratchet.mjs" ]] || comment="$(node "$root/tools/suppression-ratchet.mjs" --changed origin/main 2>&1)" || { merge_pr_refuse "$pr" "$comment"; return 1; }; over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^REFUSAL found=')" || return 0
   [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(merge_pr_head_sha "$pr" 2>/dev/null)" ]] || return 0
   files="$(merge_pr_view "$pr" body,files,commits 2>/dev/null | jq -r '.files[].path')"
   over="$(awk 'FILENAME == ARGV[1] { own[$0] = 1; next } /^REFUSAL found="/ { for (path in own) if (index($0, "found=\"" path " ")) { print; next } }' <(printf '%s\n' "$files") - <<<"$over")"

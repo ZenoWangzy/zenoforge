@@ -1116,14 +1116,14 @@ test('leaves changed package vitest files to their package gate', () => {
   }
 });
 
-test('a grown engine or tools source file selects the size ratchet; tests and vendored code do not', () => {
-  const ratchet = 'engine/size-ratchet.test.sh';
-  const tracked = new Set([ratchet, 'engine/issue-pipeline.test.sh', 'engine/new-helper.test.mjs']);
-  for (const path of ['engine/issue-pipeline.sh', 'engine/new-helper.mjs', 'tools/size-ratchet.sh', 'tools/size-baseline.txt']) {
-    assert.ok(focusedTestPaths([path], tracked).includes(ratchet), path);
+test('source changes select ratchets and vendored source selects only the suppression ratchet', () => {
+  const ratchet = 'engine/size-ratchet.test.sh', suppression = 'engine/suppression-ratchet.test.sh';
+  const tracked = new Set([ratchet, suppression, 'engine/issue-pipeline.test.sh', 'engine/new-helper.test.mjs']);
+  for (const path of ['engine/issue-pipeline.sh', 'engine/new-helper.mjs', 'tools/size-ratchet.sh', 'tools/size-baseline.txt', 'tools/suppression-ratchet.mjs', 'tools/source-comments.mjs', 'tools/suppression-baseline.txt', 'tools/suppression-exceptions.json', 'cli/new-helper.py']) {
+    assert.ok(focusedTestPaths([path], tracked).includes(suppression) && ((path.startsWith('cli/') || path === 'tools/suppression-baseline.txt' || path === 'tools/suppression-exceptions.json') ? !focusedTestPaths([path], tracked).includes(ratchet) : focusedTestPaths([path], tracked).includes(ratchet)), path);
   }
   for (const path of ['engine/issue-pipeline.test.sh', 'engine/vendor/unlisted-vendored.sh', 'engine/notes.md']) {
-    assert.ok(!focusedTestPaths([path], tracked).includes(ratchet), path);
+    assert.ok(path.includes('/vendor/') ? !focusedTestPaths([path], tracked).includes(ratchet) && focusedTestPaths([path], tracked).includes(suppression) : !focusedTestPaths([path], tracked).includes(ratchet) && !focusedTestPaths([path], tracked).includes(suppression), path);
   }
 });
 

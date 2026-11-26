@@ -125,6 +125,7 @@ quick_land_commit_refusal() { # [test commands]
   ' <(git diff --name-only origin/main HEAD) -)"
   [[ -z "$out" ]] || echo "shortcut-ratchet: $out"
   [[ ! -f tools/comment-ratchet.mjs ]] || out="$(node tools/comment-ratchet.mjs --changed origin/main 2>&1)" || echo "comment-ratchet: $out" # fixture repos without the tool skip it
+  [[ ! -f tools/suppression-ratchet.mjs ]] || out="$(node tools/suppression-ratchet.mjs --changed origin/main 2>&1)" || echo "suppression-ratchet: $out"
 }
 
 quick_land_run_tests() { # test commands...; stops at the first red, the receipt keeps every rc
