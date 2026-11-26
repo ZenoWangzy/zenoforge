@@ -804,11 +804,12 @@ review_identity_family() {
 }
 
 review_identity_unavailable_reason() {
-  local identity="$1" role="${2:-review}" provider model effort family
+  local identity="$1" role="${2:-review}" provider model family marker_reason
   provider="${identity%%:*}"; model="${identity#*:}"; model="${model%:*}"
-  effort="${identity##*:}"
   family="$(review_identity_family "$identity" 2>/dev/null || echo unknown)"
   model_policy_model_allowed_for_role "$model" "$role" || { echo 'policy refused'; return 0; }
+  if [[ "$provider" == claude ]] && marker_reason="$(quota_marker_blocks claude review 2>/dev/null)"; then [[ "$marker_reason" == claude.week_stop:* ]] && echo 'claude week-stop' || echo 'claude hold'; return 0; fi
+  if [[ "$provider" == claude ]] && ! command -v claude >/dev/null 2>&1; then echo 'claude cli missing'; return 0; fi
   if declare -F cooling >/dev/null 2>&1 && cooling "$provider"; then echo "$family hold"; return 0; fi
   case "$provider" in
     codex)
@@ -824,8 +825,7 @@ review_identity_unavailable_reason() {
       else echo 'glm unavailable'; fi
       ;;
     claude)
-      if ! command -v claude >/dev/null 2>&1; then echo 'sonnet cli missing'
-      else echo 'sonnet unavailable'; fi
+      echo 'claude unavailable'
       ;;
     *) echo 'unknown provider' ;;
   esac

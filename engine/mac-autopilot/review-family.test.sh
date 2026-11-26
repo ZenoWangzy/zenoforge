@@ -431,5 +431,31 @@ NOW_EPOCH="$(date +%s)" review_identity_available "zcode:GLM-5.3:max" review cod
 set_review_scope zcode block
 if NOW_EPOCH="$(date +%s)" review_identity_available "zcode:GLM-5.3:max" review codex; then fail 'a ZCode marker with review blocked by scope must refuse the reviewer'; fi
 
+export CLAUDE_QUOTA_SNAPSHOT_FILE="$fixture/claude-quota.json"
+rm -f "$CLAUDE_QUOTA_SNAPSHOT_FILE"
+NOW_EPOCH="$(date +%s)"
+set_cooldowns 0 "$((NOW_EPOCH + 1800))"
+claude_marker="$(_quota_marker_file claude)"
+printf '%s\n' "$(($(date +%s) + 3600))" > "$claude_marker"
+[[ "$(review_identity_unavailable_reason 'claude:claude-sonnet-5-5:high' review_fallback)" == 'claude hold' ]] || fail 'an exhausted Claude marker must be named as a Claude hold'
+[[ "$(review_wait_reason 'codex:gpt-6-luna:max' 'codex:gpt-6-luna:max' '' 'claude:claude-sonnet-5-5:high')" == 'no-cross-reviewer:claude-hold' ]] || fail 'a Claude-only fallback wait must name the Claude hold'
+rm -f "$claude_marker"
+jq -n --argjson pct 95 --argjson reset "$(($(date +%s) + 3600))" '{week_pct:$pct,week_reset:$reset}' > "$CLAUDE_QUOTA_SNAPSHOT_FILE"
+[[ "$(review_identity_unavailable_reason 'claude:claude-sonnet-5-5:high' review_fallback)" == 'claude week-stop' ]] || fail 'a Claude week stop must be named separately from an exhausted marker'
+rm -f "$CLAUDE_QUOTA_SNAPSHOT_FILE"
+set_cooldowns 0 0
+[[ "$(review_identity_unavailable_reason 'claude:claude-sonnet-5-5:high' review_fallback)" == 'claude unavailable' ]] || fail 'an unmarked unavailable Claude identity must use the general reason'
+no_claude_bin="$fixture/no-claude-bin"
+mkdir -p "$no_claude_bin"
+for utility in jq cat date; do
+  ln -s "$(type -P "$utility")" "$no_claude_bin/$utility"
+done
+original_path="$PATH"
+PATH="$no_claude_bin"
+set_cooldowns 0 "$((NOW_EPOCH + 1800))"
+missing_cli_reason="$(review_identity_unavailable_reason 'claude:claude-sonnet-5-5:high' review_fallback)"
+PATH="$original_path"
+[[ "$missing_cli_reason" == 'claude cli missing' ]] || fail "a missing Claude CLI must have its own reason, got $missing_cli_reason"
+
 echo 'PASS review family dispatch, fallback, wait, alert, and role policy'
 
