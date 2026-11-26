@@ -1276,6 +1276,11 @@ test('maps the GitHub budget health collector to its focused test', () => {
   assert.deepEqual(focusedTestPaths(['engine/mac-autopilot/gh_budget_health.py'], new Set([suite])), [suite]);
 });
 
+test('maps the GitHub budget sampler entrypoint to its focused test', () => {
+  const suite = 'engine/gh-budget.test.sh';
+  assert.deepEqual(focusedTestPaths(['engine/mac-autopilot/gh-budget-sampler.sh'], new Set([suite])), [suite]);
+});
+
 test('two parallel row appends to docs/enforced-rules.md and two fragments merge without a conflict', () => {
   const repo = mkdtempSync(join(tmpdir(), 'registry-union-'));
   const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@e.invalid', ...args], { encoding: 'utf8' });

@@ -3112,6 +3112,9 @@ budget_sample_epoch="$(date +%s)"
 budget_sample_reset=$((budget_sample_epoch + 3600))
 budget_sampled_at="$(date -u +%FT%TZ)"
 mkdir -p "$TF/agent-home/state"
+budget_sample_minute="$((budget_sample_epoch / 60))"
+mkdir -p "$TF/agent-home/state/gh-budget-minute-$budget_sample_minute" \
+  "$TF/agent-home/state/gh-budget-minute-$((budget_sample_minute + 1))"
 command jq -cn --arg sampled_at "$budget_sampled_at" --argjson sampled_epoch "$budget_sample_epoch" \
   --argjson reset "$budget_sample_reset" \
   '{sampled_at:$sampled_at,sampled_epoch:$sampled_epoch,resources:{graphql:{used:100,remaining:4900,reset:$reset},core:{used:0,remaining:5000,reset:$reset}}}' \

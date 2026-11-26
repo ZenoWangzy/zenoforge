@@ -256,7 +256,7 @@
 14	engine/lib.d/spend-budget.sh
 42	engine/lib.d/supervisor-inbox.sh
 97	engine/lib.d/sweeps.sh
-118	engine/lib.d/transport.sh
+116	engine/lib.d/transport.sh
 14	engine/lib.d/triage-claude.sh
 27	engine/lib.d/triage-default.sh
 43	engine/lib.d/triage-solo.sh

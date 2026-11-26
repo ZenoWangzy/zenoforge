@@ -302,8 +302,8 @@ tick_gh_calls_summary() { # the same string feeds the tick-phases line (gh_locke
 tick_rest_usage_begin() {
   local core remaining reset
   TICK_REST_REMAINING_BEFORE="" TICK_REST_RESET_BEFORE=""
-  gh_budget_sample || :
-  core="$(gh_budget_latest)" || return 0
+  (declare -F gh_budget_sample >/dev/null || source "$SCHEDULER_AGENT_LIB"; gh_budget_sample) || :
+  core="$(declare -F gh_budget_latest >/dev/null || source "$SCHEDULER_AGENT_LIB"; gh_budget_latest)" || return 0
   remaining="$(jqf -r '.resources.core.remaining // empty' <<<"$core" 2>/dev/null)" || return 0
   reset="$(jqf -r '.resources.core.reset // empty' <<<"$core" 2>/dev/null)" || return 0
   [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 0
@@ -312,7 +312,7 @@ tick_rest_usage_begin() {
 tick_rest_usage_summary() {
   local core remaining reset
   if [[ "${TICK_REST_REMAINING_BEFORE:-}" =~ ^[0-9]+$ && "${TICK_REST_RESET_BEFORE:-}" =~ ^[0-9]+$ ]] \
-    && { gh_budget_sample || :; core="$(gh_budget_latest)"; } \
+    && { (declare -F gh_budget_sample >/dev/null || source "$SCHEDULER_AGENT_LIB"; gh_budget_sample) || :; core="$(declare -F gh_budget_latest >/dev/null || source "$SCHEDULER_AGENT_LIB"; gh_budget_latest)"; } \
     && remaining="$(jqf -r '.resources.core.remaining // empty' <<<"$core" 2>/dev/null)" \
     && reset="$(jqf -r '.resources.core.reset // empty' <<<"$core" 2>/dev/null)" \
     && [[ "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]]; then
