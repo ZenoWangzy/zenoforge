@@ -414,6 +414,37 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
     json.dump(prs, output)
 PY
 export MERGED_PR_FIXTURE="$merged_pr_fixture"
+tick_gh_pr_rest_payload() {
+  local pr_number="$1" pr_row='' fixture pr_sha pr_branch state=open merged_at='' merge_commit=''
+  for fixture in "$TF/handoff-pr-view.json" "$TF/handoff-lookup.json"; do
+    [[ -f "$fixture" ]] || continue
+    pr_row="$(command jq -c --argjson n "$pr_number" '[.[] | select(.number==$n)][0] // empty' "$fixture")" || return 1
+    [[ -n "$pr_row" ]] && break
+  done
+  if [[ -z "$pr_row" ]]; then
+    pr_sha="$(cat "$TF/pr-head-$pr_number" 2>/dev/null || printf '%040x' "$pr_number")"
+    pr_branch="$(command jq -r --argjson n "$pr_number" '[.units[] | select(.pr==$n) | .branch // empty][0] // "fix/token-fixture"' "$TF/supervisor/autopi/units.json" 2>/dev/null || echo fix/token-fixture)"
+    if [[ -f "$TF/closed-prs" ]] && grep -Fxq "$pr_number" "$TF/closed-prs"; then state=closed; fi
+    if [[ -f "$TF/main-sha" && "$(cat "$TF/main-sha")" == "$pr_sha" ]]; then
+      state=closed; merged_at='2026-10-29T00:00:00Z'; merge_commit="$pr_sha"
+    fi
+    [[ ! -f "$TF/no-merge-sha" ]] || merge_commit=''
+    command jq -cn --argjson n "$pr_number" --arg oid "$pr_sha" --arg branch "$pr_branch" --arg state "$state" \
+      --arg merged_at "$merged_at" --arg merge_commit "$merge_commit" \
+      '{number:$n,state:$state,draft:false,head:{ref:$branch,sha:$oid},base:{ref:"main"},title:"fixture",body:"",labels:[],mergeable:null,
+        merge_commit_sha:(if $merge_commit == "" then null else $merge_commit end),merged_at:(if $merged_at == "" then null else $merged_at end)}'
+    return
+  fi
+  pr_sha="$(cat "$TF/pr-head-$pr_number" 2>/dev/null || printf '%040x' "$pr_number")"
+  command jq -cn --argjson p "$pr_row" --argjson n "$pr_number" --arg sha "$pr_sha" '
+    $p as $p | {number:($p.number // $n),
+      state:(if ($p.mergedAt // $p.merged_at // null) != null or $p.state == "MERGED" then "closed" else (($p.state // "OPEN") | ascii_downcase) end),
+      draft:($p.draft // $p.isDraft // false), head:{ref:($p.head.ref // $p.headRefName // ""),sha:($p.head.sha // $p.headRefOid // $sha)},
+      base:{ref:($p.base.ref // $p.baseRefName // "main"),sha:($p.base.sha // $p.baseRefOid // null)}, title:($p.title // ""), body:($p.body // ""),
+      labels:($p.labels // []), mergeable:(if $p.mergeable == true or $p.mergeable == "MERGEABLE" then true elif $p.mergeable == false or $p.mergeable == "CONFLICTING" then false else null end),
+      merge_commit_sha:($p.merge_commit_sha // $p.mergeCommit.oid // null),
+      merged_at:($p.mergedAt // $p.merged_at // (if $p.state == "MERGED" then "2026-10-29T00:00:00Z" else null end))}'
+}
 cat > "$fixture/bin/gh" <<'SH'
 #!/usr/bin/env bash
 if [[ "$*" == 'api repos/example-maintainer/example-repo/deployments?environment=production&per_page=20' && -n "${DEPLOYMENT_FIXTURE:-}" ]]; then
@@ -423,7 +454,7 @@ elif [[ "$*" == 'api repos/example-maintainer/example-repo/deployments/1/statuse
 elif [[ "$*" == 'api --paginate '*'/actions/runners?per_page=100'* ]]; then
   # 看板 60ba960cf 起按 runner 池展示 CI 现状：PR 池一个在线且忙，Mac 池一个离线
   printf '%s\n' '{"runners":[{"name":"cihost-ci-1","status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"name":"zf-mac-2","status":"offline","busy":false,"labels":[{"name":"other"}]}]}'
-elif [[ "$*" == 'pr list --state merged --search merged:>='*' --limit 200 --json number,mergedAt' ]]; then
+elif [[ "$1 $2" == 'api search/issues' && "$*" == *'merged:>='* ]]; then
   cat "$MERGED_PR_FIXTURE"
 else
   echo '[]'
@@ -598,6 +629,10 @@ TODAY="$(date -u +%Y-%m-%d)"
 session_day="${TODAY//-//}"
 tick_gh() {
   printf 'gh %s\n' "$*" >> "$TF/calls"
+  if [[ "${1:-}" == api && ( "${2:-}" == 'repos/{owner}/{repo}/pulls/'* || "${2:-}" == 'repos/example-maintainer/example-repo/pulls/'* ) ]]; then
+    local pr_number="${2##*/pulls/}"
+    [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] && { tick_gh_pr_rest_payload "$pr_number"; return $?; }
+  fi
   case "$1 $2" in
     'api rate_limit') command jq -cn --argjson reset "$(($(date +%s) + 3600))" \
       '{resources:{graphql:{used:100,remaining:4900,reset:$reset},core:{used:0,remaining:5000,reset:$reset}}}' ;;
@@ -616,12 +651,6 @@ tick_gh() {
       body="$(tick_gh "${rest[@]}")" || return $?
       printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
       return 0 ;;
-    'api repos/example-maintainer/example-repo/pulls/'*)
-      local pr_number="${2##*/}"
-      [[ "$#" -eq 2 && "$pr_number" =~ ^[0-9]+$ ]] || return 97
-      command jq -cn --argjson n "$pr_number" --arg oid "$(printf '%040x' "$pr_number")" \
-        '{number:$n,merged:true,base:{ref:"main"},merge_commit_sha:$oid,merged_at:"2026-10-29T00:00:00Z"}'
-      ;;
     # 轻量 census 后的检查行：按 head SHA 读 check-runs。优先用 pr-census.json 里该 head 的 statusCheckRollup
     # （fixture 原样保留）；真实 head（夹具仓库的 git SHA，记录在 pr-head-<n>）按文件反查 PR 号；%040x 的
     # head 本身就是 PR 号；main 的两个 run head 由 main-check-runs.json 回答（原 api * 分支的行为）。
@@ -778,10 +807,15 @@ tick_gh() {
         *baseRefName*) echo main ;;
       esac ;;
     'pr list')
-      if [[ -f "$TF/aged-prs.json" && "$*" == *'--json number,headRefName,headRefOid,createdAt,baseRefName'* ]]; then cat "$TF/aged-prs.json"; return; fi
-      if [[ -f "$TF/handoff-lookup-fail" && "$*" == *'--json number,headRefName,title,body'* ]]; then return 1; fi
       # The tick census is the open-PR census (948e839b2), so a failing handoff lookup fails that listing too.
       if [[ -f "$TF/handoff-lookup-fail" && "$*" == *'--json number,headRefOid,headRefName,baseRefName,isDraft'* ]]; then return 1; fi
+      if [[ -f "$TF/handoff-lookup-fail" && "$*" == *'--json number,headRefName,title,body'* ]]; then return 1; fi
+      if [[ -f "$TF/aged-prs.json" && "$*" == *'--json number,headRefOid,headRefName,baseRefName,isDraft,title,body,labels,mergeable,createdAt,updatedAt'* ]]; then
+        if [[ -f "$TF/handoff-lookup.json" ]]; then
+          command jq -c --slurpfile RU "$TF/handoff-lookup.json" 'map(. as $r | . + (([$RU[0][] | select(.number == $r.number)][0] // {}) | {title,body,labels} | with_entries(select(.value != null))))' "$TF/aged-prs.json"
+        else cat "$TF/aged-prs.json"; fi
+        return
+      fi
       if [[ -f "$TF/handoff-lookup.json" && "$*" == *'--json number,headRefName,title,body'* ]]; then
         if [[ "$*" == *'--head '* ]]; then
           command jq -c '[.[] | select(.headRefName=="agent/issue-779") | if has("labels") then . else . + {labels:[]} end]' "$TF/handoff-lookup.json"
@@ -831,23 +865,37 @@ tick_gh() {
       [[ -f "$TF/sub-issues-$issue_number.json" ]] || { echo "missing sub-issue fixture #$issue_number" >&2; return 97; }
       cat "$TF/sub-issues-$issue_number.json"
       ;;
+    'api repos/{owner}/{repo}/pulls?state=open&per_page=100'|'api repos/example-maintainer/example-repo/pulls?state=open&per_page=100')
+      local pr_rows
+      pr_rows="$(tick_gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,body,labels,mergeable,createdAt,updatedAt)" || return $?
+      command jq -c '[.[] | {number, state:"open", draft:(.isDraft // false), head:{ref:.headRefName,sha:.headRefOid}, base:{ref:.baseRefName}, title, body,
+        labels:(.labels // []), mergeable:null, created_at:.createdAt, updated_at:.updatedAt}]' <<<"$pr_rows"
+      ;;
     'api graphql')
       if [[ "$*" == *'i9901:'* ]]; then
         if [[ -f "$TF/dependency-closed" ]]; then printf '9901\tCLOSED\tbug\n'; else printf '9901\tOPEN\tbug\n'; fi
       elif [[ "$*" == *'REOPENED_EVENT'* ]]; then
         cat "$TF/reopen-events.json" 2>/dev/null || echo '{}'
+      elif [[ "$*" == *'labels(first: 100)'* && "$*" == *'blockedBy(first: 50)'* ]]; then
+        local pred_n pred_resp='{}'
+        for pred_n in $(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+'); do
+          [[ -f "$TF/issues/$pred_n.json" ]] || continue
+          pred_resp="$(command jq -c --argjson r "$pred_resp" '$r + {("i" + (.number | tostring)): {number, title, body: (.body // ""), state: (.state // "OPEN"), labels: {nodes: (.labels // [])}, blockedBy: (.blockedBy // {nodes:[]})}}' "$TF/issues/$pred_n.json")"
+        done
+        command jq -cn --argjson r "$pred_resp" '{data: {repository: $r}}'
       elif [[ "$*" == *'blockedBy(first: 50)'* ]]; then
-        local context_n context_result='{}' context_source="$TF/intake-issues.json"
+        local context_n context_result='{}' context_source="$TF/intake-issues.json" context_with_subissues=false
+        [[ "$*" != *'subIssues(first: 100)'* ]] || context_with_subissues=true
         [[ -f "$TF/intake-issue.json" ]] && context_source="$TF/intake-issue.json"
         [[ -f "$TF/intake-issue-context.json" ]] && context_source="$TF/intake-issue-context.json"
         while IFS=' ' read -r context_alias context_n; do
           [[ "$context_n" =~ ^[1-9][0-9]*$ ]] || continue
-          context_result="$(command jq -c --argjson result "$context_result" --argjson n "$context_n" '
+          context_result="$(command jq -c --argjson result "$context_result" --argjson n "$context_n" --argjson with_subissues "$context_with_subissues" '
             (if type == "array" then . else [.] end) as $issues
             | reduce $issues[] as $issue ($result; if $issue.number == $n then . + {
-                ("i" + ($n | tostring)): {number:$n,blockedBy:($issue.blockedBy // {nodes:[]}),
-                  subIssues:($issue.subIssues // {totalCount:0,nodes:[]}),
-                  subIssuesSummary:($issue.subIssuesSummary // {total:0,completed:0})}
+                ("i" + ($n | tostring)): ({number:$n,blockedBy:($issue.blockedBy // {nodes:[]})}
+                  + (if $with_subissues then {subIssues:($issue.subIssues // {totalCount:0,nodes:[]}),
+                      subIssuesSummary:($issue.subIssuesSummary // {total:0,completed:0})} else {} end))
               } else . end)' "$context_source")" || return 1
         done < <(grep -oE 'i[0-9]+: issue\(number: [0-9]+\)' <<<"$*" | sed -E 's/^i([0-9]+): issue\(number: ([0-9]+)\)$/\1 \2/')
         command jq -cn --argjson result "$context_result" '{data:{repository:$result}}'
@@ -904,10 +952,18 @@ tick_gh() {
         if [[ -f "$TF/pr-files" ]]; then command jq -Rn '[inputs | select(length > 0) | {filename:.}]' < "$TF/pr-files"; else echo '[{"filename":"packages/fixture/src/index.ts"}]'; fi
       elif [[ "$*" == *'/pulls/'*'/files'* ]]; then
         [[ ! -f "$TF/pr-files-fail" ]] || return 1
-        if [[ -f "$TF/pr-files" ]]; then cat "$TF/pr-files"; else echo 'packages/fixture/src/index.ts'; fi
+        local files_jq='' files_prev='' files_json
+        for arg in "$@"; do [[ "$files_prev" == --jq ]] && files_jq="$arg"; files_prev="$arg"; done
+        if [[ -f "$TF/pr-files" ]]; then
+          files_json="$(command jq -Rsc '[split("\n")[] | select(length > 0) | {filename:.,status:"modified",additions:1,deletions:0}]' "$TF/pr-files")"
+        else
+          files_json='[{"filename":"packages/fixture/src/index.ts","status":"modified","additions":1,"deletions":0}]'
+        fi
+        if [[ -n "$files_jq" ]]; then command jq -r "$files_jq" <<<"$files_json"; else printf '%s\n' "$files_json"; fi
+      elif [[ "$*" == *'/pulls/'*'/commits?per_page=100'* ]]; then echo '[]'
       elif [[ "$*" == *'commits/'*'/status'* ]]; then echo 1
       elif [[ "$*" == *'/comments'* ]]; then echo '[]'
-      elif [[ "$*" == *'/pulls/'*'/reviews' ]]; then echo '[]' # human PR feedback (#957) fails closed on an unreadable review list
+      elif [[ "$*" == *'/pulls/'*'/reviews?per_page=100'* || "$*" == *'/pulls/'*'/reviews' ]]; then echo '[]'
       elif [[ "$*" =~ ' repos/{owner}/{repo}/issues/'[0-9]+$ ]]; then echo '{"author_association":"OWNER","user":{"login":"fixture"}}' # the intake author gate (#114); its own test is intake-author.test.sh
       else echo '{}'; fi ;;
     *) echo "unexpected gh call: $*" >&2; return 97 ;;
@@ -1147,7 +1203,7 @@ tick() (
     fi
   }
   export PATH="$repo_root/engine/gh-shim:$TF/bin:$PATH" AUTOPI_VIEWS_INLINE=true
-  export -f git jq node ps test_issue_rest_payload tick_gh tick_git tick_jq
+  export -f git jq node ps test_issue_rest_payload tick_gh tick_gh_pr_rest_payload tick_git tick_jq
   # 额外参数原样传给 scheduler.sh（如 --refill）；不带参数就是一整拍慢 tick。
   local rc=0
   # Fixture ticks assert step effects before exit; keep the production step lock but run them inline here.
@@ -1178,6 +1234,7 @@ sched_run_case() {
 
 sched_case_gh_timeout() (
   local timeout_fixture="$test_env_root/gh-timeout" start_ns end_ns elapsed_ms rc stub_pid
+  unset -f tick_pr_cli_list tick_pr_cli_view 2>/dev/null || :
   source "$script_dir/scheduler.d/core.sh"
   mkdir -p "$timeout_fixture/bin"
   cat > "$timeout_fixture/bin/gh" <<'SH'
@@ -1531,7 +1588,7 @@ command jq -e '
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo "scheduler.test.sh: deferred marking marked the wrong units ($(command jq -c '.units[] | {id,supervisor_owned,stage}' "$TF/supervisor/autopi/units.json"))" >&2; exit 1; }
 grep -Fq 'supervisor-owned marking deferred: hotfix classification unavailable' "$TF/supervisor/autopi/scheduler.log" \
-  || { echo 'scheduler.test.sh: deferred marking was not announced in the log' >&2; exit 1; }
+  || { cat "$TF/tick.out" >&2; grep -F 'pulls?state=open' "$TF/calls" >&2 || :; echo 'scheduler.test.sh: deferred marking was not announced in the log' >&2; exit 1; }
 grep -Fq 'unit=pr-4894 supervisor-owned: counted for census only' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: the hotpatch unit was not marked in the deferred branch' >&2; exit 1; }
 command jq -e '(.workers | length) == 0' "$TF/supervisor/autopi/workers.json" >/dev/null \
@@ -2740,7 +2797,15 @@ command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.
 set_pipeline_gate_probe
 echo 'fatal: gnutls_handshake() failed: connection reset' > "$TF/failed.log"
 tick; tick
-[[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
+[[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]] || {
+  echo 'scheduler.test.sh: runner infrastructure failure did not rerun exactly once' >&2
+  echo '--- actions ---' >&2; cat "$TF/actions" >&2
+  echo '--- relevant GitHub calls ---' >&2
+  grep -E 'check-runs|run list|run view|run rerun|pulls/86|pr checks|pr view' "$TF/calls" >&2 || :
+  echo '--- unit ---' >&2; command jq -c '.units[0]' "$TF/supervisor/autopi/units.json" >&2
+  echo '--- scheduler log ---' >&2; tail -n 30 "$TF/supervisor/autopi/scheduler.log" >&2
+  return 1
+}
 [[ ! -s "$TF/reverted" ]]
 command jq -e '.units | length==1 and .[0].id=="pr-pipeline-probe" and .[0].stage=="ready-to-merge"' \
   "$TF/supervisor/autopi/units.json" >/dev/null
@@ -5420,7 +5485,7 @@ sched_case_hold_handoff_orphan_and_aged_pr() {
     if [[ "$mode" == ambiguous ]]; then
       grep -Fq 'handoff-pr-ambiguous issue=#779' "$TF/agent-home/supervisor-inbox" \
         || { echo 'not ok - orphan ambiguity was not sent to supervisor' >&2; exit 1; }
-      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision' "$TF/calls" \
+      grep -Fq 'gh api -i repos/{owner}/{repo}/pulls?state=open&per_page=100' "$TF/calls" \
         || { echo 'not ok - aged PR fixture did not run' >&2; exit 1; }
     elif [[ "$mode" == incomplete ]]; then
       grep -Fq 'aged PR lifecycle deferred: handoff PR census unavailable' "$TF/supervisor/autopi/scheduler.log" \
@@ -5428,7 +5493,7 @@ sched_case_hold_handoff_orphan_and_aged_pr() {
     else
       command jq -e '.units[0].hold_handoff_waiting==true' "$TF/supervisor/autopi/units.json" >/dev/null \
         || { echo 'not ok - live owner did not hold the handoff' >&2; exit 1; }
-      grep -Fq 'gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision' "$TF/calls" \
+      grep -Fq 'gh api -i repos/{owner}/{repo}/pulls?state=open&per_page=100' "$TF/calls" \
         || { echo 'not ok - aged PR fixture did not run while waiting for the live owner' >&2; exit 1; }
     fi
   done
@@ -6093,6 +6158,7 @@ sched_case_jev_f12_rollout() {
 }
 sched_run_case jev_f12_rollout
 
+sched_case_tracker_parent_intake() {
 # #4279 regression: a no-label predecessor with an open native child is sent
 # to triage during a real tick and never becomes an implement unit.
 new_tick_fixture tracker-parent-intake
@@ -6249,6 +6315,8 @@ tracker_edit="$(grep -E '^issue edit 4279 --repo ' "$TF/actions" || true)"
   || { echo "scheduler.test.sh: tracker transition did not replace the lane label with its container marker: $tracker_edit" >&2; exit 1; }
 grep -Fq 'intake issue #4279 -> tracker (roadmap container parent: spec/ADR pilot)' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: roadmap container tracker disposition was not logged' >&2; exit 1; }
+}
+sched_run_case tracker_parent_intake
 
 sched_case_m5_intake() {
 # M5 生效即验收（#4501）：验收块没有 live-event 项的 pipeline-system 票在收单时退回补写

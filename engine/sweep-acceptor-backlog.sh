@@ -88,7 +88,7 @@ for n in $(printf '%s\n' "${!BACKLOG_ACCEPTOR[@]}" | sort -n); do
   # lesson above): never close on the manifest's say-so alone -- confirm a
   # real merged agent/issue-$n PR exists first, the same search
   # issue-pipeline.sh's own release candidate-selection already trusts.
-  merged_pr="$(gh pr list --repo "$REPO" --state merged --search "head:agent/issue-$n" --json number -q '.[0].number // empty' 2>/dev/null || echo "")"
+  merged_pr="$(gh api search/issues -X GET -f q="repo:$REPO is:pr is:merged head:agent/issue-$n" --jq '.items[0].number // empty' 2>/dev/null || echo "")"
   if [ -z "$merged_pr" ]; then
     echo "sweep-acceptor-backlog: #$n -- no merged agent/issue-$n PR found; NOT closing (do not guess a merge that may not exist -- see #1221 in this script's own header)" >&2
     skipped_not_merged=$((skipped_not_merged + 1))

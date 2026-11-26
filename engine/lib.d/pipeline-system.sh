@@ -417,7 +417,7 @@ The issue is waiting for the live checkout to sync before it closes."
 # pipeline-system changes wait for the live checkout sync. Return 1 only when
 # no such change exists, and 2 when evidence could not be read safely.
 route_existing_main_work() {
-  local n="$1" worktree="$2" commit_line sha subject paths kind pr_list candidate pr_number pr_json merge_sha
+  local n="$1" worktree="$2" commit_line sha subject paths kind pr_numbers candidate pr_number pr_json merge_sha matched
   while IFS= read -r commit_line; do
     [ -n "$commit_line" ] || continue
     sha="${commit_line%%$'\t'*}"
@@ -437,11 +437,21 @@ route_existing_main_work() {
     fi
   done < <(git -C "$worktree" log origin/main --format='%H%x09%s' --grep="(#|issue[[:space:]]+)$n([^[:alnum:]_]|$)" --extended-regexp --regexp-ignore-case)
 
-  if ! pr_list="$(gh pr list --repo "$REPO" --state merged --search "$n in:title" --limit 100 \
-      --json number,title,headRefName,baseRefName,mergeCommit)"; then
+  if ! pr_numbers="$(gh api search/issues -X GET -f q="repo:$REPO is:pr is:merged $n in:title" \
+      -f per_page=100 --jq '[.items[].number]')"; then
     return 2
   fi
-  candidate="$(jq -c --arg n "$n" '[.[] | select(.baseRefName == "main" and (.headRefName == ("agent/issue-" + $n) or (.headRefName | test("(^|/)fix/" + $n + "($|[-/])")) or (.title | test("(\\(#|\\bissue )" + $n + "([^0-9]|$)"))))] | sort_by(.number) | last // empty' <<< "$pr_list")"
+  candidate=""
+  while IFS= read -r pr_number; do
+    [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || continue
+    pr_json="$(gh api "repos/$REPO/pulls/$pr_number")" || return 2
+    matched="$(jq -c --arg n "$n" '{number, title, headRefName:.head.ref, baseRefName:.base.ref,
+      mergeCommit:(if .merge_commit_sha == null then null else {oid:.merge_commit_sha} end)}
+      | select(.baseRefName == "main" and (.headRefName == ("agent/issue-" + $n)
+        or (.headRefName | test("(^|/)fix/" + $n + "($|[-/])"))
+        or (.title | test("(\\(#|\\bissue )" + $n + "([^0-9]|$)"))))' <<< "$pr_json")" || return 2
+    [ -z "$matched" ] || candidate="$matched"
+  done < <(jq -r '.[]' <<<"$pr_numbers" | sort -n)
   # 2026-10-05: PR titles say "(issue N)" since the merged-PR full-text gate; matching only "(#N)" missed
   # PR 2258 for issue 2254, so implement re-ran an already-merged fix four times.
   [ -n "$candidate" ] || return 1

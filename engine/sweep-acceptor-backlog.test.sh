@@ -85,7 +85,7 @@ case "$sub" in
     echo "${FAKE_ISSUE_LABELS_JSON:-{}}" \
       | jq -r --arg want_label "$label" 'to_entries[] | select(.value | index($want_label) != null) | .key'
     ;;
-  "pr list")
+  "api search/issues")
     n=""
     for a in "${args[@]}"; do
       case "$a" in

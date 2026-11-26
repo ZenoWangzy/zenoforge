@@ -7,7 +7,9 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fail() { echo "dashboard-front.test.sh: $*" >&2; exit 1; }
 f="$test_env_root/front"; root="$f/repo"; sup="$root/.scratch-supervisor"; a="$sup/autopi"
+export LUNA_WORKER_SLICE_DIR="$f/workers.slice" LUNA_SLOTS="$f/luna-slots"
 mkdir -p "$f/bin" "$a/alerts" "$AGENT_HOME/logs" "$AGENT_HOME/metrics" "$f/sessions" "$root/engine/state" "$root/.zenoforge/state"
+mkdir -p "$LUNA_WORKER_SLICE_DIR" "$LUNA_SLOTS"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 git init -q -b main "$root"
 echo 1 > "$root/a"; git -C "$root" add a; GIT_COMMITTER_DATE="$(date -u -d '-5 hours' +%FT%TZ)" git -C "$root" commit -qm deployed --date "$(date -u -d '-5 hours' +%FT%TZ)"
@@ -140,6 +142,9 @@ elif [[ "$1 $2" == "api repos/"* ]]; then
 elif [[ "$1 $2" == "api --paginate" && " $* " == *"/actions/runners?per_page=100 "* ]]; then
   echo runner >> "$FAKE_GH_LOG"
   echo '{"runners":[{"name":"fixture","status":"online","busy":false,"labels":[{"name":"cihost-ci"}]}]}'
+elif [[ "$1 $2" == "api search/issues" ]]; then
+  printf '%s\n' "$*" >> "$FAKE_PR_LOG"
+  jq -c '[.[] | {number,mergedAt:.mergedAt}]' "${FAKE_PR_JSON:-/dev/null}"
 elif [[ "$1 $2" == "pr list" ]]; then
   printf '%s\n' "$*" >> "$FAKE_PR_LOG"; cat "${FAKE_PR_JSON:-/dev/null}"
 elif [[ "$1 $2" == "api --paginate" && " $* " == *"/issues?state=open&per_page=100 "* ]]; then
@@ -404,10 +409,9 @@ gen_block() { # extra env, then config main_workflow, then the codex root
 }
 block_out() { sed 's/^window.DASH=//; s/;$//' "$f/out-block.js"; }
 cp "$a/config.json" "$f/config.saved.json"
-# 8a. 今日完成：请求带 --search merged:>=LA 午夜 与 --limit 200；昨天合并的不算
 gen_block >/dev/null
-grep -Fq -- "--search merged:>=$la_midnight_utc" "$FAKE_PR_LOG" && grep -Fq -- "--limit 200" "$FAKE_PR_LOG" \
-  || fail "merged-today census did not search by merge time with a 200 limit: $(cat "$FAKE_PR_LOG")"
+grep -Fq -- 'api search/issues' "$FAKE_PR_LOG" && grep -Fq -- "merged:>=$la_midnight_utc" "$FAKE_PR_LOG" \
+  || fail "merged-today census did not query the REST search endpoint by merge time: $(cat "$FAKE_PR_LOG")"
 block_out | jq -e '.totals.merged_today == [3]' >/dev/null || fail "merged-today census wrong: $(block_out | jq -c .totals.merged_today)"
 # 8b. 套件：配置的是 Pipeline suites 才取它的结果；配成 CI 时 套件 为未知，不复用 CI 的结果
 block_out | jq -e '.totals.suites == "success" and .totals.ci == "failure"' >/dev/null || fail "suites verdict wrong: $(block_out | jq -c '.totals | {suites, ci}')"

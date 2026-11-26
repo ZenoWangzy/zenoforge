@@ -423,6 +423,7 @@ if ! FASTLANE_OUTPUT="$(AGENT_HOME="$FASTLANE_HOME" FASTLANE_LOG="$FASTLANE_LOG"
 {"data":{"repository":{"i991009":{"number":991009,"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}},"i991010":{"number":991010,"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}},"i991011":{"number":991011,"blockedBy":{"nodes":[{"number":2911,"state":"OPEN"}]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}}}}}
 JSON
             ;;
+          search/issues) printf "%s\n" "[]" ;;
           */comments\?*)
             if [[ "$2" == *"/991009/"* ]]; then
               cat <<JSON

@@ -83,11 +83,11 @@ def merged_at(repo, issue):
     if times:
         return max(times)
     # Retro implementation PRs say "Refs #N" and do not close the issue, so they never
-    # appear in closedByPullRequestsReferences. Search merged PR bodies the same way
-    # engine/factory/feeder.sh and issue-pipeline.sh search open ones.
+    # appear in closedByPullRequestsReferences.
     result = gh_caller.run_gh(
-        ["gh", "pr", "list", "--repo", repo, "--state", "merged",
-         "--search", f'"Refs #{issue}" in:body', "--json", "mergedAt"],
+        ["gh", "api", "search/issues", "-X", "GET", "-f",
+         f'q=repo:{repo} is:pr is:merged "Refs #{issue}" in:body',
+         "--jq", "[.items[] | {mergedAt:.closed_at}]"],
         check=True, capture_output=True, text=True,
     )
     pulls = json.loads(result.stdout)

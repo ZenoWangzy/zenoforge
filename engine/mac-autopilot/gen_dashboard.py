@@ -385,6 +385,7 @@ cost_ledger["eval"] = worker_cost.eval_costs(os.path.join(AGENT_HOME, "eval"), t
 
 # ---- GitHub 总量 ----
 # PR 与 run 事实来自 scheduler 每拍发布的快照（pr-run-snapshot.json）：缺失、格式错或分区为 null 都是"不可用"，不当成零。
+DEPLOYMENT_REPO = os.environ.get("RELEASE_TRAIN_REPO") or os.environ.get("ZF_REPO", "")
 _pr_run_snapshot = read_json(f"{A}/pr-run-snapshot.json")
 def snapshot_section(*path):
     node = _pr_run_snapshot if isinstance(_pr_run_snapshot, dict) and _pr_run_snapshot.get("schema") == 1 else None
@@ -393,10 +394,13 @@ def snapshot_section(*path):
     return node if isinstance(node, list) else None
 issues_open = gh(["issue", "list", "--state", "open", "--limit", "300", "--json", "number,labels"])
 prs_open = snapshot_section("prs") or []
-# 按合并时间检索（gh 默认按创建时间排序，老编号今天合并的 PR 不能被截掉）；200 是上限，不是窗口
 la_midnight_utc = datetime.combine(today, datetime.min.time(), tzinfo=SESSION_TIMEZONE).astimezone(ZoneInfo("UTC"))
-prs_merged_today = gh(["pr", "list", "--state", "merged", "--search", f"merged:>={la_midnight_utc:%Y-%m-%dT%H:%M:%SZ}",
-                       "--limit", "200", "--json", "number,mergedAt"])
+prs_merged_today = gh(["api", "search/issues", "-X", "GET", "-f",
+                       f"q=repo:{DEPLOYMENT_REPO} is:pr is:merged merged:>={la_midnight_utc:%Y-%m-%dT%H:%M:%SZ}",
+                       "-f", "per_page=100", "--paginate", "--slurp",
+                       "--jq", "[.items[] | {number, mergedAt:.closed_at}]"])
+if prs_merged_today and isinstance(prs_merged_today[0], list):
+    prs_merged_today = [pr for page in prs_merged_today for pr in page]
 merged_today = [p["number"] for p in prs_merged_today
                 if session_date_of(p.get("mergedAt")) == today_text]
 needs_triage = sum(1 for i in issues_open if any(l.get("name") == "needs-triage" for l in i.get("labels", [])))
@@ -498,7 +502,6 @@ def sha_epoch(sha):
 def sha_date(sha):
     e = sha_epoch(sha)
     return time.strftime("%Y-%m-%d", time.gmtime(e)) if e else None
-DEPLOYMENT_REPO = os.environ.get("RELEASE_TRAIN_REPO") or os.environ.get("ZF_REPO", "")
 DEPLOYMENT_READER = os.path.join(_HERE, "..", "production-deployment-read.sh")
 deployment_records = []
 deployment_readable = False

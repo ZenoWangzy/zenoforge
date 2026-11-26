@@ -43,9 +43,17 @@ sha=2222222222222222222222222222222222222222
 jq -n --arg sha "$sha" '[{number:503,headRefOid:$sha,headRefName:"agent/issue-4903",baseRefName:"main",
   isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"UNKNOWN",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
 : > "$GH_CALLS"
+pr_rest_response() {
+  local payload
+  payload="$(jq -c 'map({number, state:"open", draft:(.isDraft // false), head:{ref:.headRefName,sha:.headRefOid},
+    base:{ref:.baseRefName},title,body,labels,mergeable:(if .mergeable == "MERGEABLE" then true elif .mergeable == "CONFLICTING" then false else null end),
+    created_at:.createdAt,updated_at:.updatedAt})' "$FIXTURE_PRS")"
+  printf 'HTTP/2 200 OK\r\nETag: "open-prs"\r\n\r\n%s\n' "$payload"
+}
 gh() {
   printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
   case "${1:-} ${2:-}" in
+    'api -i') pr_rest_response ;;
     'pr list') cat "$FIXTURE_PRS" ;;
     'pr view') printf 'CONFLICTING %s\n' "$sha" ;; # the one GitHub re-check merge_conflict_to_repair makes
     *) printf 'unexpected gh query during dispatch: %s\n' "$*" >&2; return 97 ;;
@@ -101,7 +109,7 @@ write_workers 7
 : > "$GH_CALLS"; : > "$LOG"
 tick_prs_changed
 dispatch_pending true
-[[ "$(cat "$GH_CALLS")" == 'pr list' ]] || fail "expected exactly one census read at 7/8, got: $(tr '\n' ';' < "$GH_CALLS")"
+[[ "$(cat "$GH_CALLS")" == 'api -i' ]] || fail "expected exactly one REST census read at 7/8, got: $(tr '\n' ';' < "$GH_CALLS")"
 [[ "$dispatch_calls" == 1 ]] || fail "admitted review candidate was not dispatched (calls=$dispatch_calls)"
 # One steps line per pass: every row step it ran, with seconds and counts, in the shape of `intake detail steps`.
 steps_line="$(grep -F 'dispatch detail steps refill=true' "$LOG")" || fail "no dispatch steps line: $(cat "$LOG")"
@@ -172,7 +180,7 @@ write_workers 7
 tick_prs_changed
 dispatch_pending true
 [[ "$dispatch_calls" == 0 ]] || fail "a CONFLICTING PR was dispatched to review (calls=$dispatch_calls)"
-[[ "$(sort "$GH_CALLS" | uniq -c | tr -s ' ' | tr '\n' ';')" == ' 1 pr list; 2 pr view;' ]] || fail "unexpected gh calls for two conflicts: $(tr '\n' ';' < "$GH_CALLS")"
+[[ "$(sort "$GH_CALLS" | uniq -c | tr -s ' ' | tr '\n' ';')" == ' 1 api -i; 2 pr view;' ]] || fail "unexpected gh calls for two conflicts: $(tr '\n' ';' < "$GH_CALLS")"
 for u in issue-4903 issue-4904; do
   jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "repair-pending" and .merge_rebase_pending == true and (.repair_hint | contains("Rebase this PR branch onto origin/main")) and ([.history[].stage] | index("merge-conflict") != null)' "$UNITS" >/dev/null \
     || fail "$u was not routed to conflict repair: $(jq -c --arg id "$u" '.units[] | select(.id == $id)' "$UNITS")"
@@ -573,8 +581,11 @@ jq -n '[{created_at:"2026-11-11T01:30:00Z",user:{login:"human-reviewer",type:"Us
   {created_at:"2026-11-11T03:00:00Z",user:{login:"zeno",type:"User"},body:"<!-- vecta-agent-comment -->\nagent note",path:"engine/x.sh",html_url:"https://example.test/c3"}]' > "$fixture/human-comments.json"
 gh() {
   printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
-  case "${1:-} ${2:-} ${3:-}" in
+  case "$*" in
     'pr list'*) cat "$FIXTURE_PRS" ;;
+    *'pulls?state=open&per_page=100'*) pr_rest_response ;;
+    *'pulls/505/reviews?per_page=100'*)
+      printf 'HTTP/2 200 OK\r\nETag: "reviews-505"\r\n\r\n'; cat "$fixture/human-reviews.json" ;;
     'api --paginate repos/{owner}/{repo}/pulls/505/reviews') cat "$fixture/human-reviews.json" ;;
     'api --paginate repos/{owner}/{repo}/pulls/505/comments') cat "$fixture/human-comments.json" ;;
     *) printf 'unexpected gh query during human feedback: %s\n' "$*" >&2; return 97 ;;
@@ -599,8 +610,10 @@ tick_prs_changed
     statusCheckRollup:[],mergeable:"MERGEABLE",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
   gh() {
     printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
-    case "${1:-} ${2:-} ${3:-}" in
+    case "$*" in
       'pr list'*) cat "$FIXTURE_PRS" ;;
+      *'pulls?state=open&per_page=100'*) pr_rest_response ;;
+      *'pulls/501/reviews?per_page=100'*) return 1 ;;
       'api --paginate repos/{owner}/{repo}/pulls/501/reviews') return 1 ;;
       *) printf 'unexpected gh query during unreadable feedback: %s\n' "$*" >&2; return 97 ;;
     esac
@@ -625,7 +638,14 @@ tick_prs_changed
 (
   jq -n --arg sha "$sha" '[{number:506,headRefOid:$sha,headRefName:"agent/issue-4911",baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",
     statusCheckRollup:[],mergeable:"MERGEABLE",createdAt:"2026-11-10T00:00:00Z",reviewDecision:"CHANGES_REQUESTED"}]' > "$FIXTURE_PRS"
-  gh() { printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"; return 1; }
+  gh() {
+    printf '%s %s\n' "${1:-}" "${2:-}" >> "$GH_CALLS"
+    case "$*" in
+      *'pulls?state=open&per_page=100'*) pr_rest_response ;;
+      *'pulls/506/reviews?per_page=100'*) return 1 ;;
+      *) return 1 ;;
+    esac
+  }
   jq -n --arg sha "$sha" '{units:[{id:"issue-4911",stage:"ready-to-merge",pr:506,branch:"agent/issue-4911",lane:"pr",title:"fixture ready",approved_sha:$sha,
     history:[{stage:"write-start",result:"",at:"2026-11-11T00:00:00Z"}]}]}' > "$UNITS"
   TICK_PRS="$(cat "$FIXTURE_PRS")"

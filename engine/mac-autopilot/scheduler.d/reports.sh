@@ -381,7 +381,11 @@ sweep_rule() { # unit-json [head-sha]
 # 人工 PR 评审反馈（#119）：上次派发（write-start）之后的人工评审与行内评论。机器人与引擎自己的评论（带 vecta-agent-comment）不算。
 human_feedback_items() { # pr since-iso → JSON 数组（时间升序）；gh 失败返回 1
   local pr="$1" since="$2" reviews comments
-  reviews="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/reviews" 2>/dev/null)" || { say "human feedback pr=$pr: could not list reviews"; return 1; }
+  if declare -F tick_pr_reviews >/dev/null 2>&1; then
+    reviews="$(tick_pr_reviews "$pr")" || { say "human feedback pr=$pr: could not list reviews"; return 1; }
+  else
+    reviews="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/reviews" 2>/dev/null)" || { say "human feedback pr=$pr: could not list reviews"; return 1; }
+  fi
   comments="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/comments" 2>/dev/null)" || { say "human feedback pr=$pr: could not list review comments"; return 1; }
   jq -n --arg since "$since" --argjson r "$(jq -s 'add // []' <<<"$reviews")" --argjson c "$(jq -s 'add // []' <<<"$comments")" '
     def human: .user.type != "Bot" and ((.user.login // "") | endswith("[bot]") | not) and ((.body // "") | contains("<!-- vecta-agent-comment -->") | not);
@@ -401,13 +405,13 @@ human_feedback_block() { # pr since-iso → 提示片段：最新 8 条带链接
     + ([.[-8:][] | "- [\(.kind)] \(.who) \(.at)：\(.text) \(.url)"] | join("\n")) end' <<<"$items"
 }
 last_dispatch_at() { jqf -r '[(.history // [])[] | select(.stage == "write-start") | .at] | last // ""' <<<"$1"; }
-# 就绪单元：census 的 reviewDecision 为 CHANGES_REQUESTED，且上次派发之后有人工的请求修改评审，则移回 repair-pending。
 ready_changes_requested_sweep() {
-  local id pr since items
+  local id pr since items requested
   [[ -n "${TICK_PRS:-}" ]] || return 0
   while IFS=$'\t' read -r id pr since; do
     [[ "$pr" =~ ^[0-9]+$ ]] || continue
-    jqf -e --argjson n "$pr" 'any(.[]; .number == $n and .reviewDecision == "CHANGES_REQUESTED")' <<<"$TICK_PRS" >/dev/null || continue
+    requested="$(tick_pr_has_changes_requested "$pr")" || { say "ready unit=$id pr=$pr: human feedback unreadable, retry next tick"; continue; }
+    [[ "$requested" == true ]] || continue
     items="$(human_feedback_items "$pr" "$since")" || { say "ready unit=$id pr=$pr: human feedback unreadable, retry next tick"; continue; }
     jqf -e 'any(.[]; .kind == "review CHANGES_REQUESTED")' <<<"$items" >/dev/null || continue
     set_unit "$id" "$(hist review-changes-requested "PR#$pr human changes requested") | .approved_sha=null | .repair_hint=$(js "PR#$pr 有人工请求修改的评审，见评审反馈。") | .stage=\"repair-pending\""
