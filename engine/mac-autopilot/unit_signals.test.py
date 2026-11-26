@@ -18,6 +18,29 @@ def stages(*names):
 
 
 class UnitSignalsTests(unittest.TestCase):
+    def test_disproved_share_uses_complete_review_dispositions(self):
+        unit = stages("review-approve")
+        unit["review_findings"] = [{
+            "disposition_block": "ok",
+            "dispositions": [
+                {"id": "F1", "disposition": "disproved"},
+                {"id": "F2", "disposition": "fixed"},
+            ],
+        }]
+        out = unit_signals(unit, {})
+        self.assertEqual(out["disproved_findings"], {"disproved": 1, "total": 2})
+        self.assertEqual(out["signals"]["disproved_share"], 0.5)
+
+    def test_disproved_share_is_unknown_without_complete_findings(self):
+        unit = stages("review-approve")
+        unit["review_findings"] = [{
+            "disposition_block": "incomplete",
+            "dispositions": [{"id": "F1", "disposition": "fixed"}],
+        }]
+        out = unit_signals(unit, {})
+        self.assertIsNone(out["disproved_findings"])
+        self.assertIsNone(out["signals"]["disproved_share"])
+
     def test_overturned_review_after_supervisor_approve(self):
         unit = stages("review-request-changes", "supervisor-approve")
         self.assertIs(unit_signals(unit, {})["signals"]["overturned"], True)
@@ -50,9 +73,11 @@ class UnitSignalsTests(unittest.TestCase):
         unit = {"id": "issue-3", "stage": "implement", "merge_sha": SHA, "prompt": "fixture-prompt"}
         out = unit_signals(unit, None)
         self.assertEqual(out["prompt"], "fixture-prompt")
-        self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": None})
+        self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": None, "disproved_share": None})
+        self.assertIsNone(out["disproved_findings"])
         out = unit_signals({"id": "issue-4", "stage": "merged", "history": [], "merge_sha": SHA}, {OTHER: None})
-        self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": False})
+        self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": False, "disproved_share": None})
+        self.assertIsNone(out["disproved_findings"])
 
     def test_no_sha_leaves_reverted_null(self):
         self.assertIsNone(unit_signals(stages("review-approve"), {})["signals"]["reverted"])

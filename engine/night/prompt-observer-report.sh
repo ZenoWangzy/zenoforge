@@ -61,9 +61,17 @@ for unit in ledger_history.load_units(runtime):
     stage, prompt = result.get("stage"), result.get("prompt")
     if (stage is not None and not isinstance(stage, str)) or (prompt is not None and not isinstance(prompt, str)):
         continue
-    group = groups.setdefault((stage, prompt), {"scores": [], "unit_ids": []})
+    group = groups.setdefault((stage, prompt), {
+        "scores": [],
+        "unit_ids": [],
+        "disproved_findings": {"disproved": 0, "total": 0},
+    })
     signals = result.get("signals", {}).values()
     known = [signal for signal in signals if signal is not None]
+    findings = result.get("disproved_findings")
+    if isinstance(findings, dict) and findings.get("total", 0) > 0:
+        group["disproved_findings"]["disproved"] += findings["disproved"]
+        group["disproved_findings"]["total"] += findings["total"]
     if known:
         # True signals are adverse; nulls are omitted, and each unit contributes one equal-weight score.
         group["scores"].append(1 - sum(known) / len(known))
@@ -76,6 +84,9 @@ for (stage, prompt), group in sorted(groups.items(), key=lambda item: (item[0][0
         row["status"] = "insufficient-data"
     else:
         row["score"] = sum(group["scores"]) / row["sample_size"]
+    if group["disproved_findings"]["total"]:
+        row["disproved_findings"] = group["disproved_findings"]
+        row["disproved_share"] = group["disproved_findings"]["disproved"] / group["disproved_findings"]["total"]
     row["unit_ids"] = sorted(group["unit_ids"])
     rows.append(row)
 
