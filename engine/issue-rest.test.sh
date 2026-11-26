@@ -67,6 +67,41 @@ check "batched context uses one GraphQL request" "$((before_graphql + 1))" "$(gr
 check "same GraphQL query hash is reused within the tick" "$context_rows" "$second_context_rows"
 check "repeated context query keeps one GraphQL request" "$((before_graphql + 1))" "$(grep -c '^graphql$' "$FAKE_CALLS")"
 
+issue_rest_limited_graphql() {
+  [[ "$1" == api && "$2" == graphql ]] || return 64
+  local query="" arg numbers count
+  for arg in "$@"; do
+    [[ "$arg" == query=* ]] && query="${arg#query=}"
+  done
+  numbers="$(grep -oE 'i[0-9]+: issue' <<< "$query" | sed -E 's/^i([0-9]+):.*/\1/')"
+  count="$(wc -l <<< "$numbers" | tr -d ' ')"
+  printf '%s\n' "$count" >> "$test_env_root/context-batch-sizes"
+  if (( count > 20 )); then
+    for _ in $(seq 1 296); do printf '%s\n' 'Resource limits for this query exceeded.' >&2; done
+    return 1
+  fi
+  jq -cn --arg numbers "$numbers" '
+    ($numbers | split("\n") | map(select(length > 0) | tonumber)) as $ids
+    | {data:{repository:(reduce $ids[] as $number ({};
+        .["i\($number)"]={number:$number,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}))}}
+  '
+}
+
+large_context_rows="$(jq -cn '[range(1;46) | {number:.,title:"candidate"}]')"
+rm -f -- "$test_env_root/context-batch-sizes"
+context_rc=0
+issue_rest_with_context issue_rest_limited_graphql <<< "$large_context_rows" \
+  > "$test_env_root/large-context.json" 2> "$test_env_root/large-context.err" || context_rc=$?
+check "large dependency context succeeds when oversized batches are refused" 0 "$context_rc"
+check "dependency context requests stay within 20 aliases" '20,20,5' \
+  "$(paste -sd, "$test_env_root/context-batch-sizes")"
+check "successful dependency batches emit no resource-limit failures" 0 \
+  "$(grep -c 'Resource limits for this query exceeded' "$test_env_root/large-context.err" || true)"
+check "large dependency context retains every candidate" 45 \
+  "$(jq 'length' "$test_env_root/large-context.json" 2>/dev/null || echo 0)"
+check "every candidate receives blocker and child context" 45 \
+  "$(jq '[.[] | select(has("blockedBy") and has("subIssues") and has("subIssuesSummary"))] | length' "$test_env_root/large-context.json" 2>/dev/null || echo 0)"
+
 FAKE_ISSUE='{"number":7,"title":"t","body":"b","state":"closed","state_reason":"not_planned","closed_at":"2026-11-01T00:00:00Z","labels":[]}'
 check "closed issue upper-cases state and reason" 'CLOSED NOT_PLANNED 2026-11-01T00:00:00Z' "$(issue_rest_view 7 | jq -r '[.state, .stateReason, .closedAt] | join(" ")')"
 

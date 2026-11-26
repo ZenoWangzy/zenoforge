@@ -71,15 +71,42 @@ issue_rest_list() {
 }
 
 issue_rest_graphql_context() {
-  local rows="$1" fetch="${2:-gh}" numbers number fields="" query
+  local rows="$1" fetch="${2:-gh}" numbers number fields query context chunk chunk_numbers offset index
+  local batch_size=20
+  local -a issue_numbers=()
   numbers="$(jq -r '[.[]?.number | select(type == "number" and . > 0)] | unique | .[]' <<< "$rows")" || return 1
-  while IFS= read -r number; do
-    [[ "$number" =~ ^[1-9][0-9]*$ ]] || continue
-    fields+=" i$number: issue(number: $number) { number blockedBy(first: 50) { nodes { number state } } subIssues(first: 100) { totalCount nodes { number state } } subIssuesSummary { total completed } }"
-  done <<< "$numbers"
-  [[ -n "$fields" ]] || { printf '%s\n' '{"data":{"repository":{}}}'; return 0; }
-  query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$fields} }"
-  gh_graphql_cached_with "$fetch" api graphql -F owner='{owner}' -F name='{repo}' -f "query=$query"
+  [[ -n "$numbers" ]] || { printf '%s\n' '{"data":{"repository":{}}}'; return 0; }
+  mapfile -t issue_numbers <<< "$numbers"
+  context='{"data":{"repository":{}}}'
+  for ((offset = 0; offset < ${#issue_numbers[@]}; offset += batch_size)); do
+    fields=""
+    for ((index = offset; index < offset + batch_size && index < ${#issue_numbers[@]}; index++)); do
+      number="${issue_numbers[index]}"
+      [[ "$number" =~ ^[1-9][0-9]*$ ]] || continue
+      fields+=" i$number: issue(number: $number) { number blockedBy(first: 50) { nodes { number state } } subIssues(first: 100) { totalCount nodes { number state } } subIssuesSummary { total completed } }"
+    done
+    [[ -n "$fields" ]] || continue
+    query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$fields} }"
+    chunk="$(gh_graphql_cached_with "$fetch" api graphql -F owner='{owner}' -F name='{repo}' -f "query=$query")" || return $?
+    chunk_numbers="$(printf '%s\n' "${issue_numbers[@]:offset:batch_size}" | jq -Rsc 'split("\n")[:-1] | map(tonumber)')" || return 1
+    jq -e --argjson expected "$chunk_numbers" '
+      .data.repository as $repository
+      | ($repository | type == "object")
+        and all($expected[];
+          . as $number
+          | ($repository["i" + ($number | tostring)] // null) as $issue
+          | ($issue | type == "object")
+            and ($issue.blockedBy.nodes | type == "array")
+            and ($issue.subIssues.totalCount | type == "number")
+            and ($issue.subIssues.nodes | type == "array")
+            and ($issue.subIssuesSummary.total | type == "number")
+            and ($issue.subIssuesSummary.completed | type == "number")
+        )
+    ' <<< "$chunk" >/dev/null || return 1
+    context="$(jq -cn --argjson current "$context" --argjson next "$chunk" \
+      '{data:{repository:($current.data.repository + $next.data.repository)}}')" || return 1
+  done
+  printf '%s\n' "$context"
 }
 
 issue_rest_context_merge() {
