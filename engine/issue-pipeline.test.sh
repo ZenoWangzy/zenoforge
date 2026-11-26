@@ -415,7 +415,46 @@ if ! FASTLANE_OUTPUT="$(AGENT_HOME="$FASTLANE_HOME" FASTLANE_LOG="$FASTLANE_LOG"
     guarded_write() { printf "write:%s\n" "$*" >> "$FASTLANE_LOG"; }
     hold_issue() { printf "hold:%s:%s\n" "$1" "$*" >> "$FASTLANE_LOG"; }
     gh() {
-      if [ "$1 $2" = "issue view" ]; then
+      if [ "$1" = "api" ]; then
+        case "$2" in
+          graphql)
+            cat <<JSON
+{"data":{"repository":{"i991009":{"number":991009,"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}},"i991010":{"number":991010,"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}},"i991011":{"number":991011,"blockedBy":{"nodes":[{"number":2911,"state":"OPEN"}]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}}}}}
+JSON
+            ;;
+          */comments\?*)
+            if [[ "$2" == *"/991009/"* ]]; then
+              cat <<JSON
+[{"node_id":"c991009","body":"Keep direct lane.","created_at":"2026-10-11T00:00:00Z","html_url":"u","user":{"login":"fixture"}}]
+JSON
+            else
+              echo "[]"
+            fi ;;
+          repos/test/repo/issues\?*)
+            if [[ "$2" == *labels=needs-triage* ]]; then
+              cat <<JSON
+[{"number":991009,"title":"Path-only infrastructure","body":"Fix paths:\n- engine/lib.sh","state":"open","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-02T00:00:00Z","labels":[{"name":"needs-triage"}],"user":{"login":"fixture"}},{"number":991010,"title":"Mixed product change","body":"Fix paths:\n- engine/lib.sh\n- packages/example-service/src/app.ts","state":"open","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-02T00:00:00Z","labels":[{"name":"needs-triage"}],"user":{"login":"fixture"}},{"number":991011,"title":"Parent tracker","body":"Fix paths:\n- engine/lib.sh","state":"open","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-02T00:00:00Z","labels":[{"name":"needs-triage"}],"user":{"login":"fixture"}}]
+JSON
+            else
+              echo "[]"
+            fi ;;
+          repos/test/repo/issues/*)
+            n="${2#repos/test/repo/issues/}"
+            case "$n" in
+              991009)
+                cat <<JSON
+{"number":991009,"title":"Path-only infrastructure","body":"Fix paths:\n- engine/lib.sh","state":"open","created_at":"2026-10-01T00:00:00Z","labels":[{"name":"needs-triage"}]}
+JSON
+                ;;
+              991010)
+                cat <<JSON
+{"number":991010,"title":"Mixed product change","body":"Fix paths:\n- engine/lib.sh\n- packages/example-service/src/app.ts","state":"open","created_at":"2026-10-01T00:00:00Z","labels":[{"name":"needs-triage"}]}
+JSON
+                ;;
+              *) return 1 ;;
+            esac ;;
+        esac
+      elif [ "$1 $2" = "issue view" ]; then
         if [ "$3" != 991008 ]; then
           gh issue list --label needs-triage | jq -c --argjson n "$3" ".[] | select(.number == \$n)"
           return
@@ -930,12 +969,25 @@ ROADMAP_FASTLANE_OUTPUT="$(AGENT_HOME="$ROADMAP_FASTLANE_HOME" FASTLANE_LOG="$RO
     issue_body_is_direct_main_lane() { return 0; }
     route_pipeline_fastlane_issue() { printf "%s\n" "$1" >> "$FASTLANE_LOG"; }
     gh() {
-      if [ "$1 $2" = "issue view" ]; then
-        printf "%s\n" "{\"number\":$3,\"title\":\"Leaf\",\"body\":\"paths\",\"comments\":[],\"labels\":[],\"state\":\"OPEN\",\"subIssuesSummary\":{\"total\":0,\"completed\":0}}"
-      elif [[ " $* " == *" --label needs-triage "* ]]; then
-        printf "%s\n" "[{\"number\":991008,\"title\":\"Later triage issue\",\"body\":\"paths\",\"comments\":[],\"labels\":[{\"name\":\"needs-triage\"}],\"state\":\"OPEN\"}]"
-      elif [[ " $* " == *" --label ready-for-agent "* ]]; then
-        printf "%s\n" "[{\"number\":991009,\"title\":\"Earlier ready issue\",\"body\":\"paths\",\"comments\":[],\"labels\":[{\"name\":\"ready-for-agent\"}],\"state\":\"OPEN\"}]"
+      if [ "$1" = api ]; then
+        case "$2" in
+          graphql)
+            cat <<JSON
+{"data":{"repository":{"i991008":{"number":991008,"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}},"i991009":{"number":991009,"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}}}}}
+JSON
+            ;;
+          repos/test/repo/issues\?*)
+            if [[ "$2" == *labels=needs-triage* ]]; then
+              echo "[{\"number\":991008,\"title\":\"Later triage issue\",\"body\":\"paths\",\"state\":\"open\",\"created_at\":\"2026-10-01T00:00:00Z\",\"updated_at\":\"2026-10-02T00:00:00Z\",\"labels\":[{\"name\":\"needs-triage\"}],\"user\":{\"login\":\"fixture\"}}]"
+            else
+              echo "[{\"number\":991009,\"title\":\"Earlier ready issue\",\"body\":\"paths\",\"state\":\"open\",\"created_at\":\"2026-10-01T00:00:00Z\",\"updated_at\":\"2026-10-02T00:00:00Z\",\"labels\":[{\"name\":\"ready-for-agent\"}],\"user\":{\"login\":\"fixture\"}}]"
+            fi ;;
+          */comments\?*) echo "[]" ;;
+          repos/test/repo/issues/*)
+            n="${2#repos/test/repo/issues/}"
+            echo "{\"number\":$n,\"title\":\"Leaf\",\"body\":\"paths\",\"state\":\"open\",\"created_at\":\"2026-10-01T00:00:00Z\",\"labels\":[]}"
+            ;;
+        esac
       fi
     }
     route_nonproduct_path_candidates
@@ -1199,7 +1251,7 @@ assert_cond "fastlane stage no longer routes pipeline-system tickets to a hand" 
 assert_cond "path-only ticket routing reuses shared delivery classifier" \
   "$(route_body="$(sed -n '/^route_nonproduct_path_issue_rows() {/,/^}/p; /^route_nonproduct_path_candidates() {/,/^}/p' "$PIPELINE_SRC")"; grep -qF 'issue_body_is_direct_main_lane' <<< "$route_body" && grep -qF 'pipeline_system_issue_matches' <<< "$route_body" && echo 1 || echo 0)"
 assert_cond "configured non-product tickets are excluded from recut and release dispatch snapshots" \
-  "$(grep -A3 -F 'for next_recut in $(gh issue list' "$PIPELINE_SRC" | grep -qF '$lane_labels' && grep -A8 -F 'if ! release_list_json=' "$PIPELINE_SRC" | grep -qF '$lane_labels' && echo 1 || echo 0)"
+  "$(grep -A2 -F 'for next_recut in $(issue_rest_list' "$PIPELINE_SRC" | grep -qF '$lane_labels' && grep -A8 -F 'if ! release_list_json=' "$PIPELINE_SRC" | grep -qF '$lane_labels' && echo 1 || echo 0)"
 assert_cond "pipeline-system triage uses lightweight classification before model prompt" \
   "$(classify_line="$(grep -nF 'prepare_pipeline_system_issue "$N" "$ISSUE_JSON"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; prompt_line="$(grep -nF 'cat "$(zf_config_file prompts/triage.md)"' "$SCRIPT_DIR/run-triage.sh" | cut -d: -f1)"; [ -n "$classify_line" ] && [ -n "$prompt_line" ] && [ "$classify_line" -lt "$prompt_line" ] && echo 1 || echo 0)"
 assert_cond "technical advisor routes return pipeline-system tickets to implementation" \
@@ -1612,7 +1664,9 @@ run_advisor_snapshot_selection() (
   NEEDS_ADVISOR_IDS=""
   gh() {
     printf '%s\n' "$*" >> "$gh_calls"
-    if [[ "$1 ${2:-}" == 'issue list' ]]; then
+    if [[ "$1 ${2:-}" == 'api repos/test/repo/issues?'* ]]; then
+      jq -c '[.[] | {number,title:(.title // ""),body:(.body // ""),state:"open",created_at:(.createdAt // 0),updated_at:(.createdAt // 0),labels:(.labels // []),user:{login:"fixture"}}]' <<< "$issue_json"
+    elif [[ "$1 ${2:-}" == 'issue list' ]]; then
       printf '%s\n' "$issue_json"
     else
       return 1
@@ -1667,7 +1721,7 @@ run_advisor_snapshot_selection() (
       "${NEEDS_ADVISOR_IDS//$'\n'/,}"
   }
   if eval "$SELECTION_BODY"; then dispatch_status=0; else dispatch_status=$?; fi
-  list_calls="$(grep -c '^issue list ' "$gh_calls" || true)"
+  list_calls="$(grep -c '^api repos/test/repo/issues?' "$gh_calls" || true)"
   view_calls="$(grep -c '^issue view ' "$gh_calls" || true)"
   printf 'snapshot-body-status=%s\ndispatch-body-status=%s\ngh-issue-list-calls=%s\ngh-issue-view-calls=%s\n' \
     "$queue_status" "$dispatch_status" "$list_calls" "$view_calls"
@@ -2157,7 +2211,9 @@ assert_eq 'triage failed caller makes no dispatch claim' '' "$TRIAGE_CALL_FAILUR
 # Fail-closed pause read failures are summarized at tick exit without masking
 # the scheduler's existing exit status.
 ON_HOLD_FAILURE_REPORTER="$(sed -n '/^report_on_hold_query_failures() {/,/^}/p' "$PIPELINE_SRC")"
-if grep -q '^trap report_on_hold_query_failures EXIT$' "$PIPELINE_SRC" \
+pipeline_exit_trap='trap'
+pipeline_exit_trap+=" 'report_on_hold_query_failures; gh_tick_cache_end' EXIT"
+if grep -qF "$pipeline_exit_trap" "$PIPELINE_SRC" \
   && grep -qF 'fail-closed skipped those candidates' <<< "$ON_HOLD_FAILURE_REPORTER" \
   && grep -qF 'return "$exit_status"' <<< "$ON_HOLD_FAILURE_REPORTER"; then
   echo 'ok - failed fail-closed pause checks are summarized at tick exit'
@@ -2261,6 +2317,10 @@ run_release_selection() (
   guarded_state_write() { record_selector_side_effect state-write; }
   state_requeue() { record_selector_side_effect state-write; }
   gh() {
+    if [[ "$1 ${2:-}" == 'api repos/test/repo/issues?'* ]]; then
+      jq -c '[.[] | {number,title:(.title // ""),body:(.body // ""),state:"open",created_at:"2026-10-01T00:00:00Z",updated_at:"2026-10-02T00:00:00Z",labels:(.labels // []),user:{login:"fixture"}}]' <<< "$issue_json"
+      return
+    fi
     case "$1 ${2:-}" in
       'issue list') printf '%s\n' "$issue_json" ;;
       'pr list') printf '[]\n' ;;
@@ -2427,7 +2487,7 @@ assert_eq 'deploy_is_blocked remains a release-selection skip' \
   'release-decision issue=#910106 outcome=skipped gate=deploy-blocked object=candidate-sha reason=exact-failed-sha' \
   "$(run_release_selection '[{"number":910106}]' 910106 '' 1 '' 0)"
 RECHECK_DEPLOY_BLOCK_LINE="$(grep -nF -- '--recheck-deploy-block' "$PIPELINE_SRC" | cut -d: -f1)"
-RELEASE_CANDIDATE_LIST_LINE="$(grep -nF 'gh issue list --repo "$REPO" --state open' "$PIPELINE_SRC" | tail -1 | cut -d: -f1)"
+RELEASE_CANDIDATE_LIST_LINE="$(grep -nF 'issue_rest_list "$REPO" open awaiting-release' "$PIPELINE_SRC" | tail -1 | cut -d: -f1)"
 assert_cond 'infrastructure block recheck runs before release candidate selection' \
   "$([[ "${RECHECK_DEPLOY_BLOCK_LINE:-0}" -gt 0 && "${RECHECK_DEPLOY_BLOCK_LINE:-0}" -lt "${RELEASE_CANDIDATE_LIST_LINE:-0}" ]] && echo 1 || echo 0)"
 PENDING_FLEET_SELECTION="$(run_release_selection '[{"number":910107}]' 910107 '' 1 '' 1 910107 910107)"
@@ -3086,14 +3146,17 @@ rm -f "$CODEX_UNAVAILABLE_MARKER_FILE"
 clock_rc=0; advisor_hold_clock || clock_rc=$?
 assert_eq 'the first tick after the hold ends still charges its last interval' 2 "$(wc -l < "$CODEX_UNAVAILABLE_HOLD_LEDGER")"
 rm -rf "$HOLD_HOME"
-# reconcile_needs_info_issues: one issue list call supplies every row; no per-issue view.
 needs_info_loop_case() (
   NEEDS_INFO_LOG="$(mktemp)"
+  REPO=test/repo
   trap 'rm -f -- "$NEEDS_INFO_LOG"' EXIT  # subshell trap: keeps the test-env cleanup intact
   gh() {
     printf '%s\n' "$*" >> "$NEEDS_INFO_LOG"
-    case "$1 $2" in
-      'issue list') printf '%s\n' '[{"number":991301,"labels":[{"name":"needs-info"}],"comments":[{"body":"q"}]},{"number":991302,"labels":[{"name":"needs-info"}],"comments":[]}]' ;;
+    case "$2" in
+      repos/test/repo/issues\?*) printf '%s\n' '[{"number":991301,"title":"one","body":"q","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"needs-info"}],"user":{"login":"fixture"}},{"number":991302,"title":"two","body":"","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"needs-info"}],"user":{"login":"fixture"}}]' ;;
+      */comments\?*) [[ "$2" == *'/991301/'* ]] && printf '%s\n' '[{"node_id":"c991301","body":"q","created_at":"2026-11-02T00:00:00Z","html_url":"u","user":{"login":"fixture"}}]' || printf '%s\n' '[]' ;;
+      repos/test/repo/issues/991301) printf '%s\n' '{"number":991301,"title":"one","body":"q","state":"open","created_at":"2026-11-01T00:00:00Z","labels":[{"name":"needs-info"}]}' ;;
+      repos/test/repo/issues/991302) printf '%s\n' '{"number":991302,"title":"two","body":"","state":"open","created_at":"2026-11-01T00:00:00Z","labels":[{"name":"needs-info"}]}' ;;
       *) return 1 ;;
     esac
   }
@@ -3103,10 +3166,10 @@ needs_info_loop_case() (
   needs_info_resume_answered_issue() { :; }
   comment_is_bot() { return 1; }
   reconcile_needs_info_issues
-  printf 'list=%s view=%s\n' "$(grep -c '^issue list ' "$NEEDS_INFO_LOG" || true)" "$(grep -c '^issue view ' "$NEEDS_INFO_LOG" || true)"
+  printf 'list=%s details=%s comments=%s\n' "$(grep -c '^api repos/test/repo/issues?' "$NEEDS_INFO_LOG" || true)" "$(grep -Ec '^api repos/test/repo/issues/99130[12]$' "$NEEDS_INFO_LOG" || true)" "$(grep -c '/comments?' "$NEEDS_INFO_LOG" || true)"
   grep '^99130' "$NEEDS_INFO_LOG" | grep -v ' ' || true
 )
-assert_eq 'needs-info loop makes one issue list call and no issue view' $'list=1 view=0' "$(needs_info_loop_case | head -1)"
+assert_eq 'needs-info loop uses one REST label list plus conditional issue and comment endpoints' $'list=1 details=2 comments=2' "$(needs_info_loop_case | head -1)"
 assert_eq 'needs-info loop hands each listed issue its own row' $'991301:991301\n991302:991302' "$(needs_info_loop_case | tail -n +2)"
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL PASSED"

@@ -10,11 +10,27 @@ check() { # description expected actual
   if [[ "$2" == "$3" ]]; then printf 'ok - %s\n' "$1"; else printf 'not ok - %s (expected [%s], got [%s])\n' "$1" "$2" "$3"; failures=$((failures + 1)); fi
 }
 FAKE_ISSUE=''; FAKE_COMMENTS='[[]]'; FAKE_FAIL=''
-gh() { # api repos/<repo>/issues/<n>[/comments?...]: FAKE_FAIL=issue|comments|all makes that read fail
+FAKE_CALLS="$test_env_root/gh-calls"
+FAKE_LIST='[]'
+FAKE_LIST_PAGE1=''; FAKE_LIST_PAGE2=''
+: > "$FAKE_CALLS"
+gh() {
   [[ "$1" == api ]] || return 64
-  case "${*: -1}" in
-    */comments\?*) [[ "$FAKE_FAIL" != comments && "$FAKE_FAIL" != all ]] || return 1; printf '%s\n' "$FAKE_COMMENTS" ;;
-    *) [[ "$FAKE_FAIL" != issue && "$FAKE_FAIL" != all ]] || return 1; printf '%s\n' "$FAKE_ISSUE" ;;
+  if [[ "$2" == graphql ]]; then
+    printf 'graphql\n' >> "$FAKE_CALLS"
+    printf '%s\n' '{"data":{"repository":{"i7":{"number":7,"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}},"i8":{"number":8,"blockedBy":{"nodes":[{"number":6,"state":"OPEN"}]},"subIssues":{"totalCount":1,"nodes":[{"number":9,"state":"OPEN"}]},"subIssuesSummary":{"total":1,"completed":0}}}}}'
+    return
+  fi
+  case "$2" in
+    repos/test/repo/issues\?*)
+      local page="${2##*page=}"
+      page="${page%%&*}"
+      printf 'list %s\n' "$page" >> "$FAKE_CALLS"
+      if [[ "$page" == 1 && -n "$FAKE_LIST_PAGE1" ]]; then printf '%s\n' "$FAKE_LIST_PAGE1"
+      elif [[ "$page" == 2 && -n "$FAKE_LIST_PAGE2" ]]; then printf '%s\n' "$FAKE_LIST_PAGE2"
+      else printf '%s\n' "$FAKE_LIST"; fi ;;
+    */comments\?*) [[ "$FAKE_FAIL" != comments && "$FAKE_FAIL" != all ]] || return 1; printf 'comments\n' >> "$FAKE_CALLS"; printf '%s\n' "$2" > "$test_env_root/comment-url"; printf '%s\n' "$*" > "$test_env_root/comment-args"; printf '%s\n' "$FAKE_COMMENTS" ;;
+    *) [[ "$FAKE_FAIL" != issue && "$FAKE_FAIL" != all ]] || return 1; printf 'issue\n' >> "$FAKE_CALLS"; FAKE_ISSUE_URL="$2"; printf '%s\n' "$FAKE_ISSUE" ;;
   esac
 }
 rc_of() { local rc=0; "$@" > "$test_env_root/out" 2>/dev/null || rc=$?; printf '%s' "$rc"; }
@@ -25,12 +41,41 @@ check "open issue keeps the gh issue view shape" '{"number":7,"title":"t","body"
 check "comments are absent unless asked for" false "$(jq 'has("comments")' <<< "$view")"
 check "issue_rest_state prints OPEN" OPEN "$(issue_rest_state 7)"
 
+GH_TICK_CACHE_DIR="$test_env_root/gh-tick-cache"
+FAKE_LIST_PAGE1="$(jq -cn '([range(1;100) as $i | {number:$i,title:"pull request",body:"",state:"open",pull_request:{url:"fixture"},labels:[],user:{login:"fixture"}}] + [{number:100,title:"issue",body:"",state:"open",created_at:"2026-11-01T00:00:00Z",updated_at:"2026-11-02T00:00:00Z",labels:[],user:{login:"fixture"}}])')"
+FAKE_LIST_PAGE2="$(jq -cn '[range(101;201) as $i | {number:$i,title:"issue",body:"",state:"open",created_at:"2026-11-01T00:00:00Z",updated_at:"2026-11-02T00:00:00Z",labels:[],user:{login:"fixture"}}]')"
+: > "$FAKE_CALLS"
+paged_list="$(issue_rest_list_fetch gh test/repo open ready-for-agent 100)"
+check "REST issue limit fills after dropping pull-request rows" 100 "$(jq 'length' <<< "$paged_list")"
+check "REST list keeps paginating until it has enough issues" 'list 1,list 2' "$(paste -sd, "$FAKE_CALLS")"
+FAKE_LIST_PAGE1=''; FAKE_LIST_PAGE2=''; : > "$FAKE_CALLS"
+FAKE_LIST='[{"number":7,"title":"t","body":"b","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"ready-for-agent"}],"user":{"login":"a"}},{"number":8,"title":"pr","body":"","state":"open","pull_request":{"url":"u"},"created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"ready-for-agent"}],"user":{"login":"b"}}]'
+first_list="$(issue_rest_list test/repo open ready-for-agent)"
+second_list="$(issue_rest_list test/repo open ready-for-agent)"
+check "REST label snapshots drop pull requests" '[7]' "$(jq -c '[.[].number]' <<< "$first_list")"
+check "two reads of one label share one REST request per tick" 1 "$(grep -c '^list ' "$FAKE_CALLS")"
+before_graphql="$(grep -c '^graphql$' "$FAKE_CALLS" || true)"
+multi_label_rows="$(issue_rest_list_labels_context test/repo open 1000 gh needs-triage ready-for-agent)"
+check "two label snapshots merge before one dependency query" '[7]' "$(jq -c '[.[].number]' <<< "$multi_label_rows")"
+check "all candidate labels share one batched context request" "$((before_graphql + 1))" "$(grep -c '^graphql$' "$FAKE_CALLS")"
+before_graphql="$(grep -c '^graphql$' "$FAKE_CALLS" || true)"
+context_rows="$(issue_rest_with_context <<< '[{"number":7},{"number":8}]')"
+second_context_rows="$(issue_rest_with_context <<< '[{"number":7},{"number":8}]')"
+check "one batched GraphQL read adds dependency fields for all issue candidates" '7,8|6|9' \
+  "$(jq -r '[.[].number] | sort | map(tostring) | join(",")' <<< "$context_rows")|$(jq -r '.[1].blockedBy.nodes[0].number' <<< "$context_rows")|$(jq -r '.[1].subIssues.nodes[0].number' <<< "$context_rows")"
+check "batched context uses one GraphQL request" "$((before_graphql + 1))" "$(grep -c '^graphql$' "$FAKE_CALLS")"
+check "same GraphQL query hash is reused within the tick" "$context_rows" "$second_context_rows"
+check "repeated context query keeps one GraphQL request" "$((before_graphql + 1))" "$(grep -c '^graphql$' "$FAKE_CALLS")"
+
 FAKE_ISSUE='{"number":7,"title":"t","body":"b","state":"closed","state_reason":"not_planned","closed_at":"2026-11-01T00:00:00Z","labels":[]}'
 check "closed issue upper-cases state and reason" 'CLOSED NOT_PLANNED 2026-11-01T00:00:00Z' "$(issue_rest_view 7 | jq -r '[.state, .stateReason, .closedAt] | join(" ")')"
 
-FAKE_COMMENTS='[[{"node_id":"IC_1","body":"one","created_at":"2026-11-01T00:00:00Z","html_url":"u1","user":{"login":"a"}}],[{"node_id":"IC_2","body":null,"created_at":"2026-11-02T00:00:00Z","html_url":"u2","user":{"login":"b"}}]]'
-check "comments from every page, oldest first" 'IC_1 one a|IC_2  b' "$(issue_rest_view 7 test/repo comments | jq -r '[.comments[] | "\(.id) \(.body) \(.author.login)"] | join("|")')"
-FAKE_COMMENTS='[[]]'
+FAKE_ISSUE='{"number":7,"title":"t","body":"b","state":"open","created_at":"2026-11-01T00:00:00Z","labels":[]}'
+FAKE_COMMENTS='[{"node_id":"IC_1","body":"one","created_at":"2026-11-01T00:00:00Z","html_url":"u1","user":{"login":"a"}},{"node_id":"IC_2","body":null,"created_at":"2026-11-02T00:00:00Z","html_url":"u2","user":{"login":"b"}}]'
+check "comments use the REST since endpoint" 'IC_1 one a|IC_2  b' "$(issue_rest_view 7 test/repo comments | jq -r '[.comments[] | "\(.id) \(.body) \(.author.login)"] | join("|")')"
+check "comment GET starts at issue creation for a complete thread" 'repos/test/repo/issues/7/comments?per_page=100&since=2026-11-01T00:00:00Z' "$(cat "$test_env_root/comment-url")"
+check "comment GET uses one conditional-capable request" no "$(grep -F -- --paginate "$test_env_root/comment-args" >/dev/null && echo yes || echo no)"
+FAKE_COMMENTS='[]'
 check "an issue without comments still has the key when asked" '[]' "$(issue_rest_view 7 test/repo comments | jq -c '.comments')"
 
 # Every unreadable answer: nonzero, nothing on stdout.
@@ -44,7 +89,7 @@ FAKE_FAIL=issue;    unreadable "failed issue read" issue_rest_view 7
 FAKE_FAIL=issue;    unreadable "failed state read" issue_rest_state 7
 FAKE_FAIL=comments; unreadable "failed comments read" issue_rest_view 7 test/repo comments
 FAKE_FAIL=''
-check "a failed comments read is not needed without comments" CLOSED "$(issue_rest_state 7)"
+check "a failed comments read is not needed without comments" OPEN "$(issue_rest_state 7)"
 FAKE_ISSUE='{"number":7,"title":"t","body":"","state":"open","pull_request":{"url":"u"},"labels":[]}'
 unreadable "a pull request number" issue_rest_view 7
 FAKE_ISSUE='{"number":8,"title":"t","body":"","state":"open","labels":[]}'

@@ -367,30 +367,6 @@ gh_api_cached() { # [-p] key url [gh api 参数…]；--jq 的输出即缓存正
   fi
   printf '%s' "$body"
 }
-gh_tick_cache_get() { # key fetch_function [args…] → shared file for subshell readers in this tick
-  local key="$1" fetch="$2" cache lock_fd="" output="" tmp="" rc=0
-  shift 2
-  [[ -n "${GH_TICK_CACHE_DIR:-}" ]] || { "$fetch" "$@"; return $?; }
-  cache="$GH_TICK_CACHE_DIR/$key"
-  mkdir -p -- "$GH_TICK_CACHE_DIR" 2>/dev/null || { "$fetch" "$@"; return $?; }
-  exec {lock_fd}>>"$cache.lock" || return 1
-  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 1; }
-  if [[ -f "$cache" ]]; then
-    cat "$cache" || rc=$?
-  else
-    output="$("$fetch" "$@")" || rc=$?
-    if (( rc == 0 )); then
-      tmp="$(mktemp "$cache.XXXXXX")" || tmp=""
-      if [[ -n "$tmp" ]]; then
-        if printf '%s' "$output" >"$tmp" && mv -f -- "$tmp" "$cache"; then :; else rm -f -- "$tmp"; fi
-      fi
-      printf '%s' "$output"
-    fi
-  fi
-  flock -u "$lock_fd" || :
-  exec {lock_fd}>&-
-  return "$rc"
-}
 gh_run_list_fetch() {
   gh run list "$@" --json databaseId,conclusion,event,status,headBranch,headSha,createdAt,updatedAt,workflowName,displayTitle,attempt 2>/dev/null
 }

@@ -138,7 +138,7 @@ supervisor_cap_close_pr() { # id token detail
   [[ "$state" == OPEN\ * ]] || return 0
   [[ "$state" != *session-owned* ]] || { say "supervisor close unit=$id reason=$token: PR #$pr kept open, session-owned"; return 0; }
   [[ "$issue" =~ ^[1-9][0-9]*$ && -n "$repo" ]] || { say "supervisor close unit=$id reason=$token: PR #$pr kept open, no issue hold to link"; return 0; }
-  cited="$(gh issue list --repo "$repo" --state open --limit 1000 --json number,body --jq ".[] | select((.body // \"\") | test(\"PR #$pr(?![0-9])\")) | .number" 2>/dev/null)" \
+  cited="$(issue_rest_list "$repo" open '' 1000 | jqf -r --arg pr "$pr" '.[] | select((.body // "") | test("PR #" + $pr + "(?![0-9])")) | .number' 2>/dev/null)" \
     || { say "supervisor close unit=$id reason=$token: PR #$pr kept open, open-issue read failed"; return 0; }
   if [[ -n "$cited" ]]; then say "supervisor close unit=$id reason=$token: PR #$pr kept open, first slice cited by open issue #${cited%%$'\n'*}"; return 0; fi
   gh pr close "$pr" --comment "Autopilot cap close: unit $id is closed. Its issue #$issue is on hold (hold.sh, holder scheduler-stop-loss): $detail. A recurrence of that issue reopens the work." >/dev/null 2>&1 \

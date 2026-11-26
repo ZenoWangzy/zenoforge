@@ -42,31 +42,15 @@ intake_judge_claim_end() {
 }
 
 intake_judge_station_query_candidates() {
-  local labels label tmp file index=0
-  local -a files=()
+  local labels label repo
+  local -a label_rows=()
   labels="$(jqf -r '[((.issue_intake.labels // [])[]), ((.issue_intake.product_labels // ["ready-for-agent"])[])] | unique | .[]' <<<"$CFG")" || return 1
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/intake-judge-query.XXXXXX")" || return 1
-  while IFS= read -r label; do
-    [[ -n "$label" ]] || continue
-    file="$tmp/$index.json"
-    if ! gh issue list --state open --label "$label" --limit 200 \
-      --json number,title,body,state,labels,createdAt,subIssuesSummary,blockedBy >"$file" 2>/dev/null; then
-      rm -rf -- "$tmp"
-      return 1
-    fi
-    if ! jqf -e 'type == "array"' "$file" >/dev/null 2>&1; then
-      rm -rf -- "$tmp"
-      return 1
-    fi
-    files+=("$file")
-    index=$((index + 1))
-  done <<<"$labels"
-  if (( ${#files[@]} == 0 )); then
-    printf '[]\n'
-  else
-    jqf -s 'add | unique_by(.number)' "${files[@]}" || { rm -rf -- "$tmp"; return 1; }
-  fi
-  rm -rf -- "$tmp"
+  while IFS= read -r label; do [[ -z "$label" ]] || label_rows+=("$label"); done <<<"$labels"
+  (( ${#label_rows[@]} > 0 )) || { printf '[]\n'; return 0; }
+  repo="${REPO:-${ZF_REPO:-}}"
+  if [[ -z "$repo" ]]; then scheduler_lib_context || return 1; repo="$SCHEDULER_LIB_REPO"; fi
+  [[ -n "$repo" ]] || return 1
+  issue_rest_list_labels_context "$repo" open 200 gh "${label_rows[@]}"
 }
 
 intake_judge_station_raw_candidates() { # Share one bounded candidate scan across station passes; successful calls consume rows below.

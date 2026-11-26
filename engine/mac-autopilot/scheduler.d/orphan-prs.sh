@@ -24,7 +24,7 @@ orphan_issue_states() { # issue numbers... → {number:{state,labels}} from one 
     query+=" i$number: issue(number: $number) { state labels(first: 100) { nodes { name } } }"
   done
   [[ -n "$query" ]] || { printf '{}\n'; return 0; }
-  gh api graphql -F owner='{owner}' -F name='{repo}' \
+  gh_graphql_cached api graphql -F owner='{owner}' -F name='{repo}' \
     -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$query} }" \
     --jq '.data.repository | to_entries | map(select(.value != null) | {key:(.key[1:]),value:{state:.value.state,labels:[.value.labels.nodes[]?.name]}}) | from_entries' 2>/dev/null
 }

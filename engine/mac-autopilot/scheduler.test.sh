@@ -822,19 +822,6 @@ tick_gh() {
       else
         echo '[]'
       fi ;;
-    'issue list')
-      if [[ -f "$TF/intake-issues.json" && " $* " == *' --label ready-for-agent '* ]]; then
-        command jq -c '[.[] | select(any(.labels[]?; .name=="ready-for-agent"))]' "$TF/intake-issues.json"
-      elif [[ -f "$TF/intake-issues.json" && " $* " == *' --label pipeline-system '* ]]; then
-        command jq -c '[.[] | select(any(.labels[]?; .name=="pipeline-system"))]' "$TF/intake-issues.json"
-      elif [[ -f "$TF/intake-issue.json" && " $* " == *' --label ready-for-agent '* ]]; then
-        command jq -c '[.]' "$TF/intake-issue.json"
-      elif [[ -f "$TF/intake-issue.json" && " $* " == *' --label pipeline-system '* ]] \
-        && command jq -e 'any(.labels[]; .name=="pipeline-system")' "$TF/intake-issue.json" >/dev/null; then
-        command jq -c '[.]' "$TF/intake-issue.json"
-      else
-        echo '[]'
-      fi ;;
     'label list') printf '%s\n' needs-triage needs-info ready-for-agent ready-for-human needs-owner checks-blocked duplicate finish-first wontfix needs-advisor needs-recut awaiting-release awaiting-pipeline-sync awaiting-pipeline-health released concluded ;;
     'label create') return 0 ;;
     'api repos/example-maintainer/example-repo/issues/'*'/sub_issues?per_page=100')
@@ -848,6 +835,20 @@ tick_gh() {
         if [[ -f "$TF/dependency-closed" ]]; then printf '9901\tCLOSED\tbug\n'; else printf '9901\tOPEN\tbug\n'; fi
       elif [[ "$*" == *'REOPENED_EVENT'* ]]; then
         cat "$TF/reopen-events.json" 2>/dev/null || echo '{}'
+      elif [[ "$*" == *'blockedBy(first: 50)'* ]]; then
+        local context_n context_result='{}' context_source="$TF/intake-issues.json"
+        [[ -f "$TF/intake-issue.json" ]] && context_source="$TF/intake-issue.json"
+        while IFS=' ' read -r context_alias context_n; do
+          [[ "$context_n" =~ ^[1-9][0-9]*$ ]] || continue
+          context_result="$(command jq -c --argjson result "$context_result" --argjson n "$context_n" '
+            (if type == "array" then . else [.] end) as $issues
+            | reduce $issues[] as $issue ($result; if $issue.number == $n then . + {
+                ("i" + ($n | tostring)): {number:$n,blockedBy:($issue.blockedBy // {nodes:[]}),
+                  subIssues:($issue.subIssues // {totalCount:0,nodes:[]}),
+                  subIssuesSummary:($issue.subIssuesSummary // {total:0,completed:0})}
+              } else . end)' "$context_source")" || return 1
+        done < <(grep -oE 'i[0-9]+: issue\(number: [0-9]+\)' <<<"$*" | sed -E 's/^i([0-9]+): issue\(number: ([0-9]+)\)$/\1 \2/')
+        command jq -cn --argjson result "$context_result" '{data:{repository:$result}}'
       elif [[ "$*" == *'labels(first: 100)'* ]]; then
         # predecessor_candidates batches the blocking issues into one GraphQL call; answer from the issue fixtures.
         local pred_n pred_resp='{}'
@@ -860,7 +861,25 @@ tick_gh() {
         echo '{}'
       fi ;;
     'api '*)
-      if [[ "${2:-}" =~ ^repos/example-maintainer/example-repo/issues/([0-9]+)$ ]]; then test_issue_rest_payload "$TF" "${BASH_REMATCH[1]}"
+      if [[ "${2:-}" == repos/example-maintainer/example-repo/issues\?* ]]; then
+        local issues_file="$TF/intake-issues.json" issues_label='' issues_page=1 issues_url="$2"
+        [[ -f "$TF/intake-issue.json" ]] && issues_file="$TF/intake-issue.json"
+        [[ "$issues_url" == *'labels='* ]] && issues_label="${issues_url#*labels=}" && issues_label="${issues_label%%&*}"
+        [[ "$issues_url" =~ (^|\&)page=([0-9]+) ]] && issues_page="${BASH_REMATCH[2]}"
+        if [[ -f "$issues_file" ]]; then
+          command jq -c --arg label "$issues_label" --argjson page "$issues_page" '
+            (if type == "array" then . else [.] end)
+            | map(select(($label == "") or any(.labels[]?; .name == $label)))
+            | .[((($page - 1) * 100)):($page * 100)]
+            | map({number,title,body:(.body // ""),state:((.state // "OPEN") | ascii_downcase),
+                created_at:(.createdAt // .created_at // "2026-01-01T00:00:00Z"),
+                updated_at:(.updatedAt // .updated_at // "2026-01-01T00:00:00Z"),labels:(.labels // []),
+                user:{login:(.author.login // .user.login // "fixture")}})
+          ' "$issues_file"
+        else
+          echo '[]'
+        fi
+      elif [[ "${2:-}" =~ ^repos/example-maintainer/example-repo/issues/([0-9]+)$ ]]; then test_issue_rest_payload "$TF" "${BASH_REMATCH[1]}"
       elif [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
         cat "$TF/main-check-runs.json"
       elif [[ "$*" == *'actions/runners?per_page=100'* ]]; then
@@ -1094,6 +1113,7 @@ tick() (
   prepare_tick_config
   export MAC_AUTOPILOT_ROOT="$TF/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$TF/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$TF/supervisor/autopi" CODEX_SESSIONS_DIR="$TF/sessions"
   export AGENT_HOME="$TF/agent-home" AUTOPILOT_PAUSE_FILE="$TF/pause"
+  export REPO=example-maintainer/example-repo ZF_REPO=example-maintainer/example-repo
   export UNIT_RETIRE_DISABLED="${UNIT_RETIRE_DISABLED:-true}"
   export AUTOPILOT_POLICY_SCRIPT="${AUTOPILOT_POLICY_SCRIPT:-$POLICY_FIXTURE}"
   export AP_SYSTEM_TMP="$TF/tmp" AP_SYSTEM_TMP_FS=fixture
@@ -4042,7 +4062,7 @@ sched_case_refill_intake_cap() {
   command jq -e '([.units[] | select(.issue == 9201 or .issue == 9202 or .issue == 9203)] | length) == 1' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
     || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill ignored issue_intake.refill_max=1' >&2; exit 1; }
-  [[ "$(grep -c '^gh issue list ' "$TF/calls" || true)" == 1 ]] \
+  [[ "$(grep -c '^gh api repos/example-maintainer/example-repo/issues?' "$TF/calls" || true)" == 1 ]] \
     || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: refill made more than one fresh issue-list call' >&2; exit 1; }
 }
 sched_run_case refill_intake_cap
@@ -4088,7 +4108,7 @@ SH
   command jq -e 'any(.workers[]; .unit=="existing-startable" and .harvested!=true)' \
     "$TF/supervisor/autopi/workers.json" >/dev/null \
     || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill did not record the existing unit dispatch' >&2; exit 1; }
-  [[ "$(grep -c '^gh issue list ' "$TF/calls" || true)" == 1 ]] \
+  [[ "$(grep -c '^gh api repos/example-maintainer/example-repo/issues?' "$TF/calls" || true)" == 1 ]] \
     || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: refill made more than one fresh issue-list call' >&2; exit 1; }
   worker_pid="$(command jq -r '.workers[] | select(.unit=="existing-startable" and .harvested!=true) | .pid' "$TF/supervisor/autopi/workers.json")"
   [[ "$worker_pid" =~ ^[1-9][0-9]*$ ]] && kill -- "-$worker_pid" 2>/dev/null || :
@@ -4101,13 +4121,30 @@ sched_case_intake_cache_large_rows() {
   command jq '.issue_intake={enabled:true,max_upstream:8,max_ready:30,labels:[],product_labels:["ready-for-agent"],refill_max:2}' \
     "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
   mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
-  command jq -cn '[range(1;301) as $i | {number:(10000+$i),title:("large candidate "+($i|tostring)),body:("x"*8192),state:"OPEN",labels:[{name:"ready-for-agent"}]}]' \
+  command jq -cn '[range(1;301) as $i | {number:(10000+$i),title:("large candidate "+($i|tostring)),body:("x"*16384),state:"OPEN",labels:[{name:"ready-for-agent"}]}]' \
     > "$TF/intake-issues.json"
-  A="$TF/supervisor/autopi"; CFG="$(cat "$A/config.json")"; LOG="$A/scheduler.log"; STAMP=intake-cache-test; GH_PARALLEL=1
+  A="$TF/supervisor/autopi"; CFG="$(cat "$A/config.json")"; LOG="$A/scheduler.log"; STAMP=intake-cache-test; GH_PARALLEL=1; REPO=example-maintainer/example-repo
   : > "$LOG"
   gh() {
-    [[ "$1 $2" == 'issue list' && " $* " == *' --label ready-for-agent '* ]] || return 97
-    cat "$TF/intake-issues.json"
+    if [[ "$1 $2" == 'api repos/example-maintainer/example-repo/issues?'* ]]; then
+      local page=1 endpoint="$2"
+      [[ "$endpoint" =~ (^|\&)page=([0-9]+) ]] && page="${BASH_REMATCH[2]}"
+      command jq -c --argjson page "$page" '
+        .[((($page - 1) * 100)):($page * 100)]
+        | map({number,title,body,state:(.state | ascii_downcase),created_at:"2026-01-01T00:00:00Z",
+            updated_at:"2026-01-01T00:00:00Z",labels,user:{login:"fixture"}})
+      ' "$TF/intake-issues.json"
+    elif [[ "$1 $2" == 'api graphql' ]]; then
+      local context='{}' issue_number
+      while IFS= read -r issue_number; do
+        [[ "$issue_number" =~ ^[1-9][0-9]*$ ]] || continue
+        context="$(command jq -cn --argjson context "$context" --argjson number "$issue_number" \
+          '$context + {("i" + ($number | tostring)):{number:$number,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}}')"
+      done < <(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+')
+      command jq -cn --argjson context "$context" '{data:{repository:$context}}'
+    else
+      return 97
+    fi
   }
   intake_candidates true > "$TF/printed-rows"
   [[ -f "$A/intake-candidates.json" ]] \

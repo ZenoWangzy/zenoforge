@@ -61,7 +61,7 @@ intake_units_view() {
 }
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
   local refill_mode="${1:-false}" intake_judge_started="${2:-}" intake_judge_budget="${3:-}"
-  local skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status aging_hours
+  local skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status aging_hours repo="${REPO:-${ZF_REPO:-}}"
   local cache_token="$BASHPID.$RANDOM" cache_rows_tmp cache_valid_tmp cache_json_tmp
   local -a query_files=() query_lanes=() query_pids=()
   cache_rows_tmp="$cache_file.rows.$cache_token.tmp"
@@ -82,6 +82,8 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
     fi
   fi
   skip_labels="$(issue_skip_labels)"
+  if [[ -z "$repo" ]]; then scheduler_lib_context || return 1; repo="$SCHEDULER_LIB_REPO"; fi
+  [[ -n "$repo" ]] || return 1
   aging_hours="$(jqf -r '.issue_intake.aging_hours // 75' <<<"$CFG")"
   if [[ "$refill_mode" == true ]]; then
     candidate_labels="$(jqf -r '[((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .]), ((.issue_intake.labels // [])[] | ["direct-main", .])] | .[] | @tsv' <<<"$CFG")"
@@ -100,7 +102,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       [[ -n "$lane" && -n "$label" ]] || continue
       [[ "$refill_mode" != true || $index -lt 1 ]] || break
       query_file="$query_dir/$index.json"
-      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,subIssuesSummary,blockedBy,updatedAt,createdAt >"$query_file" 2>/dev/null &
+      issue_rest_list "$repo" open "$label" 200 intake_gh_read >"$query_file" 2>/dev/null &
       query_pids+=("$!"); query_files+=("$query_file"); query_lanes+=("$lane")
       gh_par_throttle query_pids
       index=$((index + 1))
@@ -114,7 +116,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       for ((index = 0; index < ${#query_files[@]}; index++)); do
         jqf -c --arg lane "${query_lanes[$index]}" '.[] | . + {lane:$lane}' "${query_files[$index]}" || true
       done
-    } | jqf -cs '.' \
+    } | jqf -cs '.' | (issue_rest_with_context intake_gh_read || { say 'intake dependency context unavailable'; printf '[]\n'; }) \
       | INTAKE_AGING_HOURS="$aging_hours" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 "$HERE/intake_rows.py" | tee "$query_dir/rows.json" | jqf -c 'group_by(.number)[] | sort_by(.lane) | .[0]' | intake_priority_open_unlabelled_candidates "$intake_judge_started" "$intake_judge_budget" | jqf -sr --argjson skip "$skip_labels" '
       def rank: [.labels[].name] as $n
         | if ($n | index("founder-test")) then 0 elif ($n | index("priority:top")) then 1
@@ -159,7 +161,7 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
       q+=" i$dep: issue(number: $dep) { number title body state labels(first: 100) { nodes { name } } blockedBy(first: 50) { nodes { number state } } }"
     done
     [[ -n "$q" ]] || continue
-    response="$(intake_gh_read api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
+    response="$(gh_graphql_cached_with intake_gh_read api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
     jqf -r --argjson skip "$skip_labels" '
       [.data.repository | to_entries[] | .value | select(type=="object")
         | {number,title,body:(.body // ""),state,labels:[.labels.nodes[]? | {name}],blockedBy}]

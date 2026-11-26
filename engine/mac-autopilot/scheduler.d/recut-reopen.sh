@@ -170,7 +170,7 @@ intake_reopen_episodes() { # issue... → one read per 20 issues: about 8 rows r
     for n in "${issues[@]:start:20}"; do
       q+=" i$n: issue(number: $n) { number timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } } }"
     done
-    response="$(intake_gh_read api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
+    response="$(gh_graphql_cached_with intake_gh_read api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
     while IFS=$'\t' read -r n at; do
       intake_reopen_episode "$n" "$at"
     done < <(jqf -r '.data.repository | to_entries[] | .value | select(.timelineItems.nodes[0].createdAt != null) | "\(.number)\t\(.timelineItems.nodes[0].createdAt)"' <<<"$response")
