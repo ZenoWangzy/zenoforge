@@ -683,12 +683,13 @@ pre_dispatch_skip() { # unit-json → 0 when retired (one log line), 1 to dispat
 }
 
 dispatch_if_room() { # unit stage type log report model effort prompt [sha] [workdir] [pr-head] [new-failure] [unit-json] [check-footprint] [provider] [hard] [route-reason] [route-provider] [worker-context-json]
-  local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint footprint_summary lesson_brief write_start_filter repair_head trigger \
+  local ledger_filter="" unit_json="${13:-}" prompt="$8" check_output check_status footprint footprint_summary lesson_brief write_start_filter repair_head trigger merge_rebase_head="" \
     check_footprint="${14:-true}" provider hard_escalation="${16:-false}" route_reason="${17:-configured}" route_provider \
     worker_context="${19:-}" report_only=false failure_prompt="${12-$8}"
   provider="${15:-$(provider_of "$6")}"; route_provider="${18:-$provider}"
   refill_stopped && return 1 # never start a worker once a ledger write was refused: its stage write would be refused too
   [[ -n "$unit_json" ]] || unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  if [[ "$3" == repair && "$(jqf -r '.merge_rebase_pending // false' <<<"$unit_json")" == true ]]; then merge_rebase_head="$(jqf -r '.merge_rebase_head // empty' <<<"$unit_json")"; [[ "$merge_rebase_head" =~ $SHA_RE ]] || { say "merge rebase start refused unit=$1: invalid PR head"; return 1; }; fi
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
   fi
@@ -765,7 +766,7 @@ $(tail -80 "$check_output" 2>/dev/null)"
           elif . == "worker-rc75" then "worker-rc75"
           else "unknown"
           end')"
-      write_start_filter+=" | .history[-1].trigger=$(js "$trigger")"
+      write_start_filter+=" | .history[-1].trigger=$(js "$trigger")$([[ -z "$merge_rebase_head" ]] || printf ' | .history[-1].merge_rebase_head=%s' "$(js "$merge_rebase_head")")"
     fi
     # The PR head a repair starts from, so harvest can tell a run that pushed nothing (repair_head_class); unreadable = unclassified.
     if [[ "$3" == repair && "$report_only" != true && "$(unit_field "$1" '.lane // "pr"')" != direct-main && "$(unit_field "$1" '.pr // empty')" =~ ^[0-9]+$ ]] \
@@ -794,5 +795,6 @@ $(tail -80 "$check_output" 2>/dev/null)"
   fi
   # The three trailing ledger writes of a started worker (report, write-start, stage) are one rewrite of the whole ledger: same filters, same order.
   ledger_filter="${ledger_filter# | }"
-  set_unit "$1" "${ledger_filter:+$ledger_filter | }.stage=\"$2\"$extra"
+  set_unit "$1" "${ledger_filter:+$ledger_filter | }.stage=\"$2\"$extra$([[ -z "$merge_rebase_head" ]] || printf ' | .merge_rebase_pending=false')" || return
+  [[ -z "$merge_rebase_head" ]] || say "merge rebase started PR#$(jqf -r '.pr // empty' <<<"$unit_json") head=$merge_rebase_head attempt=$(unit_field "$1" '[(.history // [])[] | select(.merge_rebase_head != null)] | length')"
 }

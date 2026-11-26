@@ -58,7 +58,7 @@ merge_conflict_files() { # main_sha pr_head [pr]
 # 冲突的单元送修复：作废批准、留历史、给 repair 提示。合并车道两处发现冲突（checks 未齐时、合并失败后）共用；
 # cause 同时进历史和日志，hint 各处自己的话（热修回迁 / 迁移编号）。
 merge_conflict_to_repair() { # id pr cause repair_hint head
-  local head="${5:-}" fresh files conflict_files paths
+  local head="${5:-}" fresh files conflict_files paths attempts same_head rebase_hint extra=""
   # 已排队：上一次冲突送了 repair-pending 且其后没有 write-start。修复 worker 合并的是它开跑时的 main，再标一次（扫描+评审，
   # 或 main 又动了）只多记一次 merge-conflict，merge.conflict_repairs_per_day 把它算成又一次修复。
   if [[ "$(unit_field "$1" '(.stage // "") + " " + ([(.history // [])[] | select(.stage | IN("merge-conflict","write-start")) | .stage] | last // "")')" == "repair-pending merge-conflict" ]]; then
@@ -85,8 +85,30 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
   # 第二次冲突起、且冲突文件全在热点文件类里：确定性解决并 push，不派 LLM 修复（见 conflict-resolve.sh）；否则照旧。
   if declare -F conflict_auto_resolve >/dev/null && paths="$(merge_conflict_paths "${MAIN_HEAD:-}" "$head" "$2")" \
     && conflict_auto_resolve "$1" "$2" "$head" "$paths"; then return 0; fi
-  set_unit "$1" "$(hist merge-conflict "PR#$2 $3") | .history[-1].conflict_files=$(js "$conflict_files") | .approved_sha=null | .repair_hint=$(js "$4") | .stage=\"repair-pending\""
+  rebase_hint="$4"
+  if [[ "$head" =~ $SHA_RE ]]; then
+    attempts="$(unit_field "$1" '[(.history // [])[] | select(.merge_rebase_head != null)] | length')"; [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+    same_head="$(unit_field "$1" "[(.history // [])[] | select(.merge_rebase_head == \"$head\")] | length")"; [[ "$same_head" =~ ^[0-9]+$ ]] || same_head=0
+    if (( attempts >= 2 )); then
+      if [[ "$(unit_field "$1" '.merge_rebase_alerted_head // empty')" != "$head" ]]; then
+        printf '[%s] merge rebase exhausted PR#%s head=%s attempts=%s; no third rebase queued\n' "$STAMP" "$2" "$head" "$attempts" >> "$A/alerts/merge.md"
+        set_unit "$1" "$(hist merge-rebase-exhausted "PR#$2 remains conflicting after $attempts rebase attempts at $head") | .merge_rebase_alerted_head=$(js "$head") | .approved_sha=null"
+      fi
+      say "merge rebase exhausted PR#$2 head=$head attempts=$attempts; no third rebase queued"
+      return 0
+    fi
+    if (( same_head > 0 )); then
+      say "merge rebase PR#$2 head=$head already attempted; not queued again"
+      return 0
+    fi
+    rebase_hint="Rebase this PR branch onto origin/main, resolve conflicts preserving both sides, run the affected tests, and publish the rewritten branch with branch-delivery-preflight."
+    extra=" | .merge_rebase_pending=true | .merge_rebase_head=$(js "$head")"
+  else
+    extra=' | del(.merge_rebase_pending,.merge_rebase_head)'
+  fi
+  set_unit "$1" "$(hist merge-conflict "PR#$2 $3") | .history[-1].conflict_files=$(js "$conflict_files") | .approved_sha=null | .repair_hint=$(js "$rebase_hint") | .stage=\"repair-pending\"$extra" || return 0
   say "merge skipped PR#$2 ($3) -> repair-pending"
+  [[ ! "$head" =~ $SHA_RE ]] || say "merge rebase queued PR#$2 head=$head attempt=$((attempts + 1))"
   say "merge-conflict-attribution unit=$1 pr=$2 pr_head=${head:-unknown} main_sha=${MAIN_HEAD:-unknown} conflicting_files=$conflict_files"
 }
 

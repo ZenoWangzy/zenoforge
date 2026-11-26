@@ -17,6 +17,7 @@ printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+dispatch_if_room_definition="$(declare -f dispatch_if_room)"
 priority_admission_has_room() { return 0; }
 ticket_budget_reason_real="$(declare -f ticket_budget_reason)"
 
@@ -173,9 +174,49 @@ dispatch_pending true
 [[ "$dispatch_calls" == 0 ]] || fail "a CONFLICTING PR was dispatched to review (calls=$dispatch_calls)"
 [[ "$(sort "$GH_CALLS" | uniq -c | tr -s ' ' | tr '\n' ';')" == ' 1 pr list; 2 pr view;' ]] || fail "unexpected gh calls for two conflicts: $(tr '\n' ';' < "$GH_CALLS")"
 for u in issue-4903 issue-4904; do
-  jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "repair-pending" and (.repair_hint | contains("git merge --no-edit origin/main")) and ([.history[].stage] | index("merge-conflict") != null)' "$UNITS" >/dev/null \
+  jq -e --arg id "$u" '.units[] | select(.id == $id) | .stage == "repair-pending" and .merge_rebase_pending == true and (.repair_hint | contains("Rebase this PR branch onto origin/main")) and ([.history[].stage] | index("merge-conflict") != null)' "$UNITS" >/dev/null \
     || fail "$u was not routed to conflict repair: $(jq -c --arg id "$u" '.units[] | select(.id == $id)' "$UNITS")"
 done
+
+(
+  jq -n --arg sha "$sha" '[{number:501,headRefOid:$sha,headRefName:"agent/issue-4901",baseRefName:"main",
+    isDraft:false,title:"fixture",labels:[],body:"",statusCheckRollup:[],mergeable:"CONFLICTING",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
+  jq -n --arg sha "$sha" '{units:[{id:"issue-4901",issue:4901,stage:"repair-pending",pr:501,branch:"agent/issue-4901",lane:"pr",
+    title:"fixture rebase",repair_hint:"Rebase this PR onto origin/main and preserve both sides.",merge_rebase_pending:true,merge_rebase_head:$sha,history:[{stage:"merge-conflict"}]}]}' > "$UNITS"
+  printf '%s\n' '# fixture' > "$MAC_AUTOPILOT_SUPERVISOR_DIR/review-501.md"
+  room_for() { return 0; }
+  footprint_room() { return 0; }
+  pick_configured_model() { PICK_MODEL=gpt-6-luna; PICK_EFFORT=max; PICK_PROVIDER=codex; PICK_HARD=false; PICK_REASON=merge-rebase; PICK_ROUTE_PROVIDER=codex; return 0; }
+  ensure_clone() { printf '%s\n' "$fixture/repo"; }
+  pre_dispatch_pr_admission() { printf '%s\n' "$fixture/repo"; }
+  repair_failure_prompt() { printf 'fixture failure'; }
+  human_feedback_block() { :; }
+  resume_handoff_integration() { return 0; }
+  refill_stopped() { return 1; }
+  incident_worker_prompt() { printf '%s' "$3"; }
+  size_admission_write_start() { return 0; }
+  dispatch_attempt_fields() { printf '.history[-1].attempt="fixture"'; }
+  tick_pr_head() { printf '%s' "$sha"; }
+  eval "$dispatch_if_room_definition"
+  dispatch() { captured_model="$2"; captured_prompt="$7"; dispatch_calls=$((dispatch_calls + 1)); return 0; }
+  matt_method_rule() { :; }
+  decision_scope() { :; }
+  sweep_rule() { :; }
+  supervisor_rule() { :; }
+  repair_demote() { :; }
+  dispatch_calls=0; captured_prompt=''; captured_model=''; SCHED_LOCK_HELD=true; TICK_ACTIVE_FOOTPRINTS_VALID=false
+  write_workers 7; tick_prs_changed; : > "$LOG"
+  dispatch_pending false
+  [[ "$dispatch_calls" == 1 && "$captured_model" == gpt-6-luna ]] || fail "a queued rebase did not start one Luna worker ($dispatch_calls, $captured_model)"
+  [[ "$captured_prompt" == *'git rebase origin/main'* && "$captured_prompt" != *'git merge --no-edit origin/main'* && "$captured_prompt" == *'--publish-topic'* ]] \
+    || fail 'the rebase worker did not receive a rebase-only brief'
+  jqf -e --arg sha "$sha" '.units[0] | .stage == "repair" and .merge_rebase_pending == false and .history[-1].merge_rebase_head == $sha' "$UNITS" >/dev/null \
+    || fail 'the rebase start was not recorded on the PR head'
+  grep -Fq "merge rebase started PR#501 head=$sha attempt=1" "$LOG" || fail 'the actual rebase start was not logged'
+  dispatch_pending false
+  [[ "$dispatch_calls" == 1 ]] || fail 'a second dispatch tick started another rebase for the same head'
+) || exit 1
+
 jq -n --arg sha "$sha" '[{number:503,headRefOid:$sha,headRefName:"agent/issue-4903",baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",
   statusCheckRollup:[],mergeable:"UNKNOWN",createdAt:"2026-11-03T00:00:00Z"}]' > "$FIXTURE_PRS"
 jq -n '{units:[{id:"issue-4903",stage:"review-pending",pr:503,branch:"agent/issue-4903",lane:"pr",title:"fixture review",history:[]}]}' > "$UNITS"

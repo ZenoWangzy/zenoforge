@@ -149,4 +149,22 @@ set_unit pr-801 '.history += [{stage:"write-start",work_type:"repair"}] | .stage
 review_conflict_to_repair pr-801 801 "$(head_of agent/issue-801)" || fail 'a conflict after a repair run was dropped'
 [[ "$(conflicts pr-801)" == 2 && "$(stage_of pr-801)" == repair-pending ]] || fail 'a conflict after a repair run was not flagged'
 
+head="$(head_of agent/issue-801)"
+reset "$(unit pr-801 801 ready-to-merge)"
+merge_conflict_to_repair pr-801 801 'merge lane conflict' 'rebase brief' "$head"
+jqf -e --arg head "$head" '.units[0] | .stage == "repair-pending" and .merge_rebase_pending == true and .merge_rebase_head == $head' "$UNITS" >/dev/null \
+  || fail 'a merge conflict did not queue a rebase worker for its PR head'
+[[ "$(grep -Fc "merge rebase queued PR#801 head=$head" "$LOG")" == 1 ]] || fail 'the first conflict did not log one rebase start'
+merge_conflict_to_repair pr-801 801 'merge lane conflict' 'rebase brief' "$head"
+[[ "$(grep -Fc "merge rebase queued PR#801 head=$head" "$LOG")" == 1 ]] || fail 'the second tick started another rebase for the same head'
+
+reset "$(jqf -cn --arg head "$head" --arg other "$(printf '1%.0s' {1..40})" \
+  '{id:"pr-801",pr:801,issue:801,branch:"agent/issue-801",stage:"ready-to-merge",history:[{stage:"write-start",merge_rebase_head:$head},{stage:"write-start",merge_rebase_head:$other}]}')"
+merge_conflict_to_repair pr-801 801 'merge lane conflict' 'rebase brief' "$head"
+jqf -e '.units[0] | .stage == "ready-to-merge" and (.merge_rebase_pending // false) == false' "$UNITS" >/dev/null \
+  || fail 'the conflict cap queued a third rebase'
+[[ "$(grep -Fc 'merge rebase exhausted PR#801' "$A/alerts/merge.md")" == 1 ]] || fail 'the second failed rebase did not raise one alert'
+merge_conflict_to_repair pr-801 801 'merge lane conflict' 'rebase brief' "$head"
+[[ "$(grep -Fc 'merge rebase exhausted PR#801' "$A/alerts/merge.md")" == 1 ]] || fail 'the exhausted rebase alert repeated on the same head'
+
 printf 'merge-tree-sweep.test.sh: PASS\n'

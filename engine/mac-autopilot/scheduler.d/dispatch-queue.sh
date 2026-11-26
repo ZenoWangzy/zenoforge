@@ -430,7 +430,7 @@ dispatch_pending_pass() {
           dispatch_skip body-blocked; continue
         fi
         dstep room_for room_for "$id" repair "$u" false || continue
-        read -r route route_head <<<"$(no_finding_repair_route "$u")" || true
+        route=""; route_head=""; [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]] || read -r route route_head <<<"$(no_finding_repair_route "$u")" || true
         if [[ "$route" == ready-to-merge ]]; then
           set_unit "$id" "$(hist repair-rerouted "no red check and no open finding; approved head $route_head -> CI admission") | .approved_sha=$(js "$route_head") | .stage=\"ready-to-merge\""
           say "repair-pending unit=$id: no red check and no open finding -> ready-to-merge"; continue
@@ -442,7 +442,7 @@ dispatch_pending_pass() {
         [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }; dmark census_prime
         # repair_cap_admission may have just moved this unit onto the hard tier.
         u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"; dmark unit_reload
-        dstep pick pick implement "$u" || { dispatch_skip pick; continue; }
+        if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then dstep pick pick_configured_model implement "$u" || { dispatch_skip pick; continue; }; else dstep pick pick implement "$u" || { dispatch_skip pick; continue; }; fi
         branch="$(jqf -r '.branch // empty' <<<"$u")"
         # Reject local footprint conflicts before tick_pr_branch can fall back to a remote PR lookup.
         dstep footprint_room footprint_room "$id" "$u" true || continue
@@ -501,7 +501,7 @@ dispatch_pending_pass() {
           deliver="node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交即可，【不要 push】：这是非产品快车道，复审通过后流水线会把它压成一个提交经 land-direct-main.sh 直落 main。提交信息不要带 [skip ci]。"
         else
           verify_rule="2. 补/改回归测试${VERIFY_RUN_RULE}${INTEGRATION_RULE}"
-          deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 到 origin ${branch}（绝不推 main、不 force）。"
+          deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic $(if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then printf '通过后发布重写后的 origin %s，预检使用 force-with-lease。' "$branch"; else printf '通过后 push 到 origin %s（绝不推 main、不 force）。' "$branch"; fi)"
         fi
         prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：${wt}（分支 ${branch}，已同步 origin）。
 $(matt_method_rule "$wt")
@@ -515,6 +515,7 @@ ${verify_rule}
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
 5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；同时就地更新单元实现报告的该节，供复审读取，交付完即结束。
 $(decision_scope "$u")"
+        if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then prompt="你是 the product 流水线的 rebase worker。当前目录是隔离 clone：${wt}（分支 ${branch}）。只处理该 PR 与 origin/main 的冲突。$(matt_method_rule "$wt") 先看 git stash list；若有 autopilot: kept before redispatch，先 git stash pop 恢复。运行 git fetch origin main 和 git rebase origin/main，按两边意图解决冲突，不做无关改动或 merge commit；不能安全解决就记录原因并停止。运行受影响测试，检查 git status 和 diff，然后 ${deliver}。不要改主 checkout、合并 PR、改 GitHub 状态或部署。不要直接 push；publish-topic 预检负责带 lease 发布重写后的分支。将结果、验证命令与退出码、交付 SHA 写入 $SUP/${rep} 的 ## decision-log。"; failure="$prompt"; fi
         if [[ "$lane" == direct-main ]]; then prompt+=$'\nDo not run *.test.* files; the lander runs the tests.'; fi
         prompt="$(direct_main_worker_prompt "$prompt" "$u")"
         sha=""
