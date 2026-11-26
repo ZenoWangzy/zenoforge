@@ -136,6 +136,11 @@ gh() {
         printf '%s\n' "$PR_HEAD"
         return
       fi
+      if [[ "$*" == *' --jq .[].filename'* ]]; then
+        [[ "$PR_FILES_API_ERROR" == 0 ]] || return 1
+        jq -r '.[]' <<<"$PR_FILES"
+        return
+      fi
       if [[ "$*" == *' -q .[].filename' ]]; then
         printf 'api:%s\n' "$*" >> "$fixture/gh-calls"
         [[ "$PR_FILES_API_ERROR" == 0 ]] || return 1
@@ -200,6 +205,9 @@ gh() {
       ;;
   esac
 }
+
+PR_FILES='["tools/quick-land.sh"]'
+: > "$fixture/gh-calls"
 
 assert_refuses "no full-suite result exists for SHA $sha" 'missing result'
 [[ ! -s "$fixture/gh-calls" ]] || fail 'missing result queried or merged the PR'

@@ -19,7 +19,7 @@ git -C "$target" -c user.name=t -c user.email=t@example.invalid commit -qm table
 git -C "$target" update-ref refs/remotes/origin/main HEAD
 
 repo="$test_env_root/quick-land"
-mkdir -p "$repo/engine" "$repo/tools"
+mkdir -p "$repo/engine/prompts" "$repo/tools"
 git init -q -b main "$repo"
 git -C "$repo" config user.name 'Quick Land Test'
 git -C "$repo" config user.email quick-land-test@example.invalid
@@ -33,6 +33,8 @@ printf '# shortcut: fixture limit, remove when paid down\n' > "$repo/engine/ratc
 printf '1\tengine/ratcheted.sh\n1\tengine/stale.sh\n' > "$repo/tools/shortcut-baseline.txt"
 printf 'echo suite\n' > "$repo/engine/old.test.sh"
 printf 'echo ok\n' > "$repo/engine/ok.test.sh"
+printf 'fixture.md\t4\n' > "$repo/engine/prompts/byte-budgets.tsv"
+printf 'okay' > "$repo/engine/prompts/fixture.md"
 git -C "$repo" add -A
 git -C "$repo" commit -qm fixture
 git init -q --bare -b main "$test_env_root/quick-land-origin.git"
@@ -120,6 +122,14 @@ land() { # <expected rc> <quick-land args...>; leaves origin/main at what the ru
   [[ "$got" == "$want" ]] || fail "quick_land_main $* returned $got, wanted $want: $(cat "$quick_land_output")"
   git fetch -q origin main
 }
+
+before="$(origin_main)"
+printf 'x' >> "$repo/engine/prompts/fixture.md"
+land 1 --test 'true' --prior-art "$pa" 'over-budget prompt'
+[[ "$(origin_main)" == "$before" ]] || fail 'an over-budget prompt landed on main'
+[[ "$(cat "$quick_land_output")" == *'engine/prompts/fixture.md is 5 bytes, budget 4 bytes'* ]] \
+  || fail "quick-land refusal omitted prompt size and budget: $(cat "$quick_land_output")"
+reset_fixture
 
 before="$(origin_main)"
 printf 'echo hi\n' > run.sh

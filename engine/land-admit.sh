@@ -1,5 +1,98 @@
 # Shared admission checks for every landing entry point.
 # Each function returns 0 to admit and 1 to refuse.
+land_prompt_byte_budget_check() {
+  local root="${1:-}" base="${2:-}" head="${3:-}" changed="${4:-}" table path name budget bytes
+  local scan_all=0
+  local -a prompt_paths=()
+  [[ -d "$root" ]] || { printf 'prompt byte budget: repository root is unavailable\n' >&2; return 1; }
+  if [[ -n "$base" || -n "$head" ]]; then
+    [[ -n "$base" && -n "$head" ]] || { printf 'prompt byte budget: both base and head are required\n' >&2; return 1; }
+    changed="$(git -C "$root" diff --name-only "$base...$head" 2>/dev/null)" \
+      || { printf 'prompt byte budget: could not read the landing diff\n' >&2; return 1; }
+  elif [[ -z "$changed" ]]; then
+    scan_all=1
+  fi
+  grep -q '^engine/prompts/' <<<"$changed" || (( scan_all == 1 )) || return 0
+  table="$root/engine/prompts/byte-budgets.tsv"
+  [[ -f "$table" ]] || { printf 'prompt byte budget: missing engine/prompts/byte-budgets.tsv\n' >&2; return 1; }
+  if (( scan_all == 1 )) || grep -Fxq 'engine/prompts/byte-budgets.tsv' <<<"$changed"; then
+    for path in "$root"/engine/prompts/*.md; do
+      [[ -f "$path" ]] && prompt_paths+=("$path")
+    done
+  else
+    while IFS= read -r path; do
+      [[ "$path" =~ ^engine/prompts/[^/]+\.md$ && -f "$root/$path" ]] && prompt_paths+=("$root/$path")
+    done <<<"$changed"
+  fi
+  ((${#prompt_paths[@]})) || return 0
+  for path in "${prompt_paths[@]}"; do
+    name="${path##*/}"
+    budget="$(awk -F '\t' -v name="$name" '$1 == name { count++; value=$2 } END { if (count == 1 && value ~ /^[0-9]+$/) print value; else exit 1 }' "$table")" \
+      || { printf 'engine/prompts/%s has no unique byte budget in engine/prompts/byte-budgets.tsv\n' "$name" >&2; return 1; }
+    bytes="$(wc -c <"$path" | tr -d ' ')" || return 1
+    if (( bytes > budget )); then
+      printf 'engine/prompts/%s is %s bytes, budget %s bytes\n' "$name" "$bytes" "$budget" >&2
+      return 1
+    fi
+  done
+}
+
+land_pr_prompt_byte_budget_check() {
+  local pr="$1" head_sha="$2" repo="${3:-}" files root ref tree actual_sha prompt_paths path output='' rc=0
+  local -a repo_args=()
+  [[ -n "$repo" ]] && repo_args=(--repo "$repo")
+  files="$(gh api --paginate "${repo_args[@]}" --jq '.[].filename' \
+    "repos/{owner}/{repo}/pulls/$pr/files?per_page=100" 2>/dev/null)" || {
+    printf 'prompt byte budget: could not read PR #%s files\n' "$pr" >&2
+    return 1
+  }
+  grep -q '^engine/prompts/' <<<"$files" || return 0
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    printf 'prompt byte budget: repository checkout is unavailable\n' >&2
+    return 1
+  }
+  ref="refs/zf-land-prompt-budget/$pr"
+  git -C "$root" fetch -q origin "+refs/pull/$pr/head:$ref" 2>/dev/null || {
+    printf 'prompt byte budget: could not fetch PR #%s head\n' "$pr" >&2
+    return 1
+  }
+  actual_sha="$(git -C "$root" rev-parse "$ref^{commit}" 2>/dev/null)" || actual_sha=
+  if [[ "$actual_sha" != "$head_sha" ]]; then
+    git -C "$root" update-ref -d "$ref" 2>/dev/null || true
+    printf 'prompt byte budget: PR #%s changed after its head was pinned\n' "$pr" >&2
+    return 1
+  fi
+  tree="$(mktemp -d)" || return 1
+  mkdir -p "$tree/engine/prompts" || { rc=1; output="prompt byte budget: could not stage PR #$pr prompt files"; }
+  if git -C "$root" cat-file -e "$ref:engine/prompts/byte-budgets.tsv" 2>/dev/null; then
+    git -C "$root" show "$ref:engine/prompts/byte-budgets.tsv" > "$tree/engine/prompts/byte-budgets.tsv" \
+      || { rc=1; output="prompt byte budget: could not read PR #$pr budget table"; }
+  fi
+  if grep -Fxq 'engine/prompts/byte-budgets.tsv' <<<"$files"; then
+    prompt_paths="$(git -C "$root" ls-tree -r --name-only "$ref" -- engine/prompts 2>/dev/null)" \
+      || { rc=1; output="prompt byte budget: could not list PR #$pr prompt templates"; }
+    prompt_paths="$(grep -E '^engine/prompts/[^/]+\.md$' <<<"$prompt_paths" || true)"
+  else
+    prompt_paths="$(grep -E '^engine/prompts/[^/]+\.md$' <<<"$files" || true)"
+  fi
+  while IFS= read -r path; do
+    [[ "$path" =~ ^engine/prompts/[^/]+\.md$ ]] || continue
+    if git -C "$root" cat-file -e "$ref:$path" 2>/dev/null; then
+      git -C "$root" show "$ref:$path" > "$tree/$path" \
+        || { rc=1; output="prompt byte budget: could not read PR #$pr template $path"; }
+    fi
+  done <<<"$prompt_paths"
+  if (( rc == 0 )); then
+    output="$(land_prompt_byte_budget_check "$tree" '' '' "$files" 2>&1)" || rc=$?
+  fi
+  rm -rf -- "$tree"
+  git -C "$root" update-ref -d "$ref" 2>/dev/null || true
+  if (( rc != 0 )); then
+    printf '%s\n' "$output" >&2
+    return "$rc"
+  fi
+}
+
 land_receipt_green() {
   local receipt="${1-}"
   if [[ ! -f "$receipt" ]]; then
@@ -94,6 +187,7 @@ land_merge_pr() {
     esac
   done
   merge_args+=(--match-head-commit "$head_sha")
+  land_pr_prompt_byte_budget_check "$pr" "$head_sha" "$repo" || return 1
   if gh "${merge_args[@]}"; then
     return 0
   else

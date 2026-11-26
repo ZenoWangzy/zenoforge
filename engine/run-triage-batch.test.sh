@@ -1147,19 +1147,10 @@ assert_eq "budget-refused batch does not spend issue attempt" 0 \
 
 # Stage prompt templates each carry a recorded byte budget (rounded up to 1 KB).
 # A template over its budget fails; shrink it before raising the number here.
-PROMPT_BUDGETS="advisor-batch.md 8192
-advisor.md 23552
-guarded-recut-hand.md 3072
-implement-contract.md 6144
-recut.md 10240
-retro.md 2048
-review-contract.md 8192
-supervisor-arbiter.md 8192
-supervisor-cap-triage.md 3072
-triage.md 34816"
+PROMPT_BUDGETS="$SCRIPT_DIR/prompts/byte-budgets.tsv"
 for template in "$SCRIPT_DIR"/prompts/*.md; do
   name="$(basename "$template")"
-  budget="$(awk -v n="$name" '$1 == n {print $2}' <<< "$PROMPT_BUDGETS")"
+  budget="$(awk -F '\t' -v n="$name" '$1 == n {print $2}' "$PROMPT_BUDGETS")"
   bytes="$(wc -c < "$template" | tr -d ' ')"
   assert_eq "prompt template $name has a recorded budget" true \
     "$([ -n "$budget" ] && echo true || echo false)"

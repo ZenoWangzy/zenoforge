@@ -1211,6 +1211,7 @@ test('a test-*.sh suite under a configured pipeline root is still selected', () 
 test('a stage prompt change runs the prompt byte-budget suite', () => {
   const tracked = new Set(['engine/run-triage-batch.test.sh', 'engine/run-recut.test.sh']);
   assert.deepEqual(focusedTestPaths(['engine/prompts/implement-contract.md'], tracked), ['engine/run-triage-batch.test.sh']);
+  assert.deepEqual(focusedTestPaths(['engine/prompts/byte-budgets.tsv'], tracked), ['engine/run-triage-batch.test.sh']);
   assert.deepEqual(focusedTestPaths(['engine/prompts/recut.md'], tracked).sort(), ['engine/run-recut.test.sh', 'engine/run-triage-batch.test.sh']);
 });
 

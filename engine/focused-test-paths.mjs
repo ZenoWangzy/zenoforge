@@ -842,7 +842,7 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
     } else if (!candidates && path.startsWith(`${PACK_PREFIX}prompts/`)) {
       const prompt = path.slice(`${PACK_PREFIX}prompts/`.length);
       const promptOwner = new Map([
-        ['triage.md', 'run-triage'],
+        ['triage.md', 'run-triage'], ['byte-budgets.tsv', 'run-triage-batch'],
         ['advisor.md', 'run-advisor'],
         ['advisor-batch.md', 'run-advisor-batch'],
         ['advisor.schema.json', ['run-advisor', 'run-advisor-batch']],

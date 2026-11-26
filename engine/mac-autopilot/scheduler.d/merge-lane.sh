@@ -272,7 +272,7 @@ pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
 source "$(dirname -- "${BASH_SOURCE[0]}")/pr-body.sh"
 
 run_merge_lane_pass() {
-  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts current_unit verified_by
+  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha merge_error checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts current_unit verified_by
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
@@ -703,7 +703,7 @@ run_merge_lane_pass() {
     # and post-merge exact-SHA CI verifies the resulting main commit without a stable-main barrier.
     if [[ "$pre_merge_sha" =~ $SHA_RE ]]; then
       tick_prs_changed
-      if gh pr merge "$pr" --squash --match-head-commit "$approved" >/dev/null 2>&1; then
+      if merge_error="$(cd "$ROOT" && land_merge_pr "$pr" "$approved" 2>&1)"; then
         current_unit="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"; verified_by="$(unit_verification_stamp "$current_unit" "$head" "$checks")"
         merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"; [[ "$merge_sha" =~ $SHA_RE ]] || merge_sha=""
         if [[ -n "$merge_sha" ]]; then
@@ -723,6 +723,7 @@ run_merge_lane_pass() {
         # 冲突不会自己消失：以前每拍空试 merge（#3885/#3860 空转数小时），现在直接派修复合 main。
         merge_conflict_to_repair "$id" "$pr" "conflicts with main" "PR 与最新 main 冲突，GitHub 拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（迁移编号顺延到 main 之后），跑受影响测试后 push。" "$head"; pass_step_end conflict-repair "$pr"
       else
+        [[ "$merge_error" != *'engine/prompts/'* && "$merge_error" != *'prompt byte budget:'* ]] || say "merge skipped PR#$pr ($merge_error)"
         say "merge skipped PR#$pr (synchronous squash merge failed)"; pass_step_end skipped-merge-failed "$pr"
       fi
     else
