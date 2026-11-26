@@ -264,19 +264,22 @@ rule_supersede_handoff() { # unit ruling-comment-url：清掉已被当前 PR hea
   set_unit "$id" "$(hist handoff-superseded "ruling comment $comment_id superseded the handoff snapshot with PR #$pr head $head") | .history[-1].ruling_comment_id=$(js "$comment_id") | .history[-1].pr_head=$(js "$head") | .history[-1].superseded_by=$(js "$head") | del(.handoff_worktree, .handoff_worktree_sha, .handoff_worktree_dirty, .handoff_worktree_applied, .handoff_integration_sha, .handoff_original_pr_head, .handoff_delivery_verified_sha, .handoff_start_ref, .handoff_start_sha, .handoff_start_applied)"
 }
 
+closed_unit_state_read() {
+  if [[ "${2:-apply}" == check ]]; then scheduler_issue_state_readonly "$1"; else scheduler_issue_state "$1"; fi
+}
 closed_unit_stop_loss_open() { # id：0 = 已关闭单元的 issue 仍开着且挂着 scheduler-stop-loss hold；1 = 不符合；2 = 读不到 GitHub 状态（GraphQL 读在 secondary rate limit 下返回空，故走 REST）
-  local issue state repo rest_state
+  local issue state repo rest_state mode="${2:-apply}"
   issue="$(unit_field "$1" '.issue // empty')"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
-  state="$(scheduler_issue_state "$issue")" || return 1
+  state="$(closed_unit_state_read "$issue" "$mode")" || return 1
   jqf -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' <<<"$state" >/dev/null || return 1
   repo="${REPO:-${ZF_REPO:-}}"; [[ -n "$repo" ]] || return 1
   rest_state="$(gh api "repos/$repo/issues/$issue" --jq .state 2>/dev/null)" || return 2
   case "$rest_state" in open) return 0 ;; closed) return 1 ;; *) return 2 ;; esac
 }
 closed_unit_recut_open() { # id：0 = recut 或 arbitration cap（supervisor-close）关掉的单元，issue 仍开着、ready-for-agent、无 hold、无 recut 子单；1 = 不符合；2 = 读不到状态（只有 issue 开着才有路：#3405/#1135/#6206）
-  local issue state repo rest_state last
+  local issue state repo rest_state last mode="${2:-apply}"
   issue="$(unit_field "$1" '.issue // empty')"; [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
-  state="$(scheduler_issue_state "$issue")" || return 2
+  state="$(closed_unit_state_read "$issue" "$mode")" || return 2
   jqf -e '.state == "ready-for-agent" and .hold == null and (has("recut_children") | not)' <<<"$state" >/dev/null || return 1
   # a delivered unit (merged/landed/done anywhere in its history) stays closed; the close must come from a recut event
   last="$(unit_field "$1" '(.history // []) as $h | if any($h[]; .stage | IN("merged", "landed", "done")) then empty else ($h | map(.stage | select(. != "supervisor-cap-default")) | last // empty) end')"
@@ -291,10 +294,10 @@ closed_unit_recut_open() { # id：0 = recut 或 arbitration cap（supervisor-clo
   case "$rest_state" in open) return 0 ;; closed) return 1 ;; *) return 2 ;; esac
 }
 closed_unit_route() { # id：0 = stop-loss hold 路，3 = recut 路（都用 --requeue 重开）；1 = 无路；2 = 读不到 GitHub 状态
-  local rc=0
-  closed_unit_stop_loss_open "$1" || rc=$?
+  local rc=0 mode="${2:-apply}"
+  closed_unit_stop_loss_open "$1" "$mode" || rc=$?
   [[ "$rc" == 1 ]] || return "$rc"
-  rc=0; closed_unit_recut_open "$1" || rc=$?
+  rc=0; closed_unit_recut_open "$1" "$mode" || rc=$?
   [[ "$rc" == 0 ]] && return 3
   return "$rc"
 }
@@ -397,7 +400,7 @@ rule_entry_apply() {
 }
 
 rule_entry_decide() {
-  local id="${1:-}" action="${2:-}" ref="${3:-}" blocker="${5:-}" waiver="${6:-}" author="${7:-}" snapshot rc issue stage pr pr_state head result
+  local id="${1:-}" action="${2:-}" ref="${3:-}" blocker="${5:-}" waiver="${6:-}" author="${7:-}" mode="${8:-apply}" snapshot rc issue stage pr pr_state head result
   RULE_ENTRY_REFUSAL_TEXT=""
   [[ "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ && -n "$id" ]] || { RULE_ENTRY_REFUSAL_TEXT="usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver <ref> [guidance]"; return 64; }
   [[ "$action" != waiver || -n "$waiver" ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: waiver needs --size-waiver <max_lines>"; return 64; }
@@ -435,7 +438,7 @@ rule_entry_decide() {
       ;;
     reroute)
       if [[ "$stage" == closed ]]; then
-        rc=0; closed_unit_route "$id" || rc=$?
+        rc=0; closed_unit_route "$id" "$mode" || rc=$?
         RULE_ENTRY_REFUSAL_TEXT="$(closed_unit_refusal "$id" "$rc" 2>&1)"
         [[ "$rc" == 2 ]] && return 75
         return 1
@@ -445,7 +448,7 @@ rule_entry_decide() {
       case "$stage" in
         parked|supervisor-review) ;;
         closed)
-          rc=0; closed_unit_route "$id" || rc=$?
+          rc=0; closed_unit_route "$id" "$mode" || rc=$?
           if [[ "$rc" == 0 || "$rc" == 3 ]]; then :
           else RULE_ENTRY_REFUSAL_TEXT="$(closed_unit_refusal "$id" "$rc" 2>&1)"; [[ "$rc" == 2 ]] && return 75; return 1
           fi

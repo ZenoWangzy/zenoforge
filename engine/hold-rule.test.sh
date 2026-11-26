@@ -726,6 +726,19 @@ EOT
     && [ "$(find "$AGENT_HOME" "$check_runtime" -print | sort)" = "$archive_probe_files" ] \
     || { echo 'FAIL: an unreadable unit archive must defer the ruling without writing' >&2; cat "$test_env_root/scheduler-archive-read.out" >&2; exit 1; }
   rm "$check_runtime/units-archive.json"
+  closed_agent_home="$test_env_root/closed-check-agent"
+  closed_runtime="$test_env_root/closed-check-runtime"
+  mkdir -p "$closed_agent_home" "$closed_runtime"
+  printf 'test-host\n' > "$closed_agent_home/host-id"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$closed_runtime/config.json"
+  printf '%s\n' '{"units":[{"id":"issue-85","issue":85,"stage":"closed","history":[{"stage":"supervisor-close"}]}]}' > "$closed_runtime/units.json"
+  closed_before="$(find "$closed_agent_home" "$closed_runtime" -print | sort)"
+  for action in requeue reroute; do
+    rc=0; AGENT_HOME="$closed_agent_home" MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/closed-check-sup" MAC_AUTOPILOT_RUNTIME_DIR="$closed_runtime" ZF_ENGINE_DIR="$SCRIPT_DIR" ZF_REPO_DIR="$test_env_root/repo" OPEN_ISSUE_BLOCKER_GRAPH_JSON='[]' bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-85 "$action" u '' '' '' '' > "$test_env_root/scheduler-closed-$action-check.out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] && [ "$(cat "$test_env_root/scheduler-closed-$action-check.out")" = 'would refuse: rule: issue-85 is closed; use --recut to route its issue to recut' ] \
+      && [ "$(find "$closed_agent_home" "$closed_runtime" -print | sort)" = "$closed_before" ] \
+      || { echo "FAIL: closed-unit $action check must stay read-only without creating a state lock" >&2; cat "$test_env_root/scheduler-closed-$action-check.out" >&2; find "$closed_agent_home" "$closed_runtime" -print >&2; exit 1; }
+  done
   printf '%s\n' '{"units":[{"id":"issue-83","issue":83,"stage":"supervisor-review","pr":83,"history":[]},{"id":"issue-84","issue":84,"stage":"supervisor-review","pr":84,"history":[]}]}' > "$check_runtime/units.json"
   pr_read_before_files="$(find "$AGENT_HOME" "$check_runtime" -print | sort)"
   pr_read_before_units="$(sha256sum "$check_runtime/units.json")"
