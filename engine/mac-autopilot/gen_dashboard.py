@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, triage_split, intake_laneless_health, traffic_trend, gh_caller
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, repo_identity, triage_split, intake_laneless_health, traffic_trend, gh_caller
 import ledger_history
 from config_paths import zf_config_file
 
@@ -803,7 +803,7 @@ def front_run(argv, timeout, **kw):
 worker_traffic = read_json(os.path.join(AGENT_HOME, "state", "traffic-workers.json")) or {}
 try:
     live_workers_data = live_workers.collect(wl, units, UNIT_PREFIX_TRANSIENT,
-        os.environ.get("ZF_LUNA_DIR", os.path.expanduser("~/project/zf-refactor/.scratch/luna")),
+        os.environ.get("ZF_LUNA_DIR", os.path.join(os.environ.get("WORKER_SCRATCH_ROOT", os.path.expanduser("~/.zenoforge/scratch")), "luna")),
         os.path.join(AGENT_HOME, "web-advisor-provider-jobs"), SUP, worker_traffic, SESSION_ROOT)
 except Exception as e:
     live_workers_data = {"error": str(e)[:200]}
@@ -841,24 +841,18 @@ def front_unit_active(pattern):
         return None
     return [line.split()[0] for line in out.splitlines() if line.strip()]
 
-def front_cache_get(now, max_age):
-    cached = (read_json(FRONT_CACHE_PATH) or {}).get("github"); epoch = cached.get("fetched_epoch") if isinstance(cached, dict) else None
-    if not isinstance(epoch, (int, float)) or not isinstance(cached.get("stages"), list): return None, None
-    age = now - epoch
-    return (cached, age) if 0 <= age < max_age else (None, None)
-
 def front_cache_has_triage_split(cached):
     return triage_split.cache_has_filter(cached)
 
-def front_github_stages(now):
-    cached, age = front_cache_get(now, FRONT_CACHE_SECONDS)
+def front_github_stages(now, repo_slug=None):
+    repo_slug = repo_slug or os.environ.get("ZF_REPO", "")
+    cached, age = dashboard_repos.cache_get(FRONT_CACHE_PATH, repo_slug, os.environ.get("ZF_REPO", ""), now, FRONT_CACHE_SECONDS, read_json)
     if cached and isinstance(cached.get("search_counts"), dict) and front_cache_has_triage_split(cached):
         return cached["stages"], cached["search_counts"], {"cached": True, "stale": False, "age_s": int(age), "error": None}
     try:
-        repo_slug = os.environ.get("ZF_REPO", "")
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_slug): raise RuntimeError("ZF_REPO 必须是 owner/repo")
         owner, name = repo_slug.split("/", 1)
-        repo_queries = [("issues_open", "is:issue is:open"), ("issues_closed", "is:issue is:closed"), ("prs_open", "is:pr is:open"), ("prs_merged", "is:pr is:merged"), ("prs_closed_unmerged", "is:pr is:closed is:unmerged")]; stage_queries = [(row[0], f"is:issue is:open label:{row[0]}") for row in FRONT_STAGES]; terms = [term for _, term in repo_queries + stage_queries]; vars = "$owner:String!,$name:String!," + ",".join(f"$q{i}:String!" for i in range(len(terms)))
+        repo_queries = [("issues_open", "is:issue is:open"), ("issues_closed", "is:issue is:closed"), ("prs_open", "is:pr is:open"), ("prs_merged", "is:pr is:merged"), ("prs_closed_unmerged", "is:pr is:closed is:unmerged"), ("prs_merged_24h", f"is:pr is:merged merged:>={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 86400))}")]; stage_queries = [(row[0], f"is:issue is:open label:{row[0]}") for row in FRONT_STAGES]; terms = [term for _, term in repo_queries + stage_queries]; vars = "$owner:String!,$name:String!," + ",".join(f"$q{i}:String!" for i in range(len(terms)))
         stage_fields = triage_split.graphql_stage_fields(FRONT_STAGES)
         query = ("query(" + vars + "){repository(owner:$owner,name:$name){" + stage_fields + "}" +
                  "".join(f"c{i}:search(query:$q{i},type:ISSUE,first:1){{issueCount}}" for i in range(len(terms))) + "}")
@@ -876,16 +870,10 @@ def front_github_stages(now):
         search_counts["stages"] = {label: (data.get(f"c{i + len(repo_queries)}") or {}).get("issueCount") for i, (label, _) in enumerate(stage_queries)}
         search_count_error = "; ".join(str(e.get("message") or "") for e in (payload.get("errors") or []) if isinstance(e, dict))[:200] or "GitHub 搜索未返回计数"
         search_counts["errors"] = {**{key: search_count_error for key, value in search_counts.items() if key != "stages" and not isinstance(value, int)}, **{f"stages.{key}": search_count_error for key, value in search_counts["stages"].items() if not isinstance(value, int)}}
-        try:
-            tmp = FRONT_CACHE_PATH + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as out:
-                json.dump({"github": {"fetched_epoch": now, "stages": stages, "search_counts": search_counts}}, out, ensure_ascii=False)
-            os.replace(tmp, FRONT_CACHE_PATH)
-        except OSError:
-            pass
+        dashboard_repos.cache_store(FRONT_CACHE_PATH, repo_slug, os.environ.get("ZF_REPO", ""), now, stages, search_counts, read_json)
         return stages, search_counts, {"cached": False, "stale": False, "age_s": 0, "error": None}
     except Exception as ex:
-        stale, age = front_cache_get(now, FRONT_STALE_SECONDS)
+        stale, age = dashboard_repos.cache_get(FRONT_CACHE_PATH, repo_slug, os.environ.get("ZF_REPO", ""), now, FRONT_STALE_SECONDS, read_json)
         if stale and front_cache_has_triage_split(stale):
             return stale["stages"], stale.get("search_counts"), {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex)}
         raise
@@ -1116,11 +1104,14 @@ for section, build in (
 front["standards"] = front_standards
 front["values"] = front_values
 front["status"] = {k: ("N/A" if k in front_na else front_judge(front_values.get(k), sd)) for k, sd in front_standards.items()}
-front["elapsed_s"] = round(time.time() - front_started, 2)
+front["elapsed_s"] = round(time.time() - front_started, 2); repo_sections = dashboard_repos.sections(os.environ.get("ZF_DASHBOARD_REPOS"), os.environ.get("ZF_REPO", ""),
+    os.environ.get("ZF_ENGINE_REPO") or repo_identity.origin_repo(os.environ.get("ZF_ENGINE_REPO_DIR") or os.environ.get("ZF_ENGINE_DIR") or _HERE),
+    live_workers_data.get("items") or [], front, lambda repo: front_github_stages(front_now, repo))
 
 data = {
     "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "repo": os.environ.get("ZF_REPO", ""),
+    "repo_sections": repo_sections,
     "live_workers": live_workers_data,
     "factory": factory_data, "founder_reqs": founder_data,
     "units": units, "workers": wl, "release": release, "cost": cost_data, "cost_ledger": cost_ledger,

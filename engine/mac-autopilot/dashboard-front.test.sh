@@ -98,9 +98,8 @@ printf '%s' '{"data":{"repository":{
  "a4":{"totalCount":0,"nodes":[]},"a5":{"totalCount":9,"nodes":[{"number":8,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a6":{"totalCount":5,"nodes":[{"number":3,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"__RECENT__"}]},
  "a7":{"totalCount":0,"nodes":[]}},
- "c0":{"issueCount":128},"c1":{"issueCount":31},"c2":{"issueCount":2},"c3":{"issueCount":3},"c4":{"issueCount":4},
- "c5":{"issueCount":102},"c6":{"issueCount":0},"c7":{"issueCount":2},"c8":{"issueCount":3},"c9":{"issueCount":0},
- "c10":{"issueCount":9},"c11":{"issueCount":5},"c12":{"issueCount":0}}}' | sed "s/__RECENT__/$(iso '-2 hours')/g" > "$f/graphql.json"
+ "c0":{"issueCount":128},"c1":{"issueCount":31},"c2":{"issueCount":2},"c3":{"issueCount":3},"c4":{"issueCount":4},"c5":{"issueCount":6},
+ "c6":{"issueCount":102},"c7":{"issueCount":0},"c8":{"issueCount":2},"c9":{"issueCount":3},"c10":{"issueCount":0},"c11":{"issueCount":9},"c12":{"issueCount":5},"c13":{"issueCount":0}}}' | sed "s/__RECENT__/$(iso '-2 hours')/g" > "$f/graphql.json"
 # Exercise two-page triage pagination above the 100-issue GraphQL page size.
 jq '.data.repository.a0.totalCount = 102
   | .data.repository.a0.pageInfo = {endCursor:"triage-cursor-1",hasNextPage:true}
@@ -117,7 +116,9 @@ cat > "$f/bin/gh" <<'GH'
 if [[ "$1 $2" == "api graphql" ]]; then
   echo graphql >> "$FAKE_GH_LOG"
   if [[ -n "${FAKE_GH_FAIL:-}" ]]; then echo 'HTTP 502: bad gateway' >&2; exit 1; fi
-  if [[ " $* " == *"after=triage-cursor-1"* ]]; then cat "$FAKE_GRAPHQL_PAGE2"; else cat "$FAKE_GRAPHQL"; fi
+  if [[ -n "${FAKE_GRAPHQL_ZEN:-}" && " $* " == *"owner=ZenoWangzy"* ]]; then cat "$FAKE_GRAPHQL_ZEN"
+  elif [[ -n "${FAKE_GRAPHQL_OTHER:-}" && " $* " == *"owner=example-maintainer"* ]]; then cat "$FAKE_GRAPHQL_OTHER"
+  elif [[ " $* " == *"after=triage-cursor-1"* ]]; then cat "$FAKE_GRAPHQL_PAGE2"; else cat "$FAKE_GRAPHQL"; fi
 elif [[ "$1 $2" == "issue list" && " $* " == *" --label ready-for-agent "* ]]; then
   echo issue-list >> "$FAKE_GH_LOG"
   cat "$FAKE_READY_ISSUES"
@@ -283,9 +284,7 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
 # 2. 5 分钟缓存：再跑一次不再调 GitHub
 cache="$MAC_AUTOPILOT_DASHBOARD_OUTPUT"; cache="$(dirname "$cache")/front-cache.json"
 run
-# Four calls from the first run: two dashboard query pages, the ready issue list, and founder_reqs' by-number fetch for #555.
-# None may repeat inside the cache window.
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 4 ]] || fail "GitHub reads repeated inside the cache window: $(cat "$FAKE_GH_LOG")"
+[[ "$(wc -l < "$FAKE_GH_LOG")" == 6 ]] || fail "GitHub reads repeated inside the cache window: $(cat "$FAKE_GH_LOG")"
 front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9 and .search_counts.issues_open == 128' >/dev/null || fail "cached run not marked cached"
 
 # A pre-split cache must be refreshed instead of restoring its raw needs-triage count.
@@ -293,7 +292,7 @@ jq '(.github.stages) |= map(if .label == "needs-triage" then .excluded |= map(se
 run
 front | jq -e '.github.cached == false and .stages[0].count == 2 and (.stages[0].excluded | length == 7)' >/dev/null \
   || fail "pre-split cache kept the raw needs-triage count: $(front | jq -c '{github, stage: .stages[0]}')"
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 7 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
+[[ "$(wc -l < "$FAKE_GH_LOG")" == 9 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
 
 # 3. 缓存过期而 GitHub 失败：沿用旧缓存并标明失败原因（最长 30 分钟）
 [[ -s "$cache" ]] || fail "front cache file not written next to dashboard.data.js"
@@ -483,4 +482,67 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e --arg 
   and (.traffic.days[1] | .rx_gb == 4 and .tx_gb == 1 and .partial == true)
   and (.traffic.days[2] | .rx_gb == 5 and .tx_gb == 1 and .category_rx_gb.models == 3.75 and .partial == false)' >/dev/null \
   || fail "traffic.days did not carry each day's last-line totals with the malformed and missing days skipped"
+
+(
+  set -euo pipefail
+  worker_pids=()
+  trap 'for pid in "${worker_pids[@]}"; do kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; done; rm -rf -- "$test_env_root"' EXIT
+  worker_root="$f/repo-workers"; worker_slice="$worker_root/zf-workers.slice"; worker_scratch="$worker_root/scratch"; worker_slots="$worker_scratch/tmp/luna-slots"
+  mkdir -p "$worker_slice" "$worker_slots" "$worker_scratch/luna"
+  make_clone() { mkdir -p "$1"; git init -q -b main "$1"; git -C "$1" remote add origin "https://github.com/$2.git"; }
+  start_worker() { (cd "$1" && exec sleep 600) & worker_pids+=("$!"); }
+  zen_clone="$worker_root/zenoforge-clone"; other_clone="$worker_root/other-clone"
+  make_clone "$zen_clone" ZenoWangzy/zenoforge; make_clone "$other_clone" example-maintainer/other-repo
+  start_worker "$zen_clone"; zen_pid="${worker_pids[-1]}"
+  start_worker "$other_clone"; other_pid="${worker_pids[-1]}"
+  mkdir -p "$worker_slice/luna-zenoforge-issue-1537-2201.scope" "$worker_slice/zc-other-issue-77-2202.scope"
+  printf '%s\n' "$zen_pid" > "$worker_slice/luna-zenoforge-issue-1537-2201.scope/cgroup.procs"
+  printf '%s\n' "$other_pid" > "$worker_slice/zc-other-issue-77-2202.scope/cgroup.procs"
+  for row in "zenoforge-issue-1537:$zen_pid" "other-issue-77:$other_pid"; do
+    key="${row%%:*}"; pid="${row#*:}"; dir="$worker_scratch/luna/$key"; mkdir -p "$dir"
+    printf '%s\n' "$pid" > "$dir/wrapper.pid"; touch -d '@'"$(( $(date +%s) - 300 ))" "$dir/wrapper.pid"
+  done
+  zen_wait_clone="$worker_root/zenoforge-wait-clone"; other_wait_clone="$worker_root/other-wait-clone"
+  make_clone "$zen_wait_clone" ZenoWangzy/zenoforge; make_clone "$other_wait_clone" example-maintainer/other-repo
+  start_worker "$zen_wait_clone"; zen_wait_pid="${worker_pids[-1]}"
+  start_worker "$other_wait_clone"; other_wait_pid="${worker_pids[-1]}"
+  for row in "zenoforge-wait-1537:$zen_wait_pid:normal:120" "other-wait-77:$other_wait_pid:hotfix:60"; do
+    key="${row%%:*}"; rest="${row#*:}"; pid="${rest%%:*}"; rest="${rest#*:}"; priority="${rest%%:*}"; age="${rest#*:}"
+    dir="$worker_scratch/luna/$key"; mkdir -p "$dir"
+    printf '%s\n' "$pid" > "$dir/wrapper.pid"; printf '%s\n' "$(( $(date +%s) - age ))" > "$dir/gate-wait"
+    printf '%s\n' "$(( $(date +%s) - age ))" > "$worker_slots/wait-$priority-$pid"
+  done
+  jq '.data.repository.a0.pageInfo.hasNextPage=false | .data.c0.issueCount=21 | .data.c2.issueCount=4 | .data.c5.issueCount=3 | .data.c11.issueCount=8' "$f/graphql.json" > "$f/graphql-zen.json"
+  jq '.data.repository.a0.pageInfo.hasNextPage=false | .data.c0.issueCount=55 | .data.c2.issueCount=7 | .data.c5.issueCount=1 | .data.c11.issueCount=12' "$f/graphql.json" > "$f/graphql-other.json"
+  export FAKE_GRAPHQL_ZEN="$f/graphql-zen.json" FAKE_GRAPHQL_OTHER="$f/graphql-other.json"
+  env ZF_DASHBOARD_REPOS=ZenoWangzy/zenoforge,example-maintainer/other-repo WORKER_SCRATCH_ROOT="$worker_scratch" \
+    LUNA_WORKER_SLICE_DIR="$worker_slice" LUNA_SLOTS="$worker_slots" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/repo-sections.js" \
+    MAC_AUTOPILOT_FRONT_CACHE="$f/repo-section-cache.json" python3 "$script_dir/gen_dashboard.py"
+  sed 's/^window.DASH=//; s/;$//' "$f/repo-sections.js" | jq -e '
+    [.repo_sections[].repo] == ["ZenoWangzy/zenoforge","example-maintainer/other-repo"]
+    and .repo_sections[0].counts == {issues_open:21,ready_for_agent:8,prs_open:4,prs_merged_24h:3}
+    and .repo_sections[1].counts == {issues_open:55,ready_for_agent:12,prs_open:7,prs_merged_24h:1}
+    and [.repo_sections[0].workers[].key] == ["zenoforge-issue-1537"]
+    and [.repo_sections[1].workers[].key] == ["other-issue-77"]
+    and [.repo_sections[0].waiters[].key] == ["zenoforge-wait-1537"]
+    and [.repo_sections[1].waiters[].key] == ["other-wait-77"]
+    and .repo_sections[0].waiters[0].waiter_ahead == "other-wait-77"
+    and (.repo_sections[0].workers[0].age_s > 0)
+    and (.repo_sections[0].waiters[0].age_s >= 120)' >/dev/null \
+    || fail "per-repo dashboard data mixed counts or workers: $(sed 's/^window.DASH=//; s/;$//' "$f/repo-sections.js" | jq -c '.repo_sections')"
+  node - "$script_dir/dashboard.html" "$f/repo-sections.js" <<'JS'
+const fs = require("fs"), vm = require("vm"), [page, dataFile] = process.argv.slice(2), source = fs.readFileSync(page, "utf8");
+const script = [...source.matchAll(/<script>([\s\S]*?)<\/script>/g)][0][1], raw = fs.readFileSync(dataFile, "utf8");
+const D = JSON.parse(raw.replace(/^window\.DASH=/, "").replace(/;\s*$/, ""));
+const el = () => ({innerHTML:"",textContent:"",classList:{add(){},remove(){},contains(){return false}},style:{},addEventListener(){},setAttribute(){},removeAttribute(){},appendChild(){},remove(){},dataset:{}});
+const els = {}, store = {}, storage = {getItem:k => store[k] || null,setItem:(k,v) => {store[k]=String(v);}}, document = {getElementById:id => els[id] ||= el(),addEventListener(){},createElement:el,head:el(),documentElement:el(),title:""};
+const context = {document,localStorage:storage,sessionStorage:storage,setInterval(){},setTimeout(){},innerWidth:1440,innerHeight:900,location:{reload(){}},console,Date,Math,JSON,Number,String,Object,Array,Set,encodeURIComponent};
+context.window=context; context.scrollTo=()=>{}; context.DASH=D; vm.createContext(context); vm.runInContext(script,context,{filename:"dashboard.html"});
+const rendered = context.__dash.MODULES.find(module => module.id === "overview").render(D), start = rendered.indexOf('class="panel repo-section"');
+const section = rendered.slice(start, rendered.indexOf("</section>", start)+10);
+if (start < 0 || !section.includes("ZenoWangzy/zenoforge") || !section.includes("zenoforge-issue-1537") || !section.includes("zenoforge-wait-1537") || !section.includes("other-wait-77"))
+  throw new Error("rendered Zenoforge section lacks its counts or workers: " + section);
+console.log("Zenoforge section: " + section.replace(/<[^>]+>/g," ").replace(/&amp;/g,"&").replace(/\s+/g," ").trim());
+JS
+) || fail 'rendered per-repository dashboard did not show each repo and its own workers'
 echo "dashboard-front.test.sh: PASS"

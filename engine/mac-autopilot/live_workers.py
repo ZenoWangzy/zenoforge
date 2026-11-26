@@ -2,6 +2,7 @@
 Sources: scheduler workers (pid in /proc), ad-hoc luna/zc/worker scopes, advisor batch units, release batch.
 Reads /proc/<pid>/{comm,cwd}, file mtimes and systemctl properties only; never process args."""
 import calendar, glob, json, os, re, subprocess, time
+from repo_identity import origin_repo
 
 STEPS = {"pipeline": ["implement", "review", "repair", "rereview", "land"], "opt": ["run", "land"], "hotfix": ["run", "land"],
          "advisor": ["ask", "answer"], "release": []}
@@ -86,6 +87,119 @@ def _brief(luna_dir, key):
     return "", int(m.group(1)) if m else None
 
 
+def _worker_slice_dir():
+    uid = os.getuid()
+    return os.environ.get("LUNA_WORKER_SLICE_DIR") or f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/zf.slice/zf-workers.slice"
+
+
+def _scope_names(root):
+    return sorted({os.path.basename(p) for pattern in ("luna-*.scope", "zc-*.scope")
+                   for p in glob.glob(os.path.join(root, pattern)) if os.path.isdir(p)})
+
+
+def _scope_key(name):
+    base = re.sub(r"\.scope$", "", name)
+    for prefix in ("luna-zc-", "luna-", "zc-"):
+        if base.startswith(prefix):
+            return re.sub(r"-\d+$", "", base[len(prefix):])
+    return re.sub(r"-\d+$", "", base)
+
+
+def _scope_pids(scope_dir):
+    pids = []
+    for path in glob.glob(os.path.join(scope_dir, "**", "cgroup.procs"), recursive=True):
+        try:
+            pids.extend(open(path).read().split())
+        except OSError:
+            pass
+    return pids
+
+
+def _repo_for_pids(pids):
+    for pid in pids:
+        try:
+            repo = origin_repo(os.readlink(f"/proc/{int(pid)}/cwd"))
+        except (OSError, ValueError):
+            continue
+        if repo:
+            return repo
+    return None
+
+
+def _is_worker_scope(name):
+    return name.startswith(("luna-", "zc-")) and name.endswith(".scope")
+
+
+def _timestamp_file(path):
+    try:
+        value = int(_first_line(path, 32))
+        return value if value > 0 else None
+    except ValueError:
+        try:
+            return int(os.path.getmtime(path))
+        except OSError:
+            return None
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _waiter_rows(luna_dir, slots, by_issue, now):
+    priority_rank = {"hotfix": 0, "opt": 1, "normal": 2}
+    tickets = {}
+    for ticket in glob.glob(os.path.join(slots, "wait-*-*")):
+        name = os.path.basename(ticket)
+        match = re.fullmatch(r"wait-(.+)-(\d+)", name)
+        if not match or not _pid_alive(match[2]):
+            continue
+        try:
+            ticket_time = int(_first_line(ticket, 32))
+        except ValueError:
+            ticket_time = 0
+        if not ticket_time:
+            try:
+                ticket_time = int(os.path.getmtime(ticket))
+            except OSError:
+                continue
+        tickets[match[2]] = (ticket, match[1], ticket_time)
+    rows = []
+    for marker in glob.glob(os.path.join(luna_dir, "*", "gate-wait")):
+        run_dir, key = os.path.dirname(marker), os.path.basename(os.path.dirname(marker))
+        pid = _first_line(os.path.join(run_dir, "wrapper.pid"), 32)
+        if pid not in tickets:
+            continue
+        ticket, priority, ticket_time = tickets[pid]
+        if not _pid_alive(pid):
+            continue
+        started = _timestamp_file(marker) or ticket_time
+        try:
+            repo = origin_repo(os.readlink(f"/proc/{int(pid)}/cwd"))
+        except (OSError, ValueError):
+            repo = None
+        title, issue = _brief(luna_dir, key)
+        ref = by_issue.get(issue) or {}
+        owner = priority if priority in ("hotfix", "opt") else "pipeline"
+        rows.append({"key": key, "repo": repo, "waiting": True, "waiter_ahead": None, "owner": owner,
+                     "task": (ref.get("title") or title or key)[:60], "issue": issue, "pr": ref.get("pr"),
+                     "backend": "zc" if key.startswith("zc-") else "cx", "started_epoch": started,
+                     "tip": f"{key} · capacity gate", "tokens": None, "rx": None, "tx": None,
+                     "kind": owner, "health": "warn", "gate_ticket": os.path.basename(ticket),
+                     "steps": STEPS[owner], "step": 0, "typical_s": TYPICAL.get(owner, 1800),
+                     "age_s": max(0, int(now - started))})
+    rows.sort(key=lambda row: (priority_rank.get(tickets[row["gate_ticket"].rsplit("-", 1)[-1]][1], 2),
+                               tickets[row["gate_ticket"].rsplit("-", 1)[-1]][2],
+                               int(row["gate_ticket"].rsplit("-", 1)[-1])))
+    for index, row in enumerate(rows):
+        row["waiter_ahead"] = rows[index - 1]["key"] if index else None
+        row.pop("gate_ticket")
+    return rows
+
+
 def _worker_tokens(w, root):
     """Tokens this pipeline run used so far: the session's cumulative total minus the total when the run started."""
     p = _rollout_for(root, session_id=w.get("session_id")) if root and w.get("session_id") else None
@@ -158,16 +272,21 @@ def collect(pipeline_workers, units, prefix, luna_dir, jobs_dir, sup="", traffic
         u = by_unit.get(w.get("unit")) or {}
         typ = w.get("type") or "implement"
         log = os.path.join(sup, w.get("log") or "x")
+        started = _epoch(w.get("started") or "")
         # real unit chain: implement -> review -> repair <-> rereview -> land; other kinds (triage, supervise) get a one-step track
         steps = STEPS["pipeline"] if typ in STEPS["pipeline"] else [typ]
         step = steps.index(typ) if typ in steps else 0
         items.append({"owner": "pipeline", "task": (u.get("title") or w.get("unit") or "")[:60], "issue": u.get("issue"), "pr": u.get("pr"),
                       "backend": _backend(w.get("model")), "steps": steps, "step": step, "kind": typ,
                       "tokens": _worker_tokens(w, codex_root) or w.get("tokens") or None, **_bytes(traffic, "wt:" + (os.path.basename(w.get("workdir") or "")[3:] or w.get("unit") or "")),
-                      "started_epoch": _epoch(w.get("started") or ""), "typical_s": TYPICAL.get(typ, 1800),
-                      "health": _health(_fresh_age([log], now)), "tip": f"{w.get('unit')} · {typ} · {w.get('started') or ''}"})
+                      "started_epoch": started, "age_s": max(0, int(now - started)) if started else None,
+                      "typical_s": TYPICAL.get(typ, 1800),
+                      "health": _health(_fresh_age([log], now)), "repo": origin_repo(w.get("workdir")),
+                      "tip": f"{w.get('unit')} · {typ} · {w.get('started') or ''}"})
     pats = ["luna-*.scope", f"{prefix}-w-*", "opt-*", f"{prefix}-web-advisor-provider-*", f"{prefix}-advisor-batch*", f"{prefix}-release-batch*"]
-    names = [n for n in _active_units(pats) if not n.endswith("-feeder.service")]
+    slice_dir = _worker_slice_dir()
+    scope_names = _scope_names(slice_dir)
+    names = [n for n in _active_units(pats) if not n.endswith("-feeder.service") and not _is_worker_scope(n)] + scope_names
     # opt-<key>.service is the wrapper of luna-*-opt-<key>-N.scope: one card, not two
     names = [n for n in names if not (n.startswith("opt-") and any(m.startswith("luna-") and f"-{n[:-8]}-" in m for m in names))]
     props = _unit_props(names)
@@ -183,7 +302,7 @@ def collect(pipeline_workers, units, prefix, luna_dir, jobs_dir, sup="", traffic
         elif "release-batch" in base:
             it.update(owner="release", task="发布", kind="release", health="none")
         else:
-            key = re.sub(r"-\d+$", "", re.sub(r"^luna-(zc-)?|^opt-|^" + re.escape(prefix) + r"-w-", "", base))
+            key = _scope_key(n) if _is_worker_scope(n) else re.sub(r"-\d+$", "", re.sub(r"^opt-|^" + re.escape(prefix) + r"-w-", "", base))
             d = os.path.join(luna_dir, key)
             owner = "hotfix" if re.search(r"hotfix|(^|-)hf(-|$)", key) or _under_hotfix(props.get(n, {}).get("ControlGroup", "")) \
                 or any(os.path.isdir(f"{os.path.dirname(luna_dir)}/hotfix/wt-{k}") for k in (key, re.sub(r"-r\d+$", "", key))) else "opt"
@@ -194,12 +313,22 @@ def collect(pipeline_workers, units, prefix, luna_dir, jobs_dir, sup="", traffic
             if tk is None and bk == "luna":
                 try: tk = _tail_total(_rollout_for(codex_root, cwd=os.readlink(f"/proc/{int(_first_line(d + '/codex.pid', 12))}/cwd"), now=now) or "")
                 except (OSError, ValueError): pass
+            scope_dir = os.path.join(slice_dir, n)
+            repo = _repo_for_pids(_scope_pids(scope_dir) + [_first_line(d + "/codex.pid", 12), _first_line(d + "/wrapper.pid", 12)])
+            if started is None:
+                try: started = os.path.getmtime(os.path.join(d, "wrapper.pid"))
+                except OSError: pass
             it.update(owner=owner, task=(ref.get("title") or title or key)[:60], issue=num, pr=ref.get("pr"), kind=owner, tokens=tk,
                       backend="zc" if bk.startswith("zc") else "cx" if bk == "luna" else _backend(bk),
                       health=_health(_fresh_age([d + "/events.jsonl", d + "/stderr.log", d + "/stdout.log"], now)),
+                      key=key, repo=repo, waiting=False, waiter_ahead=None,
                       tip=f"{key} · {n}")
+        if started is not None:
+            it["started_epoch"] = int(started); it["age_s"] = max(0, int(now - started))
         it.update(steps=STEPS[it["owner"]], step=0, typical_s=TYPICAL.get(it["kind"], 1800))
         items.append(it)
+    slots = os.environ.get("LUNA_SLOTS") or os.path.join(os.environ.get("WORKER_SCRATCH_ROOT") or os.path.dirname(luna_dir), "tmp", "luna-slots")
+    items.extend(_waiter_rows(luna_dir, slots, by_issue, now))
     try: mem = int([l for l in open("/proc/meminfo") if l.startswith("MemAvailable")][0].split()[1]) // 1024
     except Exception: mem = None
     try: load = float(open("/proc/loadavg").read().split()[1])

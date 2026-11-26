@@ -596,6 +596,7 @@ function stack(parts, fmt=num) {
 }
 const CAT = ["var(--c1)","var(--c2)","var(--c3)","var(--c4)","var(--c5)","var(--c6)","var(--c7)","var(--c8)"];
 const panel = (icon, title, body, aside="", cls="") => `<section class="panel ${cls}"><h2 class="ph">${ic(icon)}${esc(title)}${aside?`<span class="aside">${aside}</span>`:""}</h2>${body}</section>`;
+const repoPanels = D => (D.repo_sections||[]).map(r => { const c = r.counts || {}, cell = (label,value) => `<div class="ts-m" title="GitHub repo:${esc(r.repo)}"><span>${label}</span><b>${value==null?"未读取":num(value)}</b></div>`, cells = [["开放 Issue",c.issues_open],["待实现",c.ready_for_agent],["开放 PR",c.prs_open],["24 小时合并 PR",c.prs_merged_24h]].map(([label,value]) => cell(label,value)).join(""), row = (w,waiting) => `<div class="srow"><div class="nm">${esc(w.key||w.task||"worker")}</div><b>${w.age_s==null?"—":fDur(w.age_s)}</b><div class="sub">${waiting?`等待容量门${w.waiter_ahead?` · 前方 ${esc(w.waiter_ahead)}`:""}`:"运行中"}</div></div>`, workers = (r.workers||[]).map(w => row(w,false)).join(""), waiters = (r.waiters||[]).map(w => row(w,true)).join(""); return panel("git",r.repo||"仓库",`<div class="ts-row">${cells}</div>${r.error?`<div class="unavail">${esc(r.error)}</div>`:""}<div class="sub" style="margin-top:10px">在岗 workers</div>${workers?`<div class="rows">${workers}</div>`:emptyMsg("没有在岗 workers")}<div class="sub" style="margin-top:10px">容量门等待</div>${waiters?`<div class="rows">${waiters}</div>`:emptyMsg("没有容量门等待者")}`,r.stale?stChip("warn","数据较旧"):"","repo-section"); }).join("");
 const unavailable = (what, err) => `<div class="unavail" data-tip="${esc(String(err||""))}">${ic("bad")}<div><b style="color:inherit">数据不可用</b>，${esc(what)}</div></div>`;
 const emptyMsg = t => `<div class="empty">${ic("none")}${esc(t)}</div>`;
 const kcard = (icon, label, v, vis="", st="", tip="") => `<div class="kc"${tip?` data-tip="${esc(tip)}"`:""}><div class="kc-h">${ic(icon)}${esc(label)}${st?`<i class="ad s-${sk(st)}"></i>`:""}</div><div class="kc-v">${v}</div>${vis}</div>`;
@@ -1545,7 +1546,7 @@ function vOverview(D) {
       `<div class="sub">raw ${ft(TE.unattributed?.tokens)} tokens</div>`, TE.unattributed?.ledger_keys ? "warn" : "ok",
       "cost_ledger.by_unit 中无法关联到 units.json / units-archive.json 的 key 独立计数和汇总，不混入近 7 天 cohort。")}
     </div>`);
-  return `<div class="stack16">${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}${t7}</div>
+  return `<div class="stack16">${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}${t7}</div>${repoPanels(D)}
     ${panel("warn", "要处理", pbody)}
     <div id="ov-workers">${livePanel(D)}</div>
     ${panel("arrow", "流水线", pipeStrip(D), (F.errors || {}).stages ? stChip("bad", "阶段计数不可用") : "")}
@@ -1560,7 +1561,6 @@ function sumReqs(D) { const R = D.founder_reqs;
 function vRoi(D) { return `<div class="stack16">${roiLinePanel(D)}${archivePanel(D)}${trendPanel(D)}</div>`; }
 function sumRoi(D) { const F = D.factory, n = F && Array.isArray(F.archive) ? F.archive.length : null; return {s:"none", v: n==null ? "—" : n, l:"最近完成"}; }
 function sumOverview(D) { const f = freshness(D); return {s: f.display_s, v: f.age==null ? "—" : fDur(Math.round(f.age)), l: "数据新鲜度"}; }
-
 const MODULES = [
   {id:"overview", nm:"总览", en:"Overview", icon:"overview", render:vOverview, sum:sumOverview},
   {id:"reqs",     nm:"需求", en:"Founder requirements", icon:"layers", render:vReqs, sum:sumReqs},
