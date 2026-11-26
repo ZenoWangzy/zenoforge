@@ -341,7 +341,7 @@ implement_claude_deferred_route() { # Claude may stay routed while a timed hold 
 }
 
 implement_family_has_other_reviewer() { # family -> 0 when review dispatch can select another family now
-  local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason="" hold
+  local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason="" hold reviewer_count=0 claude_marker_held=false
   IMPLEMENT_DEFER_UNTIL=0; IMPLEMENT_DEFER_FAMILY=""
   codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
   glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
@@ -360,15 +360,18 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
   for candidate in "${pool[@]}"; do
     candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"; [[ -n "$candidate_family" && "$candidate_family" != "$family" ]] && candidate_role=review || continue
     if [[ "$candidate_family" == claude ]]; then candidate_role=review_fallback; [[ "$family" != claude && "$candidate" =~ ^claude:claude-(haiku|sonnet)- ]] || continue; fi
+    reviewer_count=$((reviewer_count + 1))
     if implement_route_review_identity_available "$candidate" "$candidate_role" "$family"; then return 0; fi
     reason="$IMPLEMENT_REVIEWER_REASON"
     if [[ "$candidate_family" == claude && ( "$reason" == 'claude hold' || "$reason" == 'claude week-stop' ) ]]; then reason=reviewer-held:claude; fi
     [[ -z "$first_reason" && -n "$reason" ]] && first_reason="${reason// /-}"
+    if [[ "$candidate_family" == claude ]] && quota_marker_blocks claude review >/dev/null; then claude_marker_held=true; fi
     if [[ "$family" == claude && "$reason" == *hold ]] && hold="$(implement_review_hold_until "$candidate")"; then
       if (( IMPLEMENT_DEFER_UNTIL == 0 || hold < IMPLEMENT_DEFER_UNTIL )); then IMPLEMENT_DEFER_UNTIL="$hold"; IMPLEMENT_DEFER_FAMILY="$candidate_family"; fi
     fi
   done
-  IMPLEMENT_REVIEWER_REASON="${first_reason:-review-config}"
+  if [[ "$claude_marker_held" == true && "$reviewer_count" == 1 ]]; then IMPLEMENT_REVIEWER_REASON=reviewer-held:claude
+  else IMPLEMENT_REVIEWER_REASON="${first_reason:-review-config}"; fi
   return 1
 }
 
@@ -387,7 +390,11 @@ implement_route_family_reviewable() { # family -> log the skip and alert head-wa
   if [[ " ${IMPLEMENT_ROUTE_SKIPS:-} " != *" $family "* ]]; then
     IMPLEMENT_ROUTE_SKIPS="${IMPLEMENT_ROUTE_SKIPS:-} $family"
     reason="${IMPLEMENT_REVIEWER_REASON:-review-config}"; reason="${reason// /-}"
-    say "implement-route unreviewable family=$family reason=$reason"
+    if [[ "$IMPLEMENT_REVIEWER_REASON" == reviewer-held:claude ]]; then
+      say "implement-route deferred-review family=$family reviewer=claude reason=$reason"
+    else
+      say "implement-route unreviewable family=$family reason=$reason"
+    fi
     mkdir -p "$AGENT_HOME/logs"
     grep -F "${STAMP:0:13}" "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null | grep -Fq "IMPLEMENT-ROUTE-UNREVIEWABLE family=$family " \
       || printf '%s IMPLEMENT-ROUTE-UNREVIEWABLE family=%s reason=%s\n' "$STAMP" "$family" "$reason" >> "$AGENT_HOME/logs/head-watch.alerts"
