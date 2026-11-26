@@ -736,6 +736,8 @@ intake_admit_unlabeled_issues() {
       if [ "$transition_status" -eq 3 ] \
         && issue_transition "$n" tracker "intake-parent:roadmap-container:intake-unlabeled" '.tracker_parent = true' 0 "$issue_json"; then
         echo "intake_admit_unlabeled_issues: #$n is a roadmap container; routed to tracker" >&2
+      elif state_read "$n" 2>/dev/null | jq -e '.tracker_parent == true or .state == "tracker"' >/dev/null 2>&1; then
+        echo "intake_admit_unlabeled_issues: #$n became a tracker during admission; deferring to the next tick" >&2
       else
         echo "intake_admit_unlabeled_issues: could not admit #$n to needs-triage; retrying next tick" >&2
         failed=1
