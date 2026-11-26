@@ -106,6 +106,13 @@ hex characters) and linked issues as `#N` where available.
 Every implement report must also include a non-empty `## decision-log` section:
 what was tried, what failed and why, the final choice, and how it was verified.
 
+When the issue body has a parseable list under `## Acceptance criteria`, include
+an `## acceptance-criteria coverage` Markdown table with the columns
+`Acceptance criterion` and `Production call site (file:line)`. Copy each
+criterion's text and include a row for every criterion. Each call-site cell
+must cite a production path and line that exists in the candidate branch. If
+the issue body has no parseable acceptance-criteria list, omit the table.
+
 Write no code comments: record a non-obvious decision in an ADR (docs/adr/) and file an issue for a shortcut.
 
 When the incident rule applies, include its exact `## root-cause`,

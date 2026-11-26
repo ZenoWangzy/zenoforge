@@ -116,6 +116,20 @@ incident_report_reason() { # unit-json report-path → the first report gate rea
   [[ -n "$r" ]] || r="$(incident_report_gate_reason "$1" "$2")"
   printf '%s' "$r"
 }
+acceptance_criteria_coverage_check() {
+  local unit="$1" repo="$2" base="$3" head="$4" report_name report_path=""
+  report_name="$(jqf -r '.implementation_report // .report // empty' <<<"$unit")"
+  if [[ -n "$report_name" ]]; then
+    if [[ "$report_name" == /* ]]; then report_path="$report_name"; else report_path="$SUP/$report_name"; fi
+  fi
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/acceptance-criteria-coverage.py" "$repo" "$base" "$head" "$report_path" <<<"$(jqf -r '.task // empty' <<<"$unit")"
+}
+acceptance_criteria_coverage_repair_prompt() {
+  local report
+  report="$(jqf -r '.implementation_report // .report // empty' <<<"$1")"
+  printf '\nAcceptance-criteria coverage failed: update ## acceptance-criteria coverage in the original report %s, quote each issue criterion, and cite an existing production call site as file:line; keep the repair note in %s.' \
+    "$SUP/${report:-$2}" "$SUP/$2"
+}
 incident_report_merge_adopted() { # unit-report fix-note fix-note-path → atomically writes the fix note and original unit report section beside the unit report; prints its name
   local orig="$1" fix="$2" fix_path="$3" orig_base="${1%.md}" original_name="$1" orig_path="$1" orig_path_rel merged tmp marker
   if [[ "$orig_path" == /* ]]; then

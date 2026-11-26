@@ -7,7 +7,7 @@ self_check_deferred_count() { jqf -r --arg id "$1" --arg sha "$2" 'def entry_sha
 self_check_run() (
   set -o pipefail
   local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source runner_path
-  local unit_id="${5:-}" branch="${6:-}" pr="${7:-}" main_head merge_rc checked_head branch_head
+  local unit_id="${5:-}" branch="${6:-}" pr="${7:-}" main_head merge_rc checked_head branch_head initial_sha="$2" unit_json="${8:-}"
   local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
   local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
   local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg test_started
@@ -49,7 +49,7 @@ self_check_run() (
     fi
   fi
   tree="$(git rev-parse "$sha^{tree}")" || return 1
-  base="$(git merge-base "$main_head" "$sha")" || return 1
+  base="$(git merge-base "$main_head" "$sha")" || return 1; [[ "$sha" == "$initial_sha" || -z "$unit_json" ]] || acceptance_criteria_coverage_check "$unit_json" "$dir" "$base" "$sha" || return 1
   # CI preserves candidate edits and backfills the remaining helpers from main.
   # Never execute a candidate helper on the controller: use the isolated cihost
   # checkout, where the full candidate module environment is available.
@@ -313,9 +313,10 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
     if [[ -n "$reason" ]]; then
       printf '%s check failed: %s\nreport: %s\n' "$gate" "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
       printf 'red\n' > "$result"
+    elif ! acceptance_criteria_coverage_check "$u" "$dir" "$config_base" "$sha"; then printf 'red\n' > "$result"
     elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json" "$config_base"; then
       printf 'red\n' > "$result"
-    elif self_check_run "$dir" "$sha" "$lane" "$pr_base" "$id" "$(jqf -r '.branch // empty' <<<"$u")" "$(jqf -r '.pr // empty' <<<"$u")"; then
+    elif self_check_run "$dir" "$sha" "$lane" "$pr_base" "$id" "$(jqf -r '.branch // empty' <<<"$u")" "$(jqf -r '.pr // empty' <<<"$u")" "$u"; then
       printf 'pass\n' > "$result"
     else
       rc=$?
@@ -413,6 +414,7 @@ $(matt_method_rule "$dir")"
     impl_report="$(jqf -r '.implementation_report // empty' <<<"$u")"
     prompt+="
 失败项是事故报告结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要另写一份替代它；$SUP/${rep} 只写修复说明。"
+  elif grep -q '^acceptance-criteria coverage check failed' "$out"; then prompt+="$(acceptance_criteria_coverage_repair_prompt "$u" "$rep")"
   elif grep -q '^decision-log check failed' "$out"; then
     impl_report="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
     prompt+="
