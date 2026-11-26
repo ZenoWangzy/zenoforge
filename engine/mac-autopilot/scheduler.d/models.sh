@@ -341,7 +341,7 @@ implement_claude_deferred_route() { # Claude may stay routed while a timed hold 
 }
 
 implement_family_has_other_reviewer() { # family -> 0 when review dispatch can select another family now
-  local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason="" hold reviewer_count=0 claude_marker_held=false
+  local family="$1" codex_identity glm_identity sonnet_identity cross other="" candidate candidate_family candidate_role reason first_reason="" hold claude_marker_held=false
   IMPLEMENT_DEFER_UNTIL=0; IMPLEMENT_DEFER_FAMILY=""
   codex_identity="$(review_identity_for_model "$(model_tuple_field review 0)" "$(model_tuple_field review 1)" 2>/dev/null || true)"
   glm_identity="$(review_identity_for_model "$(model_tuple_field review_cross 0)" "$(model_tuple_field review_cross 1)" 2>/dev/null || true)"
@@ -356,11 +356,12 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
     *) IMPLEMENT_REVIEWER_REASON=review-config; return 1 ;;
   esac
   local -a pool=("$cross" "$other" "$sonnet_identity")
+  local -A reviewer_families=()
   if routing_configured; then mapfile -t pool < <(routing_review_candidates "$family" "$codex_identity" "$glm_identity" "$sonnet_identity"); fi
   for candidate in "${pool[@]}"; do
     candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"; [[ -n "$candidate_family" && "$candidate_family" != "$family" ]] && candidate_role=review || continue
     if [[ "$candidate_family" == claude ]]; then candidate_role=review_fallback; [[ "$family" != claude && "$candidate" =~ ^claude:claude-(haiku|sonnet)- ]] || continue; fi
-    reviewer_count=$((reviewer_count + 1))
+    reviewer_families[$candidate_family]=1
     if implement_route_review_identity_available "$candidate" "$candidate_role" "$family"; then return 0; fi
     reason="$IMPLEMENT_REVIEWER_REASON"
     if [[ "$candidate_family" == claude && ( "$reason" == 'claude hold' || "$reason" == 'claude week-stop' ) ]]; then reason=reviewer-held:claude; fi
@@ -370,7 +371,7 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
       if (( IMPLEMENT_DEFER_UNTIL == 0 || hold < IMPLEMENT_DEFER_UNTIL )); then IMPLEMENT_DEFER_UNTIL="$hold"; IMPLEMENT_DEFER_FAMILY="$candidate_family"; fi
     fi
   done
-  if [[ "$claude_marker_held" == true && "$reviewer_count" == 1 ]]; then IMPLEMENT_REVIEWER_REASON=reviewer-held:claude
+  if [[ "$claude_marker_held" == true && "${#reviewer_families[@]}" == 1 ]]; then IMPLEMENT_REVIEWER_REASON=reviewer-held:claude
   else IMPLEMENT_REVIEWER_REASON="${first_reason:-review-config}"; fi
   return 1
 }
