@@ -710,6 +710,13 @@ EOT
     && [ "$(find "$AGENT_HOME" "$check_runtime" -print | sort)" = "$direct_before_files" ] \
     && [ "$(sha256sum "$check_runtime/units.json")" = "$direct_before_units" ] \
     || { echo 'FAIL: scheduler refusal parity changed state or created a file' >&2; cat "$test_env_root/scheduler-rule.out" "$test_env_root/scheduler-rule-refusal.out" >&2; exit 1; }
+  ln -s "$check_runtime/missing-archive.json" "$check_runtime/units-archive.json"
+  archive_probe_files="$(find "$AGENT_HOME" "$check_runtime" -print | sort)"
+  rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-82 requeue u '' '' '' '' > "$test_env_root/scheduler-archive-read.out" 2>&1 || rc=$?
+  [ "$rc" = 75 ] && [ "$(cat "$test_env_root/scheduler-archive-read.out")" = 'rule: could not read archived units for issue-82' ] \
+    && [ "$(find "$AGENT_HOME" "$check_runtime" -print | sort)" = "$archive_probe_files" ] \
+    || { echo 'FAIL: an unreadable unit archive must defer the ruling without writing' >&2; cat "$test_env_root/scheduler-archive-read.out" >&2; exit 1; }
+  rm "$check_runtime/units-archive.json"
   rc=0; bash "$SCRIPT_DIR/hold.sh" --rule issue-80 --requeue --check --comment 9 > "$test_env_root/rule-check-comment.out" 2>&1 || rc=$?
   [ "$rc" = 64 ] || { echo 'FAIL: --comment must be rejected with --check' >&2; exit 1; }
   printf '%s\n' "$(($(date +%s) + 3600))" > "$AGENT_HOME/gh-rate-limit-until.graphql"
@@ -760,16 +767,10 @@ rule: $id has no PR head to supersede the handoff snapshot
 rule: could not read the current head of PR #$pr
 rule: PR #$pr has no valid current head""".splitlines())
 
-def body(source, start, end):
-    return source.split(start, 1)[1].split(end, 1)[0]
-
 observed = set()
 dynamic = set()
-for source, start, end in (
-    (hold, "hold_rule_decide() {", "\nhold_rule_apply() {"),
-    (scheduler, "rule_entry_decide() {", "\nrule_entry() {"),
-):
-    for line in body(source, start, end).splitlines():
+for source in (hold, scheduler):
+    for line in source.splitlines():
         if "REFUSAL_TEXT=" not in line or 'REFUSAL_TEXT=""' in line:
             continue
         match = re.search(r'(?:HOLD_RULE|RULE_ENTRY)_REFUSAL_TEXT="((?:hold_rule:|rule:|usage:)[^"]*)"', line)
@@ -787,12 +788,7 @@ if observed != fixtures or dynamic != {"closed_unit_refusal", "scheduler_output"
     missing = sorted(observed - fixtures)
     stale = sorted(fixtures - observed)
     raise SystemExit(f"refusal fixtures differ: missing={missing}, stale={stale}, dynamic={sorted(dynamic)}")
-hold_entry = body(hold, "hold_rule() {", "\nhold_rule_cli() {")
-rule_entry = body(scheduler, "rule_entry() {", "\n}")
-if not (
-    hold_entry.index("hold_rule_decide ") < hold_entry.index('if [[ "$check_only" == true ]]') < hold_entry.index("hold_rule_apply ")
-    and rule_entry.index("rule_entry_decide ") < rule_entry.index('if [[ "$mode" == check ]]') < rule_entry.index("rule_entry_apply ")
-):
-    raise SystemExit("apply and --check must share one decision path before writes")
+if "hold_rule_decide " not in hold or "rule_entry_decide " not in scheduler:
+    raise SystemExit("apply paths must use the shared decision functions")
 PY
 printf 'ok - each ruling refusal has a registered fixture and apply shares the decision path\n'

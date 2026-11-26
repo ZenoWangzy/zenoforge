@@ -404,7 +404,8 @@ rule_entry_decide() {
   if [[ -n "$waiver" && "$action" != requeue && "$action" != waiver ]]; then RULE_ENTRY_REFUSAL_TEXT="rule: --size-waiver goes with --requeue, or alone on an implement or *-pending unit"; return 64; fi
   if gh_rate_limit_active graphql >/dev/null 2>&1; then RULE_ENTRY_REFUSAL_TEXT="rule: GitHub GraphQL backoff is active"; return 75; fi
   snapshot="$(jqf -c --arg id "$id" '[.units[] | select(.id == $id)][0] // empty' "$UNITS" 2>/dev/null)" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read units for $id"; return 75; }
-  if [[ -z "$snapshot" && -r "$UNITS_ARCHIVE" ]]; then
+  if [[ -z "$snapshot" && ( -e "$UNITS_ARCHIVE" || -L "$UNITS_ARCHIVE" ) ]]; then
+    [[ -r "$UNITS_ARCHIVE" ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read archived units for $id"; return 75; }
     snapshot="$(jqf -c --arg id "$id" '[.units[] | select(.id == $id)][0] // empty' "$UNITS_ARCHIVE" 2>/dev/null)" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read archived units for $id"; return 75; }
   fi
   [[ -n "$snapshot" ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: no unit $id"; return 1; }
