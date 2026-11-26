@@ -1372,7 +1372,7 @@ dispatch_pending || :
   && "$(field pr-5ci-cancelled '.arbiter // false')" == false ]] \
   || fail "ci-test-red repair with a cancelled run did not rerun within the bound (stage=$(field pr-5ci-cancelled .stage), reruns=${GH_RERUNS[*]:-none})"
 # The ci-test-red entry names the failing suites and tests: vitest facts and engine suite lines, bounded.
-[[ "$(ci_red_tests "$(printf '%s\n%s\n' '{"suites":[{"file":"a/b.test.ts","tests":[{"name":"does x","msg":"m"}],"more":0}],"more":0}' '{"pipelineSuites":["engine/x.test.sh"]}')")" == '["a/b.test.ts","does x","engine/x.test.sh"]' \
+[[ "$(ci_red_tests "$(printf '%s\n%s\n' '{"suites":[{"file":"a/b.test.ts","tests":[{"name":"does x","msg":"m"}],"more":0}],"more":0}' '{"pipelineSuites":["engine/x.test.sh"]}')")" == '["a/b.test.ts","does x"]' \
   && "$(ci_red_tests "")" == '[]' \
   && "$(ci_red_tests "" "required check")" == '["required check"]' \
   && "$(ci_red_tests "not-json" "required check")" == '["required check"]' ]] || fail "ci_red_tests did not list the failing suites and tests"

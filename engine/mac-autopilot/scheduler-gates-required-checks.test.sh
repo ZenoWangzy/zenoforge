@@ -195,7 +195,7 @@ SH
   approval_carries() { [[ "$1" == 11 && "$2" == "$H1" && "$3" == "$H2" ]]; }
   ci_test_red_checks_saved="$(declare -f ci_test_red_checks)"; ci_triage_saved="$(declare -f ci_triage)"
   cancel_branch_runs_saved="$(declare -f cancel_branch_runs)"
-  ci_test_red_checks() { printf '%s\n%s\n' "$gate_b" '{"pipelineSuites":["engine/example.test.sh"]}'; }
+  ci_test_red_checks() { printf '%s\n%s\n' "$gate_b" '{"suites":[{"file":"engine/example.test.sh","tests":[{"name":"example failure"}],"more":0}]}'; }
   ci_triage() { printf 'stale-base\n'; }
   cancel_branch_runs() { :; }
   : > "$UPDATE_BRANCH_CALLS"; GH_HEAD="$H2"
