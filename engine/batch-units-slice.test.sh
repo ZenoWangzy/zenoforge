@@ -34,7 +34,7 @@ release_site() {
 # --- batch units ---
 batch_site issue-pipeline.sh '--unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect' 'issue-pipeline stage dispatch (implement, triage, recut)'
 batch_site issue-pipeline.sh '--unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect' 'issue-pipeline advisor-batch'
-batch_site issue-pipeline.sh '--unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect' 'issue-pipeline triage-batch'
+batch_site issue-pipeline.sh '--unit "$claim_unit" --collect' 'issue-pipeline triage-batch'
 batch_site issue-pipeline.sh '--unit ${UNIT_PREFIX_TRANSIENT}-gitnexus-refresh --collect' 'issue-pipeline gitnexus-refresh'
 batch_site web-advisor-provider-job.sh '--unit "$prefix-advisor-batch" --collect' 'web-advisor-provider-job advisor-batch'
 batch_site providers/web-advisor-provider.sh '--unit "${ZF_WEB_ADVISOR_PROVIDER_UNIT_PREFIX}-web-advisor-provider-$job_id" --collect' 'web-advisor-provider job'

@@ -93,8 +93,21 @@ fi
 # 2026-09-30 issue 2074 sat in a running advisor batch and was alerted as stuck at the 30m founder-test bound.
 # The member files only count while their unit runs, so a killed batch cannot hide a ticket.
 batch_members='[]'
-if [ -r "$AGENT_HOME/triage-batch-active.json" ] && triage_batch_unit_active 2>/dev/null; then
-  batch_members="$(jq -c '[.issues[]? | tostring]' "$AGENT_HOME/triage-batch-active.json" 2>/dev/null || printf '[]')"
+active_batch_markers=()
+for marker in "$AGENT_HOME"/triage-batch-active*.json; do
+  [ -r "$marker" ] || continue
+  marker_name="${marker##*/}"
+  if [ "$marker_name" = triage-batch-active.json ]; then
+    triage_batch_unit_active legacy 2>/dev/null || continue
+  else
+    batch_id="${marker_name#triage-batch-active-}"
+    batch_id="${batch_id%.json}"
+    triage_batch_unit_active "$batch_id" 2>/dev/null || continue
+  fi
+  active_batch_markers+=("$marker")
+done
+if [ "${#active_batch_markers[@]}" -gt 0 ]; then
+  batch_members="$(jq -cs '[.[]?.issues[]? | tostring] | unique' "${active_batch_markers[@]}" 2>/dev/null || printf '[]')"
 fi
 advisor_job="$(advisor_batch_job_json 2>/dev/null || true)"
 advisor_job_id="$(jq -r '.job_id // empty' <<< "$advisor_job" 2>/dev/null || true)"

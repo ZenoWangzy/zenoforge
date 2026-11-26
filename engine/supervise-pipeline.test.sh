@@ -853,8 +853,8 @@ cat > "$FAKE_BIN/systemctl" <<'EOF'
 set -u
 if [ "$1" = "--user" ] && [ "$2" = "list-units" ]; then
   for a in "$@"; do
-    if [ "$a" = 'zf-triage-*' ] && [ "${FAKE_TRIAGE_ACTIVE:-0}" = 1 ]; then
-      echo 'zf-triage-batch.service loaded active running fake'
+    if [[ "$a" == 'zf-triage-*' || "$a" == 'zf-triage-batch*.service' ]] && [ "${FAKE_TRIAGE_ACTIVE:-0}" = 1 ]; then
+      echo 'zf-triage-batch-owner-fake.service loaded active running fake'
     fi
     case "$a" in
       zf-*.service)

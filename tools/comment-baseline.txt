@@ -179,8 +179,8 @@
 2	engine/issue-pipeline-census-size.test.sh
 10	engine/issue-pipeline-maintenance-budget.test.sh
 40	engine/issue-pipeline-slices.sh
-508	engine/issue-pipeline.sh
-99	engine/issue-pipeline.test.sh
+504	engine/issue-pipeline.sh
+98	engine/issue-pipeline.test.sh
 5	engine/issue-rest.test.sh
 33	engine/issue-transition-gh-retry.test.sh
 26	engine/issue-transition-state-drift.test.sh

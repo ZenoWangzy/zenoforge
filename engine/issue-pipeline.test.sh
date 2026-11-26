@@ -31,6 +31,7 @@ eval "$(sed -n '/^reconcile_pipeline_system_delivery() {/,/^}/p' "$PIPELINE_SRC"
 FAILED=0
 # Default-cap fixtures must ignore the operator's configured concurrency.
 unset AGENT_TRIAGE_CAP
+unset AGENT_TRIAGE_BATCH_CONCURRENCY
 
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
@@ -1052,8 +1053,10 @@ MEASURE_SELECTION_BODY="$(sed -n '/^  for next_measure in \$READY_MEASURE_IDS; d
 # shellcheck source=./lib.d/triage-solo.sh
 source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 run_triage_selection() (
-  local mode="$1" issue_numbers="$2" deferred_issue="$3" retry_deadline="$4" now="$5" backoff_issue="${6:-}" retry_alone_issues="${7:-}" maintainer_test_issue="${8:-}"
+  local mode="$1" issue_numbers="$2" deferred_issue="$3" retry_deadline="$4" now="$5" backoff_issue="${6:-}" retry_alone_issues="${7:-}" maintainer_test_issue="${8:-}" active_batch_count="${9:-0}" active_issue_ids="${10:-}" batch_concurrency
   TRIAGE_CAP="${AGENT_TRIAGE_CAP:-8}" TRIAGE_RETRY_NOW="$now" REPO=test/repo
+  batch_concurrency="$(triage_batch_concurrency)"
+  TRIAGE_BATCH_SLOTS="$(cap_slots_remaining "$batch_concurrency" "$active_batch_count")"
   NEEDS_TRIAGE_IDS="$issue_numbers" READY_MEASURE_IDS="$issue_numbers"
   NEEDS_TRIAGE_JSON="$(printf '%s\n' "$issue_numbers" | jq -Rsc 'split("\n") | map(select(test("^[0-9]+$")) | tonumber | {number:.,labels:[]})')"
   if [ -n "$maintainer_test_issue" ]; then
@@ -1085,13 +1088,16 @@ run_triage_selection() (
   triage_classification_status() { printf 'unmeasured\n'; }
   is_on_hold() { return 1; }
   stage_unit_count() { printf '0\n'; }
-  stage_unit_active() { return 1; }
+  stage_unit_active() { [ "$1" = triage ] && [ "$2" != batch ] && [[ " $active_issue_ids " == *" $2 "* ]]; }
+  pipeline_triage_skip_inflight() { return 1; }
   stage_dispatch_allowed() { return 0; }
   dispatch_triage_batch() { printf 'batch:%s\n' "$*"; }
-  if [ "$mode" = "needs-triage" ]; then
-    eval "$TRIAGE_SELECTION_BODY"
-  else
-    eval "$MEASURE_SELECTION_BODY"
+  if [ "$TRIAGE_BATCH_SLOTS" -gt 0 ]; then
+    if [ "$mode" = "needs-triage" ]; then
+      eval "$TRIAGE_SELECTION_BODY"
+    else
+      eval "$MEASURE_SELECTION_BODY"
+    fi
   fi
   triage_solo_candidate_dispatch
   [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ] || dispatch_triage_batch "${TRIAGE_BATCH_IDS[@]}"
@@ -1101,7 +1107,7 @@ run_triage_selection() (
 run_triage_empty_case() (
   MAC_AUTOPILOT_RUNTIME_DIR="$(mktemp -d)"
   trap 'rm -rf -- "$MAC_AUTOPILOT_RUNTIME_DIR"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
-  NEEDS_TRIAGE_JSON='[]' NEEDS_TRIAGE_IDS='' READY_MEASURE_IDS='' TRIAGE_ORDERED_COUNT=0 TRIAGE_BATCH_ACTIVE=0
+  NEEDS_TRIAGE_JSON='[]' NEEDS_TRIAGE_IDS='' READY_MEASURE_IDS='' TRIAGE_ORDERED_COUNT=0 TRIAGE_BATCH_ACTIVE_COUNT=0
   TRIAGE_CANDIDATE_QUERY_FAILED=0 READY_MEASURE_QUERY_FAILED=0 TRIAGE_SELECT_CUT=0 triage_slots=8
   TRIAGE_BATCH_IDS=()
   declare -A TRIAGE_SKIPS=()
@@ -1144,6 +1150,27 @@ assert_eq "a flagged maintainer-test issue still runs alone at once" \
 assert_eq "a flagged measure candidate does not stop unflagged measurement selection" \
   $'batch:910202 910203 910204\ndeferred:0\nretry-alone:0' \
   "$(AGENT_TRIAGE_CAP=3 run_triage_selection measure "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' 910201)"
+assert_eq "one active batch leaves a second slot for disjoint issues" \
+  $'batch:910203 910204\ndeferred:0\nretry-alone:0' \
+  "$(AGENT_TRIAGE_CAP=2 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' '' '' 1 '910201 910202')"
+assert_eq "one active batch leaves a second slot for precut measurements" \
+  $'batch:910203 910204\ndeferred:0\nretry-alone:0' \
+  "$(AGENT_TRIAGE_CAP=2 run_triage_selection measure "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' '' '' 1 '910201 910202')"
+assert_eq "N active batches leave no triage batch to dispatch" \
+  $'deferred:0\nretry-alone:0' \
+  "$(AGENT_TRIAGE_CAP=2 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' '' '' 2 '910201 910202')"
+assert_eq "N active batches leave no measurement batch to dispatch" \
+  $'deferred:0\nretry-alone:0' \
+  "$(AGENT_TRIAGE_CAP=2 run_triage_selection measure "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' '' '' 2 '910201 910202')"
+assert_eq "one active batch preserves the single-batch limit at N=1" \
+  $'deferred:0\nretry-alone:0' \
+  "$(AGENT_TRIAGE_BATCH_CONCURRENCY=1 AGENT_TRIAGE_CAP=2 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' '' '' 1 '910201 910202')"
+assert_eq "N=1 dispatches the same capped batch when no batch is active" \
+  $'batch:910201 910202\ndeferred:2\nretry-alone:0' \
+  "$(AGENT_TRIAGE_BATCH_CONCURRENCY=1 AGENT_TRIAGE_CAP=2 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000)"
+assert_eq "concurrency override of three leaves a slot after two active batches" \
+  $'batch:910203 910204\ndeferred:0\nretry-alone:0' \
+  "$(AGENT_TRIAGE_BATCH_CONCURRENCY=3 AGENT_TRIAGE_CAP=2 run_triage_selection needs-triage "$TRIAGE_MULTI_QUEUE_FIXTURE" 0 0 1000 '' '' '' 2 '910201 910202')"
 
 jq -n '{issues:[991010]}' > "$AGENT_HOME/triage-batch-active.json"
 TRIAGE_BATCH_MEMBER_ACTIVE="$(
@@ -1168,6 +1195,29 @@ TRIAGE_BATCH_NONMEMBER_ACTIVE="$(
 )"
 assert_eq "active batch member blocks implement and duplicate triage" active "$TRIAGE_BATCH_MEMBER_ACTIVE"
 assert_eq "batch marker does not block unrelated issue" inactive "$TRIAGE_BATCH_NONMEMBER_ACTIVE"
+jq -n '{issues:[991012]}' > "$AGENT_HOME/triage-batch-active-owner-fixture-two.json"
+TRIAGE_SECOND_BATCH_MEMBER_ACTIVE="$(
+  systemctl() {
+    if [ "${2:-}" = list-units ]; then
+      printf '%s\n' 'zf-triage-batch-owner-fixture-two.service loaded activating start-pre'
+      return 0
+    fi
+    return 1
+  }
+  stage_unit_active triage 991012 && echo active || echo inactive
+)"
+TRIAGE_BATCH_COUNT="$(
+  systemctl() {
+    if [ "${2:-}" = list-units ]; then
+      printf '%s\n' 'zf-triage-batch-owner-fixture-one.service loaded activating start-pre' 'zf-triage-batch-owner-fixture-two.service loaded activating start-pre'
+      return 0
+    fi
+    return 1
+  }
+  triage_batch_unit_count
+)"
+assert_eq "the second batch marker participates in issue ownership" active "$TRIAGE_SECOND_BATCH_MEMBER_ACTIVE"
+assert_eq "batch occupancy counts each unique active unit" 2 "$TRIAGE_BATCH_COUNT"
 TRIAGE_BATCH_ACTIVATING="$(
   systemctl() {
     if [ "${2:-}" = list-units ]; then
@@ -1193,7 +1243,6 @@ assert_eq "triage batch cap defaults to eight" '8' "$DEFAULT_TRIAGE_CAP"
 CONFIGURED_TRIAGE_CAP="$(env AGENT_TRIAGE_CAP=3 bash -c \
   "$TRIAGE_CAP_ASSIGNMENT; printf '%s\\n' \"\$TRIAGE_CAP\"")"
 assert_eq "AGENT_TRIAGE_CAP overrides triage cap" '3' "$CONFIGURED_TRIAGE_CAP"
-
 assert_cond "fastlane stage no longer routes pipeline-system tickets to a hand" \
   "$(grep -qF 'route_pipeline_system_candidates' "$PIPELINE_SRC" && echo 0 || echo 1)"
 assert_cond "path-only ticket routing reuses shared delivery classifier" \
@@ -1363,6 +1412,8 @@ assert_eq "unit result hook succeeds" '0' "$OOM_RECORDER_STATUS"
 
 TRIAGE_BATCH_ISSUE_A=990104
 TRIAGE_BATCH_ISSUE_B=990105
+TRIAGE_BATCH_LEGACY_MARKER="$AGENT_HOME/triage-batch-active.json"
+jq -n --argjson a "$TRIAGE_BATCH_ISSUE_A" --argjson b "$TRIAGE_BATCH_ISSUE_B" '{issues:[$a,$b]}' > "$TRIAGE_BATCH_LEGACY_MARKER"
 state_merge "$TRIAGE_BATCH_ISSUE_A" '.attempts = 2'
 state_merge "$TRIAGE_BATCH_ISSUE_B" '.attempts = 3'
 TRIAGE_BATCH_RECORDER_STATUS=0
@@ -1376,6 +1427,18 @@ assert_eq "triage batch result is saved for every member" \
   "$(state_read "$TRIAGE_BATCH_ISSUE_A" | jq -r '.unit_results.triage.result')$(printf ',')$(state_read "$TRIAGE_BATCH_ISSUE_B" | jq -r '.unit_results.triage.result')"
 assert_eq "triage batch result records its shared unit name" 'zf-triage-batch.service' \
   "$(state_read "$TRIAGE_BATCH_ISSUE_A" | jq -r '.unit_results.triage.unit')"
+assert_eq "legacy triage stop hook removes its marker after an early worker exit" absent \
+  "$( [ -e "$TRIAGE_BATCH_LEGACY_MARKER" ] && echo present || echo absent )"
+TRIAGE_BATCH_DYNAMIC_ISSUE=990109
+TRIAGE_BATCH_DYNAMIC_MARKER="$AGENT_HOME/triage-batch-active-fixture-owner.json"
+printf '{"issues":[%s]}\n' "$TRIAGE_BATCH_DYNAMIC_ISSUE" > "$TRIAGE_BATCH_DYNAMIC_MARKER"
+SERVICE_RESULT=success EXIT_CODE=exited EXIT_STATUS=0 \
+  "$SCRIPT_DIR/record-unit-result.sh" triage-batch fixture-owner \
+  --unit zf-triage-batch-fixture-owner.service "$TRIAGE_BATCH_DYNAMIC_ISSUE" >/dev/null 2>&1
+assert_eq "triage batch result records its unique unit name" 'zf-triage-batch-fixture-owner.service' \
+  "$(state_read "$TRIAGE_BATCH_DYNAMIC_ISSUE" | jq -r '.unit_results.triage.unit')"
+assert_eq "triage batch stop hook removes its marker after an early worker exit" absent \
+  "$( [ -e "$TRIAGE_BATCH_DYNAMIC_MARKER" ] && echo present || echo absent )"
 
 CONSUME_UNIT_OOM_FN="$(sed -n '/^consume_unit_memory_oom() {/,/^}/p' "$PIPELINE_SRC")"
 if [ -n "$CONSUME_UNIT_OOM_FN" ]; then eval "$CONSUME_UNIT_OOM_FN"; fi
@@ -1474,10 +1537,12 @@ assert_contains "recut first attempt stays capped at 4G" "$RECUT_MEMORY_FIRST" '
 
 TRIAGE_BATCH_DISPATCH_FN="$(sed -n '/^dispatch_triage_batch() {/,/^}/p; /^pipeline_batch_launch() {/,/^}/p' "$PIPELINE_SRC")"
 run_fake_triage_batch_dispatch() (
-  local oom_count="$1" retry_cap="$2"
+  local oom_count="$1" retry_cap="$2" batch_count="${3:-1}"
+  AGENT_HOME="$(mktemp -d "$test_env_root/triage-dispatch.XXXXXX")"
   ZF_ENGINE_DIR="$SCRIPT_DIR" UNIT_PREFIX_TRANSIENT=zf \
     AGENT_UNIT_MEMORY_RETRY_MAX="$retry_cap" TRIAGE_OOM_COUNT="$oom_count" \
     REPO_DIR="$(git rev-parse --show-toplevel)" AGENT_HOME="$AGENT_HOME" \
+    TRIAGE_BATCH_COUNT="$batch_count" \
     bash -c '
       set -euo pipefail
       eval "$1"
@@ -1490,21 +1555,38 @@ run_fake_triage_batch_dispatch() (
       state_read() { printf "{\"unit_memory_ooms\":{\"triage\":%s}}\\n" "$TRIAGE_OOM_COUNT"; }
       model_policy() { echo fixture; }
       model_config_fault_blocked() { return 1; }
-      coord_new_owner() { printf "fixture-owner"; }
+      codex_week_stopped() { return 1; }
+      triage_claude_identity() { return 1; }
+      coord_new_owner() {
+        local seq=0
+        [ ! -r "$AGENT_HOME/owner-seq" ] || seq="$(cat "$AGENT_HOME/owner-seq")"
+        seq=$((seq + 1))
+        printf "%s\\n" "$seq" > "$AGENT_HOME/owner-seq"
+        printf "fixture-owner-%s\\n" "$seq"
+      }
       pipeline_batch_claim_acquire() { return 0; }
       pipeline_batch_claim_drop() { :; }
       pipeline_batch_claim_keep() { :; }
-      guarded_write() { printf "%s\\n" "$*"; }
+      guarded_write() { printf "%s\\n" "$*" >> "$AGENT_HOME/systemd-args"; }
       record_env_fault() { :; }
-      dispatch_triage_batch 990104
-      rm -f "$AGENT_HOME/triage-batch-active.json"
+      for ((i = 1; i <= TRIAGE_BATCH_COUNT; i++)); do dispatch_triage_batch "$((990103 + i))"; done
+      cat "$AGENT_HOME/systemd-args"
+      printf "markers:%s\\n" "$(find "$AGENT_HOME" -maxdepth 1 -name "triage-batch-active-*.json" | wc -l | tr -d " ")"
     ' _ "$TRIAGE_BATCH_DISPATCH_FN" "$SCRIPT_DIR"
 )
 FIRST_TRIAGE_BATCH="$(run_fake_triage_batch_dispatch 0 6G)"
 assert_contains "first triage batch keeps default 4G MemoryMax" \
   "$FIRST_TRIAGE_BATCH" 'MemoryMax=4G'
 assert_contains "triage batch stop hook receives every issue id" \
-  "$FIRST_TRIAGE_BATCH" "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch fixture-owner 990104"
+  "$FIRST_TRIAGE_BATCH" "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch fixture-owner-1 --unit zf-triage-batch-fixture-owner-1.service 990104"
+TRIAGE_PARALLEL_DISPATCH="$(run_fake_triage_batch_dispatch 0 7G 2)"
+assert_contains "concurrent batch units use distinct names" "$TRIAGE_PARALLEL_DISPATCH" '--unit zf-triage-batch-fixture-owner-1'
+assert_contains "each concurrent batch gets a unique unit and marker" "$TRIAGE_PARALLEL_DISPATCH" '--unit zf-triage-batch-fixture-owner-2'
+TRIAGE_PARALLEL_TICK_IDENTITIES="$(grep -oE 'ZF_TRIAGE_TICK_ID=triage-batch-[^ ]*' <<< "$TRIAGE_PARALLEL_DISPATCH")"
+assert_contains "each concurrent batch gets a unique metrics identity" "$TRIAGE_PARALLEL_TICK_IDENTITIES" '-fixture-owner-1'
+assert_contains "the second batch gets its own metrics identity" "$TRIAGE_PARALLEL_TICK_IDENTITIES" '-fixture-owner-2'
+assert_eq "parallel batches receive separate metrics identities" 2 "$(wc -l <<< "$TRIAGE_PARALLEL_TICK_IDENTITIES" | tr -d ' ')"
+assert_contains "two dispatches create two active batch markers" "$TRIAGE_PARALLEL_DISPATCH" 'markers:2'
 RETRY_TRIAGE_BATCH="$(run_fake_triage_batch_dispatch 1 7G)"
 assert_contains "OOM triage batch retries at configured larger cap" \
   "$RETRY_TRIAGE_BATCH" 'MemoryMax=7G'
@@ -2071,9 +2153,8 @@ assert_eq 'refresh launch failure still records its fault' \
 
 # Execution admission's typed 75 is pending work, not a failed systemd launch.
 run_batch_admission_case() (
-  local kind="$1" launch_status="$2" runtime_mode="${3:-absent}" status=0
-  AGENT_HOME="$(mktemp -d)"
-  trap 'rm -rf -- "$AGENT_HOME"' EXIT  # subshell trap: this ( ) body has its own EXIT, the test-env cleanup stays
+  local kind="$1" launch_status="$2" runtime_mode="${3:-absent}" quota_mode="${4:-open}" fallback_mode="${5:-absent}" config_fault_mode="${6:-clear}" status=0
+  AGENT_HOME="$(mktemp -d "$test_env_root/triage-admission.XXXXXX")"
   MAC_AUTOPILOT_RUNTIME_DIR="$AGENT_HOME/runtime"
   [ "$runtime_mode" != present ] || mkdir -p -- "$MAC_AUTOPILOT_RUNTIME_DIR"
   REPO_DIR="$SCRIPT_DIR/.."
@@ -2095,7 +2176,9 @@ run_batch_admission_case() (
   pipeline_batch_claim_keep() { :; }
   agent_memory_floor_allows() { return 0; }
   model_policy() { echo fixture; }
-  model_config_fault_blocked() { return 1; }
+  model_config_fault_blocked() { [ "$config_fault_mode" = blocked ]; }
+  codex_week_stopped() { [ "$quota_mode" = stopped ]; }
+  triage_claude_identity() { [ "$fallback_mode" = present ] || return 1; printf 'claude-haiku\n'; }
   consume_unit_memory_oom() { return 1; }
   state_read() { echo '{}'; }
   release_deployment_record_readable() { return 0; }
@@ -2113,7 +2196,7 @@ run_batch_admission_case() (
   esac
   printf 'status:%s\n' "$status"
   if [ "$kind" = triage ]; then
-    if [ -e "$AGENT_HOME/triage-batch-active.json" ]; then echo active:yes; else echo active:no; fi
+    if compgen -G "$AGENT_HOME/triage-batch-active-*.json" >/dev/null; then echo active:yes; else echo active:no; fi
     if [ "$runtime_mode" = present ]; then
       echo "journal:$(grep -c 'execution admission deferred: ' "$AGENT_HOME/stderr")"
     fi
@@ -2128,6 +2211,12 @@ assert_eq 'triage real launch error remains fatal and cleans the dispatch marker
   $'fault:env:systemd-run-dispatch-failed:triage-batch\nstatus:1\nactive:no' "$(run_batch_admission_case triage 1)"
 assert_eq 'triage success creates one unit with the active dispatch marker' \
   $'unit-created\nstatus:0\nactive:yes' "$(run_batch_admission_case triage 0)"
+assert_eq 'quota stop without an available triage fallback dispatches no batch' \
+  $'status:0\nactive:no' "$(run_batch_admission_case triage 0 absent stopped)"
+assert_eq 'quota stop holds triage batch dispatch even when a fallback is configured' \
+  $'status:0\nactive:no' "$(run_batch_admission_case triage 0 absent stopped present)"
+assert_eq 'work-role config fault holds triage batch dispatch' \
+  $'status:0\nactive:no' "$(run_batch_admission_case triage 0 absent open absent blocked)"
 assert_eq 'advisor admission 75 writes one scheduler line with its reason and issue id' \
   $'status:0\nsched:issue-pipeline: advisor batch admission deferred reason=resource floor: available_mb=5537 load=27.76 issues=910101' \
   "$(run_batch_admission_case advisor 75 present)"
@@ -2787,6 +2876,8 @@ run_triage_status_failure_case() (
   printf '#!/usr/bin/env bash\n' > "$AGENT_HOME/run-triage-batch.sh"; chmod +x "$AGENT_HOME/run-triage-batch.sh"
   model_policy() { :; }
   model_config_fault_blocked() { return 1; }
+  codex_week_stopped() { return 1; }
+  triage_claude_identity() { return 1; }
   issue_spend_budget_status() { if [ "$1" = 7044 ]; then return 1; fi; printf 'clear\t0\t0\n'; }
   coord_new_owner() { printf 'fixture-owner'; }
   pipeline_batch_claim_acquire() { return 0; }
