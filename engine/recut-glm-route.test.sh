@@ -9,6 +9,8 @@ jq '.roles["hand-zcode"].disabled = false' "$MODEL_POLICY_FILE" > "$AGENT_HOME/p
 GLM="$(model_policy identity hand-zcode)"
 glm_quota() { jq -n --argjson now "$(date +%s)" --argjson pct "$1" '{freshness:"fresh",read_at:$now,max_age_seconds:900,five_h_pct:$pct,week_pct:10,cap_5h:60,cap_week:100}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"; }
 codex_exhausted() { printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CODEX_EXHAUSTED_MARKER_FILE"; }
+CLAUDE_EXHAUSTED_MARKER_FILE="$AGENT_HOME/claude-exhausted-until"
+claude_exhausted() { printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$CLAUDE_EXHAUSTED_MARKER_FILE"; }
 
 state_read() { echo '{}'; }
 state_merge() { printf '%s\n' "$2" >> "$AGENT_HOME/merged"; }
@@ -29,15 +31,20 @@ dispatch() { echo "$1" > "$AGENT_HOME/dispatched"; }
 touch "$AGENT_HOME/supervisor-inbox"
 inbox_lines() { grep -c policy-route-held "$AGENT_HOME/supervisor-inbox" || true; }
 
-# Claude stays held in the cases below unless CLAUDE_HELD=0, so the GLM-only expectations do not depend on a claude CLI on PATH.
-eval "orig_$(declare -f provider_quota_exhausted)"
-provider_quota_exhausted() { if [ "$1" = claude ]; then [ "${CLAUDE_HELD:-1}" = 1 ]; else orig_provider_quota_exhausted "$@"; fi; }
 rm -f "$CODEX_EXHAUSTED_MARKER_FILE"
+rm -f "$CLAUDE_EXHAUSTED_MARKER_FILE"
+claude_exhausted
 glm_quota 10
 assert_eq "recut stays on Codex while Codex is open" "" "$(recut_glm_identity || true)"
 
 codex_exhausted
 assert_eq "recut takes GLM while Codex is exhausted" "$GLM" "$(recut_glm_identity)"
+routing_file="$AGENT_HOME/codex-recut-allow.json"
+original_cfg="${CFG:-}"
+printf '%s\n' '{"quota_marker_scope":{"codex":{"recut":"allow"}}}' > "$routing_file"
+CFG="$(jq -cn --arg file "$routing_file" '{models:{routing_file:$file}}')"
+assert_eq "recut scope allow keeps the Codex route" "" "$(recut_glm_identity || true)"
+CFG="$original_cfg"
 dispatch_policy_unit recut 910701 needs-recut
 assert_eq "recut dispatches past the marker" recut "$(cat "$AGENT_HOME/dispatched")"
 assert_contains "the dispatch records the GLM identity" "$(cat "$AGENT_HOME/merged")" "$GLM"
@@ -56,20 +63,30 @@ assert_eq "one alert a day" 1 "$(inbox_lines)"
 # Head 2026-11-22 (founder 11-21 balance ruling): with Codex and GLM closed, recut takes Claude haiku; sonnet after a failed
 # haiku recut of that issue; a Claude hold closes it too.
 mkdir -p "$AGENT_HOME/claude-bin"; printf '#!/bin/sh\n' > "$AGENT_HOME/claude-bin/claude"; chmod +x "$AGENT_HOME/claude-bin/claude"
-PATH="$AGENT_HOME/claude-bin:$PATH" CLAUDE_HELD=0
+PATH="$AGENT_HOME/claude-bin:$PATH"
+rm -f "$CLAUDE_EXHAUSTED_MARKER_FILE"
 assert_contains "recut takes Claude haiku when Codex and GLM are closed" "$(recut_glm_identity 910705)" 'claude:claude-haiku-5-5'
 state_read() { echo '{"recut_claude_haiku_failed_at":"2026-11-22T05:00:00Z"}'; }
 assert_contains "a failed haiku recut moves that issue to sonnet" "$(recut_glm_identity 910705)" 'claude:claude-sonnet-5-5'
 state_read() { echo '{}'; }
-CLAUDE_HELD=1
+claude_exhausted
 assert_eq "a Claude hold closes the fallback" "" "$(recut_glm_identity 910705 || true)"
 (
-  CLAUDE_HELD=0; routing_configured() { return 0; }; routing_family_order() { echo claude; }; routing_file_path() { echo "$AGENT_HOME/routing-off.json"; }
+  routing_configured() { return 0; }; routing_family_order() { echo claude; }; routing_file_path() { echo "$AGENT_HOME/routing-off.json"; }
+  rm -f "$CLAUDE_EXHAUSTED_MARKER_FILE"
   printf '{"families":{"claude":{"implement":false}}}' > "$AGENT_HOME/routing-off.json"
   assert_eq "implement=false keeps Claude out of recut" "" "$(recut_glm_identity 910705 || true)"
   printf '{"families":{"claude":{}}}' > "$AGENT_HOME/routing-off.json"
   assert_contains "without the implement field recut still takes Claude" "$(recut_glm_identity 910705)" 'claude:claude-haiku-5-5'
 )
+claude_exhausted
+routing_file="$AGENT_HOME/claude-recut-allow.json"
+quota_file="$AGENT_HOME/claude-quota.json"
+jq -n --argjson now "$(date +%s)" '{read_at:$now,week_pct:10}' > "$quota_file"
+jq -cn --arg quota "$quota_file" '{families:{claude:{quota_file:$quota}},quota_marker_scope:{claude:{recut:"allow"}}}' > "$routing_file"
+CFG="$(jq -cn --arg file "$routing_file" '{models:{routing_file:$file}}')"
+assert_contains "recut scope allow permits the Claude fallback through its marker" "$(recut_glm_identity 910705)" 'claude:claude-haiku-5-5'
+CFG="$original_cfg"
 
 glm_quota 10
 status=0; dispatch_policy_unit implement 910704 ready-for-agent 2>/dev/null || status=$?

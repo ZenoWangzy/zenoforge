@@ -17,6 +17,7 @@ export FALLBACK_ISSUES="$test_root/issues.json"
 export FALLBACK_CLAUDE_REPLY="$test_root/claude-reply.txt"
 export FALLBACK_JUDGE_LOG="$test_root/judge.log"
 export CLAUDE_QUOTA_SNAPSHOT_FILE="$test_root/no-quota.json"
+export CLAUDE_EXHAUSTED_MARKER_FILE="$test_root/claude-exhausted-until"
 unset TYPESAFE_API_KEY TYPESAFE_ENV_FILE
 export AGENT_HOME="$test_root/agent"
 mkdir -p "$AGENT_HOME"
@@ -211,15 +212,17 @@ echo 'ok (j) an issue without an applied label is not judged again within six ho
 # (k) TypeSafe credits exhaustion plus a held Claude provider defers and keeps the station candidate retryable.
 jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
 jq -n --argjson reset "$(( $(date +%s) + 3600 ))" '{week_pct:95,week_reset:$reset}' > "$CLAUDE_QUOTA_SNAPSHOT_FILE"
+rm -f "$CLAUDE_EXHAUSTED_MARKER_FILE"
+[[ ! -e "$CLAUDE_EXHAUSTED_MARKER_FILE" ]] || fail '(k) week-stop fixture unexpectedly has an exhausted marker'
 printf '%s\n' fallback > "$FALLBACK_JUDGE_MODE"
 : > "$FALLBACK_CLAUDE_LOG"
 : > "$FALLBACK_GH_WRITES"
 rc=0
 bash "$SCRIPT_DIR/intake-priority.sh" triage 9101 ready-for-agent "$REPO" < "$test_root/issue.json" > "$test_root/k.out" 2>&1 || rc=$?
 [[ "$rc" == 75 ]] || fail "(k) a held Claude fallback returned rc=$rc: $(cat "$test_root/k.out")"
-grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=claude-held' "$test_root/k.out" \
+grep -Fq 'intake-priority: haiku fallback skipped issue=#9101 reason=claude.week_stop' "$test_root/k.out" \
   || fail "(k) the held fallback reason was missing: $(cat "$test_root/k.out")"
-grep -Fq 'intake-priority: deferred issue=#9101 reason=claude-held' "$test_root/k.out" \
+grep -Fq 'intake-priority: deferred issue=#9101 reason=claude.week_stop' "$test_root/k.out" \
   || fail "(k) the deferral line was missing: $(cat "$test_root/k.out")"
 grep -Fq 'intake-priority: deferred issue=#9101 reason=priority missing classifier=deferred' "$test_root/k.out" \
   || fail "(k) the missing-priority reason was missing: $(cat "$test_root/k.out")"
@@ -232,7 +235,7 @@ rm -f "$A/intake-skip-noted.tsv"
 intake_priority_judge_issue "$(cat "$test_root/issue.json")" 9101 "$REPO" || fail '(k) the scheduler rejected a held-provider deferral'
 [[ ! -e "$A/intake-skip-noted.tsv" ]] || fail '(k) the held-provider deferral was cooldown-stamped'
 [[ "$CONSUMED_CANDIDATES" == 0 ]] || fail '(k) the held-provider candidate was consumed'
-grep -Fq 'intake-priority: deferred issue=#9101 reason=claude-held' "$LOG" || fail '(k) scheduler output lost the deferral line'
+grep -Fq 'intake-priority: deferred issue=#9101 reason=claude.week_stop' "$LOG" || fail '(k) scheduler output lost the deferral line'
 rm -f "$CLAUDE_QUOTA_SNAPSHOT_FILE"
 unset -f intake_judge_station_consume_candidate
 echo 'ok (k) a Claude hold exits 75, is not stamped, and leaves its candidate retryable'

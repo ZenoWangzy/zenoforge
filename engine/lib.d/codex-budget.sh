@@ -163,7 +163,7 @@ codex_budget_status() {
 # codex_budget_reserve <work|production> <id> [tokens] [provisional=0]
 # Provisional leases expire after 15 minutes unless the launched child adopts.
 codex_budget_reserve() {
-  local role="$1" id="$2" tokens="${3:-}" provisional="${4:-0}" now="${5:-$(date +%s)}" model_identity="${6:-}"
+  local role="$1" id="$2" tokens="${3:-}" provisional="${4:-0}" now="${5:-$(date +%s)}" model_identity="${6:-}" station="${7:-}"
   local usage used work production reservations work_reserved production_reserved total_reserved work_limit
   local pid ticks expires tmp lock_fd until marker traffic_monitor
   [[ "$role" = work || "$role" = production ]] || return 2
@@ -190,7 +190,8 @@ codex_budget_reserve() {
   mkdir -p "$AGENT_HOME/locks" "$CODEX_BUDGET_DIR" || return 2
   exec {lock_fd}>"$AGENT_HOME/locks/codex-budget.lock" || return 2
   flock "$lock_fd" || { unlock_fd "$lock_fd"; return 2; }
-  if provider_quota_exhausted codex; then
+  if { [[ "$station" == owner_session ]] && quota_marker_blocks codex owner_session >/dev/null; } \
+    || { [[ "$station" != owner_session ]] && provider_quota_exhausted codex; }; then
     marker="$(_quota_marker_file codex)"
     until="$(cat "$marker" 2>/dev/null || true)"
     echo "codex budget: provider quota hold active until $(date -u -d "@$until" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)" >&2

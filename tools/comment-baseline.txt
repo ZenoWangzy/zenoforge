@@ -673,7 +673,7 @@
 50	engine/queue-order.test.sh
 9	engine/quick-land.test.sh
 2	engine/record-unit-result.sh
-9	engine/recut-glm-route.test.sh
+8	engine/recut-glm-route.test.sh
 21	engine/recut-parent-state.test.sh
 1	engine/redact-secrets.sh
 3	engine/related-tests-dir.mjs

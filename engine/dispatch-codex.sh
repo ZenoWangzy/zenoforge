@@ -299,13 +299,13 @@ dispatch_owner_session() {
   OWNER_SESSION_BUDGET_MODEL="$model"
   OWNER_SESSION_BUDGET_EFFORT="$effort"
   if ! codex_budget_adopt "$OWNER_SESSION_BUDGET_ID" "$$"; then
-    codex_budget_reserve "$role" "$OWNER_SESSION_BUDGET_ID" "" 0 "" "$identity" || return $?
+    codex_budget_reserve "$role" "$OWNER_SESSION_BUDGET_ID" "" 0 "" "$identity" owner_session || return $?
   fi
   if codex_model_capacity_held "$identity"; then
     echo "$SCRIPT_NAME: node-auto-owner deferred by Codex model capacity hold" >&2
     return 75
   fi
-  if provider_quota_exhausted codex; then
+  if quota_marker_blocks codex owner_session >/dev/null; then
     echo "$SCRIPT_NAME: node-auto-owner deferred by Codex provider quota hold" >&2
     return 75
   fi

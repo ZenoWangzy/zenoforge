@@ -3,7 +3,6 @@ engine/check-gh-flags.test.sh
 engine/check-pipeline-lesson-window.test.sh
 engine/check-rulings.test.sh
 engine/closing-keyword-gate.test.sh
-engine/codex-usage-budget.test.sh
 engine/entry-symlink.test.sh
 engine/gitnexus-refresh-target.test.sh
 engine/gitnexus-refresh-window.test.sh
