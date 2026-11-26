@@ -65,10 +65,10 @@ for unit in ledger_history.load_units(runtime):
         group["disproved"] += finding_group["disproved"]
         group["total"] += finding_group["total"]
         group["unit_ids"].add(unit_id)
-    stage, prompt = result.get("stage"), result.get("prompt")
-    if not isinstance(stage, str) or not isinstance(prompt, str) or not prompt:
+    stage, prompt_stage, prompt, prompt_version = result.get("stage"), result.get("prompt_stage"), result.get("prompt"), result.get("prompt_version")
+    if not isinstance(stage, str) or not isinstance(prompt_stage, str) or not isinstance(prompt, str) or not prompt:
         continue
-    group = groups.setdefault((stage, prompt), {"scores": [], "unit_ids": []})
+    group = groups.setdefault((stage, prompt_stage, prompt, prompt_version), {"scores": [], "unit_ids": []})
     signals = result.get("signals", {}).values()
     known = [signal for signal in signals if signal is not None]
     if known:
@@ -77,8 +77,10 @@ for unit in ledger_history.load_units(runtime):
         group["unit_ids"].append(unit_id)
 
 rows = []
-for (stage, prompt), group in sorted(groups.items(), key=lambda item: (item[0][0] or "", item[0][1] or "")):
-    row = {"stage": stage, "prompt": prompt, "sample_size": len(group["scores"])}
+for (stage, prompt_stage, prompt, prompt_version), group in sorted(groups.items(), key=lambda item: (item[0][0] or "", item[0][1] or "", item[0][2] or "", item[0][3] or "")):
+    row = {"stage": stage, "prompt_stage": prompt_stage, "prompt": prompt, "sample_size": len(group["scores"])}
+    if prompt_version is not None:
+        row["prompt_version"] = prompt_version
     if row["sample_size"] < minimum:
         row["status"] = "insufficient-data"
     else:
@@ -91,6 +93,7 @@ for (prompt, prompt_version), group in sorted(finding_groups.items()):
     unit_ids = sorted(group["unit_ids"])
     row = {
         "stage": "review",
+        "prompt_stage": "review",
         "prompt": prompt,
         "prompt_version": prompt_version,
         "sample_size": len(unit_ids),

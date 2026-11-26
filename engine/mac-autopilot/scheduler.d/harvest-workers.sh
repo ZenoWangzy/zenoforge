@@ -476,7 +476,15 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             *) # 冲突、预检失败、落地卡死：改动本身要修，交给 repair 并附落地日志
                set_unit "$unit" "$(hist land-failed "$land_result") | .approved_sha=null | .land_log=$(js "${report}.land.log") | .repair_hint=$(js "直落 main 失败：${land_result}。落地日志 $SUP/${report}.land.log；与 main 冲突就 merge origin/main 解决；检查失败或卡死就修复根因。") | .stage=\"repair-pending\"" ;;
           esac ;;
-        implement|triage) harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only" ;;
+        implement|triage)
+          harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only"
+          if [[ "$wtype" == implement && "$(unit_field "$unit" '.stage // empty')" == review-pending &&
+            "$(jqf -r '.report // empty' <<<"$w")" == "$report" ]]; then
+            local prompt_update
+            prompt_update="$(unit_prompt_update "$(harvest_unit_snapshot "$unit")" "$w")"
+            [[ "$prompt_update" == '.' ]] || set_unit "$unit" "$prompt_update"
+          fi
+          ;;
       esac
       fi
       [[ "$wtype" != implement || "$report_only_requeue_handled" == true ]] || incident_report_pre_review "$w" "$report" "$rep" "$session_id" || :

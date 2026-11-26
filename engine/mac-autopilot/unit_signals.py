@@ -18,6 +18,9 @@ REPAIR_STAGES = frozenset(("repair-delivered", "repair-no-push"))
 REVIEW_DISPOSITIONS = frozenset(("fixed", "disproved", "intentional", "out-of-scope"))
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 PROMPT_VERSION_RE = re.compile(r"[0-9a-f]{64}")
+PROMPT_STAGES = {
+    "engine/mac-autopilot/scheduler.d/dispatch-queue.sh": "implement",
+}
 
 
 def _history_stages(unit):
@@ -91,10 +94,19 @@ def unit_signals(unit, reverted):
     elif isinstance(sha, str) and SHA_RE.fullmatch(sha) and reverted is not None:
         signals["reverted"] = sha in reverted
     prompt = unit.get("prompt")
+    prompt_stage = unit.get("prompt_stage")
+    if prompt not in PROMPT_STAGES or prompt_stage != PROMPT_STAGES.get(prompt):
+        prompt = None
+        prompt_stage = None
+    prompt_version = unit.get("prompt_version")
+    if prompt is None or not isinstance(prompt_version, str) or not PROMPT_VERSION_RE.fullmatch(prompt_version):
+        prompt_version = None
     return {
         "unit": unit.get("id"),
         "stage": unit.get("stage"),
         "prompt": prompt,
+        "prompt_stage": prompt_stage,
+        "prompt_version": prompt_version,
         "signals": signals,
         "disproved_findings": findings,
     }

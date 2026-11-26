@@ -98,9 +98,33 @@ version_b="$(sha256sum -- "$review_prompt" | cut -d' ' -f1)"
 dispatch_case rereview codex fixture-pr rereview-v2.log
 [[ "$(jq -r '.workers[-1].prompt_version // empty' "$WORKERS")" == "$version_b" && "$version_a" != "$version_b" ]] \
   || fail 'rereview worker did not record its changed effective review prompt version'
-dispatch_case implement codex fixture-pr implement-no-prompt-version.log
-[[ "$(jq -e '.workers[-1] | has("prompt_version") | not' "$WORKERS")" == true ]] \
-  || fail 'non-review worker recorded a review prompt version'
+WORKER_DOCS_FILE="$fixture/worker-docs.json"
+PRODUCT_LANE_SKILLS="$fixture/product-lane-skills.txt"
+printf '{"skipped_docs":["skip-v1"],"on_demand_docs":[],"boundary_selectors":[]}' > "$WORKER_DOCS_FILE"
+printf 'skills-v1\n' > "$PRODUCT_LANE_SKILLS"
+printf 'project rules v1\n' > "$ROOT/CLAUDE.md"
+unset IMPLEMENTATION_PROMPT_VERSION
+dispatch_case implement codex fixture-pr implement-prompt-version.log
+implementation_version="$(jq -r '.workers[-1].prompt_version // empty' "$WORKERS")"
+[[ "$(jq -r '.workers[-1].prompt // empty' "$WORKERS")" == 'engine/mac-autopilot/scheduler.d/dispatch-queue.sh' &&
+  "$(jq -r '.workers[-1].prompt_stage // empty' "$WORKERS")" == implement &&
+  "$implementation_version" =~ ^[0-9a-f]{64}$ ]] \
+  || fail 'implementation worker did not record its prompt builder identity and version'
+printf '{"skipped_docs":["skip-v2"],"on_demand_docs":[],"boundary_selectors":[]}' > "$WORKER_DOCS_FILE"
+unset IMPLEMENTATION_PROMPT_VERSION
+dispatch_case implement codex fixture-pr implement-worker-docs-v2.log
+implementation_version_b="$(jq -r '.workers[-1].prompt_version // empty' "$WORKERS")"
+[[ "$implementation_version" != "$implementation_version_b" ]] || fail 'worker docs change did not change the implementation prompt version'
+printf 'project rules v2\n' > "$ROOT/CLAUDE.md"
+unset IMPLEMENTATION_PROMPT_VERSION
+dispatch_case implement codex fixture-pr implement-project-rules-v2.log
+implementation_version_c="$(jq -r '.workers[-1].prompt_version // empty' "$WORKERS")"
+[[ "$implementation_version_b" != "$implementation_version_c" ]] || fail 'project instructions change did not change the implementation prompt version'
+printf 'skills-v2\n' > "$PRODUCT_LANE_SKILLS"
+unset IMPLEMENTATION_PROMPT_VERSION
+dispatch_case implement codex fixture-pr implement-product-skills-v2.log
+implementation_version_d="$(jq -r '.workers[-1].prompt_version // empty' "$WORKERS")"
+[[ "$implementation_version_c" != "$implementation_version_d" ]] || fail 'product skill map change did not change the implementation prompt version'
 
 # env(1) applies assignments left to right, so direct-main rebuilds the word instead of appending a second one.
 dispatch_case implement codex fixture-dm impl-dm.log

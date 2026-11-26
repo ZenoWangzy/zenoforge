@@ -73,6 +73,17 @@ second_version_class="$(sed -n '2s/.*--class \([^ ]*\).*/\1/p' "$TEST_UPSERT_CAL
 [[ "$first_version_class" != "$second_version_class" ]]
 grep -Fq -- "Prompt version: \`$version_b\`" "$TEST_UPSERT_BODIES"
 
+rm -f -- "$state" "$TEST_UPSERT_CALLS" "$TEST_UPSERT_BODIES"
+implementation_version="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+jq -cn --arg version "$implementation_version" '{stage:"merged",prompt_stage:"implement",prompt:"engine/mac-autopilot/scheduler.d/dispatch-queue.sh",prompt_version:$version,sample_size:3,score:0.4,unit_ids:["unit-301"]}' > "$report"
+run_report >/dev/null
+[[ ! -s "$TEST_UPSERT_CALLS" ]]
+run_report >/dev/null
+[[ "$(wc -l < "$TEST_UPSERT_CALLS")" == 1 ]]
+grep -Fq -- 'engine/mac-autopilot/scheduler.d/dispatch-queue.sh' "$TEST_UPSERT_BODIES"
+grep -Fq -- 'Prompt stage: `implement`' "$TEST_UPSERT_BODIES"
+grep -Fq -- "Prompt version: \`$implementation_version\`" "$TEST_UPSERT_BODIES"
+
 # Later low reports call the shared upsert again with the same class, so it updates the open issue.
 rm -f -- "$state" "$TEST_UPSERT_CALLS" "$TEST_UPSERT_BODIES"
 write_low_report

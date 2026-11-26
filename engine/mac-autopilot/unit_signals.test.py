@@ -95,14 +95,22 @@ class UnitSignalsTests(unittest.TestCase):
         self.assertIs(unit_signals(unit, None)["signals"]["reverted"], True)
 
     def test_missing_evidence_is_null_and_other_signals_stay_filled(self):
-        unit = {"id": "issue-3", "stage": "implement", "merge_sha": SHA, "prompt": "fixture-prompt"}
+        unit = {"id": "issue-3", "stage": "implement", "merge_sha": SHA, "prompt": "engine/mac-autopilot/scheduler.d/dispatch-queue.sh", "prompt_stage": "implement", "prompt_version": PROMPT_A}
         out = unit_signals(unit, None)
-        self.assertEqual(out["prompt"], "fixture-prompt")
+        self.assertEqual(out["prompt"], "engine/mac-autopilot/scheduler.d/dispatch-queue.sh")
+        self.assertEqual(out["prompt_stage"], "implement")
+        self.assertEqual(out["prompt_version"], PROMPT_A)
         self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": None})
         self.assertEqual(out["disproved_findings"], [])
         out = unit_signals({"id": "issue-4", "stage": "merged", "history": [], "merge_sha": SHA}, {OTHER: None})
         self.assertEqual(out["signals"], {"overturned": None, "repair": None, "rereview": None, "reverted": False})
         self.assertEqual(out["disproved_findings"], [])
+
+    def test_prompt_version_requires_a_known_engine_prompt_path(self):
+        unit = {"id": "issue-5", "stage": "merged", "prompt": "fixture-prompt", "prompt_stage": "implement", "prompt_version": PROMPT_A}
+        out = unit_signals(unit, None)
+        self.assertIsNone(out["prompt"])
+        self.assertIsNone(out["prompt_version"])
 
     def test_no_sha_leaves_reverted_null(self):
         self.assertIsNone(unit_signals(stages("review-approve"), {})["signals"]["reverted"])

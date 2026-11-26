@@ -299,7 +299,7 @@ review_findings_update() {
   local rec block reason prompt_version worker
   worker="${3-}"
   [[ -n "$worker" ]] || worker='{}'
-  prompt_version="$(jqf -r 'if (.type == "review" or .type == "rereview") and (.prompt_version | type == "string" and test("^[0-9a-f]{64}$")) then .prompt_version else empty end' <<<"$worker")"
+  prompt_version="$(jqf -r --arg report "$2" 'if (.type == "review" or .type == "rereview") and .report == $report and (.prompt_version | type == "string" and test("^[0-9a-f]{64}$")) then .prompt_version else empty end' <<<"$worker")"
   if block="$(findings_block_of "$1")"; then
     rec="$(jq -c '{block:"ok", findings:[.findings[] | select(.severity=="P0" or .severity=="P1")], all_findings:.findings, dispositions:[], dropped, dropped_findings}' <<<"$block")"
   else
@@ -312,6 +312,23 @@ review_findings_update() {
   printf ' | .review_findings = ((.review_findings // []) + [{round:((.history // []) | map(select(.stage=="review-request-changes")) | length), at:%s, report:%s} + %s])' \
     "$(js "$STAMP")" "$(js "$2")" "$rec"
   if [[ -n "$reason" ]]; then printf ' | .history[-1].reason=%s' "$(js "$reason")"; fi
+}
+
+unit_prompt_update() {
+  local unit="$1" worker="$2" type prompt stage version expected
+  type="$(jqf -r '.type // empty' <<<"$worker")"
+  prompt="$(jqf -r '.prompt // empty' <<<"$worker")"
+  stage="$(jqf -r '.prompt_stage // empty' <<<"$worker")"
+  version="$(jqf -r '.prompt_version // empty' <<<"$worker")"
+  case "$type" in
+    implement) expected="engine/mac-autopilot/scheduler.d/dispatch-queue.sh"; [[ "$stage" == implement ]] || { printf '.'; return 0; } ;;
+    *) printf '.'; return 0 ;;
+  esac
+  [[ "$prompt" == "$expected" && "$version" =~ ^[0-9a-f]{64}$ ]] || { printf '.'; return 0; }
+  jqf -e '.stage == "review-pending"' <<<"$unit" >/dev/null || { printf '.'; return 0; }
+  if [[ "$type" == implement ]] \
+    && jqf -e '.prompt_stage == "implement" and (.prompt // "") != ""' <<<"$unit" >/dev/null; then printf '.'; return 0; fi
+  printf '.prompt=%s | .prompt_stage=%s | .prompt_version=%s' "$(js "$prompt")" "$(js "$stage")" "$(js "$version")"
 }
 
 # 同一发现类别的复现计数（只记 NOT_READY 的阻断级发现；合成门禁报告不记）。失败只记日志，下一次评审重试。
