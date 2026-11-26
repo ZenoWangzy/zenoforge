@@ -32,9 +32,12 @@ mkdir -p "$S/tmp" "$d"
 model=${CODEX_MODEL:-gpt-6-luna}
 round_model=$model
 model_fallback=''
+model_started=0
 trap 'round_rc=$?
   [[ -z $model_fallback ]] || printf "%s\n" "$model_fallback" >> "$d/stderr.log"
-  printf "%s %s %s rc=%s\n" "$(date -u +%FT%TZ)" "$key" "$round_model" "$round_rc" >> "$S/luna/rounds.log"
+  if (( model_started && round_rc != 143 )); then
+    printf "%s %s %s rc=%s\n" "$(date -u +%FT%TZ)" "$key" "$round_model" "$round_rc" >> "$S/luna/rounds.log"
+  fi
 ' EXIT
 model_not_found_cache="$S/luna/model-not-found.cache"
 model_not_found_cached() {
@@ -389,6 +392,7 @@ run_backend() {
   wait "$pid"; run_rc=$?
   trap - TERM INT HUP
   rm -f "$d/backend-run.pid"
+  [[ ! -s $d/codex.pid ]] || model_started=1
   if [[ $backend == luna ]] && grep -qiF 'model_not_found' "$d/events.jsonl" 2>/dev/null; then
     cache_model_not_found "$round_model"
   fi
