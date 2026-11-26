@@ -48,14 +48,12 @@ engine/night/production-tenant-marker-readonly.test.sh
 engine/owner-stop-request.test.sh
 engine/pipeline-issue-upsert-label-limit.test.sh
 engine/pipeline-system-close-evidence.test.sh
-engine/rule-lane.test.sh
 engine/run-advisor.test.sh
 engine/scheduler-gh-timeout-safety.test.sh
 engine/state-json-merge.test.sh
 engine/state-merge-concurrency.test.sh
 engine/supervise-exceptions.test.sh
 engine/sweep-merges.test.sh
-engine/syntax-only-landing.test.sh
 engine/test-env-exit.test.sh
 engine/tests/fix-forward-release-helper.test.sh
 engine/tests/release-runner.test.sh

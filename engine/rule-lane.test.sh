@@ -6,7 +6,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 rule_lane="$script_dir/rule-lane.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/rule-lane-test.XXXXXX")"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 repo="$tmp/repo"
 log="$tmp/rule-lane.log"
 
@@ -97,6 +97,88 @@ fi
 grep -Fq 'rule-lane: decision=unit-reject refused=rule-files actor=unit touched=1 files=.zenoforge/state/rulings.json' "$log" \
   || fail 'legacy manifest path was not mapped to the target-config copy'
 
+git -C "$repo" reset --hard -q "$base"
+git -C "$repo" clean -fdq
+mkdir -p "$repo/.zenoforge/state"
+cat > "$repo/.zenoforge/state/rule-files.json" <<'JSON'
+{
+  "schema": "zf-rule-files/v1",
+  "files": {
+    ".zenoforge/state/rule-files.json": "target manifest"
+  }
+}
+JSON
+git -C "$repo" add .zenoforge/state/rule-files.json
+git -C "$repo" commit -q -m 'fixture: target manifest overrides engine defaults'
+override_base="$(git -C "$repo" rev-parse HEAD)"
+
+assert_override_rejects() {
+  local path="$1" contents="$2" head status
+  git -C "$repo" reset --hard -q "$override_base"
+  git -C "$repo" clean -fdq
+  mkdir -p "$(dirname -- "$repo/$path")"
+  printf '%s\n' "$contents" > "$repo/$path"
+  git -C "$repo" add "$path"
+  git -C "$repo" commit -q -m 'fixture: change a judging input'
+  head="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout --detach -q "$override_base"
+  if (cd -- "$repo" && ZF_AGENT_NAME=unit:agent/issue-probe ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$script_dir" \
+    ZF_CONFIG_ROOT="$repo/.zenoforge" bash "$rule_lane" "$override_base" "$head") > "$log" 2>&1; then
+    fail "target-manifest unit change to $path was accepted"
+  else
+    status=$?
+  fi
+  [[ "$status" == 1 ]] || fail "target-manifest rejection for $path exited $status instead of 1"
+  grep -Fq "rule-lane: decision=unit-reject refused=rule-files actor=unit:agent/issue-probe touched=1 files=$path" "$log" \
+    || fail "target-manifest rejection did not identify $path"
+  sed -n '1p' "$log"
+}
+
+assert_override_rejects .zenoforge/prompts/review-contract.md 'Review contract'
+assert_override_rejects .zenoforge/state/risk-paths.json '{"rules":[]}'
+assert_override_rejects .zenoforge/eval/cases/triage.json '{"case":"unit"}'
+
+git -C "$repo" reset --hard -q "$base"
+git -C "$repo" clean -fdq
+mkdir -p "$repo/.zenoforge/state"
+cat > "$repo/.zenoforge/state/rule-files.json" <<'JSON'
+{
+  "schema": "zf-rule-files/v1",
+  "files": {
+    ".zenoforge/state/rule-files.json": "target manifest",
+    ".zenoforge/state/target-rule.json": "target rule"
+  }
+}
+JSON
+printf '{"rule":"base"}\n' > "$repo/.zenoforge/state/target-rule.json"
+git -C "$repo" add .zenoforge
+git -C "$repo" commit -q -m 'fixture: target manifest protects a target rule'
+union_base="$(git -C "$repo" rev-parse HEAD)"
+cat > "$repo/.zenoforge/state/rule-files.json" <<'JSON'
+{
+  "schema": "zf-rule-files/v1",
+  "files": {
+    ".zenoforge/state/rule-files.json": "target manifest"
+  }
+}
+JSON
+printf '{"rule":"edited"}\n' > "$repo/.zenoforge/state/target-rule.json"
+git -C "$repo" add .zenoforge/state/rule-files.json .zenoforge/state/target-rule.json
+git -C "$repo" commit -q -m 'fixture: remove and edit a target rule'
+union_head="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout --detach -q "$union_base"
+if (cd -- "$repo" && ZF_AGENT_NAME=unit:agent/issue-probe ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$script_dir" \
+  ZF_CONFIG_ROOT="$repo/.zenoforge" bash "$rule_lane" "$union_base" "$union_head") > "$log" 2>&1; then
+  fail 'removing a target manifest entry and editing its file was accepted'
+else
+  status=$?
+fi
+[[ "$status" == 1 ]] || fail "manifest-entry removal rejection exited $status instead of 1"
+grep -Fq 'rule-lane: decision=unit-reject refused=rule-files actor=unit:agent/issue-probe touched=2' "$log" \
+  || { cat "$log" >&2; fail 'base and head manifest paths were not both protected'; }
+grep -Fq '.zenoforge/state/rule-files.json' "$log" || fail 'target manifest change was not protected'
+grep -Fq '.zenoforge/state/target-rule.json' "$log" || fail 'removed target manifest entry was not protected from the base'
+
 # A vendored pack (ZF_PACK_REL) is protected under its prefix, a trailing-slash key covers a directory,
 # and the rest of the scheduler stays open to units.
 git -C "$repo" reset --hard -q "$base"
@@ -133,7 +215,12 @@ git -C "$repo" commit -q -am 'fixture: unit scheduler edit'
 pack_run "$(git -C "$repo" rev-parse HEAD)" || { cat "$log" >&2; fail 'unit scheduler edit was refused'; }
 
 # The shipped manifest names the check, itself, and at least one file per protected area.
-for key in engine/rule-lane.sh engine/state/rule-files.json tools/merge-pr.sh engine/mac-autopilot/scheduler.d/merge-lane.sh \
+for key in .zenoforge/prompts/review-contract.md .zenoforge/state/risk-paths.json .zenoforge/eval/cases/ \
+  engine/prompts/review-contract.md engine/state/risk-paths.json engine/eval/cases/; do
+  jq -e --arg key "$key" '.mandatory | has($key)' "$script_dir/state/rule-files.json" >/dev/null \
+    || fail "shipped rule-files.json does not protect $key"
+done
+for key in engine/rule-lane.sh engine/land-direct-main-policy.sh engine/rule-file-paths.sh engine/state/rule-files.json tools/merge-pr.sh engine/mac-autopilot/scheduler.d/merge-lane.sh \
   engine/mac-autopilot/scheduler.d/review-rules.sh engine/mac-autopilot/scheduler.d/evals-arbiter.sh tools/pin-vecta.sh \
   engine/supervisor/watch/ engine/deploy-culprit.sh engine/redact-secrets.sh; do
   jq -e --arg key "$key" '.files | has($key)' "$script_dir/state/rule-files.json" >/dev/null \
