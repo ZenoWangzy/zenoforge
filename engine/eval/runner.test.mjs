@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { zfConfigFile } from '../pack-dir.mjs';
-import { applyOverrides, execute, hiddenChecks, renderPrompt, worktree } from './run-eval.mjs';
+import { applyOverrides, attempt, execute, hiddenChecks, renderPrompt, worktree } from './run-eval.mjs';
 import { blindingLeaks } from './blinding.mjs';
 const scratch = resolve('.scratch'); mkdirSync(scratch, { recursive: true });
 test('hidden grader applies the patch to base and replaces worker-forged tests', () => {
@@ -443,10 +443,11 @@ console.log(JSON.stringify({ steps: [{ id: 'read-doc', ok, doc_available: false,
 process.exitCode = ok ? 0 : 1;
 `);
     const baseSha = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').at(-1);
+    const fixSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const cases = join(f.dir, 'fresh-cases.json');
     writeFileSync(cases, JSON.stringify({ stage: 'fresh-agent', cases: [
-      { id: 'pass', base_sha: baseSha, prompt: 'FIXTURE_PASS', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
-      { id: 'fail', base_sha: baseSha, prompt: 'FIXTURE_FAIL', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
+      { id: 'pass', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_PASS', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
+      { id: 'fail', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_FAIL', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
     ] }));
     const r = f.run(['--stage', 'fresh-agent', '--cases', cases, '--runs', '1', '--label', 'fresh']);
     assert.equal(r.status, 0, r.stderr);
@@ -462,6 +463,14 @@ process.exitCode = ok ? 0 : 1;
     assert.equal(passing.tokens, 1234);
     assert.equal(failing.calls.length, 1);
     assert.ok(existsSync(join(failing.artifacts, 'hidden-check.log')));
+    const oldGoldCases = join(f.dir, 'old-gold-cases.json');
+    writeFileSync(oldGoldCases, JSON.stringify({ stage: 'fresh-agent', cases: [
+      { id: 'legacy', base_sha: baseSha, prompt: 'FIXTURE_PASS', hidden_check: 'true', expected_divergence: 'read-doc' },
+    ] }));
+    const missingFix = f.run(['--stage', 'fresh-agent', '--cases', oldGoldCases, '--runs', '1', '--verify-gold', '--label', 'missing-fix']);
+    assert.notEqual(missingFix.status, 0);
+    assert.match(missingFix.stderr, /fix_sha: required for --verify-gold/);
+    assert.equal(existsSync(join(f.home, '.zenoforge/eval/missing-fix')), false);
     const goldCases = join(f.dir, 'gold-cases.json');
     writeFileSync(goldCases, JSON.stringify({ stage: 'implement', cases: [{ id: 'close-gold', expected: {
       outcome: 'close', implementationPrefixes: ['engine/changed'], gold: { closeLine: 'OBSOLETE: measured 10', implementationPath: 'engine/changed.mjs' },
@@ -474,6 +483,32 @@ process.exitCode = ok ? 0 : 1;
     assert.deepEqual(goldRow.calls, []);
     assert.equal(readFileSync(f.events, 'utf8').split('\n').filter(Boolean).length, eventsBeforeGold);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('fresh-agent gold verification requires a red base and green known fix', () => {
+  const dir = mkdtempSync(join(scratch, 'eval-fresh-gold-'));
+  const sourceRepo = join(dir, 'repo'), out = join(dir, 'out');
+  mkdirSync(sourceRepo); mkdirSync(out);
+  const git = (...args) => execFileSync('git', args, { cwd: sourceRepo, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.name', 'Eval fixture');
+    git('config', 'user.email', 'eval@example.invalid');
+    writeFileSync(join(sourceRepo, 'answer.txt'), 'broken\n');
+    git('add', '.'); git('commit', '-qm', 'broken base');
+    const baseSha = git('rev-parse', 'HEAD');
+    writeFileSync(join(sourceRepo, 'answer.txt'), 'fixed\n');
+    git('add', '.'); git('commit', '-qm', 'known fix');
+    const fixSha = git('rev-parse', 'HEAD');
+    const row = attempt({ stage: 'fresh-agent', run: 1, c: {
+      id: 'fixture-gold', base_sha: baseSha, fix_sha: fixSha, prompt: 'Fix answer.txt.',
+      hidden_check: 'grep -qx fixed answer.txt', expected_divergence: 'implement',
+    } }, { out, verifyGold: true, sourceRepo });
+    assert.equal(row.pass, true, row.failures.join('; '));
+    assert.equal(row.broken.pass, false);
+    assert.equal(row.fixed.pass, true);
+    assert.deepEqual(row.calls, []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('--concurrency 3 keeps at most 3 attempts running and records every row', () => {

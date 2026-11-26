@@ -1,21 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execute } from './run-eval.mjs';
 import { validateFreshCase, classifyFailedRun } from './fresh-agent.mjs';
 
 const SHA = 'a'.repeat(40);
-const validCase = { id: 'fresh-1', base_sha: SHA, prompt: 'Add a retry guard.', hidden_check: 'node check.mjs', expected_divergence: 'read-doc' };
+const validCase = { id: 'fresh-1', source_url: 'https://github.com/ZenoWangzy/zenoforge/issues/984', base_sha: SHA, fix_sha: 'b'.repeat(40), prompt: 'Add a retry guard.', hidden_check: 'node check.mjs', expected_divergence: 'read-doc' };
 const step = (id, ok, doc = true, guard = true) => ({ id, ok, doc_available: doc, guard_available: guard });
 
 test('case schema accepts a complete frozen case and rejects memory or bad SHA', () => {
   assert.deepEqual(validateFreshCase(validCase), []);
+  const legacyCase = { ...validCase };
+  delete legacyCase.fix_sha;
+  delete legacyCase.source_url;
+  assert.deepEqual(validateFreshCase(legacyCase), []);
   assert.ok(validateFreshCase({ ...validCase, base_sha: 'HEAD' }).some((f) => f.startsWith('base_sha')));
+  assert.ok(validateFreshCase({ ...validCase, fix_sha: 'HEAD' }).some((f) => f.startsWith('fix_sha')));
+  assert.ok(validateFreshCase({ ...validCase, fix_sha: SHA }).some((f) => f.startsWith('fix_sha')));
+  assert.ok(validateFreshCase({ ...validCase, source_url: 'fixture' }).some((f) => f.startsWith('source_url')));
   assert.ok(validateFreshCase({ ...validCase, memory: 'earlier chat' }).includes('unknown key: memory'));
   assert.ok(validateFreshCase({ ...validCase, prompt: '' }).some((f) => f.startsWith('prompt')));
+});
+
+test('frozen fresh-agent corpus has five to eight valid cases with unique ids', () => {
+  const set = JSON.parse(readFileSync(new URL('./cases/fresh-agent.json', import.meta.url), 'utf8'));
+  assert.equal(set.stage, 'fresh-agent');
+  assert.ok(set.cases.length >= 5 && set.cases.length <= 8);
+  assert.equal(new Set(set.cases.map((c) => c.id)).size, set.cases.length);
+  assert.ok(set.cases.every((c) => c.source_url));
+  assert.ok(set.cases.every((c) => validateFreshCase(c).length === 0));
 });
 
 test('classifies missing-doc when the first failing step had no doc at base', () => {
@@ -55,13 +71,15 @@ test('fresh-agent runner gives the backend only the prompt and records pass or c
     git('init', '-q'); git('config', 'user.name', 'Eval fixture'); git('config', 'user.email', 'eval@example.invalid');
     writeFileSync(join(sourceRepo, 'base.txt'), 'frozen\n'); git('add', '.'); git('commit', '-qm', 'frozen base');
     const base_sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRepo, encoding: 'utf8' }).trim();
+    writeFileSync(join(sourceRepo, 'result.txt'), 'ready\n'); git('add', '.'); git('commit', '-qm', 'known fix');
+    const fix_sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRepo, encoding: 'utf8' }).trim();
     const stageCall = join(dir, 'fake-stage-call.sh');
     writeFileSync(stageCall, `#!/usr/bin/env bash
 set -euo pipefail
 stage=$1; wt=$3; prompt=$4; artifact=$5; input=$6
 [[ "$stage" == fresh-agent ]]
 grep -qx 'TASK_ONLY_PASS' "$prompt" || grep -qx 'TASK_ONLY_FAIL' "$prompt"
-! grep -Eq 'hidden_check|expected_divergence|memory' "$prompt"
+! grep -Eq 'hidden_check|expected_divergence|fix_sha|source_url|memory' "$prompt"
 grep -q '"sessionId":null' "$input"
 printf 'codex:fixture:high\\n' > "$artifact/identity.txt"
 printf '{"tokens":23}\\n' > "$artifact/usage.json"
@@ -77,7 +95,7 @@ process.exitCode = ok ? 0 : 1;
 `);
     const run = (id, prompt) => {
       const attemptDir = join(dir, id); mkdirSync(attemptDir);
-      return execute({ id, base_sha, prompt, hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
+      return execute({ id, base_sha, fix_sha, source_url: 'https://github.com/ZenoWangzy/zenoforge/issues/984', prompt, hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
         'fresh-agent', attemptDir, 'unused-policy', { sourceRepo, stageCall });
     };
     const passing = run('pass', 'TASK_ONLY_PASS');

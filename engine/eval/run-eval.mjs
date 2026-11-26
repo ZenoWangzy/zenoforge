@@ -528,7 +528,25 @@ export function attempt({ stage, c, run }, plan) {
   let outcome;
   try {
     if (plan.verifyGold) {
-      if (c.expected?.outcome === 'close') {
+      if (stage === 'fresh-agent') {
+        const sourceRepo = plan.sourceRepo ?? repo;
+        const check = (sha, name) => {
+          const parent = join(dir, name);
+          mkdirSync(parent, { recursive: true });
+          const wt = worktree(sha, parent, 'worker', sourceRepo);
+          try {
+            const result = command(['bash', '-c', c.hidden_check], wt, { timeout: 180_000 });
+            const exitCode = result.status ?? (result.error?.code === 'ETIMEDOUT' ? 124 : 1);
+            writeFileSync(join(dir, `${name}-hidden-check.log`), `${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+            return { pass: exitCode === 0, exitCode };
+          } finally { removeWorktree(wt); }
+        };
+        const broken = check(c.base_sha, 'broken');
+        const fixed = check(c.fix_sha, 'fixed');
+        outcome = { pass: !broken.pass && fixed.pass,
+          failures: [broken.pass ? 'hidden check passed on broken base' : '', !fixed.pass ? 'hidden check failed on known fix' : ''].filter(Boolean),
+          broken, fixed, calls: [] };
+      } else if (c.expected?.outcome === 'close') {
         // Modelless gold for a close-graded case: the grader accepts the case's own
         // recorded close verdict with no diff, and rejects an implemented diff or an
         // empty report. The data behind the verdict is pinned in source.evidence.
@@ -630,6 +648,7 @@ export async function main(args = process.argv.slice(2)) {
     if (stage === 'fresh-agent') {
       for (const c of set.cases) {
         const failures = validateFreshCase(c);
+        if (values['verify-gold'] && !c.fix_sha) failures.push('fix_sha: required for --verify-gold');
         if (failures.length) throw new Error(`invalid fresh-agent case ${c.id ?? '(unknown)'}: ${failures.join('; ')}`);
       }
     }
