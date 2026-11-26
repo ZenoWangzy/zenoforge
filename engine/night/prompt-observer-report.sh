@@ -49,6 +49,7 @@ if report_path.resolve() in ledger_paths:
 repo = os.environ.get("ZF_REPO_DIR") or str(night_dir.parent.parent)
 reverted = roi_rollup._reverted_shas(repo)
 groups = {}
+finding_groups = {}
 threshold = int(sample_rate * (1 << 256))
 for unit in ledger_history.load_units(runtime):
     unit_id = unit.get("id")
@@ -58,20 +59,18 @@ for unit in ledger_history.load_units(runtime):
     if int.from_bytes(hashlib.sha256(unit_id.encode()).digest(), "big") >= threshold:
         continue
     result = unit_signals(unit, reverted)
+    for finding_group in result.get("disproved_findings", []):
+        key = (finding_group["prompt"], finding_group["prompt_version"])
+        group = finding_groups.setdefault(key, {"disproved": 0, "total": 0, "unit_ids": set()})
+        group["disproved"] += finding_group["disproved"]
+        group["total"] += finding_group["total"]
+        group["unit_ids"].add(unit_id)
     stage, prompt = result.get("stage"), result.get("prompt")
     if not isinstance(stage, str) or not isinstance(prompt, str) or not prompt:
         continue
-    group = groups.setdefault((stage, prompt), {
-        "scores": [],
-        "unit_ids": [],
-        "disproved_findings": {"disproved": 0, "total": 0},
-    })
+    group = groups.setdefault((stage, prompt), {"scores": [], "unit_ids": []})
     signals = result.get("signals", {}).values()
     known = [signal for signal in signals if signal is not None]
-    findings = result.get("disproved_findings")
-    if isinstance(findings, dict) and findings.get("total", 0) > 0:
-        group["disproved_findings"]["disproved"] += findings["disproved"]
-        group["disproved_findings"]["total"] += findings["total"]
     if known:
         # True signals are adverse; nulls are omitted, and each unit contributes one equal-weight score.
         group["scores"].append(1 - sum(known) / len(known))
@@ -84,11 +83,28 @@ for (stage, prompt), group in sorted(groups.items(), key=lambda item: (item[0][0
         row["status"] = "insufficient-data"
     else:
         row["score"] = sum(group["scores"]) / row["sample_size"]
-    if group["disproved_findings"]["total"]:
-        row["disproved_findings"] = group["disproved_findings"]
-        row["disproved_share"] = group["disproved_findings"]["disproved"] / group["disproved_findings"]["total"]
     row["unit_ids"] = sorted(group["unit_ids"])
     rows.append(row)
+
+for (prompt, prompt_version), group in sorted(finding_groups.items()):
+    share = group["disproved"] / group["total"]
+    unit_ids = sorted(group["unit_ids"])
+    row = {
+        "stage": "review",
+        "prompt": prompt,
+        "prompt_version": prompt_version,
+        "sample_size": len(unit_ids),
+        "disproved_findings": {"disproved": group["disproved"], "total": group["total"]},
+        "disproved_share": share,
+        "unit_ids": unit_ids,
+    }
+    if row["sample_size"] < minimum:
+        row["status"] = "insufficient-data"
+    else:
+        row["score"] = 1 - share
+    rows.append(row)
+
+rows.sort(key=lambda row: (row["stage"], row["prompt"], row.get("prompt_version", "")))
 
 content = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
 report_path.parent.mkdir(parents=True, exist_ok=True)

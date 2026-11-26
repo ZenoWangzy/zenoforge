@@ -366,7 +366,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
               fi ;;
             NOT_READY)
               if findings_block_of "$rep" >/dev/null 2>&1; then
-                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
+                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report" "$w")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
                 review_class_recurrence_record "$rep" "$unit"
                 cancel_unit_runs "$unit" "review requested changes; head will change"
               else
@@ -374,7 +374,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
                 # 照记 block=missing（node_health 看得见），但绝不带着零发现进修复：同 head 重问一次
                 # （review-pending + history 标记，派发时附契约要点），再失败按评审失败转 supervisor，
                 # 不把「无发现」当成一次有效的打回结论。
-                set_unit "$unit" "$reviewed | .approved_sha=null$(review_findings_update "$rep" "$report")"
+                set_unit "$unit" "$reviewed | .approved_sha=null$(review_findings_update "$rep" "$report" "$w")"
                 if [[ "$(unit_retries "$unit" review-findings-missing)" == 0 ]]; then
                   set_unit "$unit" "$(hist review-findings-missing "$report") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
                   say "review-findings-missing unit=$unit report=$report: re-asking once with the findings contract"

@@ -85,6 +85,23 @@ dispatch_case rereview codex fixture-pr rereview.log
 [[ "$path_word" == "$guard_first"* ]] || fail "rereview: install-guard not first on the worker PATH: $path_word"
 echo "ok - review and rereview workers share the same PATH"
 
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+review_prompt="$fixture/review-contract.md"
+printf 'review prompt v1\n' > "$review_prompt"
+REVIEW_CONTRACT_MD="$review_prompt"
+version_a="$(sha256sum -- "$review_prompt" | cut -d' ' -f1)"
+dispatch_case review codex fixture-pr review-v1.log
+[[ "$(jq -r '.workers[-1].prompt_version // empty' "$WORKERS")" == "$version_a" ]] \
+  || fail 'review worker did not record the effective review prompt version'
+printf 'review prompt v2\n' > "$review_prompt"
+version_b="$(sha256sum -- "$review_prompt" | cut -d' ' -f1)"
+dispatch_case rereview codex fixture-pr rereview-v2.log
+[[ "$(jq -r '.workers[-1].prompt_version // empty' "$WORKERS")" == "$version_b" && "$version_a" != "$version_b" ]] \
+  || fail 'rereview worker did not record its changed effective review prompt version'
+dispatch_case implement codex fixture-pr implement-no-prompt-version.log
+[[ "$(jq -e '.workers[-1] | has("prompt_version") | not' "$WORKERS")" == true ]] \
+  || fail 'non-review worker recorded a review prompt version'
+
 # env(1) applies assignments left to right, so direct-main rebuilds the word instead of appending a second one.
 dispatch_case implement codex fixture-dm impl-dm.log
 [[ "$path_word" == "PATH=$engine_dir/non-product-test-shim:$engine_dir/bin/install-guard:"* ]] \

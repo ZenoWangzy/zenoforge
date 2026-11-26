@@ -49,7 +49,37 @@ grep -Fq -- 'unit-102' "$TEST_UPSERT_BODIES"
 grep -Fq -- 'Suggested change:' "$TEST_UPSERT_BODIES"
 ! grep -Fq -- 'must-not-appear' "$TEST_UPSERT_BODIES"
 
+version_a="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+version_b="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+rm -f -- "$state" "$TEST_UPSERT_CALLS" "$TEST_UPSERT_BODIES"
+{
+  jq -cn --arg version "$version_a" '{stage:"review",prompt:"engine/prompts/review-contract.md",prompt_version:$version,sample_size:3,score:0.4,unit_ids:["unit-201"]}'
+  jq -cn --arg version "$version_b" '{stage:"review",prompt:"engine/prompts/review-contract.md",prompt_version:$version,sample_size:3,score:0.3,unit_ids:["unit-202"]}'
+} > "$report"
+run_report >/dev/null
+[[ ! -s "$TEST_UPSERT_CALLS" ]]
+jq -e --arg a "$version_a" --arg b "$version_b" '.entries | length == 2 and
+  any(.[]; .prompt_version == $a and .streak == 1) and
+  any(.[]; .prompt_version == $b and .streak == 1)' "$state" >/dev/null
+jq -cn --arg version "$version_a" '{stage:"review",prompt:"engine/prompts/review-contract.md",prompt_version:$version,sample_size:3,score:0.4,unit_ids:["unit-201"]}' > "$report"
+run_report >/dev/null
+[[ "$(wc -l < "$TEST_UPSERT_CALLS")" == 1 ]]
+grep -Fq -- "Prompt version: \`$version_a\`" "$TEST_UPSERT_BODIES"
+first_version_class="$(sed -n '1s/.*--class \([^ ]*\).*/\1/p' "$TEST_UPSERT_CALLS")"
+jq -cn --arg version "$version_b" '{stage:"review",prompt:"engine/prompts/review-contract.md",prompt_version:$version,sample_size:3,score:0.3,unit_ids:["unit-202"]}' > "$report"
+run_report >/dev/null
+[[ "$(wc -l < "$TEST_UPSERT_CALLS")" == 2 ]]
+second_version_class="$(sed -n '2s/.*--class \([^ ]*\).*/\1/p' "$TEST_UPSERT_CALLS")"
+[[ "$first_version_class" != "$second_version_class" ]]
+grep -Fq -- "Prompt version: \`$version_b\`" "$TEST_UPSERT_BODIES"
+
 # Later low reports call the shared upsert again with the same class, so it updates the open issue.
+rm -f -- "$state" "$TEST_UPSERT_CALLS" "$TEST_UPSERT_BODIES"
+write_low_report
+run_report >/dev/null
+[[ ! -s "$TEST_UPSERT_CALLS" ]]
+run_report >/dev/null
+[[ "$(wc -l < "$TEST_UPSERT_CALLS")" == 1 ]]
 run_report >/dev/null
 [[ "$(wc -l < "$TEST_UPSERT_CALLS")" == 2 ]]
 first_class="$(sed -n '1s/.*--class \([^ ]*\).*/\1/p' "$TEST_UPSERT_CALLS")"

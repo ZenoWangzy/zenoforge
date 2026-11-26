@@ -16,8 +16,8 @@ BLOCKING_VERDICTS = frozenset(("review-request-changes", "review-block"))
 REVIEW_VERDICTS = BLOCKING_VERDICTS | {"review-approve"}
 REPAIR_STAGES = frozenset(("repair-delivered", "repair-no-push"))
 REVIEW_DISPOSITIONS = frozenset(("fixed", "disproved", "intentional", "out-of-scope"))
-REVIEW_PROMPT = "engine/prompts/review-contract.md"
 SHA_RE = re.compile(r"[0-9a-f]{40}")
+PROMPT_VERSION_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def _history_stages(unit):
@@ -30,10 +30,14 @@ def _history_stages(unit):
 def _disproved_findings(unit):
     reviews = unit.get("review_findings")
     if not isinstance(reviews, list):
-        return None
-    total = disproved = 0
+        return []
+    groups = {}
     for review in reviews:
         if not isinstance(review, dict) or review.get("disposition_block") != "ok":
+            continue
+        prompt = review.get("prompt")
+        version = review.get("prompt_version")
+        if prompt != "engine/prompts/review-contract.md" or not isinstance(version, str) or not PROMPT_VERSION_RE.fullmatch(version):
             continue
         dispositions = review.get("dispositions")
         if not isinstance(dispositions, list) or not dispositions:
@@ -50,9 +54,10 @@ def _disproved_findings(unit):
         ids = [item["id"] for item in dispositions]
         if len(ids) != len(set(ids)):
             continue
-        total += len(dispositions)
-        disproved += sum(item["disposition"] == "disproved" for item in dispositions)
-    return {"disproved": disproved, "total": total} if total else None
+        group = groups.setdefault((prompt, version), {"prompt": prompt, "prompt_version": version, "disproved": 0, "total": 0})
+        group["total"] += len(dispositions)
+        group["disproved"] += sum(item["disposition"] == "disproved" for item in dispositions)
+    return [groups[key] for key in sorted(groups)]
 
 
 def unit_signals(unit, reverted):
@@ -64,7 +69,6 @@ def unit_signals(unit, reverted):
         "repair": None,
         "rereview": None,
         "reverted": None,
-        "disproved_share": None if findings is None else findings["disproved"] / findings["total"],
     }
     if stages is not None:
         # A supervisor approve while the last review verdict still blocks overrules that verdict.
@@ -87,9 +91,6 @@ def unit_signals(unit, reverted):
     elif isinstance(sha, str) and SHA_RE.fullmatch(sha) and reverted is not None:
         signals["reverted"] = sha in reverted
     prompt = unit.get("prompt")
-    has_review = stages is not None and any(stage in REVIEW_VERDICTS for stage in stages)
-    if (findings is not None or has_review) and (not isinstance(prompt, str) or not prompt):
-        prompt = REVIEW_PROMPT
     return {
         "unit": unit.get("id"),
         "stage": unit.get("stage"),

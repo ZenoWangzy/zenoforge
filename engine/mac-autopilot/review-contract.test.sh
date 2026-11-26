@@ -277,6 +277,29 @@ done
 grep -Fq 'unbounded cost is a finding; name the principle' <<<"$scale_section" \
   || fail 'scale checklist does not require a finding to name the principle'
 
+prompt_version='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+cat >"$tmp/versioned-review.md" <<'EOF'
+```review-findings
+{"findings":[],"dispositions":[]}
+```
+EOF
+worker="$(jq -cn --arg version "$prompt_version" '{type:"review",prompt_version:$version}')"
+update="$(review_findings_update "$tmp/versioned-review.md" review-report.md "$worker")"
+unit="$(jq -c ". $update" <<<'{"history":[{"stage":"review-request-changes"}],"review_findings":[]}')"
+jq -e --arg version "$prompt_version" '.review_findings[-1].prompt == "engine/prompts/review-contract.md" and
+  .review_findings[-1].prompt_version == $version' <<<"$unit" >/dev/null \
+  || fail 'review prompt version was not persisted with its finding record'
+cat >"$tmp/versioned-disposition.md" <<'EOF'
+```review-findings
+{"findings":[],"dispositions":[]}
+```
+EOF
+disposition_update="$(review_dispositions_update "$tmp/versioned-disposition.md" "$unit")"
+unit="$(jq -c ". $disposition_update" <<<"$unit")"
+jq -e --arg version "$prompt_version" '.review_findings[-1].disposition_block == "ok" and
+  .review_findings[-1].prompt_version == $version' <<<"$unit" >/dev/null \
+  || fail 'review prompt version was lost when dispositions were recorded'
+
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
 echo 'review-contract.test.sh: PASS'
