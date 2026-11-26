@@ -99,6 +99,9 @@ run_repair "" '[{"stage":"review-request-changes","result":"'"$H2"'"}]'
 units_json="$(jq -cn --arg h "$H1" '{id:"issue-9",reviewed_sha:$h,reviewed_pr_head:$h,review_findings:[{round:1,block:"ok",findings:[{id:"F1",severity:"P1",status:"open"}],all_findings:[]}],
   history:[{stage:"review-request-changes",result:$h},{stage:"write-start",work_type:"repair"},{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}]}')"
 supervisor_requeue_rereview "$units_json" || fail 'a harvest-written repair-no-push was not read as a confirmed no-push'
+unverified_units_json="$(jq -cn --arg h "$H1" '{id:"issue-9",reviewed_sha:$h,reviewed_pr_head:$h,review_findings:[{round:1,block:"ok",findings:[{id:"F1",severity:"P1",status:"unverified"}],all_findings:[]}],
+  history:[{stage:"review-request-changes",result:$h},{stage:"write-start",work_type:"repair"},{stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}]}')"
+if supervisor_requeue_rereview "$unverified_units_json"; then fail 'an unverified P1 test-only finding was rerouted to rereview after a no-push repair'; fi
 
 # 8. Dispatch records the head a repair starts from on its write-start; implement runs and PR-less units record none.
 room_for() { return 0; }; size_admission_write_start() { return 0; }; dispatch() { return 0; }; refill_stopped() { return 1; }

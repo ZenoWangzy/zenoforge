@@ -1,8 +1,13 @@
 # Review stage
 
-Review is read-only in every lane. Do not edit code, commit, push, or run tests
-during review; leave findings open for the repair stage. Produce one report and
-one verdict.
+Review is read-only in every lane: do not edit code, commit, push, or run tests.
+Read-only evidence may use `git diff`, `git show`, `git log`, `rg`, `grep`,
+`cat`, `jq`, `gh pr view`, `gh pr diff`, `gh pr checks`, and `gh issue view`.
+If only a test can prove a finding, keep it with `status: "unverified"`, put
+the test command in `rerun_command`, say in
+`rerun_output` that it was not run and must be passed to repair or the engine's
+own test run, and give an unverified P0/P1 finding `NOT_READY`. Produce one
+report and one verdict.
 
 This file is the machine-readable contract the scheduler parses: the verdict
 line and the `review-findings` block below. The review method is Matt
@@ -95,9 +100,11 @@ input or a named prerequisite is unavailable. Older reports may still use
 
 End every review and every repair report with exactly one fenced block whose
 info string is `review-findings`, describing the same findings as your prose:
+The example below shows one finding; use empty arrays when there is nothing to
+list.
 
 ```review-findings
-{"findings":[],"dispositions":[]}
+{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":1,"rule":"Defect","status":"open","summary":"Broken query.","introduced_by":"candidate","base_evidence":"The base lacks this query.","rerun_command":"git show HEAD:src/a.ts","rerun_output":"The candidate introduces the query."}],"dispositions":[]}
 ```
 
 The block is one JSON object with required `findings` and `dispositions` arrays,
@@ -109,12 +116,12 @@ there is nothing to list. Each finding has exactly these fields and no others:
 - `file`: repository-relative path
 - `line`: positive integer
 - `rule`: the rule or category, for example `Defect`, `Spec`, `Standards`, `Maintainability`
-- `status`: `open`, `resolved`, or `inherited`
+- `status`: `open`, `unverified`, `resolved`, or `inherited`
 - `summary`: one sentence
 - `introduced_by`: `candidate`, `pre_existing`, or `unknown`
 - `base_evidence`: non-empty text explaining the comparison with the fixed base
-
-Example finding: `{"id":"F1","severity":"P1","file":"src/a.ts","line":1,"rule":"Defect","status":"open","summary":"Broken query.","introduced_by":"candidate","base_evidence":"The base lacks this query."}`.
+- `rerun_command`: a non-empty command that can verify the finding; when only a test can prove it, name that test for repair or the engine's own test run
+- `rerun_output`: non-empty evidence output, or for an `unverified` test-only finding, a note that the reviewer did not run it and it must be passed to repair or the engine's own test run
 
 Reviewers always write `"dispositions":[]`. Dispositions belong to the repair
 author, who adds exactly one entry per prior finding ID, each with exactly the

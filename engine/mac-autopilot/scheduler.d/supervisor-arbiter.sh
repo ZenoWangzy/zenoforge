@@ -299,7 +299,8 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
            and ((.reviewed_pr_head // "") | test("^[0-9a-f]{40}$"))) as $reviewed_pair
         | ($findings != null and $findings.block == "ok"
            and ($findings.findings | type) == "array"
-           and ([$findings.findings[] | select(.status == "open" and (.severity == "P0" or .severity == "P1"))] | length) == 0) as $no_actionable
+           and ([$findings.findings[] | select((.status == "open" or .status == "unverified") and (.severity == "P0" or .severity == "P1"))] | length) == 0) as $no_actionable
+        | (($findings.findings // []) | any(.[]; .status == "unverified" and (.severity == "P0" or .severity == "P1"))) as $unverified_actionable
         | ([$history | to_entries[]
           | select(.key > $review.key and (.value.stage == "repair-delivered" or .value.stage == "self-fix-delivered"))] | last // null) as $delivery
         | ([$history | to_entries[]
@@ -308,7 +309,7 @@ supervisor_requeue_rereview() { # unit-json → true when the latest unchanged r
            else try ($no_push.value.result | capture("^head (?<sha>[0-9a-f]{40}) unchanged after repair$").sha) catch ""
            end) as $no_push_sha
         | ([$history | to_entries[] | select(.key > $review.key and .value.stage == "write-start")] | last // null) as $latest_write
-        | $reviewed_pair and (
+        | $reviewed_pair and ($unverified_actionable | not) and (
             ($no_actionable and $latest_write == null)
             or ($no_push != null and ($delivery == null or $no_push.key > $delivery.key)
                 and $no_push_sha == $review_sha

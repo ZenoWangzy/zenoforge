@@ -123,6 +123,10 @@ actual_gh_permissions="$(IFS=,; printf '%s' "${gh_permissions[*]}")"
 review_prompt="${CODEX_COMMAND[2]}"
 [[ "$review_prompt" == *'评审只读'* && "$review_prompt" == *'保持 finding 为 open'* ]] \
   || fail 'Sonnet fallback prompt does not keep findings open in read-only review'
+[[ "$review_prompt" == *'可用只读证据命令：git diff/show/log/rev-parse/status、rg、grep、cat、jq、gh pr view/diff/checks、gh issue view'* ]] \
+  || fail 'review prompt does not name read-only evidence commands'
+[[ "$review_prompt" == *'status 为 unverified'* && "$review_prompt" == *'交给 repair 或引擎自测'* ]] \
+  || fail 'review prompt does not preserve test-only findings for repair or engine verification'
 review_command=" ${CODEX_COMMAND[*]} "
 [[ "$review_command" == *' --tools Read,Grep,Glob,Bash '* ]] || fail 'Sonnet fallback tool surface is not read-only'
 [[ "$review_command" == *' --permission-mode plan '* ]] || fail 'Sonnet fallback permission mode is not plan'

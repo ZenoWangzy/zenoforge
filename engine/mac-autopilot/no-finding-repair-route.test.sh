@@ -35,9 +35,10 @@ pass_row='[{"name":"gate","bucket":"pass","link":""}]'
 cancel_row='[{"name":"gate","bucket":"cancel","link":""}]'
 red_row='[{"name":"gate","bucket":"fail","link":""}]'
 p1_open='[{"id":"F1","severity":"P1","status":"open"}]'
+p1_unverified='[{"id":"F2","severity":"P1","status":"unverified"}]'
 
 # One unit per case; each case calls supervisor_requeue_unit (action requeue) once.
-jq -n --arg now "$head_now" --arg old "$head_old" --argjson p1 "$p1_open" '{units:[
+jq -n --arg now "$head_now" --arg old "$head_old" --argjson p1 "$p1_open" --argjson unverified "$p1_unverified" '{units:[
   {id:"pr-approved-cancel",pr:7,lane:"pr",branch:"agent/a",stage:"repair-pending",
     history:[{stage:"review-approve",result:$now},{stage:"repair-delivered"}]},
   {id:"pr-stale-approval",pr:8,lane:"pr",branch:"agent/b",stage:"repair-pending",
@@ -50,6 +51,10 @@ jq -n --arg now "$head_now" --arg old "$head_old" --argjson p1 "$p1_open" '{unit
     history:[{stage:"review-request-changes",result:$now}],
     reviewed_sha:$now,reviewed_pr_head:$now,
     review_findings:[{round:1,block:"ok",findings:$p1,all_findings:$p1}]},
+  {id:"pr-unverified-p1",pr:21,lane:"pr",branch:"agent/o",stage:"repair-pending",
+    history:[{stage:"review-request-changes",result:$now}],
+    reviewed_sha:$now,reviewed_pr_head:$now,
+    review_findings:[{round:1,block:"ok",findings:$unverified,all_findings:$unverified}]},
   {id:"pr-land-failed",pr:12,lane:"pr",branch:"agent/f",stage:"repair-pending",
     history:[{stage:"review-approve",result:$now},{stage:"land-failed",result:"push rejected"}]}
 ]}' > "$UNITS"
@@ -86,6 +91,9 @@ ROWS="$red_row"; supervisor_requeue_unit pr-red requeue 'fix the red gate' null
 ROWS="$cancel_row"; supervisor_requeue_unit pr-open-p1 requeue 'repair the finding' null
 [[ "$(field pr-open-p1 .stage)" == repair-pending ]] \
   || fail "an open P1 finding must still go to repair (got: $(field pr-open-p1 .stage))"
+ROWS="$cancel_row"; supervisor_requeue_unit pr-unverified-p1 requeue 'run the test-only finding through repair' null
+[[ "$(field pr-unverified-p1 .stage)" == repair-pending ]] \
+  || fail "an unverified P1 finding must still go to repair (got: $(field pr-unverified-p1 .stage))"
 
 # 6. A land failure carries its own repair reason, so it stays in repair even with green checks and an approval.
 ROWS="$pass_row"; supervisor_requeue_unit pr-land-failed requeue 'fix the land failure' null
