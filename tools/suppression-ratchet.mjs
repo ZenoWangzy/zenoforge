@@ -177,7 +177,7 @@ function main() {
   const previousBaseline = scope ? compareBaselineToRef(argv[1], baseline) : false;
   if (previousBaseline === true) process.exit(1);
   const baselineBootstrap = scope && previousBaseline === null;
-  const paths = !scope || baselineBootstrap || scope.has(baselinePath)
+  const paths = !scope || baselineBootstrap || scope.has(baselinePath) || scope.has(exceptionsPath)
     ? trackedSourceFiles()
     : [...scope].filter((path) => sourceCommentKind(path) && existsSync(path));
   const directives = currentDirectives(paths, exceptions);

@@ -69,6 +69,16 @@ EOF
 out=$(fails) || fail 'an exception with a missing ADR passed'
 [[ $out == *'ADR does not exist'* ]] || fail "the missing ADR file was not refused: $out"
 
+cat > tools/suppression-exceptions.json <<'EOF'
+[{"file":"engine/a.sh","line":2,"directive":"shellcheck disable=SC2086","adr":"docs/adr/0001-test.md"}]
+EOF
+[[ "$(run)" == 'suppression-ratchet ok' ]] || fail 'a valid exception was refused'
+git add docs/adr/0001-test.md engine/a.sh tools/suppression-exceptions.json && git commit -qm 'valid exception'
+printf '[]\n' > tools/suppression-exceptions.json
+git add tools/suppression-exceptions.json && git commit -qm 'remove exception'
+out=$(fails --changed HEAD~1) || fail 'removing an exception passed the changed-file ratchet'
+[[ $out == *'FAIL engine/a.sh:2'*'fix the finding'* ]] || fail "exception removal did not name its uncovered directive: $out"
+
 printf '[]\n' > tools/suppression-exceptions.json
 rm engine/a.ts engine/a.py
 printf 'echo x\n' > engine/a.sh
