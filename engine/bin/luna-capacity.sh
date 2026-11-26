@@ -10,6 +10,8 @@ if [[ -z "$LUNA_GATE_HOME" ]]; then
 fi
 LUNA_GATE_HOME="${LUNA_GATE_HOME:-${HOME:-}/.zenoforge}"
 LUNA_GATE_LAST_SOURCE="${LUNA_GATE_LAST_SOURCE:-$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)}"
+LUNA_CPU_BUSY_FILE="$LUNA_GATE_HOME/locks/luna-host-cpu.sample"
+LUNA_CPU_BUSY_LOCK="$LUNA_GATE_HOME/locks/luna-host-cpu.lock"
 
 luna_reload_live_gate() {
   local live_file="$LUNA_GATE_HOME/engine-live/bin/luna-capacity.sh" resolved source_file function_name
@@ -45,9 +47,53 @@ luna_reload_live_gate() {
 }
 
 luna_run_cap() { local cap="${LUNA_MAX:-$LUNA_RUNS_HARD_CAP}"; (( cap < LUNA_RUNS_HARD_CAP )) || cap=$LUNA_RUNS_HARD_CAP; printf '%s\n' "$cap"; }
-cpu_busy() { local a b; a=($(head -1 /proc/stat)); sleep 2; b=($(head -1 /proc/stat))
+cpu_busy() { local a b stat="${LUNA_PROC_STAT:-/proc/stat}"; a=($(head -1 "$stat")); sleep 2; b=($(head -1 "$stat"))
   local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
   echo $(( 100 * busy / (busy + idle + 1) )); }
+luna_cpu_sample_read() {
+  local sampled_at sample now ttl="${LUNA_CPU_SAMPLE_STALE_SECONDS:-45}"
+  LUNA_CPU_BUSY_VALUE=""
+  read -r sampled_at sample 2>/dev/null < "$LUNA_CPU_BUSY_FILE" || return 1
+  [[ "$sampled_at" =~ ^[0-9]+$ && "$sample" =~ ^[0-9]{1,3}$ ]] || return 1
+  printf -v now '%(%s)T' -1
+  (( now >= sampled_at && now - sampled_at <= ttl )) || return 1
+  LUNA_CPU_BUSY_VALUE="$sample"
+}
+luna_cpu_sampler_has_waiter() {
+  local slots="$1" f pid
+  for f in "$slots"/wait-*; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*-}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && return 0
+  done
+  return 1
+}
+luna_cpu_sampler_loop() {
+  local slots="$1" sample sampled_at tmp interval="${LUNA_CPU_SAMPLE_INTERVAL:-15}"
+  [[ "$interval" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || interval=15
+  while luna_cpu_sampler_has_waiter "$slots"; do
+    sample="$(cpu_busy 2>/dev/null)" || sample=100
+    [[ "$sample" =~ ^[0-9]{1,3}$ ]] || sample=100
+    printf -v sampled_at '%(%s)T' -1
+    tmp="${LUNA_CPU_BUSY_FILE}.${BASHPID}.tmp"
+    if printf '%s %s\n' "$sampled_at" "$sample" > "$tmp"; then
+      mv -f -- "$tmp" "$LUNA_CPU_BUSY_FILE" || rm -f -- "$tmp"
+    else
+      rm -f -- "$tmp"
+    fi
+    sleep "$interval"
+  done
+}
+luna_cpu_sampler_start() {
+  local slots="$1" fd lock_dir="${LUNA_CPU_BUSY_LOCK%/*}"
+  [[ -d "$lock_dir" ]] || mkdir -p -- "$lock_dir" || return 1
+  exec {fd}>"$LUNA_CPU_BUSY_LOCK" || return 1
+  if flock -n "$fd"; then
+    ( luna_cpu_sampler_loop "$slots" ) >/dev/null 2>&1 &
+    LUNA_CPU_SAMPLER_PID=$!
+  fi
+  exec {fd}>&-
+}
 # 11-19 (head row, vecta-81 cgroup read): zf-workers.slice sat at its MemoryHigh while MemAvailable still passed, so admitted
 # workers were throttled in reclaim (load1 60 with idle CPU). A start needs one worker peak (measured 603-1165 MB) left under
 # the slice's memory.high; no slice dir or memory.high=max skips the check.
@@ -179,7 +225,7 @@ slice_cpu_used() { # latest worker CPU average in cores (zf-workers.slice only; 
 }
 BOX_ROOM_WHY=""
 box_has_room() { # optional waiter age in seconds, then the asking backend (luna|zc); shared by bin/luna, bin/zc, and the priority hold
-  local age="${1:-$SECONDS}" backend="${2:-}" runs scope_runs avail cpu full cap slice peak peak_source quota_line quota period cpu_cap floor_cap fallback_cap cpu_used cpu_est quota_cpus used_display
+  local age="${1:-$SECONDS}" backend="${2:-}" shared_cpu="${3:-}" runs scope_runs avail cpu full cap slice peak peak_source quota_line quota period cpu_cap floor_cap fallback_cap cpu_used cpu_est quota_cpus used_display
   BOX_ROOM_WHY=""
   [[ "$age" =~ ^[0-9]+$ ]] || age=0
   runs=$(codex_runs)
@@ -228,24 +274,30 @@ box_has_room() { # optional waiter age in seconds, then the asking backend (luna
     return 1
   fi
   # The CPU sample takes 2 s: reuse one from the last LUNA_CPU_SAMPLE_TTL seconds. Assigned here, not inside $(...), so the cache outlives the call.
-  if [[ -z "${LUNA_CPU_BUSY_AT:-}" ]] || (( SECONDS - LUNA_CPU_BUSY_AT >= ${LUNA_CPU_SAMPLE_TTL:-10} )); then
-    LUNA_CPU_BUSY_VALUE=$(cpu_busy); LUNA_CPU_BUSY_AT=$SECONDS
+  if [[ "$shared_cpu" == shared ]]; then
+    if ! luna_cpu_sample_read; then
+      BOX_ROOM_WHY="host CPU sample unavailable or stale"
+      return 1
+    fi
+    cpu="$LUNA_CPU_BUSY_VALUE"
+  else
+    if [[ -z "${LUNA_CPU_BUSY_AT:-}" ]] || (( SECONDS - LUNA_CPU_BUSY_AT >= ${LUNA_CPU_SAMPLE_TTL:-10} )); then
+      LUNA_CPU_BUSY_VALUE=$(cpu_busy); LUNA_CPU_BUSY_AT=$SECONDS
+    fi
+    cpu=$LUNA_CPU_BUSY_VALUE
   fi
-  cpu=$LUNA_CPU_BUSY_VALUE
   if (( cpu < ${LUNA_CPU_TARGET:-85} )); then return 0; fi
   BOX_ROOM_WHY="runs $runs/$cap avail ${avail}MB full $full cpu ${cpu}/${LUNA_CPU_TARGET:-85}%"
   return 1
 }
 
 luna_wait_priority_rank() { # keep aligned with higher_priority_waiting: hotfix > opt > normal
-  case "$1" in hotfix) echo 0 ;; opt) echo 1 ;; *) echo 2 ;; esac
+  case "$1" in hotfix) LUNA_WAIT_PRIORITY_RANK=0 ;; opt) LUNA_WAIT_PRIORITY_RANK=1 ;; *) LUNA_WAIT_PRIORITY_RANK=2 ;; esac
 }
 luna_wait_ticket_time() {
-  local time
-  time=$(cat "$1" 2>/dev/null) || time=""
-  [[ "$time" =~ ^[0-9]+$ ]] || time=$(stat -c %Y -- "$1" 2>/dev/null) || time=0
-  [[ "$time" =~ ^[0-9]+$ ]] || time=0
-  printf '%s\n' "$time"
+  LUNA_WAIT_TICKET_TIME=0
+  read -r LUNA_WAIT_TICKET_TIME < "$1" 2>/dev/null || :
+  [[ "$LUNA_WAIT_TICKET_TIME" =~ ^[0-9]+$ ]] || LUNA_WAIT_TICKET_TIME=0
 }
 wait_stale_drop() {
   local slots="$1" f pid
@@ -259,17 +311,21 @@ luna_wait_ticket_ahead() {
   local slots="$1" wait_f="$2" priority="$3" own_pid="${2##*-}" own_rank own_time
   local f key pid ticket_priority ticket_rank ticket_time
   [[ "$own_pid" =~ ^[0-9]+$ ]] || return 1
-  own_rank=$(luna_wait_priority_rank "$priority")
-  own_time=$(luna_wait_ticket_time "$wait_f")
+  luna_wait_priority_rank "$priority"
+  own_rank=$LUNA_WAIT_PRIORITY_RANK
+  luna_wait_ticket_time "$wait_f"
+  own_time=$LUNA_WAIT_TICKET_TIME
   for f in "$slots"/wait-*; do
     [[ -e "$f" && "$f" != "$wait_f" ]] || continue
     key="${f##*/}"; pid="${key##*-}"
     [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || continue
     ticket_priority="${key#wait-}"; ticket_priority="${ticket_priority%-*}"
-    ticket_rank=$(luna_wait_priority_rank "$ticket_priority")
-    ticket_time=$(luna_wait_ticket_time "$f")
+    luna_wait_priority_rank "$ticket_priority"
+    ticket_rank=$LUNA_WAIT_PRIORITY_RANK
+    luna_wait_ticket_time "$f"
+    ticket_time=$LUNA_WAIT_TICKET_TIME
     if (( ticket_rank < own_rank || (ticket_rank == own_rank && (ticket_time < own_time || (ticket_time == own_time && pid < own_pid))) )); then
-      printf '%s\n' "$key"
+      LUNA_WAIT_AHEAD="$key"
       return 0
     fi
   done
@@ -277,19 +333,82 @@ luna_wait_ticket_ahead() {
 }
 LUNA_WAIT_AHEAD=""
 luna_waiter_has_room() { # publish once, clean stale tickets, respect priority/FIFO, then check capacity
-  local slots="$1" wait_f="$2" priority="$3" age="${4:-$SECONDS}" backend="${5:-}" now last ahead
+  local slots="$1" wait_f="$2" priority="$3" age="${4:-$SECONDS}" backend="${5:-}" now last scope runs base="${LUNA_WAIT_SECONDS:-15}" maximum="${LUNA_WAIT_MAX_SECONDS:-30}" check_interval
   LUNA_WAIT_AHEAD=""
-  [[ -d "$slots" ]] && { [[ -e "$wait_f" ]] || date +%s > "$wait_f"; } || return 1
+  [[ -d "$slots" ]] && { [[ -e "$wait_f" ]] || printf '%(%s)T\n' -1 > "$wait_f"; } || return 1
   [[ -e "$wait_f" ]] || return 1
   wait_stale_drop "$slots"
-  if ahead=$(luna_wait_ticket_ahead "$slots" "$wait_f" "$priority"); then
-    LUNA_WAIT_AHEAD="$ahead"
+  if luna_wait_ticket_ahead "$slots" "$wait_f" "$priority"; then
     now=$SECONDS; last="${LUNA_WAIT_LOG_AT:-}"
     if [[ ! "$last" =~ ^[0-9]+$ ]] || (( now - last >= 60 )); then
-      printf 'capacity gate yield waiter=%s ahead=%s\n' "${wait_f##*/}" "$ahead" >&2
+      printf 'capacity gate yield waiter=%s ahead=%s\n' "${wait_f##*/}" "$LUNA_WAIT_AHEAD" >&2
       LUNA_WAIT_LOG_AT=$now
     fi
     return 1
   fi
-  box_has_room "$age" "$backend"
+  if [[ "$priority" != hotfix ]] && (( age < ${LUNA_AGE_ADMIT_SECONDS:-1200} )); then
+    runs=0
+    for scope in "$LUNA_WORKER_SLICE_DIR"/luna-*.scope "$LUNA_WORKER_SLICE_DIR"/zc-*.scope; do
+      [[ -d "$scope" ]] || continue
+      runs=$((runs + 1))
+    done
+    if (( runs >= ${LUNA_MIN:-2} )); then
+      if ! luna_cpu_sample_read; then
+        BOX_ROOM_WHY="host CPU sample unavailable or stale"
+        LUNA_WAIT_ROOM_CHECK_AT=""
+        now=$SECONDS; last="${LUNA_CPU_SAMPLER_TRY_AT:-}"
+        if [[ ! "$last" =~ ^[0-9]+$ ]] || (( now - last >= ${LUNA_CPU_SAMPLER_RETRY_SECONDS:-15} )); then
+          LUNA_CPU_SAMPLER_TRY_AT=$now
+          luna_cpu_sampler_start "$slots" || :
+        fi
+        return 1
+      fi
+      if (( LUNA_CPU_BUSY_VALUE >= ${LUNA_CPU_TARGET:-85} )); then
+        BOX_ROOM_WHY="host CPU busy ${LUNA_CPU_BUSY_VALUE}/${LUNA_CPU_TARGET:-85}%"
+        LUNA_WAIT_ROOM_CHECK_AT=""
+        return 1
+      fi
+    fi
+  fi
+  now=$SECONDS; last="${LUNA_WAIT_ROOM_CHECK_AT:-}"
+  [[ "$base" =~ ^[0-9]+$ ]] || base=15
+  [[ "$maximum" =~ ^[0-9]+$ ]] || maximum=30
+  (( base < 15 )) && base=15
+  (( maximum < base )) && maximum=$base
+  check_interval=$((maximum + 1))
+  if [[ "$last" =~ ^[0-9]+$ ]] && (( now - last < check_interval )); then return 1; fi
+  if box_has_room "$age" "$backend" shared; then return 0; fi
+  [[ "$BOX_ROOM_WHY" == "host CPU sample unavailable or stale" ]] || LUNA_WAIT_ROOM_CHECK_AT=$SECONDS
+  if [[ "$BOX_ROOM_WHY" == 'host CPU sample unavailable or stale' ]]; then
+    now=$SECONDS; last="${LUNA_CPU_SAMPLER_TRY_AT:-}"
+    if [[ ! "$last" =~ ^[0-9]+$ ]] || (( now - last >= ${LUNA_CPU_SAMPLER_RETRY_SECONDS:-15} )); then
+      LUNA_CPU_SAMPLER_TRY_AT=$now
+      luna_cpu_sampler_start "$slots" || :
+    fi
+  fi
+  return 1
+}
+luna_wait_backoff() {
+  local attempt="${1:-0}" base="${LUNA_WAIT_SECONDS:-15}" maximum="${LUNA_WAIT_MAX_SECONDS:-30}" n
+  [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=0
+  [[ "$base" =~ ^[0-9]+$ ]] || base=15
+  [[ "$maximum" =~ ^[0-9]+$ ]] || maximum=30
+  (( base < 15 )) && base=15
+  (( maximum < base )) && maximum=$base
+  LUNA_WAIT_DELAY=$base
+  n=0
+  while (( n < attempt && LUNA_WAIT_DELAY < maximum )); do
+    LUNA_WAIT_DELAY=$((LUNA_WAIT_DELAY * 2))
+    (( LUNA_WAIT_DELAY > maximum )) && LUNA_WAIT_DELAY=$maximum
+    n=$((n + 1))
+  done
+}
+luna_waiter_sleep() {
+  local slots="$1" delay="$2" fifo="$1/capacity-wake.fifo" fd
+  if [[ ! -p "$fifo" ]]; then
+    mkfifo "$fifo" 2>/dev/null || [[ -p "$fifo" ]] || return 1
+  fi
+  exec {fd}<>"$fifo" || return 1
+  read -r -t "$delay" -u "$fd" || :
+  exec {fd}>&-
 }

@@ -221,10 +221,18 @@ wait_for_file() {
 start_gate_waiter() {
   local case_root="$1" key="$2"
   env AGENT_HOME="$case_root/agent" LUNA_GATE_CALLS="$case_root/calls" LUNA_STARTED="$case_root/started" \
-    WORKER_SCRATCH_ROOT="$case_root/scratch" LUNA_SLOTS="$case_root/slots" LUNA_WAIT_SECONDS=.1 \
+    WORKER_SCRATCH_ROOT="$case_root/scratch" LUNA_SLOTS="$case_root/slots" LUNA_WAIT_SECONDS=.1 LUNA_GATE_RELOAD_SECONDS=0 \
     PATH="$RELOAD_STUB_BIN:$PATH" "$bin/luna" "$key" "$case_root" "$case_root/prompt" \
     >"$case_root/waiter.log" 2>&1 &
   reload_pid=$!
+}
+wake_gate_waiter() {
+  local fifo="$1/slots/capacity-wake.fifo"
+  for _ in {1..200}; do
+    if [[ -p "$fifo" ]]; then printf '\n' > "$fifo"; return 0; fi
+    sleep .01
+  done
+  return 1
 }
 prepare_gate_case() {
   local case_root="$1"
@@ -242,6 +250,7 @@ live_gate_reload_case() {
   wait_for_lines "$case_root/calls" 1 || fail 'luna did not call version A gate'
   [[ -z "$(cat "$case_root/started" 2>/dev/null || :)" ]] || fail 'version A unexpectedly started the run'
   ln -sfn "$engine_b" "$case_root/agent/engine-live"
+  wake_gate_waiter "$case_root" || fail 'luna did not create its waiter sleep signal'
   wait_for_file "$case_root/started" || fail 'luna did not start after the live gate changed to B'
   wait "$reload_pid" || fail 'luna failed after the live gate admitted the run'; reload_pid=""
   [[ "$(cat "$case_root/calls")" == $'A\nB' ]] || fail "luna did not admit on the first poll after reloading B: $(cat "$case_root/calls")"
@@ -262,6 +271,7 @@ EOF
   start_gate_waiter "$case_root" reload-broken
   wait_for_lines "$case_root/calls" 1 || fail 'luna did not call version A gate before the broken reload'
   ln -sfn "$engine_b" "$case_root/agent/engine-live"
+  wake_gate_waiter "$case_root" || fail 'luna did not create its waiter sleep signal before broken reload'
   wait_for_lines "$case_root/calls" 2 || fail 'luna did not continue calling A after B failed to source'
   kill -0 "$reload_pid" 2>/dev/null || fail 'luna exited after the live gate failed to source'
   [[ "$(cat "$case_root/calls")" == $'A\nA' ]] || fail "broken B replaced A gate functions: $(cat "$case_root/calls")"
@@ -274,7 +284,8 @@ for f in "$bin/luna" "$bin/zc"; do
   case "${f##*/}" in luna) gate_backend=luna ;; *) gate_backend=zc ;; esac
   grep -Fq "if luna_waiter_has_room \"\$slots\" \"\$wait_f\" \"\$prio\" \"\$SECONDS\" $gate_backend; then" "$f" || fail "$(basename "$f") does not use ticket-ordered admission naming its backend"
   grep -Fq 'luna_reload_live_gate' "$f" || fail "$(basename "$f") does not reload the live gate"
-  grep -Fq 'sleep "${LUNA_WAIT_SECONDS:-30}"' "$f" || fail "$(basename "$f") does not use the waiter sleep override"
+  grep -Fq 'luna_wait_backoff "$wait_attempt"' "$f" || fail "$(basename "$f") does not use shared waiter backoff"
+  grep -Fq 'luna_waiter_sleep "$slots" "$LUNA_WAIT_DELAY"' "$f" || fail "$(basename "$f") does not use the in-shell waiter sleep"
 done
 echo "ok - ticket admission orders hotfix before normal and older waiters before newer ones; stale tickets drop; uncontended hotfix admitted"
 

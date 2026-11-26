@@ -45,22 +45,25 @@ chain_exit_trap() {
   trap "$1${prior:+; $prior}" EXIT # lint-exempt: preserve any existing exit trap
 }
 chain_exit_trap 'rm -f -- "$wait_f" "$out/gate-wait"; [[ -z "${scope:-}" ]] || systemctl --user stop "$scope.scope" >/dev/null 2>&1 || true'
-mx=8
 if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
-  exec {mx}>"$slots/mutex"
+  wait_attempt=0 gate_reload_at=""
   while :; do
-    flock "$mx"
-    [[ -e "$wait_f" ]] || : >"$wait_f"
+    [[ -e "$wait_f" ]] || printf '%(%s)T\n' -1 >"$wait_f"
     [[ -e "$wait_f" ]] || { echo "zc: cannot publish capacity ticket $wait_f" >&2; exit 74; }
-    luna_reload_live_gate
+    if [[ ! "$gate_reload_at" =~ ^[0-9]+$ ]] || (( SECONDS - gate_reload_at >= ${LUNA_GATE_RELOAD_SECONDS:-60} )); then
+      luna_reload_live_gate
+      gate_reload_at=$SECONDS
+    fi
     if declare -F luna_waiter_has_room >/dev/null; then
-      if luna_waiter_has_room "$slots" "$wait_f" "$prio" "$SECONDS" zc; then rm -f -- "$wait_f" "$out/gate-wait"; break; fi
+      if luna_waiter_has_room "$slots" "$wait_f" "$prio" "$SECONDS" zc; then break; fi
     elif box_has_room "$SECONDS" zc; then
-      rm -f -- "$wait_f" "$out/gate-wait"; break
+      break
     fi
     [[ -e "$wait_f" ]] || { echo "zc: capacity ticket disappeared: $wait_f" >&2; exit 74; }
-    [[ -f $out/gate-wait ]] || date +%s >"$out/gate-wait"
-    flock -u "$mx"; sleep "${LUNA_WAIT_SECONDS:-30}"
+    [[ -f $out/gate-wait ]] || printf '%(%s)T\n' -1 >"$out/gate-wait"
+    luna_wait_backoff "$wait_attempt"
+    wait_attempt=$((wait_attempt + 1))
+    luna_waiter_sleep "$slots" "$LUNA_WAIT_DELAY" || { echo 'zc: could not wait on capacity gate' >&2; exit 74; }
   done
 else
   # Remote zc joins luna's inner shape: no local capacity gate, a validated zf-remote scope under
@@ -97,8 +100,8 @@ TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
   systemd-run "${systemd_args[@]}" -p MemoryHigh="${LUNA_MEM_HIGH:-1536M}" -p MemoryMax="${LUNA_MEM_MAX:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
   "${zcode_cmd[@]}" \
   "${prompt_args[@]}" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
-  >"$out/events.jsonl" 2>"$out/stderr.log" {mx}>&- &
-zpid=$!; echo "$zpid" >"$out/codex.pid"; sleep 3; flock -u "$mx"; exec {mx}>&-
+  >"$out/events.jsonl" 2>"$out/stderr.log" &
+zpid=$!; echo "$zpid" >"$out/codex.pid"; sleep 3; rm -f -- "$wait_f" "$out/gate-wait"
 # Sample the scope's memory.peak while it lives: systemd reaps the cgroup the moment the run ends (11-21: four
 # ended runs had no scope dir left at a read after wait), so the peak must come from a read made during the run.
 peak_sample="$root/tmp/$key/scope-peak.sample"
