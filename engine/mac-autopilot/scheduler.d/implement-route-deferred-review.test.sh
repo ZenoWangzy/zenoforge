@@ -35,6 +35,7 @@ codex_probe_ok() { return 0; }
 model_tuple_field() { case "$1:$2" in review:0) echo gpt-5.5 ;; review:1) echo high ;; review_cross:0) echo GLM-5.3 ;; review_cross:1) echo max ;; review_fallback:0) echo claude-sonnet-4-6 ;; review_fallback:1) echo high ;; esac; }
 review_identity_for_model() { case "$1" in gpt-*) echo "codex:$1:$2" ;; GLM-*) echo "zcode:$1:$2" ;; claude-*) echo "claude:$1:$2" ;; *) return 1 ;; esac; }
 toggle_cli() { if [[ "$2" == on ]]; then printf '#!/usr/bin/env bash\nexit 0\n' > "$test_env_bin/$1"; chmod +x "$test_env_bin/$1"; else rm -f "$test_env_bin/$1"; fi; }
+command() { if [[ "${1:-}" == -v && ( "${2:-}" == claude || "${2:-}" == codex ) ]]; then [[ -x "$test_env_bin/$2" ]]; return; fi; builtin command "$@"; }
 glm_quota_stale() { jq -n '{freshness:"fresh",read_at:0,max_age_seconds:900,five_h_pct:0,week_pct:1,cap_5h:60,cap_week:100}' > "$ZCODE_QUOTA_SNAPSHOT_FILE"; }
 future() { echo $(( $(date +%s) + 3600 )); }
 write_units() { # N review-pending Claude-authored units
@@ -65,7 +66,6 @@ if implement_route_family_reviewable claude; then fail "(c) claude reviewable at
 grep -Fq 'IMPLEMENT-ROUTE-UNREVIEWABLE family=claude reason=deferred-review-cap' "$AGENT_HOME/logs/head-watch.alerts" || fail "(c) alert missing"
 
 # (d) codex and glm families with the same holds (GLM, Codex and the Claude fallback all on a marker): unreviewable as before, nothing deferred.
-# The Claude fallback is held by its marker, not by a missing CLI: the test host has a real claude on PATH.
 write_units 3; reset_route; toggle_cli codex off; toggle_cli claude off; glm_quota_stale
 future > "$ZCODE_EXHAUSTED_MARKER_FILE"; future > "$CODEX_EXHAUSTED_MARKER_FILE"; future > "$CLAUDE_EXHAUSTED_MARKER_FILE"
 if implement_route_family_reviewable codex; then fail "(d) codex reviewable"; fi
@@ -73,6 +73,25 @@ if implement_route_family_reviewable glm; then fail "(d) glm reviewable"; fi
 ! grep -Fq 'deferred-review' "$LOG" || fail "(d) codex or glm deferred"
 grep -Fq 'IMPLEMENT-ROUTE-UNREVIEWABLE family=codex' "$AGENT_HOME/logs/head-watch.alerts" || fail "(d) codex alert missing"
 grep -Fq 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm' "$AGENT_HOME/logs/head-watch.alerts" || fail "(d) glm alert missing"
+
+write_units 0; reset_route; future > "$CLAUDE_EXHAUSTED_MARKER_FILE"
+(
+  model_tuple_field() { case "$1:$2" in review_fallback:0) echo claude-sonnet-4-6 ;; review_fallback:1) echo high ;; esac; }
+  routing_configured() { return 0; }
+  routing_implement_family_order() { printf 'glm\n'; }
+  routing_review_candidates() { printf 'claude:claude-sonnet-4-6:high\n'; }
+  PICK_PROVIDER=""
+  if pick_routed_implementer '{}' ''; then fail "(d2) glm implement picked without a reviewer"; fi
+  [[ -z "$PICK_PROVIDER" ]] || fail "(d2) glm implement picked $PICK_PROVIDER"
+  [[ "$IMPLEMENT_REVIEWER_REASON" == reviewer-held:claude ]] || fail "(d2) glm wait reason was $IMPLEMENT_REVIEWER_REASON"
+  IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=(); IMPLEMENT_ROUTE_SKIPS=""
+  if pick_routed_implementer '{}' ''; then fail "(d2) glm implement picked on a repeated check"; fi
+  [[ "$IMPLEMENT_REVIEWER_REASON" == reviewer-held:claude ]] || fail "(d2) repeated glm wait reason was $IMPLEMENT_REVIEWER_REASON"
+)
+grep -Fq 'implement-route unreviewable family=glm reason=reviewer-held:claude' "$LOG" || fail "(d2) glm wait log missing"
+grep -Fq 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm reason=reviewer-held:claude' "$AGENT_HOME/logs/head-watch.alerts" || fail "(d2) Claude hold alert missing"
+glm_alerts="$(grep -F "${STAMP:0:13}" "$AGENT_HOME/logs/head-watch.alerts" | grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm ' || true)"
+[[ "$glm_alerts" == 1 ]] || fail "(d2) glm alert count for the hour was $glm_alerts"
 
 # (e) Claude-authored unit, GLM held, Codex without CLI, Claude fallback free: review pick selects nothing.
 write_units 0; reset_route; toggle_cli codex off; toggle_cli claude on; glm_quota_stale; future > "$ZCODE_EXHAUSTED_MARKER_FILE"
