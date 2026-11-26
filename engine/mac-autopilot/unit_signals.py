@@ -16,6 +16,7 @@ BLOCKING_VERDICTS = frozenset(("review-request-changes", "review-block"))
 REVIEW_VERDICTS = BLOCKING_VERDICTS | {"review-approve"}
 REPAIR_STAGES = frozenset(("repair-delivered", "repair-no-push"))
 REVIEW_DISPOSITIONS = frozenset(("fixed", "disproved", "intentional", "out-of-scope"))
+REVIEW_PROMPT = "engine/prompts/review-contract.md"
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
@@ -85,10 +86,14 @@ def unit_signals(unit, reverted):
         signals["reverted"] = True
     elif isinstance(sha, str) and SHA_RE.fullmatch(sha) and reverted is not None:
         signals["reverted"] = sha in reverted
+    prompt = unit.get("prompt")
+    has_review = stages is not None and any(stage in REVIEW_VERDICTS for stage in stages)
+    if (findings is not None or has_review) and (not isinstance(prompt, str) or not prompt):
+        prompt = REVIEW_PROMPT
     return {
         "unit": unit.get("id"),
         "stage": unit.get("stage"),
-        "prompt": unit.get("prompt"),
+        "prompt": prompt,
         "signals": signals,
         "disproved_findings": findings,
     }

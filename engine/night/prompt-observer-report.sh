@@ -59,7 +59,7 @@ for unit in ledger_history.load_units(runtime):
         continue
     result = unit_signals(unit, reverted)
     stage, prompt = result.get("stage"), result.get("prompt")
-    if (stage is not None and not isinstance(stage, str)) or (prompt is not None and not isinstance(prompt, str)):
+    if not isinstance(stage, str) or not isinstance(prompt, str) or not prompt:
         continue
     group = groups.setdefault((stage, prompt), {
         "scores": [],

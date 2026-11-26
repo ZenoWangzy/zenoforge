@@ -10,8 +10,8 @@ runtime="$tmp/runtime"
 mkdir -p "$runtime" "$tmp/bin"
 cat > "$runtime/units.json" <<'JSON'
 {"units":[
-  {"id":"unit-1","stage":"merged","prompt":"triage","history":[{"stage":"review-request-changes"},{"stage":"supervisor-approve"}],"review_findings":[{"disposition_block":"ok","dispositions":[{"id":"F1","disposition":"disproved"},{"id":"F2","disposition":"fixed"}]}]},
-  {"id":"unit-2","stage":"merged","prompt":"triage","history":[{"stage":"review-approve"}],"review_findings":[{"disposition_block":"ok","dispositions":[{"id":"F3","disposition":"fixed"}]}]},
+  {"id":"unit-1","stage":"merged","history":[{"stage":"review-request-changes"},{"stage":"supervisor-approve"}],"review_findings":[{"disposition_block":"ok","dispositions":[{"id":"F1","disposition":"disproved"},{"id":"F2","disposition":"fixed"}]}]},
+  {"id":"unit-2","stage":"merged","history":[{"stage":"review-approve"}],"review_findings":[{"disposition_block":"ok","dispositions":[{"id":"F3","disposition":"fixed"}]}]},
   {"id":"unit-3","stage":"merged","prompt":"triage"},
   {"id":"pending","stage":"review-pending","prompt":"triage","history":[{"stage":"review-approve"}]}
 ]}
@@ -33,15 +33,16 @@ run_report() {
 
 # Exactly the minimum known units gets a score; null signals do not dilute it or join its unit list.
 run_report 1 2 > /dev/null
-jq -s -e 'length == 1 and .[0].stage == "merged" and .[0].prompt == "triage" and
+jq -s -e 'length == 2 and .[0].stage == "merged" and .[0].prompt == "engine/prompts/review-contract.md" and
   .[0].sample_size == 2 and (.[0].score > 0.81 and .[0].score < 0.82) and
   (.[0].disproved_share > 0.333333 and .[0].disproved_share < 0.333334) and
   .[0].disproved_findings.disproved == 1 and .[0].disproved_findings.total == 3 and
-  .[0].unit_ids == ["unit-1","unit-2"] and (.[0] | has("status") | not)' "$tmp/report.jsonl" >/dev/null
+  .[0].unit_ids == ["unit-1","unit-2"] and (.[0] | has("status") | not) and
+  .[1].prompt == "triage" and .[1].sample_size == 0 and .[1].status == "insufficient-data"' "$tmp/report.jsonl" >/dev/null
 
 # One below the boundary reports insufficient data and omits score.
 run_report 1 3 > /dev/null
-jq -s -e 'length == 1 and .[0].sample_size == 2 and .[0].status == "insufficient-data" and
+jq -s -e 'length == 2 and .[0].sample_size == 2 and .[0].status == "insufficient-data" and
   (.[0] | has("score") | not) and .[0].unit_ids == ["unit-1","unit-2"]' "$tmp/report.jsonl" >/dev/null
 
 # A zero rate samples no finished unit; unfinished units never enter the report.

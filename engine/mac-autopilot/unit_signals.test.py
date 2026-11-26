@@ -28,6 +28,7 @@ class UnitSignalsTests(unittest.TestCase):
             ],
         }]
         out = unit_signals(unit, {})
+        self.assertEqual(out["prompt"], "engine/prompts/review-contract.md")
         self.assertEqual(out["disproved_findings"], {"disproved": 1, "total": 2})
         self.assertEqual(out["signals"]["disproved_share"], 0.5)
 
@@ -56,7 +57,9 @@ class UnitSignalsTests(unittest.TestCase):
         self.assertIs(signals["rereview"], True)
 
     def test_review_without_repair_has_no_rereview(self):
-        signals = unit_signals(stages("review-approve"), {})["signals"]
+        out = unit_signals(stages("review-approve"), {})
+        self.assertEqual(out["prompt"], "engine/prompts/review-contract.md")
+        signals = out["signals"]
         self.assertIs(signals["repair"], False)
         self.assertIs(signals["rereview"], False)
 
