@@ -31,17 +31,17 @@ batch_ticket_return_ratchet() {
   for fn in dispatch_advisor_batch dispatch_triage_batch; do
     body="$(batch_loop_body "$file" "$fn")"
     if [[ -z "$body" ]]; then
-      printf 'FAIL %s: for-n loop not found\n' "$fn"; fail=1; continue
+      printf 'REFUSAL found="%s has no for-n loop" alternative="restore the per-ticket for-n loop and skip ticket-specific failures with continue" documented_in=docs/enforced-rules.md\n' "$fn"; fail=1; continue
     fi
     if grep -q -F '|| return' <<< "$body"; then
-      printf 'FAIL %s: for-n loop returns on a per-ticket failure; skip the ticket with continue:\n' "$fn"
+      printf 'REFUSAL found="%s returns on a per-ticket failure" alternative="skip that ticket with continue" documented_in=docs/enforced-rules.md; offending lines:\n' "$fn"
       grep -F '|| return' <<< "$body" | sed 's/^/  /'
       fail=1
     fi
   done
   case_body="$(recut_case_body "$file")"
   if ! grep -qE '^[[:space:]]*([0-9]+\|)*80(\|[0-9]+)*\)' <<< "$case_body"; then # 80) alone or in an alternation such as 78|80) (#1403)
-    printf 'FAIL recut caller case on dispatch_policy_unit has no 80) arm; a spend skip would hit *)\n'
+    printf 'REFUSAL found="recut caller case on dispatch_policy_unit has no 80 arm" alternative="add an 80 arm that continues the batch on a spend skip" documented_in=docs/enforced-rules.md\n'
     fail=1
   fi
   (( fail == 0 )) || return 1
@@ -61,7 +61,7 @@ if batch_ticket_return_ratchet "$fixture_dir/return.sh" > "$fixture_dir/out.txt"
   printf 'batch-ticket-return-ratchet.test.sh: a for-n loop return passed\n' >&2
   exit 1
 fi
-if ! grep -Fq 'FAIL dispatch_advisor_batch' "$fixture_dir/out.txt" || ! grep -Fq 'FAIL dispatch_triage_batch' "$fixture_dir/out.txt"; then
+if ! grep -Fq 'REFUSAL found="dispatch_advisor_batch returns on a per-ticket failure" alternative=' "$fixture_dir/out.txt" || ! grep -Fq 'REFUSAL found="dispatch_triage_batch returns on a per-ticket failure" alternative=' "$fixture_dir/out.txt"; then
   printf 'batch-ticket-return-ratchet.test.sh: for-n failure was unexpected: %s\n' "$(cat "$fixture_dir/out.txt")" >&2
   exit 1
 fi
@@ -72,7 +72,7 @@ if batch_ticket_return_ratchet "$fixture_dir/no-80.sh" > "$fixture_dir/out.txt" 
   printf 'batch-ticket-return-ratchet.test.sh: a recut case without 80) passed\n' >&2
   exit 1
 fi
-if ! grep -Fq 'has no 80) arm' "$fixture_dir/out.txt"; then
+if ! grep -Fq 'found="recut caller case on dispatch_policy_unit has no 80 arm" alternative=' "$fixture_dir/out.txt"; then
   printf 'batch-ticket-return-ratchet.test.sh: missing-80 failure was unexpected: %s\n' "$(cat "$fixture_dir/out.txt")" >&2
   exit 1
 fi

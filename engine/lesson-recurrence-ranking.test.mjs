@@ -16,6 +16,7 @@ import {
   holdLintPaths,
   inspectSupervisorHoldSource,
 } from './supervisor-hold-lesson-lint.mjs';
+import { formatLintRefusal } from './lesson-lints.mjs';
 
 const rankingScript = fileURLToPath(new URL('./lesson-recurrence-ranking.mjs', import.meta.url));
 
@@ -208,6 +209,10 @@ test('V930 lint refuses removal of an explicit wait and prints actionable fix gu
   assert.equal(verdict.verdict, 'fail');
   assert.match(verdict.missing.join('\n'), /explicit evidence wait kinds/);
   assert.match(verdict.fix_guidance, /owner_state=waiting/);
+  const refusal = formatLintRefusal(fixGuidance, verdict.missing, 'engine/supervisor-hold-lesson-lint.mjs');
+  assert.match(refusal, /^REFUSAL found=/);
+  assert.match(refusal, /alternative=/);
+  assert.match(refusal, /documented_in=engine\/supervisor-hold-lesson-lint\.mjs/);
   assert.match(fixGuidance, /hold.test.sh/);
   assert.match(fixGuidance, /direct-main/);
   assert.doesNotMatch(fixGuidance, /engine\/land-direct-main\.test\.sh/);

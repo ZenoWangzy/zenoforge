@@ -34,7 +34,7 @@ source_extract_ratchet() {
     old="${baseline_counts[$path]:-0}"
     if (( count > old )); then
       fail=1
-      printf 'FAIL %s has %s source-extract lines, baseline %s\n' "$path" "$count" "$old"
+      printf 'REFUSAL found="%s has %s source-extract lines, baseline %s" alternative="remove the text-range extraction and test the behavior through a public interface" documented_in=docs/enforced-rules.md\n' "$path" "$count" "$old"
     elif (( count < old )); then
       printf 'NOTE %s is at %s, lower its baseline from %s\n' "$path" "$count" "$old"
     fi
@@ -81,7 +81,7 @@ if source_extract_ratchet "$fixture_root" "$fixture_baseline" > "$fixture_output
 else
   rc=$?
 fi
-if (( rc != 1 )) || ! grep -Fq 'FAIL engine/fake.test.sh has 2 source-extract lines, baseline 1' "$fixture_output"; then
+if (( rc != 1 )) || ! grep -Fq 'REFUSAL found="engine/fake.test.sh has 2 source-extract lines, baseline 1" alternative=' "$fixture_output" || ! grep -Fq 'documented_in=docs/enforced-rules.md' "$fixture_output"; then
   printf 'source-extract-ratchet.test.sh: over-baseline failure was unexpected: %s\n' "$(cat "$fixture_output")" >&2
   exit 1
 fi

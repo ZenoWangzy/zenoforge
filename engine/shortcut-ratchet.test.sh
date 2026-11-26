@@ -21,11 +21,11 @@ fails() { if bash tools/shortcut-ratchet.sh > out.txt 2>&1; then return 1; fi; c
 
 printf '# shortcut: another limit, upgrade later\n' >> engine/a.sh
 msg=$(fails) || fail 'a grown file passed'
-[[ $msg == *'engine/a.sh has 2 shortcut comments'*'remove the limit'*'raising that baseline line'* ]] || fail "grow message lacks file or both actions: $msg"
+[[ $msg == *'REFUSAL found="engine/a.sh has 2 shortcut comments'*'alternative="'*'documented_in=docs/enforced-rules.md'* ]] || fail "grow refusal lacks finding, alternative or documentation: $msg"
 
 printf '# shortcut: a new limit, upgrade later\n' > engine/b.sh
 msg=$(fails) || fail 'a new file with a marker passed'
-[[ $msg == *'engine/b.sh'*'remove the limit'*'raising that baseline line'* ]] || fail "new-file message lacks file or both actions: $msg"
+[[ $msg == *'REFUSAL found="engine/b.sh has 1 shortcut comments'*'alternative="'*'documented_in=docs/enforced-rules.md'* ]] || fail "new-file refusal lacks finding, alternative or documentation: $msg"
 rm engine/b.sh
 
 printf '# no marker remains\n' > engine/a.sh

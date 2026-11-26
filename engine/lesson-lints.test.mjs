@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url';
 import {
   entryCheckFailures,
   exactSecondFailures,
+  formatLintRefusal,
   lessonLints,
+  lessonLintRegistry,
   runLessonLints,
   utcStampLint,
   utcStampFailures,
@@ -81,6 +83,29 @@ test('exact-second grep on an elapsed-seconds message fails; a regex over [0-9]+
 
 test('a deleted changed test file is skipped instead of failing the lint', () => {
   assert.deepEqual(exactSecondFailures(['engine/gone.test.sh'], () => { throw new Error('missing'); }), []);
+});
+
+test('every registered lesson lint names its alternative and documentation when it refuses', () => {
+  for (const lint of lessonLintRegistry) {
+    assert.equal(typeof lint.alternative, 'string', `${lint.classTag} must register an alternative`);
+    assert.notEqual(lint.alternative.trim(), '', `${lint.classTag} must register a non-empty alternative`);
+    const refusal = formatLintRefusal(lint.alternative, 'fixture finding');
+    assert(refusal.includes('found="fixture finding"'));
+    assert(refusal.includes(`alternative=${JSON.stringify(lint.alternative)}`));
+    assert(refusal.includes('documented_in=engine/lesson-lints.mjs'));
+  }
+  assert.throws(() => formatLintRefusal('', 'fixture finding'), /blessed alternative/);
+  assert.throws(() => formatLintRefusal(undefined, 'fixture finding'), /blessed alternative/);
+  const fixture = lintRepoFixture();
+  const lines = [];
+  try {
+    assert.equal(runLessonLints({ ...fixture, log: (line) => lines.push(line) }), 2);
+    assert(lines.some((line) => line.includes('REFUSAL found=')
+      && line.includes('alternative=')
+      && line.includes('documented_in=engine/lesson-lints.mjs')));
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 test('an entry check comparing argv[1] without existsSync and realpathSync fails, in every plain form', () => {

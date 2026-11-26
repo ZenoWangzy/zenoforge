@@ -15,12 +15,12 @@ done < <(git ls-files --cached --others --exclude-standard engine tools | grep -
 fail=0
 for f in "${!now[@]}"; do
   n=${now[$f]} b=${base[$f]:-0}
-  if (( n > b )); then fail=1; echo "FAIL $f has $n shortcut comments, its baseline in $baseline is $b: remove the limit the new comment names, or justify the new entry by raising that baseline line to \"$n$(printf '\t')$f\" in this PR."
+  if (( n > b )); then fail=1; echo "REFUSAL found=\"$f has $n shortcut comments, baseline in $baseline is $b\" alternative=\"remove the new limit, or if it is justified raise that baseline line to '$n$(printf '\t')$f' in this PR\" documented_in=docs/enforced-rules.md"
   elif (( n < b )); then echo "NOTE $f shrank to $n shortcut comments (baseline $b): run bash tools/shortcut-ratchet.sh --tighten."; fi
 done
 for f in "${!base[@]}"; do [[ -n ${now[$f]:-} ]] || echo "NOTE $f has no shortcut comments left (baseline ${base[$f]}): run bash tools/shortcut-ratchet.sh --tighten."; done
 if [[ ${1:-} == --tighten ]]; then
-  if (( fail )) && [[ -f $baseline ]]; then echo 'shortcut-ratchet: a count grew, nothing tightened' >&2; exit 1; fi
+  if (( fail )) && [[ -f $baseline ]]; then echo 'REFUSAL found="a count above baseline" alternative="remove the new limit before tightening" documented_in=docs/enforced-rules.md. Nothing tightened.' >&2; exit 1; fi
   { echo '# shortcut-ratchet baseline: <count><TAB><path>; lower a count when a limit is paid down.'
     for f in "${!now[@]}"; do printf '%s\t%s\n' "${now[$f]}" "$f"; done | LC_ALL=C sort -t$'\t' -k2; } > "$baseline"
   echo 'shortcut-ratchet: baseline tightened'; exit 0

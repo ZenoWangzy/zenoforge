@@ -15,9 +15,9 @@ while read -r f; do
   n=$(wc -l < "$f"); seen+="$f "
   b=${base[$f]:-}
   if [[ -z $b ]]; then
-    (( n > CAP )) && { fail=1; echo "FAIL $f has $n lines, over the $CAP-line cap and not in $baseline: split it, or if the size is deliberate add the line \"$n$(printf '\t')$f\" to $baseline in this PR."; }
+    (( n > CAP )) && { fail=1; echo "REFUSAL found=\"$f has $n lines, over the $CAP-line cap and not in $baseline\" alternative=\"split the file, or if the size is deliberate add the line '$n$(printf '\t')$f' to $baseline in this PR\" documented_in=docs/enforced-rules.md,docs/adr/0007-file-size-only-shrinks-above-cap.md"; }
   elif (( n > b )); then
-    fail=1; echo "FAIL $f grew to $n lines, its baseline in $baseline is $b: move code out of it, or if the growth is deliberate change that baseline line to \"$n$(printf '\t')$f\" in this PR."
+    fail=1; echo "REFUSAL found=\"$f has $n lines, above its $b-line baseline in $baseline\" alternative=\"move code out of it, or if the growth is deliberate change that baseline line to '$n$(printf '\t')$f' in this PR\" documented_in=docs/enforced-rules.md,docs/adr/0007-file-size-only-shrinks-above-cap.md"
   elif (( n <= CAP )); then
     echo "NOTE $f shrank to $n lines, at or under the $CAP-line cap: delete its line from $baseline."
   elif (( n < b )); then

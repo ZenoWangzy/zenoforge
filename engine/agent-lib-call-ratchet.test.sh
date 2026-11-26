@@ -31,7 +31,7 @@ agent_lib_call_counts() {
   local root="$1" path count pattern lines
   local -a names=()
   mapfile -t names < <(agent_lib_only_names "$root")
-  (( ${#names[@]} > 0 )) || { printf 'agent-lib ratchet: no agent-lib-only functions found under %s\n' "$root" >&2; return 1; }
+  (( ${#names[@]} > 0 )) || { printf 'REFUSAL found="no agent-lib-only functions found under %s" alternative="check the library and scheduler function definitions" documented_in=docs/enforced-rules.md\n' "$root" >&2; return 1; }
   pattern=$(agent_lib_call_pattern "${names[@]}")
   while IFS= read -r path; do
     [[ -n "$path" && "${path##*/}" != *.test.sh && "${path##*/}" != test-*.sh ]] || continue
@@ -52,7 +52,7 @@ agent_lib_call_ratchet() {
   done < "$baseline"
 
   mapfile -t names < <(agent_lib_only_names "$root")
-  (( ${#names[@]} > 0 )) || { printf 'agent-lib ratchet: no agent-lib-only functions found under %s\n' "$root" >&2; return 1; }
+  (( ${#names[@]} > 0 )) || { printf 'REFUSAL found="no agent-lib-only functions found under %s" alternative="check the library and scheduler function definitions" documented_in=docs/enforced-rules.md\n' "$root" >&2; return 1; }
   pattern=$(agent_lib_call_pattern "${names[@]}")
   while read -r path count; do
     seen["$path"]=1
@@ -60,10 +60,10 @@ agent_lib_call_ratchet() {
     (( count == 0 )) || files=$((files + 1))
     if [[ -z "${baseline_counts[$path]:-}" ]]; then
       fail=1
-      printf 'FAIL %s is missing from %s; add it with count %s\n' "$path" "$baseline" "$count"
+      printf 'REFUSAL found="%s is missing from %s" alternative="add the path with its measured count when it enters the ratchet scope" documented_in=docs/enforced-rules.md\n' "$path" "$baseline"
     elif (( count > baseline_counts[$path] )); then
       fail=1
-      printf 'FAIL %s has %s agent-lib-only calls, baseline %s; call it as (source "$SCHEDULER_AGENT_LIB"; fn ...), or define it in scheduler context. Lines naming an agent-lib-only function (the new one is among them):\n' \
+      printf 'REFUSAL found="%s has %s agent-lib-only calls, baseline %s" alternative="call it as (source SCHEDULER_AGENT_LIB; fn ...), or define it in scheduler context" documented_in=docs/enforced-rules.md; lines naming an agent-lib-only function (the new one is among them):\n' \
         "$path" "$count" "${baseline_counts[$path]}"
       while IFS= read -r line; do
         [[ -n "$line" ]] || continue
@@ -119,7 +119,9 @@ if agent_lib_call_ratchet "$fixture_root" "$baseline" > "$fixture_output" 2>&1; 
 else
   rc=$?
 fi
-if (( rc != 1 )) || ! grep -Fq "$injected:$injected_line calls supervisor_inbox_append" "$fixture_output"; then
+if (( rc != 1 )) || ! grep -Fq "REFUSAL found=\"$injected has " "$fixture_output" \
+  || ! grep -Fq 'alternative="call it as (source SCHEDULER_AGENT_LIB; fn ...), or define it in scheduler context" documented_in=docs/enforced-rules.md' "$fixture_output" \
+  || ! grep -Fq "$injected:$injected_line calls supervisor_inbox_append" "$fixture_output"; then
   printf 'agent-lib-call-ratchet.test.sh: bare call failure was unexpected (rc %s): %s\n' "$rc" "$(cat "$fixture_output")" >&2
   exit 1
 fi
