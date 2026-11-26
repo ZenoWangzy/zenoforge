@@ -16,7 +16,7 @@ export INTAKE_BACKLOG_JUDGE_LOG="$test_root/judge.log"
 export INTAKE_BACKLOG_EVENTS="$test_root/events.log"
 unset TYPESAFE_API_KEY TYPESAFE_ENV_FILE
 
-jq -n '{intake_priority:{enabled:false}}' > "$ZF_CONFIG_ROOT/night.json"
+jq -n '{intake_priority:{enabled:false,fallback_model:null}}' > "$ZF_CONFIG_ROOT/night.json"
 jq '.switches["roadmap-order"] = true' "$SCRIPT_DIR/model-policy.default.json" > "$MODEL_POLICY_FILE"
 jq -n '{roots:[{number:90,title:"Roadmap",state:"open",labels:["roadmap"],children:[{number:91,title:"Theme",state:"open",labels:["roadmap-theme"],children:[{number:101,title:"Release work",state:"open",labels:["roadmap-epic"],children:[]},{number:102,title:"Reliability",state:"open",labels:["roadmap-epic"],children:[]}]}]}]}' > "$ZF_ROADMAP_TREE_CACHE_FILE"
 jq -n '[
@@ -46,9 +46,11 @@ case "${1:-} ${2:-}" in
   "label list") printf '%s\n' '[]' ;;
   "api"*)
     if [[ "$*" == *"rate_limit"* ]]; then
+      reset="$(($(date +%s) + 3600))"
       jq -cn --argjson core "${INTAKE_BACKLOG_RATE_CORE_REMAINING:-5000}" \
         --argjson graphql "${INTAKE_BACKLOG_RATE_GRAPHQL_REMAINING:-5000}" \
-        '{resources:{core:{remaining:$core},graphql:{remaining:$graphql}}}'
+        --argjson reset "$reset" \
+        '{resources:{core:{used:(5000-$core),remaining:$core,reset:$reset},graphql:{used:(5000-$graphql),remaining:$graphql,reset:$reset}}}'
     elif [[ "$*" == *"/issues/"*"/labels"* && "$*" == *"-X POST"* ]]; then
       number="$(sed -nE 's#.*issues/([0-9]+)/labels.*#\1#p' <<< "$*")"
       printf 'labels:%s\n' "$number" >> "$INTAKE_BACKLOG_EVENTS"
@@ -171,7 +173,7 @@ skip_report="$(cat "$test_root/skip-labelled.json")"
 [[ "$(grep -F 'intake-priority 11' "$INTAKE_BACKLOG_JUDGE_LOG" || true)" == '' ]]
 [[ "$(wc -l < "$INTAKE_BACKLOG_JUDGE_LOG")" == 2 ]]
 
-jq -n '{intake_priority:{enabled:true}}' > "$ZF_CONFIG_ROOT/night.json"
+jq -n '{intake_priority:{enabled:true,fallback_model:null}}' > "$ZF_CONFIG_ROOT/night.json"
 export TYPESAFE_API_KEY=fixture-key
 export INTAKE_BACKLOG_RATE_LIMIT_NUMBER=12
 : > "$INTAKE_BACKLOG_JUDGE_LOG"
@@ -201,6 +203,7 @@ route_rate_report="$(cat "$test_root/rate-limit-route.json")"
 
 unset INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT
 export INTAKE_BACKLOG_RATE_CORE_REMAINING=1499
+rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
 : > "$INTAKE_BACKLOG_JUDGE_LOG"
 : > "$INTAKE_BACKLOG_EVENTS"
 : > "$INTAKE_BACKLOG_GH_LOG"
@@ -214,6 +217,7 @@ floor_report="$(cat "$test_root/rate-floor.json")"
 [[ "$(grep -F 'labels:11' "$INTAKE_BACKLOG_EVENTS" || true)" == '' ]]
 [[ "$(grep -F 'api rate_limit' "$INTAKE_BACKLOG_GH_LOG" || true)" != '' ]]
 unset INTAKE_BACKLOG_RATE_CORE_REMAINING
+rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
 
 export INTAKE_BACKLOG_RATE_LIMIT_SEARCH='beta duplicate in:title'
 export INTAKE_BACKLOG_DELAY_SEARCH='alpha release in:title'
@@ -242,7 +246,8 @@ export TYPESAFE_API_KEY=fixture-key
 : > "$INTAKE_BACKLOG_JUDGE_LOG"
 : > "$INTAKE_BACKLOG_EVENTS"
 : > "$INTAKE_BACKLOG_GH_LOG"
-bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/blocked-by.json" --limit 3 --concurrency 1 --apply > "$test_root/blocked-by.out"
+bash "$SCRIPT_DIR/intake-backlog.sh" --repo fixture/repo --output "$test_root/blocked-by.json" --limit 3 --concurrency 1 --apply \
+  > "$test_root/blocked-by.out"
 [[ "$(grep -c -- '--method POST repos/fixture/repo/issues/12/dependencies/blocked_by -F issue_id=10013' "$INTAKE_BACKLOG_GH_LOG")" == 1 ]]
 [[ "$(grep -c 'dependencies/blocked_by -F' "$INTAKE_BACKLOG_GH_LOG")" == 1 ]]
 [[ "$(grep -c 'issues/5/' "$INTAKE_BACKLOG_GH_LOG")" == 0 ]]

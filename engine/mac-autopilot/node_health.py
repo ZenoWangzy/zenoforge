@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
 import arbiter_health, existing_walk_health, harvest_health, ledger_history, live_delivery, merge_wait, release_deps_health, metric_windows, fork_rate
-import line_holds, intake_laneless_health, wip_hold, flow_unstarted_health
+import line_holds, intake_laneless_health, wip_hold, flow_unstarted_health, gh_budget_health
 import release_age
 from cancel_audit import cancel_metrics, read_cancel_audit
 import release_batch
@@ -52,7 +52,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **existing_walk_health.CRITERIA, **release_deps_health.CRITERIA,**merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA,
+CRITERIA = {**arbiter_health.CRITERIA, **harvest_health.CRITERIA, **existing_walk_health.CRITERIA, **release_deps_health.CRITERIA,**merge_wait.CRITERIA, **live_delivery.CRITERIA, **ledger_history.CRITERIA, **gh_budget_health.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "merge.conflict_repairs_per_day": ("ci+merge", "merge conflicts that a repair run followed, in 24 h", 20, 27, False),
@@ -140,7 +140,7 @@ def resolve_health_standards(criteria=None):
 
 
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_health.MEANING, **release_deps_health.MEANING,**merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING,
+MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_health.MEANING, **release_deps_health.MEANING,**merge_wait.MEANING, **live_delivery.MEANING, **ledger_history.MEANING, **gh_budget_health.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "merge.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的次数。多个任务可以同时改同一个文件，撞上了由原任务自己修；这个数偏高说明撞得太多，修复拖慢交付。24 小时值 20 以内健康，27 以上不健康；这两个界来自 9 个有效日的账本均值 15.6、标准差 5.5。",
@@ -208,7 +208,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_h
     "delivery.unlinked_incidents_30d": "过去 30 天线上事故账本（与负责人邮件同源）里未关联接受单元的事故，加上 head-watch 的线上告警次数（PROD-DB-TIMEOUT，间隔 30 分钟内算一次，与负责人邮件线上告警同口径）；告警不带 issue，一律未关联。告警日志只从 2026-11-04 开始，所以这是下限而非完整 30 天；不会猜测归属。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_health.SOURCE, **release_deps_health.SOURCE,**merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE,
+SOURCE = {**arbiter_health.SOURCE, **harvest_health.SOURCE, **existing_walk_health.SOURCE, **release_deps_health.SOURCE,**merge_wait.SOURCE, **live_delivery.SOURCE, **ledger_history.SOURCE, **gh_budget_health.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "merge.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
@@ -1388,7 +1388,7 @@ def main():
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times,
                                 delivery_unavailable=delivery_unavailable, rows_from=delivery_served.get("rows_from")); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")}); sample_counts["delivery.unverified_merge_30d_pct"] = delivery["details"].get("stamped_merged_units_30d")
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
-    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); SOURCE.update(live_delivery.SOURCE); merge_metrics, merge_details = merge_wait.collect(repo, now, here, merge_wait.gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
+    metrics.update(gh_budget_health.collect(agent_home, now)); metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); SOURCE.update(live_delivery.SOURCE); merge_metrics, merge_details = merge_wait.collect(repo, now, here, merge_wait.gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,
@@ -1524,7 +1524,7 @@ def main():
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
                "window_hours": args.hours, "release_batch_info": {"failed_14d": metrics.get(release_batch.FAILED_14D)},
-               "future_stamped": future_stamped,
+               "future_stamped": future_stamped, "github_budget": gh_budget_health.hourly_rollup(agent_home),
                "metrics": scorecard_metrics, "trend_metrics": [m for m in scorecard_metrics if "_30d" in m["id"]],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
                "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
