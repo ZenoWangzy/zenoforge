@@ -1694,9 +1694,9 @@ run_merge_lane || :
 [[ "$(field pr-14 .stage)" == repair-pending ]] || fail 'a code step failure was classified as runner environment'
 # 停线：失败 job 日志已有测试断言失败，不等其余检查、不重跑，直接派修复并取消该分支剩余 run；只有环境类失败照旧等齐
 gh() { case "$*" in
-  "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/555/logs") printf ' FAIL  tests/a.test.ts > example > claim\nAssertionError: expected false to be true\n' ;;
-  "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/556/logs") printf 'ENOSPC: no space left on device\n' ;;
-  "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/557/logs") printf '320 : \xe2\x94\x86 [4m8s] | \x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m tests/a.test.ts\x1b[2m > \x1b[22mexample\nerror: column "wake_token" does not exist\n' ;;
+  "api repos/{owner}/{repo}/actions/jobs/555"|"api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/555/logs") if [[ "$*" == *"/logs" ]]; then printf ' FAIL  tests/a.test.ts > example > claim\nAssertionError: expected false to be true\n'; else printf '{"status":"completed","steps":[]}\n'; fi ;;
+  "api repos/{owner}/{repo}/actions/jobs/556"|"api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/556/logs") if [[ "$*" == *"/logs" ]]; then printf 'ENOSPC: no space left on device\n'; else printf '{"status":"completed","steps":[]}\n'; fi ;;
+  "api repos/{owner}/{repo}/actions/jobs/557"|"api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/557/logs") if [[ "$*" == *"/logs" ]]; then printf '320 : \xe2\x94\x86 [4m8s] | \x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m tests/a.test.ts\x1b[2m > \x1b[22mexample\nerror: column "wake_token" does not exist\n'; else printf '{"status":"completed","steps":[]}\n'; fi ;;
   "run list --branch"*) printf '%s\n' '[{"databaseId":801,"status":"queued","event":"pull_request"}]' ;;
   *) eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@" ;;
 esac; }
