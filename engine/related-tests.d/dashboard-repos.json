@@ -1,0 +1,9 @@
+{
+  "engine/mac-autopilot/dashboard_repos.py": [
+    "engine/mac-autopilot/dashboard-front.test.sh",
+    "engine/mac-autopilot/dashboard_repos.test.sh"
+  ],
+  "engine/mac-autopilot/repo_identity.py": [
+    "engine/mac-autopilot/live_workers.test.sh"
+  ]
+}
