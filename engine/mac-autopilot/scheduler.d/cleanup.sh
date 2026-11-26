@@ -25,13 +25,17 @@ rotate_loop_out() {
 }
 
 worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose recoverable Git work
-  local wt="$1" status stash head remote_refs pushed_refs
+  local wt="$1" status stash head remote_refs pushed_refs unpushed_commits
   [[ -e "$wt/.git" ]] || return 1
   if ! status="$(git -C "$wt" status --porcelain=v1 --untracked-files=normal 2>/dev/null)"; then
     printf 'could not inspect Git status'
     return 0
   fi
   [[ -z "$status" ]] || { printf 'uncommitted changes'; return 0; }
+  if ! rescue_flagged_files_clean "$wt"; then
+    printf 'flagged files may contain changes'
+    return 0
+  fi
   if ! stash="$(git -C "$wt" stash list -n 1 2>/dev/null)"; then
     printf 'could not inspect Git stashes'
     return 0
@@ -51,6 +55,11 @@ worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose re
     return 0
   fi
   [[ -n "$pushed_refs" ]] || { printf 'HEAD is not reachable from a remote-tracking ref'; return 0; }
+  if ! unpushed_commits="$(git -C "$wt" rev-list --all --not --remotes -n 1 2>/dev/null)"; then
+    printf 'could not inspect local commits'
+    return 0
+  fi
+  [[ -z "$unpushed_commits" ]] || { printf 'local commits are not pushed'; return 0; }
   return 1
 }
 
@@ -310,6 +319,58 @@ cleanup_unit_worktrees() { # id：终态单元的两个 worktree 位置；有可
   done
 }
 
+cleanup_stale_clones() {
+  local cursor_file="$A/.clone-pool-cleanup-cursor" start_cursor="" cursor="" dir name index index_mtime id owner ledger eval_ids
+  local now_epoch="${NOW_EPOCH:-$(date +%s)}" scanned=0 max_per_tick=50 max_age_seconds=604800 complete=true
+  local -A eval_pending=()
+  [[ -r "$cursor_file" ]] && IFS= read -r start_cursor < "$cursor_file"
+  [[ -d "$WT_ROOT" ]] || return 0
+  for ledger in "$UNITS" "$UNITS_ARCHIVE"; do
+    [[ -s "$ledger" ]] || continue
+    jqf -e 'type=="object" and (.units|type=="array") and all(.units[]; (.id|type)=="string")' "$ledger" >/dev/null 2>&1 || return 0
+    eval_ids="$(jqf -r '.units[] | select((.eval_gate.status // "") | IN("pending","running")) | .id' "$ledger" 2>/dev/null)" || return 0
+    while IFS= read -r id; do
+      [[ -z "$id" ]] || eval_pending["$id"]=1
+    done <<< "$eval_ids"
+  done
+  for dir in "$WT_ROOT"/wt-*/; do
+    dir="${dir%/}"
+    name="${dir##*/}"
+    [[ -n "$start_cursor" && ! "$name" > "$start_cursor" ]] && continue
+    [[ -d "$dir" && ! -L "$dir" ]] || continue
+    [[ "$name" == *'.preserved-'* ]] && continue
+    if (( SECONDS >= CLEANUP_DEADLINE || scanned >= max_per_tick )); then
+      complete=false
+      break
+    fi
+    scanned=$((scanned + 1))
+    cursor="$name"
+    [[ -d "$dir/.git" && ! -L "$dir/.git" ]] || continue
+    index="$dir/.git/index"
+    [[ -f "$index" && ! -L "$index" ]] || continue
+    index_mtime="$(ap_mtime_epoch "$index")" || continue
+    [[ "$index_mtime" =~ ^[0-9]+$ ]] || continue
+    (( now_epoch - index_mtime > max_age_seconds )) || continue
+    id="${name#wt-}"
+    [[ -z "${eval_pending[$id]:-}" ]] || continue
+    if clone_worktree_owner_live "$id"; then
+      continue
+    else
+      owner=$?
+    fi
+    (( owner == 1 )) || continue
+    if worktree_cleanup_block_reason "$dir" >/dev/null; then
+      continue
+    fi
+    if remove_readonly_tree "$dir"; then say "cleanup stale clone $name"; fi
+  done
+  if [[ "$complete" == true ]]; then
+    rm -f -- "$cursor_file"
+  else
+    printf '%s\n' "$cursor" > "$cursor_file.tmp.$$" && mv -f -- "$cursor_file.tmp.$$" "$cursor_file"
+  fi
+}
+
 cleanup_tick() {
   local id wt n_total b track r block_reason
   # 43 preserve lines under load ran the tick into its kill in this walk (2026-11-07): stop with time left for the end of the tick.
@@ -321,6 +382,7 @@ cleanup_tick() {
       [[ "$preserve_epoch" =~ ^[0-9]+$ && -n "$preserve_path" ]] && PRESERVE_SEEN["$preserve_path"]="$preserve_epoch"
     done < "$preserve_file"
   fi
+  cleanup_stale_clones
   # eval 在途（pending/running）的单元保留 worktree：#4656 起 eval 并行跑，可能在单元 merged 之后才结束。
   for id in $(jqf -r '.units[] | select(.stage=="merged" or .stage=="landed" or .stage=="awaiting-live-event" or .stage=="done" or .stage=="wontfix" or .stage=="duplicate" or .stage=="closed") | select((.eval_gate.status // "") | IN("pending","running") | not) | .id' "$UNITS"); do
     cleanup_unit_worktrees "$id"

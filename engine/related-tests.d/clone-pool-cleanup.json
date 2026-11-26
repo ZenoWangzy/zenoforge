@@ -1,0 +1,8 @@
+{
+  "engine/mac-autopilot/scheduler.d/cleanup.sh": [
+    "engine/mac-autopilot/scheduler.d/clone-pool-cleanup.test.sh"
+  ],
+  "docs/design/AGENT-SCALE-PRINCIPLES.md": [
+    "engine/agent-scale-principles-doc.test.sh"
+  ]
+}
