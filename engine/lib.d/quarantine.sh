@@ -162,7 +162,7 @@ quarantine_decision() {
 # the next canary is due after an exponentially longer wait (capped), so a
 # second candidate this same tick already sees "open".
 quarantine_mark_canary() {
-  local scope="$1" now="${2:-$(date +%s)}" f canaries wait lock_fd
+  local scope="$1" now="${2:-$(date +%s)}" dispatched="${3:-false}" f canaries wait lock_fd
   agent_pipeline_write_guard quarantine_mark_canary "$AGENT_HOME" "$QUARANTINE_DIR" || return 1
   f="$(quarantine_file "$scope")"
   [ -f "$f" ] || return 0
@@ -174,8 +174,8 @@ quarantine_mark_canary() {
   canaries="$(jq -r '.canaries // 0' "$f")" || { unlock_fd "$lock_fd"; return 1; }
   wait=$((QUARANTINE_CANARY_INITIAL_SECONDS * (1 << (canaries + 1))))
   [ "$wait" -gt "$QUARANTINE_CANARY_MAX_SECONDS" ] && wait="$QUARANTINE_CANARY_MAX_SECONDS"
-  if ! jq --argjson now "$now" --argjson wait "$wait" \
-    '.canaries = ((.canaries // 0) + 1) | .last_canary_at = $now | .next_canary_at = ($now + $wait)' \
+  if ! jq --argjson now "$now" --argjson wait "$wait" --arg dispatched "$dispatched" \
+    '.canaries = ((.canaries // 0) + 1) | .last_canary_at = $now | .next_canary_at = ($now + $wait) | .last_canary_dispatched = ($dispatched == "true")' \
     "$f" > "$f.tmp" || ! mv "$f.tmp" "$f"; then
     rm -f "$f.tmp"
     unlock_fd "$lock_fd"
@@ -199,8 +199,13 @@ quarantine_stage_canary_forget_stage() {
 }
 
 quarantine_mark_canary_scope_list() {
-  local now="${2:-$(date +%s)}" scope
-  while IFS= read -r scope; do [ -z "$scope" ] || quarantine_mark_canary "$scope" "$now" || return $?; done <<< "${1:-}"
+  local now="${2:-$(date +%s)}" dispatched="${3:-false}" scope
+  while IFS= read -r scope; do [ -z "$scope" ] || quarantine_mark_canary "$scope" "$now" "$dispatched" || return $?; done <<< "${1:-}"
+}
+
+quarantine_mark_dispatched_canary_scope_list() {
+  local scopes="$1" now="${2:-$(date +%s)}"
+  quarantine_mark_canary_scope_list "$scopes" "$now" true
 }
 
 quarantine_mark_stage_dispatch_canaries() {
@@ -324,7 +329,7 @@ legs_executable_check() {
 #       advisor canary is asynchronous: its pending web-advisor-provider job must be
 #       polled before silence can count as survival.
 reconcile_quarantines() {
-  local now="${1:-$(date +%s)}" f signature scope hits detail last_canary repair_tried newer probe_rc repair_rc recovery_rc
+  local now="${1:-$(date +%s)}" f signature scope hits detail last_canary last_canary_dispatched repair_tried newer probe_rc repair_rc recovery_rc
   MAIN_CI_RED_RECONCILIATION_DONE=0
   MAIN_CI_RED_RECOVERY_HELD=0
   if [ -d "$ENV_FAULT_DIR" ]; then
@@ -360,6 +365,7 @@ reconcile_quarantines() {
     scope="$(jq -r '.scope // empty' "$f")"
     signature="$(jq -r '.signature // empty' "$f")"
     last_canary="$(jq -r '.last_canary_at // empty' "$f")"
+    last_canary_dispatched="$(jq -r '.last_canary_dispatched // false' "$f")"
     repair_tried="$(jq -r '.repair_tried // false' "$f")"
     [ -n "$scope" ] && [ -n "$signature" ] || continue
     [ "$scope" = advisor ] && codex_unavailable && continue # head's hold: no advisor canary probe
@@ -417,9 +423,12 @@ reconcile_quarantines() {
       # result is consumed. The scheduler admits that poll independently of
       # this quarantine; until then, silence only means nobody has learned
       # whether the canary passed.
-      if [ "$scope" = "advisor" ] && { [ -n "$(web_advisor_provider_job_candidates)" ] || advisor_batch_job_active; }; then
-        continue
-      fi
+      case "$scope" in
+        advisor|advisor@*)
+          [ "$last_canary_dispatched" = true ] || continue
+          if [ -n "$(web_advisor_provider_job_candidates)" ] || advisor_batch_job_active; then continue; fi
+          ;;
+      esac
       newer="$(env_fault_lines_since "$signature" "$last_canary" | wc -l)"
       if [ "$newer" -eq 0 ]; then
         quarantine_lift "$scope" "试探派发后 $((QUARANTINE_CANARY_GRACE_SECONDS / 60)) 分钟内没有再出现同一故障（${signature}）" "$now"

@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 target="$tmp/target/.zenoforge"
 pack="$tmp/pack"
 mkdir -p "$target/prompts" "$pack/prompts"
@@ -51,6 +51,18 @@ WEB_ADVISOR_PROVIDER_JOB_DIR="$tmp/jobs"
 BATCH_JOB_ID="fixture-job"
 mkdir -p "$LOG_DIR" "$WEB_ADVISOR_PROVIDER_JOB_DIR"
 (
+  no_job_now=1800000000
+  quarantine_open advisor env:test-gate:advisor 'no dispatched job' 2 "$no_job_now" >/dev/null 2>&1
+  canary_file="$(quarantine_file advisor)"
+  quarantine_mark_canary advisor "$no_job_now"
+  codex_unavailable() { return 1; }
+  web_advisor_provider_job_candidates() { :; }
+  advisor_batch_job_active() { return 1; }
+  reconcile_quarantines "$((no_job_now + QUARANTINE_CANARY_GRACE_SECONDS + 1))" >/dev/null 2>&1
+  [[ -f "$canary_file" ]]
+  rm -f "$canary_file"
+)
+(
   started="$tmp/provider-started"; web_advisor_provider_start_job_unit() { : > "$started"; }; quarantine_mark_canary_scope_list() { return 1; }
   printf 'question\n' > "$tmp/provider-question"; ZF_QUARANTINE_CANARY_SCOPES=advisor; status=0
   web_advisor_provider_dispatch_question_async charge-failure "$tmp/provider-question" 2>"$tmp/provider-charge.log" || status=$?
@@ -65,6 +77,7 @@ eval "$(sed -n '/^advisor_batch_web_dispatch() {/,/^}/p' "$script_dir/run-adviso
   ZF_QUARANTINE_CANARY_SCOPES=advisor
   advisor_batch_web_dispatch batch-canary "$tmp/provider-question"
   after="$(jq -r '.canaries' "$canary_file")"
+  jq -e '.last_canary_dispatched == true' "$canary_file" >/dev/null
   [[ -f "$started" && "$before:$after" == '0:1' ]]
 )
 eval "$(sed -n '/^advisor_batch_dispatch_plan_reask() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
