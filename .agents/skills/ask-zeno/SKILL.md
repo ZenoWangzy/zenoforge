@@ -78,7 +78,7 @@ Skills in order. A skill in brackets is used only when its condition holds.
 
 ## Setup and special tools
 
-Use only when the task is exactly this: `setup-matt-pocock-skills`, `setup-pstack`, `setup-pre-commit`, `setup-ts-deep-modules`, `git-guardrails-claude-code`, `migrate-to-shoehorn`, `scaffold-exercises`, `wizard` (steps only a person can do), `make-bot-ui`.
+Use only when the task is exactly this: `setup-matt-pocock-skills`, `setup-home-repo`, `setup-pstack`, `setup-pre-commit`, `setup-ts-deep-modules`, `git-guardrails-claude-code`, `migrate-to-shoehorn`, `scaffold-exercises`, `wizard` (steps only a person can do), `make-bot-ui`.
 
 Skills outside this repo (browser, charts, documents, an assistant's own commands) stay available. Choose them by their description, at the step that needs them.
 

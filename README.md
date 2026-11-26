@@ -120,6 +120,10 @@ The maintainer gets mail for decisions.
 - [Security](SECURITY.md): the threat model. Agents run unsandboxed and act on issue text.
 - Source: `engine/` is the pipeline, `cli/` is the `zenoforge` command, `tools/` is repository tooling.
 
+## Use Zenoforge as a home repo
+
+Keep shared skills, practices, and factory terms in Zenoforge; keep private instructions and repo pointers in your own private home repo. The [setup-home-repo skill](.agents/skills/setup-home-repo/SKILL.md) guides the four-step inventory and setup. See the [glossary](GLOSSARY.md) for factory terms.
+
 <details>
 <summary>Run the tests</summary>
 
