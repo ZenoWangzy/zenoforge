@@ -49,7 +49,7 @@ def latest_scheduler_tick(path, now):
     return tick
 
 
-RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
+RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\](?: surface_covered=(true|false))?")
 _SCHEDULER_ROWS_UNSET = object()
 
 
@@ -67,7 +67,7 @@ def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET)
     now = now or datetime.now(timezone.utc)
     scheduler_path = os.path.join(runtime, "scheduler.log")
     paths = [os.path.join(runtime, "alerts", "events.md"), scheduler_path]
-    events, seen = [], set()
+    events, surface_events, seen = [], [], set()
     found_source = False
     for path in paths:
         try:
@@ -85,17 +85,68 @@ def release_acceptances(runtime, now=None, scheduler_rows=_SCHEDULER_ROWS_UNSET)
                 for raw in lines:
                     match = RELEASE_CLOSER_RE.search(raw)
                     at = _scheduler_event_time(raw)
-                    if not match or not at or at > now + SCHEDULER_FUTURE_TOLERANCE:
+                    if not at or at > now + SCHEDULER_FUTURE_TOLERANCE:
+                        continue
+                    if not match:
                         continue
                     for number in re.findall(r"\d+", match.group(2)):
                         event = {"issue": int(number), "sha": match.group(1), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
+                        if match.group(3) is not None:
+                            event["surface_covered"] = match.group(3) == "true"
+                            event["surface_covered_at"] = event["at"]
+                            surface_events.append(event)
                         key = (event["issue"], event["sha"], event["at"])
                         if key not in seen:
                             seen.add(key)
                             events.append(event)
+                        elif match.group(3) is not None:
+                            existing = next(existing for existing in events if
+                                            (existing["issue"], existing["sha"], existing["at"]) == key)
+                            existing["surface_covered"] = event["surface_covered"]
+                            existing["surface_covered_at"] = event["surface_covered_at"]
         except OSError:
             continue
+    surface_by_release = {}
+    for event in surface_events:
+        key = (event["issue"], event["sha"])
+        if key not in surface_by_release or event["at"] >= surface_by_release[key]["at"]:
+            surface_by_release[key] = event
+    surface_event_ids = {id(event) for event in surface_events}
+    events = [event for event in events if id(event) not in surface_event_ids]
+    for key, surface_event in surface_by_release.items():
+        matches = [event for event in events if (event["issue"], event["sha"]) == key]
+        if matches:
+            target = max(matches, key=lambda event: event["at"])
+            target["surface_covered"] = surface_event["surface_covered"]
+            target["surface_covered_at"] = surface_event["surface_covered_at"]
+        else:
+            events.append(surface_event)
     return events if found_source else None
+
+
+def uncovered_closes_7d(events, now):
+    if events is None:
+        return None
+    since = now - timedelta(days=7)
+    counted = {}
+    for event in events:
+        covered = event.get("surface_covered")
+        if not isinstance(covered, bool):
+            continue
+        try:
+            at = datetime.strptime(event.get("surface_covered_at") or event.get("at", ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if not since <= at <= now:
+            continue
+        counted[(event.get("issue"), event.get("sha"))] = (at, covered)
+    if not counted:
+        return None
+    return sum(not covered for _, covered in counted.values())
+
+
+def uncovered_closes_line(value):
+    return f"uncovered closes (7d): {value if value is not None else 'NO-DATA'}"
 
 
 def load_units(runtime_dir):

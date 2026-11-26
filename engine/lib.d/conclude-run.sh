@@ -272,7 +272,7 @@ split_followups_note() { # issue -> close-comment text, empty when none is open
 }
 
 conclude_run() {
-  local n="$1" outcome="$2" needs_md="${3:-}" quota_provider="${4:-}" expected_hold="${5:-}" state pr_number pr_head_sha review_verdict ci_outcome attempts acceptor duplicate_of deploy_state deployed_sha real_user_path policy_exhausted implement_episode implement_after_requeue implementation_run pipeline_sha pipeline_close_comment health_target health_detail health_target_json health_detail_json issue_state mandatory_check_status="" check_report_json conclusion_json='null'
+  local n="$1" outcome="$2" needs_md="${3:-}" quota_provider="${4:-}" expected_hold="${5:-}" state pr_number pr_head_sha review_verdict ci_outcome attempts acceptor duplicate_of deploy_state deployed_sha real_user_path surface_covered policy_exhausted implement_episode implement_after_requeue implementation_run pipeline_sha pipeline_close_comment health_target health_detail health_target_json health_detail_json issue_state mandatory_check_status="" check_report_json conclusion_json='null'
   if [ -n "$quota_provider" ] && provider_quota_exhausted "$quota_provider"; then
     echo "conclude_run: refusing outcome=$outcome for #$n -- $quota_provider provider quota hold is open" >&2
     return 1
@@ -304,6 +304,8 @@ conclude_run() {
         return 1
       fi
       release_feature_evidence_valid "$n" "$real_user_path" || return 1
+      surface_covered=true
+      [ "${RELEASE_SURFACE_UNCOVERED:-0}" != 1 ] || surface_covered=false
       pr_head_sha="$(echo "$state" | jq -r '.run.evidence.pr_head_sha // empty')"
       if ! mandatory_check_receipt_ready "$n" "$pr_head_sha"; then
         mandatory_check_status="$(state_read "$n" | jq -r '.run.evidence.mandatory_checks.status // "missing"')"
@@ -442,6 +444,8 @@ $needs_md
 
 这张票已经关闭。如果之后验证发现仍有问题，重新打开这张 issue 就行，机器人会当成新的一轮重新处理。" || return 1
     guarded_write gh issue close "$n" --repo "$REPO" || return 1
+    record_release_surface_close "$n" "$deployed_sha" "$surface_covered" \
+      || echo "conclude_run: surface coverage event not recorded for #$n after close" >&2
     if queue_maintainer_outcome "$n" "$deployed_sha"; then
       if ! state_merge "$n" 'del(.maintainer_outcome_pending)'; then
         echo "conclude_run: queued production outcome for #$n, but retry marker could not be cleared" >&2
