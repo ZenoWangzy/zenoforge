@@ -527,15 +527,13 @@ hotfix_lane_supervisor_owned() { [[ "$(jqf -r '.hotfix_lane.supervisor_owned // 
 # 慢拍与补派据此整拍跳过动手阶段，分类恢复的下一拍补标记后恢复。
 source "$(dirname -- "${BASH_SOURCE[0]}")/supervisor-owned.sh"
 hotfix_issue_numbers() {
-  local label rows
+  local label rows repo="${REPO:-${ZF_REPO:-}}" fetch=gh
   if [[ "$TICK_HOTFIX_ISSUES_LOADED" != true ]]; then
     TICK_HOTFIX_ISSUES_LOADED=true
     label="$(hotfix_lane_label)"
-    if declare -F intake_gh_read >/dev/null 2>&1; then
-      rows="$(intake_gh_read issue list --state open --label "$label" --limit 200 --json number,labels 2>/dev/null)" || return 1
-    else
-      rows="$(gh issue list --state open --label "$label" --limit 200 --json number,labels 2>/dev/null)" || return 1
-    fi
+    [[ -n "$repo" ]] || { scheduler_lib_context || return 1; repo="$SCHEDULER_LIB_REPO"; }
+    declare -F intake_gh_read >/dev/null 2>&1 && fetch=intake_gh_read
+    rows="$(issue_rest_list "$repo" open "$label" 200 "$fetch" 2>/dev/null)" || return 1
     if ! TICK_HOTFIX_ISSUES="$(jqf -c --arg label "$label" '
       if type != "array" then error("invalid issue census")
       else [.[] | select(any(.labels[]?; .name == $label)) | .number] end

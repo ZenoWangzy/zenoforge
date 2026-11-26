@@ -23,6 +23,7 @@ export ZF_INTAKE_PRIORITY_SCRIPT="$fixture/intake-priority.sh"
 export JUDGE_CALLS="$fixture/judge-calls" JUDGE_MODE=apply JUDGE_FALLBACK_NUMBERS=2,4
 export ACTIVE_FILE="$fixture/active" ACTIVE_LOCK="$fixture/active.lock" MAX_ACTIVE_FILE="$fixture/max-active"
 export CANDIDATE_FILE="$fixture/candidates.json" QUERY_CALLS="$fixture/query-calls"
+export CONTEXT_CALLS="$fixture/context-calls"
 
 fail() { printf 'intake-judge-station.test.sh: %s\n' "$*" >&2; exit 1; }
 
@@ -73,20 +74,41 @@ export PATH="$fixture/bin:$PATH"
 
 state_schema_ok() { [[ "${SCHEMA_OK:-true}" == true ]]; }
 gh() {
-  [[ "$1 ${2:-}" == 'issue list' && "$*" == *'--state open'* && "$*" == *'--label ready-for-agent'* ]] || return 97
-  printf '%s\n' "$*" >> "$QUERY_CALLS"
-  if [[ "${QUERY_OVERLAP:-false}" == true ]]; then
-    issue="$(jq -c 'first(.[] | select(.number == 1))' "$CANDIDATE_FILE")"
-    intake_judge_claim_begin 1 1200 || return 98
-    intake_priority_judge_issue "$issue" 1 "$REPO" || { intake_judge_claim_end; return 98; }
-    intake_judge_claim_end
+  if [[ "$1 ${2:-}" == 'issue view' ]]; then
+    number="${3:-}"
+    if [[ ",${JUDGE_FALLBACK_NUMBERS:-}," == *",$number,"* ]]; then echo '{"labels":[{"name":"judge:fallback"}]}'
+    else echo '{"labels":[]}'
+    fi
+  elif [[ "$1 ${2:-}" == 'api repos/example-maintainer/example-repo/issues?'* ]]; then
+    local label="${2#*labels=}"
+    label="${label%%&*}"
+    printf '%s\n' "$*" >> "$QUERY_CALLS"
+    if [[ "${QUERY_OVERLAP:-false}" == true ]]; then
+      issue="$(jq -c 'first(.[] | select(.number == 1))' "$CANDIDATE_FILE")"
+      intake_judge_claim_begin 1 1200 || return 98
+      intake_priority_judge_issue "$issue" 1 "$REPO" || { intake_judge_claim_end; return 98; }
+      intake_judge_claim_end
+    fi
+    jq -c --arg label "$label" '[.[] | select((.state // "OPEN") == "OPEN" and any(.labels[]?; .name == $label))
+      | {number,title,body:(.body // ""),state:((.state // "OPEN") | ascii_downcase),created_at:"2026-01-01T00:00:00Z",
+          updated_at:"2026-01-01T00:00:00Z",labels,user:{login:"fixture"}}]' "$CANDIDATE_FILE"
+  elif [[ "$1 ${2:-}" == 'api graphql' ]]; then
+    printf '%s\n' "$*" >> "$CONTEXT_CALLS"
+    local context='{}' issue_number
+    while IFS= read -r issue_number; do
+      [[ "$issue_number" =~ ^[1-9][0-9]*$ ]] || continue
+      context="$(jq -cn --argjson context "$context" --argjson number "$issue_number" \
+        '$context + {("i" + ($number | tostring)):{number:$number,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}}')"
+    done < <(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+')
+    jq -cn --argjson context "$context" '{data:{repository:$context}}'
+  else
+    return 97
   fi
-  cat "$CANDIDATE_FILE"
 }
 git() { :; }
 
 make_candidates() {
-  jq -cn '([6,5,4,3,2,1] | map({number:.,title:("issue " + tostring),body:"",state:"OPEN",labels:[]})) + [
+  jq -cn '([6,5,4,3,2,1] | map({number:.,title:("issue " + tostring),body:"",state:"OPEN",labels:[{name:"ready-for-agent"}]})) + [
     {number:7,title:"needs triage",body:"",state:"OPEN",labels:[{name:"needs-triage"}]},
     {number:8,title:"already prioritized",body:"",state:"OPEN",labels:[{name:"priority:high"}]},
     {number:9,title:"closed",body:"",state:"CLOSED",labels:[]}
@@ -97,7 +119,7 @@ reset() {
     "$A/.intake-judge-candidates.json.lock" "$PAUSE_FILE"
   rm -f "$A/.intake-judge-consumed.tsv"
   rm -f "$A/intake-skip-noted.tsv" "$A/intake-skip-noted.tsv.lock"
-  : > "$LOG"; : > "$JUDGE_CALLS"; : > "$QUERY_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
+  : > "$LOG"; : > "$JUDGE_CALLS"; : > "$QUERY_CALLS"; : > "$CONTEXT_CALLS"; echo 0 > "$ACTIVE_FILE"; echo 0 > "$MAX_ACTIVE_FILE"
   JUDGE_MODE=apply; SCHEMA_OK=true; make_candidates
 }
 
@@ -110,7 +132,8 @@ ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass 
 line="$(grep 'intake-judge done' "$LOG")"
 [[ "$line" =~ intake-judge\ done\ secs=[0-9]+\ judged=4\ applied=4\ fallback=2\ deferred=2\ rc=0 ]] || fail "pass summary was wrong: $line"
 [[ "$(wc -l < "$QUERY_CALLS" | tr -d ' ')" == 1 ]] || fail 'the station did not populate one candidate snapshot'
-grep -Fq -- '--label ready-for-agent' "$QUERY_CALLS" || fail 'the station did not use the configured intake-label query'
+grep -Fq 'labels=ready-for-agent' "$QUERY_CALLS" || fail 'the station did not use the configured intake-label query'
+[[ "$(wc -l < "$CONTEXT_CALLS" | tr -d ' ')" == 1 ]] || fail 'the station did not batch dependency context into one query'
 # The next pass consumes the rest of that snapshot without another full candidate scan or a repeat judge.
 ZF_INTAKE_JUDGE_PER_PASS=4 ZF_INTAKE_JUDGE_PARALLEL=2 intake_judge_station_pass || fail 'the cached follow-up pass failed'
 [[ "$(sort -n "$JUDGE_CALLS" | paste -sd, -)" == '1,2,3,4,5,6' ]] || fail "the next pass repeated a judge or skipped candidates: $(cat "$JUDGE_CALLS")"

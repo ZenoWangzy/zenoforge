@@ -37,7 +37,7 @@ IMPLEMENT_RECENT_SKIP_SECONDS=600
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
-source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.sh"; gh_tick_cache_begin || exit 1
 source "$SCRIPT_DIR/lib.d/triage-filter.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 source "$SCRIPT_DIR/hand-completion-refill.sh"
@@ -362,7 +362,7 @@ report_on_hold_query_failures() {
   echo "issue-pipeline: on-hold status could not be verified for $ON_HOLD_QUERY_FAILURE_COUNT read(s) across issue(s) $ON_HOLD_QUERY_FAILURE_ISSUES; fail-closed skipped those candidates, and next tick will retry" >&2
   return "$exit_status"
 }
-trap report_on_hold_query_failures EXIT
+trap 'report_on_hold_query_failures; gh_tick_cache_end' EXIT
 
 # Concurrency caps, one per stage. The transient units ARE the ledger (see
 # lib.sh's stage_unit_active()/stage_unit_count()): no PID files, no lease
@@ -1155,7 +1155,7 @@ read_needs_info_email_replies() {
   # Only an issue whose state records a Gmail thread can have a reply to read,
   # so the 1000-issue GitHub listing is paid only when such a state file exists.
   grep -qs '"needs_info_thread_id"' "$STATE_DIR"/*.json || return 0
-  issue_rows="$(gh issue list --repo "$REPO" --limit 1000 --state open --json number,labels)" || return 0
+  issue_rows="$(issue_rest_list "$REPO" open '' 1000)" || return 0
   while IFS= read -r issue_row; do
     if [[ "$email_stop_at" =~ ^[0-9]+$ ]] && (( SECONDS >= email_stop_at )); then
       echo "issue-pipeline: needs-info email poll yielded at its reserved cutoff elapsed_sec=$SECONDS stop_at=$email_stop_at" >&2
@@ -1250,10 +1250,10 @@ $trimmed"
 reconcile_needs_info_issues() {
   local n issue_json issue_list lane_match_status last_comment_body
   # One list call returns labels and comments for every needs-info issue; a per-issue view was one call each.
-  issue_list="$(gh issue list --repo "$REPO" --limit 1000 --label needs-info --state open --json number,labels,comments)" || return 0
+  issue_list="$(issue_rest_list "$REPO" open needs-info 1000)" || return 0
   for n in $(jq -r '.[].number' <<< "$issue_list"); do
     is_on_hold "$n" && continue
-    issue_json="$(jq -c --argjson n "$n" '.[] | select(.number == $n)' <<< "$issue_list")"
+    issue_json="$(issue_rest_view "$n" "$REPO" comments)" || continue
     lane_match_status=0
     pipeline_system_issue_matches "$issue_json" || lane_match_status=$?
     case "$lane_match_status" in
@@ -2198,7 +2198,8 @@ fastlane_read_path_contexts() {
   local rows n context lane_labels ids scan_index=0 cursor_lane="${2:-paths}"
   local -a scan_order=()
   lane_labels="${PIPELINE_SYSTEM_LABELS_JSON:-$(pipeline_system_issue_labels_json)}" || return 1
-  rows="$(fastlane_snapshot_candidates "$1")" || return 1
+  rows="$(issue_rest_with_context <<< "$1")" || return 1
+  rows="$(fastlane_snapshot_candidates "$rows")" || return 1
   ids="$(jq -r --argjson lane_labels "$lane_labels" '
     .[] | select(any(.labels[]?; .name as $name | ($lane_labels | index($name)) != null) | not) | .number
   ' <<< "$rows")"
@@ -2210,7 +2211,12 @@ fastlane_read_path_contexts() {
     gh_tick_attempt_timeout_sec >/dev/null || break
     scan_index=$(( (scan_index + 1) % ${#scan_order[@]} ))
     printf '%s\n' "${scan_order[$scan_index]}" > "$NIGHT/fastlane-$cursor_lane.cursor"
-    context="$(gh issue view "$n" --repo "$REPO" --json number,title,body,comments,labels,state,blockedBy,subIssues,subIssuesSummary)" || continue
+    context="$(issue_rest_view "$n" "$REPO" comments)" || continue
+    context="$(jq -ce --slurpfile rows <(printf '%s' "$rows") --argjson n "$n" '
+      . as $issue | first($rows[0][] | select(.number == $n)) as $snapshot
+      | select(($snapshot | type) == "object" and ($snapshot | has("blockedBy") and has("subIssues") and has("subIssuesSummary")))
+      | $issue + {blockedBy:$snapshot.blockedBy,subIssues:$snapshot.subIssues,subIssuesSummary:$snapshot.subIssuesSummary}
+    ' <<< "$context")" || continue
     # Establish an owner before reading the next leaf; a slow later read must
     # not consume the slice before already-read candidates can progress.
     route_nonproduct_path_issue_rows "[$context]"
@@ -2218,46 +2224,28 @@ fastlane_read_path_contexts() {
 }
 
 route_nonproduct_path_candidates() {
-  local state_label issue_rows all_rows='[]'
+  local issue_rows
   if [ "${ROADMAP_ORDER_ENABLED:-false}" = true ]; then
     [ "${ROADMAP_TREE_READY:-0}" = 1 ] || return 0
-    for state_label in needs-triage ready-for-agent; do
-      gh_tick_attempt_timeout_sec >/dev/null || return 0
-      if ! issue_rows="$(gh issue list --repo "$REPO" --limit 1000 --label "$state_label" --state open \
-          --json number,title,body,labels,state,blockedBy,subIssuesSummary 2>/dev/null)" \
-        || ! jq -e 'type == "array"' <<< "$issue_rows" >/dev/null 2>&1; then
-        echo "issue-pipeline: cannot scan $state_label for roadmap-ordered fastlane tickets" >&2
-        return 0
-      fi
-      all_rows="$(printf '%s\n' "$all_rows" "$issue_rows" | jq -sc 'if length == 2 then add | unique_by(.number) else error("invalid issue snapshots") end')" || return 0
-    done
-    issue_rows="$(roadmap_order_candidate_json "$ROADMAP_TREE_JSON" "$all_rows")" || {
+  fi
+  gh_tick_attempt_timeout_sec >/dev/null || return 0
+  issue_rows="$(issue_rest_list_labels_context "$REPO" open 1000 gh needs-triage ready-for-agent)" || {
+    echo "issue-pipeline: cannot read fastlane issue candidates or dependency context" >&2
+    return 0
+  }
+  if [ "${ROADMAP_ORDER_ENABLED:-false}" = true ]; then
+    issue_rows="$(roadmap_order_candidate_json "$ROADMAP_TREE_JSON" "$issue_rows")" || {
       echo "issue-pipeline: cannot order non-product fastlane tickets by roadmap" >&2
       return 0
     }
-    fastlane_read_path_contexts "$issue_rows" "paths-$state_label"
-    return
   fi
-  for state_label in needs-triage ready-for-agent; do
-    gh_tick_attempt_timeout_sec >/dev/null || return 0
-    if ! issue_rows="$(gh issue list --repo "$REPO" --limit 1000 --label "$state_label" --state open \
-        --json number,title,body,labels,state,blockedBy,subIssuesSummary 2>/dev/null)" \
-      || ! jq -e 'type == "array"' <<< "$issue_rows" >/dev/null 2>&1; then
-      echo "issue-pipeline: cannot scan $state_label for non-product path tickets" >&2
-      continue
-    fi
-    issue_rows="$(jq -c --arg label "$state_label" \
-      '[.[] | select(any(.labels[]?; .name == $label))] | unique_by(.number)' <<< "$issue_rows")" || continue
-    fastlane_read_path_contexts "$issue_rows" "paths-$state_label"
-  done
+  fastlane_read_path_contexts "$issue_rows" paths
 }
 
 reconcile_pipeline_system_delivery() {
   local n state pipeline_sha awaiting_sync awaiting_legacy awaiting
-  if ! awaiting_sync="$(gh issue list --repo "$REPO" --state all --label awaiting-pipeline-sync \
-    --limit 1000 --json number -q '.[].number')" \
-    || ! awaiting_legacy="$(gh issue list --repo "$REPO" --state all --label awaiting-pipeline-health \
-      --limit 1000 --json number -q '.[].number')"; then
+  if ! awaiting_sync="$(issue_rest_list "$REPO" all awaiting-pipeline-sync 1000 | jq -r '.[].number')" \
+    || ! awaiting_legacy="$(issue_rest_list "$REPO" all awaiting-pipeline-health 1000 | jq -r '.[].number')"; then
     echo "issue-pipeline: pipeline delivery label query failed; leaving tickets open" >&2
     return 0
   fi
@@ -2367,8 +2355,7 @@ READY_MEASURE_JSON='[]'
 # slice and the 120s kill landed before any batch). The snapshot below reads
 # only labels already on the issues; unlabeled-issue admission and founder-test
 # labelling run after dispatch, so their results are picked up next tick.
-if ! NEEDS_TRIAGE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label needs-triage --state open \
-    --json number,createdAt,labels,author,title,body)"; then
+if ! NEEDS_TRIAGE_JSON="$(issue_rest_list "$REPO" open needs-triage 1000)"; then
   TRIAGE_CANDIDATE_QUERY_FAILED=1
   echo "issue-pipeline: needs-triage candidate snapshot failed; skipping triage dispatch this tick" >&2
 elif ! NEEDS_TRIAGE_FILTERED_JSON="$(triage_filter_issues_json "$NEEDS_TRIAGE_JSON")"; then
@@ -2471,8 +2458,7 @@ elif [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
   READY_MEASURE_IDS=""
   TRIAGE_SELECT_CUT=1
   echo "issue-pipeline: triage measurement skipped; slice deadline reached before selection" >&2
-elif ! READY_MEASURE_JSON="$(gh issue list --repo "$REPO" --limit 1000 --label ready-for-agent --state open \
-    --json number,createdAt,labels,author,title,body)"; then
+elif ! READY_MEASURE_JSON="$(issue_rest_list "$REPO" open ready-for-agent 1000)"; then
   READY_MEASURE_QUERY_FAILED=1
   echo "issue-pipeline: ready-for-agent measurement snapshot failed; skipping triage measurement this tick" >&2
 elif [ "$ROADMAP_ORDER_ENABLED" = true ] && [ "$ROADMAP_TREE_READY" != 1 ]; then
@@ -2636,7 +2622,7 @@ profile_mark advisor
 # left the batch, so a non-container verdict was skipped by every path; see
 # the ownership comment further down).
 ADVISOR_QUEUE_READ_FAILED=0
-if ! ADVISOR_QUEUE_SNAPSHOT="$(gh issue list --repo "$REPO" --limit 1000 --label needs-advisor --state open --json number,createdAt,labels)" \
+if ! ADVISOR_QUEUE_SNAPSHOT="$(issue_rest_list "$REPO" open needs-advisor 1000)" \
   || ! NEEDS_ADVISOR_IDS="$(jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | (($lane_labels + ["session-owned", "on-hold"]) | index($label_name)) != null)) | not)) | .[].number' <<< "$ADVISOR_QUEUE_SNAPSHOT")"; then
   ADVISOR_QUEUE_READ_FAILED=1
   NEEDS_ADVISOR_IDS=""
@@ -2916,8 +2902,7 @@ profile_mark recut
 # needs-triage children.
 recut_slots="$(cap_slots_remaining "$RECUT_CAP" "$(stage_unit_count recut)")"
 if [ "$recut_slots" -gt 0 ]; then
-  for next_recut in $(gh issue list --repo "$REPO" --limit 1000 --label needs-recut --state open \
-      --json number,createdAt,labels | jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null)) | not)) | .[].number'); do
+  for next_recut in $(issue_rest_list "$REPO" open needs-recut 1000 | jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null)) | not)) | .[].number'); do
     [ "$recut_slots" -le 0 ] && break
     is_on_hold "$next_recut" && continue
     [ "$(issue_model_failure_backoff_remaining "$next_recut")" -gt 0 ] && continue
@@ -3031,8 +3016,7 @@ select_release_batch() {
 
   release_batch_hold_active && return 0
   release_slots="$(cap_slots_remaining "$RELEASE_CAP" "$(stage_unit_count release)")"
-  if ! release_list_json="$(gh issue list --repo "$REPO" --state open \
-      --label awaiting-release --limit 1000 --json number,labels)"; then
+  if ! release_list_json="$(issue_rest_list "$REPO" open awaiting-release 1000)"; then
     echo "issue-pipeline: could not read awaiting-release issues; refusing release selection" >&2
     return 1
   fi

@@ -36,7 +36,7 @@ mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记
     query+=" pr_$pr: pullRequest(number:$pr) { files(first:100) { nodes { path } } }"
   done
   query+=" } }"
-  raw="$(cd "$ROOT" && AUTOPI_GH_TIMEOUT_SECONDS="$query_timeout" gh api graphql -f query="$query" 2>/dev/null)" || return 0
+  raw="$(cd "$ROOT" && AUTOPI_GH_TIMEOUT_SECONDS="$query_timeout" gh_graphql_cached api graphql -f query="$query" 2>/dev/null)" || return 0
   jqf -e '.data.repository | type == "object"' <<<"$raw" >/dev/null 2>&1 || return 0
 
   for i in "${!ids[@]}"; do

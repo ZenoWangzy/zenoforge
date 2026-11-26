@@ -177,7 +177,7 @@ dep_states() { # issue/PR 号… → 每行 "号<TAB>STATE<TAB>标签,…"；一
     q+=" p$d: pullRequests(headRefName: \"agent/issue-$d\", states: MERGED, first: 1) { nodes { number } }"
   done
   # awaiting-release follows a verified merge; agent/issue-N PR merges also count as delivery before issue closure.
-  gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
+  gh_graphql_cached api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q } }" \
     --jq '.data.repository | . as $r | to_entries[] | select((.key | startswith("i")) and .value != null) | .key[1:] as $d | [$d, (if (($r["p" + $d].nodes // []) | length) > 0 or ([.value.labels.nodes[].name] | index("awaiting-release")) != null then "MERGED" else .value.state end), ([.value.labels.nodes[].name] | join(",")), .value.state, (.value.stateReason // ""), (.value.updatedAt // ""), (([.value.closedByPullRequestsReferences.nodes[]? | select(.merged) | .number] | first) // ""), (($r["p" + $d].nodes[0].number // "") | tostring)] | @tsv' 2>/dev/null
 }
 stack_pilot_label() { jqf -r 'if .stacking.enabled == false then "" else (.stacking.pilot_label // "stack-pilot") end' <<<"$CFG"; }

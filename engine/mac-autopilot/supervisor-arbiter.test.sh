@@ -1476,9 +1476,16 @@ eval "$(declare -f gh | sed '1s/^gh ()/gh_before_pr ()/')"
 gh() {
   case "$1 $2" in
     'pr view') printf '%s\n' "$PR_STATE"; return 0 ;;
-    'issue list') printf '%s\n' "$CITED_ISSUES"; return 0 ;;
     'pr close') printf 'pr-close %s\n' "$*" >> "$pr_calls"; return 0 ;;
   esac
+  if [[ "$1" == api && "$2" == repos/*/issues\?* ]]; then
+    if [[ "$CITED_ISSUES" =~ ^[1-9][0-9]*$ ]]; then
+      printf '[{"number":%s,"title":"cited issue","body":"PR #6811","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[],"user":{"login":"fixture"}}]\n' "$CITED_ISSUES"
+    else
+      printf '[]\n'
+    fi
+    return 0
+  fi
   gh_before_pr "$@"
 }
 units "$(jq -cn '{units:[{id:"issue-6801",issue:6801,pr:6811,stage:"closed",history:[]}]}')"
