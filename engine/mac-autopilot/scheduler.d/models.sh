@@ -361,7 +361,9 @@ implement_family_has_other_reviewer() { # family -> 0 when review dispatch can s
     candidate_family="$(review_identity_family "$candidate" 2>/dev/null || true)"; [[ -n "$candidate_family" && "$candidate_family" != "$family" ]] && candidate_role=review || continue
     if [[ "$candidate_family" == claude ]]; then candidate_role=review_fallback; [[ "$family" != claude && "$candidate" =~ ^claude:claude-(haiku|sonnet)- ]] || continue; fi
     if implement_route_review_identity_available "$candidate" "$candidate_role" "$family"; then return 0; fi
-    reason="$IMPLEMENT_REVIEWER_REASON"; [[ -z "$first_reason" && -n "$reason" ]] && first_reason="${reason// /-}"
+    reason="$IMPLEMENT_REVIEWER_REASON"
+    if [[ "$candidate_family" == claude && ( "$reason" == 'claude hold' || "$reason" == 'claude week-stop' ) ]]; then reason=reviewer-held:claude; fi
+    [[ -z "$first_reason" && -n "$reason" ]] && first_reason="${reason// /-}"
     if [[ "$family" == claude && "$reason" == *hold ]] && hold="$(implement_review_hold_until "$candidate")"; then
       if (( IMPLEMENT_DEFER_UNTIL == 0 || hold < IMPLEMENT_DEFER_UNTIL )); then IMPLEMENT_DEFER_UNTIL="$hold"; IMPLEMENT_DEFER_FAMILY="$candidate_family"; fi
     fi
