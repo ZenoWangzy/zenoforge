@@ -193,6 +193,8 @@ ci_test_red_checks() { # checks_json [infra-summary] → first line: test-red na
       hits="${hits:+$hits, }$name"
       marker="$({ grep -a -m1 -oE 'ZENOFORGE-FAIL-FACTS \{.*' "$logfile" || :; } | sed 's/^ZENOFORGE-FAIL-FACTS //')"; [[ -n "$marker" ]] || marker="$({ grep -a -oE ' FAIL  [^[:space:]]+ > .*' "$logfile" || :; } | sed 's/^ FAIL  //' | jq -Rsc 'split("\n") | map(select(. != ""))[:12] | group_by(split(" > ")[0]) | map({file: (.[0] | split(" > ")[0]), tests: map({name: (split(" > ")[1:] | join(" > "))})}) | select(length > 0) | {suites: .}' 2>/dev/null)"
       [[ -z "$marker" ]] || facts="${facts}${marker}"$'\n'
+      # run-ci-suites.sh 已为每个失败的 engine 套件打印 "[pipeline suites] FAILED suite=<path>"；同一次抓取里取出，供分诊用
+      facts="${facts}$(grep -a -oE '^\[pipeline suites\] FAILED suite=[^ ]+' "$logfile" | sed 's/.*suite=//' | jq -Rsc 'split("\n") | map(select(. != "" and startswith("engine/"))) | select(length > 0) | {pipelineSuites: .}' 2>/dev/null)"$'\n'
     fi
     rm -f "$logfile" "${log_status[$i]}"
   done
@@ -200,7 +202,7 @@ ci_test_red_checks() { # checks_json [infra-summary] → first line: test-red na
 }
 ci_red_tests() { # facts lines (ci_test_red_checks, line 2 on) → failing suites/tests, or the failed check labels when facts are unavailable
   local tests
-  tests="$(jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name))] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null)" || tests='[]'
+  tests="$(jqf -sc '[.[] | (.suites[]? | .file, (.tests[]?.name)), (.pipelineSuites[]? | strings | select(startswith("engine/")))] | map(.[:120]) | .[:12]' <<<"$1" 2>/dev/null)" || tests='[]'
   jqf -cn --argjson tests "$tests" --arg fallback "${2:-}" '$tests | if length > 0 then . elif $fallback != "" then [$fallback[:120]] else [] end'
 }
 
@@ -215,7 +217,7 @@ ci_triage() { # head facts → verdict
   suites_file="$tmpdir/suites.json"
   pr_files="$tmpdir/pr-files.json"
   main_files="$tmpdir/main-files.json"
-  jq -sc '[.[] | ((.suites // [])[] | .file)] | unique' <<<"$2" 2>/dev/null > "$suites_file" \
+  jq -sc '[.[] | ((.pipelineSuites // [])[] | strings | select(startswith("engine/"))), ((.suites // [])[] | .file)] | unique' <<<"$2" 2>/dev/null > "$suites_file" \
     || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
   [[ -n "$MAIN_HEAD" ]] && jq -e 'length > 0' "$suites_file" >/dev/null 2>&1 \
     || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
@@ -237,6 +239,20 @@ ci_triage() { # head facts → verdict
     | node "${ZF_ENGINE_DIR:-$ROOT/engine}/failure-triage.mjs" 2>/dev/null || echo unknown)"
   rm -rf -- "$tmpdir"
   printf '%s\n' "$result"
+}
+
+# Early stale-base routing uses update-branch once; a second failure with the same approval goes to repair.
+ci_stale_base_hop() { # id pr head facts
+  [[ "$STALE_BASE_ROUTING" == true ]] || return 1
+  [[ "$(unit_field "$1" '.hotpatch // false')" != true && "$(unit_field "$1" '.critical // false')" != true ]] || return 1
+  [[ "$(ci_triage "$3" "$4")" == stale-base ]] || return 1
+  local suites; suites="$(jq -sc '[.[] | ((.pipelineSuites // [])[] | strings | select(startswith("engine/")))] | unique' <<<"$4" 2>/dev/null)"
+  [[ -n "$suites" && "$suites" != "[]" ]] || return 1
+  ci_stale_base_hop_available "$1" || return 1
+  [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]] || return 1
+  ci_update_branch "$2" "$3" || return 1
+  set_unit "$1" "$(hist ci-stale-base-update "suites $suites") | .stale_base_hop_used=true | .ci_rerun_sha=$(js "$3")"
+  say "merge skipped PR#$2 (stale-base failure in $suites) -> update-branch at $3, no repair"
 }
 
 # Build repair hints from marked failure facts and changed files, without inferring import closure.
