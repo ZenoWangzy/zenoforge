@@ -109,6 +109,11 @@ scheduler_issue_state() (
   done
   state_read "$1"
 )
+scheduler_issue_state_readonly() (
+  scheduler_scope_lib issue-state || return 1
+  STATE_DIR="$AGENT_HOME/state"
+  state_read "$1"
+)
 scheduler_size_recut_active() (
   REPO_DIR="$ROOT"
   source "$SCHEDULER_AGENT_LIB" || return 0

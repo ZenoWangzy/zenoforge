@@ -29,10 +29,10 @@ assert_rule_refusal missing-waiver 64 hold_rule 5 waiver 7
 assert_rule_refusal reroute-waiver 64 hold_rule 5 reroute 7 "" 800
 grep -Fq 'reroute keeps an existing waiver' "$test_env_root/reroute-waiver.err" || { echo "FAIL: reroute waiver refusal did not explain the retained waiver" >&2; exit 1; }
 assert_rule_refusal ready-pr 64 hold_rule pr-9 ready 7
-assert_rule_refusal missing-gh-comment 1 hold_rule 5 requeue 99
+assert_rule_refusal missing-gh-comment 75 hold_rule 5 requeue 99
 original_state_read="$(declare -f state_read)"
 state_read() { return 1; }
-assert_rule_refusal initial-state-read 1 hold_rule 5 requeue 7
+assert_rule_refusal initial-state-read 75 hold_rule 5 requeue 7
 eval "$original_state_read"
 (
   fixture_engine="$test_env_root/hold-rule-engine"
@@ -43,6 +43,7 @@ eval "$original_state_read"
   cat > "$fixture_engine/mac-autopilot/scheduler.sh" <<'EOT'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == --rule-check && "${3:-}" == requeue ]]; then printf '%s\n' 'would-apply scheduler.sh --rule issue-7 --requeue'; exit 0; fi
 [[ "${1:-}" == --rule && "${3:-}" == requeue ]] || exit 64
 if [[ "${HOLD_RULE_FAKE_FAIL:-0}" == 1 ]]; then exit 1; fi
 jq '.state = "ready-for-agent" | .hold = null' "$AGENT_HOME/state/7.json" > "$AGENT_HOME/state/7.json.tmp"
@@ -185,7 +186,7 @@ printf 'ok - rule_entry reroute releases a blocker; requeue moves supervisor-rev
   # An unreadable GitHub state (the read fails) refuses both ways without recut or requeue advice, and never releases the hold.
   for act in requeue reroute; do
     FAKE_ISSUE_STATE=FAIL; rc=0; rule_entry issue-25 "$act" u "dead" "" > "$test_env_root/closed-25-$act.out" 2>&1 || rc=$?
-    [ "$rc" = 1 ] && grep -q -- 'could not be read' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--recut' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--requeue' "$test_env_root/closed-25-$act.out" || { echo "FAIL: unreadable closed state ($act) gave the wrong refusal" >&2; cat "$test_env_root/closed-25-$act.out" >&2; exit 1; }
+    [ "$rc" = 75 ] && grep -q -- 'could not be read' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--recut' "$test_env_root/closed-25-$act.out" && ! grep -q -- '--requeue' "$test_env_root/closed-25-$act.out" || { echo "FAIL: unreadable closed state ($act) gave the wrong refusal" >&2; cat "$test_env_root/closed-25-$act.out" >&2; exit 1; }
     [ "$(jq -r '.units[]|select(.id=="issue-25")|.stage' "$UNITS")" = closed ] && jq -e '.state == "on-hold" and .hold.holder == "scheduler-stop-loss"' "$AGENT_HOME/state/25.json" >/dev/null || { echo "FAIL: unreadable closed state ($act) changed the unit or released its hold" >&2; exit 1; }
   done
   # The state read works but the refresh read behind the requeue fails: refuse, keep the hold and the unit.
@@ -252,7 +253,7 @@ printf 'ok - rule_entry returns non-zero when the unit is archived before the re
   stage() { jq -r --arg id "$1" '.units[]|select(.id==$id)|.stage' "$UNITS"; } # live-only
   refused() { # unit issue-state text: rc 1, the message has text, the unit stays closed
     FAKE_ISSUE_STATE="$2"; rc=0; rule_entry "$1" requeue u "" "" > "$test_env_root/recut-$1.out" 2>&1 || rc=$?
-    [ "$rc" = 1 ] && [ "$(stage "$1")" = closed ] && grep -q -- "$3" "$test_env_root/recut-$1.out" || { echo "FAIL: $1 (issue $2) was not refused with '$3'" >&2; cat "$test_env_root/recut-$1.out" >&2; exit 1; }
+    [[ "$rc" == 1 || ( "$2" == FAIL && "$rc" == 75 ) ]] && [ "$(stage "$1")" = closed ] && grep -q -- "$3" "$test_env_root/recut-$1.out" || { echo "FAIL: $1 (issue $2) was not refused with '$3'" >&2; cat "$test_env_root/recut-$1.out" >&2; exit 1; }
   }
   # the #3405 shape: closed by cap-triage-recut, issue open, no hold -> requeued
   FAKE_ISSUE_STATE=open; rule_entry issue-30 requeue u "" ""
@@ -332,6 +333,10 @@ printf 'ok - rule_entry requeues a recut-closed unit whose issue is open, ready 
   cat > "$fe/mac-autopilot/scheduler.sh" <<'EOT'
 #!/usr/bin/env bash
 if [[ "$1" == --size-waiver-check ]]; then [[ "$2" -le 1280 ]] || { echo "rule: out of range" >&2; exit 1; }; exit 0; fi
+if [[ "$1" == --rule-check ]]; then
+  if [[ -n "${7:-}" && "${7:-}" -gt 1280 ]]; then printf '%s\n' 'would refuse: rule: out of range'; exit 1; fi
+  printf '%s\n' 'would-apply scheduler.sh --rule issue-8 --requeue'; exit 0
+fi
 printf '%s|' "$@" > "$AGENT_HOME/waiver.args"
 EOT
   cat > "$fb/gh" <<'EOT'
@@ -461,6 +466,7 @@ EOT
 #!/usr/bin/env bash
 set -euo pipefail
 source "$TEST_ENGINE/mac-autopilot/scheduler.sh"
+if [[ "${1:-}" == --rule-check ]]; then rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" check; exit $?; fi
 rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"
 unit_field "${2:-}" .stage > "$SUPERSEDE_STAGE_AFTER_RULE"
 resume_handoff_integration "${2:-}" "$RESUME_WORKTREE"
@@ -520,6 +526,7 @@ printf 'ok - supersede-handoff clears the snapshot, records the ruling and curre
 #!/usr/bin/env bash
 set -euo pipefail
 source "$TEST_ENGINE/mac-autopilot/scheduler.sh"
+if [[ "${1:-}" == --rule-check ]]; then rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" check; exit $?; fi
 rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"
 EOT2
   chmod +x "$fixture_engine/mac-autopilot/scheduler.sh"
@@ -626,14 +633,281 @@ printf 'ok - hold --rule explains a post-ruling state read failure inside and ou
   echo '{"units":[{"id":"issue-30","issue":30,"stage":"supervisor-review","parked_reason":"supervisor-cap-exhausted","task":"t","branch":"b","history":[]},{"id":"issue-31","issue":31,"stage":"supervisor-review","pr":31,"task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
   source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
   close_calls="$test_env_root/close-calls"; : > "$close_calls"
-  gh() { printf 'gh %s\n' "$*" >> "$close_calls"; return 64; } # any GitHub call is recorded and fails
-  tick_pr_state() { printf 'OPEN\n'; }
+  gh() { if [[ "$*" == 'pr view 31 --json state --jq .state' ]]; then printf 'gh %s\n' "$*" >> "$close_calls"; printf 'OPEN\n'; else printf 'gh %s\n' "$*" >> "$close_calls"; return 64; fi; }
   rc=0; rule_entry issue-30 close u "closing" "" || rc=$?
   [ "$rc" = 0 ] && [ "$(jq -r '.units[]|select(.id=="issue-30")|.stage+"|"+.history[-1].stage+"|"+(.history[-1].result|tostring)+"|"+(has("parked_reason")|tostring)' "$UNITS")" = "closed|supervisor-close|supervisor ruling u: closing|false" ] && [ ! -s "$close_calls" ] || { echo "FAIL: close did not close the unit with a supervisor-close event, or touched GitHub" >&2; cat "$close_calls" >&2; exit 1; }
   rc=0; rule_entry issue-31 close u "closing" "" > "$test_env_root/close-pr.out" 2>&1 || rc=$?
-  [ "$rc" = 1 ] && grep -Fq 'open PR #31' "$test_env_root/close-pr.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = supervisor-review ] && [ ! -s "$close_calls" ] || { echo "FAIL: close with an open PR was not refused by number, or changed the unit" >&2; cat "$test_env_root/close-pr.out" >&2; exit 1; }
+  [ "$rc" = 1 ] && grep -Fq 'open PR #31' "$test_env_root/close-pr.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = supervisor-review ] && [ "$(cat "$close_calls")" = 'gh pr view 31 --json state --jq .state' ] || { echo "FAIL: close with an open PR was not refused by number, or changed the unit" >&2; cat "$test_env_root/close-pr.out" "$close_calls" >&2; exit 1; }
   jq '(.units[]|select(.id=="issue-31")|.stage) = "implement"' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
   rc=0; rule_entry issue-31 close u "closing" "" > "$test_env_root/close-implement.out" 2>&1 || rc=$?
-  [ "$rc" = 1 ] && grep -Fq 'is in implement; close needs' "$test_env_root/close-implement.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = implement ] && [ ! -s "$close_calls" ] || { echo "FAIL: close of an implement unit was not refused by stage, or changed the unit" >&2; cat "$test_env_root/close-implement.out" >&2; exit 1; }
+  [ "$rc" = 1 ] && grep -Fq 'is in implement; close needs' "$test_env_root/close-implement.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = implement ] && [ "$(wc -l < "$close_calls")" = 1 ] || { echo "FAIL: close of an implement unit was not refused by stage, or changed the unit" >&2; cat "$test_env_root/close-implement.out" "$close_calls" >&2; exit 1; }
 )
 printf 'ok - rule_entry close sets a unit closed with a supervisor-close event and refuses an open PR by number\n'
+(
+  check_runtime="$test_env_root/rule-check-runtime"
+  check_bin="$test_env_root/rule-check-bin"
+  mkdir -p "$check_runtime" "$check_bin" "$AGENT_HOME/state" "$test_env_root/repo"
+  cat > "$check_bin/gh" <<'EOT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == pr && "${2:-}" == view ]]; then
+  [[ " $* " != *' --method '* && " $* " != *' -X '* && " $* " != *' POST '* ]] || exit 64
+  printf '%s\n' "$*" >> "$RULE_CHECK_GH_CALLS"
+  case " $* " in
+    *' --jq .state '*) printf '%s\n' OPEN ;;
+    *' --jq .headRefOid '*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
+    *) exit 64 ;;
+  esac
+  exit 0
+fi
+[[ "${1:-}" == api && ( "${2:-}" == user || "${2:-}" == repos/test/repo ) ]] || exit 64
+[[ " $* " != *' --method '* && " $* " != *' -X '* && " $* " != *' POST '* ]] || exit 64
+printf '%s\n' "$*" >> "$RULE_CHECK_GH_CALLS"
+printf '%s\n' 'head-owner'
+EOT
+  chmod +x "$check_bin/gh"
+  PATH="$check_bin:$PATH"
+  export RULE_CHECK_GH_CALLS="$test_env_root/rule-check-gh.calls"
+  : > "$RULE_CHECK_GH_CALLS"
+  export MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/rule-check-sup" MAC_AUTOPILOT_RUNTIME_DIR="$check_runtime" ZF_ENGINE_DIR="$SCRIPT_DIR" ZF_REPO_DIR="$test_env_root/repo" OPEN_ISSUE_BLOCKER_GRAPH_JSON='[]'
+  mkdir -p "$MAC_AUTOPILOT_SUPERVISOR_DIR"
+  printf '%s\n' '{"state":"ready-for-agent","hold":null}' > "$AGENT_HOME/state/80.json"
+  printf '%s\n' '{"units":[{"id":"issue-80","issue":80,"stage":"supervisor-review","history":[]}]}' > "$check_runtime/units.json"
+  printf '%s\n' '{"units":[]}' > "$check_runtime/units-archive.json"
+  printf '%s\n' '{"workers":[]}' > "$check_runtime/workers.json"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$check_runtime/config.json"
+  mkdir -p "$check_runtime/alerts"
+  before_files="$(find "$AGENT_HOME" "$check_runtime" -type f -print | sort)"
+  before_state="$(sha256sum "$AGENT_HOME/state/80.json")"
+  before_units="$(sha256sum "$check_runtime/units.json")"
+  rc=0; bash "$SCRIPT_DIR/hold.sh" --rule issue-80 --requeue --check --author head-owner --size-waiver 800 > "$test_env_root/rule-check.out" 2> "$test_env_root/rule-check.err" || rc=$?
+  [ "$rc" = 0 ] && [ "$(cat "$test_env_root/rule-check.out")" = 'would-apply hold.sh --rule issue-80 --requeue' ] \
+    && [ ! -s "$test_env_root/rule-check.err" ] \
+    && [ "$(wc -l < "$RULE_CHECK_GH_CALLS")" = 2 ] \
+    && [ "$(find "$AGENT_HOME" "$check_runtime" -type f -print | sort)" = "$before_files" ] \
+    && [ "$(sha256sum "$AGENT_HOME/state/80.json")" = "$before_state" ] \
+    && [ "$(sha256sum "$check_runtime/units.json")" = "$before_units" ] || {
+      echo "FAIL: hold.sh --rule --check must decide through GET-only reads without writing" >&2
+      cat "$test_env_root/rule-check.out" "$test_env_root/rule-check.err" >&2
+      printf 'GitHub calls:\n' >&2; cat "$RULE_CHECK_GH_CALLS" >&2
+      printf 'Added files:\n' >&2; comm -13 <(printf '%s\n' "$before_files") <(find "$AGENT_HOME" "$check_runtime" -type f -print | sort) >&2
+      printf 'Removed files:\n' >&2; comm -23 <(printf '%s\n' "$before_files") <(find "$AGENT_HOME" "$check_runtime" -type f -print | sort) >&2
+      printf 'State hashes: %s -> %s\nUnit hashes: %s -> %s\n' "$before_state" "$(sha256sum "$AGENT_HOME/state/80.json")" "$before_units" "$(sha256sum "$check_runtime/units.json")" >&2
+      exit 1
+    }
+  printf '%s\n' '{"state":"on-hold","hold":{"holder":"other"}}' > "$AGENT_HOME/state/82.json"
+  rc=0; bash "$SCRIPT_DIR/hold.sh" --rule issue-82 --requeue --comment 9 > "$test_env_root/rule-refusal.out" 2>&1 || rc=$?
+  hold_refusal="$(cat "$test_env_root/rule-refusal.out")"
+  rc_check=0; bash "$SCRIPT_DIR/hold.sh" --rule issue-82 --requeue --check --author head-owner > "$test_env_root/rule-refusal-check.out" 2>&1 || rc_check=$?
+  [ "$rc" = 1 ] && [ "$rc_check" = 1 ] \
+    && [ "$(cat "$test_env_root/rule-refusal-check.out")" = "would refuse: $hold_refusal" ] \
+    || { echo 'FAIL: hold --rule and --check refusal text or status differed' >&2; cat "$test_env_root/rule-refusal.out" "$test_env_root/rule-refusal-check.out" >&2; exit 1; }
+  printf '%s\n' '{"units":[{"id":"issue-80","issue":80,"stage":"supervisor-review","history":[]},{"id":"issue-81","issue":81,"stage":"implement-pending","history":[]}]}' > "$check_runtime/units.json"
+  mkdir -p "$check_runtime/alerts"
+  unset AUTOPI_TEST_LIBRARY_ONLY
+  rm -f "$check_runtime/units-archive.json" "$check_runtime/workers.json"
+  rmdir "$check_runtime/alerts"
+  direct_before_files="$(find "$AGENT_HOME" "$check_runtime" -print | sort)"
+  direct_before_units="$(sha256sum "$check_runtime/units.json")"
+  rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-80 requeue u '' '' '' '' > "$test_env_root/scheduler-rule-check.out" 2> "$test_env_root/scheduler-rule-check.err" || rc=$?
+  [ "$rc" = 0 ] && [ "$(cat "$test_env_root/scheduler-rule-check.out")" = 'would-apply scheduler.sh --rule issue-80 --requeue' ] \
+    && [ ! -s "$test_env_root/scheduler-rule-check.err" ] || { echo 'FAIL: scheduler --rule-check did not decide the allowed ruling' >&2; cat "$test_env_root/scheduler-rule-check.out" "$test_env_root/scheduler-rule-check.err" >&2; exit 1; }
+  rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule issue-81 requeue u '' '' '' '' > "$test_env_root/scheduler-rule.out" 2>&1 || rc=$?
+  rule_refusal="$(cat "$test_env_root/scheduler-rule.out")"
+  [ "$rc" = 1 ] || { echo "FAIL: scheduler --rule refusal rc=$rc" >&2; cat "$test_env_root/scheduler-rule.out" >&2; exit 1; }
+  rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-81 requeue u '' '' '' '' > "$test_env_root/scheduler-rule-refusal.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && [ "$(cat "$test_env_root/scheduler-rule-refusal.out")" = "would refuse: $rule_refusal" ] \
+    && [ "$(find "$AGENT_HOME" "$check_runtime" -print | sort)" = "$direct_before_files" ] \
+    && [ "$(sha256sum "$check_runtime/units.json")" = "$direct_before_units" ] \
+    || { echo 'FAIL: scheduler refusal parity changed state or created a file' >&2; cat "$test_env_root/scheduler-rule.out" "$test_env_root/scheduler-rule-refusal.out" >&2; exit 1; }
+  ln -s "$check_runtime/missing-archive.json" "$check_runtime/units-archive.json"
+  archive_probe_files="$(find "$AGENT_HOME" "$check_runtime" -print | sort)"
+  rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-82 requeue u '' '' '' '' > "$test_env_root/scheduler-archive-read.out" 2>&1 || rc=$?
+  [ "$rc" = 75 ] && [ "$(cat "$test_env_root/scheduler-archive-read.out")" = 'rule: could not read archived units for issue-82' ] \
+    && [ "$(find "$AGENT_HOME" "$check_runtime" -print | sort)" = "$archive_probe_files" ] \
+    || { echo 'FAIL: an unreadable unit archive must defer the ruling without writing' >&2; cat "$test_env_root/scheduler-archive-read.out" >&2; exit 1; }
+  rm "$check_runtime/units-archive.json"
+  closed_agent_home="$test_env_root/closed-check-agent"
+  closed_runtime="$test_env_root/closed-check-runtime"
+  mkdir -p "$closed_agent_home" "$closed_runtime"
+  printf 'test-host\n' > "$closed_agent_home/host-id"
+  cp "$SCRIPT_DIR/mac-autopilot/config.template.json" "$closed_runtime/config.json"
+  printf '%s\n' '{"units":[{"id":"issue-85","issue":85,"stage":"closed","history":[{"stage":"supervisor-close"}]}]}' > "$closed_runtime/units.json"
+  closed_before="$(find "$closed_agent_home" "$closed_runtime" -print | sort)"
+  for action in requeue reroute; do
+    rc=0; AGENT_HOME="$closed_agent_home" MAC_AUTOPILOT_ROOT="$test_env_root/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$test_env_root/closed-check-sup" MAC_AUTOPILOT_RUNTIME_DIR="$closed_runtime" ZF_ENGINE_DIR="$SCRIPT_DIR" ZF_REPO_DIR="$test_env_root/repo" OPEN_ISSUE_BLOCKER_GRAPH_JSON='[]' bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-85 "$action" u '' '' '' '' > "$test_env_root/scheduler-closed-$action-check.out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] && [ "$(cat "$test_env_root/scheduler-closed-$action-check.out")" = 'would refuse: rule: issue-85 is closed; use --recut to route its issue to recut' ] \
+      && [ "$(find "$closed_agent_home" "$closed_runtime" -print | sort)" = "$closed_before" ] \
+      || { echo "FAIL: closed-unit $action check must stay read-only without creating a state lock" >&2; cat "$test_env_root/scheduler-closed-$action-check.out" >&2; find "$closed_agent_home" "$closed_runtime" -print >&2; exit 1; }
+  done
+  printf '%s\n' '{"units":[{"id":"issue-83","issue":83,"stage":"supervisor-review","pr":83,"history":[]},{"id":"issue-84","issue":84,"stage":"supervisor-review","pr":84,"history":[]}]}' > "$check_runtime/units.json"
+  pr_read_before_files="$(find "$AGENT_HOME" "$check_runtime" -print | sort)"
+  pr_read_before_units="$(sha256sum "$check_runtime/units.json")"
+  rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-83 close u '' '' '' '' > "$test_env_root/scheduler-close-check.out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && [ "$(cat "$test_env_root/scheduler-close-check.out")" = 'would refuse: rule: issue-83 has open PR #83; close or merge it first' ] \
+    || { echo 'FAIL: close check did not use the read-only PR-state lookup' >&2; cat "$test_env_root/scheduler-close-check.out" >&2; exit 1; }
+  rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-84 supersede-handoff 'https://github.com/test/repo/issues/84#issuecomment-9' '' '' '' '' > "$test_env_root/scheduler-supersede-check.out" 2>&1 || rc=$?
+  [ "$rc" = 0 ] && [ "$(cat "$test_env_root/scheduler-supersede-check.out")" = 'would-apply scheduler.sh --rule issue-84 --supersede-handoff' ] \
+    && [ "$(tail -n2 "$RULE_CHECK_GH_CALLS")" = "pr view 83 --json state --jq .state
+pr view 84 --json headRefOid --jq .headRefOid" ] \
+    && [ "$(find "$AGENT_HOME" "$check_runtime" -print | sort)" = "$pr_read_before_files" ] \
+    && [ "$(sha256sum "$check_runtime/units.json")" = "$pr_read_before_units" ] \
+    || { echo 'FAIL: close and supersede-handoff checks must read PRs without writing scheduler files' >&2; cat "$test_env_root/scheduler-supersede-check.out" >&2; exit 1; }
+  rc=0; bash "$SCRIPT_DIR/hold.sh" --rule issue-80 --requeue --check --comment 9 > "$test_env_root/rule-check-comment.out" 2>&1 || rc=$?
+  [ "$rc" = 64 ] || { echo 'FAIL: --comment must be rejected with --check' >&2; exit 1; }
+  printf '%s\n' "$(($(date +%s) + 3600))" > "$AGENT_HOME/gh-rate-limit-until.graphql"
+  rc=0; bash "$SCRIPT_DIR/hold.sh" --rule issue-80 --requeue --check --author head-owner > "$test_env_root/rule-check-backoff.out" 2>&1 || rc=$?
+  [ "$rc" = 75 ] || { echo "FAIL: GraphQL backoff must return 75, got $rc" >&2; exit 1; }
+)
+printf 'ok - hold --rule --check is GET-only, write-free, rejects comments and returns 75 during GraphQL backoff\n'
+python3 - "$SCRIPT_DIR" <<'PY'
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+engine = Path(sys.argv[1])
+hold = (engine / "lib.d/hold-rule.sh").read_text()
+scheduler = (engine / "mac-autopilot/scheduler.d/locks-views.sh").read_text()
+fixtures = set("""hold_rule: GitHub GraphQL backoff is active
+hold_rule: invalid target or action
+hold_rule: --comment is not accepted with --check; --author must be a login
+hold_rule: invalid comment id
+hold_rule: waiver needs --size-waiver N
+hold_rule: --size-waiver is allowed only with --requeue or alone as --waiver; --reroute keeps an existing waiver
+hold_rule: --ready takes an issue, not a PR
+hold_rule: initial state read failed for #$n
+hold_rule: initial state is unreadable for #$n
+hold_rule: #$n is held by someone other than scheduler-stop-loss
+hold_rule: authenticated author could not be read
+hold_rule: --author does not match the authenticated GitHub author
+hold_rule: repository owner could not be read
+hold_rule: ruling author is not the repository owner
+hold_rule: GitHub comment lookup failed for comment $comment_id
+hold_rule: GitHub comment response was unreadable
+hold_rule: ruling comment is not on #$n
+hold_rule: #$n is $state_name; --ready needs tracker, needs-advisor or needs-triage
+hold_rule: #$n state is unreadable; --ready refused
+hold_rule: #$n is closed; --ready needs an open issue
+usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver <ref> [guidance]
+rule: waiver needs --size-waiver <max_lines>
+rule: --size-waiver goes with --requeue, or alone on an implement or *-pending unit
+rule: GitHub GraphQL backoff is active
+rule: could not read units for $id
+rule: could not read archived units for $id
+rule: no unit $id
+rule: could not read unit $id
+rule: --size-waiver alone needs an implement or *-pending unit; $id is in $stage, use --requeue
+rule: --size-waiver needs the ruling comment author
+rule: $id has no blocker; pass --blocked-on N
+rule: $id has no issue to recut
+rule: $id is in $stage; close needs supervisor-review, parked or blocked-external
+rule: $id PR #$pr state is unreadable; close refused
+rule: $id has open PR #$pr; close or merge it first
+rule: $id is in $stage; use --reroute to move it
+rule: supersede-handoff requires an issuecomment URL
+rule: $id has no PR head to supersede the handoff snapshot
+rule: could not read the current head of PR #$pr
+rule: PR #$pr has no valid current head""".splitlines())
+
+observed = set()
+dynamic = set()
+fixture_codes = {}
+direct_fixtures = set("""hold_rule: could not prepare the hold-release record for #$n
+hold_rule: pre-ruling hold release failed for #$n; --$action was not run
+hold_rule: scheduler --rule refused #$n --$action; see the scheduler refusal above
+hold_rule: ready-state transition failed for #$n after the ruling was recorded
+hold_rule: post-ruling state read failed for #$n after --$action was recorded
+hold_rule: final hold release failed for #$n after --$action was recorded
+rule: supersede-handoff requires an issuecomment URL
+rule: $id has no PR head to supersede the handoff snapshot
+rule: could not read the current head of PR #$pr
+rule: PR #$pr has no valid current head
+rule: $1 is closed but its issue is on a stop-loss hold; use --requeue
+rule: $1 was closed by a recut, an obsolete retirement or an outside PR close and its issue is open and ready-for-agent; use --requeue
+rule: $1 is closed and its GitHub issue state could not be read; retry the ruling
+rule: $1 is closed; use --recut to route its issue to recut
+usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver <ref> [guidance]
+rule: no unit $1
+rule: waiver needs --size-waiver <max_lines>
+rule: --size-waiver goes with --requeue, or alone on an implement or *-pending unit
+rule: --size-waiver alone needs an implement or *-pending unit; $1 is in $stage, use --requeue
+rule: --size-waiver needs the ruling comment author
+rule: $1 has no blocker; pass --blocked-on N
+rule: $1 has no issue to recut
+rule: $1 is in $stage; close needs supervisor-review, parked or blocked-external
+rule: $1 PR #$pr state is unreadable; close refused
+rule: $1 has open PR #$pr; close or merge it first
+rule: $1 is in $stage; use --reroute to move it
+usage: scheduler.sh --rule-check <unit> <action> <ref> [guidance]""".splitlines())
+direct = set()
+for source in (hold, scheduler):
+    source_lines = source.splitlines()
+    for index, line in enumerate(source_lines):
+        for match in re.finditer(r'(?:echo|printf)\s+(?:"([^"]*)"|\'([^\']*)\')', line):
+            value = match.group(1) if match.group(1) is not None else match.group(2)
+            if value.startswith(("hold_rule:", "rule:", "usage:")):
+                direct.add(value)
+        if "REFUSAL_TEXT=" not in line or 'REFUSAL_TEXT=""' in line:
+            continue
+        match = re.search(r'(?:HOLD_RULE|RULE_ENTRY)_REFUSAL_TEXT="((?:hold_rule:|rule:|usage:)[^"]*)"', line)
+        if match:
+            value = match.group(1)
+            observed.add(value)
+            status = re.search(r'\breturn ([0-9]+)\b', line)
+            if not status:
+                status = next((found for following in source_lines[index + 1:index + 3] if (found := re.search(r'\breturn ([0-9]+)\b', following))), None)
+            if not status:
+                raise SystemExit(f"refusal has no literal exit code: {line.strip()}")
+            code = int(status.group(1))
+            if value in fixture_codes and fixture_codes[value] != code:
+                raise SystemExit(f"refusal has conflicting exit codes: {value}")
+            fixture_codes[value] = code
+        elif "closed_unit_refusal" in line:
+            dynamic.add("closed_unit_refusal")
+        elif "scheduler_output" in line:
+            dynamic.add("scheduler_output")
+        elif "$result" in line:
+            dynamic.add("size_waiver_result")
+        else:
+            raise SystemExit(f"unregistered refusal expression: {line.strip()}")
+if observed != fixtures or dynamic != {"closed_unit_refusal", "scheduler_output", "size_waiver_result"}:
+    missing = sorted(observed - fixtures)
+    stale = sorted(fixtures - observed)
+    raise SystemExit(f"refusal fixtures differ: missing={missing}, stale={stale}, dynamic={sorted(dynamic)}")
+if direct != direct_fixtures:
+    raise SystemExit(f"direct refusal output fixtures differ: missing={sorted(direct - direct_fixtures)}, stale={sorted(direct_fixtures - direct)}")
+if set(fixture_codes) != fixtures:
+    raise SystemExit(f"refusal fixture exit codes differ: missing={sorted(set(fixture_codes) - fixtures)}, stale={sorted(fixtures - set(fixture_codes))}")
+if "hold_rule_decide " not in hold or "rule_entry_decide " not in scheduler:
+    raise SystemExit("apply paths must use the shared decision functions")
+with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as fixture_file:
+    fixture_path = Path(fixture_file.name)
+    for text, code in sorted(fixture_codes.items()):
+        fixture_file.write(f"{code}\t{text}\n")
+parity_lines = [
+    "set -euo pipefail",
+    'engine="$1"',
+    'source "$engine/lib.d/hold-rule.sh"',
+    'source "$engine/mac-autopilot/scheduler.d/locks-views.sh"',
+    'hold_rule_decide() { HOLD_RULE_REFUSAL_TEXT="$fixture_text"; return "$fixture_rc"; }',
+    'rule_entry_decide() { RULE_ENTRY_REFUSAL_TEXT="$fixture_text"; return "$fixture_rc"; }',
+    "while IFS=$'\\t' read -r fixture_rc fixture_text; do",
+    '  for mode in apply check; do',
+    '    expected="$fixture_text"; if [[ "$mode" == check && "$fixture_rc" == 1 ]]; then expected="would refuse: $fixture_text"; fi',
+    '    if [[ "$mode" == check ]]; then check_only=true; else check_only=false; fi',
+    '    rc=0; output="$(hold_rule issue-1 requeue 7 "" "" "$check_only" reviewer 2>&1)" || rc=$?',
+    '    [[ "$rc" == "$fixture_rc" && "$output" == "$expected" ]] || exit 1',
+    '    rc=0; output="$(rule_entry issue-1 requeue reference "" "" "" reviewer "$mode" 2>&1)" || rc=$?',
+    '    [[ "$rc" == "$fixture_rc" && "$output" == "$expected" ]] || exit 1',
+    '  done',
+    'done < "$2"',
+]
+try:
+    result = subprocess.run(["bash", "-c", "\n".join(parity_lines), "parity", str(engine), str(fixture_path)], capture_output=True, text=True)
+finally:
+    fixture_path.unlink(missing_ok=True)
+if result.returncode != 0:
+    raise SystemExit(f"refusal wrapper parity failed: {result.stdout}{result.stderr}")
+PY
+printf 'ok - each ruling refusal is registered and its rc and text match in apply and check modes\n'
