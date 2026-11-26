@@ -205,7 +205,6 @@ self_check_run() (
   else rc=1; fi
   return "$rc"
 )
-
 pid_start() { pid_start_id "$1"; } # start ticks: tells a reused pid from the gate
 self_check_verification_run() ( # unit head clone config output metadata; success writes the verification evidence record
   local id="$1" sha="$2" dir="$3" config="$4" command_output="$5" metadata="$6" argv_json timeout_s evidence_dir files_json rc=0 arg
@@ -444,7 +443,6 @@ unit_dispatch_priority() { # unit-json → hotfix|opt|normal
   else printf 'normal\n'; fi
 }
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../bin" && pwd -P)/luna-capacity.sh"
-
 higher_priority_waiting() { # priority → sets waiter and age; always drops stale files
   local priority="$1" f pid name hotfix="" opt="" hotfix_age=0 opt_age=0 max age mtime now=""
   max="${AUTOPI_PRIORITY_HOLD_MAX_SECONDS:-1200}"

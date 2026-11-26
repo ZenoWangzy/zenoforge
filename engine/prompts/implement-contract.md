@@ -1,11 +1,10 @@
 # Implement-stage review contract
 
-The current issue and its acceptance criteria are the source of truth. Before
-handing off the implementation, write one machine-readable contract for the
-reviewer. The scheduler copies this block from your report into the PR body;
-do not create a contract file or edit the PR yourself.
-A ticket closed under the optimization-premise rule below delivers the
-`OBSOLETE:` first line instead of a contract block.
+Use the issue as source of truth. Write the machine-readable contract in your
+report; the scheduler copies it into the PR. Do not create a contract file or
+edit the PR. If optimization numbers fail to reproduce, make
+`OBSOLETE: <measured numbers, window, data source>` the report's first line
+instead of a contract.
 
 **No change on purpose.** When you judge that the issue has no independently deliverable slice, or a prerequisite is missing, and you change nothing, make the first line of the report `NO-CHANGE: <reason>` with the reason in the same line. Use it only when the worktree has no commit and no edit; if you changed or committed anything, do not use it.
 
@@ -56,11 +55,9 @@ crossing it measures the old mechanism. Record the numbers and calculation.
 
 ## Name the full verification command before coding
 
-Before you write code, decide the one command or script that fully verifies
-this change. If no existing check covers it, build that check first and see it
-fail on the current code, then implement. The decision-log's "how it was
-verified" line names this command and its exit code. This adds no report
-section and no schema field.
+Before coding, name the command that fully verifies the change. If none
+exists, build one, see it fail, then implement. Record its command and exit
+code in `## decision-log`; add no report section or schema field.
 
 ## Blast-radius proof on risk-class paths
 
@@ -91,12 +88,11 @@ body. Use this exact JSON shape and the `contract` fence:
 }
 ```
 
-Restate every issue acceptance criterion without weakening it. List the files
-you intend the diff to change, the observable behavior changes, and tests added
-by this implementation, each one seen failing before the fix that makes it pass. Use empty arrays only when
-that category has no items.
-Keep each entry specific enough to compare with the issue and diff. The contract describes intended work; it does not authorize behavior that
-conflicts with the issue.
+Restate every issue criterion without weakening it. List intended files,
+behavior changes, and tests added by this implementation; see each test fail
+before its fix. Use empty arrays only for empty categories. Keep entries
+specific enough to compare with the issue and diff; the contract does not
+authorize behavior that conflicts with the issue.
 
 Every implement report must also include non-empty `## how` and `## why`
 sections. `## how` explains how the touched code works today. `## why` explains
@@ -106,12 +102,10 @@ hex characters) and linked issues as `#N` where available.
 Every implement report must also include a non-empty `## decision-log` section:
 what was tried, what failed and why, the final choice, and how it was verified.
 
-When the issue body has a parseable list under `## Acceptance criteria`, include
-an `## acceptance-criteria coverage` Markdown table with the columns
-`Acceptance criterion` and `Production call site (file:line)`. Copy each
-criterion's text and include a row for every criterion. Each call-site cell
-must cite a production path and line that exists in the candidate branch. If
-the issue body has no parseable acceptance-criteria list, omit the table.
+For parseable `## Acceptance criteria`, add `## acceptance-criteria coverage`
+with exactly columns `Acceptance criterion` and `Production call site (file:line)`,
+one row per criterion. Copy each criterion verbatim; cite an existing production
+`file:line` in the candidate branch. Omit the table if none parse.
 
 Write no code comments: record a non-obvious decision in an ADR (docs/adr/) and file an issue for a shortcut.
 
