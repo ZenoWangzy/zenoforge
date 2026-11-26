@@ -9,7 +9,8 @@ if [[ $rc == 2 && $real == *'is not installed'* && -z ${CI:-} ]]; then
   printf 'SKIP comment-ratchet.test.sh: %s\n' "${real//$'\n'/; }"; exit 0
 fi
 (( rc == 0 )) || fail "current tree fails: $real"
-[[ $real == 'comment-ratchet ok' ]] || fail "current tree did not report success: $real"
+unexpected="$(grep -Ev '^(NOTE .*: run node tools/comment-ratchet\.mjs --tighten\.|comment-ratchet ok)$' <<< "$real" || true)"
+[[ -z "$unexpected" && "$(grep -xc 'comment-ratchet ok' <<< "$real")" == 1 ]] || fail "current tree reported unexpected output: $real"
 
 repo="$test_env_root/comment-ratchet"
 mkdir -p "$repo/tools" "$repo/engine"
