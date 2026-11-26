@@ -131,6 +131,18 @@ release_feature_evidence_valid() {
   return 0
 }
 
+record_release_surface_close() {
+  local n="$1" sha="$2" covered="$3" events="$AGENT_HOME/alerts/events.md" at
+  [[ "$n" =~ ^[1-9][0-9]*$ && "$sha" =~ ^[0-9a-f]{7,40}$ && "$covered" =~ ^(true|false)$ ]] || return 2
+  mkdir -p "$(dirname -- "$events")" || return 1
+  if [[ -r "$events" ]] && grep -Fq "release-closer: deployed=$sha closed=[$n] surface_covered=$covered" "$events"; then
+    return 0
+  fi
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  printf '[%s] release-closer: deployed=%s closed=[%s] surface_covered=%s\n' \
+    "$at" "$sha" "$n" "$covered" >> "$events"
+}
+
 # Close-contract refusals depend on ticket revision; acceptance depends on SHA.
 release_close_state_revision() {
   jq -c '[.state, .requeued_at, .run.implement_started_at, .run.concluded_at,

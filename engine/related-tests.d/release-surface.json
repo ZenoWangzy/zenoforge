@@ -1,0 +1,6 @@
+{
+  "engine/lib.d/release-close.sh": ["engine/release-surface.test.sh", "engine/lib-conclude.test.sh"],
+  "engine/lib.d/conclude-run.sh": ["engine/release-surface.test.sh", "engine/lib-conclude.test.sh"],
+  "engine/mac-autopilot/ledger_history.py": ["engine/release-surface.test.sh", "engine/mac-autopilot/node_health.test.sh"],
+  "engine/mac-autopilot/node_health.py": ["engine/release-surface.test.sh", "engine/mac-autopilot/node_health.test.sh"]
+}

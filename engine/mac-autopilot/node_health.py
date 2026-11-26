@@ -1075,7 +1075,7 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
     details = {
         "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
         "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None, "lead_time_samples_7d": None, "lead_time_samples_30d": None,
-        "delivery_unavailable": dict(delivery_unavailable or {}), "rows_from": rows_from,
+        "delivery_unavailable": dict(delivery_unavailable or {}), "rows_from": rows_from, "uncovered_closes_7d": ledger_history.uncovered_closes_7d(release_events, now),
     }
 
     accepted = []
@@ -1500,7 +1500,7 @@ def main():
     for node, mid, desc, v, healthy, unhealthy, higher, status in rows:
         shown = "-" if v is None else f"{v:.0f}"
         op = ">=" if higher else "<="
-        print(f"  {node:<12} {desc:<48} {shown:>7}  {op}{healthy:<6} {'<=' if higher else '>='}{unhealthy:<8} {status}" + (f"  {fork_detail}" if mid == "host.fork_rate_root_max" and fork_detail else ""))
+        print(f"  {node:<12} {desc:<48} {shown:>7}  {op}{healthy:<6} {'<=' if higher else '>='}{unhealthy:<8} {status}" + (f"  {fork_detail}" if mid == "host.fork_rate_root_max" and fork_detail else "") + (f"\n  delivery    {ledger_history.uncovered_closes_line(delivery['details']['uncovered_closes_7d'])}" if mid == "delivery.issue_to_accept_p50_7d_hours" else ""))
     bad = [r for r in rows if r[7] == "UNHEALTHY"]
     print("unhealthy nodes: " + (", ".join(sorted({r[0] for r in bad})) or "none"))
     if host_missing:
