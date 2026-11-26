@@ -1,0 +1,8 @@
+{
+  "engine/formal/unit-lifecycle/gen-edges.sh": [
+    "engine/formal/unit-lifecycle/table-drift.test.sh"
+  ],
+  "engine/formal/unit-lifecycle/verify-model.sh": [
+    "engine/formal/unit-lifecycle/verify-model.test.sh"
+  ]
+}
