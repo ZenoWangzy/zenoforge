@@ -90,18 +90,18 @@ write_report() {
 }
 
 intake_backlog_rate_allows_apply() {
-  local now sampled_at response core graphql
+  local response core graphql sample_status
   [[ ! -e "$stop_signal" ]] || return 1
-  gh_budget_sample '' force || :
-  response="$(gh_budget_latest)" || {
-    echo 'intake-backlog: rate-limit sample unavailable' >&2
-    intake_backlog_signal_stop rate-check-failed
-    return 1
-  }
-  now="$(date +%s)" || return 1
-  sampled_at="$(jq -er '.sampled_epoch | select(type == "number" and floor == .)' <<< "$response" 2>/dev/null)" || sampled_at=''
-  if [[ ! "$sampled_at" =~ ^[0-9]+$ ]] || (( now < sampled_at || now - sampled_at >= 60 )); then
-    echo 'intake-backlog: rate-limit sample stale' >&2
+  gh_budget_sample '' allow-test || :
+  if response="$(gh_budget_fresh)"; then
+    :
+  else
+    sample_status=$?
+    if (( sample_status == 2 )); then
+      echo 'intake-backlog: rate-limit sample stale' >&2
+    else
+      echo 'intake-backlog: rate-limit sample unavailable' >&2
+    fi
     intake_backlog_signal_stop rate-check-failed
     return 1
   fi

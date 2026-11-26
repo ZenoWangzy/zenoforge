@@ -13,6 +13,16 @@ gh_budget_latest() {
   cat -- "$GH_BUDGET_LATEST_FILE"
 }
 
+gh_budget_fresh() {
+  local snapshot sampled_epoch now
+  snapshot="$(gh_budget_latest)" || return 1
+  sampled_epoch="$(jq -er '.sampled_epoch | select(type == "number" and floor == .)' <<< "$snapshot" 2>/dev/null)" || return 1
+  now="$(date +%s)" || return 1
+  [[ "$sampled_epoch" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
+  (( now >= sampled_epoch && now - sampled_epoch < 60 )) || return 2
+  printf '%s\n' "$snapshot"
+}
+
 gh_budget_recent() {
   local now="$1" file value
   for file in "$GH_BUDGET_ATTEMPT_FILE" "$GH_BUDGET_LATEST_FILE"; do
@@ -81,9 +91,9 @@ gh_budget_record_rollup() {
 }
 
 gh_budget_sample() {
-  local now="${1:-}" force="${2:-}" sampled_at month response rc record previous attempt_tmp latest_tmp
+  local now="${1:-}" allow_test="${2:-}" sampled_at month response rc record previous attempt_tmp latest_tmp
   gh_budget_paths || return 0
-  [[ "$force" == force || "${ZF_AGENT_TEST_MODE:-0}" != 1 ]] || return 0
+  [[ "$allow_test" == allow-test || "${ZF_AGENT_TEST_MODE:-0}" != 1 ]] || return 0
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)" || return 0
   [[ "$now" =~ ^[0-9]+$ ]] || return 0
   mkdir -p -- "$GH_BUDGET_METRICS_DIR" "$GH_BUDGET_STATE_DIR" 2>/dev/null || return 0
@@ -151,18 +161,14 @@ gh_budget_sample() {
 }
 
 gh_rate_limit_quota() {
-  local key quota snapshot sampled_epoch now
+  local key quota snapshot
   case "$1" in
     graphql) key=graphql ;;
     rest) key=core ;;
     *) return 1 ;;
   esac
-  gh_budget_sample '' force || :
-  snapshot="$(gh_budget_latest)" || return 1
-  sampled_epoch="$(jq -er '.sampled_epoch | select(type == "number" and floor == .)' <<< "$snapshot" 2>/dev/null)" || return 1
-  now="$(date +%s)" || return 1
-  [[ "$sampled_epoch" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
-  (( now >= sampled_epoch && now - sampled_epoch < 60 )) || return 1
+  gh_budget_sample '' allow-test || :
+  snapshot="$(gh_budget_fresh)" || return 1
   quota="$(jq -er --arg key "$key" '.resources[$key] | "\(.remaining) \(.reset)" | select(test("^[0-9]+ [0-9]+$"))' <<< "$snapshot" 2>/dev/null)" || return 1
   printf '%s\n' "$quota"
 }
