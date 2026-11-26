@@ -135,7 +135,7 @@
 6	engine/hand-completion-refill.test.sh
 1	engine/hold-answer.test.sh
 2	engine/hold-landing-owner.test.sh
-57	engine/hold-rule.test.sh
+56	engine/hold-rule.test.sh
 9	engine/hold-sweep-release.test.sh
 20	engine/hold.test.sh
 4	engine/host-unit-install-source.test.sh
@@ -180,8 +180,8 @@
 10	engine/issue-pipeline-maintenance-budget.test.sh
 40	engine/issue-pipeline-slices.sh
 504	engine/issue-pipeline.sh
-98	engine/issue-pipeline.test.sh
-5	engine/issue-rest.test.sh
+97	engine/issue-pipeline.test.sh
+4	engine/issue-rest.test.sh
 33	engine/issue-transition-gh-retry.test.sh
 26	engine/issue-transition-state-drift.test.sh
 4	engine/join-plan-package-trailer.sh
@@ -228,7 +228,7 @@
 24	engine/lib.d/gitnexus.sh
 134	engine/lib.d/guarded-write.sh
 39	engine/lib.d/hand-dependency.sh
-14	engine/lib.d/hold-rule.sh
+9	engine/lib.d/hold-rule.sh
 30	engine/lib.d/holds.sh
 66	engine/lib.d/implement-gates.sh
 14	engine/lib.d/issue-rest.sh
@@ -429,7 +429,7 @@
 51	engine/mac-autopilot/scheduler.d/clones.sh
 27	engine/mac-autopilot/scheduler.d/conflict-resolve.sh
 21	engine/mac-autopilot/scheduler.d/conflict-resolve.test.sh
-58	engine/mac-autopilot/scheduler.d/core.sh
+57	engine/mac-autopilot/scheduler.d/core.sh
 17	engine/mac-autopilot/scheduler.d/dead-park-exit.test.sh
 4	engine/mac-autopilot/scheduler.d/dead-park-salvage.sh
 7	engine/mac-autopilot/scheduler.d/dep-fresh-tick.test.sh
@@ -479,7 +479,7 @@
 16	engine/mac-autopilot/scheduler.d/locks-views-empty-pid.test.sh
 6	engine/mac-autopilot/scheduler.d/locks-views-term.test.sh
 6	engine/mac-autopilot/scheduler.d/locks-views-trap.test.sh
-81	engine/mac-autopilot/scheduler.d/locks-views.sh
+80	engine/mac-autopilot/scheduler.d/locks-views.sh
 4	engine/mac-autopilot/scheduler.d/main-red-optional-file.test.sh
 17	engine/mac-autopilot/scheduler.d/merge-census-latest.test.sh
 112	engine/mac-autopilot/scheduler.d/merge-lane.sh
@@ -498,7 +498,7 @@
 9	engine/mac-autopilot/scheduler.d/release-deps-station.sh
 12	engine/mac-autopilot/scheduler.d/release-deps-station.test.sh
 1	engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
-57	engine/mac-autopilot/scheduler.d/reports.sh
+56	engine/mac-autopilot/scheduler.d/reports.sh
 10	engine/mac-autopilot/scheduler.d/review-fixes.sh
 75	engine/mac-autopilot/scheduler.d/review-rules.sh
 67	engine/mac-autopilot/scheduler.d/self-check.sh
@@ -520,7 +520,7 @@
 3	engine/mac-autopilot/scheduler.d/worker-outcomes.sh
 1	engine/mac-autopilot/scheduler.d/worker-rc75.test.sh
 34	engine/mac-autopilot/scheduler.d/worker-scope.sh
-217	engine/mac-autopilot/scheduler.sh
+216	engine/mac-autopilot/scheduler.sh
 310	engine/mac-autopilot/scheduler.test.sh
 2	engine/mac-autopilot/self-check-main-sync.test.sh
 3	engine/mac-autopilot/set-unit-compact-ledger.test.sh
@@ -633,9 +633,8 @@
 2	engine/night/production-tenant-marker-readonly.test.sh
 7	engine/night/prompt-observer-compare.sh
 12	engine/night/prompt-observer-compare.test.sh
-2	engine/night/prompt-observer-low-score.sh
 5	engine/night/prompt-observer-low-score.test.sh
-3	engine/night/prompt-observer-report.test.sh
+2	engine/night/prompt-observer-report.test.sh
 3	engine/no-pack-rulings-reader.test.sh
 433	engine/notify.sh
 186	engine/notify.test.sh
