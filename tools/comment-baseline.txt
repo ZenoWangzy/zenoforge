@@ -498,7 +498,7 @@
 9	engine/mac-autopilot/scheduler.d/release-deps-station.sh
 12	engine/mac-autopilot/scheduler.d/release-deps-station.test.sh
 1	engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
-58	engine/mac-autopilot/scheduler.d/reports.sh
+57	engine/mac-autopilot/scheduler.d/reports.sh
 10	engine/mac-autopilot/scheduler.d/review-fixes.sh
 75	engine/mac-autopilot/scheduler.d/review-rules.sh
 67	engine/mac-autopilot/scheduler.d/self-check.sh
@@ -514,7 +514,7 @@
 32	engine/mac-autopilot/scheduler.d/tick-census.sh
 10	engine/mac-autopilot/scheduler.d/tick-steps.sh
 1	engine/mac-autopilot/scheduler.d/unit-transition-log.sh
-128	engine/mac-autopilot/scheduler.d/units.sh
+127	engine/mac-autopilot/scheduler.d/units.sh
 6	engine/mac-autopilot/scheduler.d/usage-sessions.sh
 46	engine/mac-autopilot/scheduler.d/worker-command.sh
 3	engine/mac-autopilot/scheduler.d/worker-outcomes.sh

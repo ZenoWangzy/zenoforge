@@ -80,19 +80,30 @@ verdict_of() {
       }
     }' "$1" 2>/dev/null \
     | sed -e 's/^APPROVE$/READY/' -e 's/^REQUEST-CHANGES$/NOT_READY/' -e 's/^BLOCK$/INPUT_INCOMPLETE/' | sort -u)"
-  if [[ -n "$found" ]]; then
-    [[ "$(wc -l <<<"$found")" -eq 1 ]] && { printf '%s' "$found"; return 0; }
-    return 1
-  fi
   # 10-28：约 1/5 的评审写「## Verdict」标题、下一行裸写 NOT_READY，缺 `VERDICT:` 前缀，被当成无结论重跑。
-  found="$(awk 'h && NF { line=toupper($0); gsub(/[*`]/, "", line); if (line ~ /^[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE)[[:space:]]*$/) { gsub(/[[:space:]]/, "", line); print line }; exit }
-    toupper($0) ~ /^#+[[:space:]]*VERDICT[[:space:]]*$/ { h = 1 }' "$1" 2>/dev/null)"
+  if [[ -z "$found" ]]; then
+    found="$(awk 'h && NF { line=toupper($0); gsub(/[*`]/, "", line); if (line ~ /^[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE)[[:space:]]*$/) { gsub(/[[:space:]]/, "", line); print line }; exit }
+      toupper($0) ~ /^#+[[:space:]]*VERDICT[[:space:]]*$/ { h = 1 }' "$1" 2>/dev/null)"
+  fi
   if [[ -n "$found" ]]; then
-    [[ "$(wc -l <<<"$found")" -eq 1 ]] && { printf '%s' "$found"; return 0; }
-    return 1
+    [[ "$(wc -l <<<"$found")" -eq 1 ]] || return 1
+    if findings="$(findings_block_of "$1")"; then
+      if jqf -e 'any(.findings[]; .status=="unverified" and (.severity=="P0" or .severity=="P1"))
+        or any(.dropped_findings[]; .status=="unverified" and (.severity=="P0" or .severity=="P1"))' \
+        <<<"$findings" >/dev/null 2>&1; then
+        printf 'NOT_READY'
+      else
+        printf '%s' "$found"
+      fi
+    elif grep -Eq '^(```|~~~)review-findings[[:space:]]*$' "$1"; then
+      printf 'NOT_READY'
+    else
+      printf '%s' "$found"
+    fi
+    return 0
   fi
   findings="$(findings_block_of "$1")" || return 1
-  jqf -e 'any(.findings[]; .status=="open" and (.severity=="P0" or .severity=="P1"))' <<<"$findings" >/dev/null 2>&1 \
+  jqf -e 'any(.findings[]; (.status=="open" or .status=="unverified") and (.severity=="P0" or .severity=="P1"))' <<<"$findings" >/dev/null 2>&1 \
     && printf 'NOT_READY'
 }
 
@@ -165,7 +176,7 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
       and (.severity|IN("P0","P1","P2","P3"))
       and (.file|type)=="string" and (.file|length)>0
       and (.line|type)=="number" and .line==(.line|floor) and .line>0
-      and (.status|IN("open","resolved","inherited","fixed-in-review"))
+      and (.status|IN("open","unverified","resolved","inherited","fixed-in-review"))
       and (if .status=="fixed-in-review" then (.commit_sha|type)=="string" and (.commit_sha|test("^[0-9a-f]{40}$")) and (.test|test_case) else true end)
       and ((has("introduced_by")|not and $legacy) or (.introduced_by|IN("candidate","pre_existing","unknown")))
       and ((has("base_evidence")|not and $legacy) or ((.base_evidence|type)=="string" and (.base_evidence|test("\\S"))))
@@ -203,7 +214,7 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
           and (([$normalized.dispositions[].id] | length)==([$normalized.dispositions[].id] | unique | length)) then
           {findings:($normalized.findings|map(select(evidence_gap==[])|normalized_finding)),dispositions:$normalized.dispositions,decision_log_flags:$normalized.decision_log_flags,legacy:false,
            dropped:([$normalized.findings[]|select(evidence_gap!=[])]|length),
-           dropped_findings:[$normalized.findings[]|select(evidence_gap!=[])|{id,reason:("no rerunnable evidence: missing "+(evidence_gap|join(", ")))}]}
+           dropped_findings:[$normalized.findings[]|select(evidence_gap!=[])|{id,severity,status,reason:("no rerunnable evidence: missing "+(evidence_gap|join(", ")))}]}
         else empty end
     else empty end' <<<"$raw" 2>/dev/null
 }
@@ -254,10 +265,10 @@ review_report_harvest() { # report unit [worker-json] → attach review context 
   review_decision_log_flags_append "$1" "$2"
 }
 # Actionable blocking findings provide a concrete target for the repair worker.
-review_findings_hint_update() { # report → jq update fragment for open P0/P1 findings
+review_findings_hint_update() {
   local findings hint
   findings="$(findings_block_of "$1")" || return 0
-  hint="$(jqf -r '[.findings[] | select((.status=="open" or .status=="fixed-in-review") and (.severity=="P0" or .severity=="P1"))
+  hint="$(jqf -r '[.findings[] | select((.status=="open" or .status=="unverified" or .status=="fixed-in-review") and (.severity=="P0" or .severity=="P1"))
     | "\(.id) \(.file):\(.line) — \(.summary // .id)"] | join("\n")' <<<"$findings")"
   [[ -n "$hint" ]] || return 0
   printf ' | .repair_hint=%s' "$(js "$hint")"

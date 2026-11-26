@@ -233,7 +233,6 @@ verdict_missing_escalation() { # unit-json [unchanged-head] → 0 when the lates
     and ('"$gate"')' <<<"$1" >/dev/null 2>&1
 }
 no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approved), "review-pending" (no current approval), or nothing (a repair is right)
-  # A repair with no red check and no open P0/P1 finding has nothing to fix (2026-11-08: issue-5306 went to repair three times on cancelled checks).
   # Other failures keep repair: a merge conflict, a land/precheck/CI red stage, or any lookup that fails.
   local u="$1" pr head rows approved=false
   pr="$(jqf -r '.pr // empty' <<<"$u")"
@@ -249,7 +248,7 @@ no_finding_repair_route() { # unit-json → "ready-to-merge <head>" (head approv
   jqf -e --arg h "$head" '[(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | (.stage == "review-approve" and .result == $h)' <<<"$u" >/dev/null && approved=true
   # An approval of the open PR's current head supersedes the findings of earlier rounds and a review report with no findings record (#1077).
   if [[ "$approved" == true && "$(pr_view "$pr" state)" == OPEN ]]; then printf 'ready-to-merge %s\n' "$head"; return 0; fi
-  jqf -e '((.review_findings // []) | last // {}) | (.findings // []) | any(.status == "open" and (.severity == "P0" or .severity == "P1"))' <<<"$u" >/dev/null && return 0
+  jqf -e '((.review_findings // []) | last // {}) | (.findings // []) | any((.status == "open" or .status == "unverified") and (.severity == "P0" or .severity == "P1"))' <<<"$u" >/dev/null && return 0
   jqf -e '((.review_findings // []) | length == 0) and ((.review_report // "") != "" or ([(.history // [])[] | select(.stage | IN("review-approve", "review-request-changes", "review-block"))] | last | .stage) == "review-request-changes")' <<<"$u" >/dev/null && return 0
   if [[ "$approved" == true ]]; then printf 'ready-to-merge %s\n' "$head"; else printf 'review-pending\n'; fi
 }

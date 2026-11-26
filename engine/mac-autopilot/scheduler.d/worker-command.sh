@@ -146,7 +146,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   if [[ "$type" == review || "$type" == rereview ]]; then
     sandbox_mode=read-only
     zcode_mode=plan
-    prompt+=$'\n\n本次评审工作目录只读。不要修改、提交或推送，也不要运行测试命令（测试可能在工作目录留下文件）。缺陷保持 open，在报告中给出修复建议，交由 repair 阶段处理。'
+    prompt+=$'\n\n本次评审工作目录只读。不要修改、提交或推送，也不要运行测试命令（测试可能在工作目录留下文件）。可用只读证据命令：git diff/show/log/rev-parse/status、rg、grep、cat、jq、gh pr view/diff/checks、gh issue view。已确认缺陷保持 open，在报告中给出修复建议，交由 repair 阶段处理。若问题只能由测试证明，保留 finding 并设 status 为 unverified，rerun_command 写待运行的测试命令，rerun_output 写明未运行，交给 repair 或引擎自测；P0/P1 unverified 用 NOT_READY。'
   fi
   prompt+="$(worker_rules "$(jqf -c --arg id "$unit" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")" "$type" "$(provider_of "$model")")"
   prompt_arg="$prompt"

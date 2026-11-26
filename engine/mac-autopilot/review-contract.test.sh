@@ -10,6 +10,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 
 fail() { echo "review-contract.test.sh: $*" >&2; exit 1; }
+jqf() { command jq "$@"; }
+js() { command jq -Rn --arg v "$1" '$v'; }
 
 cat >"$tmp/implement-report.md" <<'EOF'
 ```contract
@@ -36,6 +38,51 @@ cat >"$tmp/malformed.md" <<'EOF'
 ```
 EOF
 if contract_block_of "$tmp/malformed.md" >/dev/null; then fail 'contract with non-string entries was accepted'; fi
+
+check_review_contract_example() {
+  local path="$1" parsed
+  parsed="$(findings_block_of "$path")" || fail "review contract findings example was rejected: $path"
+  [[ "$(jq -r '.findings|length' <<<"$parsed")" == 1 ]] || fail "review contract example did not keep one finding: $path"
+  [[ "$(jq -r '.dropped' <<<"$parsed")" == 0 ]] || fail "review contract example dropped a finding: $path"
+}
+review_contract="$script_dir/../prompts/review-contract.md"
+check_review_contract_example "$review_contract"
+grep -Fq -- '- `rerun_command`:' "$review_contract" || fail 'review contract field list omits rerun_command'
+grep -Fq -- '- `rerun_output`:' "$review_contract" || fail 'review contract field list omits rerun_output'
+override_review_contract="$script_dir/../../.zenoforge/prompts/review-contract.md"
+if [[ -f "$override_review_contract" ]]; then check_review_contract_example "$override_review_contract"; fi
+
+cat >"$tmp/unverified-review.md" <<'EOF'
+Review report without a verdict line.
+
+```review-findings
+{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":4,"rule":"Defect","status":"unverified","summary":"Only a test can prove this finding.","introduced_by":"candidate","base_evidence":"The base lacks the check.","rerun_command":"pnpm vitest run src/a.test.ts","rerun_output":"Not run by the read-only reviewer; pass to repair or the engine's test run."}],"dispositions":[]}
+```
+EOF
+unverified="$(findings_block_of "$tmp/unverified-review.md")" || fail 'an unverified test-only finding was rejected'
+[[ "$(jq -r '.findings|length' <<<"$unverified")" == 1 && "$(jq -r '.findings[0].status' <<<"$unverified")" == unverified ]] \
+  || fail 'an unverified test-only finding was not kept'
+[[ "$(jq -r '.dropped' <<<"$unverified")" == 0 ]] || fail 'an unverified test-only finding was dropped'
+[[ "$(verdict_of "$tmp/unverified-review.md")" == NOT_READY ]] || fail 'an unverified P1 finding did not default to NOT_READY'
+unverified_hint="$(review_findings_hint_update "$tmp/unverified-review.md")"
+[[ "$unverified_hint" == *'Only a test can prove this finding.'* ]] || fail 'an unverified finding was not passed to repair'
+sed '1i VERDICT: READY' "$tmp/unverified-review.md" > "$tmp/unverified-ready.md"
+[[ "$(verdict_of "$tmp/unverified-ready.md")" == NOT_READY ]] || fail 'an explicit READY verdict overrode an unverified P1 finding'
+{ printf '## Verdict\nREADY\n'; cat "$tmp/unverified-review.md"; } > "$tmp/unverified-heading-ready.md"
+[[ "$(verdict_of "$tmp/unverified-heading-ready.md")" == NOT_READY ]] || fail 'a heading READY verdict overrode an unverified P1 finding'
+{
+  printf 'VERDICT: READY\n\n```review-findings\n'
+  jq -cn '{findings:[{id:"F1",severity:"P1",file:"src/a.ts",line:4,rule:"Defect",status:"unverified",summary:"Only a test can prove this finding.",introduced_by:"candidate",base_evidence:"The base lacks the check."}],dispositions:[]}'
+  printf '```\n'
+} > "$tmp/unverified-dropped.md"
+dropped_unverified="$(findings_block_of "$tmp/unverified-dropped.md")" || fail 'a dropped unverified finding block was rejected entirely'
+[[ "$(jq -r '.dropped' <<<"$dropped_unverified")" == 1 ]] || fail 'the missing rerun fields did not mark the unverified finding dropped'
+[[ "$(jq -r '.dropped_findings[0] | [.severity,.status] | join(":")' <<<"$dropped_unverified")" == P1:unverified ]] \
+  || fail 'the dropped finding lost its blocker severity or unverified status'
+[[ "$(verdict_of "$tmp/unverified-dropped.md")" == NOT_READY ]] || fail 'an explicit READY verdict overrode a dropped unverified P1 finding'
+printf 'VERDICT: READY\n\n```review-findings\nnot-json\n```\n' > "$tmp/unverified-malformed.md"
+if findings_block_of "$tmp/unverified-malformed.md" >/dev/null 2>&1; then fail 'the malformed findings fixture was accepted'; fi
+[[ "$(verdict_of "$tmp/unverified-malformed.md")" == NOT_READY ]] || fail 'an explicit READY verdict overrode an unparseable findings block'
 
 findings='[
   {"id":"F1","severity":"P1","file":"src/a.ts","line":4,"rule":"Spec","status":"open","summary":"[contract: in] Required behavior is missing."},
