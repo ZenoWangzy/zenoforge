@@ -25,6 +25,8 @@ unset_all=(-u ZF_ENGINE_DIR -u ZF_REPO_DIR -u ZF_HOME -u AGENT_HOME)
 
 check "engine inside the target: both default to the file's location, home to ~/.zenoforge" \
   "$(resolve "$target/engine" "${unset_all[@]}")" "$target/engine|$target|$HOME/.zenoforge"
+check "ZF_ENGINE_DIR defaults to the config file's directory" \
+  "$(resolve "$SCRIPT_DIR" "${unset_all[@]}" | cut -d'|' -f1)" "$SCRIPT_DIR"
 check "same repo directory lib.sh derived before config.sh" \
   "$(resolve "$SCRIPT_DIR" "${unset_all[@]}" | cut -d'|' -f2)" "$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 check "an exported ZF_REPO_DIR wins" \
@@ -206,5 +208,36 @@ if forbidden_paths="$(git -C "$repo_root" grep -nE '\$\{?ZF_REPO_DIR\}?/engine/'
 else
   lint_status=$?
   [[ "$lint_status" == 1 ]] || fail "could not scan engine paths for the lint (git grep rc=$lint_status): $forbidden_paths"
+fi
+checkout_engine_paths_added() {
+  local root="$1" base_ref="$2" base diff
+  base="$(git -C "$root" merge-base "$base_ref" HEAD)" || return 2
+  diff="$(git -C "$root" diff --unified=0 "$base" -- engine ':!**/*.test.*')" || return 2
+  grep -nE '^\+[^+].*(\$\{[A-Za-z_][A-Za-z_0-9]*[^}]*\}"?/engine/|\$[A-Za-z_][A-Za-z_0-9]*"?/engine/)' <<<"$diff"
+}
+lint_fixture="$test_env_root/checkout-engine-lint"
+git init -q -b main "$lint_fixture"
+git -C "$lint_fixture" config user.email test@example.com
+git -C "$lint_fixture" config user.name Test
+mkdir -p "$lint_fixture/engine"
+printf 'seed\n' > "$lint_fixture/engine/seed.sh"
+git -C "$lint_fixture" add engine/seed.sh
+git -C "$lint_fixture" commit -q -m seed
+printf '%s\n' 'source "$other_checkout/engine/config.sh"' 'source "${another_checkout}"/engine/lib.sh' > "$lint_fixture/engine/new.sh"
+git -C "$lint_fixture" add engine/new.sh
+if fixture_path="$(checkout_engine_paths_added "$lint_fixture" HEAD 2>&1)"; then
+  [[ "$fixture_path" == *'$other_checkout/engine/'* ]] || fail "checkout-path lint returned an unrelated fixture line: $fixture_path"
+  [[ "$fixture_path" == *'${another_checkout}"/engine/'* ]] || fail "checkout-path lint missed a quoted checkout root: $fixture_path"
+else
+  lint_status=$?
+  fail "checkout-path lint missed an alternate checkout root (rc=$lint_status)"
+fi
+lint_base_ref=origin/main
+git -C "$repo_root" rev-parse --verify "$lint_base_ref" >/dev/null 2>&1 || lint_base_ref=HEAD
+if forbidden_paths="$(checkout_engine_paths_added "$repo_root" "$lint_base_ref" 2>&1)"; then
+  fail "engine code added checkout-relative engine paths: $forbidden_paths"
+else
+  lint_status=$?
+  [[ "$lint_status" == 1 ]] || fail "could not scan added engine paths for the lint (rc=$lint_status): $forbidden_paths"
 fi
 echo "config.test.sh: PASS"
