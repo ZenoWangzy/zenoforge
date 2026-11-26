@@ -26,7 +26,6 @@ rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch r
 # Shared with bin/luna (lib.d/worker-remote-handoff.sh): a remote run exits there; a refusal falls back to the local gate below.
 source "$B/../lib.d/worker-remote-handoff.sh"
 worker_remote_handoff zc "$out" "$key" "$cwd" "$prompt"
-# Same capacity gate and mutex as luna; all scopes in zf-workers.slice count for both backends.
 source "$B/luna-capacity.sh"
 slots="${LUNA_SLOTS:-$root/tmp/luna-slots}"; mkdir -p "$slots"
 # A run that cannot start yet publishes wait-<prio>-<pid> (prio = LUNA_PRIORITY, pid = this wrapper): the autopilot
