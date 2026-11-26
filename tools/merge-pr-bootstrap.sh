@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Landing check: engine/**/*.test.sh in a PR must carry the test-env bootstrap. Sourced by tools/merge-pr.sh, which supplies merge_pr_root, merge_pr_view and merge_pr_refuse.
 # Same scope as run-engine-tests.sh (every engine/**/*.test.sh). A suite without the bootstrap runs nothing in its shard: #972 reached main red that way.
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/engine/lib.d/gh-key-cache.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/merge-pr-view.sh"
 merge_pr_red_receipt_ci_superseded() {
   local pr="$1" head_sha="$2" bad="$3" line first_red details count url
   [[ -n "$bad" ]] || return 1

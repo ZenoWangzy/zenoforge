@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.d/gh-key-cache.sh"
+
+production_status_fetch() {
+  timeout "$3" gh api "repos/$1/deployments/$2/statuses"
+}
+
+production_status_terminal() {
+  jq -e 'type == "array" and length > 0
+    and ((max_by(.created_at // "") | .state) | IN("success", "failure", "error", "inactive"))' >/dev/null 2>&1
+}
 
 repo="${1:-${ZF_REPO:?ZF_REPO is not set}}"
 per_page="${2:-20}"
@@ -26,7 +36,7 @@ while IFS= read -r deployment; do
     statuses="$(cat "$status_cache_file")"
     jq -e 'type == "object" and .reader_failed == true' <<< "$statuses" >/dev/null && exit 1
   else
-    if ! statuses="$(timeout "$timeout_seconds" gh api "repos/$repo/deployments/$id/statuses")"; then
+    if ! statuses="$(gh_key_cache_get "deployment-status:$repo:$id" forever production_status_terminal production_status_fetch "$repo" "$id" "$timeout_seconds")"; then
       if [[ -n "$status_cache_file" ]]; then printf '{"reader_failed":true}\n' > "$status_cache_file.tmp.$BASHPID" && mv -f -- "$status_cache_file.tmp.$BASHPID" "$status_cache_file"; fi
       exit 1
     fi

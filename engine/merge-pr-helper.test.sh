@@ -2,6 +2,12 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
+unset GH_KEY_CACHE_DIR
+gh_key_cache_root() {
+  local digest
+  digest="$(printf '%s\0%s\0%s\0%s\0%s\0%s' "${PR_FILES:-}" "${PR_FILE_STATUSES:-}" "${PR_FILES_BY_PR:-}" "${PR_REST_RUNS:-}" "${PR_REST_ACTIONS:-}" "${PR_FILES_API_ERROR:-0}" | sha256sum)" || return 1
+  printf '%s/%s\n' "$test_env_root/gh-key-cache" "${digest%% *}"
+}
 merge_pr_static_scans() { return 0; }
 merge_pr_review_family() { return 0; }
 merge_pr_export_suites() { # the PR head's suites come from $fixture/head, not a fetch
@@ -16,7 +22,10 @@ merge_pr_root() { printf '%s\n' "$repo"; } # the fixture repo stands in for the 
 
 fixture="$test_env_root/merge-pr"
 repo="$fixture/repo"
-mkdir -p "$repo"
+file_calls="$fixture/file-api-calls"
+check_calls="$fixture/check-runs-api-calls"
+workflow_run_calls="$fixture/workflow-run-api-calls"
+mkdir -p "$repo" "$fixture"
 git init -q -b main "$repo"
 git -C "$repo" config user.name 'Merge Helper Test'
 git -C "$repo" config user.email merge-helper-test@example.invalid
@@ -56,7 +65,12 @@ PR_FILES_API_ERROR=0
 PR_GRAPHQL_DOWN=0
 PR_REST_RUNS='{"check_runs":[]}'
 PR_REST_STATUS='{"statuses":[]}'
-PR_REST_ACTIONS='{"workflow_runs":[]}'
+PR_REST_ACTIONS='{"workflow_runs":[{"id":7,"check_suite_id":11,"name":"cli-tests","status":"queued"}]}'
+pr_view_head_sha() {
+  local digest
+  digest="$(printf '%s\0%s\0%s' "${PR_CI_HEAD:-$PR_HEAD}" "$PR_FILES" "${PR_HEAD_DATE:-}" | sha256sum)" || return 1
+  printf '%s\n' "${digest%% *}" | cut -c1-40
+}
 gh() {
   case "$1 $2" in
     'pr view')
@@ -73,6 +87,9 @@ gh() {
         [[ "$PR_CI_VIEW_ERROR" == 0 ]] || return 1
         if [[ -n "$PR_CI_VIEW_OUTPUT" ]]; then printf '%s\n' "$PR_CI_VIEW_OUTPUT"; return; fi
         printf '{"headRefOid":"%s","statusCheckRollup":%s,"files":%s}\n' "${PR_CI_HEAD:-$PR_HEAD}" "$PR_CI_ROLLUP" "$(jq -cn --argjson files "$PR_FILES" '$files[:100] | map({path:.})')"
+      elif [[ "$*" == *body,headRefOid* ]]; then
+        [[ "$PR_BODY" != gh-error ]] || return 1
+        jq -cn --arg body "$PR_BODY" --arg sha "$(pr_view_head_sha)" '{body:$body,headRefOid:$sha}'
       elif [[ "$*" == *body,files* ]]; then
         [[ "$PR_BODY" != gh-error && "${PR_FILES_VIEW_DOWN:-0}" != 1 ]] || return 1
         jq -cn --arg body "$PR_BODY" --argjson files "$PR_FILES" --arg at "${PR_HEAD_DATE:-}" \
@@ -152,7 +169,7 @@ gh() {
         'repos/{owner}/{repo}/pulls/17')
           [[ "${PR_META_ERROR:-}" != 1 && "$PR_BODY" != gh-error ]] || return 1
           if [[ "$PR_GRAPHQL_DOWN" == 1 ]]; then
-            jq -cn --arg body "$PR_BODY" --arg ref "$PR_HEAD_REF" '{title:"fixture", body:$body, head:{ref:$ref}}'
+            jq -cn --arg body "$PR_BODY" --arg ref "$PR_HEAD_REF" --arg sha "$(pr_view_head_sha)" '{title:"fixture", body:$body, head:{ref:$ref,sha:$sha}}'
             return
           fi
           printf '%s\n' "$PR_META"
@@ -171,22 +188,26 @@ gh() {
           printf '%s\n' "$PR_CHILDREN"
           ;;
         'repos/{owner}/{repo}/commits/'*'/check-runs?per_page=100')
+          printf '%s\n' "$*" >> "$check_calls"
           printf '%s\n' "$PR_REST_RUNS"
           ;;
         'repos/{owner}/{repo}/commits/'*'/status')
           printf '%s\n' "$PR_REST_STATUS"
           ;;
         'repos/{owner}/{repo}/pulls/17/files?per_page=100')
-          jq -c '[.[] | {filename: .}]' <<<"$PR_FILES"
+          printf '%s\n' "$*" >> "$file_calls"
+          [[ "$PR_FILES_API_ERROR" == 0 ]] || return 1
+          if [[ "$PR_FILE_STATUSES" != '[]' ]]; then printf '%s\n' "$PR_FILE_STATUSES"; else jq -c '[.[] | {filename: .}]' <<<"$PR_FILES"; fi
           ;;
         'repos/{owner}/{repo}/actions/runs?head_sha='*)
+          printf '%s\n' "$*" >> "$workflow_run_calls"
           printf '%s\n' "$PR_REST_ACTIONS"
           ;;
         'repos/{owner}/{repo}/pulls?'*)
           [[ "${PR_LIST_ERROR:-}" != 1 ]] || return 1
           printf '%s\n' "$PR_LIST"
           ;;
-        'repos/{owner}/{repo}/pulls/'*'/files')
+        'repos/{owner}/{repo}/pulls/'*'/files?per_page=100')
           num="${path#*pulls/}"
           num="${num%%/*}"
           if [[ "$num" == 17 ]]; then
@@ -231,7 +252,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 # GraphQL refuses the head and `gh pr checks` (shared-account rate limit): the head, the checks and the squash merge all come from REST.
@@ -313,7 +334,7 @@ check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
 [[ "${check_output%%ZF_MERGE_OVERRIDE*}" == *'fix: read each failing check'* ]] || fail "failed-checks refusal does not name the corrective action before the override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -322,7 +343,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -396,7 +417,7 @@ PR_BODY=$'## prior-art\nno external prior art: internal gate wiring only\n'
 expect_prior_art_merge 'no-prior-art line'
 PR_BODY='no section at all'
 PR_FILES='["engine/a.test.sh","engine/tests/fixture.json"]'
-expect_prior_art_merge 'test-only PR'
+ZF_MERGE_OVERRIDE=override-merge expect_prior_art_merge 'test-only PR'
 PR_FILES='["engine/a.test.sh","engine/a.sh"]'
 expect_prior_art_refusal 'mixed test and source PR' 'has no "## prior-art" section'
 PR_FILES='[]'
@@ -507,7 +528,7 @@ PR_BODY=$'## prior-art\nno external prior art: test fixture\n'
 PR_FILES='["engine/mac-autopilot/scheduler.d/x.sh","engine/mac-autopilot/scheduler.d/dispatch-queue.sh"]'
 mkdir -p "$receipt_dir"
 printf '0\ttrue\n' >"$receipt_dir/$rsha" # the other-repository case below needs a green receipt to reach the local checks
-merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 \
+ZF_MERGE_OVERRIDE=override-merge merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 \
   || fail "Zenoforge merge refused a PR with scheduler files: $(cat "$fixture/check-output")"
 [[ ! -s "$fixture/local-test-calls" ]] || fail "Zenoforge merge ran a local test check: $(cat "$fixture/local-test-calls")"
 [[ "$(grep -cFx 'merge-pr: local test checks skipped for PR #17 (founder ruling zenoforge_merge_without_tests_2026_11_21; fix forward)' "$fixture/check-output")" == 1 ]] \
@@ -635,11 +656,13 @@ for path in tools/run-engine-tests.sh .zenoforge/ci.json; do
 done
 PR_FILES="$(jq -cn '[range(0;119) | "safe/file-\(.).txt"] + [".github/workflows/x.yml"] + [range(120;150) | "safe/file-\(.).txt"]')"
 expect_receipt_refusal 'workflow file past the first 100 entries' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
-[[ "$(cat "$fixture/gh-calls")" == *'api --paginate repos/{owner}/{repo}/pulls/17/files -q .[].filename'* ]] \
+grep -Fq 'repos/{owner}/{repo}/pulls/17/files?per_page=100' "$file_calls" \
   || fail 'workflow-editing PR did not use the paginated CI file guard'
 PR_FILES='["tools/quick-land.sh"]'
 PR_FILES_API_ERROR=1
-expect_receipt_refusal 'paginated PR file read fails' "no test receipt exists for $rsha: run the tests at that HEAD through tools/test-receipt.sh"
+if merge_pr_test_receipt_ok 17 >"$fixture/check-output" 2>&1; then fail 'paginated PR file read failure passed the receipt check'; fi
+[[ "$(cat "$fixture/check-output")" == *'could not read the PR file list for the test receipt'* ]] \
+  || fail "paginated PR file read fails wrong refusal: $(cat "$fixture/check-output")"
 PR_FILES_API_ERROR=0
 PR_FILES='["tools/quick-land.sh"]'
 red_result="$(merge_pr_result_file "$repo" "$rsha")"
@@ -793,7 +816,9 @@ PRELUDE_RC=0
 PRELUDE_OUT='prelude passed'
 PR_CI_ROLLUP="$(ci_rollup)"
 : > "$fixture/gh-calls"
+export ZF_MERGE_OVERRIDE=override-merge
 if ! merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1; then fail "green checks at the head did not proceed to merge: $(cat "$fixture/check-output")"; fi
+unset ZF_MERGE_OVERRIDE
 [[ ! -s "$fixture/prelude-calls" ]] || fail 'all-green head checks still ran the prelude'
 [[ "$(cat "$fixture/check-output")" == *"prelude: ci-green 10 checks at ${sha:0:12}"* ]] || fail "green prelude skip was not logged: $(cat "$fixture/check-output")"
 grep -q '^merge:' "$fixture/gh-calls" || fail 'all-green head checks did not merge'
@@ -889,7 +914,7 @@ if out="$(PR_META='{"title":"fixture","body":"","state":"closed"}' merge_pr_squa
 # A silent revert: removed lines that a PR merged in the last 24 h added to the same file are refused unless the title or body says revert. A failed read warns and passes.
 expect_revert() {
   local label="$1" verdict="$2" must="$3" out
-  if out="$(merge_pr_revert_ok 17 2>&1)"; then
+  if out="$(merge_pr_revert_ok 17 "$PR_HEAD" 2>&1)"; then
     [[ "$verdict" == pass ]] || fail "$label was not refused"
   else
     [[ "$verdict" == refuse ]] || fail "$label refused: $out"
@@ -900,7 +925,7 @@ rem() { for i in "$@"; do printf -- '-alpha %s\n' "$i"; done; }
 add_all() { for i in one two three four five six seven eight nine ten eleven twelve; do printf '+alpha %s\n' "$i"; done; }
 recent="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
 old="$(date -u -d '-3 days' +%Y-%m-%dT%H:%M:%SZ)"
-PR_LIST="$(jq -cn --arg recent "$recent" '[{number:640,merged_at:$recent},{number:17,merged_at:null}]')"
+PR_LIST="$(jq -cn --arg recent "$recent" '[{number:640,head:{sha:"6400000000000000000000000000000000000000"},merged_at:$recent},{number:17,merged_at:null}]')"
 PR_FILES_BY_PR="$(jq -cn --arg a "$(add_all)" '{"640":[{filename:"engine/a.sh",status:"modified",patch:$a}]}')"
 PR_FILE_STATUSES="$(jq -cn --arg p "$(rem one two three four five six)" '[{filename:"engine/a.sh",status:"modified",patch:$p}]')"
 expect_revert 'silent revert of a 24 h merge' refuse 'engine/a.sh'
@@ -1013,6 +1038,7 @@ PR_FILE_STATUSES='[]'
 PR_GRAPHQL_DOWN=1
 PR_REST_RUNS='{"check_runs":[{"name":"unit","status":"completed","conclusion":"success","started_at":"2026-11-12T10:00:00Z"}]}'
 PR_REST_STATUS='{"statuses":[{"context":"cla","state":"success"}]}'
+export ZF_MERGE_OVERRIDE=override-merge
 : > "$fixture/gh-calls"
 check_output="$(merge_pr_checks_and_merge 17 2>&1)" || fail "green REST checks did not merge after the GraphQL refusal: $check_output"
 [[ "$check_output" != *'could not read PR checks'* ]] || fail "GraphQL refusal stopped the REST fallback: $check_output"
@@ -1022,6 +1048,23 @@ PR_REST_RUNS='{"check_runs":[{"name":"unit","status":"completed","conclusion":"f
 if check_output="$(merge_pr_checks_and_merge 17 2>&1)"; then fail 'a failed REST check run merged after the GraphQL refusal'; fi
 [[ "$check_output" == *'refusing to merge PR #17: failed checks: unit'* ]] || fail "failed REST check run did not refuse with its name: $check_output"
 ! grep -q '^merge:' "$fixture/gh-calls" || fail 'a failed REST check run reached merge'
+unset ZF_MERGE_OVERRIDE
+rest_cache_head="$PR_HEAD"
+PR_REST_RUNS='{"total_count":1,"check_runs":[{"name":"unit","status":"completed","conclusion":"success"}]}'
+PR_REST_ACTIONS='{"workflow_runs":[{"check_suite_id":11,"name":"cli-tests","id":5,"status":"completed"}]}'
+GH_KEY_CACHE_DIR="$fixture/check-run-cache"
+: > "$check_calls"
+: > "$workflow_run_calls"
+merge_pr_rollup_rest 17 >/dev/null || fail 'REST rollup read failed before cache assertion'
+merge_pr_rollup_rest 17 >/dev/null || fail 'REST rollup cache read failed'
+[[ "$(wc -l < "$check_calls" | tr -d ' ')" == 1 ]] || fail 'REST merge reader refetched completed check runs for the same SHA'
+[[ "$(wc -l < "$workflow_run_calls" | tr -d ' ')" == 1 ]] || fail 'REST merge reader refetched workflow runs inside their cache TTL'
+PR_HEAD=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+merge_pr_rollup_rest 17 >/dev/null || fail 'REST rollup for a new SHA failed'
+[[ "$(wc -l < "$check_calls" | tr -d ' ')" == 2 ]] || fail 'REST check-run cache was not keyed by head SHA'
+[[ "$(wc -l < "$workflow_run_calls" | tr -d ' ')" == 2 ]] || fail 'REST workflow-run cache was not keyed by head SHA'
+unset GH_KEY_CACHE_DIR
+PR_HEAD="$rest_cache_head"
 PR_GRAPHQL_DOWN=0
 PR_REST_RUNS='{"check_runs":[]}'
 

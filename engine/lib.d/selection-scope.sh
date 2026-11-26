@@ -379,7 +379,7 @@ issue_intake_parent_reason() { # issue number, fetched issue JSON -> reason; 1=l
   if jq -e 'has("subIssuesSummary") or has("subIssues")' <<< "$json" >/dev/null; then
     return 1
   fi
-  if ! sub_issues="$(gh api "repos/$REPO/issues/$n/sub_issues?per_page=100" 2>/dev/null)"; then
+  if ! sub_issues="$(gh_issue_subissues_cached "$REPO" "$n" 2>/dev/null)"; then
     printf 'parent-check-failure step=gh-sub-issues-read\n'
     return 2
   fi

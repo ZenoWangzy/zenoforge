@@ -554,7 +554,7 @@ $(decision_scope "$u")"
                 || { to_supervisor "$id" "could not list failed CI runs for unchanged approved head $sha"; continue; }
               [[ -n "$failed_runs" ]] || { to_supervisor "$id" "no failed CI run found for unchanged approved head $sha"; continue; }
               for r in $failed_runs; do
-                if gh run rerun "$r" --failed >/dev/null 2>&1; then n=$((n+1)); else rerun_failed=1; fi
+                if gh run rerun "$r" --failed >/dev/null 2>&1; then n=$((n+1)); gh_commit_check_runs_invalidate "$sha"; else rerun_failed=1; fi
               done
               (( n > 0 && rerun_failed == 0 )) || { to_supervisor "$id" "GitHub rejected a failed-run rerun for unchanged approved head $sha"; continue; }
               set_unit "$id" "$(hist ci-repair-rerun "unchanged approved head $sha; rerun $((k+1))/$CI_INFRA_RERUNS") | .ci_infra_reruns=$((k+1)) | .ci_rerun_sha=$(js "$sha") | .approved_sha=$(js "$sha") | .stage=\"ready-to-merge\""

@@ -234,6 +234,15 @@ gh() {
 }
 AUTOPILOT_AUTO_FILED_LABEL_READY="${AUTOPILOT_AUTO_FILED_LABEL_READY:-false}"
 scheduler_auto_filed_issue_create() {
+  local parent="" output arg i
+  for ((i = 1; i <= $#; i++)); do
+    arg="${!i}"
+    if [[ "$arg" == --parent && $i -lt $# ]]; then
+      i=$((i + 1)); parent="${!i}"
+    elif [[ "$arg" == --parent=* ]]; then
+      parent="${arg#--parent=}"
+    fi
+  done
   if [[ "$AUTOPILOT_AUTO_FILED_LABEL_READY" != true ]]; then
     if gh label create auto-filed --force --color ededed \
         --description "Automatically filed by Zenoforge" >/dev/null 2>&1; then
@@ -242,10 +251,12 @@ scheduler_auto_filed_issue_create() {
   fi
   # The marker must not block filing: a ticket that fails to file is worse than one the title predicate has to catch.
   if [[ "$AUTOPILOT_AUTO_FILED_LABEL_READY" == true ]]; then
-    gh issue create "$@" --label auto-filed
+    output="$(gh issue create "$@" --label auto-filed)" || return $?
   else
-    gh issue create "$@"
+    output="$(gh issue create "$@")" || return $?
   fi
+  [[ -z "$parent" ]] || gh_issue_subissues_invalidate "$(gh_key_cache_repo)" "$parent"
+  printf '%s\n' "$output"
 }
 tick_gh_calls_begin() {
   # Match the in-memory snapshots to the fresh per-tick directory below.
@@ -369,6 +380,11 @@ gh_api_cached() { # [-p] key url [gh api 参数…]；--jq 的输出即缓存正
 }
 gh_run_list_fetch() {
   gh run list "$@" --json databaseId,conclusion,event,status,headBranch,headSha,createdAt,updatedAt,workflowName,displayTitle,attempt 2>/dev/null
+}
+gh_commit_check_runs_cached() {
+  local sha="$1"
+  [[ "$sha" =~ $SHA_RE ]] || return 1
+  gh_tick_cache_get "check-runs-$sha.json" gh_commit_check_runs_persisted "$sha"
 }
 gh_run_list_cached() { # list filters → one shared snapshot per query in this tick
   local key

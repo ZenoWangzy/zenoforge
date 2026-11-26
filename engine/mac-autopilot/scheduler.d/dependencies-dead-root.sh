@@ -26,7 +26,7 @@ dep_predecessor_dead() { # waiter-unit-json predecessor
     ($rows[0] | map(.pr)) as $own | ($rows[0] | map(.branch) + ["agent/issue-" + $d]) as $heads
     | all(.[]; (.number as $n | $own | index($n)) == null and (.headRefName as $h | $heads | index($h)) == null
       and ((.body // "") | test("#" + $d + "([^0-9]|$)") | not))' <<<"$prs" >/dev/null || return 1
-  subs="$(gh api --paginate "repos/{owner}/{repo}/issues/$dep/sub_issues?per_page=100" --jq '.[].number' 2>/dev/null)" || return 1
+  subs="$(gh_issue_subissues_cached "$(gh_key_cache_repo)" "$dep" 2>/dev/null | jqf -r '.[].number')" || return 1
   waiter="$(jqf -r '.issue // empty' <<<"$1")"
   for c in $(printf '%s\n%s\n' "$(jqf -r '(.recut_children // [])[]' <<<"$st")" "$subs" | sort -un); do
     [[ "$c" != "$waiter" ]] || continue

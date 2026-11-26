@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/gh-key-cache.sh"
+case "${1:-}" in
+  runners)
+    pages="$(gh_runners_cached "${2:-}")"
+    jq -cs '[.[].runners[]?]' <<<"$pages"
+    ;;
+  sub-issues)
+    [[ $# == 3 ]] || exit 64
+    gh_issue_subissues_cached "$2" "$3"
+    ;;
+  *) exit 64 ;;
+esac

@@ -459,7 +459,7 @@ $recut_reason
               --body-file "$prerequisite_body_file" --label enhancement)" || prerequisite_url=""
           else
             prerequisite_url="$(guarded_write gh issue create --repo "$REPO" --title "$prerequisite_title" \
-              --body-file "$prerequisite_body_file" --label enhancement --label needs-triage --parent "$n")" || prerequisite_url=""
+              --body-file "$prerequisite_body_file" --label enhancement --label needs-triage --parent "$n")" || prerequisite_url=""; [[ -z "$prerequisite_url" ]] || gh_issue_subissues_invalidate "$REPO" "$n"
           fi
           if [ -z "$prerequisite_url" ]; then
             rm -f -- "$prerequisite_body_file"
@@ -739,7 +739,7 @@ has_open_blocker() {
       clear) return 1 ;;
     esac
   fi
-  if ! blockers_json="$(gh api "repos/$REPO/issues/$n/dependencies/blocked_by" 2>/dev/null)"; then
+  if ! blockers_json="$(gh_issue_blocked_by_cached "$REPO" "$n" 2>/dev/null)"; then
     OPEN_BLOCKER_QUERY_FAILED=1
     return 0
   fi

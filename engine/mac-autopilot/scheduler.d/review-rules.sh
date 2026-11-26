@@ -460,12 +460,18 @@ tick_pr_mergeable() { # Missing mergeability and PRs outside the census use the 
   printf '%s\n' "$state"
 }
 classify_lane() { # pr → direct-main|pr（取不到文件列表返回 1）
-  local files json verdict
+  local files json verdict head raw
   # The REST file list includes previous_filename for renames; both sides must be classified.
   # gh refuses --slurp together with --jq (exit 1 before any request): from 10-20 every call failed, 506 a hour on
   # 10-22, and no unit got a lane, so non-product PRs never took the direct-main lane. --jq runs per page instead.
-  files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/files" \
-    --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)" || return 1
+  if declare -F gh_pr_files_cached >/dev/null 2>&1 && declare -F tick_pr_head >/dev/null 2>&1; then
+    head="$(tick_pr_head "$1")" || return 1
+    raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$1" "$head" 2>/dev/null)" || return 1
+    files="$(jqf -r '.[] | .filename, (.previous_filename // empty)' <<<"$raw")" || return 1
+  else
+    files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/files" \
+      --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)" || return 1
+  fi
   json="$(jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$files")" || return 1
   [[ "$json" != '[]' ]] || return 1
   verdict="$(node "$POLICY_SCRIPT" --classify-path-set - <<<"$json" 2>/dev/null)" || return 1

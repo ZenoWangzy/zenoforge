@@ -118,9 +118,10 @@ merge_pr_prior_art_ok() {
 # has no test run to prove, and a green full-suite result for the same SHA
 # (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
-  local pr="$1" head_sha="$2" success_only="${3:-false}" with_url="${4:-false}" view count files path
+  local pr="$1" head_sha="$2" success_only="${3:-false}" with_url="${4:-false}" view count files_raw files path
   view="$(if [[ "$with_url" == true ]]; then merge_pr_rollup_rest "$pr"; else gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null || merge_pr_rollup_rest "$pr" 2>/dev/null; fi)" || return 1
-  files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" -q '.[].filename' 2>/dev/null)" || return 1
+  files_raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$pr" "$head_sha" 2>/dev/null)" || return 1
+  files="$(jq -rs 'add // [] | .[].filename' <<<"$files_raw")" || return 1
   [[ -n "$files" ]] || return 1
   while IFS= read -r path; do
     case "$path" in
@@ -158,26 +159,6 @@ merge_pr_ci_green_check_count() {
     | if $details == "true" then [$checks | length, ([$current_checks[] | select(.workflowName == "engine-tests" and .name == "suites (0)") | (.htmlUrl // .workflowUrl // empty) | select(type == "string" and length > 0)] | first // "")] | @tsv else $checks | length end
   ' <<<"$view" 2>/dev/null)" || return 1
   printf '%s\n' "$count"
-}
-
-# `gh pr view --json <fields>` for body,files,commits or headRefName. When GraphQL refuses (rate limit),
-# REST builds the same JSON: body, files[].path, commits[].committedDate, headRefName.
-merge_pr_view() {
-  local pr="$1" fields="$2" out meta files commits
-  if out="$(gh pr view "$pr" --json "$fields" 2>/dev/null)" && [[ -n "$out" ]]; then
-    printf '%s\n' "$out"; return 0
-  fi
-  meta="$(gh api "repos/{owner}/{repo}/pulls/$pr" 2>/dev/null)" || return 1
-  case "$fields" in
-    headRefName) jq -ce '{headRefName: .head.ref}' <<<"$meta" ;;
-    body,files,commits)
-      files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files?per_page=100" 2>/dev/null)" || return 1
-      commits="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/commits?per_page=100" 2>/dev/null)" || return 1
-      files="$(jq -cs '[.[][] | {path: .filename}]' <<<"$files")" || return 1
-      commits="$(jq -cs '[.[][] | {oid: .sha, messageHeadline: (.commit.message | split("\n")[0]), committedDate: .commit.committer.date}]' <<<"$commits")" || return 1
-      jq -cn --argjson m "$meta" --argjson f "$files" --argjson c "$commits" '{body: ($m.body // ""), files: $f, commits: $c}' ;;
-    *) return 1 ;;
-  esac
 }
 
 merge_pr_test_receipt_ok() {
@@ -335,14 +316,16 @@ merge_pr_review_family_ok() {
 # Fails closed like the checks above: an unreadable target refuses, ZF_MERGE_OVERRIDE=override-merge skips (logged).
 # shortcut: theirs is the PR head's file, not main plus the PR, so a head behind main can differ from what the pin sees; rebase before merging if it matters.
 merge_pr_override_ok() {
-  local pr="$1" files root home target ref="refs/zf-merge-pr/$1" hook table rel pack work ov_path ov_base ov_new rc bad=
+  local pr="$1" head_sha="${2:-}" raw files root home target ref="refs/zf-merge-pr/$1" hook table rel pack work ov_path ov_base ov_new rc bad=
   pack=.zenoforge/build/pack/scripts/agent
   if [[ ",${ZF_MERGE_OVERRIDE:-}," == *,override-merge,* ]]; then
     printf 'merge-pr: explicit ZF_MERGE_OVERRIDE skips the override merge check for PR #%s\n' "$pr" >&2
     return 0
   fi
-  if ! files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" 2>/dev/null \
-    | jq -rs 'add // [] | [.[] | (.filename, .previous_filename // empty) | select(startswith("engine/"))] | unique | .[]')"; then
+  [[ "$head_sha" =~ ^[0-9a-f]{40,64}$ ]] || head_sha="$(merge_pr_head_sha "$pr")" || head_sha=""
+  if [[ "$head_sha" =~ ^[0-9a-f]{40,64}$ ]] \
+    && raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$pr" "$head_sha" 2>/dev/null)" \
+    && files="$(jq -rs 'add // [] | [.[] | (.filename, .previous_filename // empty) | select(startswith("engine/"))] | unique | .[]' <<<"$raw")"; then :; else
     merge_pr_refuse "$pr" 'could not read PR files for the override merge check'
     return 1
   fi
@@ -397,8 +380,12 @@ merge_pr_override_ok() {
 # suite-set-check.py refuses a pin that drops a baseline suite and has no retire path: a deleted suite merged, then stopped auto-pin (#614).
 # A rename counts as a deletion unless it is a pure move (no changed lines) that stays a suite under engine/.
 merge_pr_suite_delete_ok() {
-  local pr="$1" files deleted
-  if ! files="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" 2>/dev/null)"; then
+  local pr="$1" head_sha="${2:-}" raw files deleted
+  [[ "$head_sha" =~ ^[0-9a-f]{40,64}$ ]] || head_sha="$(merge_pr_head_sha "$pr")" || head_sha=""
+  if [[ "$head_sha" =~ ^[0-9a-f]{40,64}$ ]] \
+    && raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$pr" "$head_sha" 2>/dev/null)"; then
+    files="$raw"
+  else
     merge_pr_refuse "$pr" 'could not read PR file statuses for the suite check'
     return 1
   fi
@@ -416,9 +403,16 @@ merge_pr_suite_delete_ok() {
 # shortcut: reads only the 10 newest merged PRs of the last 24 h, a revert of an older one passes; raise the cap if one slips through.
 # Any failed read warns and passes: the check must never stop the merge lane on a gh failure.
 merge_pr_revert_ok() {
-  local pr="$1" meta raw mine list merged num theirs hit file matched added
-  if ! meta="$(gh api "repos/{owner}/{repo}/pulls/$pr" 2>/dev/null)" \
-    || ! raw="$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" 2>/dev/null)" \
+  local pr="$1" head_sha="${2:-}" meta raw mine list merged num their_sha theirs hit file matched added
+  if ! meta="$(gh api "repos/{owner}/{repo}/pulls/$pr" 2>/dev/null)"; then
+    printf 'merge-pr: warning: could not read PR #%s for the revert check; not refusing\n' "$pr" >&2
+    return 0
+  fi
+  if [[ ! "$head_sha" =~ ^[0-9a-f]{40,64}$ ]]; then
+    head_sha="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40,64}$"))' <<<"$meta" 2>/dev/null)" || head_sha=""
+  fi
+  if [[ ! "$head_sha" =~ ^[0-9a-f]{40,64}$ ]] \
+    || ! raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$pr" "$head_sha" 2>/dev/null)" \
     || ! mine="$(jq -cs 'add // []' <<<"$raw" 2>/dev/null)"; then
     printf 'merge-pr: warning: could not read PR #%s for the revert check; not refusing\n' "$pr" >&2
     return 0
@@ -426,12 +420,13 @@ merge_pr_revert_ok() {
   jq -e '((.title // "") + "\n" + (.body // "")) | test("revert"; "i")' <<<"$meta" >/dev/null 2>&1 && return 0
   if ! list="$(gh api 'repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100' 2>/dev/null)" \
     || ! merged="$(jq -c --arg pr "$pr" --argjson since "$(date -u -d '24 hours ago' +%s)" \
-      '[.[] | select(.merged_at != null and (.number | tostring) != $pr and (.merged_at | fromdateiso8601) >= $since) | .number] | .[0:10]' <<<"$list" 2>/dev/null)"; then
+      '[.[] | select(.merged_at != null and (.number | tostring) != $pr and (.merged_at | fromdateiso8601) >= $since) | {number, sha:(.head.sha // "")}] | .[0:10]' <<<"$list" 2>/dev/null)"; then
     printf 'merge-pr: warning: could not list merged PRs for the revert check; not refusing PR #%s\n' "$pr" >&2
     return 0
   fi
-  for num in $(jq -r '.[]' <<<"$merged"); do
-    if ! raw="$(gh api --paginate "repos/{owner}/{repo}/pulls/$num/files" 2>/dev/null)" \
+  while IFS=$'\t' read -r num their_sha; do
+    if [[ ! "$their_sha" =~ ^[0-9a-f]{40,64}$ ]] \
+      || ! raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$num" "$their_sha" 2>/dev/null)" \
       || ! theirs="$(jq -cs 'add // []' <<<"$raw" 2>/dev/null)"; then
       printf 'merge-pr: warning: could not read merged PR #%s files for the revert check; skipping it\n' "$num" >&2
       continue
@@ -451,7 +446,7 @@ merge_pr_revert_ok() {
       merge_pr_refuse "$pr" "removes $matched lines of $file that merged PR #$num added ($added lines): a revert must say so in the PR title or body"
       return 1
     fi
-  done
+  done < <(jq -r '.[] | "\(.number)\t\(.sha)"' <<<"$merged")
   return 0
 }
 # Paths that keep CI before merge; tools/quick-land.sh refuses them too and sends the change through a PR.
@@ -473,9 +468,7 @@ merge_pr_gate_ci_ok() {
 merge_pr_cancel_ci() {
   local pr="$1" sha id runs
   sha="$(merge_pr_head_sha "$pr")" || return 0
-  runs="$(gh run list --commit "$sha" --json databaseId,status 2>/dev/null)" \
-    || runs="$(gh api --paginate "repos/{owner}/{repo}/actions/runs?head_sha=$sha&per_page=100" 2>/dev/null | jq -cs '[.[].workflow_runs[]? | {databaseId: .id, status}]')" \
-    || runs='[]'
+  runs="$(gh_actions_runs_for_sha_cached "$sha" 2>/dev/null | jq -cs '[.[].workflow_runs[]? | {databaseId: .id, status}]')" || runs='[]'
   jq -r '.[] | select(.status != "completed") | .databaseId' <<<"$runs" \
     | while read -r id; do gh run cancel "$id" >/dev/null 2>&1 || true; done
 }
@@ -529,8 +522,8 @@ merge_pr_head_sha() {
 merge_pr_rollup_rest() {
   local pr="$1" sha runs checks statuses
   sha="$(merge_pr_head_sha "$pr")" || return 1
-  runs="$(gh api --paginate "repos/{owner}/{repo}/actions/runs?head_sha=$sha&per_page=100" 2>/dev/null)" || return 1
-  checks="$(gh api --paginate "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || return 1
+  runs="$(gh_actions_runs_for_sha_cached "$sha")" || return 1
+  checks="$(gh_commit_check_runs_persisted "$sha")" || return 1
   statuses="$(gh api "repos/{owner}/{repo}/commits/$sha/status" 2>/dev/null)" || return 1
   printf '%s\n%s\n%s\n' "$runs" "$checks" "$statuses" | jq -se --arg sha "$sha" '
     ([.[] | .workflow_runs[]? | {key: (.check_suite_id | tostring), value: {name, url: .html_url}}] | from_entries) as $wf
@@ -613,9 +606,9 @@ merge_pr_checks_and_merge() {
   [[ "$zenoforge" == true ]] || merge_pr_scheduler_prelude_ok "$pr" || return 1
   [[ "$zenoforge" == true ]] || merge_pr_static_scans_ok "$pr" || return 1
   [[ "$zenoforge" == true ]] || merge_pr_review_family_ok "$pr" || return 1
-  merge_pr_override_ok "$pr" || return 1
-  merge_pr_suite_delete_ok "$pr" || return 1
-  merge_pr_revert_ok "$pr" || return 1
+  merge_pr_override_ok "$pr" "$gate_sha" || return 1
+  merge_pr_suite_delete_ok "$pr" "$gate_sha" || return 1
+  merge_pr_revert_ok "$pr" "$gate_sha" || return 1
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue

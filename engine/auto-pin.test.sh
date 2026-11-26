@@ -36,6 +36,7 @@ g clone -q "$tmp/product-origin.git" "$tmp/product-writer"
 product_commit() { echo "$1" > "$tmp/product-writer/product-state"; g -C "$tmp/product-writer" add -A; g -C "$tmp/product-writer" commit -qm "$1"; g -C "$tmp/product-writer" push -q origin main; g -C "$tmp/product-writer" rev-parse HEAD; }
 
 export ZF_AUTO_PIN_HOME=$tmp/home AGENT_HOME=$tmp/agent ZF_AUTO_PIN_CLONE=$tmp/clone ZF_AUTO_PIN_IDLE_SECS=0 ZF_AUTO_PIN_RETRY_SECS=0.2 ZF_AUTO_PIN_RATE_SECS=0.1
+export GH_KEY_CACHE_DIR=$tmp/gh-key-cache
 export ZF_AUTO_PIN_PSI_FILE=$tmp/cpu-pressure ZF_AUTO_PIN_LOAD_WAIT_SECS=900
 printf 'some avg10=0 avg60=0 avg300=0 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
 export PIN_CALLS=$tmp/calls PIN_RC=$tmp/rc TRIAGE_CALLS=$tmp/triage-calls
@@ -56,6 +57,10 @@ STUB
 chmod +x "$tmp/bin/git"; PATH="$tmp/bin:$PATH"; export PATH
 mkdir -p "$ZF_AUTO_PIN_HOME/auto-pin-logs"; echo "$c1" > "$ZF_AUTO_PIN_HOME/auto-pin.last"; : > "$PIN_CALLS"; : > "$TRIAGE_CALLS"
 source "$repo/tools/auto-pin.sh"; set +e  # the daemon runs without -e
+mkdir -p "$tmp/deployed/bin"
+cp "$repo/tools/auto-pin.sh" "$tmp/deployed/bin/zf-auto-pin"
+( export ZF_AUTO_PIN_CLONE="$repo"; source "$tmp/deployed/bin/zf-auto-pin"; declare -F gh_key_cache_get >/dev/null ) \
+  || fail 'deployed auto-pin copy could not load the shared cache helper from its clone'
 last() { cat "$ZF_AUTO_PIN_HOME/auto-pin.last"; }
 wait_for_pin_calls() {
   local commit=$1 expected=$2
@@ -354,7 +359,7 @@ kill -0 "$daemon" 2>/dev/null && { kill "$daemon"; fail 'a daemon behind its clo
 wait "$daemon" || fail 'the self-restart exit was not clean'
 grep -q 'newer script' "$tmp/out" || fail "no self-restart line: $(cat "$tmp/out")"
 # merge_override_pin: a base-only override move (clean three-way, pack copy byte-identical) has no pack file in the PR and must still merge
-green_checks='[{"check_runs":[{"status":"completed","conclusion":"success"}]}]'
+green_checks='{"total_count":1,"check_runs":[{"status":"completed","conclusion":"success"}]}'
 export GH_HEAD_FILE=$tmp/gh-head GH_CALLS=$tmp/gh-calls
 gh() { # stub of the REST reads and row PR landing
   echo "$*" >> "$GH_CALLS"
@@ -367,7 +372,7 @@ gh() { # stub of the REST reads and row PR landing
       git -C "$AGENT_HOME/checkout" rev-parse "$branch" > "$GH_HEAD_FILE" || return 1
       echo 'https://github.com/ZenoWangzy/vecta/pull/42'
       ;;
-    *"/files"*) printf '%s\n' "$GH_FILES" ;;
+    *"/files"*) jq -Rn '[inputs | select(length > 0) | {filename:.}]' <<<"$GH_FILES" ;;
     *"--jq .head.sha"*) [[ ! -s $GH_HEAD_FILE ]] || cat "$GH_HEAD_FILE"; [[ -s $GH_HEAD_FILE ]] || echo deadbeef ;;
     *"/check-runs"*) printf '%s\n' "${GH_CHECKS:-$green_checks}" ;;
     *"/status"*) echo 0 ;;
@@ -470,16 +475,25 @@ printf '%s\n' 'result=pr-open route=PR landed=no pr=https://github.com/ZenoWangz
   'pin-vecta: merged override mac-autopilot/scheduler.d/dispatch-queue.sh base=416ca459497a -> engine=cb9fd885a3b6 (clean three-way merge)' > "$ovlog"
 GH_FILES=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv)
 merge_override_pin "$ovlog" > "$tmp/ov.out" || fail "base-only override PR refused: $(cat "$tmp/ov.out")"
+check_runs_before=$(grep -c '/check-runs' "$GH_CALLS")
+files_before=$(grep -c '/files' "$GH_CALLS")
+merge_override_pin "$ovlog" > "$tmp/ov.out" || fail "cached base-only override PR refused: $(cat "$tmp/ov.out")"
+[[ $(grep -c '/check-runs' "$GH_CALLS") == "$check_runs_before" ]] || fail 'override pin refetched completed checks for the same SHA'
+[[ $(grep -c '/files' "$GH_CALLS") == "$files_before" ]] || fail 'override pin refetched the PR file list for the same SHA'
 GH_FILES=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv engine/unrelated.sh)
+printf '%040x\n' 5877 > "$GH_HEAD_FILE"
 if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an unrelated file in the override PR was merged'; fi
 GH_FILES=.zenoforge/build.json
+printf '%040x\n' 5878 > "$GH_HEAD_FILE"
 if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an override PR without overrides.tsv was merged'; fi
 # checks: a completed failing check refuses the merge; a pending check is not a failure
 GH_FILES=$(printf '%s\n' .zenoforge/build.json .zenoforge/build/overrides.tsv)
-GH_CHECKS='[{"check_runs":[{"status":"completed","conclusion":"failure"}]}]'
+export GH_KEY_CACHE_DIR=$tmp/gh-key-cache-failed
+GH_CHECKS='{"total_count":1,"check_runs":[{"status":"completed","conclusion":"failure"}]}'
 if merge_override_pin "$ovlog" > "$tmp/ov.out"; then fail 'an override PR with a failed check was merged'; fi
 grep -q 'failed check' "$tmp/ov.out" || fail 'failed check was not named'
-GH_CHECKS='[{"check_runs":[{"status":"in_progress","conclusion":null}]}]'
+export GH_KEY_CACHE_DIR=$tmp/gh-key-cache-pending
+GH_CHECKS='{"total_count":1,"check_runs":[{"status":"in_progress","conclusion":null}]}'
 merge_override_pin "$ovlog" > "$tmp/ov.out" || fail "override PR with a pending check was refused: $(cat "$tmp/ov.out")"
 unset GH_CHECKS
 

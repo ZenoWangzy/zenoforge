@@ -10,6 +10,7 @@
 # exactly one retry at half the page size on exactly that error, then one log
 # line. It lives here (not lib.sh) because pipeline-issue-upsert.sh is
 # standalone and sources only this file for it.
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/gh-key-cache.sh"
 gh_query_resource_limit_error() { # stdin: gh stderr → 0 when the query was refused for size
   grep -q 'Resource limits for this query exceeded'
 }
@@ -435,7 +436,7 @@ roadmap_ledger_add() {
 }
 
 roadmap_place_issue() {
-  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" explicit_epic="${5:-}" tree flat existing existing_parent selected epic milestone placed_file linked_file sub_issue_id link_out
+  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" explicit_epic="${5:-}" tree flat existing existing_parent="" selected epic milestone placed_file linked_file sub_issue_id link_out
   [[ "$number" =~ ^[1-9][0-9]*$ && -r "$cache_file" ]] || return 64
   [[ -z "$explicit_epic" || "$explicit_epic" =~ ^[1-9][0-9]*$ ]] || return 64
   tree="$(cat -- "$cache_file")" || return 1
@@ -486,6 +487,8 @@ roadmap_place_issue() {
     link_out="$(guarded_write gh api "repos/$REPO/issues/$epic/sub_issues" --method POST \
       -F "sub_issue_id=$sub_issue_id" -F replace_parent=true 2>&1)" \
       || { [[ "$link_out" == *"may not contain duplicate sub-issues"* ]] || { printf '%s\n' "$link_out" >&2; return 1; }; }
+    gh_issue_subissues_invalidate "$REPO" "$epic"
+    [[ -z "$existing_parent" || "$existing_parent" == "$epic" ]] || gh_issue_subissues_invalidate "$REPO" "$existing_parent"
     roadmap_ledger_add "$linked_file" "$number" "$placed_file.lock" || return 1
   fi
   if [[ -n "$milestone" ]]; then

@@ -327,20 +327,26 @@ def acquire_runner_snapshot(now_wall: float) -> list[dict[str, Any]] | None:
             temporary = GH_ATTEMPT_PATH.with_name(f"{GH_ATTEMPT_PATH.name}.{os.getpid()}.tmp")
             temporary.write_text(f"{int(now_wall)}\n")
             os.replace(temporary, GH_ATTEMPT_PATH)
-            response = command(
-                ["gh", "api", f"repos/{GH_REPO}/actions/runners?per_page=100"],
+            env = os.environ.copy()
+            env["ZF_GH_CALLER"] = "engine/bin/tput-watch:runner_snapshot"
+            response = subprocess.run(
+                ["bash", str(REPO / "engine" / "bin" / "gh-key-cache-read"), "runners", GH_REPO],
                 cwd=REPO,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 timeout=25,
+                check=False,
+                env=env,
             )
-            if response is None or response.returncode != 0:
+            if response.returncode != 0:
                 return None
             try:
-                body = json.loads(response.stdout)
+                runners = json.loads(response.stdout)
             except json.JSONDecodeError:
                 return None
-            runners = body.get("runners") if isinstance(body, dict) else None
             return runners if isinstance(runners, list) else None
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
 
 

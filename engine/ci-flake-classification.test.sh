@@ -40,7 +40,9 @@ args=" $* "
 case "${1:-}:${2:-}" in
   run:view)
     run="${3:-}"
-    if [[ "$args" == *" --json jobs "* ]]; then
+    if [[ "$args" == *" --json headSha,attempt,status,conclusion,jobs "* || "$args" == *" --json headSha,jobs "* ]]; then
+      cat "$FAKE_CI_FLAKE/run-view-$run.json"
+    elif [[ "$args" == *" --json jobs "* ]]; then
       cat "$FAKE_CI_FLAKE/jobs-$run.json"
     elif [[ "$args" == *" --json attempt "* ]]; then
       cat "$FAKE_CI_FLAKE/attempt-$run"
@@ -135,6 +137,8 @@ assert_contains() {
 run_flake() {
   local run="$1" job_json="$2" log="$3" attempt="${4:-1}" issue="${5:-3127}" status=0
   printf '%s\n' "$job_json" > "$tmp/jobs-$run.json"
+  jq -cn --arg sha "$(printf '%040d' "$run")" --argjson jobs "$job_json" --argjson attempt "$attempt" \
+    '{headSha:$sha,jobs:$jobs,attempt:$attempt,status:"completed",conclusion:"failure"}' > "$tmp/run-view-$run.json"
   printf '%s\n' "$attempt" > "$tmp/attempt-$run"
   while IFS=$'\t' read -r job name; do
     [[ -n "$job" ]] || continue
@@ -148,9 +152,14 @@ run_flake() {
 # one unhandled PostgreSQL 57P01 error and failed the job.
 known_log=$'Test Files 38 passed (38)\nTests 417 passed (417)\n1 unhandled error\n57P01 terminating connection due to administrator command'
 one_failed='[{"databaseId":11,"name":"Example pack PR gate","conclusion":"failure","steps":[{"name":"Run tests","conclusion":"failure"}]}]'
+flake_sha="$(printf '%040d' 38029158406)"
+flake_cache="$(gh_key_cache_file "check-runs:test/repo:$flake_sha")"
+mkdir -p -- "${flake_cache%/*}"
+{ date +%s; printf '%s' '{"total_count":1,"check_runs":[{"status":"completed"}]}'; } > "$flake_cache"
 if run_flake 38029158406 "$one_failed" "$known_log" 1 3127; then status=0; else status=$?; fi
 assert_eq 'open known 57P01 signature is retryable' 0 "$status"
 assert_contains 'known signature reruns failed jobs once' "$(cat "$tmp/mutations")" 'run rerun 38029158406 --repo test/repo --failed'
+[[ ! -e "$flake_cache" ]] || { echo 'ci-flake-classification.test.sh: successful flake rerun kept the completed check-run cache' >&2; exit 1; }
 assert_contains 'known occurrence is recorded with PR and run' "$(cat "$tmp/comments")" 'run=38029158406 pr=3127'
 assert_contains 'known occurrence is posted to matching issue' "$(cat "$tmp/comments")" 'issue comment 3176'
 
@@ -198,11 +207,35 @@ mv "$tmp/open.json" "$tmp/issue-states.json"
 two_failed='[{"databaseId":11,"name":"Known flake","conclusion":"failure","steps":[{"name":"Run tests","conclusion":"failure"}]},{"databaseId":12,"name":"Real failure","conclusion":"failure","steps":[{"name":"Run tests","conclusion":"failure"}]}]'
 printf '%s\n' "$two_failed" > "$tmp/jobs-38029158412.json"
 printf '1\n' > "$tmp/attempt-38029158412"
+jq -cn --arg sha "$(printf '%040d' 38029158412)" --argjson jobs "$two_failed" '{headSha:$sha,jobs:$jobs}' > "$tmp/run-view-38029158412.json"
 printf '%s\n' "$known_log" > "$tmp/logs/38029158412-11.log"
 printf '%s\n' "$real_log" > "$tmp/logs/38029158412-12.log"
 before="$(wc -l < "$tmp/mutations")"
 if ci_run_is_retryable_infra_failure 38029158412 3133 3133 1; then status=0; else status=$?; fi
 assert_eq 'mixed known and real failed jobs remain blocking' 1 "$status"
 assert_eq 'mixed failures rerun no jobs' "$before" "$(wc -l < "$tmp/mutations")"
+
+(
+  cached_run=38029158414
+  cached_head="$(printf '%040d' "$cached_run")"
+  cached_jobs='[{"databaseId":11,"name":"CI checkout","status":"completed","conclusion":"failure","steps":[{"name":"Run actions/checkout@v4","conclusion":"failure"}]}]'
+  cache_calls="$tmp/scheduler-cache-calls"
+  : > "$cache_calls"
+  gh_run_list_cached() {
+    printf 'run-list:%s\n' "$*" >> "$cache_calls"
+    printf '[{"databaseId":%s,"headSha":"%s","attempt":1}]\n' "$cached_run" "$cached_head"
+  }
+  gh_run_jobs_cached() {
+    printf 'jobs:%s\n' "$*" >> "$cache_calls"
+    printf '%s\n' "$cached_jobs"
+  }
+  gh() {
+    if [[ "$*" == *'--json headSha,jobs'* ]]; then return 97; fi
+    command gh "$@"
+  }
+  if ci_run_is_retryable_infra_failure "$cached_run" 3135 3135 1; then status=0; else status=$?; fi
+  assert_eq 'scheduler CI classification uses cached run and job readers' 0 "$status"
+  assert_eq 'scheduler run and job readers receive keyed filters' $'run-list:--limit 1000\njobs:38029158414 true 1' "$(cat "$cache_calls")"
+)
 
 echo 'ci-flake-classification.test.sh: PASS'

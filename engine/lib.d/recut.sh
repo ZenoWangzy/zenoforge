@@ -44,7 +44,7 @@ native_parent_subissues_json() {
   # no output anywhere -- not in the journal, not in the supervisor inbox
   # line. Keep gh's own error as the one-line reason instead.
   err_file="$(mktemp 2>/dev/null)" || err_file=/dev/null
-  if ! raw="$(gh api "repos/$REPO/issues/$n/sub_issues?per_page=100" 2>"$err_file")"; then
+  if ! raw="$(gh_issue_subissues_cached "$REPO" "$n" 2>"$err_file")"; then
     NATIVE_PARENT_SUBISSUES_CACHE[$n]='!unavailable!'
     blocker_root_fail "gh api sub_issues failed for #$n: $(head -c 200 "$err_file" | tr '\r\n\t;' '   ,')"
     [ "$err_file" = /dev/null ] || rm -f -- "$err_file"
@@ -59,7 +59,7 @@ native_parent_subissues_json() {
       and (.closed_at == null or (.closed_at | type == "string"))
       and ((.labels // []) | type == "array")
       and all((.labels // [])[]; type == "object" and (.name | type == "string"));
-    if type == "array" and length <= 100 and all(.[]; valid) then
+    if type == "array" and all(.[]; valid) then
       map({number, state:(.state | ascii_downcase), closed_at:(.closed_at // ""), labels:[.labels[]?.name]})
     else error("invalid sub-issue response") end
   ' <<< "$raw" 2>/dev/null)"; then

@@ -22,12 +22,12 @@ main_red_post_land_base_from_run() {
 
 
 main_red_focused_suite_step_failed() {
-  local run_id="$1" attempt="$2" jobs
+  local run_id="$1" attempt="$2" run
   [[ "$run_id" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || return 1
-  jobs="$(gh run view "$run_id" --repo "$REPO" --attempt "$attempt" --json jobs -q '.jobs' 2>/dev/null)" || return 1
-  jq -e 'type == "array" and any(.[]; .name == "Pipeline suites focused"
+  run="$(gh_run_view_cached_for_repo "$REPO" "$run_id" "$attempt" true 2>/dev/null)" || return 1
+  jq -e 'type == "object" and (.jobs | type == "array") and any(.jobs[]; .name == "Pipeline suites focused"
     and any(.steps[]?; .name == "Run focused pipeline suites" and .conclusion == "failure"))' \
-    <<< "$jobs" >/dev/null 2>&1
+    <<< "$run" >/dev/null 2>&1
 }
 
 
@@ -58,6 +58,7 @@ main_red_step_session() { # sha run_json run_history ; advances one session by o
       echo "main-red-bisect: same-SHA rerun request failed for run $red_run_id; retrying next tick" >&2
       return 0
     fi
+    gh_commit_check_runs_invalidate "$red_sha"
     red_created="$(jq -r '.created_at // empty' <<< "$run")"
     focused_base="$(main_red_post_land_base_from_run "$run" 2>/dev/null || true)"
     focused_update=""
@@ -558,6 +559,7 @@ main_red_rerun_retry() { # red_sha session_json
   [ "$age" -ge "$MAIN_RED_PROBE_RETRY_DELAY_SECONDS" ] || return 1
   main_red_session_write "$red_sha" rerun-requested ".rerun_attempts = ($attempts + 1)" || return 1
   if guarded_write gh run rerun "$run_id" --failed --repo "$REPO"; then
+    gh_commit_check_runs_invalidate "$red_sha"
     main_red_log "red ${red_sha:0:12} run=$run_id: rerun had no verdict (cancelled?); re-requested (attempt $((attempts + 1))/$MAIN_RED_PROBE_DISPATCH_ATTEMPTS)"
   else
     echo "main-red-bisect: same-SHA rerun re-request failed for run $run_id (attempt $((attempts + 1))/$MAIN_RED_PROBE_DISPATCH_ATTEMPTS)" >&2

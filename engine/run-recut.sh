@@ -595,6 +595,7 @@ $(echo "$BLOCKERS" | tr ',' '\n' | sed 's/^/- #/')"
   if [ "$DRY_RUN" != "1" ] && [ -z "$CHILD_URL" ]; then
     fail_attempt "gh issue create returned no URL for child $((i + 1)) of #$N" 0
   fi
+  [[ "$DRY_RUN" == 1 ]] || gh_issue_subissues_invalidate "$REPO" "$N"
   CHILD_NUM="${CHILD_URL##*/}"
   CHILD_NUM_BY_INDEX[$i]="$CHILD_NUM"
   if [[ "$(roadmap_switch_value)" == true && "$DRY_RUN" != 1 ]]; then
