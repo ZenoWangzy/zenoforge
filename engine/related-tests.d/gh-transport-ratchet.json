@@ -1,0 +1,7 @@
+{
+  "tools/gh-transport-ratchet.mjs": ["engine/gh-transport-ratchet.test.mjs"],
+  "tools/gh-transport-baseline.txt": ["engine/gh-transport-ratchet.test.mjs"],
+  "engine/related-tests.d/gh-transport-ratchet.json": ["engine/focused-test-paths.test.mjs"],
+  "tools/quick-land.sh": ["engine/quick-land.test.sh"],
+  ".github/workflows/engine-tests.yml": ["engine/gh-transport-ratchet.test.mjs"]
+}

@@ -128,6 +128,7 @@ quick_land_commit_refusal() { # [test commands]
   [[ -z "$out" ]] || echo "shortcut-ratchet: $out"
   [[ ! -f tools/comment-ratchet.mjs ]] || out="$(node tools/comment-ratchet.mjs --changed origin/main 2>&1)" || echo "comment-ratchet: $out" # fixture repos without the tool skip it
   [[ ! -f tools/suppression-ratchet.mjs ]] || out="$(node tools/suppression-ratchet.mjs --changed origin/main 2>&1)" || echo "suppression-ratchet: $out"
+  [[ ! -f tools/gh-transport-ratchet.mjs ]] || out="$(node tools/gh-transport-ratchet.mjs 2>&1)" || echo "gh-transport-ratchet: $out"
   quick_land_public_text_check origin/main HEAD || return 0
 }
 
