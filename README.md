@@ -92,6 +92,10 @@ Zenoforge is not another coding agent. It is the factory around the agent CLIs y
 
 It is **not for you** if you want an assistant inside your editor, if you cannot accept agents running without a sandbox, or if you need commercial use without a commercial license (see [License](#license)).
 
+## Use Zenoforge as your home repo
+
+Zenoforge holds the shared layer: skills, practices and factory terms. Your private home repo keeps private pointers and points back here. Start with the [glossary](GLOSSARY.md), [practices index](docs/agents/practices.md) and [`setup-home-repo` skill](.agents/skills/setup-home-repo/SKILL.md). This follows Matt Pocock's [Home Repo pattern article](https://www.aihero.dev/the-home-repo-pattern).
+
 ## Status
 
 **Alpha.** Zenoforge was extracted from the pipeline that builds a production product, where it lands dozens of agent-written changes a day. The engine is real and running; the packaging for other repositories is new. Expect rough edges and Bash.

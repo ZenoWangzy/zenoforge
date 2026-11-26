@@ -5,6 +5,7 @@ Goal: an unattended, fully automatic, self-healing software factory. No human in
 A self-hosted software factory: coding agents take GitHub issues through triage, recut, implement, review, repair and merge. The engine is Bash, Node and Python under `engine/`; `docs/architecture.md` maps it.
 
 Factory terms are defined in `GLOSSARY.md`.
+Factory practices and their enforcement are indexed in `docs/agents/practices.md`.
 
 ## Method: Matt skills
 
@@ -18,6 +19,12 @@ Work here follows Matt Pocock's skills, vendored in `.agents/skills/`, with psta
 - A raw issue nobody has shaped: `/triage`. Tickets from `/to-tickets` are already agent-ready.
 
 The engine's own stages use the same skills (`docs/architecture.md`, "Method: Matt skills"). The skill files are MIT and byte-identical to upstream: change the pin with `tools/sync-matt-skills.sh <commit>`, never by hand (`THIRD_PARTY_NOTICES.md`).
+
+## Other Repos
+
+- `mattpocock/skills` (source of the vendored Matt skills): `../mattpocock-skills`. Clone from `https://github.com/mattpocock/skills` if missing.
+- `cursor/plugins` (source of pstack): `../cursor-plugins`. Clone from `https://github.com/cursor/plugins` if missing.
+- `unclebob/ub-mode` (source of ub-mode): `../ub-mode`. Clone from `https://github.com/unclebob/ub-mode` if missing.
 
 ## Public repo
 

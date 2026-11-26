@@ -92,6 +92,10 @@ Zenoforge 不是又一个 coding agent。它是包裹在你已在运行的 agent
 
 如果你想要编辑器里的助手、无法接受 agent 在无沙箱环境下运行，或者需要商业使用却没有商业许可，那么它**不适合你**（见 [许可证](#许可证)）。
 
+## 将 Zenoforge 用作你的 home repo
+
+Zenoforge 提供共享层：skills、实践和工厂术语。你自己的私有 home repo 保存私有指针，并指向这里。请从 [术语表](GLOSSARY.md)、[实践索引](docs/agents/practices.md)和 [`setup-home-repo` skill](.agents/skills/setup-home-repo/SKILL.md)开始阅读。此做法参考了 Matt Pocock 的 [Home Repo 模式文章](https://www.aihero.dev/the-home-repo-pattern)。
+
 ## 状态
 
 **Alpha。** Zenoforge 是从一条为生产产品构建代码的流水线中提取出来的，该流水线每天落地数十个由 agent 编写的变更。引擎是真实运行的；面向其他仓库的打包方式则是新的。预计会有粗糙的地方，并且会大量用到 Bash。
