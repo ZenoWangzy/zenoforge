@@ -227,15 +227,51 @@ export function listActiveTasks(root) {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function latestTaskEvents(root, id) {
+  const file = eventsFile(root, id);
+  if (!existsSync(file)) return { handoff: null, decision: null };
+  const latest = { handoff: null, decision: null };
+  for (const line of readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)) {
+    const event = JSON.parse(line);
+    if (event.schema_version !== SCHEMA_VERSION) {
+      throw new Error(`task-state: unsupported schema_version ${event.schema_version} in ${file}; this reader understands ${SCHEMA_VERSION}`);
+    }
+    if (event.id === id && (event.record_type === 'handoff' || event.record_type === 'decision')) latest[event.record_type] = event;
+  }
+  return latest;
+}
+
+export function formatTaskResume(root) {
+  const tasks = listActiveTasks(root);
+  if (!tasks.length) return 'No active tasks.';
+  return tasks.map((task) => {
+    const { handoff, decision } = latestTaskEvents(root, task.id);
+    return [
+      `Active task: ${task.id}`,
+      `  goal: ${task.goal}`,
+      `  done-when: ${task.done_when}`,
+      `  owner: ${task.owner}`,
+      `  stage: ${task.stage}`,
+      `  blocker: ${task.blocker}`,
+      `  next step: ${task.next_step}`,
+      `  latest handoff: ${handoff ? `from=${handoff.from}; to=${handoff.to}; reason=${handoff.reason}; next step=${handoff.next_step}` : 'none'}`,
+      `  latest decision: ${decision ? `decision=${decision.decision}; by=${decision.by}; why=${decision.why}` : 'none'}`,
+    ].join('\n');
+  }).join('\n\n');
+}
+
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const [operation, root] = process.argv.slice(2);
-    const input = JSON.parse(readFileSync(0, 'utf8'));
-    if (operation === 'write-transition') process.stdout.write(`${JSON.stringify(writeTransitionRecords(root, input))}\n`);
-    else if (operation === 'write-issue-transition') process.stdout.write(`${JSON.stringify(writeTransitionRecords(root, issueTransitionRecords(input)))}\n`);
-    else if (operation === 'write-unit-transition') process.stdout.write(`${JSON.stringify(writeTransitionRecords(root, unitTransitionRecords(input)))}\n`);
-    else if (operation === 'rollback-transition') rollbackTransitionRecords(root, input);
-    else throw new Error(`unknown writer operation ${operation}`);
+    if (operation === 'resume') process.stdout.write(`${formatTaskResume(root)}\n`);
+    else {
+      const input = JSON.parse(readFileSync(0, 'utf8'));
+      if (operation === 'write-transition') process.stdout.write(`${JSON.stringify(writeTransitionRecords(root, input))}\n`);
+      else if (operation === 'write-issue-transition') process.stdout.write(`${JSON.stringify(writeTransitionRecords(root, issueTransitionRecords(input)))}\n`);
+      else if (operation === 'write-unit-transition') process.stdout.write(`${JSON.stringify(writeTransitionRecords(root, unitTransitionRecords(input)))}\n`);
+      else if (operation === 'rollback-transition') rollbackTransitionRecords(root, input);
+      else throw new Error(`unknown writer operation ${operation}`);
+    }
   } catch (error) {
     console.error(`task-state: ${error.message}`);
     process.exitCode = 1;

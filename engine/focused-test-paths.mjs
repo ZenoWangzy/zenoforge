@@ -31,6 +31,8 @@ const CI_TREE_TESTS = Object.freeze([
 ].map(packPath));
 
 export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() => ({ addRelatedTestFragments: (map) => map }))).addRelatedTestFragments(new Map([ // new rows: related-tests.d/*.json; a lone copy of this file has none
+  ['engine/task-state.mjs', ['engine/task-state.test.mjs', 'engine/luna-task-resume.test.mjs']],
+  ['engine/bin/luna', ['engine/bin/luna-gate.test.sh', 'engine/luna-task-resume.test.mjs']],
   ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh', 'tools/pin-fail-triage.test.sh']],
   ['tools/pin-fail-triage.sh', ['tools/pin-fail-triage.test.sh']],
   ['engine/supervisor/**', ['engine/supervisor.test.sh']],

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { getTask, issueTransitionRecords, listActiveTasks, readRecord, taskStateRoot, unitTransitionRecords, writeTaskRecord } from './task-state.mjs';
+import { getTask, issueTransitionRecords, listActiveTasks, readRecord, taskStateRoot, unitTransitionRecords, writeTaskRecord, writeTransitionRecords } from './task-state.mjs';
 
 const modulePath = fileURLToPath(new URL('./task-state.mjs', import.meta.url));
 const task = (overrides = {}) => ({
@@ -148,11 +148,76 @@ test('duplicate conclusion records its stored advisor run decision', () => {
   }]);
 });
 
-test('an empty state snapshot still writes its transition records', async () => {
-  const { writeTransitionRecords } = await import('./task-state.mjs');
+test('an empty state snapshot still writes its transition records', () => {
   const root = join(fresh(), 'task-state');
   const result = issueTransitionRecords({ issue: 994, stage: 'concluded', reason: 'conclude:deployed', before: null, after: null });
   assert.equal(result.task.stage, 'concluded');
   writeTransitionRecords(root, result);
   assert.equal(getTask(root, 'issue-994').stage, 'concluded');
+});
+
+test('resume prints every active task with its latest handoff and decision', () => {
+  const root = join(fresh(), 'task-state');
+  writeTransitionRecords(root, {
+    task: task({ goal: 'recover parser', done_when: 'parser acceptance passes', stage: 'implement', next_step: 'inspect parser' }),
+    events: [
+      { record_type: 'handoff', id: 'task-991', from: 'coordinator', to: 'worker-1', reason: 'start', next_step: 'inspect parser' },
+      { record_type: 'decision', id: 'task-991', decision: 'admit', by: 'advisor', why: 'ticket is in scope' },
+    ],
+  });
+  writeTransitionRecords(root, {
+    task: task({ goal: 'recover parser', done_when: 'parser acceptance passes', owner: 'worker-2', stage: 'implement', next_step: 'run parser acceptance' }),
+    events: [
+      { record_type: 'handoff', id: 'task-991', from: 'worker-1', to: 'worker-2', reason: 'session restart', next_step: 'run parser acceptance' },
+      { record_type: 'decision', id: 'task-991', decision: 'continue', by: 'supervisor', why: 'session died during implementation' },
+    ],
+  });
+  writeTaskRecord(root, task({ id: 'task-992', goal: 'review deployment', stage: 'review', owner: 'reviewer', next_step: 'inspect the deployment diff' }));
+
+  const result = spawnSync(process.execPath, [modulePath, 'resume', root], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, [
+    'Active task: task-991',
+    '  goal: recover parser',
+    '  done-when: parser acceptance passes',
+    '  owner: worker-2',
+    '  stage: implement',
+    '  blocker: none',
+    '  next step: run parser acceptance',
+    '  latest handoff: from=worker-1; to=worker-2; reason=session restart; next step=run parser acceptance',
+    '  latest decision: decision=continue; by=supervisor; why=session died during implementation',
+    '',
+    'Active task: task-992',
+    '  goal: review deployment',
+    '  done-when: tests green',
+    '  owner: reviewer',
+    '  stage: review',
+    '  blocker: none',
+    '  next step: inspect the deployment diff',
+    '  latest handoff: none',
+    '  latest decision: none',
+    '',
+  ].join('\n'));
+});
+
+test('resume prints a clear line when the store is empty', () => {
+  const root = join(fresh(), 'task-state');
+  const result = spawnSync(process.execPath, [modulePath, 'resume', root], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'No active tasks.\n');
+});
+
+test('resume refuses an unknown schema version in the event log', () => {
+  const root = join(fresh(), 'task-state');
+  writeTransitionRecords(root, {
+    task: task(),
+    events: [{ record_type: 'decision', id: 'task-991', decision: 'admit', by: 'advisor', why: 'in scope' }],
+  });
+  const file = join(root, 'task-991', 'events.jsonl');
+  const event = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ ...event, schema_version: 2 }) + '\n');
+
+  const result = spawnSync(process.execPath, [modulePath, 'resume', root], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unsupported schema_version 2 .* understands 1/);
 });
