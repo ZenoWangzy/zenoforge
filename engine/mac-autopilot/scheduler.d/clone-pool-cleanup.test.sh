@@ -37,6 +37,9 @@ mkdir -p "$WT_ROOT"
 clone="$WT_ROOT/wt-orphan"
 command git clone -q "$remote" "$clone"
 touch -d "@$(( $(date +%s) - 605000 ))" "$clone/.git/index"
+race_clone="$WT_ROOT/wt-race"
+command git clone -q "$remote" "$race_clone"
+touch -d "@$(( $(date +%s) - 605000 ))" "$race_clone/.git/index"
 unpushed_clone="$WT_ROOT/wt-unpushed"
 command git clone -q "$remote" "$unpushed_clone"
 command git -C "$unpushed_clone" switch -qc local-only
@@ -64,13 +67,28 @@ command git -C "$flagged_clone" update-index --assume-unchanged docs/hidden.txt
 mkdir -p "$flagged_clone/docs"
 printf 'local hidden change\n' > "$flagged_clone/docs/hidden.txt"
 touch -d "@$(( $(date +%s) - 605000 ))" "$flagged_clone/.git/index"
+eval "$(declare -f acquire_scheduler_lock_wait | sed '1s/acquire_scheduler_lock_wait/acquire_scheduler_lock_wait_original/')"
+race_claimed=false
+race_owner=""
+acquire_scheduler_lock_wait() {
+  if [[ "$race_claimed" != true ]]; then
+    race_owner="$(coord_new_owner)"
+    coord_acquire "$(coord_unit_key race)" "$race_owner" scheduler-worker race race implement || fail 'could not set up the concurrent clone owner'
+    race_claimed=true
+  fi
+  acquire_scheduler_lock_wait_original "$@"
+}
 active_key="$(coord_unit_key active)"
 active_owner="$(coord_new_owner)"
 coord_acquire "$active_key" "$active_owner" scheduler-worker active active implement || fail 'could not set up the live clone owner'
 touch "$A/.branch-gc"
 : > "$UNITS_ARCHIVE"
+export NOW_EPOCH="$(date +%s)"
 SECONDS=0 AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'cleanup tick failed'
 [[ ! -e "$clone" ]] || fail 'old clean clone outside the unit ledgers remained in the pool'
+[[ -d "$race_clone" ]] || fail 'cleanup removed a clone claimed after its first liveness check'
+[[ "$race_claimed" == true ]] || fail 'race fixture did not acquire its concurrent worker claim'
+coord_release "$(coord_unit_key race)" "$race_owner" >/dev/null || fail 'could not release the concurrent clone owner'
 [[ -d "$unpushed_clone" ]] || fail 'clone with an unpushed local branch was removed'
 [[ -d "$dirty_clone" ]] || fail 'clone with uncommitted work was removed'
 [[ -d "$active_clone" ]] || fail 'clone with a live worker was removed'
@@ -79,13 +97,16 @@ SECONDS=0 AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYS
 [[ -d "$flagged_clone" ]] || fail 'clone with a flagged file change was removed'
 WT_ROOT="$fixture/batch-worktrees"
 mkdir -p "$WT_ROOT"
-rm -f "$A/.clone-pool-cleanup-cursor"
+NOW_EPOCH=$((NOW_EPOCH + 21601))
+export NOW_EPOCH
 for ((i=0; i<51; i++)); do
   printf -v suffix '%03d' "$i"
-  mkdir "$WT_ROOT/wt-batch-$suffix"
+  cp -a "$fresh_clone" "$WT_ROOT/wt-batch-$suffix"
+  touch -d "@$((NOW_EPOCH - 605000))" "$WT_ROOT/wt-batch-$suffix/.git/index"
 done
 SECONDS=0 AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'bounded cleanup tick failed'
-[[ "$(cat "$A/.clone-pool-cleanup-cursor")" == wt-batch-049 ]] || fail 'cleanup cursor did not stop after one bounded batch'
-SECONDS=0 AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'cleanup cursor continuation failed'
-[[ ! -e "$A/.clone-pool-cleanup-cursor" ]] || fail 'cleanup cursor did not clear after a full pass'
-[[ -d "$WT_ROOT/wt-batch-050" ]] || fail 'cleanup cursor skipped the final clone-pool entry'
+remaining="$(find "$WT_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'wt-batch-*' | wc -l | tr -d '[:space:]')"
+[[ "$remaining" == 1 ]] || fail 'cleanup did not limit the pass to one bounded batch'
+SECONDS=0 AUTOPI_TICK_LIMIT_SECONDS=1800 AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'cleanup batch continuation failed'
+remaining="$(find "$WT_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'wt-batch-*' | wc -l | tr -d '[:space:]')"
+[[ "$remaining" == 0 ]] || fail 'cleanup did not finish the queued clone-pool batch'

@@ -319,55 +319,244 @@ cleanup_unit_worktrees() { # id：终态单元的两个 worktree 位置；有可
   done
 }
 
+clone_pool_sweep_advance() {
+  local queue_dir="$1" batch_index="$2" batch_count="$3" current_index batch_name rc=0
+  [[ "${SCHED_LOCK_HELD:-false}" != true ]] || return 1
+  acquire_scheduler_lock_wait 5 || return 1
+  if [[ -d "$queue_dir" ]]; then
+    current_index="$(cat "$queue_dir/index" 2>/dev/null || printf '0')"
+    [[ "$current_index" =~ ^[0-9]+$ ]] || current_index=0
+    if (( current_index <= batch_index )); then
+      current_index=$((batch_index + 1))
+      printf '%s\n' "$current_index" > "$queue_dir/index.tmp.$$" \
+        && mv -f -- "$queue_dir/index.tmp.$$" "$queue_dir/index" || rc=1
+    fi
+    printf -v batch_name '%06d' "$batch_index"
+    rm -f -- "$queue_dir/$batch_name"
+    (( current_index < batch_count )) || rm -rf -- "$queue_dir"
+  fi
+  release_scheduler_lock
+  return "$rc"
+}
+
+clone_pool_file_identity() {
+  [[ -e "$1" ]] || { printf 'missing'; return 0; }
+  stat -c '%d:%i:%s:%y:%z' -- "$1" 2>/dev/null
+}
+
+clone_pool_coord_claimed() {
+  local key="$1" rc
+  if [[ "${ZF_COORD:-off}" != on && ! -e "$COORD_DIR/$key.json" ]]; then return 1; fi
+  if coord_read "$key" >/dev/null 2>&1; then return 0; else rc=$?; fi
+  (( rc == 1 )) && return 1
+  return 0
+}
+
+clone_pool_owner_claimed() {
+  local id="$1" issue="${2:-}" key rc
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+    key="$(coord_issue_key "$issue")" || return 0
+    if clone_pool_coord_claimed "$key"; then return 0; else rc=$?; fi
+    (( rc == 1 )) || return 0
+  fi
+  key="$(coord_unit_key "$id")" || return 0
+  clone_pool_coord_claimed "$key"
+}
+
 cleanup_stale_clones() {
-  local cursor_file="$A/.clone-pool-cleanup-cursor" start_cursor="" cursor="" dir name index index_mtime id owner ledger eval_ids
-  local now_epoch="${NOW_EPOCH:-$(date +%s)}" scanned=0 max_per_tick=50 max_age_seconds=604800 complete=true
-  local -A eval_pending=()
-  [[ -r "$cursor_file" ]] && IFS= read -r start_cursor < "$cursor_file"
+  local queue_dir="$A/.clone-pool-sweep" last_sweep_file="$A/.clone-pool-sweep-at" build_dir="" own_lock=false lock_ready=false reap_path
+  local path dir name index index_mtime index_identity root_identity id issue status ledger records worker_records record worker_unit worker_path worker_issue
+  local batch_name batch_file batch_count=0 batch_index=0 batch_lines=0 candidate_json candidate_paths_json candidate_issues_json candidate_index candidate_identity coord_key
+  local units_before units_after archive_before archive_after workers_before workers_after ledger_ok=true
+  local now_epoch="${NOW_EPOCH:-$(date +%s)}" last_sweep=0 max_per_tick=50 max_age_seconds=604800 batch_complete=true
+  local -A eval_pending=() candidate_issue=() worker_live=()
+  local -a candidate_names=() candidate_ids=() candidate_roots=() candidate_issues=() safe_names=() safe_ids=() safe_roots=() safe_indexes=() reaped_paths=()
   [[ -d "$WT_ROOT" ]] || return 0
-  for ledger in "$UNITS" "$UNITS_ARCHIVE"; do
-    [[ -s "$ledger" ]] || continue
-    jqf -e 'type=="object" and (.units|type=="array") and all(.units[]; (.id|type)=="string")' "$ledger" >/dev/null 2>&1 || return 0
-    eval_ids="$(jqf -r '.units[] | select((.eval_gate.status // "") | IN("pending","running")) | .id' "$ledger" 2>/dev/null)" || return 0
-    while IFS= read -r id; do
-      [[ -z "$id" ]] || eval_pending["$id"]=1
-    done <<< "$eval_ids"
-  done
-  for dir in "$WT_ROOT"/wt-*/; do
-    dir="${dir%/}"
-    name="${dir##*/}"
-    [[ -n "$start_cursor" && ! "$name" > "$start_cursor" ]] && continue
-    [[ -d "$dir" && ! -L "$dir" ]] || continue
-    [[ "$name" == *'.preserved-'* ]] && continue
-    if (( SECONDS >= CLEANUP_DEADLINE || scanned >= max_per_tick )); then
-      complete=false
+  if [[ ! -d "$queue_dir" ]]; then
+    last_sweep="$(cat "$last_sweep_file" 2>/dev/null || true)"
+    [[ "$last_sweep" =~ ^[0-9]+$ ]] || last_sweep=0
+    (( now_epoch - last_sweep >= 21600 )) || return 0
+    build_dir="$(mktemp -d "$A/.clone-pool-build.XXXXXX")" || return 0
+    if ! find "$WT_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'wt-*' \! -name 'wt-*.preserved-*' -print > "$build_dir/paths"; then
+      rm -rf -- "$build_dir"
+      return 0
+    fi
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      if (( batch_lines % max_per_tick == 0 )); then
+        printf -v batch_name '%06d' "$batch_count"
+        : > "$build_dir/$batch_name" || { rm -rf -- "$build_dir"; return 0; }
+        batch_count=$((batch_count + 1))
+      fi
+      printf '%s\n' "${path##*/}" >> "$build_dir/$batch_name" || { rm -rf -- "$build_dir"; return 0; }
+      batch_lines=$((batch_lines + 1))
+    done < "$build_dir/paths"
+    rm -f -- "$build_dir/paths"
+    if (( batch_count == 0 )); then
+      rm -rf -- "$build_dir"
+      printf '%s\n' "$now_epoch" > "$last_sweep_file.tmp.$$" && mv -f -- "$last_sweep_file.tmp.$$" "$last_sweep_file"
+      return 0
+    fi
+    printf '%s\n' "$batch_count" > "$build_dir/count" || { rm -rf -- "$build_dir"; return 0; }
+    printf '0\n' > "$build_dir/index" || { rm -rf -- "$build_dir"; return 0; }
+    mv -T -- "$build_dir" "$queue_dir" || { rm -rf -- "$build_dir"; return 0; }
+    printf '%s\n' "$now_epoch" > "$last_sweep_file.tmp.$$" && mv -f -- "$last_sweep_file.tmp.$$" "$last_sweep_file"
+  fi
+  batch_count="$(cat "$queue_dir/count" 2>/dev/null || true)"
+  [[ "$batch_count" =~ ^[1-9][0-9]*$ ]] || { rm -rf -- "$queue_dir"; return 0; }
+  batch_index="$(cat "$queue_dir/index" 2>/dev/null || printf '0')"
+  [[ "$batch_index" =~ ^[0-9]+$ ]] || batch_index=0
+  if (( batch_index >= batch_count )); then
+    rm -rf -- "$queue_dir"
+    return 0
+  fi
+  printf -v batch_name '%06d' "$batch_index"
+  batch_file="$queue_dir/$batch_name"
+  if [[ ! -r "$batch_file" ]]; then
+    clone_pool_sweep_advance "$queue_dir" "$batch_index" "$batch_count" || :
+    return 0
+  fi
+  while IFS= read -r name; do
+    if (( SECONDS >= CLEANUP_DEADLINE )); then
+      batch_complete=false
       break
     fi
-    scanned=$((scanned + 1))
-    cursor="$name"
+    [[ "$name" =~ ^wt-[A-Za-z0-9._-]+$ && "$name" != *'.preserved-'* ]] || continue
+    reap_path="$WT_ROOT/.clone-pool-reap-$name"
+    if [[ -d "$reap_path" && ! -L "$reap_path" ]]; then
+      reaped_paths+=("$reap_path")
+      continue
+    fi
+    dir="$WT_ROOT/$name"
+    [[ -d "$dir" && ! -L "$dir" ]] || continue
     [[ -d "$dir/.git" && ! -L "$dir/.git" ]] || continue
     index="$dir/.git/index"
     [[ -f "$index" && ! -L "$index" ]] || continue
     index_mtime="$(ap_mtime_epoch "$index")" || continue
     [[ "$index_mtime" =~ ^[0-9]+$ ]] || continue
     (( now_epoch - index_mtime > max_age_seconds )) || continue
-    id="${name#wt-}"
-    [[ -z "${eval_pending[$id]:-}" ]] || continue
-    if clone_worktree_owner_live "$id"; then
-      continue
+    root_identity="$(stat -c '%d:%i' -- "$dir" 2>/dev/null)" || continue
+    [[ "$root_identity" =~ ^[0-9]+:[0-9]+$ ]] || continue
+    candidate_names+=("$name")
+    candidate_ids+=("${name#wt-}")
+    candidate_roots+=("$root_identity")
+  done < "$batch_file"
+  if ((${#candidate_ids[@]})) && [[ "$batch_complete" == true ]]; then
+    if candidate_json="$(printf '%s\n' "${candidate_ids[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+      && candidate_paths_json="$(printf '%s\n' "${candidate_names[@]}" | jq -Rsc --arg root "$WT_ROOT" 'split("\n") | map(select(length > 0) | $root + "/" + .)')"; then
+      units_before="$(clone_pool_file_identity "$UNITS")" || ledger_ok=false
+      archive_before="$(clone_pool_file_identity "$UNITS_ARCHIVE")" || ledger_ok=false
+      for ledger in "$UNITS" "$UNITS_ARCHIVE"; do
+        [[ -s "$ledger" ]] || continue
+        if records="$(jqf -r --argjson ids "$candidate_json" 'if type=="object" and (.units|type)=="array" and all(.units[]; (.id|type)=="string") then .units[] | select(.id as $id | ($ids | index($id)) != null) | [.id, ((.issue // "-") | tostring), (.eval_gate.status // "")] | @tsv else error("invalid units ledger") end' "$ledger" 2>/dev/null)"; then
+          while IFS=$'\t' read -r id issue status; do
+            [[ -n "$id" ]] || continue
+            candidate_issue["$id"]="$issue"
+            [[ "$status" != pending && "$status" != running ]] || eval_pending["$id"]=1
+          done <<< "$records"
+        else
+          ledger_ok=false
+          break
+        fi
+      done
+      archive_after="$(clone_pool_file_identity "$UNITS_ARCHIVE")" || ledger_ok=false
+      units_after="$(clone_pool_file_identity "$UNITS")" || ledger_ok=false
+      [[ "$units_before" == "$units_after" && "$archive_before" == "$archive_after" ]] || ledger_ok=false
+      for id in "${candidate_ids[@]}"; do
+        issue="${candidate_issue[$id]:-}"
+        [[ "$issue" =~ ^[1-9][0-9]*$ ]] && candidate_issues+=("$issue")
+      done
+      candidate_issues_json="$(printf '%s\n' "${candidate_issues[@]}" | jq -Rsc 'split("\n") | map(select(test("^[1-9][0-9]*$"))) | unique')" || ledger_ok=false
+      workers_before="$(clone_pool_file_identity "$WORKERS")" || ledger_ok=false
+      if [[ ! -s "$WORKERS" ]] || ! worker_records="$(jqf -c --argjson ids "$candidate_json" --argjson paths "$candidate_paths_json" --argjson issues "$candidate_issues_json" 'if type=="object" and (.workers|type)=="array" then .workers[] | select(.harvested != true and .lease_expired != true) | select((.unit as $unit | ($ids | index($unit)) != null) or (.workdir as $workdir | ($paths | index($workdir)) != null) or (((.issue // "") | tostring) as $issue | ($issues | index($issue)) != null)) else error("invalid workers ledger") end' "$WORKERS" 2>/dev/null)"; then
+        ledger_ok=false
+      else
+        while IFS= read -r record; do
+          [[ -n "$record" ]] || continue
+          harvest_worker_alive "$record" || continue
+          worker_unit="$(jqf -r '.unit // empty' <<< "$record")"
+          worker_path="$(jqf -r '.workdir // empty' <<< "$record")"
+          worker_issue="$(jqf -r '(.issue // "") | tostring' <<< "$record")"
+          for ((candidate_index=0; candidate_index<${#candidate_ids[@]}; candidate_index++)); do
+            id="${candidate_ids[$candidate_index]}"
+            issue="${candidate_issue[$id]:-}"
+            if [[ "$worker_unit" == "$id" || "$worker_path" == "$WT_ROOT/wt-$id" || ( "$issue" =~ ^[1-9][0-9]*$ && "$worker_issue" == "$issue" ) ]]; then
+              worker_live["$id"]=1
+            fi
+          done
+        done <<< "$worker_records"
+      fi
+      workers_after="$(clone_pool_file_identity "$WORKERS")" || ledger_ok=false
+      [[ "$workers_before" == "$workers_after" ]] || ledger_ok=false
+      if [[ "$ledger_ok" == true ]]; then
+        for ((candidate_index=0; candidate_index<${#candidate_ids[@]}; candidate_index++)); do
+          id="${candidate_ids[$candidate_index]}"
+          issue="${candidate_issue[$id]:-}"
+          [[ -z "${eval_pending[$id]:-}" && -z "${worker_live[$id]:-}" ]] || continue
+          if clone_pool_owner_claimed "$id" "$issue"; then continue; fi
+          dir="$WT_ROOT/${candidate_names[$candidate_index]}"
+          [[ -d "$dir" && ! -L "$dir" ]] || continue
+          [[ "$(stat -c '%d:%i' -- "$dir" 2>/dev/null)" == "${candidate_roots[$candidate_index]}" ]] || continue
+          if worktree_cleanup_block_reason "$dir" >/dev/null; then continue; fi
+          index="$dir/.git/index"
+          [[ -f "$index" && ! -L "$index" ]] || continue
+          index_identity="$(stat -c '%d:%i' -- "$index" 2>/dev/null)" || continue
+          [[ "$index_identity" =~ ^[0-9]+:[0-9]+$ ]] || continue
+          safe_names+=("${candidate_names[$candidate_index]}")
+          safe_ids+=("$id")
+          safe_roots+=("${candidate_roots[$candidate_index]}")
+          safe_indexes+=("$index_identity")
+        done
+      else
+        batch_complete=false
+      fi
     else
-      owner=$?
+      batch_complete=false
     fi
-    (( owner == 1 )) || continue
-    if worktree_cleanup_block_reason "$dir" >/dev/null; then
-      continue
+  fi
+  if ((${#safe_ids[@]})) && [[ "$batch_complete" == true ]]; then
+    if [[ "${SCHED_LOCK_HELD:-false}" != true ]] && acquire_scheduler_lock_wait 5; then
+      own_lock=true
+      lock_ready=true
+    else
+      batch_complete=false
     fi
-    if remove_readonly_tree "$dir"; then say "cleanup stale clone $name"; fi
+    if [[ "$lock_ready" == true ]]; then
+      units_after="$(clone_pool_file_identity "$UNITS")" || ledger_ok=false
+      archive_after="$(clone_pool_file_identity "$UNITS_ARCHIVE")" || ledger_ok=false
+      workers_after="$(clone_pool_file_identity "$WORKERS")" || ledger_ok=false
+      if [[ "$ledger_ok" != true || "$units_before" != "$units_after" || "$archive_before" != "$archive_after" || "$workers_before" != "$workers_after" ]]; then
+        batch_complete=false
+      else
+        for ((candidate_index=0; candidate_index<${#safe_ids[@]}; candidate_index++)); do
+          id="${safe_ids[$candidate_index]}"
+          issue="${candidate_issue[$id]:-}"
+          [[ -z "${eval_pending[$id]:-}" && -z "${worker_live[$id]:-}" ]] || continue
+          if clone_pool_owner_claimed "$id" "$issue"; then continue; fi
+          dir="$WT_ROOT/${safe_names[$candidate_index]}"
+          [[ -d "$dir" && ! -L "$dir" ]] || continue
+          [[ "$(stat -c '%d:%i' -- "$dir" 2>/dev/null)" == "${safe_roots[$candidate_index]}" ]] || continue
+          index="$dir/.git/index"
+          [[ -f "$index" && ! -L "$index" ]] || continue
+          candidate_identity="$(stat -c '%d:%i' -- "$index" 2>/dev/null)" || continue
+          [[ "$candidate_identity" == "${safe_indexes[$candidate_index]}" ]] || continue
+          reap_path="$WT_ROOT/.clone-pool-reap-${safe_names[$candidate_index]}"
+          [[ ! -e "$reap_path" ]] || continue
+          if mv -- "$dir" "$reap_path"; then reaped_paths+=("$reap_path"); fi
+        done
+      fi
+      [[ "$own_lock" != true ]] || release_scheduler_lock
+    fi
+  fi
+  for reap_path in "${reaped_paths[@]}"; do
+    if remove_readonly_tree "$reap_path"; then
+      say "cleanup stale clone ${reap_path##*/}"
+    else
+      batch_complete=false
+    fi
   done
-  if [[ "$complete" == true ]]; then
-    rm -f -- "$cursor_file"
-  else
-    printf '%s\n' "$cursor" > "$cursor_file.tmp.$$" && mv -f -- "$cursor_file.tmp.$$" "$cursor_file"
+  if [[ "$batch_complete" == true ]]; then
+    clone_pool_sweep_advance "$queue_dir" "$batch_index" "$batch_count" || :
   fi
 }
 
