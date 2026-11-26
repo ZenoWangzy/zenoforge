@@ -573,7 +573,7 @@ repair_runtime_admission() { # id unit-json → logs once when a container repai
   return 0 # 2026-11-08: refusing here never cleared on a host with no runtime (13 repairs held 3.5 h); the same-head breaker still stops a repair that cannot push
 }
 repair_failure_prompt() { # unit-json review-report -> failure evidence plus bounded prior-review context
-  local u="$1" report="$2" hint prior_report prior_sections review_block='' finding_context='' disposition_context='' repair_context='' pr checks name link job tmp i pid step_file log_file started=$SECONDS elapsed index=0
+  local u="$1" report="$2" hint prior_report prior_sections review_block='' finding_context='' disposition_context='' repair_context='' pr checks name link job job_json_file tmp i pid step_file log_file started=$SECONDS elapsed index=0
   local -a names=() links=() step_files=() log_files=() pids=()
   hint="$(jqf -r '.repair_hint // empty' <<<"$u")"
   [[ -z "$hint" ]] || printf '%s\n' "$hint"
@@ -632,24 +632,11 @@ repair_failure_prompt() { # unit-json review-report -> failure evidence plus bou
         job="${link##*/job/}"; [[ "$job" =~ ^[0-9]+$ ]] || continue
         step_file="$tmp/$index.steps"; log_file="$tmp/$index.log"
         names+=("$name"); links+=("$link"); step_files+=("$step_file"); log_files+=("$log_file")
-        (unset GH_TOKEN; gh api "repos/{owner}/{repo}/actions/jobs/$job" \
-          --jq '.steps[]? | select(.conclusion=="failure") | "Failing CI step: " + .name' \
-          >"$step_file") 2>/dev/null &
-        pids+=("$!"); gh_par_throttle pids
+        job_json_file="$tmp/$index.job.json"
         (unset GH_TOKEN
-          # 只取报告用的末尾 80 行，不再整份下载 job 日志（05:10:42Z 拍 2 个检查 17s）。日志端点
-          # 302 到 Azure blob：后缀区间（bytes=-N）Azure 不认，先 bytes=0-0 探出总长
-          # （Content-Range 尾段就是总字节数），再按显式区间只取末 64KB；探不出总长回落整份。
-          total="$(gh api -i -H "Range: bytes=0-0" "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null \
-            | tr -d '\r' | grep -i '^content-range:' | grep -oE '[0-9]+$' || true)"
-          if [[ "$total" =~ ^[0-9]+$ ]] && (( total > 0 )); then
-            start=$(( total > 65536 ? total - 65536 : 0 ))
-            exec gh api --allow-escape-sequences -H "Range: bytes=$start-$((total - 1))" \
-              "repos/{owner}/{repo}/actions/jobs/$job/logs"
-          else
-            exec gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs"
-          fi
-        ) >"$log_file" 2>/dev/null &
+          gh_job_log_cached "$job" "$job_json_file" >"$log_file" || :
+          [[ ! -s "$job_json_file" ]] || jqf -r '.steps[]? | select(.conclusion=="failure") | "Failing CI step: " + .name' "$job_json_file" >"$step_file"
+        ) 2>/dev/null &
         pids+=("$!"); gh_par_throttle pids
         index=$((index + 1))
       done < <(jqf -r '.[] | select(.bucket=="fail") | [.name,.link] | @tsv' <<<"$checks")

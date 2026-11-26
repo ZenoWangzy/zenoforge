@@ -414,6 +414,58 @@ gh_run_jobs_fetch() {
     --jq '[.jobs[] | {status, runner_id, conclusion, steps}]')" || return 1
   jqf -s 'add' <<<"$pages"
 }
+gh_job_log_cached() {
+  local id="$1" metadata_output="${2:-}" status="" metadata="" dir="$A/.gh-job-logs" log info gone lock_fd err="" tmp="" rc=0
+  [[ "$id" =~ ^[1-9][0-9]*$ ]] || return 1
+  mkdir -p -- "$dir" 2>/dev/null || return 1
+  log="$dir/$id.log"; info="$dir/$id.job.json"; gone="$dir/$id.gone"
+  exec {lock_fd}>>"$dir/$id.lock" || return 1
+  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 1; }
+  if [[ -f "$gone" ]]; then
+    [[ -z "$metadata_output" || ! -f "$info" ]] || cp -- "$info" "$metadata_output" || rc=$?
+    (( rc != 0 )) || rc=4
+  elif [[ -f "$log" ]]; then
+    [[ -z "$metadata_output" || ! -f "$info" ]] || cp -- "$info" "$metadata_output" || rc=$?
+    (( rc != 0 )) || cat "$log" || rc=$?
+  else
+    if [[ -f "$info" ]]; then metadata="$(cat "$info")" || rc=$?
+    else metadata="$(gh api "repos/{owner}/{repo}/actions/jobs/$id")" || rc=$?
+    fi
+    if (( rc == 0 )); then
+      status="$(jqf -r '.status // empty' <<<"$metadata")" || rc=$?
+    fi
+    if (( rc == 0 )) && [[ "$status" == completed && ! -f "$info" ]]; then
+      tmp="$(mktemp "$dir/$id.job.XXXXXX")" || rc=$?
+      if (( rc == 0 )); then
+        if printf '%s\n' "$metadata" >"$tmp" && mv -f -- "$tmp" "$info"; then :; else rc=1; fi
+      fi
+    fi
+    if (( rc == 0 )) && [[ -n "$metadata_output" ]]; then printf '%s\n' "$metadata" >"$metadata_output" || rc=1; fi
+    if (( rc == 0 )) && [[ "$status" != completed ]]; then rc=3; fi
+    if (( rc == 0 )); then
+      err="$(mktemp "$dir/$id.err.XXXXXX")" || rc=$?
+      if (( rc == 0 )); then
+        tmp="$(mktemp "$dir/$id.log.XXXXXX")" || rc=$?
+        if (( rc == 0 )); then
+          if gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$id/logs" >"$tmp" 2>"$err"; then
+            if mv -f -- "$tmp" "$log"; then cat "$log" || rc=$?; else rc=1; fi
+          elif grep -Eq 'HTTP (404|410)(:|[[:space:]])' "$err"; then
+            printf 'logs gone\n' >"$gone" || rc=$?
+            (( rc != 0 )) || rc=4
+          else
+            cat "$err" >&2
+            rc=1
+          fi
+        fi
+      fi
+    fi
+    [[ -z "$tmp" ]] || rm -f -- "$tmp"
+    [[ -z "$err" ]] || rm -f -- "$err"
+  fi
+  flock -u "$lock_fd" || :
+  exec {lock_fd}>&-
+  return "$rc"
+}
 gh_run_jobs_store_completed() { # run id attempt jobs-json → immutable completed snapshot
   local id="$1" attempt="$2" jobs="$3" key file tmp
   [[ "$id" =~ ^[0-9]+$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || return 1

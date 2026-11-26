@@ -49,8 +49,9 @@ make_census
 gh() {
   printf '%s\n' "$*" >> "$GH_CALLS"
   case "${1:-} ${2:-}" in
+    'api repos/{owner}/{repo}/actions/jobs/'*) printf '{"status":"completed","steps":[]}\n' ;;
     'api --allow-escape-sequences')
-      [[ "${3:-}" == 'repos/{owner}/{repo}/actions/jobs/123/logs' ]] || return 98
+      [[ "${3:-}" =~ ^repos/\{owner\}/\{repo\}/actions/jobs/[0-9]+/logs$ ]] || return 98
       cat "$GH_JOB_LOG"
       ;;
     'pr list') cat "$CENSUS" ;;
@@ -106,17 +107,16 @@ run_ci_facts_case() {
 2026-11-11T20:13:58.0919699Z 291 : ┆ [5m29s] |  FAIL  tests/fallback.test.ts > suite > ignored fallback
 ZENOFORGE-FAIL-FACTS {"suites":[{"file":"tests/marked.test.ts","tests":[{"name":"marked test"}]}]}
 LOG
-  output="$(ci_test_red_checks '[{"bucket":"fail","name":"Fruit industry pack PR gate","link":"https://example.invalid/job/123"}]')"
+  output="$(ci_test_red_checks '[{"bucket":"fail","name":"Fruit industry pack PR gate","link":"https://example.invalid/job/124"}]')"
   facts="$(tail -n +2 <<<"$output")"
   [[ "$facts" == '{"suites":[{"file":"tests/marked.test.ts","tests":[{"name":"marked test"}]}]}' ]] \
     || fail "existing ZENOFORGE-FAIL-FACTS marker did not retain precedence ($facts)"
 }
 
 run_ci_dagger_engine_loss_case() (
-  local head checks mode log_calls
+  local head checks mode log_calls job_id
   DAGGER_MERGE_HEAD="$(printf '%040x' 6101)"
   head="$DAGGER_MERGE_HEAD"
-  checks='[{"name":"Touched packages PR gate","link":"https://example.invalid/job/123","bucket":"fail"}]'
   CI_RUN_JOBS_CACHE=()
   ROOT="$fixture/repo"; MAIN_HEAD="$(printf '%040x' 6100)"; SCHED_LOCK_HELD=true
   CFG="$(jq -c . "$supervisor/autopi/config.json")"
@@ -124,6 +124,7 @@ run_ci_dagger_engine_loss_case() (
   TICK_UNFINISHED='[]'; TICK_UNFINISHED_LOADED=true; TICK_UNFINISHED_ALL_OK=true
   TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=true
   STAMP=2026-11-17T17:21:42Z
+  checks='[{"name":"Touched packages PR gate","link":"https://example.invalid/job/6101","bucket":"fail"}]'
   DAGGER_MERGE_READY="$(jq -cn --arg head "$head" --argjson checks "$checks" \
     '{id:"unit-6101",pr:6101,branch:"agent/issue-6101",lane:"pr",stage:"ready-to-merge",approved_sha:$head,
       pr_open_head:$head,pr_open_draft:false,pr_open_mergeable:"MERGEABLE",pr_open_checks:$checks}')"
@@ -152,12 +153,17 @@ run_ci_dagger_engine_loss_case() (
     case "$*" in
       'run list --commit '*) printf '[{"databaseId":9901,"attempt":1,"conclusion":"failure"}]\n' ;;
       'run rerun 9901 --failed') return 0 ;;
-      'api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/123/logs') cat "$GH_JOB_LOG" ;;
+      'api repos/{owner}/{repo}/actions/jobs/'*) printf '{"status":"completed","steps":[]}\n' ;;
+      'api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/'*'/logs') cat "$GH_JOB_LOG" ;;
       *) return 97 ;;
     esac
   }
 
   for mode in dagger ordinary; do
+    job_id=6101; [[ "$mode" == dagger ]] || job_id=6102
+    checks="$(jqf -cn --arg job "$job_id" '[{name:"Touched packages PR gate",link:("https://example.invalid/job/" + $job),bucket:"fail"}]')"
+    DAGGER_MERGE_READY="$(jqf -cn --arg head "$head" --argjson checks "$checks" \
+      '{id:"unit-6101",pr:6101,branch:"agent/issue-6101",lane:"pr",stage:"ready-to-merge",approved_sha:$head,pr_open_head:$head,pr_open_draft:false,pr_open_mergeable:"MERGEABLE",pr_open_checks:$checks}')"
     prepare_tick
     GH_TICK_CACHE_DIR="$fixture/dagger-tick-$mode"; GH_ETAG_DIR="$fixture/dagger-etag-$mode"
     mkdir -p "$GH_TICK_CACHE_DIR" "$GH_ETAG_DIR"

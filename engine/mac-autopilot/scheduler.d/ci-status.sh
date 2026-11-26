@@ -181,7 +181,7 @@ ci_test_red_checks() { # checks_json [infra-summary] → first line: test-red na
     # Strip ANSI before classifying Vitest output; capture its structured facts in the same bounded log read.
     logfile="$(mktemp)" || continue
     names+=("$name"); logfiles+=("$logfile"); log_status+=("$logfile.ok")
-    { if gh api --allow-escape-sequences "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$logfile"; then : > "$logfile.ok"; fi; } &
+    { if gh_job_log_cached "$job" > "$logfile.raw" 2>/dev/null && sed 's/\x1b\[[0-9;]*m//g' "$logfile.raw" > "$logfile"; then : > "$logfile.ok"; fi; rm -f "$logfile.raw"; } &
     pids+=("$!"); gh_par_throttle pids
   done < <(jqf -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' <<<"$1")
   for pid in "${pids[@]}"; do wait "$pid" || :; done
