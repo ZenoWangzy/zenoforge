@@ -260,22 +260,12 @@ MALFORMED_EXTERNAL="$(jq -c '. + {external_deliverable:{required:"true",location
 FAKE_TRIAGE_QUEUE_BEFORE_FILE="$TEST_ROOT/triage-before.json"
 FAKE_TRIAGE_QUEUE_AFTER_FILE="$TEST_ROOT/triage-after.json"
 export FAKE_TRIAGE_QUEUE_BEFORE_FILE FAKE_TRIAGE_QUEUE_AFTER_FILE
-jq -n '[
-  {number:910301,labels:[{name:"needs-triage"}]},
-  {number:910302,labels:[{name:"needs-triage"}]},
-  {number:910303,labels:[{name:"needs-triage"}]},
-  {number:910304,labels:[{name:"needs-triage"}]},
-  {number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},
-  {number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},
-  {number:910307,labels:[{name:"needs-triage"}]}
-]' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
-jq -n '[
-  {number:910302,labels:[{name:"needs-triage"}]},
-  {number:910304,labels:[{name:"needs-triage"}]},
-  {number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},
-  {number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},
-  {number:910307,labels:[{name:"needs-triage"}]}
-]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+jq -n '[{number:910301,labels:[{name:"needs-triage"}]},{number:910302,labels:[{name:"needs-triage"}]},{number:910303,labels:[{name:"needs-triage"}]},
+  {number:910304,labels:[{name:"needs-triage"}]},{number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},
+  {number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},{number:910307,labels:[{name:"needs-triage"}]}]' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+jq -n '[{number:910302,labels:[{name:"needs-triage"}]},{number:910304,labels:[{name:"needs-triage"}]},
+  {number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},{number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},
+  {number:910307,labels:[{name:"needs-triage"}]}]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
 jq -n --argjson retry "$(( $(date +%s) + 600 ))" '{triage_retry_after_epoch:$retry}' > "$AGENT_HOME/state/910307.json"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 ZF_TRIAGE_TICK_ID=multi-ticket-9103
@@ -332,16 +322,23 @@ assert_eq "successful batch leaves no worktree behind" 0 "$(find "$HOME/wt" -max
 
 # One issue per call provides directly comparable single-ticket token baseline.
 : > "$FAKE_CODEX_ARGS"
-jq -n '[910310] | map({number:.,labels:[{name:"needs-triage"}]})' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
-echo '[]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+cp "$SCRIPT_DIR/mac-autopilot/triage-fixture.json" "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+cp "$SCRIPT_DIR/mac-autopilot/triage-fixture.json" "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+fixture_until=$(( $(date +%s) + 3600 ))
+export MAC_AUTOPILOT_RUNTIME_DIR="$TEST_ROOT/triage-runtime"
+mkdir -p "$MAC_AUTOPILOT_RUNTIME_DIR"
+jq -n --argjson until "$fixture_until" '{model_failure_backoff:{until_epoch:$until}}' > "$AGENT_HOME/state/1004.json"
+jq -n --argjson until "$fixture_until" '{triage_retry_after_epoch:$until}' > "$AGENT_HOME/state/1005.json"
+jq -n '{units:[{id:"issue-805",issue:805,stage:"implement-pending"}]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 jq -nc --argjson issue 910310 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
 ZF_TRIAGE_TICK_ID=single-ticket-910310 bash "$BATCH_SRC" --scheduled 910310 >/dev/null 2>&1
 SINGLE_BATCH_LOG="$(cat "$AGENT_HOME/logs/triage-single-ticket-910310.log")"
 assert_contains "single-ticket baseline log has sample size one" "$SINGLE_BATCH_LOG" 'issue_sample_size=1'
-assert_contains "single-ticket baseline records its token count" "$SINGLE_BATCH_LOG" 'tokens_used=12345'
-assert_contains "single-ticket baseline average equals call total" "$SINGLE_BATCH_LOG" 'average_tokens_per_issue=12345.00'
-unset ZF_TRIAGE_TICK_ID
+assert_contains "single-ticket baseline records token metrics" "$SINGLE_BATCH_LOG" $'tokens_used=12345\naverage_tokens_per_issue=12345.00'
+assert_contains "batch log counts the shared triage fixture before apply" "$SINGLE_BATCH_LOG" 'needs_triage_selectable_before=2'
+assert_contains "batch log counts the shared triage fixture after apply" "$SINGLE_BATCH_LOG" 'needs_triage_selectable_after=2'
+unset ZF_TRIAGE_TICK_ID MAC_AUTOPILOT_RUNTIME_DIR
 
 # Oversize issue text is cut in the prompt with a pointer to the full thread;
 # a short issue in the same batch passes through unchanged.
