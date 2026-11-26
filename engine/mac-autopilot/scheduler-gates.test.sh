@@ -3145,6 +3145,14 @@ AP_SYSTEM_TMP="$st" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || :
 [[ -d "$st/old-on-disk" ]] || fail 'reaped a disk-backed /tmp'
 
 # loop.out rotates by size in place, and the canary's offset survives the truncate.
+mkdir -p "$AGENT_HOME/logs"
+stale_triage_log="$AGENT_HOME/logs/triage-triage-batch-retention-stale-$$.log"
+fresh_triage_log="$AGENT_HOME/logs/triage-triage-batch-retention-fresh-$$.log"
+: > "$stale_triage_log"; : > "$fresh_triage_log"
+touch -d '-9 days' "$stale_triage_log"
+rotate_logs
+[[ ! -e "$stale_triage_log" && -e "$fresh_triage_log" ]] || fail 'triage metrics retention removed a recent log or kept a stale one'
+rm -f "$fresh_triage_log"
 lo="$A/loop.out"
 exec 7>> "$lo"; printf 'old-1\n' >&7; AUTOPI_LOOP_OUT_MAX_BYTES=3 rotate_logs
 printf 'old-2\n' >&7; AUTOPI_LOOP_OUT_MAX_BYTES=3 rotate_logs

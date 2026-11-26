@@ -6,6 +6,9 @@ rotate_logs() {
     [[ -f "$f" ]] || continue
     (( $(wc -c < "$f") > 5242880 )) && mv -f "$f" "$f.1"
   done
+  if [[ -d "$AGENT_HOME/logs" ]]; then
+    find "$AGENT_HOME/logs" -maxdepth 1 -type f -name 'triage-triage-batch-*.log' -mtime +7 -delete 2>/dev/null || :
+  fi
   rotate_loop_out
   return 0
 }

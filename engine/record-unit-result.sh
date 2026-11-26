@@ -22,7 +22,13 @@ case "$stage" in
     unit_name="${UNIT_PREFIX_TRANSIENT}-triage-batch.service"
     if [[ ! "${2:-}" =~ ^[0-9]+$ ]]; then
       claim_owner="$2"
-      issue_ids=("${@:3}")
+      if [ "${3:-}" = --unit ]; then
+        [ "$#" -ge 5 ] || { echo "record-unit-result: expected batch unit name and issue numbers" >&2; exit 64; }
+        unit_name="$4"
+        issue_ids=("${@:5}")
+      else
+        issue_ids=("${@:3}")
+      fi
     else
       issue_ids=("${@:2}")
     fi
@@ -30,12 +36,18 @@ case "$stage" in
     ;;
   *) echo "record-unit-result: unsupported stage: $stage" >&2; exit 64 ;;
 esac
+[ -z "$claim_owner" ] || [[ "$claim_owner" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "record-unit-result: invalid batch owner" >&2; exit 64; }
 for n in "${issue_ids[@]}"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "record-unit-result: invalid issue number" >&2; exit 64; }
 done
 
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+if [ "$stage" = triage-batch ]; then
+  active_marker="$AGENT_HOME/triage-batch-active.json"
+  [ -z "$claim_owner" ] || active_marker="$AGENT_HOME/triage-batch-active-$claim_owner.json"
+  rm -f -- "$active_marker"
+fi
 
 result="$(jq -n \
   --arg result "${SERVICE_RESULT:-unknown}" \

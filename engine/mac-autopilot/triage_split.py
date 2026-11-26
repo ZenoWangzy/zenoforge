@@ -1,5 +1,5 @@
 """待分诊共享筛选：dispatcher、batch log 与 dashboard 共用排除规则。"""
-import fcntl, json, os, sys, time
+import glob, json, os, subprocess, sys, time
 from config_paths import zf_config_file
 
 ROADMAP_LABELS = ("roadmap", "roadmap-theme", "roadmap-epic")
@@ -128,26 +128,35 @@ def _scheduler_inflight_ids():
 
 def _active_batch_ids():
     home = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
-    lock_path, marker = os.path.join(home, "triage-batch.lock"), os.path.join(home, "triage-batch-active.json")
-    if not os.path.isfile(lock_path) or not os.path.isfile(marker):
+    markers = glob.glob(os.path.join(home, "triage-batch-active*.json"))
+    if not markers:
         return set()
+    prefix = os.environ.get("ZF_UNIT_PREFIX", "zf")
     try:
-        with open(lock_path, "a") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                doc = _json_file(marker, "triage batch marker")
-                if not isinstance(doc, dict) or not isinstance(doc.get("issues"), list):
-                    raise RuntimeError("triage batch marker malformed")
-                return {issue for issue in doc["issues"] if type(issue) is int}
-            finally:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_UN)
-                except OSError:
-                    pass
-    except OSError as error:
-        raise RuntimeError("triage batch lock unavailable") from error
-    return set()
+        units = subprocess.run(
+            ["systemctl", "--user", "list-units", "--no-legend", "--plain", f"{prefix}-triage-batch*.service"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("triage batch unit census unavailable") from error
+    if units.returncode != 0:
+        raise RuntimeError("triage batch unit census unavailable")
+    active_units = {line.split()[0] for line in units.stdout.splitlines() if line.split()}
+    issue_ids = set()
+    for marker in markers:
+        name = os.path.basename(marker)
+        if name == "triage-batch-active.json":
+            unit = f"{prefix}-triage-batch.service"
+        else:
+            batch_id = name.removeprefix("triage-batch-active-").removesuffix(".json")
+            unit = f"{prefix}-triage-batch-{batch_id}.service"
+        if unit not in active_units:
+            continue
+        doc = _json_file(marker, "triage batch marker")
+        if not isinstance(doc, dict) or not isinstance(doc.get("issues"), list):
+            raise RuntimeError("triage batch marker malformed")
+        issue_ids.update(issue for issue in doc["issues"] if type(issue) is int)
+    return issue_ids
 
 
 def _state(issue_number):

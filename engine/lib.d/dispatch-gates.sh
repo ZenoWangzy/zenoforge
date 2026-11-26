@@ -296,15 +296,41 @@ triage_single_unit_active() {
 
 
 triage_batch_unit_active() {
-  local out
-  if ! out="$(systemctl --user list-units --no-legend --plain "${UNIT_PREFIX_TRANSIENT}-triage-batch.service" 2>&1)"; then
+  local batch_id="${1:-}" out unit="${UNIT_PREFIX_TRANSIENT}-triage-batch"
+  if [ "$batch_id" = legacy ]; then
+    unit+=".service"
+  elif [ -n "$batch_id" ]; then
+    [[ "$batch_id" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    unit+="-$batch_id.service"
+  else
+    unit+="*.service"
+  fi
+  if ! out="$(systemctl --user list-units --no-legend --plain "$unit" 2>&1)"; then
     if [ -n "$out" ]; then
       echo "triage_batch_unit_active: systemctl --user list-units could not be queried -- treating batch as ACTIVE (fail-closed): $out" >&2
       return 0
     fi
     return 1
   fi
-  printf '%s\n' "$out" | awk -v unit="${UNIT_PREFIX_TRANSIENT}-triage-batch.service" '$1 == unit { found=1 } END { exit !found }'
+  if [ -n "$batch_id" ]; then
+    printf '%s\n' "$out" | awk -v unit="$unit" '$1 == unit { found=1 } END { exit !found }'
+  else
+    printf '%s\n' "$out" | awk -v legacy="${UNIT_PREFIX_TRANSIENT}-triage-batch.service" -v dynamic="${UNIT_PREFIX_TRANSIENT}-triage-batch-owner-" '$1 == legacy || (index($1, dynamic) == 1 && substr($1, length($1) - 7) == ".service") { found=1 } END { exit !found }'
+  fi
+}
+
+triage_batch_unit_count() {
+  local out prefix="${UNIT_PREFIX_TRANSIENT}-triage-batch" legacy="${UNIT_PREFIX_TRANSIENT}-triage-batch.service"
+  if ! out="$(systemctl --user list-units --no-legend --plain "${prefix}*.service" 2>&1)"; then
+    echo "triage_batch_unit_count: systemctl --user list-units could not be queried -- treating occupancy as FULL (fail-closed): $out" >&2
+    echo 999999999
+    return 1
+  fi
+  printf '%s\n' "$out" | awk -v legacy="$legacy" -v dynamic="${prefix}-owner-" '$1 == legacy || (index($1, dynamic) == 1 && substr($1, length($1) - 7) == ".service") { count++ } END { print count + 0 }'
+}
+
+triage_batch_concurrency() {
+  printf '%s\n' "${AGENT_TRIAGE_BATCH_CONCURRENCY:-2}"
 }
 
 
@@ -347,10 +373,20 @@ stage_unit_active() {
 # only authoritative while the batch unit is active; a killed run cannot leave
 # tickets stuck behind a stale marker.
 triage_batch_issue_active() {
-  local n="$1" marker="$AGENT_HOME/triage-batch-active.json"
-  [ -f "$marker" ] || return 1
-  jq -e --argjson n "$n" 'any(.issues[]?; . == $n)' "$marker" >/dev/null 2>&1 || return 1
-  triage_batch_unit_active
+  local n="$1" marker marker_name batch_id
+  for marker in "$AGENT_HOME"/triage-batch-active*.json; do
+    [ -f "$marker" ] || continue
+    jq -e --argjson n "$n" 'any(.issues[]?; . == $n)' "$marker" >/dev/null 2>&1 || continue
+    marker_name="${marker##*/}"
+    if [ "$marker_name" = triage-batch-active.json ]; then
+      triage_batch_unit_active legacy && return 0
+    else
+      batch_id="${marker_name#triage-batch-active-}"
+      batch_id="${batch_id%.json}"
+      triage_batch_unit_active "$batch_id" && return 0
+    fi
+  done
+  return 1
 }
 
 

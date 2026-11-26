@@ -370,9 +370,8 @@ trap report_on_hold_query_failures EXIT
 # process dies, and `--collect` (every dispatch below) drops it from
 # `systemctl --user list-units` output the instant it exits.
 #
-# Up to AGENT_TRIAGE_CAP triage issues per batch (default 8), configured in
-# ~/.zenoforge/env. Keep the operator cap within host memory headroom.
 TRIAGE_CAP="${AGENT_TRIAGE_CAP:-8}"
+TRIAGE_BATCH_CONCURRENCY="$(triage_batch_concurrency)"
 # Implement dispatch moved to mac-autopilot/scheduler.sh; the tick keeps no
 # implement cap of its own (the scheduler's implement_cap plus its file-scope
 # footprint mutex govern every lane, including pipeline-system).
@@ -876,7 +875,7 @@ dispatch_advisor_batch() {
 # One transient unit carries the selected issue IDs; the batch wrapper owns
 # one Codex call and isolates result application per issue.
 dispatch_triage_batch() {
-  local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status; local -a issue_ids=() memory_args=() result_args=()
+  local script="$ZF_ENGINE_DIR/run-triage-batch.sh" active_tmp="" active_file="" issues_json="" n memory_max oom_count consume_status budget_result budget_state budget_calls budget_tokens claim_owner claim_unit claim_status; local -a issue_ids=() memory_args=() result_args=()
   for n in "$@"; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
     budget_result="$(issue_spend_budget_status "$n")" || { echo "issue-pipeline: #$n spend-budget status failed; not dispatching it this tick" >&2; continue; }
@@ -893,13 +892,15 @@ dispatch_triage_batch() {
     echo "issue-pipeline: triage batch held by work-role model configuration fault" >&2
     return 0
   fi
+  if codex_week_stopped; then echo "issue-pipeline: triage batch held by model quota stop" >&2; return 0; fi
   if [ ! -x "$script" ]; then
     echo "issue-pipeline: batch triage leg cannot execute ($script) -- not dispatching" >&2
     record_env_fault "env:leg-not-executable:triage-batch" triage-batch batch "$script is not executable (git mode bit)"
     return 0
   fi
-  claim_unit="${UNIT_PREFIX_TRANSIENT}-triage-batch"
   claim_owner="$(coord_new_owner)"
+  claim_unit="${UNIT_PREFIX_TRANSIENT}-triage-batch-$claim_owner"
+  active_file="$AGENT_HOME/triage-batch-active-$claim_owner.json"
   if pipeline_batch_claim_acquire "$claim_owner" triage-batch "$claim_unit" issue_ids; then
     if [ "${#issue_ids[@]}" -eq 0 ]; then
       echo "issue-pipeline: triage batch has no members left after live-worker drops; nothing dispatched this tick" >&2
@@ -922,34 +923,35 @@ dispatch_triage_batch() {
     [ "$oom_count" -le 0 ] || memory_max="${AGENT_UNIT_MEMORY_RETRY_MAX:-6G}"
   done
   memory_args=(-p "MemoryMax=$memory_max")
-  result_args=(-p "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch $claim_owner ${issue_ids[*]}")
+  result_args=(-p "ExecStopPost=$SCRIPT_DIR/record-unit-result.sh triage-batch $claim_owner --unit $claim_unit.service ${issue_ids[*]}")
   if [ "$DRY_RUN" != "1" ]; then
     mkdir -p "$AGENT_HOME"
-    active_tmp="$AGENT_HOME/triage-batch-active-dispatch-$$.json"
+    active_tmp="$AGENT_HOME/.triage-batch-active-$claim_owner-$$.tmp"
     issues_json="$(printf '%s\n' "${issue_ids[@]}" | jq -Rsc 'split("\n") | map(select(test("^[0-9]+$")) | tonumber)')"
     if ! jq -n --argjson issues "$issues_json" '{issues:$issues}' > "$active_tmp" \
-        || ! mv "$active_tmp" "$AGENT_HOME/triage-batch-active.json"; then
+        || ! mv "$active_tmp" "$active_file"; then
       rm -f -- "$active_tmp"
       pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
       return 1
     fi
   fi
-  if pipeline_batch_launch triage "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
+  if pipeline_batch_launch triage "${issue_ids[*]}" guarded_write systemd-run --user --unit "$claim_unit" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
+    -E "ZF_TRIAGE_BATCH_ID=$claim_owner" -E "ZF_TRIAGE_TICK_ID=triage-batch-$(date -u +%Y%m%dT%H%M%SZ)-$claim_owner" \
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \
     "${memory_args[@]}" "${result_args[@]}" \
     "$script" --scheduled "${issue_ids[@]}"; then
     if declare -F quarantine_mark_stage_dispatch_canaries >/dev/null; then quarantine_mark_stage_dispatch_canaries triage || echo "issue-pipeline: canary mark failed after triage start" >&2; else echo "issue-pipeline: canary marker missing after triage start" >&2; fi; pipeline_batch_claim_keep "$claim_owner" "$claim_unit" "${issue_ids[@]}"
   else
     local launch_status=$?
-    [ -z "$active_tmp" ] || rm -f "$AGENT_HOME/triage-batch-active.json"
+    [ -z "$active_tmp" ] || rm -f -- "$active_file"
     pipeline_batch_claim_drop "$claim_owner" "${issue_ids[@]}"
     if [ "$launch_status" -eq 75 ]; then
       echo "issue-pipeline: triage batch admission deferred; selected jobs remain pending" >&2
       return 75
     fi
-    echo "issue-pipeline: systemd-run dispatch failed for ${UNIT_PREFIX_TRANSIENT}-triage-batch" >&2
-    record_env_fault "env:systemd-run-dispatch-failed:triage-batch" triage-batch batch "systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-triage-batch failed; see stderr above"
+    echo "issue-pipeline: systemd-run dispatch failed for $claim_unit" >&2
+    record_env_fault "env:systemd-run-dispatch-failed:triage-batch" triage-batch batch "systemd-run --user --unit $claim_unit failed; see stderr above"
     return 1
   fi
 }
@@ -2341,7 +2343,12 @@ run_intake_dispatch() {
 if [ "$PIPELINE_STAGE" = triage ]; then
 profile_mark triage
 TRIAGE_RETRY_NOW="$(date +%s)"
-triage_slots="$(cap_slots_remaining "$TRIAGE_CAP" "$(stage_unit_count triage)")"
+[[ "$TRIAGE_BATCH_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || { echo "issue-pipeline: invalid AGENT_TRIAGE_BATCH_CONCURRENCY='$TRIAGE_BATCH_CONCURRENCY'; triage dispatch held" >&2; TRIAGE_BATCH_CONCURRENCY=0; }
+TRIAGE_BATCH_ACTIVE_COUNT="$(triage_batch_unit_count)" || TRIAGE_BATCH_ACTIVE_COUNT=999999999
+TRIAGE_BATCH_SLOTS="$(cap_slots_remaining "$TRIAGE_BATCH_CONCURRENCY" "$TRIAGE_BATCH_ACTIVE_COUNT")"
+TRIAGE_STAGE_UNIT_COUNT="$(stage_unit_count triage)" || TRIAGE_STAGE_UNIT_COUNT=999999999
+TRIAGE_NONBATCH_UNIT_COUNT=$((TRIAGE_STAGE_UNIT_COUNT > TRIAGE_BATCH_ACTIVE_COUNT ? TRIAGE_STAGE_UNIT_COUNT - TRIAGE_BATCH_ACTIVE_COUNT : 0))
+triage_slots="$(cap_slots_remaining "$TRIAGE_CAP" "$TRIAGE_NONBATCH_UNIT_COUNT")"
 declare -a TRIAGE_BATCH_IDS=()
 TRIAGE_RETRY_ALONE=0
 TRIAGE_DEFERRED_COUNT=0
@@ -2349,9 +2356,6 @@ TRIAGE_DEFERRED_COUNT=0
 declare -A TRIAGE_SKIPS=()
 triage_skip() { TRIAGE_SKIPS[$1]=$(( ${TRIAGE_SKIPS[$1]:-0} + 1 )); }
 TRIAGE_ORDERED_COUNT=0
-TRIAGE_BATCH_ACTIVE=0
-stage_unit_active triage batch && TRIAGE_BATCH_ACTIVE=1
-[ "$TRIAGE_BATCH_ACTIVE" = "1" ] && triage_slots=0
 TRIAGE_CANDIDATE_QUERY_FAILED=0
 TRIAGE_SELECT_CUT=0
 TRIAGE_SELECT_RESERVE="${ZF_TRIAGE_SELECT_RESERVE_SECONDS:-20}"
@@ -2400,7 +2404,7 @@ if [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" ]; then
     fi
   done <<< "$NEEDS_TRIAGE_IDS")"
 fi
-if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" ]; then
+if [ "$TRIAGE_BATCH_SLOTS" -gt 0 ] && [ "$TRIAGE_CANDIDATE_QUERY_FAILED" = "0" ]; then
   for next_triage in $NEEDS_TRIAGE_IDS; do
     if [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
       TRIAGE_SELECT_CUT=1
@@ -2508,7 +2512,7 @@ if [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
     fi
   done <<< "$READY_MEASURE_IDS")"
 fi
-if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
+if [ "$TRIAGE_BATCH_SLOTS" -gt 0 ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; then
   for next_measure in $READY_MEASURE_IDS; do
     if [ "$(triage_slice_seconds_left)" -lt "$TRIAGE_SELECT_RESERVE" ]; then
       TRIAGE_SELECT_CUT=1
@@ -2543,8 +2547,6 @@ if [ "$TRIAGE_BATCH_ACTIVE" = "0" ] && [ "$READY_MEASURE_QUERY_FAILED" = "0" ]; 
     triage_slots=$((triage_slots - 1))
   done
 fi
-# Row 897: with both loops done, a remembered flagged candidate runs alone
-# only when no unflagged issue was selected and no batch unit is active.
 triage_solo_candidate_dispatch
 if [ "$TRIAGE_DEFERRED_COUNT" -gt 0 ]; then
   echo "issue-pipeline: triage batch cap deferred $TRIAGE_DEFERRED_COUNT selectable issue(s); they remain queued for a later tick" >&2
@@ -2558,7 +2560,7 @@ if [ "${#TRIAGE_BATCH_IDS[@]}" -eq 0 ]; then
   for triage_skip_reason in "${!TRIAGE_SKIPS[@]}"; do
     TRIAGE_SKIP_SUMMARY+="${TRIAGE_SKIP_SUMMARY:+,}$triage_skip_reason:${TRIAGE_SKIPS[$triage_skip_reason]}"
   done
-  triage_empty_line="triage batch empty: needs_triage=$(jq 'length' <<< "$NEEDS_TRIAGE_JSON") ordered=$TRIAGE_ORDERED_COUNT selectable=$(wc -w <<< "$NEEDS_TRIAGE_IDS") measure=$(wc -w <<< "${READY_MEASURE_IDS:-}") slots=$triage_slots batch_active=$TRIAGE_BATCH_ACTIVE query_failed=$TRIAGE_CANDIDATE_QUERY_FAILED/$READY_MEASURE_QUERY_FAILED cut=$TRIAGE_SELECT_CUT skips=${TRIAGE_SKIP_SUMMARY:-none}"; echo "issue-pipeline: $triage_empty_line" >&2; maintenance_scheduler_log "$triage_empty_line"
+  triage_empty_line="triage batch empty: needs_triage=$(jq 'length' <<< "$NEEDS_TRIAGE_JSON") ordered=$TRIAGE_ORDERED_COUNT selectable=$(wc -w <<< "$NEEDS_TRIAGE_IDS") measure=$(wc -w <<< "${READY_MEASURE_IDS:-}") slots=$triage_slots batch_active=$((TRIAGE_BATCH_ACTIVE_COUNT > 0)) query_failed=$TRIAGE_CANDIDATE_QUERY_FAILED/$READY_MEASURE_QUERY_FAILED cut=$TRIAGE_SELECT_CUT skips=${TRIAGE_SKIP_SUMMARY:-none}"; echo "issue-pipeline: $triage_empty_line" >&2; maintenance_scheduler_log "$triage_empty_line"
 fi
 if [ "${#TRIAGE_BATCH_IDS[@]}" -gt 0 ]; then
   TRIAGE_DISPATCH_IDS=()

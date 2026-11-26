@@ -268,8 +268,10 @@ jq -n '[{number:910302,labels:[{name:"needs-triage"}]},{number:910304,labels:[{n
   {number:910307,labels:[{name:"needs-triage"}]}]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
 jq -n --argjson retry "$(( $(date +%s) + 600 ))" '{triage_retry_after_epoch:$retry}' > "$AGENT_HOME/state/910307.json"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
-ZF_TRIAGE_TICK_ID=multi-ticket-9103
-export ZF_TRIAGE_TICK_ID
+ZF_TRIAGE_TICK_ID=triage-batch-owner-multi-ticket-9103
+ZF_TRIAGE_BATCH_ID=owner-multi-ticket-9103
+jq -n '{issues:[910399]}' > "$AGENT_HOME/triage-batch-active-owner-unrelated.json"
+export ZF_TRIAGE_TICK_ID ZF_TRIAGE_BATCH_ID
 
 set +e
 RUN_OUTPUT="$(bash "$BATCH_SRC" --scheduled 910301 910302 910303 910304 2>&1)"
@@ -310,14 +312,18 @@ assert_not_contains "skill path is decided from the agent worktree, not the repo
 assert_contains "skills note is in the prompt" "$(cat "$FAKE_PROMPT_CAPTURE")" 'Matt skill files for this run'
 assert_not_contains "deferred issue is absent from prompt" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #910304'
 assert_eq "batch spend row records tokens used" 12345 "$(awk -F '\t' '$2 == "triage" {print $6}' "$AGENT_HOME"/spend/*.log)"
-MULTI_BATCH_LOG="$(cat "$AGENT_HOME/logs/triage-multi-ticket-9103.log")"
-assert_contains "batch log stores its tick ID" "$MULTI_BATCH_LOG" 'tick_id=multi-ticket-9103'
+MULTI_BATCH_LOG="$(cat "$AGENT_HOME/logs/triage-triage-batch-owner-multi-ticket-9103.log")"
+assert_contains "batch log stores its tick ID" "$MULTI_BATCH_LOG" 'tick_id=triage-batch-owner-multi-ticket-9103'
 assert_contains "batch log stores issue sample size" "$MULTI_BATCH_LOG" 'issue_sample_size=3'
 assert_contains "batch log stores total Codex tokens" "$MULTI_BATCH_LOG" 'tokens_used=12345'
 assert_contains "batch log stores average tokens per issue" "$MULTI_BATCH_LOG" 'average_tokens_per_issue=4115.00'
 assert_contains "batch log stores selectable count before apply" "$MULTI_BATCH_LOG" 'needs_triage_selectable_before=4'
 assert_contains "batch log stores selectable count after apply" "$MULTI_BATCH_LOG" 'needs_triage_selectable_after=1'
 assert_contains "batch log stores selectable count delta" "$MULTI_BATCH_LOG" 'needs_triage_selectable_delta=-3'
+assert_eq "batch cleanup removes only its own active marker" false \
+  "$(test -e "$AGENT_HOME/triage-batch-active-owner-multi-ticket-9103.json" && echo true || echo false)"
+assert_eq "batch cleanup preserves another active marker" true \
+  "$(test -e "$AGENT_HOME/triage-batch-active-owner-unrelated.json" && echo true || echo false)"
 assert_eq "successful batch leaves no worktree behind" 0 "$(find "$HOME/wt" -maxdepth 1 -type d -name 'triage-batch-run-*' | wc -l | tr -d ' ')"
 
 # One issue per call provides directly comparable single-ticket token baseline.
@@ -332,13 +338,17 @@ jq -n --argjson until "$fixture_until" '{triage_retry_after_epoch:$until}' > "$A
 jq -n '{units:[{id:"issue-805",issue:805,stage:"implement-pending"}]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 jq -nc --argjson issue 910310 --argjson result "$VALID" '{issue:$issue,result:$result}' > "$FAKE_CODEX_OUTPUT"
-ZF_TRIAGE_TICK_ID=single-ticket-910310 bash "$BATCH_SRC" --scheduled 910310 >/dev/null 2>&1
-SINGLE_BATCH_LOG="$(cat "$AGENT_HOME/logs/triage-single-ticket-910310.log")"
+ZF_TRIAGE_TICK_ID=triage-batch-owner-single-ticket-910310 ZF_TRIAGE_BATCH_ID=owner-single-ticket-910310 \
+  bash "$BATCH_SRC" --scheduled 910310 >/dev/null 2>&1
+SINGLE_BATCH_LOG="$(cat "$AGENT_HOME/logs/triage-triage-batch-owner-single-ticket-910310.log")"
 assert_contains "single-ticket baseline log has sample size one" "$SINGLE_BATCH_LOG" 'issue_sample_size=1'
-assert_contains "single-ticket baseline records token metrics" "$SINGLE_BATCH_LOG" $'tokens_used=12345\naverage_tokens_per_issue=12345.00'
+assert_contains "single-ticket baseline records its token count" "$SINGLE_BATCH_LOG" 'tokens_used=12345'
+assert_contains "single-ticket baseline average equals call total" "$SINGLE_BATCH_LOG" 'average_tokens_per_issue=12345.00'
 assert_contains "batch log counts the shared triage fixture before apply" "$SINGLE_BATCH_LOG" 'needs_triage_selectable_before=2'
 assert_contains "batch log counts the shared triage fixture after apply" "$SINGLE_BATCH_LOG" 'needs_triage_selectable_after=2'
-unset ZF_TRIAGE_TICK_ID MAC_AUTOPILOT_RUNTIME_DIR
+assert_eq "parallel batch IDs keep separate metrics logs" 2 \
+  "$(find "$AGENT_HOME/logs" -maxdepth 1 -name 'triage-triage-batch-owner-*.log' | wc -l | tr -d ' ')"
+unset ZF_TRIAGE_TICK_ID ZF_TRIAGE_BATCH_ID MAC_AUTOPILOT_RUNTIME_DIR
 
 # Oversize issue text is cut in the prompt with a pointer to the full thread;
 # a short issue in the same batch passes through unchanged.

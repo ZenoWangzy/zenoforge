@@ -20,6 +20,17 @@ cat > "$TEST_ROOT/bin/gh" <<'SH'
 cat "$TRIAGE_FILTER_FIXTURE"
 SH
 chmod +x "$TEST_ROOT/bin/gh"
+cat > "$TEST_ROOT/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == --user && "${2:-}" == list-units ]]; then
+  if [[ -n "${TRIAGE_FILTER_ACTIVE_UNIT:-}" ]]; then
+    printf '%s loaded active running fixture\n' "$TRIAGE_FILTER_ACTIVE_UNIT"
+  fi
+  exit 0
+fi
+exit 1
+SH
+chmod +x "$TEST_ROOT/bin/systemctl"
 export PATH="$TEST_ROOT/bin:$PATH"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/lib.d/triage-filter.sh"
@@ -27,13 +38,16 @@ eligible="$(triage_filter_issues_json "$(cat "$TRIAGE_FILTER_FIXTURE")" | jq -r 
 [[ "$eligible" == $'1000\n1006' ]] || { printf 'triage-filter.test.sh: unexpected dispatcher set %s\n' "$eligible" >&2; exit 1; }
 count="$(triage_needs_queue_selectable_count)"
 jq -n '{issues:[1000,1006]}' > "$AGENT_HOME/triage-batch-active.json"
-exec 9>"$AGENT_HOME/triage-batch.lock"
-flock -n 9
+export TRIAGE_FILTER_ACTIVE_UNIT=zf-triage-batch.service
 active_eligible="$(triage_filter_issues_json "$(cat "$TRIAGE_FILTER_FIXTURE")" | jq -r '.[].number')"
 [[ -z "$active_eligible" ]] || { printf 'triage-filter.test.sh: active batch markers left candidates %s\n' "$active_eligible" >&2; exit 1; }
 active_count="$(triage_needs_queue_selectable_count)"
 [[ "$active_count" == 0 ]] || { printf 'triage-filter.test.sh: active batch count should be 0, got %s\n' "$active_count" >&2; exit 1; }
-flock -u 9
+export TRIAGE_FILTER_ACTIVE_UNIT=zf-triage-batch-owner-test.service
+mv "$AGENT_HOME/triage-batch-active.json" "$AGENT_HOME/triage-batch-active-owner-test.json"
+dynamic_eligible="$(triage_filter_issues_json "$(cat "$TRIAGE_FILTER_FIXTURE")" | jq -r '.[].number')"
+[[ -z "$dynamic_eligible" ]] || { printf 'triage-filter.test.sh: dynamic active batch markers left candidates %s\n' "$dynamic_eligible" >&2; exit 1; }
+TRIAGE_FILTER_ACTIVE_UNIT=""
 stale_marker_eligible="$(triage_filter_issues_json "$(cat "$TRIAGE_FILTER_FIXTURE")" | jq -r '.[].number')"
 [[ "$stale_marker_eligible" == $'1000\n1006' ]] || { printf 'triage-filter.test.sh: stale marker excluded candidates %s\n' "$stale_marker_eligible" >&2; exit 1; }
 [[ "$count" == 2 ]] || { printf 'triage-filter.test.sh: expected shared batch count 2, got %s\n' "$count" >&2; exit 1; }

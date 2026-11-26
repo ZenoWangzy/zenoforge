@@ -151,7 +151,7 @@ SH
 cat > "$f/bin/systemctl" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
-  *zf-triage-batch.service*) echo "zf-triage-batch.service loaded active running triage" ;;
+  *list-units*zf-triage-batch*.service*) echo "zf-triage-batch-owner-one.service loaded active running triage"; echo "zf-triage-batch-owner-two.service loaded active running triage" ;;
   *zf-web-advisor-provider-*) echo "zf-web-advisor-provider-advisor-batch-J1.service loaded active running advisor" ;;
 esac
 SH
@@ -216,6 +216,21 @@ row = t.stage("needs-triage", {"totalCount": len(nodes), "nodes": nodes})
 counts = {item["key"]: item["count"] for item in row["excluded"]}
 assert row["count"] == 2, row
 assert counts == {"session_owned": 1, "system": 1, "on_hold": 1, "model_backoff": 1, "retry_deferred": 1, "scheduler_inflight": 1, "roadmap": 0}, counts
+PY
+BATCH_MARKER_HOME="$f/triage-batch-marker-home"
+mkdir -p "$BATCH_MARKER_HOME"
+jq -n '{issues:[901]}' > "$BATCH_MARKER_HOME/triage-batch-active.json"
+jq -n '{issues:[902]}' > "$BATCH_MARKER_HOME/triage-batch-active-owner-one.json"
+jq -n '{issues:[903]}' > "$BATCH_MARKER_HOME/triage-batch-active-owner-stale.json"
+PYTHONPATH="$script_dir" AGENT_HOME="$BATCH_MARKER_HOME" ZF_UNIT_PREFIX=zf python3 - <<'PY' || fail 'triage split did not read all active batch markers'
+from types import SimpleNamespace
+import subprocess
+import triage_split as t
+def fake_run(args, **kwargs):
+    assert args[-1] == "zf-triage-batch*.service", args
+    return SimpleNamespace(returncode=0, stdout="zf-triage-batch.service loaded active running x\nzf-triage-batch-owner-one.service loaded active running x\n")
+subprocess.run = fake_run
+assert t._active_batch_ids() == {901, 902}
 PY
 jq -e '.search_counts.issues_open == 128 and .search_counts.issues_closed == 31
   and .search_counts.prs_open == 2 and .search_counts.prs_merged == 3 and .search_counts.prs_closed_unmerged == 4

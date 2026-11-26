@@ -34,7 +34,7 @@ About 50 of the 230 non-test files under `engine/` and `tools/` contain Chinese 
 
 A tick that refuses counts as a failure. After three in a row, it writes an event to the supervisor inbox.
 
-`engine/issue-pipeline.sh` is a bounded-concurrency dispatcher. Its header says it "only ever decides, it never blocks on an agent model call." It fills each stage's cap by starting transient units with `systemd-run --user --collect`, so the work outlives the tick. The unit names follow `zf-<stage>-<n>`, for example `zf-triage-<n>`, `zf-advisor-<n>`, and `zf-release-batch`. The stages it dispatches are:
+`engine/issue-pipeline.sh` is a bounded-concurrency dispatcher. Its header says it "only ever decides, it never blocks on an agent model call." It fills each stage's cap by starting transient units with `systemd-run --user --collect`, so the work outlives the tick. Single-issue units follow `zf-<stage>-<n>`, such as `zf-triage-<n>` and `zf-advisor-<n>`; batch units use `zf-<stage>-batch`, while concurrent triage batches use `zf-triage-batch-<owner>`. The stages it dispatches are:
 
 - triage (`run-triage.sh`, `run-triage-batch.sh`)
 - advisor (`run-advisor.sh`, `run-advisor-batch.sh`). The advisor role is disabled by default, and no advisor provider ships.
