@@ -1,0 +1,5 @@
+{
+  "engine/night/prompt-observer-run.sh": ["engine/night/prompt-observer-report-schedule.test.sh"],
+  "engine/systemd/zenoforge-prompt-observer-report.service": ["engine/night/prompt-observer-report-schedule.test.sh"],
+  "engine/unitgen.golden/zenoforge.zenoforge-prompt-observer-report.plist": ["engine/unitgen.test.sh"]
+}

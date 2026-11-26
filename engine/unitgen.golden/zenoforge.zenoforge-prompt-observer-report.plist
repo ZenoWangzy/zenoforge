@@ -23,7 +23,7 @@
 	<array>
 		<string>/bin/bash</string>
 		<string>-c</string>
-		<string>e="$(readlink -e /home/zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; fi; exec /bin/bash "${e:-/home/zf-golden/.zenoforge/checkout/engine}/night/prompt-observer-report.sh"</string>
+		<string>e="$(readlink -e "$AGENT_HOME/engine-live" 2&gt;/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; fi; exec /bin/bash "${e:-$ZF_REPO_DIR/engine}/night/prompt-observer-run.sh"</string>
 	</array>
 	<key>SoftResourceLimits</key>
 	<dict>
