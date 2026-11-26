@@ -169,6 +169,7 @@ cat > "$test_env_bin/gh" <<'SH'
 case "$1 $2" in
   'pr checks') echo '[{"name":"Test suite","bucket":"fail","link":"https://example.invalid/actions/runs/1/job/42"}]'; exit 1 ;;
   'api --allow-escape-sequences') printf 'post-job output\nAssertionError: expected true\n' ;;
+  'api repos/{owner}/{repo}/actions/jobs/42') echo '{"status":"completed","steps":[{"name":"Run affected regression tests","conclusion":"failure"}]}' ;;
   api*) echo 'Run affected regression tests' ;;
   *) exit 99 ;;
 esac
