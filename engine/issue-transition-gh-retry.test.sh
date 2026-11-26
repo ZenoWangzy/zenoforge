@@ -318,6 +318,7 @@ gql_marker="$AGENT_HOME/gh-rate-limit-until.graphql"
 rest_marker="$AGENT_HOME/gh-rate-limit-until.rest"
 rm -f -- "$gql_marker" "$rest_marker"
 rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
+rm -rf -- "$AGENT_HOME/state"/gh-budget-minute-*
 : > "$GH_CALL_LOG"
 if gh issue view 8124 --repo "$REPO" > /dev/null 2> "$AGENT_HOME/gql-quota.err"; then
   echo 'not ok - GraphQL quota exhaustion unexpectedly succeeded' >&2
@@ -361,6 +362,7 @@ echo 'ok - GraphQL quota marker is shared by both wrappers and expires'
 export GH_MODE=rest-quota
 rm -f -- "$gql_marker" "$rest_marker"
 rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
+rm -rf -- "$AGENT_HOME/state"/gh-budget-minute-*
 : > "$GH_CALL_LOG"
 if gh api repos/fixture/repo/issues/8124 > /dev/null 2> "$AGENT_HOME/rest-quota.err"; then
   echo 'not ok - REST quota exhaustion unexpectedly succeeded' >&2
@@ -485,6 +487,7 @@ export GH_STUB_ERR='GraphQL: API rate limit already exceeded for user ID 1.'
 : > "$GH_CALL_LOG"
 export GH_QUOTA_LINE="3902 $(( $(date +%s) + 1800 ))"
 rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
+rm -rf -- "$AGENT_HOME/state"/gh-budget-minute-*
 sec_call
 [[ "$rc" == 75 ]] || { echo "not ok - primary wording with quota left returned rc=$rc, expected 75" >&2; exit 1; }
 now="$(date +%s)"
@@ -498,6 +501,7 @@ rm -f -- "$sec_marker"
 reset_epoch="$(( $(date +%s) + 1800 ))"
 export GH_QUOTA_LINE="0 $reset_epoch"
 rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
+rm -rf -- "$AGENT_HOME/state"/gh-budget-minute-*
 sec_call
 [[ "$rc" == 75 && "$(cat "$sec_marker")" == "$reset_epoch" ]] || { echo "not ok - primary wording with quota 0: marker is not the reset $reset_epoch (rc=$rc)" >&2; exit 1; }
 echo 'ok - primary wording with quota 0 holds until the quota reset'

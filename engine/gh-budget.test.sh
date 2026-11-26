@@ -22,6 +22,8 @@ DATE
 cat > "$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_BUDGET_CALLS"
+minute="$(( $(cat "$GH_BUDGET_NOW_FILE") / 60 ))"
+[[ -d "$AGENT_HOME/state/gh-budget-minute-$minute" ]] || : > "$GH_BUDGET_CLAIM_MISSING"
 [[ "$1 ${2:-}" == 'api rate_limit' ]] || exit 43
 [[ "${GH_BUDGET_FAIL:-0}" != 1 ]] || exit 1
 cat "$GH_BUDGET_RESPONSE_FILE"
@@ -29,6 +31,7 @@ GH
 chmod +x "$tmp/bin/date" "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
 export ZF_AGENT_TEST_MODE=0
+export GH_BUDGET_CLAIM_MISSING="$tmp/claim-missing"
 source "$engine_dir/lib.d/gh-budget.sh"
 source "$engine_dir/lib.d/transport.sh"
 
@@ -38,8 +41,13 @@ rate_response() {
 }
 
 rate_response 100 1795654800 200 1795654800
+mkdir -p "$AGENT_HOME/metrics"
+printf 'old\n' > "$AGENT_HOME/metrics/gh-budget-2000-01.jsonl"
+touch -t 200001010000 "$AGENT_HOME/metrics/gh-budget-2000-01.jsonl"
 gh_budget_sample 1795651200
 [[ "$(wc -l < "$GH_BUDGET_CALLS" | tr -d ' ')" == 1 ]] || fail 'the first call did not create a sample'
+[[ ! -e "$GH_BUDGET_CLAIM_MISSING" ]] || fail 'the sample did not claim its minute before the API request'
+[[ ! -e "$AGENT_HOME/metrics/gh-budget-2000-01.jsonl" ]] || fail 'old metric files were not reclaimed'
 samples="$AGENT_HOME/metrics/gh-budget-2026-11.jsonl"
 [[ "$(wc -l < "$samples" | tr -d ' ')" == 1 ]] || fail 'the sample file did not get one row'
 [[ "$(gh_rate_limit_quota graphql)" == '4900 1795654800' ]] || fail 'GraphQL quota did not read the sample'
@@ -99,9 +107,21 @@ assert hourly["rest"]["reset"] == 1795654800 and hourly["rest"]["used"] == 3501,
 PY
 [[ "$(wc -l < "$samples" | tr -d ' ')" == 3 ]] || fail 'reset sample was not appended once'
 
-printf '1795654860\n' > "$GH_BUDGET_NOW_FILE"
-GH_BUDGET_FAIL=1 gh_budget_sample 1795654860 2> "$tmp/sample.err"
+printf '1795654875\n' > "$GH_BUDGET_NOW_FILE"
+GH_BUDGET_FAIL=1 gh_budget_sample 1795654875 2> "$tmp/sample.err"
 [[ "$(wc -l < "$samples" | tr -d ' ')" == 3 ]] || fail 'failed sample wrote a metrics row'
 grep -q 'gh-budget: rate_limit sample failed' "$tmp/sample.err" || fail 'failed sample was not logged'
-if gh_rate_limit_quota graphql >/dev/null; then fail 'quota lookup accepted a sample that was 60 seconds old'; fi
+if gh_rate_limit_quota graphql >/dev/null; then fail 'quota lookup accepted a sample that was 75 seconds old'; fi
+AGENT_HOME="$tmp/boundary-agent"
+export AGENT_HOME
+GH_BUDGET_CALLS="$tmp/boundary-calls"
+export GH_BUDGET_CALLS
+: > "$GH_BUDGET_CALLS"
+rate_response 100 1795654800 200 1795654800
+printf '1795651319\n' > "$GH_BUDGET_NOW_FILE"
+gh_budget_sample 1795651319
+rate_response 101 1795654800 201 1795654800
+printf '1795651320\n' > "$GH_BUDGET_NOW_FILE"
+gh_budget_sample 1795651320
+[[ "$(wc -l < "$GH_BUDGET_CALLS" | tr -d ' ')" == 2 ]] || fail 'sampling skipped a new wall-clock minute after a late prior sample'
 echo 'gh-budget.test.sh: PASS'

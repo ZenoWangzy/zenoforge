@@ -204,6 +204,7 @@ route_rate_report="$(cat "$test_root/rate-limit-route.json")"
 unset INTAKE_BACKLOG_ROUTE_RATE_LIMIT_PARENT
 export INTAKE_BACKLOG_RATE_CORE_REMAINING=1499
 rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
+rm -rf -- "$AGENT_HOME/state"/gh-budget-minute-*
 : > "$INTAKE_BACKLOG_JUDGE_LOG"
 : > "$INTAKE_BACKLOG_EVENTS"
 : > "$INTAKE_BACKLOG_GH_LOG"
@@ -218,6 +219,7 @@ floor_report="$(cat "$test_root/rate-floor.json")"
 [[ "$(grep -F 'api rate_limit' "$INTAKE_BACKLOG_GH_LOG" || true)" != '' ]]
 unset INTAKE_BACKLOG_RATE_CORE_REMAINING
 rm -f -- "$AGENT_HOME/state/gh-budget.latest.json" "$AGENT_HOME/state/gh-budget.last-attempt"
+rm -rf -- "$AGENT_HOME/state"/gh-budget-minute-*
 
 export INTAKE_BACKLOG_RATE_LIMIT_SEARCH='beta duplicate in:title'
 export INTAKE_BACKLOG_DELAY_SEARCH='alpha release in:title'
