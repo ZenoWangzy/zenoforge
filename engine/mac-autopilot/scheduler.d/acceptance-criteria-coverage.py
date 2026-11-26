@@ -13,6 +13,10 @@ ANY_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
 FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
 CITATION = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-][A-Za-z0-9_./-]*):([1-9][0-9]*)(?![0-9])")
+SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".go", ".java", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rb", ".rs", ".sh", ".sql", ".ts", ".tsx"}
+NON_PRODUCTION_PARTS = {"doc", "docs", "spec", "specs", "test", "tests", "__test__", "__tests__", "fixture", "fixtures"}
+TEST_NAME = re.compile(r"(?:^|[._-])(?:test|spec)(?:[._-]|$)", re.IGNORECASE)
+COVERAGE_SECTION = re.compile(r"^\s{0,3}##\s+acceptance-criteria coverage\s*#*\s*$", re.IGNORECASE)
 
 
 def normalize(value):
@@ -85,17 +89,40 @@ def table_cells(line):
 def coverage_rows(report):
     lines = report.splitlines()
     rows = []
-    for index, line in enumerate(lines[:-1]):
-        if "|" not in line or "|" not in lines[index + 1]:
+    in_section = False
+    fence = None
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        marker = FENCE.match(line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token[0]
+            elif token[0] == fence:
+                fence = None
+            index += 1
+            continue
+        if fence is not None:
+            index += 1
+            continue
+        if ANY_HEADING.match(line):
+            in_section = bool(COVERAGE_SECTION.match(line))
+            index += 1
+            continue
+        if not in_section or "|" not in line or index + 1 >= len(lines) or "|" not in lines[index + 1]:
+            index += 1
             continue
         headers = table_cells(line)
         separators = table_cells(lines[index + 1])
         if len(headers) != len(separators) or not all(TABLE_SEPARATOR.fullmatch(cell) for cell in separators):
+            index += 1
             continue
         normalized = [normalize(header) for header in headers]
-        criterion_column = next((i for i, label in enumerate(normalized) if label in {"criterion", "criteria", "acceptance criterion", "acceptance criteria"}), None)
-        callsite_column = next((i for i, label in enumerate(normalized) if "call site" in label and ("production" in label or label == "call site")), None)
+        criterion_column = next((i for i, label in enumerate(normalized) if label == "acceptance criterion"), None)
+        callsite_column = next((i for i, label in enumerate(normalized) if label == "production call site (file:line)"), None)
         if criterion_column is None or callsite_column is None:
+            index += 1
             continue
         row_index = index + 2
         while row_index < len(lines) and "|" in lines[row_index]:
@@ -103,7 +130,17 @@ def coverage_rows(report):
             if max(criterion_column, callsite_column) < len(cells):
                 rows.append((cells[criterion_column], cells[callsite_column]))
             row_index += 1
+        index = row_index
     return rows
+
+
+def is_production_path(path):
+    candidate = PurePosixPath(path)
+    if candidate.suffix.lower() not in SOURCE_SUFFIXES:
+        return False
+    if any(part.casefold() in NON_PRODUCTION_PARTS for part in candidate.parts):
+        return False
+    return TEST_NAME.search(candidate.name) is None
 
 
 def changed_paths(repo, base, head):
@@ -163,7 +200,10 @@ def check(repo, base, head, report_path, task):
             for path, line_text in citations:
                 line_count = candidate_line_count(repo, head, path)
                 line = int(line_text)
-                if line_count is None:
+                if not is_production_path(path):
+                    print(f"acceptance-criteria coverage check failed: criterion \"{criterion}\" cites a path that is not a production source path: {path}:{line}")
+                    failed = True
+                elif line_count is None:
                     location = "diff does not touch the path and candidate branch does not contain it" if paths is not None and path not in paths else "candidate branch does not contain the path"
                     print(f"acceptance-criteria coverage check failed: criterion \"{criterion}\" cites {location}: {path}:{line}")
                     failed = True
