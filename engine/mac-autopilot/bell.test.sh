@@ -194,6 +194,29 @@ touch -d "@$(( $(date +%s) - 1200 ))" "$grace_sup/grace-worker.log"
 BELL_AUTOPI_DIR="$grace_autopi" BELL_SUPERVISOR_DIR="$grace_sup" AGENT_HOME="$ledger_agent" bash "$bell"
 grep -Fq 'worker-died unit=unit-grace' "$grace_autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: worker-died not raised after the log went quiet' >&2; exit 1; }
 
+run_autopi="$tmp/run-autopi"; run_sup="$tmp/run-sup"
+mkdir -p "$run_autopi/alerts" "$run_sup"
+cp "$autopi/config.json" "$run_autopi/config.json"
+printf 'window.DASH={};\n' > "$run_autopi/dashboard.data.js"
+printf '%s\n' '{"units":[{"id":"unit-run","stage":"review","history":[]}]}' > "$run_autopi/units.json"
+jq -n '{workers:[{pid:99999998,unit:"unit-run",type:"implement",log:"run-worker.log",report:"run-worker.md",started:"2026-11-26T01:00:00Z",harvested:false}]}' > "$run_autopi/workers.json"
+printf '[%s] tick done units=0 live=0\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run_autopi/scheduler.log"
+jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' > "$run_autopi/bell-state.json"
+touch -d "@$(( $(date +%s) - 1200 ))" "$run_autopi/scheduler.log"
+printf 'quiet\n' > "$run_sup/run-worker.log"
+touch -d "@$(( $(date +%s) - 1200 ))" "$run_sup/run-worker.log"
+BELL_AUTOPI_DIR="$run_autopi" BELL_SUPERVISOR_DIR="$run_sup" AGENT_HOME="$ledger_agent" bash "$bell"
+[[ "$(grep -Fc 'worker-died unit=unit-run' "$run_autopi/BELL-QUEUE.md")" == 1 ]] || { echo 'bell.test.sh: first dead worker run was not queued once' >&2; exit 1; }
+run_sig="$(grep -F 'worker-died unit=unit-run' "$run_autopi/BELL-QUEUE.md" | awk '{print $3}')"
+jq --arg sig "$run_sig" '.signatures[$sig].last = 1' "$run_autopi/bell-state.json" > "$run_autopi/bell-state.next.json"
+mv "$run_autopi/bell-state.next.json" "$run_autopi/bell-state.json"
+BELL_AUTOPI_DIR="$run_autopi" BELL_SUPERVISOR_DIR="$run_sup" AGENT_HOME="$ledger_agent" bash "$bell"
+[[ "$(grep -Fc 'worker-died unit=unit-run' "$run_autopi/BELL-QUEUE.md")" == 1 ]] || { echo 'bell.test.sh: one worker run was queued again after the dedupe window' >&2; exit 1; }
+jq '.workers[0].started = "2026-11-26T02:00:00Z"' "$run_autopi/workers.json" > "$run_autopi/workers.next.json"
+mv "$run_autopi/workers.next.json" "$run_autopi/workers.json"
+BELL_AUTOPI_DIR="$run_autopi" BELL_SUPERVISOR_DIR="$run_sup" AGENT_HOME="$ledger_agent" bash "$bell"
+[[ "$(grep -Fc 'worker-died unit=unit-run' "$run_autopi/BELL-QUEUE.md")" == 2 ]] || { echo 'bell.test.sh: a new worker run was not queued independently' >&2; exit 1; }
+
 bash "$bell"
 grep -Fq 'worker-died unit=unit-worker' "$autopi/BELL-QUEUE.md"
 ! grep -Fq 'tick done' "$autopi/BELL-QUEUE.md" || { echo 'bell.test.sh: a tick summary line was queued as an event' >&2; exit 1; }
