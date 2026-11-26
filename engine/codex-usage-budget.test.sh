@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TMP="$test_env_root"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf -- "$test_env_root"' EXIT
 export AGENT_HOME="$TMP/agent"
 export CODEX_DAILY_TOKEN_BUDGET=8000000
 export CODEX_PRODUCTION_TOKEN_RESERVE=2000000
@@ -59,6 +59,19 @@ codex_budget_release hand-a
 codex_budget_release incident-a
 
 work_identity="$(model_policy identity work)"
+marker="$(_quota_marker_file codex)"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$marker"
+routing_file="$TMP/model-routing.json"
+printf '%s\n' '{"quota_marker_scope":{"codex":{"owner_session":"allow"}}}' > "$routing_file"
+CFG="$(jq -cn --arg file "$routing_file" '{models:{routing_file:$file}}')"
+owner_scope_status=0
+owner_scope_output="$(codex_budget_reserve work owner-scope-allowed 1 0 '' "$work_identity" owner_session 2>&1)" || owner_scope_status=$?
+assert_eq 'owner-session reservation follows the quota scope allow' 0 "$owner_scope_status"
+if [ "$owner_scope_status" -ne 0 ]; then printf '%s\n' "$owner_scope_output" >&2; fi
+codex_budget_release owner-scope-allowed
+unset CFG
+rm -f "$marker"
+
 record_premium_spend implement "$work_identity" 123 '' "$now" 5900123
 assert_reserve_status 'work stays below hard limit but cannot reserve another dispatch' 75 work test-after-spend
 production_identity="$(model_policy identity production)"
