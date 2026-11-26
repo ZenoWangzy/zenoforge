@@ -633,9 +633,6 @@ review_wait_reason() { # author codex-identity glm-identity fallback-identity ->
   fallback_family="$(review_identity_family "${4:-}" 2>/dev/null || true)"
   if [[ "$author_family" != claude && "$fallback_family" == claude ]]; then
     fallback_reason="$(zcode_paced review_identity_unavailable_reason "$4" review_fallback)"
-    if [[ "$fallback_reason" == 'sonnet unavailable' ]] && zcode_paced provider_quota_exhausted claude; then fallback_reason='claude hold'; fi
-    fallback_reason="${fallback_reason/sonnet cli missing/claude cli missing}"
-    fallback_reason="${fallback_reason/sonnet unavailable/claude unavailable}"
     if [[ "$wait_reason" == no-cross-reviewer ]]; then wait_reason+=":"; else wait_reason+=","; fi
     wait_reason+="${fallback_reason// /-}"
   fi
