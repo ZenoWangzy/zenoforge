@@ -188,7 +188,7 @@ intake_parent_unverified() { # issue, check rc, issue JSON, check reason
   fi
 }
 unit_field() {
-  if [[ "${HARVEST_CAS_ACTIVE:-false}" == true && "$1" == "${HARVEST_CAS_UNIT:-}" ]]; then jqf -r "($2 // empty)" <<<"$HARVEST_CAS_UNIT_SNAPSHOT"
+  if [[ ( "${HARVEST_CAS_ACTIVE:-false}" == true && "$1" == "${HARVEST_CAS_UNIT:-}" ) || ( -n "${RULE_ENTRY_UNIT_SNAPSHOT:-}" && "$1" == "${RULE_ENTRY_UNIT_ID:-}" ) ]]; then jqf -r "($2 // empty)" <<<"${RULE_ENTRY_UNIT_SNAPSHOT:-${HARVEST_CAS_UNIT_SNAPSHOT:-}}"
   else jqf -r --arg id "$1" "[.units[] | select(.id==\$id) | ($2 // empty)][0] // empty" "$UNITS"; fi
 }
 # hold_handoff_waiting outlives its hold when the issue leaves ready-for-agent (tracker, closed) with its episode unconsumed:

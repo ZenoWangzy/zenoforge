@@ -336,7 +336,7 @@ supervisor_approve_unit() { # id decision-json [log prefix]
     fi
   fi
 }
-rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready ref [guidance] [blocker] [size-waiver max_lines] [comment author]：记裁决历史（预算自此重算）；parked 单元按动作放回环节
+rule_entry_apply() {
   [[ "$2" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ && -n "$1" ]] || { echo "usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver <ref> [guidance]" >&2; return 64; }
   restore_archived_unit "$1" || :
   [[ -n "$(unit_field "$1" .id)" ]] || { echo "rule: no unit $1" >&2; return 1; }
@@ -394,4 +394,87 @@ rule_entry() { # unit-id requeue|approve|arbiter|recut|supersede-handoff|ready r
          set_unit "$1" "$(hist "supervisor-$2" "supervisor ruling via hold.sh --rule: $3")"
        fi ;;
   esac
+}
+
+rule_entry_decide() {
+  local id="${1:-}" action="${2:-}" ref="${3:-}" blocker="${5:-}" waiver="${6:-}" author="${7:-}" snapshot rc issue stage pr pr_state head result
+  RULE_ENTRY_REFUSAL_TEXT=""
+  [[ "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ && -n "$id" ]] || { RULE_ENTRY_REFUSAL_TEXT="usage: scheduler.sh --rule <unit> requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver <ref> [guidance]"; return 64; }
+  [[ "$action" != waiver || -n "$waiver" ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: waiver needs --size-waiver <max_lines>"; return 64; }
+  if [[ -n "$waiver" && "$action" != requeue && "$action" != waiver ]]; then RULE_ENTRY_REFUSAL_TEXT="rule: --size-waiver goes with --requeue, or alone on an implement or *-pending unit"; return 64; fi
+  if gh_rate_limit_active graphql >/dev/null 2>&1; then RULE_ENTRY_REFUSAL_TEXT="rule: GitHub GraphQL backoff is active"; return 75; fi
+  snapshot="$(jqf -c --arg id "$id" '[.units[] | select(.id == $id)][0] // empty' "$UNITS" 2>/dev/null)" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read units for $id"; return 75; }
+  if [[ -z "$snapshot" && -r "$UNITS_ARCHIVE" ]]; then
+    snapshot="$(jqf -c --arg id "$id" '[.units[] | select(.id == $id)][0] // empty' "$UNITS_ARCHIVE" 2>/dev/null)" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read archived units for $id"; return 75; }
+  fi
+  [[ -n "$snapshot" ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: no unit $id"; return 1; }
+  local RULE_ENTRY_UNIT_ID="$id" RULE_ENTRY_UNIT_SNAPSHOT="$snapshot"
+  stage="$(unit_field "$id" .stage)" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read unit $id"; return 75; }
+  if [[ -n "$waiver" ]]; then
+    if [[ "$action" == waiver && ! ( "$stage" == implement* || "$stage" == *-pending ) ]]; then RULE_ENTRY_REFUSAL_TEXT="rule: --size-waiver alone needs an implement or *-pending unit; $id is in $stage, use --requeue"; return 1; fi
+    result="$(size_waiver_range_check "$waiver" 2>&1)" || { RULE_ENTRY_REFUSAL_TEXT="$result"; return 1; }
+    [[ -n "$author" ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: --size-waiver needs the ruling comment author"; return 1; }
+  fi
+  case "$action" in
+    reblock)
+      issue="${blocker:-$(unit_field "$id" '.blocked_on // empty')}"
+      [[ "$issue" =~ ^[0-9]+$ ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: $id has no blocker; pass --blocked-on N"; return 1; }
+      ;;
+    recut)
+      issue="$(unit_field "$id" '.issue // empty')"
+      [[ "$issue" =~ ^[0-9]+$ ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: $id has no issue to recut"; return 1; }
+      ;;
+    close)
+      case "$stage" in supervisor-review|parked|blocked-external) ;; *) RULE_ENTRY_REFUSAL_TEXT="rule: $id is in $stage; close needs supervisor-review, parked or blocked-external"; return 1 ;; esac
+      pr="$(unit_field "$id" '.pr // empty')"
+      if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+        pr_state="$(tick_pr_state "$pr")" || { RULE_ENTRY_REFUSAL_TEXT="rule: $id PR #$pr state is unreadable; close refused"; return 75; }
+        [[ "$pr_state" != OPEN ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: $id has open PR #$pr; close or merge it first"; return 1; }
+      fi
+      ;;
+    reroute)
+      if [[ "$stage" == closed ]]; then
+        rc=0; closed_unit_route "$id" || rc=$?
+        RULE_ENTRY_REFUSAL_TEXT="$(closed_unit_refusal "$id" "$rc" 2>&1)"
+        [[ "$rc" == 2 ]] && return 75
+        return 1
+      fi
+      ;;
+    requeue)
+      case "$stage" in
+        parked|supervisor-review) ;;
+        closed)
+          rc=0; closed_unit_route "$id" || rc=$?
+          if [[ "$rc" == 0 || "$rc" == 3 ]]; then :
+          else RULE_ENTRY_REFUSAL_TEXT="$(closed_unit_refusal "$id" "$rc" 2>&1)"; [[ "$rc" == 2 ]] && return 75; return 1
+          fi
+          ;;
+        *) RULE_ENTRY_REFUSAL_TEXT="rule: $id is in $stage; use --reroute to move it"; return 1 ;;
+      esac
+      ;;
+    supersede-handoff)
+      [[ "$ref" =~ issuecomment-([1-9][0-9]*)$ ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: supersede-handoff requires an issuecomment URL"; return 64; }
+      pr="$(unit_field "$id" '.pr // empty')"
+      if [[ ! "$pr" =~ ^[1-9][0-9]*$ ]]; then
+        [[ "$id" =~ ^pr-([1-9][0-9]*)$ ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: $id has no PR head to supersede the handoff snapshot"; return 1; }
+        pr="${BASH_REMATCH[1]}"
+      fi
+      head="$(tick_pr_head "$pr")" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read the current head of PR #$pr"; return 75; }
+      [[ "$head" =~ $SHA_RE ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: PR #$pr has no valid current head"; return 1; }
+      ;;
+  esac
+  return 0
+}
+
+rule_entry() {
+  local id="${1:-}" action="${2:-}" mode="${8:-apply}" rc
+  [[ "$mode" == apply || "$mode" == check ]] || { echo "usage: scheduler.sh --rule-check <unit> <action> <ref> [guidance]" >&2; return 64; }
+  rc=0; rule_entry_decide "$@" || rc=$?
+  if (( rc != 0 )); then
+    if [[ "$mode" == check && "$rc" == 1 ]]; then printf 'would refuse: %s\n' "$RULE_ENTRY_REFUSAL_TEXT"; return 1; fi
+    echo "$RULE_ENTRY_REFUSAL_TEXT" >&2
+    return "$rc"
+  fi
+  if [[ "$mode" == check ]]; then printf 'would-apply scheduler.sh --rule %s --%s\n' "$id" "$action"; return 0; fi
+  rule_entry_apply "$@"
 }

@@ -134,9 +134,9 @@ source "$HERE/scheduler.d/park-label-sweep.sh"
 source "$HERE/scheduler.d/orphan-prs.sh"
 source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
-mkdir -p "$A/alerts"
+RULE_COMMAND=false; [[ "${1:-}" == --rule || "${1:-}" == --rule-check || "${1:-}" == --size-waiver-check ]] && RULE_COMMAND=true; [[ "$RULE_COMMAND" == true ]] || mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --intake-judge && "${1:-}" != --release-deps && "${1:-}" != --tick-step && "${1:-}" != --rule && "${1:-}" != --size-waiver-check ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --intake-judge && "${1:-}" != --release-deps && "${1:-}" != --tick-step && "${1:-}" != --rule && "${1:-}" != --rule-check && "${1:-}" != --size-waiver-check ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -146,19 +146,18 @@ fi
 CFG="$(cat "$A/config.json")"
 ISSUE_INTAKE_REMOTE_READ_CAP="$(jqf -r '.issue_intake.remote_reads_per_tick // 24' <<<"$CFG")"
 [[ "$ISSUE_INTAKE_REMOTE_READ_CAP" =~ ^[0-9]+$ ]] || ISSUE_INTAKE_REMOTE_READ_CAP=24
-warn_forbidden_model_config
+[[ "$RULE_COMMAND" == true ]] || warn_forbidden_model_config
 INCIDENT_LABELS="$(incident_labels_from_config "$CFG")"
 INCIDENT_RULE="$(incident_rule_text)"
 UNITS="$A/units.json"; WORKERS="$A/workers.json"
 # 终态单元的退休归档（retire_terminal_units）：只增不删；历史读者经 units_history_doc 合并读取。
 UNITS_ARCHIVE="${UNITS_ARCHIVE:-$A/units-archive.json}"
-[[ -f "$UNITS_ARCHIVE" ]] || printf '{"units":[]}\n' > "$UNITS_ARCHIVE"
-[[ -f "$WORKERS" ]] || echo '{"workers":[]}' > "$WORKERS"
+if [[ "$RULE_COMMAND" != true ]]; then [[ -f "$UNITS_ARCHIVE" ]] || printf '{"units":[]}\n' > "$UNITS_ARCHIVE"; [[ -f "$WORKERS" ]] || echo '{"workers":[]}' > "$WORKERS"; fi
 MAX="$(jqf -r .max_workers <<<"$CFG")"
 DISPATCH_PRIORITY_ORDER="$(jqf -c '.dispatch_priority_order // ["hotfix", "opt", "normal"]' <<<"$CFG")"
 DISPATCH_FIRST_ISSUES="$(jqf -c 'if (.dispatch_first_issues | type) == "array" then .dispatch_first_issues else [] end' <<<"$CFG")"
 IFS=$'\t' read -r IMPLEMENT_CAP REPAIR_DISPATCH_CAP STARTED_WIP_LIMIT <<<"$(jqf -r '[.implement_cap // 99, .repair_dispatch_cap // .implement_cap // 99, .started_wip_limit // 47] | @tsv' <<<"$CFG")"
-log_reliability_breach
+[[ "$RULE_COMMAND" == true ]] || log_reliability_breach
 BUDGET="$(jqf -r .daily_token_budget <<<"$CFG")"
 [[ "$BUDGET" =~ ^[0-9]+$ ]] || BUDGET=0
 FOCUS_MODE="$(jqf -r '.focus_mode // "all"' <<<"$CFG")"
@@ -533,7 +532,7 @@ MAIN_SUITES_RUNS_LOADED=false
 # 派发时把验收块存进 unit 记录；direct-main 落地后不立即关票（stage=awaiting-live-event），
 # 观测到该机制晚于落地时间的事件行才关票（评论附证据行），超过该机制的沉默上限转 supervisor；
 # 关票前对比存档的验收块，worker 改过验收项就拒绝关票。
-MECH_REGISTRY_FILE="$(sched_mechanism_registry)" || { MECH_REGISTRY_FILE=""; say "mechanism registry unavailable: live-event acceptance cannot resolve a mechanism this tick"; }
+MECH_REGISTRY_FILE="$([[ "$RULE_COMMAND" == true ]] || sched_mechanism_registry)" || { MECH_REGISTRY_FILE=""; say "mechanism registry unavailable: live-event acceptance cannot resolve a mechanism this tick"; }
 
 # 孤儿 PR 对账（2026-10-20：159 个 open PR 里 120 个不在台账，其中 100 个是 agent 做出来的）：
 # register_new_prs 只看最新 15 个，register_new_issues 又跳过已有 open PR 的 issue，于是老 PR 永远没人评审、
@@ -795,6 +794,7 @@ case "${1:-}" in
   --tick-step) SCHED_STATION=true; tick_step_run "${2:-}" ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --size-waiver-check) size_waiver_range_check "${2:-}" ;; # hold.sh --rule --size-waiver: refuse a bad max_lines before any hold is released
-  --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
+  --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
+  --rule-check) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" check ;;
   *) main "$@" ;;
 esac
