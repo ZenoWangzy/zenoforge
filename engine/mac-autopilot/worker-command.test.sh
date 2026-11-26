@@ -195,6 +195,10 @@ build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$
 mkdir -p "$CLAUDE_CONFIG_DIR/projects/-x" && : > "$CLAUDE_CONFIG_DIR/projects/-x/$claude_sid.jsonl"
 build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair resume was refused'
 [[ "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$claude_sid" && "$(impl_value --resume)" == "$claude_sid" ]] || fail 'Claude repair did not --resume the recorded session'
+unit_json="{\"merge_rebase_pending\":true,\"sessions\":{\"repair\":{\"id\":\"$claude_sid\",\"provider\":\"claude\",\"model\":\"claude-sonnet-5-5\"}}}"
+build_codex_command repair claude-sonnet-5-5 high impl-1 'rebase brief' 'rebase brief' "$impl_repo" claude || fail 'Claude merge rebase was refused'
+[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == merge-rebase-fresh && " ${CODEX_COMMAND[*]} " != *' --resume '* ]] || fail 'Claude merge rebase reused a prior repair session'
+unit_json="{\"sessions\":{\"repair\":{\"id\":\"$claude_sid\",\"provider\":\"claude\",\"model\":\"claude-sonnet-5-5\"}}}"
 # row 440: a repair after a review-side failure never resumes the implementer's session.
 TEST_REVIEW_SIDE=true build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$impl_repo" claude || fail 'Claude repair after a review-side failure was refused'
 [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == review-side-failure ]] || fail "Claude repair resumed after a review-side failure ($CODEX_MODE/$CODEX_PATH_REASON)"
@@ -213,7 +217,7 @@ build_codex_command repair claude-sonnet-5-5 high impl-1 'cold' 'new failure' "$
 # Codex repair resumes the recorded thread up to the repair cutoff (20M cumulative raw), goes cold above it.
 codex_sid=223e4567-e89b-12d3-a456-426614174000
 TEST_SELF_FIX=false
-unit_field() { case "$2" in .sessions.repair*) printf '{"id":"%s","provider":"codex","model":"gpt-6-luna"}' "$codex_sid" ;; .self_fix_active*) printf '%s' "$TEST_SELF_FIX" ;; *) printf false ;; esac; }
+unit_field() { case "$2" in .merge_rebase_pending*) printf '%s' "${TEST_MERGE_REBASE:-false}" ;; .sessions.repair*) printf '{"id":"%s","provider":"codex","model":"gpt-6-luna"}' "$codex_sid" ;; .self_fix_active*) printf '%s' "$TEST_SELF_FIX" ;; *) printf false ;; esac; }
 codex_session_file="$test_env_root/codex-session.jsonl"
 session_file_for_id() { printf '%s\n' "$codex_session_file"; }
 session_usage_for_id() { printf '{"input_tokens":%s,"cached_input_tokens":0,"output_tokens":0,"raw":%s}' "$repair_raw" "$repair_raw"; }
@@ -246,6 +250,9 @@ printf '%s\n' '{"units":[{"id":"implement-1"},{"id":"review-1"}]}' > "$UNITS"
 printf '%s\n' '{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"default"}}}' > "$codex_session_file"
 build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail 'codex repair at 12M raw was refused'
 [[ "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$codex_sid" ]] || fail "codex repair at 12M raw went cold ($CODEX_MODE/$CODEX_PATH_REASON)"
+TEST_MERGE_REBASE=true build_codex_command repair gpt-6-luna max implement-1 'rebase brief' 'rebase brief' || fail 'merge rebase repair was refused'
+[[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == merge-rebase-fresh && "${CODEX_COMMAND[1]}" != resume ]] || fail 'merge rebase reused a prior repair session'
+TEST_MERGE_REBASE=false
 repair_raw=21000000
 build_codex_command repair gpt-6-luna max implement-1 'cold' 'new failure' || fail 'codex repair at 21M raw was refused'
 [[ "$CODEX_MODE" == fresh && "$CODEX_PATH_REASON" == session-too-large ]] || fail "codex repair above the cutoff resumed ($CODEX_MODE/$CODEX_PATH_REASON)"

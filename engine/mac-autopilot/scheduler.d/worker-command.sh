@@ -103,7 +103,8 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
     session_id="$(jqf -r '.id // empty' <<<"$prior")"
     CODEX_PATH_REASON=no-recorded-session
-    if [[ "$session_id" =~ $SESSION_RE ]]; then
+    if [[ "$(unit_field "$unit" '.merge_rebase_pending // false')" == true ]]; then CODEX_PATH_REASON=merge-rebase-fresh
+    elif [[ "$session_id" =~ $SESSION_RE ]]; then
       if [[ "$(jqf -r '.provider // empty' <<<"$prior")" != claude ]]; then CODEX_PATH_REASON=provider-changed
       elif [[ "$(jqf -r '.model // empty' <<<"$prior")" != "$model" ]]; then CODEX_PATH_REASON=model-changed
       elif [[ -z "$(claude_session_file_for_id "$session_id")" ]]; then CODEX_PATH_REASON=session-files-missing
@@ -115,7 +116,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
       fi
     fi
   fi
-  [[ "$(unit_field "$unit" '.self_fix_active // false')" != true || "$CODEX_MODE" == resume ]] || return 1
+  [[ "$(unit_field "$unit" '.merge_rebase_pending // false')" == true || "$(unit_field "$unit" '.self_fix_active // false')" != true || "$CODEX_MODE" == resume ]] || return 1
   # A report-only continuation is read-only and never starts fresh or in another session (the codex branch's rule).
   [[ "$report_only" != true || ( "$CODEX_MODE" == resume && "$CODEX_SESSION_ID" == "$expected_session_id" ) ]] || return 1
   [[ "$report_only" == true ]] || { tools=Read,Edit,Write,Grep,Glob,Bash; allowed="$(claude_implement_tools "$workdir" "$unit")"; }
@@ -202,7 +203,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
     session_id="$(jqf -r '.id // empty' <<<"$prior")"
     CODEX_PATH_REASON=no-recorded-session
-    if [[ "$session_id" =~ $SESSION_RE ]]; then
+    if [[ "$(unit_field "$unit" '.merge_rebase_pending // false')" == true ]]; then CODEX_PATH_REASON=merge-rebase-fresh
+    elif [[ "$session_id" =~ $SESSION_RE ]]; then
       [[ "$report_only" != true || "$session_id" == "$expected_session_id" ]] || return 1
       session_file="$(session_file_for_id "$session_id")"
       stored_service_tier="$(codex_session_service_tier "$session_file")"
@@ -262,7 +264,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     fi
   fi
   # A deterministic self-fix must never silently switch to a fresh worker.
-  [[ "$self_fix" != true || "$CODEX_PATH_REASON" == stored-service-tier-* ]] || return 1
+  [[ "$(unit_field "$unit" '.merge_rebase_pending // false')" == true || "$self_fix" != true || "$CODEX_PATH_REASON" == stored-service-tier-* ]] || return 1
   # --json（两种模式一致）：stdout 变为 JSONL 事件流（thread.started / turn.completed 用量），worker 日志即事件源，
   # 回收时由 usage_reader 落进原生事件库；人类可读输出只在非 --json 模式存在，legacy 日志的页脚解析保留给旧 worker。
   CODEX_COMMAND=("${CODEX_FRESH_COMMAND[@]}")
