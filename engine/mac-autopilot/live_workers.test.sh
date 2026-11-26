@@ -55,11 +55,16 @@ os.makedirs(luna_dir); os.makedirs(slots)
 repos = {"zen": ("ZenoWangzy/zenoforge", "luna-issue-1537-101.scope"), "other": ("example-maintainer/other-repo", "zc-issue-77-202.scope")}
 children = []
 try:
+    launcher = hd + "/launcher"; os.makedirs(launcher)
+    subprocess.run(["git", "init", "-q", launcher], check=True)
+    subprocess.run(["git", "-C", launcher, "remote", "add", "origin", "https://github.com/example-maintainer/launcher.git"], check=True)
     for key, (slug, scope) in repos.items():
         clone = hd + "/clone-" + key; os.makedirs(clone)
         subprocess.run(["git", "init", "-q", clone], check=True)
         subprocess.run(["git", "-C", clone, "remote", "add", "origin", "https://github.com/" + slug + ".git"], check=True)
-        child = subprocess.Popen(["sleep", "30"], cwd=clone); children.append(child)
+        child = subprocess.Popen(["sleep", "30"], cwd=launcher); children.append(child)
+        run_dir = os.path.join(luna_dir, "issue-1537" if key == "zen" else "issue-77"); os.makedirs(run_dir)
+        open(run_dir + "/cwd", "w").write(clone)
         scope_dir = os.path.join(slice_dir, scope); os.makedirs(scope_dir)
         open(scope_dir + "/cgroup.procs", "w").write(str(child.pid))
     waiters = [("zen-wait", "normal", repos["zen"][0], int(time.time()) - 120),
@@ -68,8 +73,9 @@ try:
         clone = hd + "/wait-" + key; os.makedirs(clone)
         subprocess.run(["git", "init", "-q", clone], check=True)
         subprocess.run(["git", "-C", clone, "remote", "add", "origin", "https://github.com/" + slug + ".git"], check=True)
-        child = subprocess.Popen(["sleep", "30"], cwd=clone); children.append(child)
+        child = subprocess.Popen(["sleep", "30"], cwd=launcher); children.append(child)
         run_dir = os.path.join(luna_dir, key); os.makedirs(run_dir)
+        open(run_dir + "/cwd", "w").write(clone)
         open(run_dir + "/wrapper.pid", "w").write(str(child.pid))
         open(run_dir + "/gate-wait", "w").write(str(ticket_time))
         open(os.path.join(slots, f"wait-{priority}-{child.pid}"), "w").write(str(ticket_time))

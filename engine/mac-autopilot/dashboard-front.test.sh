@@ -490,26 +490,26 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e --arg 
   worker_root="$f/repo-workers"; worker_slice="$worker_root/zf-workers.slice"; worker_scratch="$worker_root/scratch"; worker_slots="$worker_scratch/tmp/luna-slots"
   mkdir -p "$worker_slice" "$worker_slots" "$worker_scratch/luna"
   make_clone() { mkdir -p "$1"; git init -q -b main "$1"; git -C "$1" remote add origin "https://github.com/$2.git"; }
-  start_worker() { (cd "$1" && exec sleep 600) & worker_pids+=("$!"); }
-  zen_clone="$worker_root/zenoforge-clone"; other_clone="$worker_root/other-clone"
+  start_worker() { (cd "$launcher_clone" && exec sleep 600) & worker_pids+=("$!"); }
+  record_run() { local key=$1 pid=$2 cwd=$3 dir="$worker_scratch/luna/$1"; mkdir -p "$dir"; printf '%s\n' "$pid" > "$dir/wrapper.pid"; printf '%s\n' "$cwd" > "$dir/cwd"; }
+  launcher_clone="$worker_root/launcher-clone"; zen_clone="$worker_root/zenoforge-clone"; other_clone="$worker_root/other-clone"
+  make_clone "$launcher_clone" example-maintainer/launcher
   make_clone "$zen_clone" ZenoWangzy/zenoforge; make_clone "$other_clone" example-maintainer/other-repo
-  start_worker "$zen_clone"; zen_pid="${worker_pids[-1]}"
-  start_worker "$other_clone"; other_pid="${worker_pids[-1]}"
+  start_worker; zen_pid="${worker_pids[-1]}"
+  start_worker; other_pid="${worker_pids[-1]}"
   mkdir -p "$worker_slice/luna-zenoforge-issue-1537-2201.scope" "$worker_slice/zc-other-issue-77-2202.scope"
   printf '%s\n' "$zen_pid" > "$worker_slice/luna-zenoforge-issue-1537-2201.scope/cgroup.procs"
   printf '%s\n' "$other_pid" > "$worker_slice/zc-other-issue-77-2202.scope/cgroup.procs"
-  for row in "zenoforge-issue-1537:$zen_pid" "other-issue-77:$other_pid"; do
-    key="${row%%:*}"; pid="${row#*:}"; dir="$worker_scratch/luna/$key"; mkdir -p "$dir"
-    printf '%s\n' "$pid" > "$dir/wrapper.pid"; touch -d '@'"$(( $(date +%s) - 300 ))" "$dir/wrapper.pid"
-  done
+  record_run zenoforge-issue-1537 "$zen_pid" "$zen_clone"; touch -d '@'"$(( $(date +%s) - 300 ))" "$worker_scratch/luna/zenoforge-issue-1537/wrapper.pid"
+  record_run other-issue-77 "$other_pid" "$other_clone"; touch -d '@'"$(( $(date +%s) - 300 ))" "$worker_scratch/luna/other-issue-77/wrapper.pid"
   zen_wait_clone="$worker_root/zenoforge-wait-clone"; other_wait_clone="$worker_root/other-wait-clone"
   make_clone "$zen_wait_clone" ZenoWangzy/zenoforge; make_clone "$other_wait_clone" example-maintainer/other-repo
-  start_worker "$zen_wait_clone"; zen_wait_pid="${worker_pids[-1]}"
-  start_worker "$other_wait_clone"; other_wait_pid="${worker_pids[-1]}"
-  for row in "zenoforge-wait-1537:$zen_wait_pid:normal:120" "other-wait-77:$other_wait_pid:hotfix:60"; do
-    key="${row%%:*}"; rest="${row#*:}"; pid="${rest%%:*}"; rest="${rest#*:}"; priority="${rest%%:*}"; age="${rest#*:}"
-    dir="$worker_scratch/luna/$key"; mkdir -p "$dir"
-    printf '%s\n' "$pid" > "$dir/wrapper.pid"; printf '%s\n' "$(( $(date +%s) - age ))" > "$dir/gate-wait"
+  start_worker; zen_wait_pid="${worker_pids[-1]}"
+  start_worker; other_wait_pid="${worker_pids[-1]}"
+  for row in "zenoforge-wait-1537:$zen_wait_pid:normal:120:$zen_wait_clone" "other-wait-77:$other_wait_pid:hotfix:60:$other_wait_clone"; do
+    key="${row%%:*}"; rest="${row#*:}"; pid="${rest%%:*}"; rest="${rest#*:}"; priority="${rest%%:*}"; rest="${rest#*:}"; age="${rest%%:*}"; cwd="${rest#*:}"
+    record_run "$key" "$pid" "$cwd"
+    dir="$worker_scratch/luna/$key"; printf '%s\n' "$(( $(date +%s) - age ))" > "$dir/gate-wait"
     printf '%s\n' "$(( $(date +%s) - age ))" > "$worker_slots/wait-$priority-$pid"
   done
   jq '.data.repository.a0.pageInfo.hasNextPage=false | .data.c0.issueCount=21 | .data.c2.issueCount=4 | .data.c5.issueCount=3 | .data.c11.issueCount=8' "$f/graphql.json" > "$f/graphql-zen.json"
