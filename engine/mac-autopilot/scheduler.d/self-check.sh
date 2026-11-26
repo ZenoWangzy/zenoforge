@@ -266,16 +266,16 @@ self_check_verification_body() { # unit JSON → the PR's verification section w
     "$(jq -c '.verification.argv' <<<"$1")" "$(jq -r '.verification.exit_code' <<<"$1")" "$(jq -c '.verification.evidence_files' <<<"$1")"
 }
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
-  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" reason gate config_file="" config_base="" config_temp="" incident_reason
+  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" reason gate config_file="" config_base="" config_temp="" incident_reason report_hash
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-  lane="$(jqf -r '.lane // empty' <<<"$u")"
+  lane="$(jqf -r '.lane // empty' <<<"$u")"; report_hash="$(self_check_report_fingerprint "$u")"
   if [[ "$lane" == pr ]]; then
     pr="$(jqf -r '.pr // empty' <<<"$u")"
     pr_base="$(tick_pr_base "$pr")" || pr_base=""
   fi
   if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
-      && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then
+      && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" && "$(jqf -r '.self_check_report_hash // empty' <<<"$u")" == "$report_hash" ]]; then
     if [[ "$(jqf -r '.self_check_status // empty' <<<"$u")" == red ]]; then self_check_red_to_repair "$id" "$(jqf -r '.self_check_output // empty' <<<"$u")"; return 1; fi
     # No fetched main ref can establish staleness; self_check_run requires one before it runs.
     if self_check_main_fresh "$dir" "$sha" || ! git -C "$dir" rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null 2>&1; then return 0; fi
@@ -329,7 +329,7 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
     git -C "$dir" rev-parse HEAD > "$out.head" 2>/dev/null || :
   ) > "$out" 2>&1 < /dev/null &
   pid=$!
-  set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
+  set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_report_hash=$(js "$report_hash") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
   say "self-check pid=$pid unit=$id head=$sha (before review)"
   return 1
 }

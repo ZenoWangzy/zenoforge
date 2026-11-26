@@ -124,6 +124,15 @@ acceptance_criteria_coverage_check() {
   fi
   python3 "$(dirname -- "${BASH_SOURCE[0]}")/acceptance-criteria-coverage.py" "$repo" "$base" "$head" "$report_path" <<<"$(jqf -r '.task // empty' <<<"$unit")"
 }
+self_check_report_fingerprint() {
+  local name path hash
+  name="$(jqf -r '.implementation_report // .report // empty' <<<"$1")"
+  [[ -n "$name" ]] || return 0
+  path="$SUP/$name"; [[ "$name" != /* ]] || path="$name"
+  [[ -f "$path" ]] || return 0
+  hash="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$path" 2>/dev/null)" || hash=unreadable
+  printf '%s' "$hash"
+}
 acceptance_criteria_coverage_repair_prompt() {
   local report
   report="$(jqf -r '.implementation_report // .report // empty' <<<"$1")"

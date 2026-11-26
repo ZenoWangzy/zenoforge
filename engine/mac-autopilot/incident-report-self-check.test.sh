@@ -169,7 +169,8 @@ command git -C "$fixture/repo" branch -f agent/issue-71002 HEAD
 mkdir -p "$fixture/repo/src" "$fixture/repo/tests"
 printf 'create_record\npublish_result\n' > "$fixture/repo/src/handler.js"
 printf 'assert(true);\n' > "$fixture/repo/tests/handler.js"
-command git -C "$fixture/repo" add src/handler.js tests/handler.js
+printf '<?php\ncreate_record();\n' > "$fixture/repo/src/handler.php"
+command git -C "$fixture/repo" add src/handler.js src/handler.php tests/handler.js
 command git -C "$fixture/repo" commit -qm 'add coverage fixture call sites'
 coverage_sha="$(command git -C "$fixture/repo" rev-parse HEAD)"
 command git -C "$fixture/repo" branch -f agent/issue-71004 "$coverage_sha"
@@ -200,8 +201,8 @@ Commit 97ed8be added the report gate for issue #880.
 | Preserve the existing result | `src/handler.js:2` |
 EOF
 write_coverage_unit() {
-  jqf -cn --arg task "$1" --arg report "${2:-$coverage_report}" \
-    '{units:[{id:"issue-71004",issue:71004,lane:"pr",pr:71004,branch:"agent/issue-71004",stage:"review-pending",labels:["feature"],implement_model:"gpt-6-luna",session_ids:{repair:"11111111-2222-3333-4444-555555555555"},implementation_report:$report,task:$task,history:[]}]}' > "$UNITS"
+  jqf -cn --arg task "$1" --arg report "${2:-$coverage_report}" --argjson fallback "${3:-false}" \
+    '{units:[{id:"issue-71004",issue:71004,lane:"pr",pr:71004,branch:"agent/issue-71004",stage:"review-pending",labels:["feature"],implementation_report:$report,task:$task,history:[]} + (if $fallback then {} else {implement_model:"gpt-6-luna",session_ids:{repair:"11111111-2222-3333-4444-555555555555"}} end)]}' > "$UNITS"
 }
 run_coverage_check() {
   local task="$1" report="${2:-$coverage_report}" unit before
@@ -343,6 +344,44 @@ run_coverage_check "$criteria_task" "$valid_report"
 [[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'a complete coverage table did not pass'
 coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
 grep -Fq 'acceptance-criteria coverage: passed (4 criteria)' <<<"$coverage_output" || fail 'a complete coverage check was not recorded'
+
+write_coverage_unit "$criteria_task" "$coverage_report" true
+fallback_unit="$(jqf -c '.units[0]' "$UNITS")"
+self_check_before_review issue-71004 "$coverage_sha" "$fixture/repo" "$fallback_unit" || true
+wait
+self_check_harvest
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red && "$(jqf -r '.units[0].stage' "$UNITS")" == repair-pending ]] \
+  || fail 'a report-only fallback failure did not enter repair'
+cp "$sup/$valid_report" "$sup/$coverage_report"
+jqf '.units[0].stage="review-pending"' "$UNITS" > "$UNITS.next" && mv "$UNITS.next" "$UNITS"
+fallback_unit="$(jqf -c '.units[0]' "$UNITS")"
+self_check_before_review issue-71004 "$coverage_sha" "$fixture/repo" "$fallback_unit" || true
+wait
+self_check_harvest
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'a report-only fallback repair reused the stale red self-check result'
+
+php_report=impl-71004-coverage-php.md
+cat > "$sup/$php_report" <<'EOF'
+## decision-log
+Tried the source path, then checked the candidate line.
+
+## how
+The scheduler checks report coverage before review.
+
+## why
+Commit 97ed8be added report gates for issue #880.
+
+## acceptance-criteria coverage
+| Acceptance criterion | Production call site (file:line) |
+| --- | --- |
+| Create a record | `src/handler.php:1` |
+| Publish the result | `src/handler.js:2` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+run_coverage_check "$criteria_task" "$php_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'a valid production source extension was rejected'
+
 run_coverage_check 'Task without an acceptance-criteria checklist' "$valid_report"
 [[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'an issue without parseable criteria did not pass'
 coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"

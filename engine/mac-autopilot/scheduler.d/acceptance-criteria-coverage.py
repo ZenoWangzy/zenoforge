@@ -13,10 +13,11 @@ ANY_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
 FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
 CITATION = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-][A-Za-z0-9_./-]*):([1-9][0-9]*)(?![0-9])")
-SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".go", ".java", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rb", ".rs", ".sh", ".sql", ".ts", ".tsx"}
+NON_PRODUCTION_SUFFIXES = {".adoc", ".csv", ".json", ".lock", ".md", ".markdown", ".mdx", ".pdf", ".rst", ".snap", ".svg", ".txt", ".toml", ".xml", ".yaml", ".yml"}
 NON_PRODUCTION_PARTS = {"doc", "docs", "spec", "specs", "test", "tests", "__test__", "__tests__", "fixture", "fixtures"}
 TEST_NAME = re.compile(r"(?:^|[._-])(?:test|spec)(?:[._-]|$)", re.IGNORECASE)
 COVERAGE_SECTION = re.compile(r"^\s{0,3}##\s+acceptance-criteria coverage\s*#*\s*$", re.IGNORECASE)
+FULL_CRITERIA_HEADING = re.compile(r"^\s{0,3}##\s+acceptance criteria \(full issue body\)\s*$", re.IGNORECASE)
 
 
 def normalize(value):
@@ -38,7 +39,11 @@ def acceptance_criteria(task):
     criteria = []
     in_section = False
     fence = None
-    for line in issue_body(task).splitlines():
+    lines = issue_body(task).splitlines()
+    appendix = next((index for index in range(len(lines) - 1, -1, -1) if FULL_CRITERIA_HEADING.match(lines[index])), None)
+    if appendix is not None:
+        lines = ["## Acceptance criteria", *lines[appendix + 1 :]]
+    for line in lines:
         marker = FENCE.match(line)
         if marker:
             token = marker.group(1)
@@ -58,7 +63,10 @@ def acceptance_criteria(task):
             match = CHECKLIST_ITEM.match(line)
             if match:
                 criteria.append(match.group(1).strip())
-    return criteria
+    unique = {}
+    for criterion in criteria:
+        unique.setdefault(normalize(criterion), criterion)
+    return list(unique.values())
 
 
 def table_cells(line):
@@ -136,11 +144,11 @@ def coverage_rows(report):
 
 def is_production_path(path):
     candidate = PurePosixPath(path)
-    if candidate.suffix.lower() not in SOURCE_SUFFIXES:
+    if candidate.suffix.lower() in NON_PRODUCTION_SUFFIXES:
         return False
     if any(part.casefold() in NON_PRODUCTION_PARTS for part in candidate.parts):
         return False
-    return TEST_NAME.search(candidate.name) is None
+    return TEST_NAME.search(candidate.name) is None and not candidate.name.casefold().startswith(("readme", "changelog", "license"))
 
 
 def changed_paths(repo, base, head):
@@ -221,6 +229,9 @@ def check(repo, base, head, report_path, task):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--criteria-markdown":
+        print("\n".join("- [ ] " + " ".join(item.split()) for item in acceptance_criteria(sys.stdin.read())))
+        raise SystemExit(0)
     if len(sys.argv) != 5:
         print("acceptance-criteria coverage check failed: expected repo, base, head, and report path")
         raise SystemExit(1)
