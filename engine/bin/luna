@@ -14,6 +14,7 @@ root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="$root/luna/$key"
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
+run_cwd="$cwd"; [[ "$run_cwd" == /* ]] || run_cwd="$PWD/$run_cwd"; printf '%s\n' "$run_cwd" >"$out/cwd"
 # Shared with bin/zc (lib.d/worker-remote-handoff.sh): a remote run exits there; a refusal falls back to the local gate below.
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib.d/worker-remote-handoff.sh"
 worker_remote_handoff luna "$out" "$key" "$cwd" "$prompt" "$schema"

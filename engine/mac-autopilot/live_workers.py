@@ -105,25 +105,8 @@ def _scope_key(name):
     return re.sub(r"-\d+$", "", base)
 
 
-def _scope_pids(scope_dir):
-    pids = []
-    for path in glob.glob(os.path.join(scope_dir, "**", "cgroup.procs"), recursive=True):
-        try:
-            pids.extend(open(path).read().split())
-        except OSError:
-            pass
-    return pids
-
-
-def _repo_for_pids(pids):
-    for pid in pids:
-        try:
-            repo = origin_repo(os.readlink(f"/proc/{int(pid)}/cwd"))
-        except (OSError, ValueError):
-            continue
-        if repo:
-            return repo
-    return None
+def _repo_for_run_dir(run_dir):
+    return origin_repo(_first_line(os.path.join(run_dir, "cwd"), 4096))
 
 
 def _is_worker_scope(name):
@@ -177,10 +160,7 @@ def _waiter_rows(luna_dir, slots, by_issue, now):
         if not _pid_alive(pid):
             continue
         started = _timestamp_file(marker) or ticket_time
-        try:
-            repo = origin_repo(os.readlink(f"/proc/{int(pid)}/cwd"))
-        except (OSError, ValueError):
-            repo = None
+        repo = _repo_for_run_dir(run_dir)
         title, issue = _brief(luna_dir, key)
         ref = by_issue.get(issue) or {}
         owner = priority if priority in ("hotfix", "opt") else "pipeline"
@@ -313,8 +293,7 @@ def collect(pipeline_workers, units, prefix, luna_dir, jobs_dir, sup="", traffic
             if tk is None and bk == "luna":
                 try: tk = _tail_total(_rollout_for(codex_root, cwd=os.readlink(f"/proc/{int(_first_line(d + '/codex.pid', 12))}/cwd"), now=now) or "")
                 except (OSError, ValueError): pass
-            scope_dir = os.path.join(slice_dir, n)
-            repo = _repo_for_pids(_scope_pids(scope_dir) + [_first_line(d + "/codex.pid", 12), _first_line(d + "/wrapper.pid", 12)])
+            repo = _repo_for_run_dir(d)
             if started is None:
                 try: started = os.path.getmtime(os.path.join(d, "wrapper.pid"))
                 except OSError: pass

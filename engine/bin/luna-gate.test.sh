@@ -328,7 +328,11 @@ done
 printf '%s\n' '{"type":"local.event"}'
 printf 'local fallback\n' > "$output"
 EOF
-chmod +x "$local_root/bin/ssh" "$local_root/bin/systemd-run" "$local_root/bin/systemctl" "$local_root/bin/codex"
+cat > "$local_root/bin/zcode" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"result","response":"local fallback"}'
+EOF
+chmod +x "$local_root/bin/ssh" "$local_root/bin/systemd-run" "$local_root/bin/systemctl" "$local_root/bin/codex" "$local_root/bin/zcode"
 mkdir -p "$local_root/home" "$local_root/agent-home" "$local_root/worktree"
 git -C "$local_root/worktree" init -q
 git -C "$local_root/worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
@@ -343,8 +347,16 @@ grep -Fq 'CPU PSI some avg60 61 is above 60' "$local_root/stderr" || fail 'remot
 grep -Fq 'is missing or not writable' "$local_root/stderr" || fail 'remote refusal did not report the missing run root'
 grep -Fq 'falling back to local capacity gate' "$local_root/stderr" || fail 'remote refusal did not fall back to local admission'
 grep -Fq 'local.event' "$local_root/scratch/luna/fallback/events.jsonl" || fail 'local worker did not run after remote refusal'
+[[ "$(cat "$local_root/scratch/luna/fallback/cwd")" == "$local_root/worktree" ]] || fail 'luna did not record the requested worker cwd'
 [[ ! -e "$remote_root/root/fallback" ]] || fail 'remote refusal created a remote clone'
 echo 'ok - remote gate refusal reports its reason and falls back when local capacity admits'
+env HOME="$local_root/home" AGENT_HOME="$local_root/agent-home" PATH="$local_root/bin:/usr/bin:/bin" \
+  WORKER_SCRATCH_ROOT="$local_root/scratch" ZC_OUT_ROOT="$local_root/scratch/luna" ZF_ZCODE_BIN="$local_root/bin/zcode" \
+  LUNA_MIN=2 LUNA_PROC_MEMINFO="$local_root/meminfo" LUNA_PROC_PSI_MEMORY="$local_root/psi" \
+  LUNA_WORKER_SLICE_DIR="$local_root/no-slice" "$bin/zc" fallback-zc "$local_root/worktree" "$local_root/prompt" \
+  > "$local_root/zc-stdout" 2> "$local_root/zc-stderr"
+[[ "$(cat "$local_root/scratch/luna/fallback-zc/cwd")" == "$local_root/worktree" ]] || fail 'zc did not record the requested worker cwd'
+echo 'ok - zc records the requested worker cwd'
 
 mkdir -p "$remote_root/writable-root" "$local_root/probe-bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$local_root/probe-bin/codex"; chmod +x "$local_root/probe-bin/codex"
