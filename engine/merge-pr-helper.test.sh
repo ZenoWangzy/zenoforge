@@ -136,6 +136,11 @@ gh() {
         printf '%s\n' "$PR_HEAD"
         return
       fi
+      if [[ "$*" == *' --jq .[].filename'* ]]; then
+        [[ "$PR_FILES_API_ERROR" == 0 ]] || return 1
+        jq -r '.[]' <<<"$PR_FILES"
+        return
+      fi
       if [[ "$*" == *' -q .[].filename' ]]; then
         printf 'api:%s\n' "$*" >> "$fixture/gh-calls"
         [[ "$PR_FILES_API_ERROR" == 0 ]] || return 1
@@ -201,20 +206,6 @@ gh() {
   esac
 }
 
-mkdir -p "$fixture/head/engine/prompts"
-printf 'review-contract.md\t4\n' > "$fixture/head/engine/prompts/byte-budgets.tsv"
-head -c 5 /dev/zero > "$fixture/head/engine/prompts/review-contract.md"
-PR_FILES='["engine/prompts/review-contract.md"]'
-: > "$fixture/gh-calls"
-if (
-  merge_pr_with_tree() { "$2" "$fixture/head"; }
-  merge_pr_squash 17 "$sha"
-) >"$fixture/prompt-budget-output" 2>&1; then
-  fail 'merge-pr accepted an over-budget prompt'
-fi
-[[ "$(cat "$fixture/prompt-budget-output")" == *'engine/prompts/review-contract.md is 5 bytes, budget 4 bytes'* ]] \
-  || fail "merge-pr refusal omitted the prompt size and budget: $(cat "$fixture/prompt-budget-output")"
-! grep -q '^merge:' "$fixture/gh-calls" || fail 'merge-pr merged an over-budget prompt'
 PR_FILES='["tools/quick-land.sh"]'
 : > "$fixture/gh-calls"
 
@@ -240,7 +231,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 # GraphQL refuses the head and `gh pr checks` (shared-account rate limit): the head, the checks and the squash merge all come from REST.
@@ -299,7 +290,7 @@ PR_FILES='["tools/quick-land.sh"]'
 PR_CHILDREN='[{"number":21}]'
 : > "$fixture/gh-calls"
 merge_pr_checks_and_merge 17 >"$fixture/check-output" 2>&1 || fail "stacked parent did not merge: $(cat "$fixture/check-output")"
-[[ "$(cat "$fixture/gh-calls")" == *$'edit:pr edit 21 --base main\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$''* ]] \
+[[ "$(cat "$fixture/gh-calls")" == *$'edit:pr edit 21 --base main\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$''* ]] \
   || fail "child PR was not retargeted before the squash merge: $(cat "$fixture/gh-calls")"
 [[ "$(cat "$fixture/check-output")" == *'retargeted child PR #21 from parent-branch to main'* ]] \
   || fail "retarget was not logged: $(cat "$fixture/check-output")"
@@ -331,7 +322,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error

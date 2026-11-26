@@ -66,6 +66,20 @@ fi
 [[ "$(cat "$test_env_root/stderr")" == 'engine/prompts/review-contract.md is 8193 bytes, budget 8192 bytes' ]] \
   || fail "prompt byte-budget refusal omitted its path, size or budget: $(cat "$test_env_root/stderr")"
 
+selective_fixture="$test_env_root/selective-prompt-budget"
+mkdir -p "$selective_fixture/engine/prompts"
+printf 'review-contract.md\t4\nother.md\t4\n' > "$selective_fixture/engine/prompts/byte-budgets.tsv"
+head -c 4 /dev/zero > "$selective_fixture/engine/prompts/review-contract.md"
+head -c 5 /dev/zero > "$selective_fixture/engine/prompts/other.md"
+land_prompt_byte_budget_check "$selective_fixture" '' '' 'engine/prompts/review-contract.md' \
+  || fail 'prompt landing check scanned an unchanged template'
+if land_prompt_byte_budget_check "$selective_fixture" '' '' 'engine/prompts/byte-budgets.tsv' \
+  >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'budget-table change did not rescan every prompt template'
+fi
+[[ "$(cat "$test_env_root/stderr")" == 'engine/prompts/other.md is 5 bytes, budget 4 bytes' ]] \
+  || fail 'budget-table change did not report the over-budget untouched template'
+
 source_fixture="$test_env_root/source-fixture"
 mkdir -p "$source_fixture/tools" "$source_fixture/engine"
 cp "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh" "$MODEL_POLICY_TEST_REPO/tools/merge-pr-bootstrap.sh" "$source_fixture/tools/"
@@ -107,6 +121,8 @@ GH_RC=0
 GH_API_RC=0
 GH_DELETE_RC=0
 GH_META_RC=0
+GH_FILES_RC=0
+GH_FILES_OUTPUT=''
 GH_META_OUTPUT='{"head":{"ref":"feature/topic"}}'
 
 gh() {
@@ -124,6 +140,13 @@ gh() {
     'pr merge '*) printf 'gh merge output\n'; return "$GH_RC" ;;
     'pr view '*) [[ "${GH_VIEW_RC:-0}" == 0 ]] || return "$GH_VIEW_RC"; printf '{"headRefName":"feature/topic"}\n'; return 0 ;;
     'api '*)
+      local arg
+      for arg in "$@"; do
+        if [[ "$arg" == *'/pulls/'*'/files?per_page='* ]]; then
+          printf '%s\n' "$GH_FILES_OUTPUT"
+          return "$GH_FILES_RC"
+        fi
+      done
       while (($#)); do
         if [[ "$1" == -X && $# -ge 2 ]]; then
           method="$2"
@@ -209,12 +232,25 @@ reset_gh_calls
 assert_merge_rc 64 'refuse:merge:bad-option' 17 "$valid_sha" --unknown
 [[ "$(gh_call_count)" == 0 ]] || fail 'land_merge_pr called gh for an unknown option'
 
+LAND_PROMPT_GUARD_RC=1
+land_pr_prompt_byte_budget_check() {
+  [[ "$1" == 17 && "$2" == "$valid_sha" && "$3" == owner/project ]] \
+    || fail 'land_merge_pr did not pass the pinned PR, head, and repo to prompt admission'
+  printf 'engine/prompts/review-contract.md is 8193 bytes, budget 8192 bytes\n' >&2
+  return "$LAND_PROMPT_GUARD_RC"
+}
+reset_gh_calls
+assert_merge_rc 1 'engine/prompts/review-contract.md is 8193 bytes, budget 8192 bytes' \
+  17 "$valid_sha" --repo owner/project
+[[ "$(gh_call_count)" == 0 ]] || fail 'land_merge_pr reached GitHub merge after prompt admission refused'
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/land-admit.sh"
+
 reset_gh_calls
 GH_RC=0
 assert_merge_rc 0 '' 17 "$valid_sha"
-[[ "$(gh_call_count)" == 1 ]] || fail "land_merge_pr made $(gh_call_count) gh calls for a normal merge"
+[[ "$(gh_call_count)" == 2 ]] || fail "land_merge_pr made $(gh_call_count) gh calls for a normal merge"
 [[ "$(cat "$test_env_root/stdout")" == 'gh merge output' ]] || fail 'land_merge_pr did not pass gh output through'
-read_gh_call 1
+read_gh_call 2
 [[ "${GH_ARGS[0]}" == pr && "${GH_ARGS[1]}" == merge && "${GH_ARGS[2]}" == 17 ]] \
   || fail 'land_merge_pr called gh with the wrong merge command'
 assert_gh_arg --squash
@@ -222,7 +258,7 @@ assert_gh_pair --match-head-commit "$valid_sha"
 
 reset_gh_calls
 assert_merge_rc 0 '' 17 "$valid_sha" --delete-branch
-read_gh_call 1
+read_gh_call 2
 [[ "${GH_ARGS[*]}" == "pr merge 17 --squash --delete-branch --match-head-commit $valid_sha" ]] \
   || fail 'land_merge_pr changed the merge helper argument order'
 
@@ -230,8 +266,8 @@ reset_gh_calls
 subject='ship the "quoted" change'
 body='release note with "quotes"'
 assert_merge_rc 0 '' 18 "$valid_sha" --repo owner/project --subject "$subject" --body "$body" --delete-branch
-[[ "$(gh_call_count)" == 1 ]] || fail "land_merge_pr made $(gh_call_count) gh calls with merge options"
-read_gh_call 1
+[[ "$(gh_call_count)" == 2 ]] || fail "land_merge_pr made $(gh_call_count) gh calls with merge options"
+read_gh_call 2
 assert_gh_pair --repo owner/project
 assert_gh_pair --subject "$subject"
 assert_gh_pair --body "$body"
@@ -241,7 +277,7 @@ reset_gh_calls
 unset LAND_MERGE_REST_FALLBACK
 GH_RC=1
 assert_merge_rc 1 '' 19 "$valid_sha"
-[[ "$(gh_call_count)" == 1 ]] || fail "land_merge_pr made $(gh_call_count) gh calls without REST fallback"
+[[ "$(gh_call_count)" == 2 ]] || fail "land_merge_pr made $(gh_call_count) gh calls without REST fallback"
 
 reset_gh_calls
 LAND_MERGE_REST_FALLBACK=1
@@ -249,40 +285,70 @@ GH_RC=1
 GH_API_RC=0
 GH_DELETE_RC=0
 assert_merge_rc 0 '' 20 "$valid_sha" --repo owner/project
-[[ "$(gh_call_count)" == 4 ]] || fail "land_merge_pr made $(gh_call_count) gh calls with REST fallback"
-read_gh_call 3
+[[ "$(gh_call_count)" == 5 ]] || fail "land_merge_pr made $(gh_call_count) gh calls with REST fallback"
+read_gh_call 4
 assert_gh_arg 'repos/{owner}/{repo}/pulls/20/merge'
 assert_gh_arg "sha=$valid_sha"
 assert_gh_pair --repo owner/project
-read_gh_call 4
+read_gh_call 5
 assert_gh_arg 'repos/{owner}/{repo}/git/refs/heads/feature/topic'
 
 reset_gh_calls
 GH_VIEW_RC=1
 GH_DELETE_RC=5
 assert_merge_rc 0 '' 20 "$valid_sha" --repo owner/project --delete-branch
-[[ "$(gh_call_count)" == 5 ]] || fail 'REST fallback did not recover the head ref or ignore deletion failure'
-read_gh_call 3
+[[ "$(gh_call_count)" == 6 ]] || fail 'REST fallback did not recover the head ref or ignore deletion failure'
+read_gh_call 4
 assert_gh_arg 'repos/{owner}/{repo}/pulls/20'
 assert_gh_pair --repo owner/project
-read_gh_call 4
-assert_gh_arg 'repos/{owner}/{repo}/pulls/20/merge'
 read_gh_call 5
+assert_gh_arg 'repos/{owner}/{repo}/pulls/20/merge'
+read_gh_call 6
 assert_gh_arg 'repos/{owner}/{repo}/git/refs/heads/feature/topic'
 
 reset_gh_calls
 GH_META_OUTPUT='invalid metadata'
 assert_merge_rc 1 '' 20 "$valid_sha" --repo owner/project --delete-branch
 [[ ! -s "$test_env_root/stderr" ]] || fail 'malformed REST metadata leaked a parser error'
-[[ "$(gh_call_count)" == 3 ]] || fail 'malformed REST metadata reached the merge or deletion call'
+[[ "$(gh_call_count)" == 4 ]] || fail 'malformed REST metadata reached the merge or deletion call'
 GH_META_OUTPUT='{"head":{"ref":"feature/topic"}}'
 
 reset_gh_calls
 GH_META_RC=1
 assert_merge_rc 1 '' 20 "$valid_sha" --repo owner/project --delete-branch
 [[ ! -s "$test_env_root/stderr" ]] || fail 'failed REST metadata read changed the refusal output'
-[[ "$(gh_call_count)" == 3 ]] || fail 'failed REST metadata read reached the merge or deletion call'
+[[ "$(gh_call_count)" == 4 ]] || fail 'failed REST metadata read reached the merge or deletion call'
 GH_META_RC=0
+
+prompt_remote="$test_env_root/prompt-remote.git"
+prompt_repo="$test_env_root/prompt-repo"
+git init --bare -q "$prompt_remote"
+git init -q "$prompt_repo"
+git -C "$prompt_repo" config user.email agent@example.invalid
+git -C "$prompt_repo" config user.name agent
+mkdir -p "$prompt_repo/engine/prompts"
+printf 'review-contract.md\t4\n' > "$prompt_repo/engine/prompts/byte-budgets.tsv"
+head -c 5 /dev/zero > "$prompt_repo/engine/prompts/review-contract.md"
+git -C "$prompt_repo" add engine/prompts
+git -C "$prompt_repo" commit -qm 'fixture: over-budget prompt'
+prompt_sha="$(git -C "$prompt_repo" rev-parse HEAD)"
+git -C "$prompt_repo" remote add origin "$prompt_remote"
+git -C "$prompt_repo" push -q origin HEAD:refs/pull/37/head
+GH_FILES_OUTPUT='engine/prompts/review-contract.md'
+reset_gh_calls
+git() {
+  [[ "$*" != *' archive '* ]] || { printf 'prompt budget check exported the full tree\n' >&2; return 97; }
+  command git "$@"
+}
+if (cd "$prompt_repo" && land_merge_pr 37 "$prompt_sha" --repo owner/project) \
+  >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'land_merge_pr accepted an over-budget prompt from the pinned PR head'
+fi
+unset -f git
+[[ "$(cat "$test_env_root/stderr")" == *'engine/prompts/review-contract.md is 5 bytes, budget 4 bytes'* ]] \
+  || fail "pinned PR check omitted the prompt size or budget: $(cat "$test_env_root/stderr")"
+[[ "$(gh_call_count)" == 1 ]] || fail 'over-budget PR reached the GitHub merge command'
+GH_FILES_OUTPUT=''
 
 reset_gh_calls
 GH_VIEW_RC=0
@@ -290,12 +356,12 @@ GH_API_RC=1
 GH_API_OUTPUT='HTTP 409: Head branch was modified'
 assert_merge_rc 1 "refuse:merge:head-moved:$valid_sha is no longer the head, not merged" 20 "$valid_sha" --delete-branch
 [[ "$(cat "$test_env_root/stderr")" == "refuse:merge:head-moved:$valid_sha is no longer the head, not merged" ]] || fail 'shared head-moved refusal changed'
-[[ "$(gh_call_count)" == 3 ]] || fail 'REST fallback deleted the branch after a failed merge'
+[[ "$(gh_call_count)" == 4 ]] || fail 'REST fallback deleted the branch after a failed merge'
 
 reset_gh_calls
 LAND_MERGE_PR_REFUSAL=1 assert_merge_rc 1 "refusing to merge PR #20: head moved after the gate: $valid_sha is no longer the head, not merged" 20 "$valid_sha" --delete-branch
 [[ "$(cat "$test_env_root/stderr")" == "refusing to merge PR #20: head moved after the gate: $valid_sha is no longer the head, not merged" ]] || fail 'head-moved refusal changed'
-[[ "$(gh_call_count)" == 3 ]] || fail 'REST fallback deleted the branch after a failed merge'
+[[ "$(gh_call_count)" == 4 ]] || fail 'REST fallback deleted the branch after a failed merge'
 unset LAND_MERGE_REST_FALLBACK
 
 echo 'land-admit.test.sh: all assertions passed'
