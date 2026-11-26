@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import * as cmd from './commands.mjs';
 import { buildCtx, foreground } from './scheduler.mjs';
 import { readEnvFile } from './state.mjs';
@@ -28,6 +29,8 @@ case "$1 $2" in
 esac
 `;
 const FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "systemctl $*" >> "$ZF_FAKE_LOG"\n';
+const FAKE_LAUNCHCTL = '#!/usr/bin/env bash\necho "launchctl $*" >> "$ZF_FAKE_LOG"\n';
+const FAKE_TAIL = '#!/usr/bin/env bash\necho "tail $*" >> "$ZF_FAKE_LOG"\nexec /usr/bin/tail "$@"\n';
 
 const cliFixtureRoots = new Set();
 const cliFixtureCleanupChecks = [];
@@ -70,7 +73,7 @@ function sandbox({ originFiles = { 'README.md': 'hello\n' } } = {}) {
     fs.writeFileSync(path.join(seed, f), body);
   }
   git(seed, 'add', '-A'); git(seed, 'commit', '-q', '-m', 'seed'); git(seed, 'push', '-q', 'origin', 'HEAD:main');
-  for (const [name, body] of Object.entries({ gh: FAKE_GH, systemctl: FAKE_SYSTEMCTL, codex: '#!/bin/sh\n', claude: '#!/bin/sh\n' })) {
+  for (const [name, body] of Object.entries({ gh: FAKE_GH, systemctl: FAKE_SYSTEMCTL, launchctl: FAKE_LAUNCHCTL, tail: FAKE_TAIL, codex: '#!/bin/sh\n', claude: '#!/bin/sh\n' })) {
     fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
   }
   const log = path.join(root, 'calls.log');
@@ -242,11 +245,47 @@ test('start/stop/status/upgrade/rollback/uninstall drive systemctl and keep stat
   assert.equal(fs.existsSync(path.join(s.checkout, 'engine')), false);
   assert.ok(fs.existsSync(path.join(s.agent, 'env')), 'state kept without --purge');
   assert.equal(JSON.parse(fs.readFileSync(path.join(s.agent, 'cli.json'), 'utf8')).scheduler, 'none');
+  const targetFile = path.join(s.checkout, 'README.md');
+  assert.equal(fs.readFileSync(targetFile, 'utf8'), 'hello\n', 'uninstall leaves target-repo files intact');
+  assert.equal(execFileSync('git', ['-C', s.checkout, 'status', '--porcelain']).toString(), '', 'target repository stays clean');
   await assert.rejects(cmd.start({ yes: true }, s.io), /zenoforge init/, 'the engine link is gone; start must not half-work');
 
   // plain uninstall, then uninstall --purge, still reaches everything
   cmd.uninstall({ purge: true, yes: true }, s.io);
   assert.equal(fs.existsSync(s.agent), false);
+});
+
+test('launchd init, start, stop, status, logs and uninstall manage LaunchAgents', async () => {
+  const s = sandbox();
+  s.io.scheduler = 'launchd';
+  await cmd.init({ repo: REPO, yes: true }, s.io);
+  const plistDir = path.join(s.home, 'Library', 'LaunchAgents');
+  const labels = ['com.zenoforge.autopilot-scheduler', 'com.zenoforge.autopilot-bell'];
+  for (const label of labels) assert.ok(fs.existsSync(path.join(plistDir, `${label}.plist`)));
+  assert.match(s.calls(), /launchctl bootstrap gui\/\d+ .*com\.zenoforge\.autopilot-scheduler\.plist/);
+
+  fs.writeFileSync(path.join(s.root, 'calls.log'), '');
+  cmd.stop({}, s.io);
+  assert.match(s.calls(), /launchctl bootout gui\/\d+\/com\.zenoforge\.autopilot-scheduler/);
+  await cmd.start({ yes: true }, s.io);
+  assert.match(s.calls(), /launchctl bootstrap gui\/\d+ .*com\.zenoforge\.autopilot-bell\.plist/);
+
+  const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), 'zenoforge.mjs');
+  const status = execFileSync(process.execPath, [cli, 'status'], { env: s.env, encoding: 'utf8' });
+  assert.match(status, /scheduler\s+launchd/);
+  assert.match(status, /loaded\s+com\.zenoforge\.autopilot-scheduler/);
+
+  const logDir = path.join(s.agent, 'logs');
+  fs.writeFileSync(path.join(logDir, `${labels[0]}.log`), 'scheduler output\n');
+  fs.writeFileSync(path.join(logDir, `${labels[1]}.log`), 'bell output\n');
+  const logs = execFileSync(process.execPath, [cli, 'logs', '--lines', '2'], { env: s.env, encoding: 'utf8' });
+  assert.match(logs, /scheduler output/);
+  assert.match(logs, /bell output/);
+  assert.ok(s.calls().includes(path.join(logDir, `${labels[0]}.log`)));
+  assert.ok(s.calls().includes(path.join(logDir, `${labels[1]}.log`)));
+
+  cmd.uninstall({}, s.io);
+  for (const label of labels) assert.equal(fs.existsSync(path.join(plistDir, `${label}.plist`)), false);
 });
 
 test('uninstall --purge cleans ~/.zenoforge when init never wrote cli.json; plain uninstall points at --purge', () => {

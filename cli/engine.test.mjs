@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,22 @@ test('install copies, applies the overlay, restores shim links and flips current
   for (const n of SHIM_NAMES) assert.equal(fs.readlinkSync(path.join(root, 'current', SHIM_DIR, n)), SHIM_TARGET);
   assert.ok(fs.statSync(path.join(root, 'current', 'run-tick.sh')).mode & 0o111, 'exec bit kept');
   assert.deepEqual(fs.readdirSync(root).filter((e) => e.includes('stage')), [], 'no staging dir left behind');
+});
+
+test('installed pnpm shim forwards installs to pnpm on PATH', () => {
+  const src = tmp(); const root = path.join(tmp(), 'engine'); const bin = tmp(); const log = path.join(tmp(), 'pnpm.log');
+  fakeEngine(src);
+  fs.copyFileSync(path.join(realEngine, SHIM_DIR, SHIM_TARGET), path.join(src, SHIM_DIR, SHIM_TARGET));
+  fs.writeFileSync(path.join(bin, 'pnpm'), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$ZF_PNPM_LOG"\n', { mode: 0o755 });
+  install(quiet(), { srcEngine: src, engineRoot: root, version: '0.1.0', settings: {} });
+
+  const pnpm = path.join(root, 'current', SHIM_DIR, 'pnpm');
+  const result = spawnSync(pnpm, ['install', '--frozen-lockfile'], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, ZF_PNPM_LOG: log },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(log, 'utf8'), 'install\n--frozen-lockfile\n');
 });
 
 test('install stages declared runtime dependencies beside the copied engine', () => {
