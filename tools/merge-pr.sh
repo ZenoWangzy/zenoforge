@@ -482,7 +482,7 @@ merge_pr_cancel_ci() {
 
 # GraphQL gh pr merge refused: squash over REST pinned to the head read here, then drop the head ref. A PR closed meanwhile is a stop.
 merge_pr_squash() {
-  local pr="$1" sha="$2" LAND_MERGE_PR_REFUSAL=1; [[ "$(gh api "repos/{owner}/{repo}/pulls/$pr" 2>/dev/null | jq -r '.state // empty' 2>/dev/null)" != closed ]] || { merge_pr_refuse "$pr" 'closed after the lane read it; reopen it to land (11-19: #1283 merged 49 s after its close)'; return 1; }
+  local pr="$1" sha="$2" LAND_MERGE_PR_REFUSAL=1; merge_pr_prompt_budget_ok "$pr" || return 1; [[ "$(gh api "repos/{owner}/{repo}/pulls/$pr" 2>/dev/null | jq -r '.state // empty' 2>/dev/null)" != closed ]] || { merge_pr_refuse "$pr" 'closed after the lane read it; reopen it to land (11-19: #1283 merged 49 s after its close)'; return 1; }
   LAND_MERGE_REST_FALLBACK=1 land_merge_pr "$pr" "$sha" --delete-branch || return 1
 }
 

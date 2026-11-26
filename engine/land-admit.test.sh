@@ -53,6 +53,19 @@ LAND_RECEIPT_STRICT=1 assert_green_rc 1 "$receipt" $'command\tone (exit 1)'
 printf '0\t\n' >"$receipt"
 LAND_RECEIPT_STRICT=1 assert_green_rc 1 "$receipt" 'malformed receipt line 1'
 
+budget_fixture="$test_env_root/prompt-budget"
+mkdir -p "$budget_fixture/engine/prompts"
+printf 'review-contract.md\t8192\n' > "$budget_fixture/engine/prompts/byte-budgets.tsv"
+head -c 8193 /dev/zero > "$budget_fixture/engine/prompts/review-contract.md"
+if land_prompt_byte_budget_check "$budget_fixture" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'landing accepted an over-budget prompt fixture'
+else
+  rc=$?
+fi
+[[ "$rc" == 1 ]] || fail "prompt byte budget returned $rc instead of 1"
+[[ "$(cat "$test_env_root/stderr")" == 'engine/prompts/review-contract.md is 8193 bytes, budget 8192 bytes' ]] \
+  || fail "prompt byte-budget refusal omitted its path, size or budget: $(cat "$test_env_root/stderr")"
+
 source_fixture="$test_env_root/source-fixture"
 mkdir -p "$source_fixture/tools" "$source_fixture/engine"
 cp "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh" "$MODEL_POLICY_TEST_REPO/tools/merge-pr-bootstrap.sh" "$source_fixture/tools/"

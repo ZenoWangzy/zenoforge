@@ -1,5 +1,42 @@
 # Shared admission checks for every landing entry point.
 # Each function returns 0 to admit and 1 to refuse.
+land_prompt_byte_budget_check() {
+  local root="${1:-}" base="${2:-}" head="${3:-}" table changed path name budget bytes
+  [[ -d "$root" ]] || { printf 'prompt byte budget: repository root is unavailable\n' >&2; return 1; }
+  if [[ -n "$base" || -n "$head" ]]; then
+    [[ -n "$base" && -n "$head" ]] || { printf 'prompt byte budget: both base and head are required\n' >&2; return 1; }
+    changed="$(git -C "$root" diff --name-only "$base...$head" 2>/dev/null)" \
+      || { printf 'prompt byte budget: could not read the landing diff\n' >&2; return 1; }
+    grep -q '^engine/prompts/' <<<"$changed" || return 0
+  fi
+  table="$root/engine/prompts/byte-budgets.tsv"
+  [[ -f "$table" ]] || { printf 'prompt byte budget: missing engine/prompts/byte-budgets.tsv\n' >&2; return 1; }
+  for path in "$root"/engine/prompts/*.md; do
+    [[ -f "$path" ]] || continue
+    name="${path##*/}"
+    budget="$(awk -F '\t' -v name="$name" '$1 == name { count++; value=$2 } END { if (count == 1 && value ~ /^[0-9]+$/) print value; else exit 1 }' "$table")" \
+      || { printf 'engine/prompts/%s has no unique byte budget in engine/prompts/byte-budgets.tsv\n' "$name" >&2; return 1; }
+    bytes="$(wc -c <"$path" | tr -d ' ')" || return 1
+    if (( bytes > budget )); then
+      printf 'engine/prompts/%s is %s bytes, budget %s bytes\n' "$name" "$bytes" "$budget" >&2
+      return 1
+    fi
+  done
+}
+
+merge_pr_prompt_budget_ok() {
+  local pr="$1" files output
+  files="$(merge_pr_view "$pr" body,files,commits 2>/dev/null | jq -r '.files[].path')" || {
+    merge_pr_refuse "$pr" 'could not read PR files for the prompt byte-budget check'
+    return 1
+  }
+  grep -q '^engine/prompts/' <<<"$files" || return 0
+  output="$(merge_pr_with_tree "$pr" land_prompt_byte_budget_check 2>&1)" || {
+    merge_pr_refuse "$pr" "$output" 'shrink the prompt or restore its budget entry, then retry'
+    return 1
+  }
+}
+
 land_receipt_green() {
   local receipt="${1-}"
   if [[ ! -f "$receipt" ]]; then

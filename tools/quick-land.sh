@@ -96,6 +96,7 @@ quick_land_commit_refusal() { # [test commands]
     || { echo "focused-test-paths failed for origin/main..HEAD (run it to see why; a new script needs a RELATED_TESTS row)"; return 0; }
   missing="$(quick_land_missing_focused "${1:-}")"
   [[ -z "$missing" ]] || { echo "focused tests missing from --test: $(paste -sd' ' <<<"$missing")"; return 0; }
+  out="$(land_prompt_byte_budget_check "$PWD" origin/main HEAD 2>&1)" || { echo "$out"; return 0; }
   [[ -f engine/rule-lane.sh ]] || { echo 'engine/rule-lane.sh is missing'; return 0; }
   bash engine/rule-lane.sh origin/main HEAD >/dev/null 2>&1 || { echo 'rule-lane refused the change'; return 0; }
   local hit log="${TMPDIR:-/tmp}/quick-land-pin-$(git rev-parse --short HEAD).log"
