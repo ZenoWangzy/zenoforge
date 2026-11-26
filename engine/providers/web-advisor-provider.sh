@@ -586,7 +586,7 @@ web_advisor_provider_dispatch_question_async() {
     return "$start_status"
   fi
   unset ZF_QUARANTINE_CANARY_SCOPES
-  if [ -n "$canary_scopes" ] && ! quarantine_mark_canary_scope_list "$canary_scopes"; then
+  if [ -n "$canary_scopes" ] && ! quarantine_mark_dispatched_canary_scope_list "$canary_scopes"; then
     echo "web-advisor-provider: quarantine canary mark failed after job start job=$job_id scopes=$canary_scopes" >&2
   fi
 }
