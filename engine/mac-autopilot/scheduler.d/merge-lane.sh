@@ -526,6 +526,7 @@ run_merge_lane_pass() {
       set_unit "$id" ".ci_test_checked=$(js "$head:$fails")"
       red_out="${CI_DAGGER_LOG_RED_OUT:-$(ci_test_red_checks "$checks")}"; red="$(head -n1 <<<"$red_out" | cut -f1)"; red_facts="$(tail -n +2 <<<"$red_out")"
       if [[ -n "$red" ]]; then
+        if ci_stale_base_hop "$id" "$pr" "$head" "$red_facts"; then pass_step_end ci-stale-base-hop "$pr"; continue; fi
         set_unit "$id" ".ci_facts_head=$(js "$head") | .ci_facts=$(js "$red_facts")"
         say "triage PR#$pr head ${head:0:9}: $(ci_triage "$head" "$red_facts") (verdict only; routing unchanged)"
         cancel_branch_runs "$(jqf -r '.branch // empty' <<<"$ready")" "tests already red; repair pushes a new head" || :
