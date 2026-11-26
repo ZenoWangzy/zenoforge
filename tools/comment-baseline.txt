@@ -791,7 +791,7 @@
 11	tools/main-red-revert.sh
 24	tools/main-red-revert.test.sh
 3	tools/merge-pr-bootstrap.sh
-52	tools/merge-pr.sh
+51	tools/merge-pr.sh
 2	tools/pin-fail-triage.sh
 28	tools/pin-vecta.sh
 35	tools/pin-vecta.test.sh

@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zfConfigJson } from './pack-dir.mjs';
+import { formatLintRefusal } from './lesson-lints.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepo = path.resolve(scriptDir, '..');
@@ -133,14 +134,12 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
     const ranking = JSON.parse(git(repo, ['show', `${options.head}:${rankingPath}`]));
     const result = buildHoldLessonVerdict({ paths, source, ranking });
     const line = `lesson-lint: lesson=${lessonId} incident_class=${classTag} recurrence_count=${result.recurrence_count ?? 0} verdict=${result.verdict}`;
-    console.log(result.missing?.length ? `${line} missing=${result.missing.join('; ')}` : line);
     if (result.verdict === 'fail') {
-      console.error(`lesson-lint: fix: ${fixGuidance}`);
+      console.error(`${line} ${formatLintRefusal(fixGuidance, result.missing, lintPath)}`);
       process.exitCode = 1;
-    }
+    } else console.log(line);
   } catch (error) {
-    console.error(`lesson-lint: lesson=${lessonId} incident_class=${classTag} verdict=fail error=${error instanceof Error ? error.message : String(error)}`);
-    console.error(`lesson-lint: fix: ${fixGuidance}`);
+    console.error(`lesson-lint: lesson=${lessonId} incident_class=${classTag} verdict=fail ${formatLintRefusal(fixGuidance, error instanceof Error ? error.message : String(error), lintPath)}`);
     process.exitCode = 1;
   }
 }

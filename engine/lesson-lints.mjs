@@ -18,6 +18,12 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepo = path.resolve(scriptDir, '..');
 const lintPath = 'engine/lesson-lints.mjs';
 const rankingPath = 'lessons/recurrence-ranking.json';
+export function formatLintRefusal(alternative, found, documentedIn = lintPath) {
+  if (typeof alternative !== 'string' || !alternative.trim()) throw new Error('lesson lint refusal requires a blessed alternative');
+  if (typeof documentedIn !== 'string' || !documentedIn.trim()) throw new Error('lesson lint refusal requires its guidance document');
+  const finding = Array.isArray(found) ? found.join('; ') : String(found);
+  return `REFUSAL found=${JSON.stringify(finding)} alternative=${JSON.stringify(alternative)} documented_in=${documentedIn}`;
+}
 const lib = 'engine/lib.sh';
 const libIssueState = 'engine/lib.d/issue-state.sh';
 const libCiChecks = 'engine/lib.d/ci-checks.sh';
@@ -41,7 +47,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'Route every pipeline state transition through issue_transition with the ISSUE_TRANSITION_TABLE legality check; state writes that run inside it must keep the __issue_transition_lock_held lock mode. Keep HEALTH label/state drift detection read-only.',
+    alternative: 'Route every pipeline state transition through issue_transition with the ISSUE_TRANSITION_TABLE legality check; state writes that run inside it must keep the __issue_transition_lock_held lock mode. Keep HEALTH label/state drift detection read-only.',
   },
   {
     lesson: 'V882',
@@ -54,7 +60,7 @@ export const lessonLints = [
         require: [/land-direct-main\.sh" "\$@"/],
       },
     },
-    guidance: 'Keep queue-driven preflight admission memory-only (MemAvailable >= 3072 MiB, no load average gate) and start one independent land-direct-main.sh worker per enqueue request; the shared main lock covers only the final rebase and push.',
+    alternative: 'Keep queue-driven preflight admission memory-only (MemAvailable >= 3072 MiB, no load average gate) and start one independent land-direct-main.sh worker per enqueue request; the shared main lock covers only the final rebase and push.',
   },
   {
     lesson: 'V915',
@@ -67,7 +73,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'Keep the corrected PR-runner label pool (cihost-ci,cihost-ci-testcontainers,cihost-ci-light,vecta-suites) in scripts/ops/provision-cihost-ci-runner.sh and keep ~/.config owned by the runner user at creation time; a root-owned ~/.config breaks rootless setup.',
+    alternative: 'Keep the corrected PR-runner label pool (cihost-ci,cihost-ci-testcontainers,cihost-ci-light,vecta-suites) in scripts/ops/provision-cihost-ci-runner.sh and keep ~/.config owned by the runner user at creation time; a root-owned ~/.config breaks rootless setup.',
   },
   {
     lesson: 'V975',
@@ -80,7 +86,7 @@ export const lessonLints = [
         require: [/scan_files\(\)/, /--slurpfile|--rawfile|jq_arg_file/],
       },
     },
-    guidance: 'Pass unbounded JSON (issue state, issue/PR lists, brief_md and other model prose) to jq on stdin or through jq_arg_file()/--slurpfile, never as --argjson/--arg: one argv element over 128 KiB makes execve fail with "Argument list too long". Extend jq-arg-safety.test.sh when a new unbounded variable name appears.',
+    alternative: 'Pass unbounded JSON (issue state, issue/PR lists, brief_md and other model prose) to jq on stdin or through jq_arg_file()/--slurpfile, never as --argjson/--arg: one argv element over 128 KiB makes execve fail with "Argument list too long". Extend jq-arg-safety.test.sh when a new unbounded variable name appears.',
   },
   {
     lesson: 'V797',
@@ -90,7 +96,7 @@ export const lessonLints = [
         require: [/ci_main_completed_push_runs\(\)/, /status=completed&per_page=\d+&page=1/],
       },
     },
-    guidance: 'Keep main Postsubmit verdict reads querying completed runs only (ci_main_completed_push_runs with status=completed); an "in progress" run is not a verdict and must never reset a red main to OK.',
+    alternative: 'Keep main Postsubmit verdict reads querying completed runs only (ci_main_completed_push_runs with status=completed); an "in progress" run is not a verdict and must never reset a red main to OK.',
   },
   {
     lesson: 'V803',
@@ -103,7 +109,7 @@ export const lessonLints = [
         require: [/option\('--mode'\) \?\? 'commit'/, /\['commit', 'push', 'release'\]/],
       },
     },
-    guidance: 'branch-delivery-preflight.mjs must keep commit as its default mode and run every locally reproducible gate in that mode; a gate that only runs in a mode nobody uses lets the same avoidable red reach CI on every PR.',
+    alternative: 'branch-delivery-preflight.mjs must keep commit as its default mode and run every locally reproducible gate in that mode; a gate that only runs in a mode nobody uses lets the same avoidable red reach CI on every PR.',
   },
   {
     lesson: 'V955',
@@ -117,7 +123,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'worktree-lifecycle.sh must load host-wide state once per live-state snapshot (load_live_state with a single ps into PROCESS_ARGS) and filter rows per worktree; per-worktree rescans of node-owner records or the process table blow the reap/stats budget at load.',
+    alternative: 'worktree-lifecycle.sh must load host-wide state once per live-state snapshot (load_live_state with a single ps into PROCESS_ARGS) and filter rows per worktree; per-worktree rescans of node-owner records or the process table blow the reap/stats budget at load.',
   },
   {
     lesson: 'V1144',
@@ -132,7 +138,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'The reap rescue-ref sweep must read rescue issue states in one cached batch (load_rescue_issue_states) and abort the whole sweep -- keeping refs and skipping issue-expiry and patch-equivalence cleanup -- when that refresh fails; per-ref GitHub queries and letting "unknown" states flow into the sweep are the recurrence.',
+    alternative: 'The reap rescue-ref sweep must read rescue issue states in one cached batch (load_rescue_issue_states) and abort the whole sweep -- keeping refs and skipping issue-expiry and patch-equivalence cleanup -- when that refresh fails; per-ref GitHub queries and letting "unknown" states flow into the sweep are the recurrence.',
   },
   {
     lesson: 'V1188',
@@ -142,7 +148,7 @@ export const lessonLints = [
         require: [/\[\[ -e "\$agent_home\/checkout" \]\] \|\| return 0/],
       },
     },
-    guidance: 'write-guard.sh must only guard agent homes that carry a runtime checkout ([[ -e "$agent_home/checkout" ]] || return 0); CI and AGENT_HOME=$(mktemp -d) preflights have no checkout and must not be refused at lib.sh initialization.',
+    alternative: 'write-guard.sh must only guard agent homes that carry a runtime checkout ([[ -e "$agent_home/checkout" ]] || return 0); CI and AGENT_HOME=$(mktemp -d) preflights have no checkout and must not be refused at lib.sh initialization.',
   },
   {
     lesson: 'V1203',
@@ -156,7 +162,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'Pipeline GitHub/git origin reads go through git_fetch_bounded with its recognized-transient retry (ZF_GIT_FETCH_TRANSIENT_RETRIES, 1s/2s backoff) and the 20s low-speed abort (http.lowSpeedTime=20); under the shared main lock, transient transport retries defer to land-queue instead of retrying in place.',
+    alternative: 'Pipeline GitHub/git origin reads go through git_fetch_bounded with its recognized-transient retry (ZF_GIT_FETCH_TRANSIENT_RETRIES, 1s/2s backoff) and the 20s low-speed abort (http.lowSpeedTime=20); under the shared main lock, transient transport retries defer to land-queue instead of retrying in place.',
   },
   {
     lesson: 'V1267',
@@ -170,7 +176,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'A running hand whose brief changed is not delivered by its original dispatch: land-queue must record live-run addenda (addenda.lock journal), check report acknowledgement at exit via hand_addendum_pending_for_report/queue_hand_pending_addendum, and enqueue exactly one resume for anything missed.',
+    alternative: 'A running hand whose brief changed is not delivered by its original dispatch: land-queue must record live-run addenda (addenda.lock journal), check report acknowledgement at exit via hand_addendum_pending_for_report/queue_hand_pending_addendum, and enqueue exactly one resume for anything missed.',
   },
   {
     lesson: 'V368',
@@ -184,7 +190,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'CI rootless anonymous-volume reclaim must stay bounded to the CI daemons and to Docker-marked anonymous, still-dangling volumes older than 24 hours (64-hex names); widening the daemon set or dropping the age/label bound deletes live data.',
+    alternative: 'CI rootless anonymous-volume reclaim must stay bounded to the CI daemons and to Docker-marked anonymous, still-dangling volumes older than 24 hours (64-hex names); widening the daemon set or dropping the age/label bound deletes live data.',
   },
   {
     lesson: 'V370',
@@ -194,7 +200,7 @@ export const lessonLints = [
         require: [/blobstore\.compact/, /assetBlob\.cleanup/],
       },
     },
-    guidance: 'Nexus soft deletes do not return disk space: nexus-retention.py must keep waiting on the Docker assetBlob.cleanup task and then run blobstore.compact on the default blobstore, with live components and the Compose rollback chain snapshotted before deletion.',
+    alternative: 'Nexus soft deletes do not return disk space: nexus-retention.py must keep waiting on the Docker assetBlob.cleanup task and then run blobstore.compact on the default blobstore, with live components and the Compose rollback chain snapshotted before deletion.',
   },
   {
     lesson: 'V429',
@@ -204,7 +210,7 @@ export const lessonLints = [
         require: [/function filenameReferencedTests/, /'-F', filename/],
       },
     },
-    guidance: 'focused-test-paths.mjs must keep filenameReferencedTests: besides the explicit mapping, every test file that textually references a changed or deleted file\'s filename joins the selection, plus the same-named suites of scripts that reference it (#4599: lesson-lints.mjs anchors lib.sh); dropping it lets fixture-loading suites miss their indirect lib.sh/supervise-pipeline.sh changes.',
+    alternative: 'focused-test-paths.mjs must keep filenameReferencedTests: besides the explicit mapping, every test file that textually references a changed or deleted file\'s filename joins the selection, plus the same-named suites of scripts that reference it (#4599: lesson-lints.mjs anchors lib.sh); dropping it lets fixture-loading suites miss their indirect lib.sh/supervise-pipeline.sh changes.',
   },
   {
     lesson: 'V603',
@@ -217,7 +223,7 @@ export const lessonLints = [
         require: [/-E "http_proxy=\$proxy_url"/, /EnvironmentFile=\$AGENT_HOME\/env/],
       },
     },
-    guidance: 'Direct-main transient GitHub reads retry only when landing preflight enables it and a second failure names the ruling or guard (land_git_transport_retry); detached landing units must keep every proxy and bypass variable plus EnvironmentFile from zenoforge-agent.env, or reads fail on hosts where only the unit has egress.',
+    alternative: 'Direct-main transient GitHub reads retry only when landing preflight enables it and a second failure names the ruling or guard (land_git_transport_retry); detached landing units must keep every proxy and bypass variable plus EnvironmentFile from zenoforge-agent.env, or reads fail on hosts where only the unit has egress.',
   },
   {
     lesson: 'V651',
@@ -230,7 +236,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'After a successful push, a failed read-only GitHub call must never fail the landing: keep the push inside land_git_transport_retry land_git_network push and keep postsubmit revalidation failures advisory ("landing remains successful") so a slow proxy response cannot turn a landed commit into a failed landing that skips cleanup and hold release.',
+    alternative: 'After a successful push, a failed read-only GitHub call must never fail the landing: keep the push inside land_git_transport_retry land_git_network push and keep postsubmit revalidation failures advisory ("landing remains successful") so a slow proxy response cannot turn a landed commit into a failed landing that skips cleanup and hold release.',
   },
   {
     lesson: 'V890',
@@ -243,7 +249,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'A queued landing that hits a shared network failure keeps its request and retries; a vanished worktree is recovered only when the recorded branch still points at the recorded commit (QUEUE_SNAPSHOT_ERROR otherwise) -- never recreate from whatever the branch points at now.',
+    alternative: 'A queued landing that hits a shared network failure keeps its request and retries; a vanished worktree is recovered only when the recorded branch still points at the recorded commit (QUEUE_SNAPSHOT_ERROR otherwise) -- never recreate from whatever the branch points at now.',
   },
   {
     lesson: 'V925',
@@ -259,7 +265,7 @@ export const lessonLints = [
         require: [/last two implement failures share a stage/],
       },
     },
-    guidance: 'Keep the blind-rerun gate: failure records keep the decisive line (implement_failure_class_key over the stage and failing commands), and a ticket whose last two implement failures share stage and failure class is parked, not redispatched, until an input actually changes (blind_rerun_failure_paths).',
+    alternative: 'Keep the blind-rerun gate: failure records keep the decisive line (implement_failure_class_key over the stage and failing commands), and a ticket whose last two implement failures share stage and failure class is parked, not redispatched, until an input actually changes (blind_rerun_failure_paths).',
   },
   {
     lesson: 'V931',
@@ -269,7 +275,7 @@ export const lessonLints = [
         require: [/cihost_sync_path\(\)/, /landed but not installed on cihost/],
       },
     },
-    guidance: 'A cihost unit or script landed on main is live on cihost in the same landing: the lander must run every sync-cihost-*.sh selected by cihost_sync_path() from origin/main and raise "landed but not installed on cihost" when a sync fails; cihost units must reference installed paths, never a WSL checkout path.',
+    alternative: 'A cihost unit or script landed on main is live on cihost in the same landing: the lander must run every sync-cihost-*.sh selected by cihost_sync_path() from origin/main and raise "landed but not installed on cihost" when a sync fails; cihost units must reference installed paths, never a WSL checkout path.',
   },
   {
     lesson: 'V933',
@@ -279,7 +285,7 @@ export const lessonLints = [
         require: [/MIN_HISTORY_HOURS = 24/, /function violates\(/],
       },
     },
-    guidance: 'efficiency-regression.mjs must keep alerting on baseline regressions (violates() over floor/delta rules) and must keep HEALTH UNKNOWN until MIN_HISTORY_HOURS = 24 of hourly history exist, naming the stage with the largest latency increase or most stuck tickets.',
+    alternative: 'efficiency-regression.mjs must keep alerting on baseline regressions (violates() over floor/delta rules) and must keep HEALTH UNKNOWN until MIN_HISTORY_HOURS = 24 of hourly history exist, naming the stage with the largest latency increase or most stuck tickets.',
   },
   {
     lesson: 'V1003',
@@ -295,7 +301,7 @@ export const lessonLints = [
         require: [/scheduler_requeue_issue "\$n" "supervisor hold \$kind has no live owner"/],
       },
     },
-    guidance: 'Ownerless and expired held work returns through scheduler_requeue_issue and issue_transition; the scheduler alone applies the implement cap. The hold sweep must not start a parallel hand owner, and post-release ops acceptance stays on hold for the supervisor inbox.',
+    alternative: 'Ownerless and expired held work returns through scheduler_requeue_issue and issue_transition; the scheduler alone applies the implement cap. The hold sweep must not start a parallel hand owner, and post-release ops acceptance stays on hold for the supervisor inbox.',
   },
   {
     lesson: 'V1044',
@@ -305,7 +311,7 @@ export const lessonLints = [
         require: [/record_preexisting_timing_miss\(\)/, /record_preexisting_e2e_failure\(\)/],
       },
     },
-    guidance: 'The release gate over shared runtime content must accept what the deployed images themselves provision and what the owner chain already knows: keep record_preexisting_timing_miss()/record_preexisting_e2e_failure() so pre-existing owner-recorded content is classified, and fail only on content neither explains.',
+    alternative: 'The release gate over shared runtime content must accept what the deployed images themselves provision and what the owner chain already knows: keep record_preexisting_timing_miss()/record_preexisting_e2e_failure() so pre-existing owner-recorded content is classified, and fail only on content neither explains.',
   },
   {
     lesson: 'V1126',
@@ -318,7 +324,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'Non-product direct-main landings dispatch Pipeline suites after push (dispatch_pipeline_suites_after_landing), and a main advance during landing rebases (land_main_rebase_after_advance) before the landed head is verified. Do not restore pre-push suite execution for this lane.',
+    alternative: 'Non-product direct-main landings dispatch Pipeline suites after push (dispatch_pipeline_suites_after_landing), and a main advance during landing rebases (land_main_rebase_after_advance) before the landed head is verified. Do not restore pre-push suite execution for this lane.',
   },
   {
     lesson: 'V1147',
@@ -332,7 +338,7 @@ export const lessonLints = [
         ],
       },
     },
-    guidance: 'worktree reap must compare each non-merge rescue commit patch against the main patch index in bounded batches (main_patch_index_write_state cursor state, patches_in_main); any unmatched patch, merge commit, or timeout keeps the rescue ref -- a rescue is only deletable via merged_pr_content_is_reachable or a full patch match.',
+    alternative: 'worktree reap must compare each non-merge rescue commit patch against the main patch index in bounded batches (main_patch_index_write_state cursor state, patches_in_main); any unmatched patch, merge commit, or timeout keeps the rescue ref -- a rescue is only deletable via merged_pr_content_is_reachable or a full patch match.',
   },
 ];
 
@@ -340,14 +346,14 @@ export const lessonLints = [
 export const exactSecondLint = {
   classTag: 'exact-second-elapsed-grep',
   pattern: /grep -Fq\b.*\b(?:after|at) [0-9]+s\b/,
-  guidance: 'Match an elapsed-seconds value with grep -Eq and [0-9]+s, never one exact second: SECONDS and scheduler timers keep ticking, so a stall moves the value by one. Example: grep -Eq "after [0-9]+s: ..." "$LOG".',
+  alternative: 'Match an elapsed-seconds value with grep -Eq and [0-9]+s, never one exact second: SECONDS and scheduler timers keep ticking, so a stall moves the value by one. Example: grep -Eq "after [0-9]+s: ..." "$LOG".',
 };
 
 // A script run through the engine-live symlink has import.meta.url by real path and argv[1] as typed, so a plain compare is false and the script exits 0 doing nothing (release batch #1147, 11-07).
 export const entryCheckLint = {
   classTag: 'symlink-blind-entry-check',
   pattern: /^\s*if \((?=.*process\.argv\[1\])(?=.*===)/,
-  guidance: 'Use process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)), inline, so a script copied alone still runs; without existsSync an import under a non-path argv[1] throws: an entry check that compares process.argv[1] without realpathSync silently does nothing through a symlink and exits 0.',
+  alternative: 'Use process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)), inline, so a script copied alone still runs; without existsSync an import under a non-path argv[1] throws: an entry check that compares process.argv[1] without realpathSync silently does nothing through a symlink and exits 0.',
 };
 
 export function entryCheckFailures(files, readSource) {
@@ -386,7 +392,7 @@ export function exactSecondFailures(files, readSource) {
 export const utcStampLint = {
   classTag: 'local-tz-z-stamp',
   pattern: /%\(.*Z\)T|\bdate\s+(?!-u\b)[^|;&]*\+[^\s'"]*Z\b/,
-  guidance: 'Put TZ=UTC0 on the stamp\'s own line (TZ=UTC0 printf -v now \'%(%Y-%m-%dT%H:%M:%SZ)T\' -1 in a builtin-only watcher) or use date -u +%Y-%m-%dT%H:%M:%SZ. The lint reads one line at a time, so a TZ set on an earlier line does not count.',
+  alternative: 'Put TZ=UTC0 on the stamp\'s own line (TZ=UTC0 printf -v now \'%(%Y-%m-%dT%H:%M:%SZ)T\' -1 in a builtin-only watcher) or use date -u +%Y-%m-%dT%H:%M:%SZ. The lint reads one line at a time, so a TZ set on an earlier line does not count.',
 };
 
 export function utcStampFailures(files, readSource) {
@@ -446,7 +452,7 @@ export function buildLessonLintVerdict({ lint, paths, readSource, ranking }) {
     verdict: missing.length ? 'fail' : 'pass',
     missing,
     recurrence_count: row?.recurrence_count ?? 0,
-    ...(missing.length ? { fix_guidance: lint.guidance } : {}),
+    ...(missing.length ? { fix_guidance: lint.alternative } : {}),
   };
 }
 
@@ -497,7 +503,7 @@ function effectiveMode(lint) {
   return mode;
 }
 
-const allLints = [...lessonLints, exactSecondLint, entryCheckLint, utcStampLint];
+export const lessonLintRegistry = [...lessonLints, exactSecondLint, entryCheckLint, utcStampLint];
 
 function lifecycleKey(lint) {
   return `${lint.lesson ?? 'none'}\u0000${lint.classTag}`;
@@ -516,9 +522,8 @@ export function runLessonLints({ repo, base, head = 'HEAD', ledger = '', log = (
     const mode = effectiveMode(lint);
     const verdict = result.verdict === 'fail' && mode === 'observe' ? 'would-fail' : result.verdict;
     const line = `lesson-lint: lesson=${lint.lesson} incident_class=${lint.classTag} recurrence_count=${result.recurrence_count ?? 0} verdict=${verdict}`;
-    log(result.missing?.length ? `${line} missing=${result.missing.join('; ')}` : line);
+    log(result.missing?.length ? `${line} ${formatLintRefusal(lint.alternative, result.missing)}` : line);
     if (result.verdict === 'fail') {
-      log(`lesson-lint: fix: ${lint.guidance}`);
       if (mode === 'enforce') failed += 1;
     }
     if (ledgerWritable) ledgerWritable = appendLifecycleRow(ledger, {
@@ -539,8 +544,7 @@ export function runLessonLints({ repo, base, head = 'HEAD', ledger = '', log = (
     const hits = findFailures(paths, readSource);
     const mode = effectiveMode(lint);
     const verdict = hits.length ? (mode === 'observe' ? 'would-fail' : 'fail') : 'pass';
-    for (const hit of hits) log(`lesson-lint: lesson=none incident_class=${lint.classTag} verdict=${verdict} at=${hit}`);
-    if (hits.length) log(`lesson-lint: fix: ${lint.guidance}`);
+    for (const hit of hits) log(`lesson-lint: lesson=none incident_class=${lint.classTag} verdict=${verdict} ${formatLintRefusal(lint.alternative, hit)}`);
     if (mode === 'enforce') failed += hits.length;
     if (ledgerWritable) ledgerWritable = appendLifecycleRow(ledger, {
       lesson: 'none',
@@ -578,7 +582,7 @@ export function runLessonLintLifecycle({ repo, ledger, days = 30, now = Date.now
     if (error.code !== 'ENOENT') throw error;
   }
 
-  const current = new Map(allLints.map((lint) => [lifecycleKey(lint), lint]));
+  const current = new Map(lessonLintRegistry.map((lint) => [lifecycleKey(lint), lint]));
   const events = new Map();
   for (const row of rows) {
     if (typeof row?.classTag !== 'string' || typeof row?.utc_time !== 'string') continue;
@@ -592,7 +596,7 @@ export function runLessonLintLifecycle({ repo, ledger, days = 30, now = Date.now
   }
 
   const cutoff = now - days * 24 * 60 * 60 * 1000;
-  const summaries = allLints.map((lint) => {
+  const summaries = lessonLintRegistry.map((lint) => {
     const lintEvents = events.get(lifecycleKey(lint)) ?? [];
     const window = lintEvents.filter((event) => event.at.getTime() >= cutoff && event.at.getTime() <= now);
     const first = lintEvents[0];
@@ -643,7 +647,7 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
       if (failed > 0) process.exitCode = 1;
     }
   } catch (error) {
-    console.error(`lesson-lint: verdict=fail error=${error instanceof Error ? error.message : String(error)}`);
+    console.error(`lesson-lint: ${formatLintRefusal('correct the command or make the requested Git revision readable', error instanceof Error ? error.message : String(error))}`);
     process.exitCode = 1;
   }
 }

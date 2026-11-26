@@ -108,11 +108,11 @@ quick_land_commit_refusal() { # [test commands]
   local -a suites; mapfile -t suites < <(git diff --name-only --diff-filter=AM origin/main HEAD -- ':(glob)engine/**/*.test.sh')
   (( ${#suites[@]} == 0 )) || bash "$QUICK_LAND_DIR/../engine/test-bootstrap-check.sh" "${suites[@]}" >/dev/null 2>&1 \
     || { echo "a changed test file lacks the bootstrap (set -euo pipefail, then source test-env.sh): ${suites[*]}"; return 0; }
-  out="$({ bash tools/size-ratchet.sh 2>&1 || true; } | awk 'NR == FNR { own[$0] = 1; next } $1 == "FAIL" && $2 in own' <(git diff --name-only origin/main HEAD) -)"
+  out="$({ bash tools/size-ratchet.sh 2>&1 || true; } | awk 'FILENAME == ARGV[1] { own[$0] = 1; next } /^REFUSAL found="/ { for (path in own) if (index($0, "found=\"" path " ")) { print; next } }' <(git diff --name-only origin/main HEAD) -)"
   [[ -z "$out" ]] || echo "size-ratchet: $out"
   out="$({ bash tools/shortcut-ratchet.sh 2>&1 || true; } | awk '
     NR == FNR { own[$0] = 1; next }
-    /^FAIL / { print; next }
+    /^REFUSAL found=/ { print; next }
     /^NOTE / {
       note = substr($0, 6)
       marker = " has no shortcut comments left "

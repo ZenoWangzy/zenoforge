@@ -23,7 +23,7 @@ fails() { if bash tools/size-ratchet.sh > out.txt 2>&1; then return 1; fi; cat o
 
 seq 1 901 > engine/big.sh
 msg=$(fails) || fail 'a grown file passed'
-[[ $msg == *'engine/big.sh grew to 901'*'tools/size-baseline.txt is 900'* ]] || fail "grow message lacks file, limit or action: $msg"
+[[ $msg == *'REFUSAL found="engine/big.sh has 901 lines'*'alternative="'*'documented_in=docs/enforced-rules.md'* ]] || fail "grow refusal lacks finding, alternative or documentation: $msg"
 
 seq 1 850 > engine/big.sh
 out=$(run)
@@ -31,7 +31,7 @@ out=$(run)
 
 seq 1 801 > engine/new.sh
 msg=$(fails) || fail 'a new file over the cap passed'
-[[ $msg == *'engine/new.sh has 801 lines'*'800-line cap'*'tools/size-baseline.txt'* ]] || fail "new-file message lacks file, limit or action: $msg"
+[[ $msg == *'REFUSAL found="engine/new.sh has 801 lines'*'alternative="'*'documented_in=docs/enforced-rules.md'* ]] || fail "new-file refusal lacks finding, alternative or documentation: $msg"
 seq 1 800 > engine/new.sh
 
 seq 1 900 > engine/vendor/x.sh

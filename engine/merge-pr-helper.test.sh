@@ -401,8 +401,8 @@ PR_FILES='["tools/quick-land.sh"]'
   PR_HEAD="$sha"
   PR_BODY=$'## prior-art\nno external prior art: internal gate wiring only\n'
   mkdir -p "$repo/tools"
-  printf "echo 'FAIL tools/quick-land.sh grew to 900 lines, its baseline in tools/size-baseline.txt is 800'; exit 1\n" > "$repo/tools/size-ratchet.sh"
-  expect_prior_art_refusal 'PR over its size baseline' 'FAIL tools/quick-land.sh grew'
+  printf "echo 'REFUSAL found=\"tools/quick-land.sh grew to 900 lines, baseline 800\" alternative=\"split the file or update its baseline deliberately\" documented_in=docs/enforced-rules.md'; exit 1\n" > "$repo/tools/size-ratchet.sh"
+  expect_prior_art_refusal 'PR over its size baseline' 'REFUSAL found='
   PR_FILES='["other.sh"]' expect_prior_art_merge 'main over baseline, PR not'
   PR_FILES='["tools/size-baseline.txt"]' expect_prior_art_merge 'PR edits the baseline file only'
   PR_FILES='["quick-land.sh"]' expect_prior_art_merge 'PR file is a substring of the failing path'
@@ -728,7 +728,7 @@ git -C "$scan_tree" add engine
 merge_pr_static_scans() { merge_pr_static_scans_in "$scan_tree"; }
 PR_FILES='["engine/new.test.sh"]'
 if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'a source-extract line passed the static scans'; fi
-[[ "$(cat "$fixture/check-output")" == *'static scan failed: source-extract-ratchet: FAIL engine/new.test.sh has 1 source-extract lines, baseline 0'* ]] \
+[[ "$(cat "$fixture/check-output")" == *'static scan failed: source-extract-ratchet: REFUSAL found="engine/new.test.sh has 1 source-extract lines, baseline 0"'*'alternative="'*'documented_in=docs/enforced-rules.md'* ]] \
   || fail "source-extract refusal lost its scan name: $(cat "$fixture/check-output")"
 merge_pr_static_scans() { return 0; }
 

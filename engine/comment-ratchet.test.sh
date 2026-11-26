@@ -29,15 +29,15 @@ rc=0; out=$(ratchet) || rc=$?
 
 printf '# two\n' >> engine/a.sh
 rc=0; out=$(ratchet) || rc=$?
-[[ $rc == 1 && $out == *'FAIL engine/a.sh has 2 comments, its baseline in tools/comment-baseline.txt is 1'*'remove the comment; put a decision in docs/adr and a shortcut in an issue'* ]] || fail "a grown file passed or its message lacks file, count, baseline or both actions: $out"
+[[ $rc == 1 && $out == *'REFUSAL found="engine/a.sh has 2 comments'*'alternative='*'documented_in=docs/enforced-rules.md'* ]] || fail "a grown file passed or its refusal lacks finding, alternative or documentation: $out"
 
 printf '# new\n' > engine/b.sh
 rc=0; out=$(ratchet) || rc=$?
-[[ $rc == 1 && $out == *'FAIL engine/b.sh has 1 comments, its baseline in tools/comment-baseline.txt is 0'* ]] || fail "a new file with a comment passed: $out"
+[[ $rc == 1 && $out == *'REFUSAL found="engine/b.sh has 1 comments'*'alternative='*'documented_in=docs/enforced-rules.md'* ]] || fail "a new file with a comment passed or its refusal lacks guidance: $out"
 rm engine/b.sh
 
 rc=0; out=$(ratchet --tighten) || rc=$?
-[[ $rc == 1 && $out == *'a count grew, nothing tightened'* ]] || fail "--tighten accepted a grown count: $out"
+[[ $rc == 1 && $out == *'REFUSAL found="a count above baseline"'*'alternative="remove the added comment before tightening"'*'documented_in=docs/enforced-rules.md'* ]] || fail "--tighten accepted a grown count or its refusal omitted guidance: $out"
 [[ "$(cat tools/comment-baseline.txt)" == $'1\tengine/a.sh' ]] || fail '--tighten changed the baseline after growth'
 
 rm engine/a.sh tools/comment-baseline.txt
@@ -59,7 +59,7 @@ rc=0; out=$(ratchet --proof HEAD~2) || rc=$?
 printf '# new\n' > engine/c.sh
 git add -A && git commit -qm 'comment-only addition'
 rc=0; out=$(ratchet --changed HEAD~1) || rc=$?
-[[ $rc == 1 && $out == *'FAIL engine/c.sh'* && $out != *'engine/a.sh'* ]] || fail "--changed did not check only the changed file: rc=$rc $out"
+[[ $rc == 1 && $out == *'REFUSAL found="engine/c.sh has 1 comments'* && $out != *'engine/a.sh'* ]] || fail "--changed did not check only the changed file: rc=$rc $out"
 
 node_bin=$(command -v node)
 rc=0; out=$(env PATH=/usr/bin:/bin "$node_bin" tools/comment-ratchet.mjs 2>&1) || rc=$?

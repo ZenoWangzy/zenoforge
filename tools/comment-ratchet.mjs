@@ -17,7 +17,7 @@ const argv = process.argv.slice(2);
 const proofAt = argv.indexOf('--proof');
 const changedAt = argv.indexOf('--changed');
 if (argv.length && !(argv.length === 1 && argv[0] === '--tighten') && !(proofAt === 0 && argv.length === 2) && !(changedAt === 0 && argv.length === 2)) {
-  console.error('usage: node tools/comment-ratchet.mjs [--tighten | --proof <ref> | --changed <ref>]');
+  console.error(`REFUSAL found=${JSON.stringify('unsupported arguments')} alternative=${JSON.stringify('run node tools/comment-ratchet.mjs with no arguments, --tighten, --proof <ref>, or --changed <ref>')} documented_in=docs/enforced-rules.md`);
   process.exit(2);
 }
 
@@ -135,13 +135,16 @@ function requireTools(kindSet) {
   if (kindSet.has('ts')) loadTs();
   if (kindSet.has('py')) run('python3', ['--version'], '');
   const need = {
-    shfmt: 'shfmt is not installed (needed for .sh files): download the static release binary from https://github.com/mvdan/sh/releases to ~/.local/bin/shfmt and chmod +x it',
-    typescript: 'typescript is not installed (needed for .js/.ts/.mjs/.cjs files): run npm install -g typescript',
-    python3: 'python3 is not installed (needed for .py files)',
+    shfmt: ['shfmt is not installed (needed for .sh files)', 'download the static release binary from https://github.com/mvdan/sh/releases and chmod +x it'],
+    typescript: ['typescript is not installed (needed for .js/.ts/.mjs/.cjs files)', 'run npm install -g typescript'],
+    python3: ['python3 is not installed (needed for .py files)', 'install Python 3 on PATH'],
   };
   const gone = [...new Set(missing)];
   if (gone.length) {
-    for (const tool of gone) console.error(`comment-ratchet: ${need[tool] ?? tool + ' is not installed'}`);
+    for (const tool of gone) {
+      const [found, alternative] = need[tool] ?? [`${tool} is not installed`, `install ${tool} on PATH`];
+      console.error(`REFUSAL found=${JSON.stringify(found)} alternative=${JSON.stringify(alternative)} documented_in=tools/comment-ratchet.mjs,docs/enforced-rules.md`);
+    }
     process.exit(2);
   }
 }
@@ -161,8 +164,7 @@ if (proofAt === 0) {
     if (stripped[kindOf(path)](before, path) !== stripped[kindOf(path)](after, path)) differs.push(path);
   }
   if (differs.length) {
-    console.log(`comment-only: differs, ${differs.length} file(s):`);
-    for (const path of differs) console.log(path);
+    console.log(`REFUSAL found=${JSON.stringify(`code changes in ${differs.join(', ')}`)} alternative=${JSON.stringify('use --proof only for comment-only changes and run normal checks for code changes')} documented_in=docs/enforced-rules.md`);
     process.exit(1);
   }
   console.log('comment-only: ok');
@@ -195,14 +197,14 @@ for (const [f, n] of now) {
   const b = base.get(f) ?? 0;
   if (n > b) {
     fail = true;
-    console.log(`FAIL ${f} has ${n} comments, its baseline in ${baselinePath} is ${b}: remove the comment; put a decision in docs/adr and a shortcut in an issue.`);
+    console.log(`REFUSAL found=${JSON.stringify(`${f} has ${n} comments, baseline in ${baselinePath} is ${b}`)} alternative=${JSON.stringify('remove the comment, record decisions in an ADR, and track a shortcut in an issue')} documented_in=docs/enforced-rules.md,docs/adr/`);
   } else if (n < b) console.log(`NOTE ${f} shrank to ${n} comments (baseline ${b}): run node tools/comment-ratchet.mjs --tighten.`);
 }
 for (const [f, b] of base) if (!now.has(f) && (!scope || scope.has(f))) console.log(`NOTE ${f} has no comments left (baseline ${b}): run node tools/comment-ratchet.mjs --tighten.`);
 
 if (argv[0] === '--tighten') {
   if (fail && hasBaseline) {
-    console.error('comment-ratchet: a count grew, nothing tightened');
+    console.error(`REFUSAL found=${JSON.stringify('a count above baseline')} alternative=${JSON.stringify('remove the added comment before tightening')} documented_in=docs/enforced-rules.md. Nothing tightened.`);
     process.exit(1);
   }
   const rows = [...now].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([f, n]) => `${n}\t${f}\n`).join('');

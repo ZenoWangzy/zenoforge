@@ -25,7 +25,7 @@ git -C "$repo" config user.name 'Quick Land Test'
 git -C "$repo" config user.email quick-land-test@example.invalid
 printf 'fixture\n' > "$repo/doc.md"
 printf 'exit "${STUB_RULE_RC:-0}"\n' > "$repo/engine/rule-lane.sh"
-printf '[[ -z ${STUB_SIZE_FAIL:-} ]] || { echo "FAIL tools/big.sh grew"; exit 1; }\necho size-ratchet ok\n' > "$repo/tools/size-ratchet.sh"
+printf '[[ -z ${STUB_SIZE_FAIL:-} ]] || { echo '\''REFUSAL found="tools/big.sh grew" alternative="split the file" documented_in=docs/enforced-rules.md'\''; exit 1; }\necho size-ratchet ok\n' > "$repo/tools/size-ratchet.sh"
 cp "$MODEL_POLICY_TEST_REPO/tools/shortcut-ratchet.sh" "$repo/tools/"
 printf '# shortcut: fixture limit, remove when paid down\n' > "$repo/engine/ratcheted.sh"
 printf '1\tengine/ratcheted.sh\n1\tengine/stale.sh\n' > "$repo/tools/shortcut-baseline.txt"
@@ -158,8 +158,8 @@ reset_fixture
 
 printf '# shortcut: another fixture limit\n' >> engine/ratcheted.sh
 land 1 --test 'true' --prior-art "$pa" 'shortcut growth'
-[[ "$(origin_main)" == "$before" ]] || fail 'a shortcut-ratchet FAIL landed'
-[[ "$(cat "$quick_land_output")" == *'shortcut-ratchet: FAIL engine/ratcheted.sh has 2 shortcut comments'* ]] || fail "a shortcut-ratchet FAIL was not named: $(cat "$quick_land_output")"
+[[ "$(origin_main)" == "$before" ]] || fail 'a shortcut-ratchet refusal landed'
+[[ "$(cat "$quick_land_output")" == *'shortcut-ratchet: REFUSAL found="engine/ratcheted.sh has 2 shortcut comments'*'alternative="'*'documented_in=docs/enforced-rules.md'* ]] || fail "a shortcut-ratchet refusal lacked its finding, alternative or documentation: $(cat "$quick_land_output")"
 reset_fixture
 drop_quick_branches
 
