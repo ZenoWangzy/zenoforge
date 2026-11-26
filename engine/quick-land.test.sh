@@ -23,6 +23,7 @@ mkdir -p "$repo/engine" "$repo/tools"
 git init -q -b main "$repo"
 git -C "$repo" config user.name 'Quick Land Test'
 git -C "$repo" config user.email quick-land-test@example.invalid
+printf '' > "$repo/tools/public-text-baseline.txt"
 printf 'fixture\n' > "$repo/doc.md"
 printf 'exit "${STUB_RULE_RC:-0}"\n' > "$repo/engine/rule-lane.sh"
 printf '[[ -z ${STUB_SIZE_FAIL:-} ]] || { echo '\''REFUSAL found="tools/big.sh grew" alternative="split the file" documented_in=docs/enforced-rules.md'\''; exit 1; }\necho size-ratchet ok\n' > "$repo/tools/size-ratchet.sh"
@@ -145,6 +146,22 @@ reset_fixture
 printf 'echo no prior art\n' > run.sh
 land 1 --test 'true' 'no prior art'
 [[ "$(origin_main)" == "$before" ]] || fail 'code without --prior-art landed'
+reset_fixture
+
+printf '%s/%s/%s/\n' '/home' 'someone' 'project' > doc.md
+land 1 'home path'
+[[ "$(origin_main)" == "$before" ]] || fail 'a home path reached main'
+[[ "$(cat "$quick_land_output")" == *'doc.md:1'* ]] || fail 'the local text guard did not name the home path location'
+reset_fixture
+
+denied_term='fixture-private-code'
+mkdir -p "$test_env_root/private-config/zenoforge"
+printf '%s\n' "$denied_term" > "$test_env_root/private-config/zenoforge/public-text-denylist"
+printf '%s\n' "$denied_term" > run.sh
+XDG_CONFIG_HOME="$test_env_root/private-config" land 1 --test 'true' --prior-art "$pa" 'local denylist'
+[[ "$(origin_main)" == "$before" ]] || fail 'a local denylisted term reached main'
+[[ "$(cat "$quick_land_output")" == *'run.sh:1'* ]] || fail 'the local denylist did not name the file and line'
+[[ "$(cat "$quick_land_output")" != *"$denied_term"* ]] || fail 'the local denylisted term was printed'
 reset_fixture
 
 printf 'x\n' > engine/other.sh
