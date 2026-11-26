@@ -12,13 +12,14 @@ import {
 } from './render.mjs';
 import { backends, buildCtx, detectScheduler, unitsFromOverlay } from './scheduler.mjs';
 import { loadState, readEnvFile, statePath } from './state.mjs';
+import { resolveRuntimeDependency } from './runtime-dependencies.mjs';
 import { Actions, run, which } from './util.mjs';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PKG_ENGINE = path.join(PKG_ROOT, 'engine');
 const PKG_SKILLS = path.join(PKG_ROOT, '.agents', 'skills');
 const ENGINE_RUNTIME_DEPENDENCIES = [
-  { name: '@typesafe-ai/sdk', source: path.join(PKG_ROOT, 'node_modules', '@typesafe-ai', 'sdk') },
+  { name: '@typesafe-ai/sdk', source: resolveRuntimeDependency(PKG_ROOT, '@typesafe-ai/sdk') },
 ];
 export const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).version;
 
