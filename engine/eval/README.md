@@ -296,9 +296,9 @@ Other cases use the merged fix's own tests. Gold verification should accompany a
 
 ## Fresh-agent cases
 
-`fresh-agent.mjs` holds the case schema (`id`, frozen `base_sha`, `prompt`, `hidden_check`,
-`expected_divergence`; unknown keys are rejected, so no memory or session context can
-enter a case) and a pure grader. The grader classifies a failed run as `missing-doc`,
+`fresh-agent.mjs` holds the case schema (`id`, frozen `base_sha`, optional `source_url` and
+`fix_sha`, `prompt`, `hidden_check`, `expected_divergence`; unknown keys are rejected, so
+no memory or session context can enter a case) and a pure grader. The grader classifies a failed run as `missing-doc`,
 `missing-guard` or `agent-error` from the first failing step, using facts the runner
 records at the base SHA. It calls no model. The practice used is SWE-bench-style task
 replay: a fresh agent gets a frozen checkout and a hidden check, the same design as the
@@ -307,3 +307,5 @@ docs-as-tests because those check documents, while this suite must measure what 
 no-memory agent does with the checkout it is given.
 
 A hidden check may print `{"steps":[{"id":"...","ok":false,"doc_available":true,"guard_available":false}]}` to provide per-step grader facts; an exit-only check records `expected_divergence` as an `agent-error` on failure.
+
+Fresh-agent cases retain their source issue URL. `--verify-gold` requires each case to record `fix_sha`; it runs the hidden check at `base_sha` and `fix_sha` without a model, and passes only when the base is red and the known fix is green. Regular fresh-agent runs still accept older cases without `source_url` or `fix_sha`.

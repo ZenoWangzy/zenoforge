@@ -2,7 +2,7 @@
 // The runner records facts per step; this module only reads them.
 
 const SHA = /^[0-9a-f]{40}$/;
-const CASE_KEYS = ['id', 'base_sha', 'prompt', 'hidden_check', 'expected_divergence'];
+const CASE_KEYS = ['id', 'source_url', 'base_sha', 'fix_sha', 'prompt', 'hidden_check', 'expected_divergence'];
 const nonEmpty = (v) => typeof v === 'string' && v.trim().length > 0;
 
 // Returns the list of problems; an empty list means the case is valid.
@@ -11,7 +11,14 @@ export function validateFreshCase(c) {
   if (!c || typeof c !== 'object' || Array.isArray(c)) return ['case must be an object'];
   const failures = Object.keys(c).filter((k) => !CASE_KEYS.includes(k)).map((k) => `unknown key: ${k}`);
   if (!nonEmpty(c.id)) failures.push('id: required');
+  if (c.source_url !== undefined && !/^https:\/\/github\.com\/ZenoWangzy\/zenoforge\/issues\/\d+$/.test(c.source_url)) {
+    failures.push('source_url: expected a Zenoforge issue URL');
+  }
   if (!SHA.test(c.base_sha ?? '')) failures.push('base_sha: expected a 40-char lowercase frozen commit SHA');
+  if (c.fix_sha !== undefined) {
+    if (!SHA.test(c.fix_sha)) failures.push('fix_sha: expected a 40-char lowercase known-fix commit SHA');
+    else if (c.fix_sha === c.base_sha) failures.push('fix_sha: must differ from base_sha');
+  }
   if (!nonEmpty(c.prompt)) failures.push('prompt: required');
   if (!nonEmpty(c.hidden_check)) failures.push('hidden_check: required');
   if (!nonEmpty(c.expected_divergence)) failures.push('expected_divergence: required step id');

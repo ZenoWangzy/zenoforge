@@ -11,8 +11,7 @@ const packPath = (path) => path.startsWith('engine/') ? PACK_PREFIX + path.slice
 
 const DEPENDENCY_FILE_TESTS = Object.freeze([
   // Suites that import an installed package (yaml) or spawn loaders, plus suites naming the files.
-  'engine/ci-priority-lane.test.mjs',
-  'engine/ci-runner-lanes.test.mjs',
+  'engine/ci-priority-lane.test.mjs', 'engine/ci-runner-lanes.test.mjs',
   'engine/check-rulings.test.sh',
   'engine/ci-toolchain-preflight.test.mjs',
   'engine/landing-fast-path.test.mjs',
@@ -24,8 +23,7 @@ const DEPENDENCY_FILE_TESTS = Object.freeze([
 ].map(packPath));
 
 const CI_TREE_TESTS = Object.freeze([
-  'engine/ci-infrastructure-focused.test.sh',
-  'engine/ci-toolchain-preflight.test.mjs',
+  'engine/ci-infrastructure-focused.test.sh', 'engine/ci-toolchain-preflight.test.mjs',
   'engine/ci-wiring-pr-skips-full-plane.test.mjs',
   'scripts/ci/dagger-input.test.mjs',
   'scripts/ci/dagger-run.test.mjs',
@@ -39,8 +37,10 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ['engine/eval/graders.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/compare.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/run-eval.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
+  ['engine/eval/fresh-agent.mjs', ['engine/eval/fresh-agent.test.mjs', 'engine/eval/runner.test.mjs']],
   ['engine/eval/stage-call.sh', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/cases/triage.json', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
+  ['engine/eval/cases/fresh-agent.json', ['engine/eval/fresh-agent.test.mjs', 'engine/eval/runner.test.mjs']],
   ['.zenoforge/eval/cases/triage.json', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/cases/advisor.json', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['.zenoforge/eval/cases/advisor.json', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
