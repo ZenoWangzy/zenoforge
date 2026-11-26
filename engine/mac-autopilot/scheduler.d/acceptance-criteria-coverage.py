@@ -184,6 +184,7 @@ def check(repo, base, head, report_path, task):
     for criterion, callsites in rows:
         normalized_rows.setdefault(normalize(criterion), []).append((criterion, callsites))
     paths = changed_paths(repo, base, head)
+    line_counts = {}
     failed = False
     for criterion in criteria:
         matches = normalized_rows.get(normalize(criterion), [])
@@ -198,12 +199,15 @@ def check(repo, base, head, report_path, task):
                 failed = True
                 continue
             for path, line_text in citations:
-                line_count = candidate_line_count(repo, head, path)
                 line = int(line_text)
                 if not is_production_path(path):
                     print(f"acceptance-criteria coverage check failed: criterion \"{criterion}\" cites a path that is not a production source path: {path}:{line}")
                     failed = True
-                elif line_count is None:
+                    continue
+                if path not in line_counts:
+                    line_counts[path] = candidate_line_count(repo, head, path)
+                line_count = line_counts[path]
+                if line_count is None:
                     location = "diff does not touch the path and candidate branch does not contain it" if paths is not None and path not in paths else "candidate branch does not contain the path"
                     print(f"acceptance-criteria coverage check failed: criterion \"{criterion}\" cites {location}: {path}:{line}")
                     failed = True
