@@ -26,6 +26,7 @@ git -C "$repo" config user.email quick-land-test@example.invalid
 printf 'fixture\n' > "$repo/doc.md"
 printf 'exit "${STUB_RULE_RC:-0}"\n' > "$repo/engine/rule-lane.sh"
 printf '[[ -z ${STUB_SIZE_FAIL:-} ]] || { echo '\''REFUSAL found="tools/big.sh grew" alternative="split the file" documented_in=docs/enforced-rules.md'\''; exit 1; }\necho size-ratchet ok\n' > "$repo/tools/size-ratchet.sh"
+printf 'if (process.env.STUB_SUPPRESSION_FAIL) { console.log("FAIL engine/a.sh:1 @ts-ignore: fix the finding"); process.exit(1); }\nconsole.log("suppression-ratchet ok")\n' > "$repo/tools/suppression-ratchet.mjs"
 cp "$MODEL_POLICY_TEST_REPO/tools/shortcut-ratchet.sh" "$repo/tools/"
 printf '# shortcut: fixture limit, remove when paid down\n' > "$repo/engine/ratcheted.sh"
 printf '1\tengine/ratcheted.sh\n1\tengine/stale.sh\n' > "$repo/tools/shortcut-baseline.txt"
@@ -154,6 +155,12 @@ reset_fixture
 printf 'x\n' > tools/big.sh
 STUB_SIZE_FAIL=1 land 1 --test 'true' --prior-art "$pa" 'size'
 [[ "$(origin_main)" == "$before" ]] || fail 'a size-ratchet refusal landed'
+reset_fixture
+
+printf 'echo suppression\n' > engine/suppression.sh
+STUB_SUPPRESSION_FAIL=1 land 1 --test 'true' --prior-art "$pa" 'suppression growth'
+[[ "$(origin_main)" == "$before" ]] || fail 'a suppression-ratchet refusal landed'
+[[ "$(cat "$quick_land_output")" == *'suppression-ratchet: FAIL engine/a.sh:1 @ts-ignore'* ]] || fail "a suppression-ratchet FAIL was not named: $(cat "$quick_land_output")"
 reset_fixture
 
 printf '# shortcut: another fixture limit\n' >> engine/ratcheted.sh

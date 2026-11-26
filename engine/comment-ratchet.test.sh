@@ -9,12 +9,14 @@ if [[ $rc == 2 && $real == *'is not installed'* && -z ${CI:-} ]]; then
   printf 'SKIP comment-ratchet.test.sh: %s\n' "${real//$'\n'/; }"; exit 0
 fi
 (( rc == 0 )) || fail "current tree fails: $real"
-[[ $real == 'comment-ratchet ok' ]] || fail "current tree did not report success: $real"
+unexpected="$(grep -Ev '^(NOTE .*: run node tools/comment-ratchet\.mjs --tighten\.|comment-ratchet ok)$' <<< "$real" || true)"
+[[ -z "$unexpected" && "$(grep -xc 'comment-ratchet ok' <<< "$real")" == 1 ]] || fail "current tree reported unexpected output: $real"
 
 repo="$test_env_root/comment-ratchet"
 mkdir -p "$repo/tools" "$repo/engine"
 [[ ! -d "$MODEL_POLICY_TEST_REPO/node_modules" ]] || ln -s "$MODEL_POLICY_TEST_REPO/node_modules" "$repo/node_modules"
 cp "$MODEL_POLICY_TEST_REPO/tools/comment-ratchet.mjs" "$repo/tools/"
+cp "$MODEL_POLICY_TEST_REPO/tools/source-comments.mjs" "$repo/tools/"
 git init -q -b main "$repo"
 git -C "$repo" config user.name test
 git -C "$repo" config user.email test@example.com
@@ -23,6 +25,9 @@ ratchet() { HOME="$test_host_home" node tools/comment-ratchet.mjs "$@" 2>&1; }
 
 printf 'cat <<EOF\n# not a comment\nEOF\n' > engine/heredoc.sh
 printf '# one\necho one\n' > engine/a.sh
+printf '# shellcheck disable=SC2086\necho suppressed\n' > engine/suppressed.sh
+printf '%s\n' '// @ts-expect-error fixture' '// @ts-ignore fixture' '/* eslint-disable no-alert */' > engine/suppressed.mjs
+printf '%s\n' 'from pathlib import Path # noqa: E402' 'value = 1 # type: ignore[assignment]' > engine/suppressed.py
 printf '1\tengine/a.sh\n' > tools/comment-baseline.txt
 rc=0; out=$(ratchet) || rc=$?
 [[ $rc == 0 && $out == 'comment-ratchet ok' ]] || fail "a heredoc # line or a file at its baseline was refused: $out"

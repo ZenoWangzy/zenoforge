@@ -1,17 +1,14 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
-import { extname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { missingSourceCommentTools, sourceCommentKind, sourceComments, stripSourceComments } from './source-comments.mjs';
 
 process.chdir(join(fileURLToPath(import.meta.url), '..', '..'));
 const baselinePath = 'tools/comment-baseline.txt';
-const kinds = { '.sh': 'sh', '.bash': 'sh', '.mjs': 'ts', '.cjs': 'ts', '.js': 'ts', '.ts': 'ts', '.py': 'py' };
-const kindOf = (path) => kinds[extname(path)];
+const kindOf = sourceCommentKind;
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 1 << 30 });
-const missing = [];
 
 const argv = process.argv.slice(2);
 const proofAt = argv.indexOf('--proof');
@@ -21,119 +18,20 @@ if (argv.length && !(argv.length === 1 && argv[0] === '--tighten') && !(proofAt 
   process.exit(2);
 }
 
-let shfmtBin = 'shfmt';
-function findShfmt() {
-  for (const bin of ['shfmt', join(homedir(), '.local', 'bin', 'shfmt')]) {
-    if (!spawnSync(bin, ['--version']).error) return bin;
-  }
-  return null;
-}
-
-function run(cmd, args, input) {
-  const r = spawnSync(cmd === 'shfmt' ? shfmtBin : cmd, args, { input, encoding: 'utf8', maxBuffer: 1 << 30 });
-  if (r.error?.code === 'ENOENT') { missing.push(cmd); return null; }
-  if (r.status !== 0) throw new Error(`${cmd} failed on ${args.join(' ')}: ${r.stderr.trim()}`);
-  return r.stdout;
-}
-
-let ts = null;
-function loadTs() {
-  if (ts) return ts;
-  const attempt = (load) => { try { return load(); } catch { return null; } };
-  const fromNpmRoot = () => {
-    const root = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return createRequire(import.meta.url)(join(root, 'typescript'));
-  };
-  const found = attempt(() => createRequire(join(process.cwd(), 'package.json'))('typescript'))
-    ?? attempt(fromNpmRoot)
-    ?? attempt(() => createRequire(import.meta.url)(join(homedir(), '.npm-global', 'lib', 'node_modules', 'typescript')));
-  if (found) ts = found; else missing.push('typescript');
-  return ts;
-}
-
 const ignoredTs = (text) => /^(eslint-|@ts-|\/ <reference|#!)/.test(text.replace(/^\/\/|^\/\*|\*\/$/g, '').trimStart());
-const regexAllowed = (prev, S) => prev === undefined || ![S.Identifier, S.CloseParenToken, S.CloseBracketToken, S.CloseBraceToken,
-  S.NumericLiteral, S.StringLiteral, S.NoSubstitutionTemplateLiteral, S.TemplateTail, S.RegularExpressionLiteral,
-  S.PlusPlusToken, S.MinusMinusToken, S.ThisKeyword, S.TrueKeyword, S.FalseKeyword, S.NullKeyword].includes(prev);
-
-function countTs(text) {
-  const T = loadTs();
-  if (!T) return 0;
-  const S = T.SyntaxKind;
-  const scanner = T.createScanner(T.ScriptTarget.Latest, false, T.LanguageVariant.Standard, text);
-  const templateBraces = [];
-  let n = 0, prev;
-  let kind = scanner.scan();
-  while (kind !== S.EndOfFileToken) {
-    if (kind === S.SingleLineCommentTrivia || kind === S.MultiLineCommentTrivia) {
-      if (!ignoredTs(scanner.getTokenText())) n++;
-    } else if (kind < S.FirstTriviaToken || kind > S.LastTriviaToken) {
-      if (kind === S.TemplateHead) templateBraces.push(0);
-      else if (kind === S.OpenBraceToken && templateBraces.length) templateBraces[templateBraces.length - 1]++;
-      else if (kind === S.CloseBraceToken && templateBraces.length) {
-        if (templateBraces[templateBraces.length - 1] === 0) {
-          kind = scanner.reScanTemplateToken(false);
-          if (kind === S.TemplateTail) templateBraces.pop();
-        } else templateBraces[templateBraces.length - 1]--;
-      }
-      if ((kind === S.SlashToken || kind === S.SlashEqualsToken) && regexAllowed(prev, S)) kind = scanner.reScanSlashToken();
-      prev = kind;
-    }
-    kind = scanner.scan();
-  }
-  return n;
-}
-
-function countSh(text) {
-  const out = run('shfmt', ['--to-json'], text);
-  if (out === null) return 0;
-  let n = 0;
-  (function walk(node) {
-    if (Array.isArray(node)) return node.forEach(walk);
-    if (!node || typeof node !== 'object') return;
-    if ('Hash' in node) {
-      const text = node.Text ?? '';
-      const shebang = text.startsWith('!') && node.Pos?.Offset === 0;
-      if (!shebang && !text.trimStart().startsWith('shellcheck ')) n++;
-      return;
-    }
-    Object.values(node).forEach(walk);
-  })(JSON.parse(out));
-  return n;
-}
-
-const pyCount = `import io, re, sys, tokenize
-n = 0
-for tok in tokenize.tokenize(io.BytesIO(sys.stdin.buffer.read()).readline):
-    if tok.type != tokenize.COMMENT: continue
-    if tok.start[0] == 1 and tok.string.startswith('#!'): continue
-    if re.match(r'#\\s*(type:|noqa|pragma)', tok.string): continue
-    n += 1
-print(n)`;
-
-function countPy(text) {
-  const out = run('python3', ['-I', '-c', pyCount], text);
-  return out === null ? 0 : Number(out);
-}
-
-const counters = { sh: countSh, ts: countTs, py: countPy };
+const counters = {
+  sh: (text) => sourceComments('sh', text).filter(({ text: comment, offset }) => !(comment.startsWith('!') && offset === 0) && !comment.trimStart().startsWith('shellcheck ')).length,
+  ts: (text) => sourceComments('ts', text).filter(({ text: comment }) => !ignoredTs(comment)).length,
+  py: (text) => sourceComments('py', text).filter(({ line, text: comment }) => !(line === 1 && comment.startsWith('#!')) && !/^#\s*(type:|noqa|pragma)/.test(comment)).length,
+};
 const stripped = {
-  sh: (text) => run('shfmt', ['-mn'], text),
-  ts: (text, path) => {
-    const T = loadTs();
-    return T && T.createPrinter({ removeComments: true }).printFile(T.createSourceFile(path, text, T.ScriptTarget.Latest, false));
-  },
-  py: (text) => run('python3', ['-I', '-c', 'import ast,sys;sys.stdout.write(ast.dump(ast.parse(sys.stdin.read())))'], text),
+  sh: (text) => stripSourceComments('sh', text),
+  ts: (text, path) => stripSourceComments('ts', text, path),
+  py: (text) => stripSourceComments('py', text),
 };
 
 function requireTools(kindSet) {
-  missing.length = 0;
-  if (kindSet.has('sh')) {
-    const found = findShfmt();
-    if (found) shfmtBin = found; else missing.push('shfmt');
-  }
-  if (kindSet.has('ts')) loadTs();
-  if (kindSet.has('py')) run('python3', ['--version'], '');
+  const missing = missingSourceCommentTools(kindSet);
   const need = {
     shfmt: ['shfmt is not installed (needed for .sh files)', 'download the static release binary from https://github.com/mvdan/sh/releases and chmod +x it'],
     typescript: ['typescript is not installed (needed for .js/.ts/.mjs/.cjs files)', 'run npm install -g typescript'],
