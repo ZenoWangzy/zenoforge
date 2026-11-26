@@ -28,7 +28,7 @@ The engine's own stages use the same skills (`docs/architecture.md`, "Method: Ma
 
 ## Public repo
 
-This repository is public. Keep customer names, home-directory paths, hostnames, private repository names and credentials out of code, tests, docs, commit messages and PR text. Call the pipeline Zenoforge was extracted from "the origin deployment".
+This repository is public. `engine/public-text-guard.mjs` checks tracked text, changed file paths, commit messages and PR bodies for home-directory paths and configured private terms. CI reads newline-separated terms from the `ZF_PUBLIC_TEXT_DENYLIST` secret; local land reads `zenoforge/public-text-denylist` under `XDG_CONFIG_HOME` or `ZF_PUBLIC_TEXT_DENYLIST_FILE`. Keep customer names, home-directory paths, hostnames, private repository names and credentials out of code, tests, docs, commit messages and PR text. Call the pipeline Zenoforge was extracted from "the origin deployment".
 
 ## Tests
 

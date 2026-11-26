@@ -43,6 +43,7 @@ quick_land_push() { # <the --test commands>; a rejected push replays onto the mo
     theirs="$(git diff --name-only "$base" origin/main | sort -u)"
     [[ -z "$(comm -12 <(git diff --name-only "$base" HEAD | sort -u) <(printf '%s\n' "$theirs"))" ]] || return 1
     git rebase -q origin/main 2>/dev/null || { git rebase --abort 2>/dev/null; return 1; }
+    quick_land_public_text_check origin/main HEAD || return 1
     rerun=()
     for cmd in "$@"; do
       for word in $cmd; do [[ $word == *.test.* ]] && grep -qxF -- "$word" <<<"$theirs" && { rerun+=("$cmd"); break; }; done
@@ -126,6 +127,18 @@ quick_land_commit_refusal() { # [test commands]
   [[ -z "$out" ]] || echo "shortcut-ratchet: $out"
   [[ ! -f tools/comment-ratchet.mjs ]] || out="$(node tools/comment-ratchet.mjs --changed origin/main 2>&1)" || echo "comment-ratchet: $out" # fixture repos without the tool skip it
   [[ ! -f tools/suppression-ratchet.mjs ]] || out="$(node tools/suppression-ratchet.mjs --changed origin/main 2>&1)" || echo "suppression-ratchet: $out"
+  quick_land_public_text_check origin/main HEAD || return 0
+}
+
+quick_land_public_text_check() {
+  local guard="$QUICK_LAND_DIR/../engine/public-text-guard.mjs" output
+  [[ -f "$guard" ]] || { printf '%s\n' 'public-text-guard: missing guard'; return 1; }
+  if output="$(node "$guard" --base "$1" --head "$2" 2>&1)"; then
+    printf '%s\n' "$output" >&2
+  else
+    printf '%s\n' "$output"
+    return 1
+  fi
 }
 
 quick_land_run_tests() { # test commands...; stops at the first red, the receipt keeps every rc
