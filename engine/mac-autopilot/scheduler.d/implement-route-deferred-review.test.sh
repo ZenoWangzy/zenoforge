@@ -8,9 +8,13 @@ A="$test_env_root/implement-route-deferred-review"
 export AGENT_HOME="$A" test_env_bin
 mkdir -p "$A/logs" "$test_env_bin"
 LOG="$A/scheduler.log"; UNITS="$A/units.json"; COOLDOWN="$A/cooldown.json"; STAMP=2026-11-21T23:30:00Z
-NOW_EPOCH="$(date +%s)"; MAX=8; TICK_REVIEW_WAITS=""
+NOW_EPOCH="$(date +%s)"; MAX=8; TICK_REVIEW_WAITS=""; ROUTING_MODE=false; REVIEW_POOL=all
 : > "$LOG"; echo '{}' > "$COOLDOWN"
-export PATH="$test_env_bin:$PATH" MODEL_POLICY_DEFAULT="$script_dir/../../model-policy.default.json"
+test_cli_path=""
+while IFS= read -r path_entry; do
+  [[ -n "$path_entry" && "$path_entry" != "$test_host_home"/* ]] && test_cli_path="${test_cli_path:+$test_cli_path:}$path_entry"
+done < <(tr ':' '\n' <<<"${PATH#"$test_env_bin":}")
+export PATH="$test_env_bin:$test_cli_path" MODEL_POLICY_DEFAULT="$script_dir/../../model-policy.default.json"
 export MODEL_POLICY_FILE="$A/model-policy.json" ZCODE_PROVIDER_CONFIG_FILE="$A/zcode-config.json"
 export CODEX_EXHAUSTED_MARKER_FILE="$A/codex-exhausted-until" CODEX_UNAVAILABLE_MARKER_FILE="$A/codex-unavailable-until"
 export CODEX_PROVIDER_PROBE_REQUIRED_FILE="$A/probe-required"
@@ -30,9 +34,10 @@ fail() { echo "not ok - $*" >&2; cat "$LOG" >&2; exit 1; }
 # Stubs: the ledger write, the model table and the CLI/probe checks. The hold, cap and verdict logic is real.
 set_unit() { local tmp="$A/units.tmp"; jq --arg id "$1" "(.units[] | select(.id==\$id)) |= ($2)" "$UNITS" > "$tmp" && mv "$tmp" "$UNITS"; }
 model_policy_model_allowed_for_role() { return 0; }
-routing_configured() { return 1; }
+unit_hard_escalated() { return 1; }
+routing_configured() { [[ "${ROUTING_MODE:-false}" == true ]]; }
 codex_probe_ok() { return 0; }
-model_tuple_field() { case "$1:$2" in review:0) echo gpt-5.5 ;; review:1) echo high ;; review_cross:0) echo GLM-5.3 ;; review_cross:1) echo max ;; review_fallback:0) echo claude-sonnet-4-6 ;; review_fallback:1) echo high ;; esac; }
+model_tuple_field() { case "$1:$2" in review:0) [[ "${REVIEW_POOL:-all}" == claude-only ]] || echo gpt-5.5 ;; review:1) echo high ;; review_cross:0) echo GLM-5.3 ;; review_cross:1) echo max ;; review_fallback:0) echo claude-sonnet-4-6 ;; review_fallback:1) echo high ;; esac; }
 review_identity_for_model() { case "$1" in gpt-*) echo "codex:$1:$2" ;; GLM-*) echo "zcode:$1:$2" ;; claude-*) echo "claude:$1:$2" ;; *) return 1 ;; esac; }
 toggle_cli() { if [[ "$2" == on ]]; then printf '#!/usr/bin/env bash\nexit 0\n' > "$test_env_bin/$1"; chmod +x "$test_env_bin/$1"; else rm -f "$test_env_bin/$1"; fi; }
 command() { if [[ "${1:-}" == -v && ( "${2:-}" == claude || "${2:-}" == codex ) ]]; then [[ -x "$test_env_bin/$2" ]]; return; fi; builtin command "$@"; }
@@ -88,7 +93,7 @@ write_units 0; reset_route; future > "$CLAUDE_EXHAUSTED_MARKER_FILE"
   if pick_routed_implementer '{}' ''; then fail "(d2) glm implement picked on a repeated check"; fi
   [[ "$IMPLEMENT_REVIEWER_REASON" == reviewer-held:claude ]] || fail "(d2) repeated glm wait reason was $IMPLEMENT_REVIEWER_REASON"
 )
-grep -Fq 'implement-route unreviewable family=glm reason=reviewer-held:claude' "$LOG" || fail "(d2) glm wait log missing"
+grep -Fq 'implement-route deferred-review family=glm reviewer=claude reason=reviewer-held:claude' "$LOG" || fail "(d2) glm wait log missing"
 grep -Fq 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm reason=reviewer-held:claude' "$AGENT_HOME/logs/head-watch.alerts" || fail "(d2) Claude hold alert missing"
 glm_alerts="$(grep -F "${STAMP:0:13}" "$AGENT_HOME/logs/head-watch.alerts" | grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm ' || true)"
 [[ "$glm_alerts" == 1 ]] || fail "(d2) glm alert count for the hour was $glm_alerts"
@@ -130,5 +135,29 @@ balance 24582
 implement_route_family_reviewable claude || fail "(h) claude not deferred at the credits cap: $IMPLEMENT_REVIEWER_REASON"
 grep -Fq "implement-route deferred-review family=claude reviewer=glm until=$glm_until waiting=3/16" "$LOG" || fail "(h) deferred line missing at the credits cap"
 CODEX_CREDITS_ROLES=""; CODEX_CREDITS_CAP=""; CODEX_CREDITS_START_BALANCE=""
+
+REVIEW_POOL=claude-only; CFG='{"models":{"implement_share":{"claude":0,"zcode":100,"codex":0}}}'
+write_units 0; reset_route; toggle_cli claude on; future > "$CLAUDE_EXHAUSTED_MARKER_FILE"
+unit='{"id":"u-i","issue":"1457","implement_provider":"zcode"}'
+PICK_ROUTE_PROVIDER=""
+if pick_implementer "$unit"; then fail "(i) glm implement picked with its only reviewer held by Claude"; fi
+[[ "$IMPLEMENT_REVIEWER_REASON" == reviewer-held:claude ]] || fail "(i) reviewer hold reason was $IMPLEMENT_REVIEWER_REASON"
+grep -Fq 'implement-route deferred-review family=glm reviewer=claude reason=reviewer-held:claude' "$LOG" || fail "(i) glm route did not wait"
+! grep -Fq 'implement-route unreviewable family=glm' "$LOG" || fail "(i) glm route was logged as unreviewable"
+alerts="$(grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm reason=reviewer-held:claude' "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null || true)"
+[[ "$alerts" == 1 ]] || fail "(i) expected one hourly alert, got $alerts"
+if pick_implementer "$unit"; then fail "(i) second glm implement picked with its only reviewer held by Claude"; fi
+alerts="$(grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm reason=reviewer-held:claude' "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null || true)"
+[[ "$alerts" == 1 ]] || fail "(i) repeated hourly alert, got $alerts"
+ROUTING_MODE=true
+routing_family_order() { echo claude; }
+routing_implement_family_order() { echo glm; }
+IMPLEMENT_ROUTE_REVIEWABILITY_CACHE=(); IMPLEMENT_ROUTE_SKIPS=""; : > "$LOG"
+if pick_implementer "$unit"; then fail "(i) routed glm implement picked with its only reviewer held by Claude"; fi
+[[ "$IMPLEMENT_REVIEWER_REASON" == reviewer-held:claude ]] || fail "(i) routed reviewer hold reason was $IMPLEMENT_REVIEWER_REASON"
+grep -Fq 'implement-route deferred-review family=glm reviewer=claude reason=reviewer-held:claude' "$LOG" || fail "(i) routed glm route did not wait"
+! grep -Fq 'implement-route unreviewable family=glm' "$LOG" || fail "(i) routed glm route was logged as unreviewable"
+alerts="$(grep -Fc 'IMPLEMENT-ROUTE-UNREVIEWABLE family=glm reason=reviewer-held:claude' "$AGENT_HOME/logs/head-watch.alerts" 2>/dev/null || true)"
+[[ "$alerts" == 1 ]] || fail "(i) routed retry repeated the hourly alert, got $alerts"
 
 echo 'ok - implement-route deferred review'
