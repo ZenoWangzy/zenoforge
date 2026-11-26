@@ -292,7 +292,7 @@
 8	engine/mac-autopilot/daemon-self-check.sh
 3	engine/mac-autopilot/daemon-self-check.test.sh
 2	engine/mac-autopilot/dashboard-attention.test.sh
-35	engine/mac-autopilot/dashboard-front.test.sh
+33	engine/mac-autopilot/dashboard-front.test.sh
 6	engine/mac-autopilot/dashboard-modules.test.sh
 1	engine/mac-autopilot/dashboard_titles.py
 1	engine/mac-autopilot/delivery_diagnostics.py
@@ -507,7 +507,7 @@
 14	engine/mac-autopilot/scheduler.d/size-recuts.sh
 3	engine/mac-autopilot/scheduler.d/stale-local-branch.test.sh
 12	engine/mac-autopilot/scheduler.d/start-silent-breaker.test.sh
-107	engine/mac-autopilot/scheduler.d/stop-loss.sh
+104	engine/mac-autopilot/scheduler.d/stop-loss.sh
 13	engine/mac-autopilot/scheduler.d/stuck-workers.sh
 69	engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh
 1	engine/mac-autopilot/scheduler.d/supervisor-owned.sh
