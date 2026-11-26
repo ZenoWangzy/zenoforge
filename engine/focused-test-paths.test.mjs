@@ -339,6 +339,13 @@ test('maps the maintainer rulings registry to its metadata contract test', () =>
   ), [suite]);
 });
 
+test('maps the practices index and AGENTS pointer to their documentation check', () => {
+  const suite = 'engine/practices-index.test.mjs';
+  for (const source of ['AGENTS.md', 'docs/agents/practices.md']) {
+    assert.deepEqual(focusedTestPaths([source], new Set([suite])), [suite], source);
+  }
+});
+
 test('routes the remote GitNexus index publisher to its fake-host test', () => {
   const productTests = Object.values(readPackJson('state/focused-test-map.json')?.related_tests ?? {}).flat();
   const indexTest = productTests.find((path) => (

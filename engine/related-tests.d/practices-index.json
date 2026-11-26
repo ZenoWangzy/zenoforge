@@ -1,0 +1,4 @@
+{
+  "AGENTS.md": ["engine/practices-index.test.mjs"],
+  "docs/agents/practices.md": ["engine/practices-index.test.mjs"]
+}
