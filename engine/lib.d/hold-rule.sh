@@ -20,16 +20,16 @@ hold_rule_decide() {
   local target="${1:-}" action="${2:-}" comment_id="${3:-}" blocker="${4:-}" waiver="${5:-}" check_only="${6:-false}" author="${7:-}" unit n comment owner current_author sched issue_state state_name rc scheduler_output
   HOLD_RULE_REFUSAL_TEXT=""
   [[ "$target" =~ ^[1-9][0-9]*$ ]] && target="issue-$target"
-  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ ]] || { echo "hold_rule: invalid target or action" >&2; return 64; }
+  [[ "$target" =~ ^(issue|pr)-([1-9][0-9]*)$ && "$action" =~ ^(requeue|reroute|approve|arbiter|recut|reblock|supersede-handoff|ready|close|waiver)$ ]] || { HOLD_RULE_REFUSAL_TEXT="hold_rule: invalid target or action"; return 64; }
   if [[ "$check_only" == true ]]; then
-    [[ -z "$comment_id" && ( -z "$author" || "$author" =~ ^[A-Za-z0-9-]+$ ) ]] || { echo "hold_rule: --comment is not accepted with --check; --author must be a login" >&2; return 64; }
+    [[ -z "$comment_id" && ( -z "$author" || "$author" =~ ^[A-Za-z0-9-]+$ ) ]] || { HOLD_RULE_REFUSAL_TEXT="hold_rule: --comment is not accepted with --check; --author must be a login"; return 64; }
   else
-    [[ "$comment_id" =~ ^[1-9][0-9]*$ ]] || { echo "hold_rule: invalid comment id" >&2; return 64; }
+    [[ "$comment_id" =~ ^[1-9][0-9]*$ ]] || { HOLD_RULE_REFUSAL_TEXT="hold_rule: invalid comment id"; return 64; }
   fi
   unit="$target"; n="${unit#*-}"
-  [[ "$action" != waiver || -n "$waiver" ]] || { echo "hold_rule: waiver needs --size-waiver N" >&2; return 64; }
-  [[ -z "$waiver" || ( ( "$action" == requeue || "$action" == waiver ) && "$waiver" =~ ^[1-9][0-9]*$ ) ]] || { echo "hold_rule: --size-waiver is allowed only with --requeue or alone as --waiver; --reroute keeps an existing waiver" >&2; return 64; }
-  [[ "$action" != ready || "$unit" == issue-* ]] || { echo "hold_rule: --ready takes an issue, not a PR" >&2; return 64; }
+  [[ "$action" != waiver || -n "$waiver" ]] || { HOLD_RULE_REFUSAL_TEXT="hold_rule: waiver needs --size-waiver N"; return 64; }
+  [[ -z "$waiver" || ( ( "$action" == requeue || "$action" == waiver ) && "$waiver" =~ ^[1-9][0-9]*$ ) ]] || { HOLD_RULE_REFUSAL_TEXT="hold_rule: --size-waiver is allowed only with --requeue or alone as --waiver; --reroute keeps an existing waiver"; return 64; }
+  [[ "$action" != ready || "$unit" == issue-* ]] || { HOLD_RULE_REFUSAL_TEXT="hold_rule: --ready takes an issue, not a PR"; return 64; }
   if gh_rate_limit_active graphql >/dev/null 2>&1; then
     HOLD_RULE_REFUSAL_TEXT="hold_rule: GitHub GraphQL backoff is active"
     return 75

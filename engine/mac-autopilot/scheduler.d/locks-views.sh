@@ -429,7 +429,7 @@ rule_entry_decide() {
       case "$stage" in supervisor-review|parked|blocked-external) ;; *) RULE_ENTRY_REFUSAL_TEXT="rule: $id is in $stage; close needs supervisor-review, parked or blocked-external"; return 1 ;; esac
       pr="$(unit_field "$id" '.pr // empty')"
       if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
-        pr_state="$(tick_pr_state "$pr")" || { RULE_ENTRY_REFUSAL_TEXT="rule: $id PR #$pr state is unreadable; close refused"; return 75; }
+        pr_state="$(pr_view "$pr" state)" || { RULE_ENTRY_REFUSAL_TEXT="rule: $id PR #$pr state is unreadable; close refused"; return 75; }
         [[ "$pr_state" != OPEN ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: $id has open PR #$pr; close or merge it first"; return 1; }
       fi
       ;;
@@ -460,7 +460,7 @@ rule_entry_decide() {
         [[ "$id" =~ ^pr-([1-9][0-9]*)$ ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: $id has no PR head to supersede the handoff snapshot"; return 1; }
         pr="${BASH_REMATCH[1]}"
       fi
-      head="$(tick_pr_head "$pr")" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read the current head of PR #$pr"; return 75; }
+      head="$(pr_view "$pr" headRefOid)" || { RULE_ENTRY_REFUSAL_TEXT="rule: could not read the current head of PR #$pr"; return 75; }
       [[ "$head" =~ $SHA_RE ]] || { RULE_ENTRY_REFUSAL_TEXT="rule: PR #$pr has no valid current head"; return 1; }
       ;;
   esac
