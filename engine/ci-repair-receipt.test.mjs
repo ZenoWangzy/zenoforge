@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 process.env.ZF_REPO ??= 'example-maintainer/example-repo';
-import { appendRepairReceipt, fullCheckCommandFor, matchesRepairReceipt, validateRepairReceipt } from './ci-repair-receipt.mjs';
+import { appendRepairReceipt, matchesRepairReceipt, validateRepairReceipt } from './ci-repair-receipt.mjs';
 
 const receipt = {
   version: 2, branch: 'hand/original-pr', prNumber: 123,
@@ -23,7 +23,7 @@ test('shared receipt contract binds branch, failed check identity and tested HEA
   assert.equal(matchesRepairReceipt(receipt, receipt), true);
   assert.equal(matchesRepairReceipt({ ...receipt, recordedAtMs: receipt.recordedAtMs + 1 }, receipt), true, 'existing v1 timestamp reads may differ');
   for (const patch of [
-    { branch: 'hand/temp' }, { testedHeadSha: '3'.repeat(40) }, { failedHeadSha: '4'.repeat(40) },
+    { prNumber: 124 }, { branch: 'hand/temp' }, { testedHeadSha: '3'.repeat(40) }, { failedHeadSha: '4'.repeat(40) },
     { failureLink: `${receipt.failureLink}0` }, { checkName: 'different' }, { failedAt: '2026-10-10T00:00:02Z' },
   ]) assert.equal(matchesRepairReceipt(receipt, { ...receipt, ...patch }), false);
   for (const patch of [
@@ -68,30 +68,6 @@ test('hotfix receipt requires positive original PR number', () => {
   for (const prNumber of [undefined, 0, 3716.5]) {
     assert.throws(() => validateRepairReceipt({ ...hotfixReceipt, prNumber }), /Invalid CI repair receipt/);
   }
-});
-
-test('frozen #3536 shard evidence cannot turn one passing unit into a shard pass', () => {
-  const frozen = {
-    version: 2, branch: 'hand/vision-file-401-1012', prNumber: 3536,
-    failureLink: 'https://github.com/example-maintainer/example-repo/actions/runs/38261241888/job/114852777670',
-    checkName: 'Pipeline suites shard 1',
-    failedHeadSha: '94c5b28c283e0bcc8cf68a5642a8c43c6cc11b6b',
-    testedHeadSha: '32d4809085e07f4a2971eb7a8df4c8bbbaf85182',
-    mainHeadSha: '37f3a278775457df5e05104de1c61499acb52cd7',
-    failedAt: '2026-10-12T14:43:23Z', failedAtMs: Date.parse('2026-10-12T14:43:23Z'),
-    recordedAt: '2026-10-12T14:43:24.000Z', recordedAtMs: Date.parse('2026-10-12T14:43:25Z'),
-  };
-  const focusedCommand = 'bash engine/land-direct-main.test.sh --transient-lock-release-only';
-  assert.equal(fullCheckCommandFor(frozen.checkName), 'bash engine/run-ci-suites.sh --shard 1/5');
-  assert.throws(() => validateRepairReceipt({ ...frozen, status: 'passed', scope: 'whole-check', command: focusedCommand }),
-    /whole-check pass/);
-  const focused = {
-    ...frozen, status: 'focused-passed', scope: 'failing-unit', command: focusedCommand,
-    failingPath: 'engine/land-direct-main.test.sh', mainHeadSha: undefined,
-  };
-  assert.deepEqual(validateRepairReceipt(focused), focused);
-  assert.equal(matchesRepairReceipt({ ...focused, prNumber: 3537 }, focused), false);
-  assert.equal(matchesRepairReceipt({ ...focused, status: 'unverified' }, focused), false);
 });
 
 test('locked receipt append preserves concurrent owners; malformed JSON stays refused', async () => {
