@@ -117,10 +117,8 @@ fi
 now="$(date +%s)"
 stamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 SUPERVISOR_DIR="${BELL_SUPERVISOR_DIR:-$MAC_AUTOPILOT_SUPERVISOR_DIR}"
-events=()
-action_ids=()
-action_severities=()
-action_sigs=()
+events=() worker_died_active=()
+action_ids=() action_severities=() action_sigs=()
 action_results=()
 event_seq=0
 clean() { printf '%s' "$1" | tr '\t\r\n' '   '; }
@@ -684,9 +682,9 @@ if [[ "$stale" == 1 ]]; then
 fi
 
 if [[ -r "$A/workers.json" && -r "$A/units.json" ]]; then
-  while IFS=$'\t' read -r pid unit harvested log report; do
+  while IFS=$'\t' read -r pid unit harvested log report started; do
     [[ "$pid" =~ ^[0-9]+$ && -n "$unit" ]] || continue
-    [[ "$harvested" == true ]] && continue
+    [[ "$harvested" == true ]] && continue; worker_died_raw="worker-died unit=$unit run=${started:-pid-$pid}"; worker_died_active+=("$worker_died_raw")
     kill -0 "$pid" 2>/dev/null || worker_log_fresh "$log" && continue
     # 已交付报告的 worker 是正常结束、等下一拍回收，不是死亡（每次误报都会拉起一次付费调查）。
     [[ "$report" =~ ^[A-Za-z0-9._/-]+$ && "$report" != *".."* && -s "$SUPERVISOR_DIR/$report" ]] && continue
@@ -698,8 +696,8 @@ if [[ -r "$A/workers.json" && -r "$A/units.json" ]]; then
     oom_output="$(ap_oom_evidence 5 | head -c 2048 || true)"
     [[ -n "$oom_output" ]] || oom_output="[no matching journal output]"
     evidence="tail -n 120 '$SUPERVISOR_DIR/$log'; tail -n 120 '$SUPERVISOR_DIR/$report'; $(ap_oom_command 5) output (max 2048 bytes): $oom_output"
-    add_event high "worker-died unit=$unit" "worker-died unit=$unit pid=$pid stage=$stage log=$log report=$report" "$evidence"
-  done < <(jq -r '.workers[]?|[(.pid|tostring),(.unit//""),((.harvested//false)|tostring),(.log//""),(.report//"")]|@tsv' "$A/workers.json" 2>/dev/null)
+    add_event high "$worker_died_raw" "worker-died unit=$unit pid=$pid stage=$stage log=$log report=$report" "$evidence"
+  done < <(jq -r '.workers[]?|[(.pid|tostring),(.unit//""),((.harvested//false)|tostring),(.log//""),(.report//""),(.started//"")]|@tsv' "$A/workers.json" 2>/dev/null)
 fi
 
 # Repeated pipeline-suite failures are promoted when the same suite appears in
@@ -848,7 +846,8 @@ for item in "${events[@]}"; do
   IFS=$'\t' read -r prev count event_id <<<"$sig_info"
   [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
-  if [[ "$raw" != network-recovered ]] && (( prev > 0 && now - prev < DEDUP_SECONDS )); then
+  if [[ "$raw" == worker-died\ * ]] && worker_died_run_seen "$raw"; then continue
+  elif [[ "$raw" != network-recovered ]] && (( prev > 0 && now - prev < DEDUP_SECONDS )); then
     count=$((count+1))
     STATE_JSON="$(jq -c --arg h "$h" --argjson now "$now" --argjson n "$count" '.signatures[$h].last=$now|.signatures[$h].count=$n' <<<"$STATE_JSON")"
     queue_incident_filing "$sev" "$raw" "$summary" "$evidence"
@@ -860,7 +859,7 @@ for item in "${events[@]}"; do
 
   event_seq=$((event_seq+1))
   event_id="${now}-$$-${event_seq}"
-  STATE_JSON="$(jq -c --arg h "$h" --arg raw "$raw" --arg id "$event_id" --arg sev "$sev" --arg summary "$summary" --arg evidence "$evidence" --argjson now "$now" '.signatures[$h]={last:$now,count:1,event_id:$id}|.pending += [{id:$id,signature:$h,raw_signature:$raw,severity:$sev,summary:$summary,evidence:$evidence,status:"queued"}]' <<<"$STATE_JSON")"
+  STATE_JSON="$(jq -c --arg h "$h" --arg raw "$raw" --arg id "$event_id" --arg sev "$sev" --arg summary "$summary" --arg evidence "$evidence" --argjson now "$now" '.signatures[$h]={last:$now,count:1,event_id:$id}|if ($raw|startswith("worker-died ")) then .worker_died_runs[$raw]=true else . end|.pending += [{id:$id,signature:$h,raw_signature:$raw,severity:$sev,summary:$summary,evidence:$evidence,status:"queued"}]' <<<"$STATE_JSON")"
   if ! grep -Fq "event_id=$event_id" "$QUEUE" 2>/dev/null; then
     printf '[%s] %s %s event_id=%s | %s | %s\n' "$stamp" "$sev" "$h" "$event_id" "$summary" "$evidence" >> "$QUEUE" || true
   fi
@@ -911,10 +910,11 @@ done
 # 每拍 jq 都在反复解析它)，故未完结条目也只留最近 BELL_PENDING_KEEP 条。去重走 .signatures，不受影响。
 # auto_supervisor 已退役：没有任何进程再清 queued，这个上限是唯一的界。
 BELL_PENDING_KEEP="${BELL_PENDING_KEEP:-200}"
-STATE_JSON="$(jq -c --argjson now "$now" --argjson keep "$BELL_PENDING_KEEP" '
+STATE_JSON="$(jq -c --argjson now "$now" --argjson keep "$BELL_PENDING_KEEP" --argjson worker_runs "$(printf '%s\n' "${worker_died_active[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
   .pending |= (([.[] | select(.status != "done" and .status != "failed")] | if length > $keep then .[-$keep:] else . end)
              + ([.[] | select(.status == "done" or .status == "failed")] | .[-50:]))
-  | .signatures |= with_entries(select((.value.last // 0) > ($now - 604800)))' <<<"$STATE_JSON")"
+  | .signatures |= with_entries(select((.value.last // 0) > ($now - 604800)))
+  | .worker_died_runs = ((.worker_died_runs // {}) | with_entries(. as $entry | select($worker_runs | index($entry.key))))' <<<"$STATE_JSON")"
 if [[ "$MONITOR_INITIALIZED" != true ]]; then
   STATE_JSON="$(jq -c --argjson lines "$lines" --argjson alerts "$alerts" --argjson merges "$merges" '.monitor_initialized=true|.scheduler_lines=$lines|.alert_mtimes=$alerts|.merge_events=$merges' <<<"$STATE_JSON")"
 else

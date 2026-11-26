@@ -16,3 +16,5 @@ worker_log_fresh() {
   [[ "$1" =~ ^[A-Za-z0-9._/-]+$ && "$1" != *".."* && -f "$SUPERVISOR_DIR/$1" ]] || return 1
   (( now - $(mtime_epoch "$SUPERVISOR_DIR/$1") < 600 ))
 }
+
+worker_died_run_seen() { jq -e --arg run "$1" '.worker_died_runs[$run] == true' <<<"$STATE_JSON" >/dev/null; }
