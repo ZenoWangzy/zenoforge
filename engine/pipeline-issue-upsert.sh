@@ -10,9 +10,10 @@ body_file=""
 lane="pipeline-system"
 extra_labels=()
 labels=()
+attachments=()
 
 usage() {
-  echo "usage: $0 --class stable-slug --title title --body-file path [--lane pipeline-system|product] [--label name] [--repo owner/name]" >&2
+  echo "usage: $0 --class stable-slug --title title --body-file path [--lane pipeline-system|product] [--label name] [--attach path] [--repo owner/name]" >&2
 }
 
 while (($#)); do
@@ -22,6 +23,7 @@ while (($#)); do
     --body-file) body_file="${2:-}"; shift 2 ;;
     --lane) lane="${2:-}"; shift 2 ;;
     --label) extra_labels+=("${2:-}"); shift 2 ;;
+    --attach) attachments+=("${2:-}"); shift 2 ;;
     --repo) repo="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 64 ;;
@@ -31,6 +33,9 @@ done
 [[ "$class" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || { usage; exit 64; }
 [[ "$lane" == pipeline-system || "$lane" == product ]] || { usage; exit 64; }
 [[ -n "$title" && -n "$repo" && -r "$body_file" ]] || { usage; exit 64; }
+for attachment in "${attachments[@]}"; do
+  [[ -n "$attachment" && -f "$attachment" && -r "$attachment" && ! -L "$attachment" ]] || { usage; exit 64; }
+done
 if [[ "$lane" == pipeline-system ]]; then
   labels=(pipeline-system ready-for-agent)
 else
@@ -89,7 +94,9 @@ if [[ -n "$existing" ]]; then
     printf 'Repeated occurrence for %s class `%s`.\n\n' "$lane" "$class"
     cat -- "$body_file"
   } > "$repeated_body"
-  gh issue comment "$existing" --repo "$repo" --body-file "$repeated_body"
+  comment_args=(gh issue comment "$existing" --repo "$repo" --body-file "$repeated_body")
+  for attachment in "${attachments[@]}"; do comment_args+=(--attach "$attachment"); done
+  "${comment_args[@]}"
   printf 'commented issue #%s for class %s (open matches=%s)\n' \
     "$existing" "$class" "$(jq 'length' <<< "$matches")"
   exit 0
@@ -131,6 +138,7 @@ trap 'rm -f -- "${new_body:-}"' EXIT
 create_args=(gh issue create --repo "$repo")
 for label in "${labels[@]}"; do create_args+=(--label "$label"); done
 create_args+=(--title "$title" --body-file "$new_body")
+for attachment in "${attachments[@]}"; do create_args+=(--attach "$attachment"); done
 url="$(REPO="$repo" ZF_PIPELINE_ISSUE_UPSERT_HELPER=1 \
   bash "$SCRIPT_DIR/roadmap-issue-create.sh" "${create_args[@]}")" || exit 1
 [[ "$url" =~ /issues/([1-9][0-9]*)$ ]] || {

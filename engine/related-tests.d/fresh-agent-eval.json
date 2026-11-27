@@ -1,0 +1,4 @@
+{
+  "engine/eval/fresh-agent.mjs": ["engine/eval/fresh-agent.test.mjs", "engine/eval/runner.test.mjs"],
+  "engine/eval/cases/fresh-agent.json": ["engine/eval/fresh-agent.test.mjs", "engine/eval/runner.test.mjs"]
+}
