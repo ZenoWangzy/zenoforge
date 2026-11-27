@@ -19,7 +19,6 @@
 # worktree-lifecycle.sh. Callers provide NIGHT (and say/H where they use the
 # blocked-agent functions below).
 
-if ! declare -F gh >/dev/null 2>&1; then source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"; fi
 hand_registry_dir() { printf '%s/hand-registry\n' "$NIGHT"; }
 
 # hand_registry_record <name> <json-object>: the last dispatch of <name>.
@@ -470,7 +469,7 @@ blocked_hand_agent_dependency_landed() {
     issue\ *)
       issue="${dependency#issue }"
       [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
-      state="$(gh_timeout 15 issue view "$issue" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
+      state="$(timeout 15 gh issue view "$issue" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
       [ "$state" = CLOSED ]
       ;;
     agent\ *)

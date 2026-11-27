@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.d/gh-key-cache.sh"
 
 production_status_fetch() {
-  gh_timeout "$3" api "repos/$1/deployments/$2/statuses"
+  timeout "$3" gh api "repos/$1/deployments/$2/statuses"
 }
 
 production_status_terminal() {
@@ -16,7 +15,7 @@ repo="${1:-${ZF_REPO:?ZF_REPO is not set}}"
 per_page="${2:-20}"
 timeout_seconds="${RELEASE_GH_TIMEOUT_SECONDS:-30}"
 [[ "$per_page" =~ ^([1-9]|[1-9][0-9]|100)$ ]] || exit 64
-deployments="$(gh_timeout "$timeout_seconds" api "repos/$repo/deployments?environment=production&per_page=$per_page")" || exit 1
+deployments="$(timeout "$timeout_seconds" gh api "repos/$repo/deployments?environment=production&per_page=$per_page")" || exit 1
 jq -e 'type == "array" and all(.[]; (.id | type == "number") and (.sha | type == "string" and test("^[0-9a-f]{40}$")) and ((.payload // {}) | type == "object"))' \
   <<< "$deployments" >/dev/null || exit 1
 

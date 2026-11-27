@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Start one factory worker: locked worktree from origin/main, brief = issue pointer + factory rules + shared worker rules.
 set -uo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 unset GH_TOKEN
 S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; C=$HOME/.zenoforge/checkout; WT=$HOME/.zenoforge/checkout-wt
 key=$1 issue=$2 note=${3:-}; W=$WT/$key; B=$S/factory/$key.brief.md
