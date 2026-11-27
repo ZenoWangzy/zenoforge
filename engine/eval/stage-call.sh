@@ -7,6 +7,7 @@ export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo}"
 export ZF_EVAL_CANDIDATE_ROOT="$wt"
 source "$repo/engine/config.sh"
 resolved_repo="$(zf_env_get REPO_DIR "$repo")"
+agent_sandbox="$resolved_repo/engine/bin/agent-sandbox-run"
 export REPO_DIR="$resolved_repo" ZF_REPO_DIR="$resolved_repo" TMPDIR="$artifact/tmp" AGENT_HOME="$artifact/agent-home"
 mkdir -p "$TMPDIR" "$AGENT_HOME"
 # Seed an isolated persistent policy with the caller's selected pipeline policy.
@@ -77,19 +78,19 @@ case "$stage" in
         codex_args+=(resume "$session_id")
       fi
       status=0
-      (cd "$wt"; codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 120m codex "${codex_args[@]}" \
+      (cd "$wt"; codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 120m "$agent_sandbox" codex edit "$wt" "$artifact/report.md" -- codex "${codex_args[@]}" \
         -m "$model" -c "model_reasoning_effort=$effort" \
         "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false --json \
         --output-last-message "$artifact/report.md" - < <(matt_codex_prompt_input "$prompt" "$wt" "$MATT_CODEX_CONTEXT_ROOT") > "$artifact/worker.log" 2>&1) || status=$?
       [[ ! -f "$artifact/report.md" ]] || cat "$artifact/report.md"
       exit "$status"
     else
-      run_model_text "$wt" "$identity" 120 "$prompt" "$artifact/worker.log" "$settings"
+      ZF_AGENT_ACCESS=edit run_model_text "$wt" "$identity" 120 "$prompt" "$artifact/worker.log" "$settings"
     fi
     ;;
   fresh-agent)
     identity=$(implement_model_for_attempt); record_identity "$identity"
-    run_model_text "$wt" "$identity" 120 "$prompt" "$artifact/worker.log" "$settings"
+    ZF_AGENT_ACCESS=edit run_model_text "$wt" "$identity" 120 "$prompt" "$artifact/worker.log" "$settings"
     ;;
   review)
     # Same resolution as the pipeline: a different-family reviewer or defer
@@ -103,7 +104,7 @@ case "$stage" in
         tier=$(model_policy tier "$identity")
         tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
         matt_codex_context_prepare "$wt" "$repo"
-        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m "$agent_sandbox" codex read "$wt" "$artifact/report.md" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
           --ephemeral -m "$model" -c "model_reasoning_effort=$effort" \
           "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false \
           --output-last-message "$artifact/report.md" - < <(matt_codex_prompt_input "$prompt" "$wt" "$MATT_CODEX_CONTEXT_ROOT") > "$artifact/worker.log" 2>&1
@@ -114,7 +115,7 @@ case "$stage" in
         # prompt asks for a verdict line, not JSON.
         mapfile -t zcode_cmd < <(zf_zcode_bin_argv)
         (( ${#zcode_cmd[@]} > 0 )) || { echo "eval review: GLM CLI not found by the engine resolver" >&2; exit 127; }
-        NODE_USE_ENV_PROXY=1 pipeline_execution_run timeout 45m "${zcode_cmd[@]}" -p "$(cat "$prompt")" \
+        NODE_USE_ENV_PROXY=1 pipeline_execution_run timeout 45m "$agent_sandbox" zcode read "$wt" "" -- "${zcode_cmd[@]}" -p "$(cat "$prompt")" \
           --cwd "$wt" --mode yolo > "$artifact/report.md" 2> "$artifact/worker.log"
         ;;
       *) echo "eval review: unsupported review provider: $provider" >&2; exit 64 ;;
@@ -137,7 +138,7 @@ case "$stage" in
     fi
     status=0
     matt_codex_context_prepare "$wt" "$repo"
-    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec -p "$profile" "${CODEX_PLUGINS_OFF_ARGS[@]}" "${model_args[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m "$agent_sandbox" codex read "$wt" "$artifact/report.md" -- codex exec -p "$profile" "${CODEX_PLUGINS_OFF_ARGS[@]}" "${model_args[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
       --ephemeral --json \
       --output-last-message "$artifact/report.md" - < <(matt_codex_prompt_input "$prompt" "$wt" "$MATT_CODEX_CONTEXT_ROOT") > "$artifact/worker.log" 2>&1 || status=$?
     [[ -z "$swap_log" ]] || printf '%s\n' "$swap_log" >> "$artifact/worker.log"

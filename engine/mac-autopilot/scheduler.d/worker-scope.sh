@@ -169,6 +169,13 @@ worker_scope_launch() { # pid-file workdir output-file launcher... -- command...
   ((${#worker_command[@]})) || return 2
   worker_scope_prepare
   WORKER_SCOPE_PID_START=
+  if [[ -n "${WORKER_AGENT_PROVIDER:-}" && ( "${ZF_AGENT_TEST_MODE:-0}" != 1 || -z "${ZF_AGENT_TEST_ROOT:-}" ) ]]; then
+    local sandbox repo
+    sandbox="${WORKER_AGENT_ENGINE_DIR:?}/bin/agent-sandbox-run"
+    [[ -x "$sandbox" ]] || return 125
+    repo="$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null)" || return 125
+    worker_command=("$sandbox" "$WORKER_AGENT_PROVIDER" "$WORKER_AGENT_ACCESS" "$repo" "${WORKER_AGENT_CAPTURE_OUTPUT:-}" -- "${worker_command[@]}")
+  fi
 
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
     rm -f -- "$pid_file"

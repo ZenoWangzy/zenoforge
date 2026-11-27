@@ -209,6 +209,7 @@ BACKEND
 # The worker finds its backends beside itself; the scratch root has no bin/ (10-30 rc=127 on every dispatch).
 make_fake_backends "$test_root/bin"
 cp "$script_dir/worker-remote.py" "$test_root/bin/worker-remote.py"
+cp "$script_dir/agent-sandbox-run" "$test_root/bin/agent-sandbox-run"
 chmod +x "$test_root/bin/worker-remote.py"
 cp "$worker_script" "$test_root/bin/worker"; worker_script="$test_root/bin/worker"
 cp "$script_dir/zc" "$test_root/bin/real-zc"

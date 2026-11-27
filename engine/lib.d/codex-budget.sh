@@ -667,7 +667,7 @@ note_codex_provider_outage() {
 # Run a tiny read-only Codex call every 90s during an outage. No issue prompt
 # or ticket context crosses this probe; only a completed response clears hold.
 codex_provider_recovery_probe_if_due() {
-  local identity="$1" spec model effort now due lock_file lock_fd probe_out probe_log status=0 kind="" timestamp service_tier issue probe_succeeded=0 timeout_seconds
+  local identity="$1" spec model effort now due lock_file lock_fd probe_out probe_log status=0 kind="" timestamp service_tier issue probe_succeeded=0 timeout_seconds sandbox="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/bin/agent-sandbox-run"
   local -a service_tier_args=()
   [ -e "$CODEX_PROVIDER_PROBE_REQUIRED_FILE" ] || return 0
   # An actual quota refusal must never be cleared by an availability probe.
@@ -708,7 +708,7 @@ codex_provider_recovery_probe_if_due() {
     return 1
   }
   matt_codex_context_prepare "$REPO_DIR"
-  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_seconds}s" env -u GH_TOKEN -u GITHUB_TOKEN codex exec -c features.plugins=false \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run "$sandbox" codex read "$REPO_DIR" "$probe_out" -- timeout "${timeout_seconds}s" env -u GH_TOKEN -u GITHUB_TOKEN codex exec -c features.plugins=false \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$MATT_CODEX_CONTEXT_ROOT" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort=low "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \

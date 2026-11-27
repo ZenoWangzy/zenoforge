@@ -552,7 +552,7 @@ codex_probe_ok() { [ -f "$CODEX_PROBE_MARKER" ]; }
 run_codex_json() {
   local cwd="$1" model="$2" effort="$3" schema_file="$4" prompt_file="$5" service_tier codex_context
   local -a service_tier_args=() codex_context_args=()
-  local out_file transcript status=0 body result_text tokens_used timeout_seconds started_at elapsed timeout_detail model_output_present=false
+  local out_file transcript status=0 body result_text tokens_used timeout_seconds started_at elapsed timeout_detail model_output_present=false sandbox="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/bin/agent-sandbox-run"
   model_policy_require_implementer_identity "codex:$model:$effort" || { jq -nc '{is_error: true, subtype: "unsupported_model_identity", result: "identity does not match the work role"}'; return 64; }
   service_tier="$(model_policy tier "codex:$model:$effort")" || return $?
   [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
@@ -572,7 +572,7 @@ run_codex_json() {
   # idiom instead: self-contained, works identically whether or not the
   # caller has `set -e` active, and never mutates shared shell state.
   matt_codex_context_prepare "$cwd"; codex_context="$MATT_CODEX_CONTEXT_ROOT"; codex_context_args=("${MATT_CODEX_CONTEXT_ARGS[@]}"); started_at="$(date +%s)"
-  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_seconds}s" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_seconds}s" "$sandbox" codex read "$cwd" "$out_file" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" "${codex_context_args[@]}" --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
@@ -687,7 +687,7 @@ process.stdin.on("end", () => {
 # policy-resolved review identity; nothing here names a model.
 run_zcode_json() {
   local cwd="$1" identity="$2" timeout_minutes="$3" schema_file="$4" prompt_file="$5" role="${6:-review}"
-  local zcode_id model effort status=0 started_at elapsed timeout_detail out_file transcript reply verdict_json
+  local zcode_id model effort status=0 started_at elapsed timeout_detail out_file transcript reply verdict_json sandbox="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/bin/agent-sandbox-run"
   local -a zcode_cmd=()
   model_policy_require_role_identity "$role" "$identity" || {
     jq -nc --arg role "$role" '{is_error: true, subtype: "unsupported_model_identity", result: ("identity does not match the " + $role + " role")}'
@@ -724,9 +724,8 @@ run_zcode_json() {
   # systemd-run -E of an unset name passes it empty, and an empty lower-case proxy beats HTTPS_PROXY: the token POST then goes direct and dies.
   local proxy_name; local -a empty_proxies=() prompt_args=(-p "$(cat "$transcript")")
   for proxy_name in http_proxy https_proxy no_proxy; do [ -n "${!proxy_name-x}" ] || empty_proxies+=(-u "$proxy_name"); done
-  # Same strip as run_codex_json: zcode has no sandbox, and the prompt carries ticket text.
   (( $(wc -c < "$transcript") < 120000 )) || prompt_args=(-p "The attached file is your complete task input; follow it exactly." --attach "$transcript") # 11-22 recut-6273: an argv over 128 KB fails exec (E2BIG, exit 126)
-  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "${empty_proxies[@]}" "${zcode_cmd[@]}" "${prompt_args[@]}" \
+  NODE_USE_ENV_PROXY=1 timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "${empty_proxies[@]}" "$sandbox" zcode read "$cwd" "" -- "${zcode_cmd[@]}" "${prompt_args[@]}" \
     --cwd "$cwd" --mode yolo > "$out_file" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ "$status" -eq 124 ]; then
@@ -797,7 +796,7 @@ run_model_advisor_batch_async() {
 run_codex_text() {
   local cwd="$1" model="$2" effort="$3" timeout_minutes="$4" prompt_file="$5" transcript_file="$6" service_tier codex_context
   local -a service_tier_args=() codex_context_args=()
-  local out_file status=0 started_at elapsed timeout_detail
+  local out_file status=0 started_at elapsed timeout_detail sandbox="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/bin/agent-sandbox-run"
   model_policy_require_implementer_identity "codex:$model:$effort" || return $?
   service_tier="$(model_policy tier "codex:$model:$effort")" || return $?
   [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
@@ -808,7 +807,7 @@ run_codex_text() {
   # caller's shell from this toggle regardless, but matching the sibling
   # function's idiom keeps the two functions safe to read the same way.
   matt_codex_context_prepare "$cwd"; codex_context="$MATT_CODEX_CONTEXT_ROOT"; codex_context_args=("${MATT_CODEX_CONTEXT_ARGS[@]}"); started_at="$(date +%s)"
-  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_minutes}m" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_minutes}m" "$sandbox" codex "${ZF_AGENT_ACCESS:-read}" "$cwd" "$out_file" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" "${codex_context_args[@]}" --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
@@ -890,7 +889,7 @@ run_codex_text() {
 run_codex_implement() {
   local cwd="$1" model="$2" effort="$3" prompt_file="$4" log_file="$5" timeout_minutes="${6:-120}" caller="${7:-unknown}" status=0 service_tier
   local -a service_tier_args=() codex_context_args=()
-  local started_at elapsed timeout_detail out_file guard_log transcript_empty=true diagnostic signal_name issue stage model_identity
+  local started_at elapsed timeout_detail out_file guard_log transcript_empty=true diagnostic signal_name issue stage model_identity sandbox="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/bin/agent-sandbox-run"
   MODEL_CALL_EXIT_STATUS=""
   MODEL_CALL_EXIT_CLASS=""
   MODEL_CALL_LOG_PATH="$log_file"
@@ -920,7 +919,7 @@ run_codex_implement() {
   # Admission diagnostics are not model output. Capture them separately until
   # transcript emptiness is determined, then retain them in the same log.
   codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run bash -c 'log=$1; shift; exec "$@" > "$log" 2>&1' _ "$log_file" \
-    timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
+    timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "$sandbox" codex write "$cwd" "$out_file" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
     --sandbox "$CODEX_SANDBOX_MODE" "${codex_context_args[@]}" --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c sandbox_workspace_write.network_access=true \

@@ -79,6 +79,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
   local token_context mark u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
+  local WORKER_AGENT_PROVIDER=codex WORKER_AGENT_ACCESS=read WORKER_AGENT_ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}" WORKER_AGENT_CAPTURE_OUTPUT=""
   local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort=""
   # Apply terminal defaults before prompt availability, the in-flight ceiling, or dispatch budgets can
   # return from this tick. Active arbitration workers keep their own result; all other capped units stop now.
@@ -238,14 +239,18 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       fi
     } > "$SUP/$q"
     launcher=(); command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-    if [[ "$over_stop" != true ]]; then codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" || return 1; fi; worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); source "$6/engine/matt-skills.sh"; matt_codex_context_prepare "$7"; exec timeout -k 30 900 codex exec -p "$1" -c features.plugins=false "${extra[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" \
-      -s read-only --json --output-last-message "$2" - < <(matt_codex_prompt_input "$3" "$7" "$MATT_CODEX_CONTEXT_ROOT")' \
-      supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$MODEL_NOT_FOUND_ARBITER_MODEL" "$MODEL_NOT_FOUND_ARBITER_EFFORT" "$ENGINE_ROOT" "$ROOT")
+    if [[ "$over_stop" != true ]]; then codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" || return 1; fi; matt_codex_context_prepare "$ROOT"; worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); exec timeout -k 30 900 codex exec -p "$1" -c features.plugins=false "${extra[@]}" "${@:8}" \
+      -s read-only --json --output-last-message "$2" - < "$3"' \
+      supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$MODEL_NOT_FOUND_ARBITER_MODEL" "$MODEL_NOT_FOUND_ARBITER_EFFORT" --attach "$SUP/$q" "${MATT_CODEX_CONTEXT_ARGS[@]}")
+    [[ "$over_stop" == true ]] || WORKER_AGENT_CAPTURE_OUTPUT="$SUP/$report"
     # stream-json to the log (usage and answer on the result line; harvest writes the report). The frozen record rides in the prompt, so no tools.
     # --safe-mode --setting-sources "" as in build_claude_implement_command; an empty effort drops --effort.
-    [[ "$over_stop" != true ]] || worker_command=(bash -c 'exec timeout -k 30 900 claude -p \
-      --model "$1" ${2:+--effort "$2"} --output-format stream-json --verbose --safe-mode --setting-sources "" --strict-mcp-config --permission-mode dontAsk --tools "" < "$3"' \
-      supervisor-arbiter "$arbiter_profile" "$arbiter_effort" "$SUP/$q")
+    if [[ "$over_stop" == true ]]; then
+      WORKER_AGENT_PROVIDER=claude
+      worker_command=(bash -c 'exec timeout -k 30 900 claude -p \
+        --model "$1" ${2:+--effort "$2"} --output-format stream-json --verbose --safe-mode --setting-sources "" --strict-mcp-config --permission-mode dontAsk --tools "" < "$3"' \
+        supervisor-arbiter "$arbiter_profile" "$arbiter_effort" "$SUP/$q" --attach "$SUP/$q")
+    fi
     pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
     rm -f -- "$pid_file"
     worker_scope_launch "$pid_file" "$ROOT" "$SUP/$log" "${launcher[@]}" -- "${worker_command[@]}" || {

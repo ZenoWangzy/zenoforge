@@ -21,7 +21,7 @@ import uuid
 RUNTIME_FILES = (
     "bin/luna",
     "bin/luna-capacity.sh",
-    "bin/zc",
+    "bin/zc", "bin/agent-sandbox.py", "bin/agent-sandbox-run", "bin/agent_sandbox_state.py", "bin/agent_sandbox_workspace.py", "bin/agent_sandbox_network.py",
     "config.sh",
     "lib.d/codex-mcp.sh",
     "lib.d/worker-remote-handoff.sh",
@@ -389,7 +389,7 @@ def make_payload(top, cwd, prompt, schema, key, target, archive_path, backend="l
                        check=True, stdout=stream, stderr=subprocess.PIPE)
     manifest = {
         "key": key,
-        "backend": validate_backend(backend),
+        "backend": validate_backend(backend), "access": os.environ.get("ZF_AGENT_ACCESS", "read"),
         "branch": branch,
         "base_branch": base_branch or branch,
         "origin": origin,
@@ -405,8 +405,8 @@ def make_payload(top, cwd, prompt, schema, key, target, archive_path, backend="l
         "output_cap_kb": os.environ.get("WORKER_OUTPUT_CAP_KB", "64"),
         "scope": scope_name(key),
     }
-    if not re.fullmatch(r"[1-9][0-9]*(?:[KMGTP]i?B?)?", manifest["memory_max"], re.I):
-        raise ValueError("ZF_WORKER_REMOTE_MEMORY_MAX must be a systemd size such as 8G")
+    if not re.fullmatch(r"[1-9][0-9]*(?:[KMGTP]i?B?)?", manifest["memory_max"], re.I): raise ValueError("ZF_WORKER_REMOTE_MEMORY_MAX must be a systemd size such as 8G")
+    if manifest["access"] not in {"read", "edit", "write"}: raise ValueError("ZF_AGENT_ACCESS must be read, edit or write")
     if not manifest["cpu_weight"].isdigit() or not 1 <= int(manifest["cpu_weight"]) <= 10000:
         raise ValueError("ZF_WORKER_REMOTE_CPU_WEIGHT must be an integer from 1 to 10000")
     job_file = temp / "job.json"
@@ -537,7 +537,7 @@ def remote_run(staging):
         "ZF_ENGINE_DIR": str(runtime),
         "WORKER_SCRATCH_ROOT": str(scratch),
         "ZF_WORKER_HOST": "local",
-        "ZF_WORKER_REMOTE_INNER": "1",
+        "ZF_WORKER_REMOTE_INNER": "1", "ZF_AGENT_ACCESS": job.get("access", "read"),
         "ZF_WORKER_REMOTE_SCOPE_NAME": job["scope"],
         "ZF_WORKER_SLICE": "zf-remote.slice",
         "LUNA_MEM_HIGH": job["memory_max"],
