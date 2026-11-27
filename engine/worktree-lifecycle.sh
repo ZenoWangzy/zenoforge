@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
+if [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh" ]]; then
+  source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
+elif [[ -n "${ZF_ENGINE_DIR:-}" && -f "$ZF_ENGINE_DIR/lib.d/transport.sh" ]]; then
+  source "$ZF_ENGINE_DIR/lib.d/transport.sh"
+elif [[ -n "${ZF_EXECUTION_MODULE_DIR:-}" && -f "$ZF_EXECUTION_MODULE_DIR/lib.d/transport.sh" ]]; then
+  source "$ZF_EXECUTION_MODULE_DIR/lib.d/transport.sh"
+elif [[ -n "${ZF_REPO_DIR:-}" && -f "$ZF_REPO_DIR/engine/lib.d/transport.sh" ]]; then
+  source "$ZF_REPO_DIR/engine/lib.d/transport.sh"
+else
+  source "$(git rev-parse --show-toplevel)/engine/lib.d/transport.sh"
+fi
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
 # Same setting lib.sh resolves; this script runs without sourcing it.

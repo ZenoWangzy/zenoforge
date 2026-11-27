@@ -30,7 +30,9 @@ case "$1 $2" in
  'pr merge') printf '%s\n' "$@" > "$LOG" ;;
 esac
 STUB
-chmod +x "$t/gh"; export PATH="$t:$PATH" LOG="$t/log" GH_TOKEN=secret
+chmod +x "$t/gh"; export PATH="$t:$PATH" LOG="$t/log" GH_TOKEN=secret FAKE_GH="$t/gh"
+gh() { "$FAKE_GH" "$@"; }
+export -f gh
 LABEL=other "$p/hf-merge.sh" 12 && exit 1
 LABEL=hotfix GATE=FAILURE "$p/hf-merge.sh" 12 && exit 1
 LABEL=hotfix "$p/hf-merge.sh" 12

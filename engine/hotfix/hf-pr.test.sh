@@ -18,7 +18,9 @@ case "$1 $2" in
   'pr create') printf '%s\n' "$@" > "$LOG" ;;
 esac
 STUB
-chmod +x "$t/git" "$t/gh"; export PATH="$t:$PATH" LOG="$t/log" GH_TOKEN=secret
+chmod +x "$t/git" "$t/gh"; export PATH="$t:$PATH" LOG="$t/log" GH_TOKEN=secret FAKE_GH="$t/gh"
+gh() { "$FAKE_GH" "$@"; }
+export -f gh
 BRANCH=topic THEIRS=z.md "$p/hf-pr.sh" && exit 1
 BRANCH=hotfix/test THEIRS=b.ts "$p/hf-pr.sh" --title hello && exit 1
 [[ ! -e $LOG ]]
