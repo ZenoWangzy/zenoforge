@@ -65,12 +65,12 @@ test('routes a missing-guard result with the rule to enforce', () => {
   const issue = buildFreshAgentGapIssue({ id, prompt: 'Keep the lesson-enforcer index complete.', remediation: {
     doc: { path: 'docs/enforced-rules.md', line: 'The index covers every registry incident.' },
     guard: 'Reject a lesson-enforcer index that omits a registry incident or differs from the generated output.',
-    lesson_lint: 'If this rule can be expressed as a lesson, add it to engine/lesson-lints.mjs as a landing check.',
+    lesson_lint: 'If this rule can be expressed as a lesson, add it through engine/lesson-lints.mjs in observe mode; move it to enforce only in a change that cites its ledger counts.',
   } }, { stage: 'fresh-agent', caseId: id, run: 1, pass: false, class: 'missing-guard', first_divergence: 'complete-incident-coverage' });
   assert.equal(issue.class, 'fresh-agent-zf-1049-lesson-enforcers-missing-guard');
   assert.equal(issue.title, 'Fresh-agent missing guard: zf-1049-lesson-enforcers');
   assert.match(issue.body, /Rule to enforce: `Reject a lesson-enforcer index that omits a registry incident or differs from the generated output\.`/);
-  assert.match(issue.body, /engine\/lesson-lints\.mjs as a landing check/);
+  assert.match(issue.body, /engine\/lesson-lints\.mjs in observe mode; move it to enforce only in a change that cites its ledger counts/);
 });
 
 test('groups repeated gap results into one routed issue body', () => {
