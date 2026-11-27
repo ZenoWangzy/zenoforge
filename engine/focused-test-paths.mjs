@@ -31,8 +31,6 @@ const CI_TREE_TESTS = Object.freeze([
 ].map(packPath));
 
 export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() => ({ addRelatedTestFragments: (map) => map }))).addRelatedTestFragments(new Map([ // new rows: related-tests.d/*.json; a lone copy of this file has none
-  ['engine/task-state.mjs', ['engine/task-state.test.mjs', 'engine/luna-task-resume.test.mjs']],
-  ['engine/bin/luna', ['engine/bin/luna-gate.test.sh', 'engine/luna-task-resume.test.mjs']],
   ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh', 'tools/pin-fail-triage.test.sh']],
   ['tools/pin-fail-triage.sh', ['tools/pin-fail-triage.test.sh']],
   ['engine/supervisor/**', ['engine/supervisor.test.sh']],
@@ -71,7 +69,6 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'engine/sweep-unlabeled-issues.test.sh', 'engine/batch-units-slice.test.sh',
   ]],
   ['engine/issue-pipeline-maintenance-budget.test.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
-  ['engine/notify.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
   ['engine/lib.d/holds.sh', ['engine/hold.test.sh']], ['engine/lib.d/hand-dependency.sh', ['engine/intake-blocked-by-tick.test.sh', 'engine/hand-blocked-on-dependency.test.sh', 'engine/intake-backlog.test.sh']], ['engine/lib.d/issue-rest.sh', ['engine/issue-rest.test.sh', 'engine/hold.test.sh', 'engine/hold-rule.test.sh', 'engine/mac-autopilot/supervisor-arbiter.test.sh']], ['engine/lib.d/hold-rule.sh', ['engine/hold-rule.test.sh', 'engine/hold.test.sh']],
   ['engine/hold.test.sh', ['engine/hold.test.sh']],
   ['engine/mac-autopilot/advisor-provider-missing.test.sh', ['engine/mac-autopilot/advisor-provider-missing.test.sh']],
@@ -281,7 +278,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ]],
   ['engine/night/maintainer-health-mail.test.sh', ['scripts/release/run-release.test.sh']],
   ['engine/night/maintainer-health-mail-incident.test.sh', ['scripts/release/run-release.test.sh']],
-  ['engine/notify.sh', ['engine/notify.test.sh', 'scripts/release/run-release.test.sh']],
+  ['engine/notify.sh', ['engine/notify.test.sh', 'scripts/release/run-release.test.sh', 'engine/issue-pipeline-maintenance-budget.test.sh']],
   ['engine/notify.test.sh', ['scripts/release/run-release.test.sh']],
   ['engine/run-release.sh', ['engine/tests/release-runner.test.sh']],
   ['engine/lib.d/fix-forward.sh', ['engine/tests/fix-forward-release-helper.test.sh']],
@@ -364,11 +361,6 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'engine/night/merge-lock.test.sh',
     'engine/guarded-hand-brief.test.sh',
     'engine/git-fetch-bounded.test.sh',
-  ]],
-  ['.zenoforge/prompts/guarded-recut-hand.md', [
-    'engine/guarded-hand-brief.test.sh',
-    'engine/run-recut.test.sh',
-    'engine/hold.test.sh',
   ]],
   ['.zenoforge/prompts/guarded-recut-hand.md', [
     'engine/guarded-hand-brief.test.sh',

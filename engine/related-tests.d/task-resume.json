@@ -1,0 +1,4 @@
+{
+  "engine/task-state.mjs": ["engine/task-state.test.mjs", "engine/luna-task-resume.test.mjs"],
+  "engine/bin/luna": ["engine/bin/luna-gate.test.sh", "engine/luna-task-resume.test.mjs"]
+}
