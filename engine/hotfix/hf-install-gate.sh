@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 unset GH_TOKEN
 [[ $# == 1 && $1 =~ ^[0-9]+$ ]] || { echo 'usage: hf-install-gate.sh <pr-number>' >&2; exit 3; }
 info=$(gh pr view "$1" --json state,mergeCommit) || { echo 'hf-install-gate: cannot read PR' >&2; exit 3; }

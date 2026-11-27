@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 unset GH_TOKEN
 # --image-lane moves the gate to after the deploy (#4622): no pre-merge acceptance
 # record, and the merged SHA is handed to hf-release.sh immediately, detached --
