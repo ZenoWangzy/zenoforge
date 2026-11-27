@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run the real timer repair block against an isolated fake user manager."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -11,16 +12,20 @@ SOURCE = Path(os.environ.get('RUN_TICK_SOURCE', str(Path(__file__).with_name('ru
 
 
 class TimerRepair(unittest.TestCase):
-    def repair(self, agent, maintenance='disabled', off='observe', inactive=True):
+    def repair(self, agent, maintenance='disabled', off='observe', inactive=True, pause=None):
         source = SOURCE.read_text()
         start = source.index('  if [ ! -r "$timer_list" ]; then')
         end = source.index('  done <"$timer_list"', start) + len('  done <"$timer_list"')
+        pause_line = '  local PAUSE_FILE="$AGENT_HOME/PAUSE"\n'
+        assert pause_line in source
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root/'timers').write_text(
                 'zenoforge-agent.timer - agent-alert\n'
                 'zenoforge-maintenance.timer CONTROL maintenance-alert\n'
             )
+            if pause is not None:
+                (root/'PAUSE').write_text(pause)
             script = '''set -euo pipefail
 declare -A active=()
 systemctl() {
@@ -44,7 +49,7 @@ refuse() { exit 99; }
 append_supervisor_event() { printf 'alert\\n' >> "$CALLS"; }
 timer_list="$ROOT/timers"; AGENT_HOME="$ROOT"; UNIT_PREFIX=zenoforge; timer_gh_timeout_sec=1; timer_repo=test/repo
 run() {
-''' + source[start:end] + '\n}\nrun\n'
+''' + pause_line + source[start:end] + '\n}\nrun\n'
             env = {
                 **os.environ,
                 'ROOT': str(root),
@@ -72,6 +77,25 @@ run() {
     def test_explicit_dependency_off_is_preserved(self):
         self.assertEqual(self.repair('disabled', 'disabled', off='off'), [
             '--user enable --now zenoforge-agent.timer',
+        ])
+
+    def test_pause_resume_naming_a_timer_leaves_it_stopped(self):
+        pause = json.dumps({'resume': 'rm PAUSE; systemctl --user start zenoforge-agent.timer other.timer'})
+        self.assertEqual(self.repair('enabled', 'enabled', pause=pause), [
+            '--user start zenoforge-maintenance.timer',
+        ])
+
+    def test_pause_resume_not_naming_a_timer_repairs_it(self):
+        pause = json.dumps({'resume': 'systemctl --user start zenoforge-agent.timer.bak other.timer'})
+        self.assertEqual(self.repair('enabled', 'enabled', pause=pause), [
+            '--user start zenoforge-agent.timer',
+            '--user start zenoforge-maintenance.timer',
+        ])
+
+    def test_plain_text_pause_does_not_stop_repair(self):
+        self.assertEqual(self.repair('enabled', 'enabled', pause='zenoforge-agent.timer'), [
+            '--user start zenoforge-agent.timer',
+            '--user start zenoforge-maintenance.timer',
         ])
 
 
