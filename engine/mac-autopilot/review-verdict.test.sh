@@ -68,6 +68,50 @@ jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-abstain",type:"review",log:"
 harvest_workers || :
 [[ "$(field pr-abstain .stage)" == supervisor-review ]] || fail 'a second missing verdict did not escalate'
 
+dropped_findings='{"findings":[
+{"id":"F-OPEN","severity":"P1","file":"src/a.ts","line":42,"rule":"Defect","status":"open","summary":"x","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm test","rerun_output":""},
+{"id":"F-RESOLVED","severity":"P1","file":"src/b.ts","line":8,"rule":"Defect","status":"resolved","summary":"y","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"","rerun_output":"FAIL"},
+{"id":"F-UNVERIFIED-DROPPED","severity":"P1","file":"src/f.ts","line":15,"rule":"Defect","status":"unverified","summary":"z","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm test","rerun_output":""}
+],"dispositions":[]}'
+{ printf 'VERDICT: READY\n\n```review-findings\n%s\n```\n' "$dropped_findings"; } > "$sup/review-dropped-ready-T1.md"
+units '{"units":[{"id":"pr-dropped-ready","pr":7,"stage":"review","history":[]}]}'
+jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-dropped-ready",type:"review",log:"x.log",report:"review-dropped-ready-T1.md",sha:$sha,pr_head:$sha}]}' > "$WORKERS"
+[[ -z "$(verdict_of "$sup/review-dropped-ready-T1.md")" ]] || fail 'READY with a dropped P1 was accepted as a verdict'
+harvest_workers || :
+[[ "$(field pr-dropped-ready .stage)" == review-pending \
+  && "$(field pr-dropped-ready '.history[-1].stage')" == verdict-missing ]] \
+  || fail 'READY with dropped P1 findings did not receive a format re-ask'
+dropped_reask="$(verdict_reask_rule "$(jq -c --arg id pr-dropped-ready '.units[] | select(.id==$id)' "$UNITS")")"
+[[ "$dropped_reask" == *F-OPEN* && "$dropped_reask" == *rerun_output* \
+  && "$dropped_reask" == *F-RESOLVED* && "$dropped_reask" == *rerun_command* \
+  && "$dropped_reask" == *F-UNVERIFIED-DROPPED* ]] \
+  || fail 'format re-ask omitted a dropped finding id or missing rerun field'
+
+{ printf 'VERDICT: READY\n\n```review-findings\n%s\n```\n' "$dropped_findings"; } > "$sup/review-dropped-ready-T2.md"
+jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-dropped-ready",type:"review",log:"x.log",report:"review-dropped-ready-T2.md",sha:$sha,pr_head:$sha}]}' > "$WORKERS"
+harvest_workers || :
+[[ "$(field pr-dropped-ready .stage)" == supervisor-review ]] || fail 'a second dropped P1 report did not use the existing re-ask bound'
+
+dropped_only='{"findings":[{"id":"F-NO-TARGET","severity":"P1","file":"src/c.ts","line":11,"rule":"Defect","status":"open","summary":"z","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm test","rerun_output":""}],"dispositions":[]}'
+{ printf 'VERDICT: NOT_READY\n\n```review-findings\n%s\n```\n' "$dropped_only"; } > "$sup/review-dropped-not-ready-T1.md"
+units '{"units":[{"id":"pr-dropped-not-ready","pr":8,"stage":"review","history":[]}]}'
+jq -n --arg sha "$H1" '{workers:[{pid:4244,unit:"pr-dropped-not-ready",type:"review",log:"x.log",report:"review-dropped-not-ready-T1.md",sha:$sha,pr_head:$sha}]}' > "$WORKERS"
+[[ -z "$(verdict_of "$sup/review-dropped-not-ready-T1.md")" ]] || fail 'NOT_READY with only a dropped P1 was accepted as a verdict'
+harvest_workers || :
+[[ "$(field pr-dropped-not-ready .stage)" == review-pending ]] \
+  || fail 'NOT_READY with only dropped P1 findings dispatched repair without targets'
+
+p2_drop='{"findings":[
+{"id":"F-P2","severity":"P2","file":"src/d.ts","line":5,"rule":"Minor","status":"open","summary":"minor","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"","rerun_output":""},
+{"id":"F-P3","severity":"P3","file":"src/g.ts","line":3,"rule":"Minor","status":"open","summary":"minor","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"","rerun_output":""}
+],"dispositions":[]}'
+{ printf 'VERDICT: READY\n\n```review-findings\n%s\n```\n' "$p2_drop"; } > "$sup/review-dropped-p2-T1.md"
+[[ "$(verdict_of "$sup/review-dropped-p2-T1.md")" == READY ]] || fail 'a dropped P2 changed the verdict'
+
+unverified_p1='{"findings":[{"id":"F-UNVERIFIED","severity":"P1","file":"src/e.ts","line":9,"rule":"Defect","status":"unverified","summary":"x","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm test","rerun_output":"FAIL"}],"dispositions":[]}'
+{ printf 'VERDICT: READY\n\n```review-findings\n%s\n```\n' "$unverified_p1"; } > "$sup/review-unverified-p1-T1.md"
+[[ "$(verdict_of "$sup/review-unverified-p1-T1.md")" == NOT_READY ]] || fail 'an unverified P1 no longer forced NOT_READY'
+
 # A Zcode/Claude stdout capture must not replace a report the reviewer wrote at the prompted path.
 units '{"units":[{"id":"pr-report-capture","lane":"pr","history":[]}]}'
 report_capture="$sup/review-preserved.md"
@@ -95,4 +139,4 @@ wait "$capture_pid" || fail 'stdout report capture worker failed'
   || fail 'the final chat message replaced the reviewer-written report'
 [[ "$(cat "$report_capture.final-message")" == "$final_reply" ]] \
   || fail 'the final chat message was not preserved in its separate capture file'
-echo 'review-verdict.test.sh: PASS (parse, ambiguity, format-only retry, second-failure escalation)'
+echo 'review-verdict.test.sh: PASS (parse, ambiguity, dropped P0/P1 re-ask, zero-target repair prevention, P2/P3 drops, unverified P1, retry bound)'

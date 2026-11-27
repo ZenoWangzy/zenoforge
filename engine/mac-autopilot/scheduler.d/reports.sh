@@ -60,6 +60,9 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
   fi
 }
 
+has_dropped_blocking_finding() {
+  jqf -e 'any(.dropped_findings[]; .severity=="P0" or .severity=="P1")' <<<"$1" >/dev/null 2>&1
+}
 # 评审结论：整文件扫「VERDICT token + 取值」并规范化旧别名（review-contract.md 的 verdict）。
 # 11-04 根因（一晚 9 个单元两次转 supervisor）：结论行写法带加粗/前缀/行内备注——`**VERDICT: READY**（备注）`、
 # `## 结论：VERDICT: READY`、复原终答里的 `结论 **VERDICT: READY**。`——整行锚定正则一概不认。取值只在含
@@ -88,8 +91,9 @@ verdict_of() {
   if [[ -n "$found" ]]; then
     [[ "$(wc -l <<<"$found")" -eq 1 ]] || return 1
     if findings="$(findings_block_of "$1")"; then
-      if jqf -e 'any(.findings[]; .status=="unverified" and (.severity=="P0" or .severity=="P1"))
-        or any(.dropped_findings[]; .status=="unverified" and (.severity=="P0" or .severity=="P1"))' \
+      if has_dropped_blocking_finding "$findings"; then
+        return 0
+      elif jqf -e 'any(.findings[]; .status=="unverified" and (.severity=="P0" or .severity=="P1"))' \
         <<<"$findings" >/dev/null 2>&1; then
         printf 'NOT_READY'
       else
@@ -103,6 +107,7 @@ verdict_of() {
     return 0
   fi
   findings="$(findings_block_of "$1")" || return 1
+  has_dropped_blocking_finding "$findings" && return 0
   jqf -e 'any(.findings[]; (.status=="open" or .status=="unverified") and (.severity=="P0" or .severity=="P1"))' <<<"$findings" >/dev/null 2>&1 \
     && printf 'NOT_READY'
 }
@@ -303,10 +308,22 @@ findings_reask_rule() { # unit-json → prompt 片段
 # 11-04 根因：结论行格式不合契约时旧路径整场重评，重评照样写歪，两次后转 supervisor——每个格式失败烧一个人工槽。
 # 重问只谈格式：评审员读回自己的上一份报告，原样重交并补一行独立 VERDICT 行，不重新展开评审。
 verdict_reask_rule() { # unit-json → prompt 片段
-  local prev
+  local prev findings dropped=""
   prev="$(jqf -r '.review_report // empty' <<<"$1")"
-  printf '\n【结论行重问】上一份评审报告 %s 没有单一可解析的 VERDICT 行。请读取该报告并把它原样重交为一份完整报告（沿用其中的结论、发现与 review-findings 块，不重新评审），只把结论改为一行独立结论行：整行仅有 `VERDICT: READY`、`VERDICT: NOT_READY` 或 `VERDICT: INPUT_INCOMPLETE` 三者之一——不加粗、不写成标题、不带「结论：」之类前缀、同一行不写任何备注或第二个取值。取值沿用你上一份报告的结论。结论行格式以 %s 为准。\n' \
-    "${prev:-上一份报告}" "$REVIEW_CONTRACT_MD"
+  findings=""
+  if [[ -n "$prev" && -n "${SUP:-}" ]]; then
+    findings="$(findings_block_of "$SUP/${prev##*/}" 2>/dev/null || true)"
+  fi
+  if [[ -n "$findings" ]]; then
+    dropped="$(jqf -r '[.dropped_findings[]? | select(.severity=="P0" or .severity=="P1") | "\(.id|@json) (\(.status)): \(.reason)"] | join("; ")' <<<"$findings")"
+  fi
+  if [[ -n "$dropped" ]]; then
+    printf '\n【评审证据格式重问】上一份报告 %s 中以下 P0/P1 findings 因 rerun evidence 缺失被丢弃：%s。请补齐各项所列出的非空 rerun 字段并重新提交完整报告，保留原 verdict 与其他 findings；不重新评审。review-findings 字段格式以 %s 为准。\n' \
+      "${prev:-上一份报告}" "$dropped" "$REVIEW_CONTRACT_MD"
+  else
+    printf '\n【结论行重问】上一份评审报告 %s 没有单一可解析的 VERDICT 行。请读取该报告并把它原样重交为一份完整报告（沿用其中的结论、发现与 review-findings 块，不重新评审），只把结论改为一行独立结论行：整行仅有 `VERDICT: READY`、`VERDICT: NOT_READY` 或 `VERDICT: INPUT_INCOMPLETE` 三者之一——不加粗、不写成标题、不带「结论：」之类前缀、同一行不写任何备注或第二个取值。取值沿用你上一份报告的结论。结论行格式以 %s 为准。\n' \
+      "${prev:-上一份报告}" "$REVIEW_CONTRACT_MD"
+  fi
 }
 # 一次打回在 .review_findings 里追加一条：round 是它在 history 里的第几次打回，findings 只含阻断级（P0/P1，
 # 含 resolved 状态，由复发规则排除）；块缺失或畸形记 block=missing（node_health 的 review.findings_missing_pct 数它）。
