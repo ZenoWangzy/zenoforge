@@ -32,8 +32,9 @@ Do not read the whole lessons tree.
 ## Handle flaky tests
 
 Do not skip a flaky test, add a sleep, retry it, or rerun it until it passes.
-Find and fix its root cause; if it cannot be found, delete the test and state
-why and what its assertions covered in both the report and commit message.
+Find and fix its root cause. If the cause is unknown, keep the test and file
+the evidence for diagnosis. Delete a test only if it is obsolete or invalid,
+or a named test covers it.
 
 ## Verify an optimization premise before implementing
 
