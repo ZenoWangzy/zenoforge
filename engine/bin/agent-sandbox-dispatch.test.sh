@@ -43,7 +43,7 @@ import os
 import pathlib
 import sys
 
-pathlib.Path(sys.argv[1]).write_text(json.dumps({name: os.readlink(f'/proc/self/ns/{name}') for name in ('user', 'mount', 'net', 'pid')}))
+pathlib.Path(sys.argv[1]).write_text(json.dumps({name: os.readlink(f'/proc/self/ns/{name}') for name in ('user', 'mnt', 'net', 'pid')}))
 PY
 cat > "$repo/dispatch-probe.py" <<'PY'
 import json
@@ -63,8 +63,9 @@ assert pathlib.Path('/tmp/worker/.codex/auth.json').read_text() == '{"selected":
 for relative in ('.config/gh/hosts.yml', '.config/production/token', '.aws/credentials', '.ssh/id_ed25519',
                  '.zcode/v2/credentials.json', '.claude/.credentials.json', '.zenoforge/clones/other/secret', '.git-credentials'):
     assert not (host_home / relative).exists(), relative
-for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'ZAI_API_KEY', 'ANTHROPIC_API_KEY', 'PROD_ACCESS_TOKEN', 'GIT_ASKPASS'):
+for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'ZAI_API_KEY', 'ANTHROPIC_API_KEY', 'PROD_ACCESS_TOKEN'):
     assert name not in os.environ, name
+assert os.environ.get('GIT_ASKPASS') == '/bin/false'
 for path in pathlib.Path('/proc').glob('[0-9]*/environ'):
     try:
         contents = path.read_bytes()
@@ -177,7 +178,7 @@ chmod +x "$fixture/expired-git"
 worker_pid="$WORKER_SCOPE_LAUNCHER_PID"
 worker_status=0
 wait "$worker_pid" || worker_status=$?
-[[ "$worker_status" == 0 ]] || fail "write worker exited $worker_status: $(cat "$runtime/write.log")"
+[[ "$worker_status" == 0 ]] || fail "write worker exited $worker_status; log=$supervisor/write.log: $(cat "$supervisor/write.log")"
 [[ ! -e "$holder_socket" ]] || fail 'write credential socket remained after the worker ended'
 
 expired_status=0
@@ -195,6 +196,6 @@ dispatch review codex high issue-995 review.log report.md prompt '' "$repo" '' '
 worker_pid="$WORKER_SCOPE_LAUNCHER_PID"
 worker_status=0
 wait "$worker_pid" || worker_status=$?
-[[ "$worker_status" == 0 ]] || fail "review worker exited $worker_status: $(cat "$runtime/review.log")"
+[[ "$worker_status" == 0 ]] || fail "review worker exited $worker_status; log=$supervisor/review.log: $(cat "$supervisor/review.log")"
 [[ "$(jq -r '.workers | length' "$WORKERS")" == 2 ]] || fail 'dispatch did not record both worker runs'
 printf '%s\n' 'agent-sandbox-dispatch.test.sh: pass'

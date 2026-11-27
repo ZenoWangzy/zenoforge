@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import urllib.parse
-from agent_sandbox_state import configure_zcode, prepare as prepare_session_state, prepare_codex_profile, restore as restore_session_state; from agent_sandbox_workspace import snapshot as snapshot_workspace, sync as sync_workspace; from agent_sandbox_network import configure_environment, run as run_sandbox, start_worker_proxy
+from agent_sandbox_state import configure_zcode, prepare as prepare_session_state, prepare_codex_profile, restore as restore_session_state; from agent_sandbox_workspace import snapshot as snapshot_workspace, sync as sync_workspace, preserve_sandbox_bin; from agent_sandbox_network import configure_environment, run as run_sandbox, start_worker_proxy
 
 LIBC = ctypes.CDLL(None, use_errno=True)
 MS_RDONLY = 1
@@ -652,7 +652,7 @@ def rewrite_args(command, repo, provider, zcode_argv, readonly, capture_output):
             value = value.replace(repo + os.sep, "/run/zf-agent/workspace/")
             if value == repo:
                 value = "/run/zf-agent/workspace"
-        value = value.replace(home, "/tmp/worker")
+        value = preserve_sandbox_bin(value.replace(home, "/tmp/worker"))
         values.append(value)
         index += 1
     return values
@@ -735,7 +735,7 @@ def main(argv=None):
     readonly = {}
     engine_root_path = pathlib.Path(options.engine_root) if options.engine_root else pathlib.Path(repo)
     engine_root = engine_root_path.resolve()
-    sources = [engine_root_path / "bin/install-guard"]
+    sources = [engine_root_path / "bin/install-guard", engine_root_path / "non-product-test-shim"]
     sources.extend(pathlib.Path(options.command[index + 1]) for index, value in enumerate(options.command[:-1]) if value in {"--add-dir", "--attach", "--cd", "--settings", "--output-schema"})
     for source in dict.fromkeys(sources):
         raw = str(source)

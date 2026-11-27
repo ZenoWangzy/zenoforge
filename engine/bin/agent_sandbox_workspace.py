@@ -6,6 +6,17 @@ import stat
 import subprocess
 
 
+def preserve_sandbox_bin(value):
+    if not value.startswith("PATH="):
+        return value
+    paths = [path for path in value[5:].split(os.pathsep) if path != "/run/zf-agent/bin"]
+    index = 0
+    while index < len(paths) and paths[index].startswith("/run/zf-agent/tools/"):
+        index += 1
+    paths.insert(index, "/run/zf-agent/bin")
+    return "PATH=" + os.pathsep.join(paths)
+
+
 def git(repo, *args):
     return subprocess.run(["git", "-C", str(repo), *args], check=True, stdout=subprocess.PIPE).stdout
 
