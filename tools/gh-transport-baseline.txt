@@ -1,6 +1,4 @@
 # gh transport baseline: one unwrapped script path per line; remove entries as callers load the wrapper.
-engine/mac-autopilot/land-pr.sh
-engine/mac-autopilot/rescued_gc.sh
 engine/night/hand-exit-handoff.sh
 engine/night/log-shape-classes.sh
 engine/night/node-health-rules.sh
