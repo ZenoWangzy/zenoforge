@@ -5,19 +5,18 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 land_script="$script_dir/land-direct-main.sh"
+land_script_dir="$script_dir"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/syntax-only-landing-test.XXXXXX")"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'rm -rf -- "$tmp" "$test_env_root"' EXIT
 repo="$tmp/repo"
-function_file="$tmp/syntax-only-landing.sh"
+lane_log="$tmp/rule-lane.log"
 
 fail() {
   printf 'syntax-only-landing.test.sh: %s\n' "$*" >&2
   exit 1
 }
 
-sed -n '/^syntax_only_landing() {$/,/^}$/p' "$land_script" > "$function_file"
-[[ -s "$function_file" ]] || fail 'could not extract syntax_only_landing'
-source "$function_file"
+source "$script_dir/land-direct-main-policy.sh"
 export ZF_PACK_REL=engine
 
 git init -q "$repo"
@@ -77,4 +76,67 @@ git -C "$repo" commit -q -m 'fixture: engine source'
 assert_result 1 "$(git -C "$repo" rev-parse HEAD)" 'engine shell range'
 
 assert_result 1 "$base" 'empty range'
+
+assert_actor() {
+  local expected="$1" actor_name="$2" head="$3" label="$4" actor
+  actor="$(cd -- "$repo" && ZF_AGENT_NAME="$actor_name" land_direct_main_rule_actor "$base" "$head")"
+  [[ "$actor" == "$expected" ]] || fail "$label routed as $actor instead of $expected"
+}
+
+assert_unit_rejected() {
+  local path="$1" head="$2" label="$3" actor status
+  actor="$(cd -- "$repo" && ZF_AGENT_NAME=unit:agent/issue-probe land_direct_main_rule_actor "$base" "$head")"
+  if (cd -- "$repo" && ZF_AGENT_NAME="$actor" ZF_ENGINE_DIR="$script_dir" ZF_REPO_DIR="$repo" \
+    ZF_CONFIG_ROOT="$repo/.zenoforge" bash "$script_dir/rule-lane.sh" "$base" "$head") > "$lane_log" 2>&1; then
+    fail "$label unit actor was accepted by rule-lane"
+  else
+    status=$?
+  fi
+  [[ "$status" == 1 ]] || fail "$label unit rejection exited $status instead of 1"
+  grep -Fq "rule-lane: decision=unit-reject refused=rule-files actor=unit:agent/issue-probe touched=1 files=$path" "$lane_log" \
+    || fail "$label unit rejection decision missing"
+}
+
+assert_supervisor_actor() {
+  local path="$1" contents="$2" label="$3" head
+  new_case
+  mkdir -p "$(dirname -- "$repo/$path")"
+  printf '%s\n' "$contents" > "$repo/$path"
+  git -C "$repo" add "$path"
+  git -C "$repo" commit -q -m 'fixture: change judged config'
+  head="$(git -C "$repo" rev-parse HEAD)"
+  assert_result 0 "$head" "$label"
+  assert_actor supervisor head "$head" "$label owner session"
+  assert_actor supervisor '' "$head" "$label unlabelled session"
+  assert_actor unit:agent/issue-probe unit:agent/issue-probe "$head" "$label unit actor"
+  assert_unit_rejected "$path" "$head" "$label"
+  for unit_branch in factory/probe agent/issue-probe agent/auto-issue-probe hand/probe; do
+    git -C "$repo" switch -q -c "$unit_branch"
+    assert_actor "unit:$unit_branch" '' "$head" "$label unlabelled worker on $unit_branch"
+    assert_actor "unit:$unit_branch" head "$head" "$label head-named worker on $unit_branch"
+    git -C "$repo" switch -q -
+    git -C "$repo" branch -q -D "$unit_branch"
+  done
+}
+
+assert_supervisor_actor .zenoforge/prompts/review-contract.md 'Review contract' 'review contract'
+assert_supervisor_actor .zenoforge/state/risk-paths.json '{"rules":[]}' 'risk path rules'
+assert_supervisor_actor .zenoforge/eval/cases/triage.json '{"case":"unit"}' 'eval case'
+
+pack=.zenoforge/build/pack
+export ZF_PACK_REL="$pack"
+assert_supervisor_actor "$pack/prompts/review-contract.md" 'Review contract' 'vendored review contract'
+assert_supervisor_actor "$pack/state/risk-paths.json" '{"rules":[]}' 'vendored risk path rules'
+assert_supervisor_actor "$pack/eval/cases/triage.json" '{"case":"unit"}' 'vendored eval case'
+export ZF_PACK_REL=engine
+
+new_case
+mkdir -p "$repo/packages"
+printf 'export const value = 1;\n' > "$repo/packages/value.ts"
+git -C "$repo" add packages/value.ts
+git -C "$repo" commit -q -m 'fixture: change product source'
+head="$(git -C "$repo" rev-parse HEAD)"
+assert_result 1 "$head" 'product source range'
+assert_actor unit:agent/issue-probe unit:agent/issue-probe "$head" 'product source range'
+
 printf 'syntax-only-landing tests passed\n'

@@ -13,6 +13,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_dir="$(git rev-parse --show-toplevel)"
 export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_dir}"
 source "$script_dir/config.sh"
+source "$script_dir/rule-file-paths.sh"
 manifest_file="$(zf_config_file state/rule-files.json)" || {
   echo 'rule-lane: rule manifest is unavailable' >&2
   exit 2
@@ -24,50 +25,50 @@ else
 fi
 rule_fix_hint='规则改动由 supervisor 落地并通过语法检查；unit PR 即使带回放报告也会拒绝。健康告警请修行为，并挂到根因票下。'
 
-# 清单优先取被落地 head 的树；head 删除清单时退回 base，使删除本身仍算触碰清单内路径。
-manifest_ref="$head"
-git cat-file -e "$head:$manifest_path" 2>/dev/null || manifest_ref="$base"
-
-declare -A rule_set=()
-rule_prefixes=()
-# An exact path or, with a trailing slash, a directory prefix (CODEOWNERS shape).
+declare -A rule_path_seen=()
+rule_paths=()
 rule_protect() {
-  if [[ "$1" == */ ]]; then rule_prefixes+=("$1"); else rule_set["$1"]=1; fi
+  [[ -z "${rule_path_seen[$1]:-}" ]] || return 0
+  rule_path_seen["$1"]=1
+  rule_paths+=("$1")
 }
-if git cat-file -e "$manifest_ref:$manifest_path" 2>/dev/null; then
-  manifest_list="$(git show "$manifest_ref:$manifest_path" | jq -er '
-    if .schema == "zf-rule-files/v1" and (.files | type == "object")
-    then .files | keys[] | strings
-    else error("manifest must be zf-rule-files/v1 with a files object") end')" || {
-    echo "rule-lane: rule manifest $manifest_path at $manifest_ref is invalid" >&2
-    exit 2
-  }
-  while IFS= read -r rule_file; do
-    [[ -n "$rule_file" ]] || continue
-    rule_protect "$rule_file"
-    config_relative=""
-    case "$rule_file" in
-      "${ZF_PACK_REL:-engine}/"*) config_relative="${rule_file#"${ZF_PACK_REL:-engine}/"}" ;;
-      engine/*) config_relative="${rule_file#engine/}" ;;
-    esac
-    if [[ -n "$config_relative" ]]; then
-      # A repo that vendors the pack (ZF_PACK_REL=.zenoforge/build/pack) edits the same file under that prefix.
-      rule_protect "${ZF_PACK_REL:-engine}/$config_relative"
-      config_candidate="$(zf_config_file "$config_relative" 2>/dev/null || true)"
-      if [[ -n "$ZF_CONFIG_ROOT" && -n "$config_candidate" && "$config_candidate" == "$ZF_CONFIG_ROOT/"* \
-        && "$config_candidate" == "$repo_dir/"* ]]; then
-        rule_protect "${config_candidate#"$repo_dir"/}"
-      fi
-    fi
-  done <<< "$manifest_list"
-fi
+rule_protect_manifest_path() {
+  local rule_file="$1" path
+  rule_manifest_path_aliases "$rule_file" "$repo_dir"
+  for path in "${rule_manifest_aliases[@]}"; do
+    rule_protect "$path"
+  done
+}
+for manifest_ref in "$base" "$head"; do
+  if git cat-file -e "$manifest_ref:$manifest_path" 2>/dev/null; then
+    manifest_list="$(git show "$manifest_ref:$manifest_path" | jq -er '
+      if .schema == "zf-rule-files/v1" and (.files | type == "object")
+      then .files | keys[] | strings
+      else error("manifest must be zf-rule-files/v1 with a files object") end')" || {
+      echo "rule-lane: rule manifest $manifest_path at $manifest_ref is invalid" >&2
+      exit 2
+    }
+    while IFS= read -r rule_file; do
+      [[ -n "$rule_file" ]] || continue
+      rule_protect_manifest_path "$rule_file"
+    done <<< "$manifest_list"
+  fi
+done
+
+mandatory_list="$(rule_manifest_mandatory_paths "$script_dir/state/rule-files.json")" || {
+  echo 'rule-lane: mandatory rule manifest is invalid' >&2
+  exit 2
+}
+while IFS= read -r rule_file; do
+  [[ -n "$rule_file" ]] || continue
+  rule_protect_manifest_path "$rule_file"
+done <<< "$mandatory_list"
 
 mapfile -t changed < <(git diff --name-only --no-renames "$base...$head")
 touched=()
 for path in "${changed[@]}"; do
-  if [[ -n "${rule_set[$path]:-}" ]]; then touched+=("$path"); continue; fi
-  for prefix in ${rule_prefixes[@]+"${rule_prefixes[@]}"}; do
-    [[ "$path" == "$prefix"* ]] && { touched+=("$path"); break; }
+  for rule_file in "${rule_paths[@]}"; do
+    rule_manifest_path_matches "$path" "$rule_file" && { touched+=("$path"); break; }
   done
 done
 
