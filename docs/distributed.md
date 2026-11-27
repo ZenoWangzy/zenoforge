@@ -17,11 +17,11 @@ Run `ctl.sh probe` on the real target repository before any enable step. It push
 
 ## 1. Enable on the existing host
 
-1. Run `ctl.sh enable --host-id host-a`. It writes `host.env` with `ZF_COORD=on` and `ZF_HOST_ID`, extends `timers.local.list`, starts the timer and runs `adopt-local`.
-2. `adopt-local` claims every running `zf-*` unit and unit-loop worker, with its checkpoint. Old unleased workers therefore never overlap new ones.
+1. Run `ctl.sh enable --host-id host-a`. It writes `host.env` with `ZF_COORD=on` and `ZF_HOST_ID`, adds `zenoforge-renewd.timer` to `timers.local.list`, starts the timer and runs `adopt-local`.
+2. `adopt-local` claims active `zf-<stage>-<issue>.service` units that match a row in `units.json`.
 3. Check that the claims show up on GitHub before you go on.
 
-To undo: set `ZF_COORD=off` and run `ctl.sh purge --host host-a`.
+To roll back: drain each host, stop its renewal timer, and set `ZF_COORD=off` on each host. After active claims release, run the fleet-wide `ctl.sh purge` once.
 
 ## 2. Add the second host
 
@@ -43,4 +43,4 @@ Use the fastest lever that fits:
 1. `ctl.sh control set primary=<host>`. Every other host stops acquiring within one tick. Their running claims finish and are released.
 2. `ctl.sh drain <host>`. That host stops acquiring and releases at the end of the current stage. Then stop its timers.
 3. `ZF_COORD=off` on a host. Only safe on the last remaining host. First set `primary` and drain the others.
-4. `ctl.sh purge`. Deletes every ref under `refs/claims`, `refs/status` and `refs/coord`. Leftover refs are harmless. Each ticket's local state stays intact, because local files remain the working copy.
+4. `ctl.sh purge` after every host is drained and active claims have released. It deletes every ref under `refs/claims`, `refs/status` and `refs/coord`. Each ticket's local state stays intact, because local files remain the working copy.

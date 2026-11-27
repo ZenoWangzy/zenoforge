@@ -1,0 +1,15 @@
+# Coordination operator commands
+
+`ctl.sh` operates on the custom refs of the target repository's `origin`. It uses Git transport and does not call the GitHub REST API.
+
+Run `probe --host-id <id>` before enabling coordination. The probe creates a leased claim ref, reads it back, then deletes it with an object-id lease. A failed read or delete returns an error.
+
+`enable --host-id <id>` writes the host settings and adds `zenoforge-renewd.timer` to the local timer list. It starts the timer and adopts active `zf-<stage>-<issue>.service` units that match a row in `units.json`. `adopt-local` repeats only the adoption step.
+
+`control set primary=<id>` lets that host acquire new claims; `control set primary=` clears the primary. `control set min_proto=<number>` sets the minimum protocol. `control set drain=<id>,<id>` replaces the drain list. `drain <id>` adds a host to that list. A drained or non-primary host starts no new claims. Its active stages finish and release their own claims normally.
+
+`status show` fetches the status refs and formats them through `status.sh`.
+
+`effect clear <claim> <key>` marks an unresolved once-only intent as cleared. This records the operator's decision that the intent no longer blocks the claim. `claim clear <key>` removes a malformed, unsupported, expired or released claim; it refuses a valid claim whose lease is still active.
+
+`purge` deletes refs under `refs/claims`, `refs/status` and `refs/coord` with object-id leases. Drain hosts and let active stages finish before using it.

@@ -116,6 +116,42 @@ _coord_write_locked() {
 
 coord_remote_enabled() { [[ "${ZF_COORD:-off}" == on ]]; }
 
+coord_control_record_valid() {
+  jq -e '
+    type == "object" and .proto == 1
+    and ((.primary == null) or (.primary | type == "string" and test("^[a-z0-9][a-z0-9-]{0,31}$")))
+    and (.drain | type == "array" and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]{0,31}$")) and length == (unique | length))
+    and (.min_proto | type == "number" and floor == . and . >= 1)
+  ' <<<"$1" >/dev/null 2>&1
+}
+
+coord_remote_control_read() {
+  local line oid ref seen
+  COORD_CONTROL='{"proto":1,"primary":null,"drain":[],"min_proto":1}'
+  COORD_CONTROL_OID=""
+  coord_remote_init || return 3
+  line="$(git -C "$COORD_REMOTE_REPO" ls-remote --refs origin refs/coord/control 2>/dev/null)" || return 3
+  [[ -n "$line" ]] || return 0
+  [[ "$line" != *$'\n'* ]] || return 3
+  IFS=$'\t' read -r oid ref <<<"$line"
+  [[ "$ref" == refs/coord/control && "$oid" =~ ^[0-9a-f]{40,64}$ ]] || return 3
+  seen=refs/seen/coord/control
+  git_fetch_bounded "$COORD_REMOTE_REPO" "+$ref:$seen" >/dev/null 2>&1 || return 3
+  [[ "$(git -C "$COORD_REMOTE_REPO" rev-parse "$seen" 2>/dev/null)" == "$oid" ]] || return 3
+  COORD_CONTROL="$(git -C "$COORD_REMOTE_REPO" cat-file blob "$seen:control.json" 2>/dev/null)" || return 3
+  coord_control_record_valid "$COORD_CONTROL" || return 3
+  COORD_CONTROL_OID="$oid"
+}
+
+coord_control_allows_acquire() {
+  coord_remote_control_read || return 3
+  jq -e --arg host "${ZF_HOST_ID:-}" '
+    (.min_proto <= 1)
+    and (.primary == null or .primary == $host)
+    and (.drain | index($host) == null)
+  ' <<<"$COORD_CONTROL" >/dev/null 2>&1
+}
+
 coord_remote_init() {
   local repo="$AGENT_HOME/coord/repo.git" remote existing lock_fd status=0 was_new=0 line name value
   remote="$(git -C "${REPO_DIR:-}" remote get-url origin 2>/dev/null)" \
@@ -380,7 +416,11 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
   local lock_fd rc now lease record held=0
   [[ -n "$owner" && -n "$kind" ]] || return 2
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "coord_acquire: invalid lease duration" >&2; return 3; }
-  if coord_remote_enabled; then _coord_remote_acquire "$key" "$owner" "$kind" "$subject" "$unit" "$stage"; return $?; fi
+  if coord_remote_enabled; then
+    coord_control_allows_acquire || return $?
+    _coord_remote_acquire "$key" "$owner" "$kind" "$subject" "$unit" "$stage"
+    return $?
+  fi
   _coord_paths "$key" || return 2
   mkdir -p -- "$COORD_DIR" || { echo "coord_acquire: claim directory unavailable" >&2; return 3; }
   exec {lock_fd}>"$COORD_LOCK_FILE" || return 3
