@@ -13,6 +13,8 @@ done
 [[ "$(grep -cE '^#### [0-9]+\. ' "$doc")" == 16 ]] || fail "expected 16 principles"
 [[ "$(grep -cE '^[0-9]+\. ' "$doc")" == 11 ]] || fail "expected 11 checklist questions"
 [[ "$(grep -cE '^\| 2026-11-12 ' "$doc")" == 5 ]] || fail "expected 5 audit rows in the case table"
+clone_case="$(grep -F '| 2026-11-12 | The clone pool only grows:' "$doc")"
+[[ "$clone_case" == *'ensure_clone_impl'* && "$clone_case" == *'cleanup_stale_clones'* && "$clone_case" == *'seven days'* ]] || fail 'clone-pool case lacks its creator and cleanup rule'
 
 pointers="$(grep -c 'docs/design/AGENT-SCALE-PRINCIPLES.md' "$repo/AGENTS.md" || true)"
 [[ "$pointers" == 1 ]] || fail "AGENTS.md must hold exactly one pointer line, found $pointers"
