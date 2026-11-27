@@ -2,8 +2,5 @@
   "flow.merge_rate_per_hour": {"healthy": 3.0, "unhealthy": 1.5, "basis": "units.json + units-archive.json merged/landed events per UTC day 2026-11-02..08: 40, 45, 34, 33, 33, 52, 60; best 2.50/h, median 1.67/h; the old 6.5/h target was never reached in that window"},
   "delivery.merged_not_live": {"healthy": 6, "unhealthy": 12, "basis": "merge-rate standard 3/h x release-interval standard (healthy 2 h, unhealthy 4 h); the old 0/1 bound went red after any merge mid-cycle (2026-11-09)"},
   "gh_budget.graphql_used_per_hour": {"healthy": 600, "unhealthy": 2500, "basis": "GitHub rate_limit resources.graphql.used sampled once per minute; the healthy target is the factory budget and 2,500 is the alert line"},
-  "gh_budget.rest_used_per_hour": {"healthy": 2000, "unhealthy": 3500, "basis": "GitHub rate_limit resources.core.used sampled once per minute; the healthy target is counted REST and 3,500 is the alert line"},
-  "delivery.proof_browser_lock_wait_p50_ms": {"healthy": 100, "unhealthy": 1000, "min_n": 20, "basis": "Initial operating band: an uncontended lease is under 100 ms; at a 1 s p50 at least half of proof runs cross the visible review-wait threshold"},
-  "delivery.proof_browser_lock_wait_p90_ms": {"healthy": 1000, "unhealthy": 5000, "min_n": 20, "basis": "One second is the per-proof review-wait threshold; a 5 s p90 is a material delay while live samples establish the baseline"},
-  "delivery.proof_browser_wait_over_review_threshold_pct": {"healthy": 5, "unhealthy": 20, "min_n": 20, "basis": "Share of proof runs above the 1 s review-wait threshold; 5% allows occasional contention and 20% indicates repeated waits"}
+  "gh_budget.rest_used_per_hour": {"healthy": 2000, "unhealthy": 3500, "basis": "GitHub rate_limit resources.core.used sampled once per minute; the healthy target is counted REST and 3,500 is the alert line"}
 }

@@ -4,8 +4,6 @@ from pathlib import Path
 
 from config_paths import zf_config_file
 
-import proof_browser_health
-
 
 def resolve(criteria, default_path=None):
     resolved = dict(criteria)
@@ -51,7 +49,7 @@ def score(metrics, criteria, sample_counts, minimums, invalid_standards, status_
     for mid, (node, desc, healthy, unhealthy, higher) in criteria.items():
         v = metrics.get(mid)
         status = "STANDARD-INVALID" if mid in invalid_standards else no_data_status(mid, v) or ("N/A" if v is None and mid in not_applicable else status_of(v, healthy, unhealthy, higher))
-        if (status in ("OK", "WARN") or mid in proof_browser_health.LOW_N_METRICS) and status not in ("STANDARD-INVALID", "NO-DATA", "N/A") and v is not None and mid in minimums and (n := sample_counts.get(mid)) is not None and n < minimums[mid]: status = "LOW-N"
+        if status in ("OK", "WARN") and v is not None and mid in minimums and (n := sample_counts.get(mid)) is not None and n < minimums[mid]: status = "LOW-N"
         rows.append((node, mid, desc, v, healthy, unhealthy, higher, status))
     return rows
 
