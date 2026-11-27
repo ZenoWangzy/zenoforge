@@ -220,6 +220,7 @@ run_tick() {
 
   fetch_origin_main() { # checkout → bounded fetch of origin/main, with the existing one-time timeout retry
     local checkout="$1" fetch_attempt=0 fetch_status=0 fetch_load fetch_processors
+    source "$script_dir/proc.sh"
     while :; do
       fetch_attempt=$((fetch_attempt + 1))
       if (
@@ -238,8 +239,8 @@ run_tick() {
         continue
       fi
       if [ "$fetch_status" -eq 124 ]; then
-        fetch_load="$(awk 'NR == 1 { print $1 }' /proc/loadavg 2>/dev/null || true)"
-        fetch_processors="$(nproc 2>/dev/null || true)"
+        fetch_load="$(host_load1 "${AGENT_DISPATCH_LOADAVG_FILE:-}" 2>/dev/null || true)"
+        fetch_processors="$(host_ncpu 2>/dev/null || true)"
         if dispatch_load_exceeded "$fetch_load" "$fetch_processors" "${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}"; then
           refuse_checkout_integrity "fetch-starved" "git fetch timed out after ${git_fetch_timeout_sec}s while host 1m load $fetch_load exceeded ${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}x processors ($fetch_processors)"
         fi

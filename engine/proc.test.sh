@@ -92,6 +92,35 @@ darwin() { # run a snippet with proc.sh sourced as on macOS and the fakes first 
   env "PATH=$t/fakebin:$PATH" "FAKE_PS_DIR=$t/ps" "FAKE_LSOF_OUT=$t/lsof.out" TZ=UTC \
     "$BASH" -u -c 'OSTYPE=darwin24.0; source "$1/proc.sh"; eval "$2"' _ "$engine" "$1"
 }
+cat > "$t/fakebin/python3" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1##*/}" == hostinfo.py ]] || exit 2
+printf '%s\n' "$2" >> "$HOSTINFO_CALLS"
+case "$2" in
+  mem_avail_mb) printf '6144\n' ;;
+  load1) printf '0.875\n' ;;
+  ncpu) printf '8\n' ;;
+  cpu_busy_pct) printf '30\n' ;;
+  mem_pressure_pct) printf '25.9\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$t/fakebin/python3"
+HOSTINFO_CALLS="$t/hostinfo.calls"
+export HOSTINFO_CALLS
+hostinfo_output="$(darwin 'printf "%s\n" "$(host_mem_avail_mb)" "$(host_load1)" "$(host_ncpu)" "$(host_cpu_busy_pct)" "$(host_mem_pressure_pct)"')"
+[[ "$hostinfo_output" == $'6144\n0.875\n8\n30\n25' ]] || fail "macOS host helpers returned '$hostinfo_output'"
+[[ "$(cat "$HOSTINFO_CALLS")" == $'mem_avail_mb\nload1\nncpu\ncpu_busy_pct\nmem_pressure_pct' ]] || fail 'macOS host helpers did not use hostinfo subcommands'
+printf 'MemAvailable: 3145728 kB\n' > "$t/override-meminfo"
+printf '1.25 2.00 3.00 1/1 1\n' > "$t/override-loadavg"
+printf 'some 0\nfull avg10=7.75 avg60=6.00 avg300=5.00 total=1\n' > "$t/override-pressure"
+export AGENT_DISPATCH_MEMINFO_FILE="$t/override-meminfo"
+export AGENT_DISPATCH_LOADAVG_FILE="$t/override-loadavg"
+export LUNA_PROC_PSI_MEMORY="$t/override-pressure"
+override_output="$(darwin 'printf "%s\n" "$(host_mem_avail_mb "$AGENT_DISPATCH_MEMINFO_FILE")" "$(host_load1 "$AGENT_DISPATCH_LOADAVG_FILE")" "$(host_mem_pressure_pct "$LUNA_PROC_PSI_MEMORY")"')"
+[[ "$override_output" == $'3072\n1.25\n7' ]] || fail "host test overrides returned '$override_output'"
+[[ "$(cat "$HOSTINFO_CALLS")" == $'mem_avail_mb\nload1\nncpu\ncpu_busy_pct\nmem_pressure_pct' ]] || fail 'host test overrides did not take priority'
+unset AGENT_DISPATCH_MEMINFO_FILE AGENT_DISPATCH_LOADAVG_FILE LUNA_PROC_PSI_MEMORY HOSTINFO_CALLS
 live=$$
 printf 'S+\n' > "$t/ps/$live.stat"
 darwin "pid_live $live" || fail 'macOS: S+ not live'
