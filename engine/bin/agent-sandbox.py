@@ -644,14 +644,14 @@ def rewrite_args(command, repo, provider, zcode_argv, readonly, capture_output):
             index += len(zcode_argv)
             continue
         value = command[index]
-        if value == capture_output and capture_output:
-            value = "/run/zf-capture/last.md"
+        if value == capture_output and capture_output: value = "/run/zf-capture/last.md"
         else:
-            for source, target in readonly.items():
-                value = value.replace(source, target)
-            value = value.replace(repo + os.sep, "/run/zf-agent/workspace/")
-            if value == repo:
-                value = "/run/zf-agent/workspace"
+            for source, target in readonly.items(): value = value.replace(source, target)
+            if value.startswith("PATH="):
+                guard_path = next((target for source, target in readonly.items() if source.endswith("/bin/install-guard")), None)
+                safe_paths = ["/run/zf-agent/bin", *([guard_path] if guard_path else []), "/opt/zf-agent/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+                value = "PATH=" + os.pathsep.join(dict.fromkeys(safe_paths))
+            value = "/run/zf-agent/workspace" if value == repo else value.replace(repo + os.sep, "/run/zf-agent/workspace/")
         value = value.replace(home, "/tmp/worker")
         values.append(value)
         index += 1
