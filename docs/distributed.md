@@ -18,7 +18,7 @@ Run `ctl.sh probe` on the real target repository before any enable step. It push
 ## 1. Enable on the existing host
 
 1. Run `ctl.sh enable --host-id host-a`. It writes `host.env` with `ZF_COORD=on` and `ZF_HOST_ID`, adds `zenoforge-renewd.timer` to `timers.local.list`, starts the timer and runs `adopt-local`.
-2. `adopt-local` claims active `zf-<stage>-<issue>.service` units that match a row in `units.json`.
+2. `adopt-local` claims active `zf-<stage>-<issue>.service` units and live issue workers from `workers.json` when they match a row in `units.json`.
 3. Check that the claims show up on GitHub before you go on.
 
 To roll back: drain each host, stop its renewal timer, and set `ZF_COORD=off` on each host. After active claims release, run the fleet-wide `ctl.sh purge` once.

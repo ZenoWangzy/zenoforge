@@ -173,7 +173,9 @@ ctl_update_control() {
 
 ctl_adopt_local() {
   local units_file="${ZF_COORD_UNITS_FILE:-${MAC_AUTOPILOT_RUNTIME_DIR:-$AGENT_HOME/autopilot}/units.json}"
+  local workers_file="${ZF_COORD_WORKERS_FILE:-${MAC_AUTOPILOT_RUNTIME_DIR:-$AGENT_HOME/autopilot}/workers.json}"
   local prefix="${ZF_UNIT_PREFIX:-zf}" active line unit base issue stage unit_row owner status adopted=0
+  local worker worker_unit worker_issue worker_pid worker_start worker_group current_start worker_live
   [[ "$prefix" =~ ^[A-Za-z0-9._-]+$ ]] || { ctl_error 'invalid unit prefix'; return 2; }
   [[ -r "$units_file" ]] || { ctl_error 'unit ledger unavailable'; return 3; }
   jq -e 'type == "object" and (.units | type == "array")' "$units_file" >/dev/null 2>&1 \
@@ -203,13 +205,67 @@ ctl_adopt_local() {
       return 3
     fi
   done <<<"$active"
+  if [[ -e "$workers_file" ]]; then
+    [[ -r "$workers_file" ]] && jq -e 'type == "object" and (.workers | type == "array")' "$workers_file" >/dev/null 2>&1 \
+      || { ctl_error 'worker ledger unavailable or malformed'; return 3; }
+    while IFS= read -r worker; do
+      [[ "$(jq -r '(.harvested == true) or (.lease_expired == true)' <<<"$worker")" == true ]] && continue
+      worker_unit="$(jq -r '.unit // empty' <<<"$worker")"
+      [[ "$worker_unit" =~ ^issue-([1-9][0-9]*)$ ]] || continue
+      worker_issue="${BASH_REMATCH[1]}"
+      [[ "$(jq -r '.issue // empty | tostring' <<<"$worker")" == "$worker_issue" ]] || continue
+      worker_pid="$(jq -r '.pid // empty' <<<"$worker")"
+      worker_start="$(jq -r '.pid_start // empty' <<<"$worker")"
+      worker_group="$(jq -r '.process_group // empty' <<<"$worker")"
+      [[ "$worker_pid" =~ ^[1-9][0-9]*$ ]] || continue
+      [[ "$worker_start" =~ ^[0-9]+$ ]] || {
+        if pid_live "$worker_pid" || [[ "$worker_group" =~ ^[1-9][0-9]*$ ]] && kill -0 -- "-$worker_group" 2>/dev/null; then
+          ctl_error "worker identity unavailable for $worker_unit"
+          return 3
+        fi
+        continue
+      }
+      current_start="$(coord_process_start_ticks "$worker_pid" 2>/dev/null || true)"
+      [[ -z "$current_start" || "$current_start" == "$worker_start" ]] || continue
+      worker_live=false
+      if [[ "$current_start" == "$worker_start" ]] && pid_live "$worker_pid"; then
+        worker_live=true
+      elif [[ "$worker_group" =~ ^[1-9][0-9]*$ ]] && kill -0 -- "-$worker_group" 2>/dev/null; then
+        worker_live=true
+      fi
+      if [[ -z "$current_start" ]] && pid_live "$worker_pid"; then
+        ctl_error "worker identity unreadable for $worker_unit"
+        return 3
+      fi
+      [[ "$worker_live" == true ]] || continue
+      unit_row="$(jq -c --arg issue "$worker_issue" '[.units[] | select((.issue | tostring) == $issue or .id == ("issue-" + $issue))][0] // empty' "$units_file")" \
+        || { ctl_error "unit ledger lookup failed for $worker_unit"; return 3; }
+      [[ -n "$unit_row" ]] || { ctl_error "unit ledger row missing for live worker $worker_unit"; return 3; }
+      stage="$(jq -r '.stage // empty' <<<"$unit_row")"
+      [[ "$stage" =~ ^[a-z][a-z0-9-]*$ ]] || { ctl_error "unit ledger stage invalid for $worker_unit"; return 3; }
+      owner="$(coord_new_owner)"
+      if coord_acquire "issue-$worker_issue" "$owner" scheduler-worker "$worker_issue" "$worker_unit" "$stage"; then
+        adopted=$((adopted + 1))
+      else
+        status=$?
+        (( status == 1 )) && continue
+        ctl_error "claim state unknown for live worker $worker_unit"
+        return 3
+      fi
+    done < <(jq -cr '.workers[] | select(.harvested != true and .lease_expired != true)' "$workers_file")
+  fi
   echo "adopted $adopted local units"
 }
 
 ctl_enable() {
   local host="$1" env_file="$AGENT_HOME/host.env" host_file="$AGENT_HOME/host-id"
-  local timers_file="$AGENT_HOME/timers.local.list" timer=zenoforge-renewd.timer temp lock_fd
+  local timers_file="$AGENT_HOME/timers.local.list" timer=zenoforge-renewd.timer timer_state temp lock_fd
   [[ "$host" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { ctl_error 'invalid host id'; return 2; }
+  if ! timer_state="$(systemctl --user show "$timer" --property=LoadState --value 2>/dev/null)" \
+    || [[ "$timer_state" != loaded ]]; then
+    ctl_error 'renewal timer unavailable; install the coordination unit before enabling'
+    return 3
+  fi
   mkdir -p "$AGENT_HOME" || return 3
   umask 077
   temp="$(mktemp "$AGENT_HOME/.host-env.XXXXXX")" || return 3

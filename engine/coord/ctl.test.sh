@@ -85,6 +85,10 @@ if [[ "${1:-}" == --user && "${2:-}" == list-units ]]; then
   cat "$ZF_COORD_TEST_ACTIVE_UNITS"
   exit 0
 fi
+if [[ "${1:-}" == --user && "${2:-}" == show && "${3:-}" == zenoforge-renewd.timer ]]; then
+  printf '%s\n' "${ZF_COORD_TEST_TIMER_LOAD_STATE:-loaded}"
+  exit 0
+fi
 printf '%s\n' "$*" >>"$ZF_COORD_SYSTEMCTL_LOG"
 exit 0
 SYSTEMCTL
@@ -95,8 +99,25 @@ zf-advisor-456.service loaded active running worker
 zf-health-check.service loaded active running worker
 UNITS
 cat >"$fixture/autopi/units.json" <<'JSON'
-{"units":[{"id":"issue-123","issue":123,"stage":"implement"},{"id":"issue-456","issue":456,"stage":"advisor"}]}
+{"units":[{"id":"issue-123","issue":123,"stage":"implement"},{"id":"issue-456","issue":456,"stage":"advisor"},{"id":"issue-789","issue":789,"stage":"implement"}]}
 JSON
+worker_start="$(AGENT_HOME="$agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" \
+  bash -c 'source "$ZF_ENGINE_DIR/coord.sh"; coord_process_start_ticks "$1"' _ "$$")"
+jq -cn --argjson pid "$$" --argjson pid_start "$worker_start" \
+  '{workers:[{pid:$pid,pid_start:$pid_start,unit:"issue-789",type:"implement",issue:"789"}]}' \
+  >"$fixture/autopi/workers.json"
+missing_agent="$fixture/agent-missing-timer"
+if AGENT_HOME="$missing_agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-a \
+  MAC_AUTOPILOT_RUNTIME_DIR="$fixture/autopi" ZF_COORD_TEST_ACTIVE_UNITS="$fixture/active-units" \
+  ZF_COORD_TEST_TIMER_LOAD_STATE=not-found ZF_COORD_SYSTEMCTL_LOG="$fixture/systemctl.log" PATH="$fixture/bin:$PATH" \
+  bash "$engine/coord/ctl.sh" enable --host-id test-d; then
+  echo 'ctl.test.sh: enable succeeded without the renewal timer' >&2
+  exit 1
+fi
+[[ ! -e "$missing_agent/host.env" && ! -e "$missing_agent/timers.local.list" ]] || {
+  echo 'ctl.test.sh: enable changed coordination settings without the renewal timer' >&2
+  exit 1
+}
 AGENT_HOME="$agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-a \
   MAC_AUTOPILOT_RUNTIME_DIR="$fixture/autopi" ZF_COORD_TEST_ACTIVE_UNITS="$fixture/active-units" \
   PATH="$fixture/bin:$PATH" bash "$engine/coord/ctl.sh" adopt-local
@@ -107,6 +128,11 @@ for issue in 123 456; do
     exit 1
   }
 done
+jq -e '.owner_kind == "scheduler-worker" and .unit == "issue-789"' \
+  < <(git --git-dir="$remote" cat-file blob refs/claims/issue-789:claim.json) >/dev/null || {
+  echo 'ctl.test.sh: unit-loop worker was not adopted' >&2
+  exit 1
+}
 [[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/issue-*)" ]] && {
   echo 'ctl.test.sh: no scheduler claims were adopted' >&2
   exit 1
