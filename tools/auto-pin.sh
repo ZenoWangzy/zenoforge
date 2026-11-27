@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pins the newest zenoforge main commit as soon as main moves (rulings zenoforge-instant-effect-2026-11-05, zenoforge-batch-land-2026-11-08:
 # "Pin follows the batch at once"). Commits merged together are pinned once, at main's head: walking them one by one cost ~500 s each.
-# A failed pin waits for the next main commit, then moves on; dirty-checkout and changed-VectA-head refusals retry once per fix; rate limits retry the same commit up to 3 times. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
+# A failed pin waits for the next main commit, then moves on; dirty-checkout and changed-VectA-head refusals retry once per fix; rate limits retry the same commit up to 3 times; the same live-lander refusal on 2 candidates in a row, when the candidate changes the lander, retries once with a candidate-built lander. Stop by hand: touch "$ZF_AUTO_PIN_HOME/auto-pin.stop"
 # Run a copy, not the clone's file: the loop checks out new commits in its clone (see tools/zf-auto-pin.service).
 # State and stop file live in ZF_AUTO_PIN_HOME; engine/mac-autopilot/pin-lag.sh (bell) reads auto-pin.last to alert on a stall.
 set -u
@@ -225,10 +225,62 @@ sync_tool_clone() { # next -> 0 always
   return 0
 }
 
+lander_files_re='^engine/(land-[^/]+|lib|merge-result-check|model-policy-fast-forward|git-merge-state-json|rule-lane|lesson-fragments)\.sh$|^engine/(incident-guards|lesson-lints|supervisor-hold-lesson-lint)\.mjs$|^engine/eval/.'
+lander_vecta_side_re='preflight|credential|secret|token|\bNUL\b|intended-changes|conflict|rebase|merge-base|fast-forward|rejected|permission|auth|post-land|landed|fetch|startup sync'
+
+live_engine_sha() {
+  git -C "$AGENT_HOME/checkout" show HEAD:.zenoforge/build.json 2>/dev/null | jq -er '.engine' 2>/dev/null || printf '%s\n' "$1"
+}
+
+lander_candidate_files() {
+  local files
+  files=$(git -C "$C" diff --no-renames --name-only --diff-filter=ACMR "$(live_engine_sha "$1")" "$2" -- engine 2>/dev/null \
+    | grep -E "$lander_files_re" | grep -v '\.test\.sh$') || return 1
+  [[ -n $files ]] && printf '%s\n' "$files"
+}
+
+lander_refusal_sig() {
+  local log=$1 line
+  grep -q 'pin-vecta: result=land-failed route=land-direct-main' "$log" 2>/dev/null || return 1
+  ! grep -qiE 'add this row|source checkout has changes|rate limit' "$log" || return 1
+  line=$(grep -m1 -B1 'pin-vecta: result=land-failed' "$log" | sed -n 1p)
+  [[ -n $line && $line != pin-vecta:* ]] || return 1
+  ! grep -qiE "$lander_vecta_side_re" <<<"$line" || return 1
+  sed -E 's/[0-9a-f]{7,40}/H/g; s/[0-9]+/N/g' <<<"$line" | cut -c1-200
+}
+
+lander_refusal_count() {
+  local sig=$1 next=$2 f=$ZF_AUTO_PIN_HOME/auto-pin-lander-refusal psig='' pcount=0 psha=''
+  [[ ! -f $f ]] || IFS=$'\t' read -r psig pcount psha < "$f" || :
+  [[ $pcount =~ ^[0-9]+$ ]] || pcount=0
+  if [[ $psig != "$sig" ]]; then pcount=1; elif [[ $psha != "$next" ]]; then pcount=$((pcount + 1)); fi
+  printf '%s\t%s\t%s\n' "$sig" "$pcount" "$next" > "$f" 2>/dev/null || :
+  printf '%s\n' "$pcount"
+}
+
+lander_alert() {
+  local alerts=${ZF_ALERTS_FILE:-$AGENT_HOME/logs/head-watch.alerts}
+  mkdir -p "$(dirname -- "$alerts")" 2>/dev/null || return 0
+  printf '%s LANDER-FALLBACK %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$alerts" 2>/dev/null || :
+}
+
+build_candidate_lander() {
+  local last=$1 next=$2 live_dir dest files f
+  local -a paths=()
+  live_dir=$(realpath -- "$AGENT_HOME/engine-live") && [[ -f $live_dir/land-direct-main.sh ]] || return 1
+  files=$(lander_candidate_files "$last" "$next") || return 1
+  while IFS= read -r f; do paths+=("$f"); done <<<"$files"
+  dest=$ZF_AUTO_PIN_HOME/lander-candidates/${next:0:12}
+  rm -rf -- "$dest"; mkdir -p "$dest" || return 1
+  cp -a "$live_dir/." "$dest/" && chmod -R u+w "$dest" || return 1
+  git -C "$C" archive "$next" -- "${paths[@]}" | tar -x --strip-components=1 -C "$dest" || return 1
+  printf '%s\n' "$dest"
+}
+
 # One pass: fetch, pin the oldest unpinned main commit. Returns 1 only when the checkout fails (the unit restarts the daemon).
 auto_pin_pass() {
   local last next merged log rc vecta_failed_head vecta_head product_failed_head product_head product_fetch_secs product_fetch_now product_fetch_last product_fetch_rc product_tries
-  local psi_file psi_avg60 psi_max psi_wait_secs psi_waited psi_wait_for
+  local psi_file psi_avg60 psi_max psi_wait_secs psi_waited psi_wait_for lander_override='' lander_sig lander_n=0 lander_need via='' lander_state=$ZF_AUTO_PIN_HOME/auto-pin-lander-refusal
   git -C "$C" fetch -q origin main || { sleep "$idle"; return 0; }
   last=$(cat "$state")
   next=$(git -C "$C" rev-list -1 --first-parent "$last..origin/main")
@@ -267,22 +319,42 @@ auto_pin_pass() {
   fi
   [[ ! -e $stop ]] || return 0
   # shortcut: timeout bounds one pin at 500s, same as the manual flow; a slower land needs a manual rerun.
-  rc=0; (cd "$C" && timeout 500 bash tools/pin-vecta.sh "$next" "$AGENT_HOME/checkout" --land) >"$log" 2>&1 || rc=$?
+  if [[ -e $log.lander-fallback-pending ]]; then
+    mv -f "$log.lander-fallback-pending" "$log.lander-fallback-tried"
+    if lander_override=$(build_candidate_lander "$last" "$next"); then
+      lander_override=$lander_override/land-direct-main.sh; via=' via-lander-fallback'
+    else
+      lander_override=''; echo "$(date -u +%H:%M:%S) LANDER-FALLBACK-FAILED ${next:0:12} could not build the candidate lander"
+      lander_alert "build-failed commit=$next"
+    fi
+  fi
+  rc=0
+  if [[ -n $lander_override ]]; then
+    printf 'zf-auto-pin: LANDER-FALLBACK %s: landing with the candidate lander %s\n' "${next:0:12}" "$lander_override" >"$log"
+    (cd "$C" && ZF_LAND_DIRECT_MAIN=$lander_override timeout 500 bash tools/pin-vecta.sh "$next" "$AGENT_HOME/checkout" --land) >>"$log" 2>&1 || rc=$?
+    [[ $lander_override != "$ZF_AUTO_PIN_HOME"/lander-candidates/* ]] || { chmod -R u+w "${lander_override%/*}"; rm -rf -- "${lander_override%/*}"; }
+    lander_alert "$([[ $rc == 0 || $rc == 75 ]] && echo pinned || echo failed-rc-$rc) commit=$next"
+  else
+    (cd "$C" && timeout 500 bash tools/pin-vecta.sh "$next" "$AGENT_HOME/checkout" --land) >"$log" 2>&1 || rc=$?
+  fi
   if ((rc == 75)) && merge_override_pin "$log"; then
     # The PR route does not fast-forward the live checkout; the agent tick does, then converges.
     systemctl --user start --no-block vecta-agent.service 2>/dev/null || :
+    rm -f "$lander_state"
     echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} via-pr committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
     sync_tool_clone "$next" || :
   elif ((rc == 0)); then
     # The live wrapper, not the VectA hook: only the wrapper records the swap that the engine canary watches.
     AGENT_HOME=$AGENT_HOME timeout 280 "$AGENT_HOME/engine-live/engine-sync.sh" --converge "$AGENT_HOME/checkout" "$AGENT_HOME" >>"$log" 2>&1 || echo "$(date -u +%H:%M:%S) CONVERGE-FAILED ${next:0:12}"  # live now, not at the next timer run
-    echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12} committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
+    rm -f "$lander_state"
+    echo "$next" > "$state"; echo "$(date -u +%H:%M:%S) PINNED ${next:0:12}$via committed=$merged $(git -C "$C" log -1 --format=%s "$next" | cut -c1-70)"
     sync_tool_clone "$next" || :
   else
     vecta_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse HEAD 2>/dev/null || :)
     product_failed_head=$(git -C "$AGENT_HOME/checkout" rev-parse origin/main 2>/dev/null || :)
     echo "$(date -u +%H:%M:%S) PIN-FAILED ${next:0:12} log=$log"; grep -E 'pin-vecta:|refus|add this row' "$log" | tail -4 | cut -c1-200
     pin_anchor_finding "$log" "$last" "$next" || :
+    if lander_sig=$(lander_refusal_sig "$log"); then lander_n=$(lander_refusal_count "$lander_sig" "$next"); else rm -f "$lander_state"; fi
     # A reviewed merge can land its own missing row through the checked VectA PR path; keep the pending engine SHA for the next pass.
     if grep -q 'add this row' "$log" && [[ ! -e $log.row-retried ]] \
       && reviewed_merge "$next" && ! row_named_exact_declared "$log" "$AGENT_HOME/checkout/.zenoforge/build/intended-changes.tsv"; then
@@ -300,6 +372,14 @@ auto_pin_pass() {
         echo "$(date -u +%H:%M:%S) RATE-LIMIT-RETRY ${next:0:12} attempt=$((tries + 1))"
         sleep "${ZF_AUTO_PIN_RATE_SECS:-300}"; return 0
       fi
+    fi
+    lander_need=${ZF_AUTO_PIN_LANDER_REFUSALS:-2}; [[ $lander_need =~ ^[1-9][0-9]*$ ]] || lander_need=2
+    if ((lander_n >= lander_need)) && [[ -z ${ZF_LAND_DIRECT_MAIN:-} && ! -e $log.lander-fallback-pending && ! -e $log.lander-fallback-tried ]] \
+      && lander_candidate_files "$last" "$next" >/dev/null; then
+      : > "$log.lander-fallback-pending"
+      echo "$(date -u +%H:%M:%S) LANDER-FALLBACK ${next:0:12} the live lander refused $lander_n candidates in a row: $lander_sig"
+      lander_alert "retry commit=$next refused=$lander_n sig=$lander_sig"
+      return 0
     fi
     [[ -e $log.pin-fail-triaged ]] || AGENT_HOME=$AGENT_HOME bash "$C/tools/pin-fail-triage.sh" "$C" "$AGENT_HOME/checkout" "$next" "$log" "$rc" || :
     # Fix forward: a failed pin must not stop the daemon, the next main commit carries the repair.
