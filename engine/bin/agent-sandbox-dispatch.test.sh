@@ -177,7 +177,7 @@ chmod +x "$fixture/expired-git"
 worker_pid="$WORKER_SCOPE_LAUNCHER_PID"
 worker_status=0
 wait "$worker_pid" || worker_status=$?
-[[ "$worker_status" == 0 ]] || fail "write worker exited $worker_status: $(cat "$runtime/write.log")"
+[[ "$worker_status" == 0 ]] || fail "write worker exited $worker_status: $(cat "$supervisor/write.log")"
 [[ ! -e "$holder_socket" ]] || fail 'write credential socket remained after the worker ended'
 
 expired_status=0
