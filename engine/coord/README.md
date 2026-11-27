@@ -10,6 +10,6 @@ Run `probe --host-id <id>` before enabling coordination. The probe creates a lea
 
 `status show` fetches the status refs and formats them through `status.sh`.
 
-`effect clear <claim> <key>` marks an unresolved once-only intent as cleared. This records the operator's decision that the intent no longer blocks the claim. `claim clear <key>` removes a malformed, unsupported, expired or released claim; it refuses a valid claim whose lease is still active.
+`effect clear <claim> <key>` marks an unresolved once-only intent as cleared. This records the operator's decision that the intent no longer blocks the claim. `claim clear <key>` removes a malformed, unsupported or oversized claim; it refuses valid claims so their checkpoint and effect history stays available. Use `purge` after all hosts are drained to remove valid released claims.
 
 `purge` deletes refs under `refs/claims`, `refs/status` and `refs/coord` with object-id leases. Drain hosts and let active stages finish before using it.

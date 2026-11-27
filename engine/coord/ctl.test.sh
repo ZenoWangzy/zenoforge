@@ -169,6 +169,19 @@ run_ctl claim clear issue-779
   echo 'ctl.test.sh: claim clear left an oversized claim' >&2
   exit 1
 }
+seed_remote_ref refs/claims/issue-776 claim.json \
+  '{"version":1,"key":"issue-776","owner":null,"owner_kind":"scheduler-worker","subject":"776","unit":"issue-776","stage":"implement","expires_at":0,"checkpoint":{"attempts":3}}'
+if run_ctl claim clear issue-776; then
+  echo 'ctl.test.sh: claim clear deleted a valid released claim' >&2
+  exit 1
+else
+  rc=$?
+  [[ "$rc" -eq 1 ]] || { echo "ctl.test.sh: valid claim clear returned $rc" >&2; exit 1; }
+fi
+[[ -n "$(git --git-dir="$remote" for-each-ref refs/claims/issue-776)" ]] || {
+  echo 'ctl.test.sh: claim clear deleted valid checkpoint data' >&2
+  exit 1
+}
 seed_remote_ref refs/claims/issue-777 claim.json '{"version":1,"key":"issue-777","owner":null,"owner_kind":"scheduler-worker","subject":"777","unit":"issue-777","stage":"release","expires_at":0,"effects":{"deploy:9":{"state":"unknown","class":"once"}}}'
 run_ctl effect clear issue-777 deploy:9
 claim="$(git --git-dir="$remote" cat-file blob refs/claims/issue-777:claim.json)"

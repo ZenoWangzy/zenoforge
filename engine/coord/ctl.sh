@@ -405,6 +405,8 @@ ctl_claim_clear() {
           return 1
         fi
       fi
+      ctl_error 'claim is valid; use purge after all hosts are drained'
+      return 1
     fi
   else
     ctl_error "clearing malformed or unsupported claim $key"
