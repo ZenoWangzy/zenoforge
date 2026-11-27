@@ -117,7 +117,18 @@ gh() {
       fi
       ;;
     api:*)
-      n="${2##*/}"
+      path="${!#}"
+      if [[ "$path" == */comments\?* ]]; then
+        n="$(sed -n 's#.*issues/\([0-9][0-9]*\)/comments.*#\1#p' <<< "$path")"
+        fake_advance_ms 2000
+        if [[ -f "$FAKE_GH_MARKERS/$n" ]]; then
+          jq -cn --rawfile body "$FAKE_GH_MARKERS/$n" '[{node_id:"fixture",body:$body,created_at:"2026-10-30T00:00:00Z",html_url:"fixture",user:{login:"bot"}}]'
+        else
+          echo '[]'
+        fi
+        return 0
+      fi
+      n="${path##*/}"
       fake_advance_ms 2000
       case "$n" in
         910700|910701|910702) jq -cn --argjson n "$n" '{number:$n,title:"fixture",body:"",state:"closed",state_reason:"completed",closed_at:"2026-10-31T00:00:00Z",labels:[{name:"concluded"}]}' ;;

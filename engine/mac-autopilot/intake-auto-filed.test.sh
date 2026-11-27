@@ -32,14 +32,22 @@ source "$script_dir/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
 
 intake_gh_read() {
-  [[ "$1:$2" == issue:list ]] || return 1
-  local label="" arg
-  shift 2
-  while (($#)); do
-    arg="$1"
-    if [[ "$arg" == --label ]]; then label="${2:-}"; shift 2; else shift; fi
-  done
-  jq -c --arg label "$label" '[.[] | select(any(.labels[]?; .name == $label))]' "$INTAKE_ISSUES_FILE"
+  if [[ "$1 $2" == 'api graphql' ]]; then
+    local context='{}' n
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+      context="$(jq -cn --argjson context "$context" --argjson n "$n" '$context + {("i" + ($n | tostring)):{number:$n,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}}')"
+    done < <(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+')
+    jq -cn --argjson context "$context" '{data:{repository:$context}}'
+  elif [[ "$1" == api && "$2" == repos/*/issues\?* ]]; then
+    local label="${2##*&labels=}"
+    [[ "$label" != "$2" ]] || label=""
+    label="${label//%3A/:}"
+    jq -c --arg label "$label" '[.[] | select($label == "" or any(.labels[]?; .name == $label))
+      | {number,title,body:(.body // ""),state:(.state | ascii_downcase),created_at:(.createdAt // "2026-11-26T00:00:00Z"),updated_at:(.updatedAt // "2026-11-26T00:00:00Z"),labels,user:{login:"fixture"}}]' "$INTAKE_ISSUES_FILE"
+  else
+    return 1
+  fi
 }
 
 CFG='{"issue_intake":{"labels":["founder-test","priority:top","focus"],"product_labels":["ready-for-agent"]}}'

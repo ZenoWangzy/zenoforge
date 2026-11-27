@@ -33,21 +33,22 @@ TICK_INTAKE_READS_FILE="$A/intake-reads.test"; printf '0\n' > "$TICK_INTAKE_READ
 gh() {
   printf '%s\n' "$*" >> "$GH_TEST_CALLS"
   if [[ -e "$SCHED_LOCK" ]]; then printf 'locked\n' >> "$GH_TEST_LOCKS"; else printf 'unlocked\n' >> "$GH_TEST_LOCKS"; fi
-  if [[ "$1 $2" == 'issue list' ]]; then
+  if [[ "$1 $2" == 'api graphql' ]]; then
+    local context='{}' n
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+      context="$(jq -cn --argjson context "$context" --argjson n "$n" '$context + {("i" + ($n | tostring)):{number:$n,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}}')"
+    done < <(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+')
+    jq -cn --argjson context "$context" '{data:{repository:$context}}'
+  elif [[ "$1" == api && "$2" == repos/*/issues\?* ]]; then
     [[ "${GH_FAIL_LIST:-false}" != true ]] || return 1
-    if [[ " $* " == *' --label hotfix '* ]]; then
+    if [[ "$2" == *'labels=hotfix'* ]]; then
       printf '[]\n'
-    elif [[ " $* " == *' --label ready-for-agent '* ]]; then
-      if [[ " $* " == *'subIssuesSummary'* ]]; then
-        jq -cn --argjson n "$GH_TEST_COUNT" '[range(1; $n+1) as $i | {number:(7000+$i),title:("candidate "+($i|tostring)),body:"",state:"OPEN",labels:[{name:"ready-for-agent"}],subIssuesSummary:{total:0,completed:0}}]'
-      else
-        jq -cn --argjson n "$GH_TEST_COUNT" '[range(1; $n+1) as $i | {number:(7000+$i),title:("candidate "+($i|tostring)),body:"",state:"OPEN",labels:[{name:"ready-for-agent"}]}]'
-      fi
+    elif [[ "$2" == *'labels=ready-for-agent'* ]]; then
+      jq -cn --argjson n "$GH_TEST_COUNT" '[range(1; $n+1) as $i | {number:(7000+$i),title:("candidate "+($i|tostring)),body:"",state:"open",created_at:"2026-11-26T00:00:00Z",updated_at:"2026-11-26T00:00:00Z",labels:[{name:"ready-for-agent"}],user:{login:"fixture"}}]'
     else
       printf 'unexpected issue-list query: %s\n' "$*" >&2; return 97
     fi
-  elif [[ "$1 $2" == 'api repos/example-maintainer/example-repo/issues/'*'/sub_issues?per_page=100' ]]; then
-    printf '[]\n'
   else
     printf 'unexpected gh query: %s\n' "$*" >&2; return 97
   fi

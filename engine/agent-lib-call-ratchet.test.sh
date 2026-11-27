@@ -17,13 +17,36 @@ agent_lib_only_names() {
 # One ERE: a name in command position (start of line, space, ; & | ( { or backquote), as a whole word.
 agent_lib_call_pattern() {
   local IFS='|'
-  printf '(^|[[:space:];&|({`])(%s)([^[:alnum:]_]|$)\n' "$*"
+  printf '(^[[:space:]]*|[;&|({`][[:space:]]*)(%s)([^[:alnum:]_]|$)\n' "$*"
 }
 
 # Flagged lines of one file as "N:text": no comment lines, and no line that already names SCHEDULER_AGENT_LIB.
 agent_lib_call_lines() {
-  local root="$1" path="$2" pattern="$3"
-  grep -nE -- "$pattern" "$root/$path" | grep -v 'SCHEDULER_AGENT_LIB' | grep -vE '^[0-9]+:[[:space:]]*#' || true
+  local root="$1" path="$2" pattern="$3" line text name lib_path module
+  local -a lib_paths=()
+  mapfile -t lib_paths < <(git -C "$root" ls-files -- engine/lib.sh 'engine/lib.d/*.sh')
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    text="${line#*:}"
+    [[ "$text" != *SCHEDULER_AGENT_LIB* ]] || continue
+    name="$(grep -oE -- "$pattern" <<< "$text" | sed -n '1p' | sed -E 's/^[^A-Za-z_]+//; s/[^A-Za-z0-9_].*//')"
+    [[ -n "$name" ]] || continue
+    module=lib
+    for lib_path in "${lib_paths[@]}"; do
+      if grep -qE "^[[:space:]]*${name}\\(\\)[[:space:]]*\\{" "$root/$lib_path"; then
+        module="${lib_path##*/}"
+        module="${module%.sh}"
+        break
+      fi
+    done
+    [[ "$module" != transport && "$module" != issue-rest && "$module" != gh-tick-cache ]] || continue
+    if awk -v target="${line%%:*}" -v module="$module" '
+      /^[[:alnum:]_]+\(\)[[:space:]]*[({]/ { scoped=0 }
+      $0 ~ "scheduler_scope_lib[[:space:]]+" module "([[:space:]]|$)" { scoped=1 }
+      NR == target { exit !scoped }
+    ' "$root/$path"; then continue; fi
+    printf '%s\n' "$line"
+  done < <(grep -nE -- "$pattern" "$root/$path" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
 }
 
 # "<file> <count>" per non-test scheduler.d file.
@@ -111,7 +134,10 @@ if ! grep -Fq 'agent-lib call ratchet ok:' "$fixture_output"; then
   exit 1
 fi
 
-printf '\nsupervisor_inbox_append x y\n' >> "$fixture_root/$injected"
+injected_count=$(( $(awk -v path="$injected" '$1 == path { print $2 }' "$baseline") + 1 ))
+for ((i = 0; i < injected_count; i += 1)); do
+  printf 'supervisor_inbox_append x y\n' >> "$fixture_root/$injected"
+done
 injected_line=$(wc -l < "$fixture_root/$injected")
 if agent_lib_call_ratchet "$fixture_root" "$baseline" > "$fixture_output" 2>&1; then
   printf 'agent-lib-call-ratchet.test.sh: a bare agent-lib call passed\n' >&2

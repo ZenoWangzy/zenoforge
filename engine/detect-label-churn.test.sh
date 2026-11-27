@@ -161,7 +161,13 @@ if [ "$1" = "api" ]; then
       exit 0
     fi
     var="FAKE_COMMENTS_$n"
-    printf '%s\n' "${!var:-}"
+    if [[ " $* " == *' --paginate '* ]]; then
+      printf '%s\n' "${!var:-}"
+    elif [[ -n "${!var:-}" ]]; then
+      jq -Rsc '[split("\n")[] | select(length > 0) | {node_id:"fixture",body:.,created_at:"2026-10-30T00:00:00Z",html_url:"fixture",user:{login:"bot"}}]' <<< "${!var}"
+    else
+      echo '[]'
+    fi
     exit 0
   fi
   if [[ "$path" == */labels ]]; then

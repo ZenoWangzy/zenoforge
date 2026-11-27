@@ -133,7 +133,10 @@ assert_eq "no selection site sorts on createdAt alone" "" "$bad"
 
 triage_query="$(sed -n '/NEEDS_TRIAGE_JSON=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 triage_selection="$(sed -n '/^elif ! NEEDS_TRIAGE_IDS=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-assert_contains "triage intake fetches author and issue-origin fields" "$triage_query" '--json number,createdAt,labels,author,title,body'
+assert_contains "triage intake uses the REST label snapshot" "$triage_query" 'issue_rest_list'
+rest_issue_mapping="$(sed -n '/^issue_rest_list_fetch() (/,/^}/p' "$SCRIPT_DIR/lib.d/issue-rest.sh")"
+assert_contains "REST triage rows carry authors and issue origin" "$rest_issue_mapping" 'createdAt:.created_at'
+assert_contains "REST triage rows retain their GitHub author" "$rest_issue_mapping" 'author:{login:(.user.login // "")}'
 assert_contains "triage intake puts founder-test ahead of feature priority" "$triage_selection" 'founder-test'
 assert_contains "triage intake keeps production incidents ahead" "$triage_selection" 'bug'
 assert_contains "triage intake bands the batch critical path (#4363)" "$triage_selection" 'critical-path'
@@ -148,7 +151,7 @@ assert_contains "maintainer classifier checks pipeline bot comments" "$maintaine
 
 # --- meta-test: the scanner catches a regression -----------------------------
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf -- "$TMP_DIR" "$test_env_root"' EXIT
 cat >"$TMP_DIR/regressed.sh" <<'REGRESSED'
   for n in $(gh issue list --repo "$REPO" --label ready-for-agent --state open \
       --json number,createdAt -q 'sort_by(.createdAt) | .[].number'); do

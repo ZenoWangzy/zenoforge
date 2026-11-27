@@ -24,6 +24,7 @@ source "$script_dir/scheduler.d/intake-steps.sh"
 source "$script_dir/scheduler.d/intake-index.sh"
 source "$script_dir/scheduler.d/recut-reopen.sh"
 source "$script_dir/scheduler.d/intake.sh"
+source "$script_dir/../lib.d/issue-rest.sh"
 real_intake_candidates="$(declare -f intake_candidates)"
 UNITS_ARCHIVE="$A/units-archive.json"
 
@@ -109,7 +110,7 @@ intake_gh_read() {
   fi
 }
 scheduler_issue_intake_parent_reason() { return 1; }
-scheduler_lib_context() { :; }
+scheduler_lib_context() { SCHEDULER_LIB_REPO=test/repo; }
 intake_author_gate() { return 1; }
 HANDOFF_PR_CENSUS='[]' HANDOFF_CENSUS_PARTIAL=1 HANDOFF_WAIT_PRS='[]' HANDOFF_WAIT_BRANCHES='[]'
 jq -cn --arg rows "$(printf '99\tpr\tfixture\t[]\t-\t%s' "$candidate_updated_at")" \
@@ -142,16 +143,24 @@ eval "$real_intake_candidates"
 HERE="$script_dir" GH_PARALLEL=1 REPO= ZF_REPO=
 list_args="$fixture/issue-list-args"; : > "$list_args"
 intake_gh_read() {
-  if [[ "$1 $2" == 'issue list' ]]; then
+  if [[ "$1 $2" == 'api graphql' ]]; then
     printf '%s\n' "$*" >> "$list_args"
-    printf '%s\n' '[{"number":99,"title":"fixture","body":"","state":"OPEN","labels":[{"name":"ready-for-agent"}],"subIssuesSummary":{"total":0},"blockedBy":{"nodes":[]},"updatedAt":"2026-11-12T00:00:01Z"}]'
+    local context='{}' issue_number
+    while IFS= read -r issue_number; do
+      [[ "$issue_number" =~ ^[1-9][0-9]*$ ]] || continue
+      context="$(jq -cn --argjson context "$context" --argjson n "$issue_number" '$context + {("i" + ($n | tostring)):{number:$n,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}}')"
+    done < <(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+')
+    jq -cn --argjson context "$context" '{data:{repository:$context}}'
+  elif [[ "$1" == api && "$2" == repos/*/issues\?* ]]; then
+    printf '%s\n' "$*" >> "$list_args"
+    printf '%s\n' '[{"number":99,"title":"fixture","body":"","state":"open","labels":[{"name":"ready-for-agent"}],"created_at":"2026-11-12T00:00:00Z","updated_at":"2026-11-12T00:00:01Z","user":{"login":"fixture"}}]'
   else
-    printf '[]\n'
+    return 1
   fi
 }
 actual_candidate_rows="$(intake_candidates false)"
-grep -Fq -- '--json number,title,body,state,labels,subIssuesSummary,blockedBy,updatedAt' "$list_args" \
-  || { echo 'not ok - issue list did not request updatedAt' >&2; cat "$list_args" >&2; exit 1; }
+grep -Fq 'labels=ready-for-agent' "$list_args" && grep -Fq 'subIssues(first: 100)' "$list_args" \
+  || { echo 'not ok - REST candidate snapshot did not request updatedAt and dependency context' >&2; cat "$list_args" >&2; exit 1; }
 [[ "$(cut -f6 <<<"$actual_candidate_rows")" == 2026-11-12T00:00:01Z ]] \
   || { echo 'not ok - candidate row did not carry updatedAt' >&2; printf '%s\n' "$actual_candidate_rows" >&2; exit 1; }
 jq -e '.schema == 5 and ([.skipped | keys[]] == ["99"])' "$A/intake-candidates.json" >/dev/null \
