@@ -4,6 +4,7 @@ Each rule the engine enforces by code and test, beside its enforcer. `AGENTS.md`
 
 | Rule | Enforcer |
 |---|---|
+| An engine-owned resolved-config change is recorded in the pin commit only when its source commit is on engine `origin/main` and has a merged PR to `main`; product-owned paths and changes without that provenance remain refused, and the row carries the pin SHA, PR number and resolved-content SHA-256. | `tools/pin-vecta.sh`; `tools/pin-vecta.test.sh` |
 | Public text in tracked file contents, changed file paths, commit messages and PR bodies contains no new home-directory paths or configured private terms; existing matches use a baseline that can only shrink, and an absent denylist skips term matching while path checks remain active. | `engine/public-text-guard.mjs`; `engine/public-text-guard.test.mjs`; `tools/public-text-baseline.txt`; `tools/quick-land.sh`; `.github/workflows/engine-tests.yml`; `.github/workflows/public-text.yml` |
 | Before package builds and tests, pre-review self-check merges the fetched origin/main into a stale unit branch; clean PR merges are pushed and PR conflicts use merge_conflict_to_repair before any build runs. | engine/mac-autopilot/scheduler.d/self-check.sh; engine/mac-autopilot/self-check-main-sync.test.sh |
 | Worker pushes on agent and hand branches use the trusted origin/main size counter and the unit's waiver before publishing; oversized changes are refused with SPLIT. | engine/mac-autopilot/scheduler.d/clones.sh; engine/install-pre-push-guard.sh; engine/pre-push-guard.sh; engine/pre-push-guard.test.sh |

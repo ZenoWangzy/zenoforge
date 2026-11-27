@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../engine" && pwd -P)/test-env.sh"
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 pin_script="$script_dir/pin-vecta.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/pin-vecta-test.XXXXXXXX")
-trap 'chmod -R u+w -- "$tmp" 2>/dev/null; rm -rf -- "$tmp"' EXIT
+cleanup_pin_vecta_test() {
+  chmod -R u+w -- "$tmp" 2>/dev/null || :
+  rm -rf -- "$tmp"
+  test_env_chain_exit "$test_env_root" "$test_env_prior_exit"
+}
+trap cleanup_pin_vecta_test EXIT
 mkdir -p "$tmp/bin" "$tmp/tmp"
 export TMPDIR="$tmp/tmp"
 export PATH="$tmp/bin:$PATH"
@@ -30,18 +36,31 @@ git init -q --initial-branch=main "$engine_repo"
 git -C "$engine_repo" config user.name 'pin-vecta test'
 git -C "$engine_repo" config user.email 'pin-vecta@example.invalid'
 mkdir -p "$engine_repo/engine/hotfix"
+mkdir -p "$engine_repo/engine/providers"
 printf 'echo old one\n' > "$engine_repo/engine/hotfix/one.sh"
 printf 'echo old two\n' > "$engine_repo/engine/hotfix/two.sh"
 printf '{"value":"old"}\n' > "$engine_repo/engine/hotfix.json"
+printf 'provider old\n' > "$engine_repo/engine/providers/web-advisor-provider.sh"
 git -C "$engine_repo" add -A
 git -C "$engine_repo" commit -qm 'fixture: old engine'
 old_engine=$(git -C "$engine_repo" rev-parse HEAD)
 printf 'echo old one\necho shared line\n' > "$engine_repo/engine/hotfix/one.sh"
 printf 'echo engine-only line\n' > "$engine_repo/engine/hotfix/two.sh"
 printf '{"value":"new"}\n' > "$engine_repo/engine/hotfix.json"
+printf 'provider new\n' > "$engine_repo/engine/providers/web-advisor-provider.sh"
 git -C "$engine_repo" add -A
 git -C "$engine_repo" commit -qm 'fixture: engine changes'
+provider_change=$(git -C "$engine_repo" rev-parse HEAD)
+mkdir -p "$engine_repo/engine/eval/cases"
+printf '{"case":"fresh-agent"}\n' > "$engine_repo/engine/eval/cases/fresh-agent.json"
+git -C "$engine_repo" add -A
+git -C "$engine_repo" commit -qm 'fixture: add fresh-agent case'
 new_engine=$(git -C "$engine_repo" rev-parse HEAD)
+eval_change=$new_engine
+git init -q --bare "$tmp/engine-origin.git"
+git -C "$engine_repo" remote add origin "$tmp/engine-origin.git"
+git -C "$engine_repo" push -q -u origin main
+export PIN_PROVIDER_COMMIT="$provider_change" PIN_EVAL_COMMIT="$eval_change"
 
 cat > "$tmp/bin/engine-sync" <<'SYNC'
 #!/usr/bin/env bash
@@ -60,11 +79,35 @@ case "${1:-}" in
     out_root=$5
     version="$out_root/${engine_sha:0:12}-fixture"
     mkdir -p "$version/engine"
+    for rel in hotfix.json providers/web-advisor-provider.sh eval/cases/fresh-agent.json; do
+      mkdir -p "$version/engine/$(dirname -- "$rel")"
+      if ! git -C "${ZF_LOCAL_CLONE:?}" show "$engine_sha:engine/$rel" > "$version/engine/$rel" 2>/dev/null; then
+        rm -f "$version/engine/$rel"
+      fi
+    done
+    : > "$version/PACK-FILES"
     printf 'id=%s\nzenoforge_sha=%s\nproduct_sha=%s\n' "${version##*/}" "$engine_sha" "$product_sha" > "$version/BUILD-INFO"
     cat > "$version/engine/engine-sync.sh" <<'PREFLIGHT'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'candidate:%s\n' "$*" >> "${PIN_CALLS:?}"
+case "${PIN_PREFLIGHT_CASE:-}" in
+  provider) path=providers/web-advisor-provider.sh ;;
+  eval) path=eval/cases/fresh-agent.json ;;
+  product) path=product-owned.json ;;
+  *) path='' ;;
+esac
+if [[ -n "$path" ]]; then
+  if [[ -n "${3:-}" ]] && awk -F '\t' -v p="$path" '$1 == p && $2 ~ /^engine pin / && $3 ~ /^sha256:[0-9a-f]+$/ { found = 1 } END { exit !found }' "$3"; then
+    echo 'publish-preflight: OK'
+    exit 0
+  fi
+  hash=bbbbbbbbbbbb
+  if [[ -f "$2/engine/$path" ]]; then hash=$(sha256sum "$2/engine/$path" | awk '{ print substr($1, 1, 12) }'); fi
+  echo "resolved-config-check: CHANGED $path: live engine aaaaaaaaaaaa -> new engine bbbbbbbbbbbb $hash" >&2
+  echo 'publish-preflight: resolved-config check failed' >&2
+  exit 1
+fi
 if [[ "${1:-}" == --preflight && "${PIN_PREFLIGHT_FAIL:-0}" == 1 ]]; then
   echo 'resolved-config-check: CHANGED hotfix.json: live engine aaaaaaaaaaaa -> new engine bbbbbbbbbbbb' >&2
   echo 'resolved-config-check: CHANGED gone.json: live engine aaaaaaaaaaaa -> new missing -' >&2
@@ -124,6 +167,19 @@ if [[ "${1:-}" == pr && "${PIN_GH_PR_FAIL:-0}" == 1 ]]; then
 fi
 if [[ "${1:-}" == api ]]; then
   [[ "${PIN_GH_API_FAIL:-0}" != 1 ]] || exit 1
+  if [[ "$*" == *"/commits/$PIN_PROVIDER_COMMIT/pulls"* || "$*" == *"/commits/$PIN_EVAL_COMMIT/pulls"* ]]; then
+    number=1599
+    [[ "$*" != *"/commits/$PIN_PROVIDER_COMMIT/pulls"* ]] || number=1575
+    [[ "$*" != *"/commits/$PIN_EVAL_COMMIT/pulls"* ]] || number=1583
+    if [[ "${PIN_GH_ASSOCIATION:-none}" == merged ]]; then
+      jq -cn --argjson number "$number" '[{number:$number,state:"closed",merged_at:"2026-11-26T00:00:00Z",base:{ref:"main"}}]'
+    elif [[ "${PIN_GH_ASSOCIATION:-none}" == unmerged ]]; then
+      jq -cn --argjson number "$number" '[{number:$number,state:"open",merged_at:null,base:{ref:"main"}}]'
+    else
+      printf '[]\n'
+    fi
+    exit 0
+  fi
   if [[ "$*" == *'/pulls'* ]]; then printf '%s\n' '{"html_url":"https://github.com/ZenoWangzy/vecta/pull/9001"}'; exit 0; fi
   if [[ -n "${PIN_WORKFLOW_RUNS+x}" ]]; then
     printf '%s\n' "$PIN_WORKFLOW_RUNS"
@@ -179,12 +235,12 @@ setup_agent() { # <name> [pack map rows]
 }
 
 run_pin() { # <calls-file> <scope-file> <agent-home> <target> [args...]
-  local calls="$1" scopes="$2" agent="$3" target="$4"
+  local calls="$1" scopes="$2" agent="$3" target="$4" engine_sha="${PIN_ENGINE_SHA:-$new_engine}"
   shift 4
   PIN_CALLS="$calls" PIN_SCOPE_CALLS="$scopes" \
-    AGENT_HOME="$agent" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" PIN_EXPECTED_ENGINE="$new_engine" \
+    AGENT_HOME="$agent" ZF_ENGINE_SYNC="$tmp/bin/engine-sync" PIN_EXPECTED_ENGINE="$engine_sha" \
     ZF_LOCAL_CLONE="$engine_repo" \
-    bash "$pin_script" "$new_engine" "$target" "$@"
+    bash "$pin_script" "$engine_sha" "$target" "$@"
 }
 
 # A failing VectA gate refuses a direct-main publication after the bounded preflight steps.
@@ -381,6 +437,86 @@ if [[ -e "$pack_calls" ]]; then ! grep -q '^gh:pr create ' "$pack_calls" || fail
 [[ "$(git --git-dir="$tmp/pack-origin.git" for-each-ref --format='%(refname)' refs/heads | wc -l | tr -d '[:space:]')" == 1 ]] \
   || fail 'failed preflight pushed a topic branch'
 ok 'mixed product and pack pin uses the PR preflight and refuses publication on failure'
+
+provider_target=$(setup_target resolved-provider)
+provider_agent=$(setup_agent resolved-provider)
+provider_calls="$tmp/resolved-provider.calls"
+provider_scopes="$tmp/resolved-provider.scopes"
+: > "$provider_calls"
+: > "$provider_scopes"
+if ! PIN_PREFLIGHT_CASE=provider PIN_GH_ASSOCIATION=merged run_pin "$provider_calls" "$provider_scopes" "$provider_agent" "$provider_target" > "$tmp/resolved-provider.out" 2>&1; then
+  cat "$tmp/resolved-provider.out" >&2
+  fail 'merged provider change was not accepted by publish preflight'
+fi
+provider_branch=$(branch_of "$tmp/resolved-provider.out")
+provider_hash=$(git -C "$engine_repo" show "$new_engine:engine/providers/web-advisor-provider.sh" | sha256sum | awk '{ print $1 }')
+provider_row=$(printf 'providers/web-advisor-provider.sh\tengine pin %s carries #1575\tsha256:%s' "$new_engine" "$provider_hash")
+git -C "$provider_target" show "$provider_branch:.zenoforge/build/intended-changes.tsv" | grep -Fxq "$provider_row" \
+  || fail 'merged provider pin did not record its resolved content row in the pin commit'
+[[ $(grep -c '^candidate:--preflight ' "$provider_calls") == 2 ]] || fail 'merged provider change did not rerun publish preflight with its row'
+grep -Fq "gh:api repos/ZenoWangzy/zenoforge/commits/$provider_change/pulls" "$provider_calls" \
+  || fail 'provider pin did not look up the changed engine commit PR'
+ok 'merged provider change is recorded in the pin commit and passes publish preflight'
+
+eval_target=$(setup_target resolved-eval)
+eval_agent=$(setup_agent resolved-eval)
+eval_calls="$tmp/resolved-eval.calls"
+eval_scopes="$tmp/resolved-eval.scopes"
+: > "$eval_calls"
+: > "$eval_scopes"
+if ! PIN_PREFLIGHT_CASE=eval PIN_GH_ASSOCIATION=merged run_pin "$eval_calls" "$eval_scopes" "$eval_agent" "$eval_target" > "$tmp/resolved-eval.out" 2>&1; then
+  cat "$tmp/resolved-eval.out" >&2
+  fail 'merged new eval case was not accepted by publish preflight'
+fi
+eval_branch=$(branch_of "$tmp/resolved-eval.out")
+eval_hash=$(git -C "$engine_repo" show "$new_engine:engine/eval/cases/fresh-agent.json" | sha256sum | awk '{ print $1 }')
+eval_row=$(printf 'eval/cases/fresh-agent.json\tengine pin %s carries #1583\tsha256:%s' "$new_engine" "$eval_hash")
+git -C "$eval_target" show "$eval_branch:.zenoforge/build/intended-changes.tsv" | grep -Fxq "$eval_row" \
+  || fail 'merged new eval case did not record its resolved content row in the pin commit'
+[[ $(grep -c '^candidate:--preflight ' "$eval_calls") == 2 ]] || fail 'merged eval case did not rerun publish preflight with its row'
+grep -Fq "gh:api repos/ZenoWangzy/zenoforge/commits/$eval_change/pulls" "$eval_calls" \
+  || fail 'eval pin did not look up the changed engine commit PR'
+ok 'merged new eval file is recorded in the pin commit and passes publish preflight'
+
+unmerged_target=$(setup_target unmerged-engine)
+unmerged_agent=$(setup_agent unmerged-engine)
+unmerged_calls="$tmp/unmerged-engine.calls"
+unmerged_scopes="$tmp/unmerged-engine.scopes"
+: > "$unmerged_calls"
+: > "$unmerged_scopes"
+set +e
+PIN_PREFLIGHT_CASE=provider PIN_GH_ASSOCIATION=none run_pin "$unmerged_calls" "$unmerged_scopes" "$unmerged_agent" "$unmerged_target" > "$tmp/unmerged-engine.out" 2>&1
+unmerged_status=$?
+set -e
+((unmerged_status != 0)) || fail 'engine change without a merged PR was accepted'
+unmerged_branch=$(branch_of "$tmp/unmerged-engine.out")
+if git -C "$unmerged_target" show "$unmerged_branch:.zenoforge/build/intended-changes.tsv" >/dev/null 2>&1; then
+  fail 'engine change without a merged PR left an automatic row in the pin commit'
+fi
+[[ $(grep -c '^candidate:--preflight ' "$unmerged_calls") == 1 ]] || fail 'unreviewed engine change retried publish preflight'
+ok 'engine change without a merged PR remains refused'
+
+product_target=$(setup_target product-owned)
+product_agent=$(setup_agent product-owned)
+mkdir -p "$product_target/.zenoforge"
+printf 'product bytes\n' > "$product_target/.zenoforge/product-owned.json"
+git -C "$product_target" add .zenoforge/product-owned.json
+git -C "$product_target" commit -qm 'fixture: add product-owned config'
+product_calls="$tmp/product-owned.calls"
+product_scopes="$tmp/product-owned.scopes"
+: > "$product_calls"
+: > "$product_scopes"
+set +e
+PIN_PREFLIGHT_CASE=product PIN_GH_ASSOCIATION=merged run_pin "$product_calls" "$product_scopes" "$product_agent" "$product_target" > "$tmp/product-owned.out" 2>&1
+product_status=$?
+set -e
+((product_status != 0)) || fail 'product-owned resolved config was accepted as an engine change'
+product_branch=$(branch_of "$tmp/product-owned.out")
+if git -C "$product_target" show "$product_branch:.zenoforge/build/intended-changes.tsv" >/dev/null 2>&1; then
+  fail 'product-owned resolved config left an automatic row in the pin commit'
+fi
+[[ $(grep -c '^candidate:--preflight ' "$product_calls") == 1 ]] || fail 'product-owned config retried publish preflight'
+ok 'product-owned resolved config remains refused'
 
 # A passing PR pin goes through Vecta's SHA-bound branch preflight before the
 # PR is created. The simulated publisher only pushes to the fixture bare repo.

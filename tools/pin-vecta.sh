@@ -368,7 +368,7 @@ print_override_diagnostics() {
 }
 
 print_intended_rows() {
-  local line detail path reason
+  local source=${1:-"$out_root/preflight.log"} line detail path reason new_hash scope
   while IFS= read -r line; do
     [[ "$line" == 'resolved-config-check: CHANGED '* ]] || continue
     detail=${line#resolved-config-check: CHANGED }
@@ -381,13 +381,123 @@ print_intended_rows() {
     reason="engine pin $short_sha changes resolved config"
     echo "pin-vecta: add this row to $intended_file and rerun:" >&2
     printf '%s\t%s\t%s\n' "$path" "$reason" "$scope" >&2
-  done < "$out_root/preflight.log"
+  done < "$source"
+}
+
+merged_engine_pr() {
+  local commit=$1 origin_main=$2 pulls
+  git -C "$engine_repo" merge-base --is-ancestor "$commit" "$origin_main" || return 1
+  pulls=$("$gh_bin" api "repos/ZenoWangzy/zenoforge/commits/$commit/pulls" 2>/dev/null) || return 1
+  jq -er '[.[] | select(.state == "closed" and (.merged_at | type == "string" and length > 0) and .base.ref == "main")][0].number // empty' <<<"$pulls"
+}
+
+engine_intended_rows() {
+  local source=$1 rows=$2 origin_main line detail path commit pr hash count=0
+  grep -q '^resolved-config-check: CHANGED ' "$source" || return 1
+  git -C "$engine_repo" fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main >/dev/null 2>&1 || return 1
+  origin_main=$(git -C "$engine_repo" rev-parse --verify refs/remotes/origin/main^{commit}) || return 1
+  : > "$rows"
+  while IFS= read -r line; do
+    [[ "$line" == 'resolved-config-check: CHANGED '* ]] || continue
+    detail=${line#resolved-config-check: CHANGED }
+    path=${detail%%: live *}
+    [[ "$path" != "$detail" && "$path" != /* && "$path" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+    case "/$path/" in */../*) return 1 ;; esac
+    if git -C "$worktree" cat-file -e "$head_sha:.zenoforge/$path" 2>/dev/null \
+      || git -C "$worktree" cat-file -e "$head_sha:.zenoforge/build/pack/scripts/agent/$path" 2>/dev/null; then
+      return 1
+    fi
+    [[ -r "$version_dir/PACK-FILES" ]] || return 1
+    if awk -F '\t' -v p="$path" '$2 == p { found = 1 } END { exit !found }' "$version_dir/PACK-FILES"; then
+      return 1
+    fi
+    [[ -f "$version_dir/engine/$path" ]] || return 1
+    git -C "$engine_repo" cat-file -e "$engine_sha:engine/$path" 2>/dev/null || return 1
+    commit=$(git -C "$engine_repo" log -1 --first-parent --format=%H "$old_engine_sha..$engine_sha" -- "engine/$path" 2>/dev/null) || return 1
+    [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+    pr=$(merged_engine_pr "$commit" "$origin_main") || return 1
+    hash=$(sha256sum -- "$version_dir/engine/$path" | awk '{ print $1 }') || return 1
+    printf '%s\tengine pin %s carries #%s\tsha256:%s\n' "$path" "$engine_sha" "$pr" "$hash" >> "$rows"
+    count=$((count + 1))
+  done < "$source"
+  ((count > 0))
+}
+
+record_engine_intended_rows() {
+  local source=$1 rows=$2 backup="$out_root/intended-changes.before.$$" candidate="$out_root/intended-changes.candidate.$$"
+  local had_intended=0 retry_status=0 auto_route path
+  local -a retry_runner auto_paths
+  engine_intended_rows "$source" "$rows" || return 1
+  if [[ -e "$intended_file" ]]; then
+    cp -- "$intended_file" "$backup" || return 1
+    had_intended=1
+    cp -- "$intended_file" "$candidate" || return 1
+  else
+    : > "$candidate"
+  fi
+  if [[ -s "$candidate" && -n "$(tail -c 1 "$candidate")" ]]; then
+    printf '\n' >> "$candidate" || return 1
+  fi
+  cat -- "$rows" >> "$candidate" || return 1
+  if ! cp -- "$candidate" "$intended_file"; then
+    if ((had_intended)); then cp -- "$backup" "$intended_file"; else rm -f -- "$intended_file"; fi
+    return 1
+  fi
+  retry_runner=("$live_engine_sync" --preflight "$version_dir" "$intended_file")
+  if [[ -f "$candidate_engine_sync" ]]; then
+    retry_runner=(bash "$candidate_engine_sync" --preflight "$version_dir" "$intended_file")
+  fi
+  run_bounded_step preflight "${retry_runner[@]}" || retry_status=$?
+  if ((retry_status != 0)); then
+    if ((had_intended)); then cp -- "$backup" "$intended_file"; else rm -f -- "$intended_file"; fi
+    preflight_status=$retry_status
+    return 1
+  fi
+  if ! git -C "$worktree" add -- "$intended_file"; then
+    git -C "$worktree" restore --staged -- "$intended_file" >/dev/null 2>&1 || true
+    if ((had_intended)); then cp -- "$backup" "$intended_file"; else rm -f -- "$intended_file"; fi
+    preflight_status=1
+    return 1
+  fi
+  auto_paths=()
+  while IFS= read -r -d '' path; do
+    auto_paths+=("$path")
+  done < <(git -C "$worktree" diff --cached --name-only -z "$merge_base")
+  auto_route=$(classify_delivery_paths "$worktree/scripts/branch-delivery-policy.mjs" "${auto_paths[@]}") || {
+    git -C "$worktree" restore --staged -- "$intended_file" >/dev/null 2>&1 || true
+    if ((had_intended)); then cp -- "$backup" "$intended_file"; else rm -f -- "$intended_file"; fi
+    preflight_status=1
+    return 1
+  }
+  route=$auto_route
+  if [[ "$route" == land-direct-main ]]; then
+    commit_subject="[skip ci] chore(engine): pin zenoforge $short_sha"
+  else
+    commit_subject="chore(engine): pin zenoforge $short_sha"
+  fi
+  if ! git -C "$worktree" commit --amend -m "$commit_subject"; then
+    git -C "$worktree" restore --staged -- "$intended_file" >/dev/null 2>&1 || true
+    if ((had_intended)); then cp -- "$backup" "$intended_file"; else rm -f -- "$intended_file"; fi
+    preflight_status=1
+    return 1
+  fi
+  head_sha=$(git -C "$worktree" rev-parse HEAD) || return 1
+  preflight_status=0
+  echo 'pin-vecta: recorded verified engine changes in the pin commit:'
+  sed 's/^/  /' "$rows"
 }
 
 if ((build_status != 0)) && { grep -q 'override guard failed\|override changed:' "$out_root/build.log"; }; then
   print_override_diagnostics
 fi
-if ((preflight_status != 0)); then print_intended_rows; fi
+if ((preflight_status != 0)); then
+  original_preflight_log="$out_root/preflight-original.log"
+  auto_rows="$out_root/intended-changes.auto.tsv"
+  cp -- "$out_root/preflight.log" "$original_preflight_log"
+  if ! record_engine_intended_rows "$original_preflight_log" "$auto_rows"; then
+    print_intended_rows "$original_preflight_log"
+  fi
+fi
 
 if ((build_status != 0 || check_status != 0 || preflight_status != 0 || vecta_gate_status != 0)); then
   printf 'pin-vecta: refusing publication build_status=%s check_status=%s preflight_status=%s vecta_gate_status=%s\n' \
