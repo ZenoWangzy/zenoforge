@@ -1,0 +1,6 @@
+{
+  "engine/unitgen.py": ["engine/unitgen.test.sh"],
+  "engine/systemd/templates/zenoforge-autopilot-scheduler.service.in": ["engine/unitgen.test.sh"],
+  "engine/systemd/templates/zenoforge-autopilot-bell.service.in": ["engine/unitgen.test.sh"],
+  "tools/portable-suites.txt": ["tools/run-engine-tests.test.sh"]
+}
