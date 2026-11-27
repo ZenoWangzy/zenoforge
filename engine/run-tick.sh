@@ -184,6 +184,7 @@ run_tick() {
   }
   # Same setting lib.sh resolves; this launcher deliberately does not source lib.sh. Read after config.sh so deploy.env is in effect.
   local UNIT_PREFIX="${ZF_UNIT_PREFIX:-zenoforge}"
+  local PAUSE_FILE="$AGENT_HOME/PAUSE"
   # The target checkout: ZF_REPO_DIR, else two levels up from engine (the engine lives inside it).
   repo_dir="$ZF_REPO_DIR"
   engine_repo_dir="${ZF_ENGINE_REPO_DIR:-$repo_dir}"

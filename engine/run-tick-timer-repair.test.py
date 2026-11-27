@@ -16,6 +16,8 @@ class TimerRepair(unittest.TestCase):
         source = SOURCE.read_text()
         start = source.index('  if [ ! -r "$timer_list" ]; then')
         end = source.index('  done <"$timer_list"', start) + len('  done <"$timer_list"')
+        pause_line = '  local PAUSE_FILE="$AGENT_HOME/PAUSE"\n'
+        assert pause_line in source
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root/'timers').write_text(
@@ -45,9 +47,9 @@ timeout() { shift; "$@"; }
 gh() { printf '%s' "$OFF_MODE"; }
 refuse() { exit 99; }
 append_supervisor_event() { printf 'alert\\n' >> "$CALLS"; }
-timer_list="$ROOT/timers"; AGENT_HOME="$ROOT"; PAUSE_FILE="$ROOT/PAUSE"; UNIT_PREFIX=zenoforge; timer_gh_timeout_sec=1; timer_repo=test/repo
+timer_list="$ROOT/timers"; AGENT_HOME="$ROOT"; UNIT_PREFIX=zenoforge; timer_gh_timeout_sec=1; timer_repo=test/repo
 run() {
-''' + source[start:end] + '\n}\nrun\n'
+''' + pause_line + source[start:end] + '\n}\nrun\n'
             env = {
                 **os.environ,
                 'ROOT': str(root),
