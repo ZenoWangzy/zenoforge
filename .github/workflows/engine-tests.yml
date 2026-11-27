@@ -199,7 +199,10 @@ jobs:
           echo 'PASS unitgen load launchd smoke'
 
   portable-shim-contract-macos:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Run portable-shim contract test

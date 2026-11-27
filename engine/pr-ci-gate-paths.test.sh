@@ -102,7 +102,8 @@ done
 
 portable_shim_job="$(grep -A12 -m1 '^  portable-shim-contract-macos:$' "$root/.github/workflows/engine-tests.yml" || true)"
 [[ -n "$portable_shim_job" ]] || fail "engine-tests.yml has no macOS portable-shim contract job"
-grep -qxF '    runs-on: macos-latest' <<< "$portable_shim_job" || fail "portable-shim contract job does not use macos-latest"
+grep -qxF '    runs-on: ${{ matrix.os }}' <<< "$portable_shim_job" || fail "portable-shim contract job does not use its OS matrix"
+grep -qxF '        os: [macos-latest, macos-15-intel]' <<< "$portable_shim_job" || fail "portable-shim contract job does not cover both macOS runners"
 grep -qxF '          ZF_RUNNER: pidfile' <<< "$portable_shim_job" || fail "portable-shim contract job does not select pidfile mode"
 grep -qxF '        run: bash engine/portable-shim/zf_units.test.sh' <<< "$portable_shim_job" || fail "portable-shim contract job does not run the contract test"
 
