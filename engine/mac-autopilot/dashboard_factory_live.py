@@ -156,14 +156,36 @@ def read_dispatch_decisions(agent_home, limit=8):
     return rows[-max(0, int(limit)):]
 
 
+def _reverse_lines(source):
+    source.seek(0, os.SEEK_END)
+    remaining = source.tell()
+    pending = b""
+    while remaining:
+        width = min(65536, remaining)
+        remaining -= width
+        source.seek(remaining)
+        rows = (source.read(width) + pending).split(b"\n")
+        pending = rows.pop(0) if remaining else b""
+        for row in reversed(rows):
+            if row:
+                yield row.decode("utf-8", "replace")
+    if pending:
+        yield pending.decode("utf-8", "replace")
+
+
 def merge_lane_merges_today(factory_home, today, date_of):
     merged = set()
     path = os.path.join(factory_home, "merge-lane.log")
     try:
-        with open(path, encoding="utf-8", errors="replace") as source:
-            for line in source:
+        with open(path, "rb") as source:
+            for line in _reverse_lines(source):
                 stamp = STAMP.match(line.strip())
-                if not stamp or date_of(stamp.group(1)) != today:
+                if not stamp:
+                    continue
+                merge_date = date_of(stamp.group(1))
+                if merge_date and merge_date < today:
+                    break
+                if merge_date != today:
                     continue
                 match = MERGED_LANE_LINE.match(stamp.group(2))
                 if match and int(match.group(1)) > 0:

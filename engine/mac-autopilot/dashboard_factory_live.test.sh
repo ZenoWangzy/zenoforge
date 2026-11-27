@@ -46,10 +46,10 @@ with tempfile.TemporaryDirectory() as agent_home:
         target.write("[2026-11-27T17:30:00Z] issue #2713 skipped: capacity detail\n")
         target.write("[2026-11-27T17:31:00Z] issue #2714 dispatched to worker\n")
     with open(os.path.join(agent_home, "merge-lane.log"), "w", encoding="utf-8") as target:
+        target.write("[2026-11-26T23:50:00Z] 403 MERGED direct main " + "x" * 70000 + "\n")
         target.write("[2026-11-27T17:40:00Z] 400 MERGED direct main\n")
         target.write("[2026-11-27T17:41:00Z] 401 MERGED direct main\n")
         target.write("[2026-11-27T17:42:00Z] 402 MERGED direct main\n")
-        target.write("[2026-11-26T23:50:00Z] 403 MERGED direct main\n")
     result = live.read_live(agent_home, now, today, lambda value: value[:10], lambda pid: int(pid) in {1234, 5678, 1122})
     version_engine = os.path.join(agent_home, "engine-versions", "6da8c7285e8b", "engine")
     os.makedirs(version_engine)
