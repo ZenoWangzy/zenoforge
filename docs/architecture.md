@@ -137,16 +137,18 @@ Every state change goes through `issue_transition` (`engine/lib.sh`). It checks 
 
 ### 2.3 Method: Matt skills
 
-Every stage works the way [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT) work, entered through the `ask-matt` router. The skills are vendored byte-identical under `.agents/skills/` at the upstream commit pinned in `.agents/matt-skills.manifest.json`. `tools/sync-matt-skills.sh <commit>` re-vendors a pin and rewrites the manifest, and `.claude/skills/<name>` symlinks make them visible to Claude Code in a fresh clone. They stay under their MIT license, not the repository's (`THIRD_PARTY_NOTICES.md`).
+Every agent stage has a Matt skill as its default method unless the table names an explicit exception. New incoming issues enter through the `ask-matt` router, which routes to the stage skill. The skills are vendored byte-identical under `.agents/skills/` at the upstream commit pinned in `.agents/matt-skills.manifest.json`. `tools/sync-matt-skills.sh <commit>` re-vendors a pin and rewrites the manifest, and `.claude/skills/<name>` symlinks make them visible to Claude Code in a fresh clone. They stay under their MIT license, not the repository's (`THIRD_PARTY_NOTICES.md`).
 
 | Stage | Matt skill | Where the engine names it |
 |---|---|---|
 | triage | `ask-matt` routing, then `triage`; the labels are its roles | `prompts/triage.md`, `run-triage.sh`, `run-triage-batch.sh` |
+| advisor | `ask-matt` routes judgment calls to the applicable Matt skill | `prompts/advisor.md`, `run-advisor.sh`, `run-advisor-batch.sh` |
 | recut | `to-tickets`; `to-spec` first when the parent is an unclear idea | `prompts/recut.md`, `run-recut.sh` |
 | implement | `implement`, test-first with `tdd` | `matt_method_rule` in `scheduler.sh`, `prompts/implement-contract.md`, `bin/luna-ticket` |
 | repair, CI repair, self-fix | `diagnosing-bugs`: a command that goes red on the failure comes before the fix; the regression test follows `tdd` | the same `matt_method_rule` |
 | review | `code-review`: Standards and Spec, run in one session | `review_contract_rule` in `scheduler.sh`, `prompts/review-contract.md`, `bin/luna-ticket` |
-| supervisor arbiter | none is run; the `requeue` guidance names the method | `prompts/supervisor-arbiter.md` |
+| release | **Exception:** the engine supplies no Matt skill; it executes the target-configured release runner, whose implementation is outside this checkout | `engine/run-release.sh` |
+| supervisor arbiter | **Exception:** no Matt skill runs because the arbiter receives a frozen record without repository access; requeue guidance names the relevant methods | `prompts/supervisor-arbiter.md` |
 
 The skills are interactive and the stages run unattended, so each prompt says what changes: no questions, no sub-agents, no tracker writes (the wrapper does those). The machine contracts are unchanged and win over a skill where they differ: the output schemas, the `VERDICT:` line, the `review-findings` block, the `contract` block.
 
