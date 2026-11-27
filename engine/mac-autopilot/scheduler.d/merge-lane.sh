@@ -567,6 +567,7 @@ run_merge_lane_pass() {
         candidate_head="$(git -C "$ROOT" rev-parse --verify "${candidate_ref}^{commit}" 2>/dev/null || true)"
         [[ "$candidate_head" == "$head" ]] || { say "merge skipped PR#$pr (head moved after census)"; pass_step_end skipped-head-moved "$pr"; continue; }
         state="$(jqf -r '.pr_open_mergeable // empty' <<<"$ready")"
+        [[ -n "$state" ]] || state="$(tick_pr_mergeable "$pr" 2>/dev/null || true)"
       else
         state="$(tick_pr_mergeable "$pr")"
       fi
@@ -619,6 +620,7 @@ run_merge_lane_pass() {
           behind_main=true
         fi
         state="$(jqf -r '.pr_open_mergeable // empty' <<<"$ready")"
+        [[ -n "$state" || "$behind_main" != true ]] || state="$(tick_pr_mergeable "$pr" 2>/dev/null || true)"
       elif pr_behind_main "$pr" "$head"; then
         behind_main=true
         state="$(tick_pr_mergeable "$pr")"

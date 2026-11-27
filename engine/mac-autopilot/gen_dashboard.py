@@ -288,6 +288,13 @@ def gh(args):
     except Exception:
         return []
 
+def gh_lines(args):
+    try:
+        out = gh_caller.run_gh(["gh", *args], capture_output=True, text=True, timeout=60).stdout or ""
+        return [json.loads(line) for line in out.splitlines() if line.strip()]
+    except Exception:
+        return []
+
 # 在岗员工此刻在做什么：codex 日志里最后一段 "codex" 自述 + 最后一条 exec 命令。
 def activity_of(log):
     try:
@@ -395,12 +402,10 @@ def snapshot_section(*path):
 issues_open = gh(["issue", "list", "--state", "open", "--limit", "300", "--json", "number,labels"])
 prs_open = snapshot_section("prs") or []
 la_midnight_utc = datetime.combine(today, datetime.min.time(), tzinfo=SESSION_TIMEZONE).astimezone(ZoneInfo("UTC"))
-prs_merged_today = gh(["api", "search/issues", "-X", "GET", "-f",
-                       f"q=repo:{DEPLOYMENT_REPO} is:pr is:merged merged:>={la_midnight_utc:%Y-%m-%dT%H:%M:%SZ}",
-                       "-f", "per_page=100", "--paginate", "--slurp",
-                       "--jq", "[.items[] | {number, mergedAt:.closed_at}]"])
-if prs_merged_today and isinstance(prs_merged_today[0], list):
-    prs_merged_today = [pr for page in prs_merged_today for pr in page]
+prs_merged_today = gh_lines(["api", "search/issues", "-X", "GET", "-f",
+                             f"q=repo:{DEPLOYMENT_REPO} is:pr is:merged merged:>={la_midnight_utc:%Y-%m-%dT%H:%M:%SZ}",
+                             "-f", "per_page=100", "--paginate",
+                             "--jq", ".items[] | {number, mergedAt:.closed_at}"])
 merged_today = [p["number"] for p in prs_merged_today
                 if session_date_of(p.get("mergedAt")) == today_text]
 needs_triage = sum(1 for i in issues_open if any(l.get("name") == "needs-triage" for l in i.get("labels", [])))

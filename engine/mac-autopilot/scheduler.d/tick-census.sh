@@ -15,7 +15,7 @@ tick_prs_rest_snapshot() {
   pages="$(gh_tick_cache_get "$cache_key.json" gh_api_cached -p "$cache_key" "$url")" || return 1
   jqf -sc 'add | map({number, headRefOid:.head.sha, headRefName:.head.ref, baseRefName:.base.ref,
     isDraft:(.draft // false), title, body, labels:[.labels[]? | {name}],
-    mergeable:(if .mergeable == true then "MERGEABLE" elif .mergeable == false then "CONFLICTING" else "UNKNOWN" end),
+    mergeable:(if has("mergeable") then (if .mergeable == true then "MERGEABLE" elif .mergeable == false then "CONFLICTING" else "UNKNOWN" end) else null end),
     createdAt:.created_at, updatedAt:.updated_at})' <<<"$pages"
 }
 tick_prs_fetch() { tick_prs_rest_snapshot; }
