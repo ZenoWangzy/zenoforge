@@ -118,10 +118,10 @@ gh_commit_check_runs_fetch() {
     page=$((page + 1))
     extra="$(gh api "repos/$endpoint_repo/commits/$sha/check-runs?per_page=100&page=$page" 2>/dev/null)" || return 1
     page_rows="$(jq -ce 'select(type == "object" and (.check_runs | type == "array")) | .check_runs' <<<"$extra")" || return 1
-    rows="$(jq -cn --argjson left "$rows" --argjson right "$page_rows" '$left + $right')" || return 1
+    rows="$(printf '%s\n%s\n' "$rows" "$page_rows" | jq -cs 'add')" || return 1
     row_count="$(jq -er 'length' <<<"$rows")" || return 1
   done
-  jq -cn --argjson total "$count" --argjson runs "$rows" '{total_count:$total,check_runs:$runs}'
+  printf '%s' "$rows" | jq -c --argjson total "$count" '{total_count:$total,check_runs:.}'
 }
 
 gh_commit_check_runs_complete() {

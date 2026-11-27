@@ -4,6 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 trap 'rm -rf -- "$test_env_root"' EXIT
 source "$script_dir/lib.d/gh-key-cache.sh"
+source "$script_dir/lib.d/gh-tick-cache.sh"
 HERE="$script_dir/mac-autopilot"
 source "$HERE/scheduler.d/core.sh"
 source "$HERE/scheduler.d/ci-status.sh"
