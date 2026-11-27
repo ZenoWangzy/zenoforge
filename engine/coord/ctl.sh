@@ -141,8 +141,12 @@ ctl_update_control() {
     ctl_read_control || { ctl_error 'control record unavailable or invalid'; return 3; }
     case "$operation" in
       primary)
-        [[ -z "$value" || "$value" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { ctl_error 'invalid primary host id'; return 2; }
-        record="$(jq -c --arg value "$value" '.primary = (if $value == "" then null else $value end)' <<<"$CTL_CONTROL")" || return 3
+        [[ -n "$value" ]] || value="${ZF_HOST_ID:-}"
+        [[ "$value" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { ctl_error 'invalid primary host id'; return 2; }
+        record="$(jq -c --arg value "$value" '.primary = $value' <<<"$CTL_CONTROL")" || return 3
+        ;;
+      primary-clear)
+        record="$(jq -c '.primary = null' <<<"$CTL_CONTROL")" || return 3
         ;;
       min_proto)
         [[ "$value" =~ ^[1-9][0-9]*$ ]] || { ctl_error 'min_proto must be a positive integer'; return 2; }
@@ -493,12 +497,17 @@ case "${1:-}" in
     ;;
   control)
     shift
-    [[ "${1:-}" == set && $# -eq 2 && "$2" == *=* ]] || { ctl_error 'usage: ctl.sh control set key=value'; exit 2; }
-    key="${2%%=*}"
-    value="${2#*=}"
-    case "$key" in primary|min_proto|drain) ctl_update_control "$key" "$value" ;;
-      *) ctl_error 'control key must be primary, min_proto, or drain'; exit 2 ;;
-    esac
+    if [[ "${1:-}" == clear ]]; then
+      [[ $# -eq 2 && "$2" == primary ]] || { ctl_error 'usage: ctl.sh control clear primary'; exit 2; }
+      ctl_update_control primary-clear ""
+    else
+      [[ "${1:-}" == set && $# -eq 2 && "$2" == *=* ]] || { ctl_error 'usage: ctl.sh control set key=value'; exit 2; }
+      key="${2%%=*}"
+      value="${2#*=}"
+      case "$key" in primary|min_proto|drain) ctl_update_control "$key" "$value" ;;
+        *) ctl_error 'control key must be primary, min_proto, or drain'; exit 2 ;;
+      esac
+    fi
     ;;
   drain)
     [[ $# -eq 2 ]] || { ctl_error 'usage: ctl.sh drain <host-id>'; exit 2; }
@@ -525,7 +534,7 @@ case "${1:-}" in
     ctl_purge
     ;;
   *)
-    ctl_error 'usage: ctl.sh probe [--host-id id] | enable --host-id id | adopt-local | drain <host-id> | control set key=value | effect clear <claim> <key> | claim clear <key> | purge | status show'
+    ctl_error 'usage: ctl.sh probe [--host-id id] | enable --host-id id | adopt-local | drain <host-id> | control set key=value | control clear primary | effect clear <claim> <key> | claim clear <key> | purge | status show'
     exit 2
     ;;
 esac

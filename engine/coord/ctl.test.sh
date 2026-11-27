@@ -48,7 +48,7 @@ run_ctl probe --host-id test-a
   exit 1
 }
 
-run_ctl control set primary=test-a
+run_ctl control set primary=
 run_coord test-a coord_acquire issue-1 owner-a scheduler-worker 1 issue-1 implement
 if run_coord test-b coord_acquire issue-2 owner-b scheduler-worker 2 issue-2 implement; then
   echo 'ctl.test.sh: non-primary host acquired a claim' >&2
@@ -77,7 +77,9 @@ jq -e '.owner == null' <<<"$claim" >/dev/null || {
   exit 1
 }
 
-run_ctl control set primary=
+run_ctl control clear primary
+run_coord test-b coord_acquire issue-4 owner-b scheduler-worker 4 issue-4 implement
+run_coord test-b coord_release issue-4 owner-b
 run_ctl control set drain=
 cat >"$fixture/bin/systemctl" <<'SYSTEMCTL'
 #!/usr/bin/env bash

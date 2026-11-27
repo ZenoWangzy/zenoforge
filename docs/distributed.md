@@ -28,7 +28,7 @@ To roll back: drain each host, stop its renewal timer, and set `ZF_COORD=off` on
 1. Install the engine on the new host, with its own `GH_TOKEN`.
 2. Run `ctl.sh control set primary=host-a` first. The new host then publishes its status and capabilities but dispatches nothing.
 3. Run `ctl.sh status show` and confirm both hosts are visible.
-4. Run `ctl.sh control set primary=` to clear the primary. The new host now takes work.
+4. Run `ctl.sh control clear primary` to clear the primary. The new host now takes work.
 
 To undo: `ctl.sh control set primary=host-a`. This takes effect within one tick.
 
