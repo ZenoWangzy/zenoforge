@@ -326,7 +326,9 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
           case "$v" in REVIEW-SAME-FAMILY) ;;
             READY)
               # 同时保留审核候选与当时观察到的 GitHub PR head；旧 worker 缺失 PR head 时拒绝批准。
-              if [[ "$wprhead" =~ $SHA_RE ]]; then
+              if proof_review_gate "$unit" "$w" "$wsha" "$reviewed"; then
+                :
+              elif [[ "$wprhead" =~ $SHA_RE ]]; then
                 local eval_stages eval_reason eval_workdir eval_tree eval_label eval_report eval_safe_id eval_stages_json eval_gate
                 eval_workdir="$(jqf -r '.workdir // empty' <<<"$w")"
                 eval_reason=""
