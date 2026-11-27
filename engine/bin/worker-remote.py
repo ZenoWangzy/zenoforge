@@ -25,7 +25,7 @@ RUNTIME_FILES = (
     "lib.d/codex-mcp.sh",
     "lib.d/worker-remote-handoff.sh",
     "lib.d/worker-output-cap.sh",
-    "thread-budget.sh",
+    "thread-budget.sh", "task-state.mjs",
 )
 SENSITIVE_DIRS = (".codex", ".ssh", ".aws", ".azure", ".config", ".docker", ".gnupg", ".kube")
 SENSITIVE_NAMES = (

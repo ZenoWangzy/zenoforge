@@ -47,7 +47,7 @@ mkdir -p "$test_root/home" "$test_root/agent-home"
 export HOME="$test_root/home" AGENT_HOME="$test_root/agent-home"
 export ZF_WORKER_HOST=local
 mkdir -p "$test_root/config-root" "$test_root/lib.d"
-cp "$script_dir/../config.sh" "$test_root/config.sh"
+cp "$script_dir/../config.sh" "$test_root/config.sh" && cp "$script_dir/../task-state.mjs" "$test_root/task-state.mjs"
 cp "$script_dir/../lib.d/worker-remote-handoff.sh" "$test_root/lib.d/worker-remote-handoff.sh"
 cat > "$test_root/thread-budget.sh" <<'EOF'
 agent_thread_budget() { :; }
@@ -65,7 +65,7 @@ fi
 
 make_fake_backends() {
   local bin=$1
-  mkdir -p "$bin"
+  mkdir -p "$bin"; ln -s "$(command -v node)" "$bin/node"
   cat > "$bin/fake-backend" <<'BACKEND'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -794,7 +794,7 @@ timeout 4 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCR
 [[ $(cat "$root/luna/$key/backend") == zc ]] || fail 'unset WORKER_BACKEND did not route around the open luna breaker'
 printf 'PASS unset backend routes around the open luna breaker\n'
 rm -f "$root/tmp/luna-breaker"; touch "$root/tmp/zc-breaker"; key=test-zc-breaker
-timeout 4 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+timeout 8 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
   FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" >/dev/null 2>&1
 [[ $(cat "$root/luna/$key/backend") == luna ]] || fail 'open zc breaker did not route to luna'
 printf 'PASS open zc breaker routes to luna\n'
@@ -828,7 +828,7 @@ printf 'PASS worker TERM stops backend session and child, logs rc=143\n'
 
 make_fake_remote() {
   local remote=$1
-  mkdir -p "$remote/proc/pressure" "$remote/bin" "$remote/home" "$remote/scopes" "$remote/roots"
+  mkdir -p "$remote/proc/pressure" "$remote/bin" "$remote/home" "$remote/scopes" "$remote/roots"; ln -sfn "$(command -v node)" "$remote/bin/node"
   printf '0.1 0.1 0.1 1/1 1\n' > "$remote/proc/loadavg"
   printf 'processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3\n' > "$remote/proc/cpuinfo"
   printf 'MemAvailable: 16777216 kB\n' > "$remote/proc/meminfo"

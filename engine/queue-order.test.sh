@@ -134,9 +134,14 @@ assert_eq "no selection site sorts on createdAt alone" "" "$bad"
 triage_query="$(sed -n '/NEEDS_TRIAGE_JSON=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 triage_selection="$(sed -n '/^elif ! NEEDS_TRIAGE_IDS=/,/<<< "\$NEEDS_TRIAGE_JSON")/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 assert_contains "triage intake uses the REST label snapshot" "$triage_query" 'issue_rest_list'
-rest_issue_mapping="$(sed -n '/^issue_rest_list_fetch() (/,/^}/p' "$SCRIPT_DIR/lib.d/issue-rest.sh")"
-assert_contains "REST triage rows carry authors and issue origin" "$rest_issue_mapping" 'createdAt:.created_at'
-assert_contains "REST triage rows retain their GitHub author" "$rest_issue_mapping" 'author:{login:(.user.login // "")}'
+source "$SCRIPT_DIR/lib.d/issue-rest.sh"
+gh() {
+  [[ "${1:-}" == api ]] || return 2
+  printf '%s\n' '[{"number":42,"title":"fixture","body":"","state":"open","created_at":"2026-11-26T00:00:00Z","updated_at":"2026-11-27T00:00:00Z","user":{"login":"fixture-owner"},"labels":[]}]'
+}
+rest_issue_rows="$(issue_rest_list example/repo open needs-triage 10 gh)"
+assert_eq "REST triage rows carry their timestamp" "2026-11-26T00:00:00Z" "$(jq -r '.[0].createdAt' <<<"$rest_issue_rows")"
+assert_eq "REST triage rows retain their GitHub author" fixture-owner "$(jq -r '.[0].author.login' <<<"$rest_issue_rows")"
 assert_contains "triage intake puts founder-test ahead of feature priority" "$triage_selection" 'founder-test'
 assert_contains "triage intake keeps production incidents ahead" "$triage_selection" 'bug'
 assert_contains "triage intake bands the batch critical path (#4363)" "$triage_selection" 'critical-path'

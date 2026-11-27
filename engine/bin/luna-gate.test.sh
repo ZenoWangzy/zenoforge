@@ -333,6 +333,7 @@ cat > "$local_root/bin/zcode" <<'EOF'
 printf '%s\n' '{"type":"result","response":"local fallback"}'
 EOF
 chmod +x "$local_root/bin/ssh" "$local_root/bin/systemd-run" "$local_root/bin/systemctl" "$local_root/bin/codex" "$local_root/bin/zcode"
+ln -s "$(command -v node)" "$local_root/bin/node"
 mkdir -p "$local_root/home" "$local_root/agent-home" "$local_root/worktree"
 git -C "$local_root/worktree" init -q
 git -C "$local_root/worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial

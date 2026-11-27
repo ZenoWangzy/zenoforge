@@ -43,6 +43,7 @@ engine/mac-autopilot/scheduler.d/park-label-sweep.sh 0
 engine/mac-autopilot/scheduler.d/pr-body.sh 0
 engine/mac-autopilot/scheduler.d/recut-reopen.sh 2
 engine/mac-autopilot/scheduler.d/release-deps-station.sh 0
+engine/mac-autopilot/scheduler.d/risk-tiered-review.sh 0
 engine/mac-autopilot/scheduler.d/reports.sh 0
 engine/mac-autopilot/scheduler.d/review-fixes.sh 0
 engine/mac-autopilot/scheduler.d/review-rules.sh 2
