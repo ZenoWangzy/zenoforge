@@ -1058,7 +1058,7 @@ grep -q 'reconcile_runtime_config "$(sched_config_file mac-autopilot/config.temp
   || fail 'tick reconcile must resolve config.template.json through sched_config_file'
 grep -q 'PRODUCT_LANE_SKILLS="$(sched_config_file mac-autopilot/product-lane-skills.txt)"' "$script_dir/scheduler.sh" \
   || fail 'product lane skills must resolve through sched_config_file'
-grep -Fq 'MECH_REGISTRY_FILE="$(sched_mechanism_registry)" || { MECH_REGISTRY_FILE=""; say ' "$script_dir/scheduler.sh" \
+grep -Fq 'MECH_REGISTRY_FILE="$([[ "$RULE_COMMAND" == true ]] || sched_mechanism_registry)"' "$script_dir/scheduler.sh" \
   || fail 'mechanism registry must resolve through sched_mechanism_registry'
 hotfix_list_calls="$fixture/hotfix-issue-list.calls"; : > "$hotfix_list_calls"
 hotfix_label_edits=()
@@ -1073,6 +1073,9 @@ hotfix_reg_prs="$(jq -cn --arg sha "$H1" '[
 gh() {
   if [[ "$1 $2" == "pr list" ]]; then
     printf '%s\n' "$hotfix_reg_prs"
+  elif [[ "$1" == api && "$2" == *"issues?state=open"* && "$2" == *"labels=hotfix"* ]]; then
+    printf '%s\n' "$*" >> "$hotfix_list_calls"
+    printf '%s\n' '[{"number":31,"state":"open","labels":[{"name":"hotfix"}],"user":{"login":"author"}}]'
   elif [[ "$1 $2" == "pr view" && "$*" == *'--json body'* ]]; then # the light census carries no body; registration reads it per PR
     jq -r --argjson n "$3" 'first(.[] | select(.number == $n) | .body // "")' <<<"$hotfix_reg_prs"
   elif [[ "$1 $2" == "issue list" ]]; then
@@ -1932,8 +1935,7 @@ gh() {
 units "{\"units\":[{\"id\":\"pr-17\",\"pr\":17,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :
 [[ "$(field pr-17 .stage)" == repair-pending ]] || fail 'conflict reported as UNKNOWN right after a failed merge was not sent to repair'
-# 两处"冲突送修复"共用一个帮手，但历史、提示和日志仍各是各的原话（合并失败后发现冲突 / checks 未齐时发现冲突）
-[[ "$(field pr-17 '.history[-1] | "\(.stage) \(.result)"'):$(field pr-17 '.approved_sha // "none"')" == "merge-conflict PR#17 conflicts with main:none" && "$(field pr-17 .repair_hint)" == *"迁移编号顺延"* ]] \
+[[ "$(field pr-17 '.history[-1] | "\(.stage) \(.result)"'):$(field pr-17 '.approved_sha // "none"')" == "merge-conflict PR#17 conflicts with main:none" && "$(field pr-17 .repair_hint)" == *"Rebase this PR branch onto origin/main"* ]] \
   || fail "conflict found after a failed merge lost its history entry or repair hint ($(field pr-17 '.history[-1] | "\(.stage) \(.result)"'))"
 grep -qF 'merge skipped PR#17 (conflicts with main) -> repair-pending' "$LOG" || fail 'conflict found after a failed merge lost its log line'
 eval "$gh_merge_stub"
@@ -1946,8 +1948,8 @@ pending_pr18_checks="$(jq -cn '[{__typename:"CheckRun",name:"CI",status:"IN_PROG
 gh_pr_open 18 "$H1" false CONFLICTING agent/issue-18 "$pending_pr18_checks"
 units "{\"units\":[{\"id\":\"pr-18\",\"pr\":18,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :
-[[ "$(field pr-18 .stage)" == repair-pending && "$(field pr-18 .repair_hint)" == *"不会跑 CI"* ]] || fail "conflicting PR with pending checks waited instead of going to repair ($(field pr-18 .stage))"
-[[ "$(field pr-18 '.history[-1] | "\(.stage) \(.result)"'):$(field pr-18 '.approved_sha // "none"')" == "merge-conflict PR#18 conflicts with main; CI cannot start:none" && "$(field pr-18 .repair_hint)" == *"热修回迁"* ]] \
+[[ "$(field pr-18 .stage)" == repair-pending && "$(field pr-18 .repair_hint)" == *"Rebase this PR branch onto origin/main"* ]] || fail "conflicting PR with pending checks waited instead of going to repair ($(field pr-18 .stage))"
+[[ "$(field pr-18 '.history[-1] | "\(.stage) \(.result)"'):$(field pr-18 '.approved_sha // "none"')" == "merge-conflict PR#18 conflicts with main; CI cannot start:none" && "$(field pr-18 .repair_hint)" == *"Rebase this PR branch onto origin/main"* ]] \
   || fail "conflict found while checks were pending lost its history entry or repair hint ($(field pr-18 '.history[-1] | "\(.stage) \(.result)"'))"
 grep -qF 'merge skipped PR#18 (conflicts with main; CI cannot start) -> repair-pending' "$LOG" || fail 'conflict found while checks were pending lost its log line'
 unset GH_CHECKS GH_MERGEABLE_STATE; eval "$gh_merge_stub"
@@ -1986,7 +1988,7 @@ for cc_case in cleared still-conflicted lockfile update-fails; do
     run_merge_lane || :
     [[ ${#GH_API_CALLS[@]} == 1 && "$(field pr-19 .stage)" == repair-pending ]] || fail 'a second update-branch was attempted on the same head'
   else
-    [[ "$(field pr-19 .stage)" == repair-pending && "$(field pr-19 .repair_hint)" == *"热修回迁"* ]] || fail "$cc_case did not go to the existing repair"
+    [[ "$(field pr-19 .stage)" == repair-pending && "$(field pr-19 .repair_hint)" == *"Rebase this PR branch onto origin/main"* ]] || fail "$cc_case did not go to the existing repair"
     [[ "$cc_case" == update-fails && ${#GH_API_CALLS[@]} == 1 || "$cc_case" != update-fails && ${#GH_API_CALLS[@]} == 0 ]] || fail "$cc_case made the wrong number of update-branch calls (${#GH_API_CALLS[@]})"
   fi
 done
@@ -2197,15 +2199,39 @@ ih_local="$(command git -C "$ih" rev-parse HEAD)"
 GH_ISSUE_CALLS=(); GH_ISSUE_LIST='[]'; GH_PR_BRANCHES='[]'
 gh_issue_stub="$(declare -f gh)"
 gh() {
-  case "$1 $2" in
-    "issue close") GH_ISSUE_CALLS+=("$*") ;;
-    "issue list") jq --arg l "$6" '[.[] | select(any(.labels[]; .name == $l)) | .number as $n
+  if [[ "$1" == api && "$2" == *"/issues?state=open"* ]]; then
+    local request_label="" request_url="$2"
+    if [[ "$request_url" == *"&labels="* ]]; then request_label="${request_url##*&labels=}"; request_label="${request_label%%&*}"; fi
+    jq --arg l "$request_label" '[.[] | select((.state // "open" | ascii_downcase) == "open")
+      | select($l == "" or any(.labels[]?; .name == $l))
+      | .number as $n | . + {state:(.state // "open"),title:(.title // ("t"+($n|tostring))),
+          body:(.body // (if $n==7 then "issue body" else ("issue body\n\n```json\n"+({"acceptance":[{"id":"live-event","event":"factory-f3-release-train"}]}|tojson)+"\n```"+(if $n==20 then "\n\n## Blocked by\n- #9001" else "" end)) end)),
+          created_at:(.created_at // .createdAt // "2026-10-29T00:00:00Z"),
+          updated_at:(.updated_at // .updatedAt // "2026-10-29T00:00:00Z"),user:(.user // {login:(.author.login // "fixture")})}]' \
+      <<< "$GH_ISSUE_LIST"
+  elif [[ "$1 $2" == "api graphql" ]]; then
+    local context_alias context_n context_result='{}' issue_json
+    while IFS=' ' read -r context_alias context_n; do
+      [[ "$context_n" =~ ^[1-9][0-9]*$ ]] || continue
+      issue_json="$(jq -c --argjson n "$context_n" '[.[] | select(.number == $n)] | first // {number:$n}' <<< "$GH_ISSUE_LIST")"
+      context_result="$(jq -cn --argjson result "$context_result" --argjson issue "$issue_json" \
+        --arg alias "$context_alias" \
+        '$result + {($alias):{number:$issue.number,blockedBy:($issue.blockedBy // {nodes:[]}),
+          subIssues:($issue.subIssues // {totalCount:0,nodes:[]}),subIssuesSummary:($issue.subIssuesSummary // {total:0,completed:0})}}')"
+    done < <(grep -oE 'i[0-9]+: issue\(number: [0-9]+\)' <<<"$*" \
+      | sed -E 's/^i([0-9]+): issue\(number: ([0-9]+)\)$/i\1 \2/')
+    jq -cn --argjson result "$context_result" '{data:{repository:$result}}'
+  else
+    case "$1 $2" in
+      "issue close") GH_ISSUE_CALLS+=("$*") ;;
+      "issue list") jq --arg l "$6" '[.[] | select(any(.labels[]; .name == $l)) | .number as $n
       | . + {state:(.state // "OPEN"), body:(if $n==7 then "issue body" else ("issue body\n\n```json\n"+({"acceptance":[{"id":"live-event","event":"factory-f3-release-train"}]}|tojson)+"\n```"+(if $n==20 then "\n\n## Blocked by\n- #9001" else "" end)) end)}]' <<<"$GH_ISSUE_LIST" ;;
     # M5 (#4501)：pipeline-system 票带 live-event 验收块才能收单；#7 保持无块，覆盖落地即关的旧路径。
     "issue view") jq -n --argjson n "$3" '{number:$n,title:("t"+($n|tostring)),body:(if $n==7 then "issue body" else ("issue body\n\n```json\n"+({"acceptance":[{"id":"live-event","event":"factory-f3-release-train"}]}|tojson)+"\n```"+(if $n==20 then "\n\n## Blocked by\n- #9001" else "" end)) end)}' ;;
-    "pr list") echo "$GH_PR_BRANCHES" ;;
-    *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;;
-  esac
+      "pr list") echo "$GH_PR_BRANCHES" ;;
+      *) eval "${gh_issue_stub/gh ()/gh_i ()}"; gh_i "$@" ;;
+    esac
+  fi
 }
 units '{"units":[{"id":"issue-7","issue":7,"lane":"direct-main","branch":"agent/auto-issue-7","stage":"implement","history":[]},{"id":"issue-8","issue":8,"lane":"direct-main","branch":"agent/auto-issue-8","stage":"implement","history":[]}]}'
 printf 'fixed it\n' > "$sup/impl-issue-7-T.md"; printf 'OBSOLETE: already fixed, measured in https://github.com/o/r/actions/runs/123\n' > "$sup/impl-issue-8-T.md"
@@ -2749,7 +2775,7 @@ release_dependency_blocks || :
 [[ "$(field issue-77 .stage)" == supervisor-review ]] || fail 'blocked unit without a predecessor stayed parked forever'
 
 # founder-test 是维护者提的 issue：收单且排在最前（issue-pipeline.md 队列顺序）
-gh() { case "$1 $2" in "issue list") [[ "$*" == *ready-for-agent* ]] && echo '[{"number":5,"title":"top","labels":[{"name":"ready-for-agent"},{"name":"priority:top"}]},{"number":6,"title":"mine","labels":[{"name":"ready-for-agent"},{"name":"founder-test"}]},{"number":4,"title":"hot","labels":[{"name":"ready-for-agent"},{"name":"hotfix"}]}]' || echo '[]' ;; esac; }
+gh() { case "$1 $2" in "api "*) jq -cn --arg url "$2" 'if ($url | contains("labels=ready-for-agent")) then [{number:5,title:"top",labels:[{name:"ready-for-agent"},{name:"priority:top"}]},{number:6,title:"mine",labels:[{name:"ready-for-agent"},{name:"founder-test"}]},{number:4,title:"hot",labels:[{name:"ready-for-agent"},{name:"hotfix"}]}] | map(. + {state:"open",created_at:"2026-10-29T00:00:00Z",updated_at:"2026-10-29T00:00:00Z",user:{login:"fixture"}}) else [] end' ;; "issue list") [[ "$*" == *ready-for-agent* ]] && echo '[{"number":5,"title":"top","labels":[{"name":"ready-for-agent"},{"name":"priority:top"}]},{"number":6,"title":"mine","labels":[{"name":"ready-for-agent"},{"name":"founder-test"}]},{"number":4,"title":"hot","labels":[{"name":"ready-for-agent"},{"name":"hotfix"}]}]' || echo '[]' ;; esac; }
 [[ "$(intake_candidates | cut -f1 | tr '\n' ' ')" == "6 5 " ]] || fail "founder-test not taken first or hotfix taken: $(intake_candidates | cut -f1 | tr '\n' ' ')"
 eval "$gh_issue_stub"
 

@@ -607,7 +607,7 @@ register_new_issues_pass() {
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
       ! intake_parent_retry_waiting "$n" || { intake_skip parent_retry; continue; }
-      if intake_skip_cache_hit "$n" "$issue_updated_at"; then
+      if ! intake_parent_retry_recorded "$n" && intake_skip_cache_hit "$n" "$issue_updated_at"; then
         intake_walked=$((intake_walked - 1)); intake_cached=$((intake_cached + 1)); continue
       fi
       [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary,blockedBy 2>/dev/null)" || { intake_skip issue_read; continue; }; intake_mark issue_read

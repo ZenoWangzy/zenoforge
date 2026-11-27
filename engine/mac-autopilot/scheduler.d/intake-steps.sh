@@ -7,6 +7,9 @@ intake_parent_retry_escalate() { # issue, attempt -> one session-visible alert p
   printf '%s INTAKE-PARENT-LABEL-FAILED issue=#%s attempts=%s retry=backoff\n' "$stamp" "$n" "$attempt" >> "$alerts" || return 1
   units_update --arg n "$n" '.intake_parent_retry[$n].escalated = true'
 }
+intake_parent_retry_recorded() {
+  jqf -e --arg n "$1" '(.intake_parent_retry // {}) | has($n)' "$UNITS" >/dev/null 2>&1
+}
 # Idle capacity with no eligible issue goes to head-watch.alerts once an hour, with the stage of each candidate's unit (what blocks the slots).
 intake_idle_alert() { # live pending
   local alerts="$AGENT_HOME/logs/head-watch.alerts" cand stages

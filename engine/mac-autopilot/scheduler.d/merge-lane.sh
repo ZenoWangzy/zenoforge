@@ -287,7 +287,7 @@ pass_steps_line() { # "name=<secs>s/<count> ..." slowest first
 source "$(dirname -- "${BASH_SOURCE[0]}")/pr-body.sh"
 
 run_merge_lane_pass() {
-  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha merge_error checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts current_unit verified_by
+  local scan_lock scan_skipped merge_max eval_sha gate_run suites grid glf gnet gtest tmpnr ready id pr adoption_pr_number approved head state branch adopted_head adopt_at adopted_label pre_merge_sha merge_sha merge_error merge_error_file merge_status checks red fails missing_required ready_at ready_sha rule_head rule_result rule_event rule_hint rule_actor rule_ok merge_result_errors merge_result_hint candidate_ids cands detail_started detail_elapsed candidate_pr candidate_head candidate_ref behind_main merge_head_fetch_started merge_head_fetch_elapsed merge_head_batch_ok=false carry red_out="" red_facts current_unit verified_by
   local merge_worker
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
@@ -723,7 +723,18 @@ run_merge_lane_pass() {
     # and post-merge exact-SHA CI verifies the resulting main commit without a stable-main barrier.
     if [[ "$pre_merge_sha" =~ $SHA_RE ]]; then
       tick_prs_changed
-      if merge_error="$(cd "$ROOT" && land_merge_pr "$pr" "$approved" 2>&1)"; then
+      merge_error_file="$(mktemp)" || merge_error_file=""
+      merge_status=1
+      if [[ -n "$merge_error_file" ]] && pushd "$ROOT" >/dev/null; then
+        if land_merge_pr "$pr" "$approved" >"$merge_error_file" 2>&1; then merge_status=0; else merge_status=$?; fi
+        popd >/dev/null || true
+        merge_error="$(<"$merge_error_file")"
+        rm -f -- "$merge_error_file"
+      else
+        [[ -z "$merge_error_file" ]] || rm -f -- "$merge_error_file"
+        merge_error="could not capture merge admission result"
+      fi
+      if (( merge_status == 0 )); then
         current_unit="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"; verified_by="$(unit_verification_stamp "$current_unit" "$head" "$checks")"
         merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"; [[ "$merge_sha" =~ $SHA_RE ]] || merge_sha=""
         if [[ -n "$merge_sha" ]]; then
