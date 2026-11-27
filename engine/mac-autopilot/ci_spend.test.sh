@@ -180,4 +180,17 @@ JSON
 python3 "$script_dir/ci_spend.py" --runtime "$c" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$c/fixture.json" >/dev/null
 [[ "$(jq -r .by_reason.superseded_unapproved "$c/ci-spend.json")" == 6 ]] \
   || fail "approval-carried or failed-superseded case wrong: $(cat "$c/ci-spend.json")"
+m="$test_env_root/ci-spend-main"; mkdir -p "$m"; echo '{"units":[]}' > "$m/units.json"
+mrun() { printf '{"id":%s,"name":"engine-tests","event":"push","head_branch":"main","head_sha":"%s","status":"completed","conclusion":"%s","created_at":"2026-10-21T%s:00Z","updated_at":"2026-10-21T%s:00Z","head_commit":{"message":"m"}}' "$1" "$A1" "$2" "$3" "$4"; }
+cat > "$m/fixture.json" <<JSON
+{"runs":[],"engine_runs":[
+ $(mrun 10 failure 10:00 10:20),
+ $(mrun 11 cancelled 10:05 10:06),
+ $(mrun 12 cancelled 10:10 10:12),
+ $(mrun 13 success 10:30 10:50)],
+ "jobs":{"10":[$(job failure 20)],"11":[],"12":[$(job cancelled 02)],"13":[$(job success 20)]}}
+JSON
+python3 "$script_dir/ci_spend.py" --runtime "$m" --hours 5 --now 2026-10-21T12:00:00Z --fixture "$m/fixture.json" >/dev/null
+jq -e '.main_push == {replaced_while_queued:1,cancelled:1,covered_merges:4,merge_to_cover_median_min:40,merge_to_cover_max_min:45,red_episodes:1,red_longest_min:30,red_open_min:null}' "$m/ci-spend.json" >/dev/null \
+  || fail "main push numbers wrong: $(jq -c .main_push "$m/ci-spend.json")"
 echo 'ci_spend.test.sh: PASS'

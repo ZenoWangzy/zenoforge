@@ -940,7 +940,8 @@ function vCi(D) {
     <div class="grid g2">
       ${panel("timer","白白占用的 CI 时间", `<div class="ringbox">${ring(ws, wst, 96, ws==null?"—":ws+"%", [{at:20,c:"ok"},{at:35,c:"bad"}])}
           <div style="flex:1;min-width:0">${stack([{label:"被取消", value:br.cancelled, color:"var(--c2)"},{label:"未批准就被替换", value:br.superseded_unapproved, color:"var(--c7)"},{label:"非产品发布检查", value:br.nonproduct_postsubmit, color:"var(--c4)"}], v=>num(v)+" 分")}
-          <div class="sub" style="margin-top:8px">近 ${num(sp.window_hours??5)} 小时，共 ${num(sp.total_min)} 分钟</div></div></div>`)}
+          <div class="sub" style="margin-top:8px">近 ${num(sp.window_hours??5)} 小时，共 ${num(sp.total_min)} 分钟</div>
+          ${sp.main_push ? `<div class="sub">main 推送：被替换的排队 run ${num(sp.main_push.replaced_while_queued)}，合入到被覆盖 中位 ${num(sp.main_push.merge_to_cover_median_min)} / 最长 ${num(sp.main_push.merge_to_cover_max_min)} 分，主线红 ${num(sp.main_push.red_episodes)} 次、最长 ${num(sp.main_push.red_longest_min)} 分，进行中 ${num(sp.main_push.red_open_min)} 分</div>` : ""}</div></div>`)}
       ${panel("git","批准之后", foldOk([...modMetrics(D,"ci").map(bNode), ...sinks.map(bSink)]))}
     </div>
   </div>`;

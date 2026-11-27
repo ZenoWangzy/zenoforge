@@ -16,7 +16,7 @@ run_node_health() {
   local cs_pid; cs_pid="$(cat "$A/.ci-spend.pid" 2>/dev/null || true)"
   if [[ -f "$HERE/ci_spend.py" ]] && ! { [[ "$cs_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$cs_pid" 2>/dev/null; } \
     && [[ -z "$(find "$A" -maxdepth 1 -name ci-spend.json -mmin -30 2>/dev/null)" ]]; then
-    (cd "$ROOT" && exec setsid python3 "$HERE/ci_spend.py" --runtime "$A" --hours 5) >> "$A/ci-spend.log" 2>&1 < /dev/null &
+    (cd "$ROOT" && exec setsid python3 "$HERE/ci_spend.py" --runtime "$A" --hours 5 --engine-repo "${ZF_ENGINE_REPO:-ZenoWangzy/zenoforge}") >> "$A/ci-spend.log" 2>&1 < /dev/null &
     echo $! > "$A/.ci-spend.pid"
   fi
 }
