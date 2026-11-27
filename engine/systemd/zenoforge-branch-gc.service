@@ -1,0 +1,20 @@
+[Unit]
+Description=the product remote branch collector (archive, read back, then delete stale heads)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=19
+CPUWeight=10
+IOWeight=10
+TimeoutStartSec=30min
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=AGENT_HOME=%h/.zenoforge
+Environment=ZF_HOME=%h/.zenoforge
+Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
+Environment=MAC_AUTOPILOT_RUNTIME_DIR=%h/.zenoforge/checkout/.scratch-supervisor/autopi
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=-%h/.zenoforge/engine.env
+ExecStart=:/bin/bash -c 'e="$(readlink -e "$AGENT_HOME/engine-live" 2>/dev/null)"; exec /bin/bash "${e:-$ZF_REPO_DIR/engine}/mac-autopilot/rescued_gc.sh" "$ZF_REPO_DIR" "$MAC_AUTOPILOT_RUNTIME_DIR/rescued-gc.log"'

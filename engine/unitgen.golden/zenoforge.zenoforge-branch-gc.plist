@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AGENT_HOME</key>
+		<string>/home/zf-golden/.zenoforge</string>
+		<key>MAC_AUTOPILOT_RUNTIME_DIR</key>
+		<string>/home/zf-golden/.zenoforge/checkout/.scratch-supervisor/autopi</string>
+		<key>PATH</key>
+		<string>/home/zf-golden/.local/bin:/home/zf-golden/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
+		<key>ZF_HOME</key>
+		<string>/home/zf-golden/.zenoforge</string>
+		<key>ZF_REPO_DIR</key>
+		<string>/home/zf-golden/.zenoforge/checkout</string>
+	</dict>
+	<key>Label</key>
+	<string>zenoforge.zenoforge-branch-gc</string>
+	<key>Nice</key>
+	<integer>19</integer>
+	<key>ProgramArguments</key>
+	<array>
+		<string>timeout</string>
+		<string>-k</string>
+		<string>30</string>
+		<string>1800</string>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>e="$(readlink -e "$AGENT_HOME/engine-live" 2&gt;/dev/null)"; exec /bin/bash "${e:-$ZF_REPO_DIR/engine}/mac-autopilot/rescued_gc.sh" "$ZF_REPO_DIR" "$MAC_AUTOPILOT_RUNTIME_DIR/rescued-gc.log"</string>
+	</array>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>8192</integer>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-branch-gc.log</string>
+	<key>StandardOutPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-branch-gc.log</string>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Hour</key>
+			<integer>8</integer>
+			<key>Minute</key>
+			<integer>40</integer>
+		</dict>
+		<dict>
+			<key>Hour</key>
+			<integer>14</integer>
+			<key>Minute</key>
+			<integer>40</integer>
+		</dict>
+		<dict>
+			<key>Hour</key>
+			<integer>20</integer>
+			<key>Minute</key>
+			<integer>40</integer>
+		</dict>
+		<dict>
+			<key>Hour</key>
+			<integer>2</integer>
+			<key>Minute</key>
+			<integer>40</integer>
+		</dict>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/home/zf-golden/.zenoforge/checkout</string>
+</dict>
+</plist>

@@ -1,57 +1,126 @@
 #!/usr/bin/env bash
-# rescued/* 分支的生命周期收尾（2026-10-22 维护者裁决：归档后按规则自动清理）。
-# run-implement.sh 在 worker 失败时把未提交改动推到 rescued/issue-N-<时间>，下一次实现会取回；此前从无清理，攒到 479 个。
-# 规则：issue 已关闭 → 删；名字里没有 issue 号且最后提交超过 RESCUED_MAX_AGE_DAYS（默认 14）天 → 删；其余保留。
-# 删除前先把提交以 refs/vecta-rescue/archived/<名> 推到 GitHub（git fetch origin refs/vecta-rescue/archived/<名> 即可取回），存档成功才删，每删一条在 <log> 记一行。
-# 用法：rescued_gc.sh <repo> <log>；GitHub 查询失败就整轮跳过，绝不在不知道 issue 状态时删。
+# Remote branch collector: archives stale rescued/backup/salvage/train heads and heads of PRs closed 7+ days ago, then deletes them.
+# The archive ref refs/vecta-rescue/archived/<branch>-<sha12> is read back before each delete; a failed batch appends BRANCH-GC-FAILED to alerts/branch-gc.md next to the log.
+# Kept: open PR heads and bases, resume points of open issues, tips not authored by the automation account.
+# Usage: rescued_gc.sh <repo> <log>; any lookup that fails stops the round without deleting.
 set -euo pipefail
-repo="${1:?repo}" log="${2:?log file}"
+repo="${1:?repo}" log="$(realpath -m -- "${2:?log file}")"
 max_age_days="${RESCUED_MAX_AGE_DAYS:-14}"
+pr_age_days="${BRANCH_GC_PR_AGE_DAYS:-7}"
 now="${NOW_EPOCH:-$(date +%s)}"
 stamp="$(date -u -d "@$now" +%Y%m%dT%H%M%SZ)"
+alert_file="$(dirname -- "$log")/alerts/branch-gc.md"
+archive_prefix=refs/vecta-rescue/archived
+cd -- "$repo"
 
-git -C "$repo" fetch -q --prune origin '+refs/heads/rescued/*:refs/remotes/origin/rescued/*' 2>/dev/null || exit 0
-declare -A sha_of=() age_ok=() issue_of=()
-while read -r ref when sha; do
-  b="${ref#origin/}"
-  sha_of["$b"]="$sha"
-  (( now - when > max_age_days * 86400 )) && age_ok["$b"]=1
-  [[ "$b" =~ issue-([0-9]+) ]] && issue_of["$b"]="${BASH_REMATCH[1]}"
-done < <(git -C "$repo" for-each-ref --format='%(refname:short) %(committerdate:unix) %(objectname)' refs/remotes/origin/rescued/)
-(( ${#sha_of[@]} )) || exit 0
+alert() {
+  mkdir -p -- "$(dirname -- "$alert_file")"
+  printf '[%s] BRANCH-GC-FAILED %s\n' "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$alert_file"
+  echo "rescued_gc: $*" >&2
+}
+die() { alert "$*"; exit 1; }
 
-# issue 状态：GraphQL 每批 100 个别名；任何一批失败就整轮放弃。
+git fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null || die "fetch of origin heads failed"
+meta="$(gh repo view --json nameWithOwner,defaultBranchRef --jq '[.nameWithOwner, .defaultBranchRef.name] | @tsv' 2>/dev/null)" || die "repository lookup failed"
+IFS=$'\t' read -r owner_repo default_branch <<< "$meta"
+[[ -n "$owner_repo" && -n "$default_branch" ]] || die "repository lookup returned no default branch"
+
+if [[ -n "${BRANCH_GC_AUTHOR_EMAILS:-}" ]]; then
+  own=" ${BRANCH_GC_AUTHOR_EMAILS,,} "
+else
+  who="$(gh api user --jq '"\(.id) \(.login)"' 2>/dev/null)" || die "automation account lookup failed"
+  read -r uid login <<< "$who"
+  [[ -n "$uid" && -n "$login" ]] || die "automation account lookup returned nothing"
+  own=" $uid+${login,,}@users.noreply.github.com ${login,,}@users.noreply.github.com "
+fi
+
+prs="$(gh pr list --state all --limit 20000 --json headRefName,headRefOid,baseRefName,state,closedAt,isCrossRepository 2>/dev/null)" || die "pull request lookup failed"
+rows="$(jq -r '.[] | if .state == "OPEN" then ["open", .headRefName, .baseRefName, 0]
+  elif .isCrossRepository then empty
+  else ["closed", .headRefName, .headRefOid, ((.closedAt // "1970-01-01T00:00:00Z") | fromdateiso8601)] end | @tsv' <<< "$prs")" || die "pull request data unreadable"
+declare -A open_ref=() pr_closed=()
+while IFS=$'\t' read -r kind head extra at; do
+  if [[ "$kind" == open ]]; then
+    open_ref["$head"]=1 open_ref["$extra"]=1
+  elif [[ "$kind" == closed ]] && (( at > ${pr_closed["$head $extra"]:-0} )); then
+    pr_closed["$head $extra"]="$at"
+  fi
+done <<< "$rows"
+open_ref["$default_branch"]=1
+
+declare -A tip=() when_of=() num_of=() reason_of=()
+while read -r b when sha email; do
+  [[ "$b" == HEAD || -n "${open_ref["$b"]:-}" ]] && continue
+  email="${email#<}"; email="${email%>}"
+  [[ "$own" == *" ${email,,} "* ]] || continue
+  tip["$b"]="$sha" when_of["$b"]="$when"
+  [[ "$b" =~ (issue-|hand-)([0-9]+) ]] && num_of["$b"]="${BASH_REMATCH[2]}"
+done < <(git for-each-ref --format='%(refname:lstrip=3) %(committerdate:unix) %(objectname) %(authoremail)' refs/remotes/origin/)
+
+(( ${#tip[@]} )) || { echo "rescued_gc: no authored heads"; exit 0; }
+is_family() { [[ "$1" == rescued/* || "$1" == backup/* || "$1" == salvage/* || "$1" == train/* ]]; }
+pr_aged() { local key="$1 ${tip[$1]}" at; at="${pr_closed[$key]:-}"; [[ -n "$at" ]] && (( now - at > pr_age_days * 86400 )); }
+
 declare -A closed=()
-mapfile -t nums < <(printf '%s\n' "${issue_of[@]}" | sort -un)
-owner_repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || exit 0
+mapfile -t nums < <(for b in "${!tip[@]}"; do
+  if [[ -n "${num_of["$b"]:-}" ]] && { is_family "$b" || pr_aged "$b"; }; then echo "${num_of["$b"]}"; fi
+done | sort -un)
 for ((i = 0; i < ${#nums[@]}; i += 100)); do
   q="query { repository(owner: \"${owner_repo%/*}\", name: \"${owner_repo#*/}\") {"
   for n in "${nums[@]:i:100}"; do q+=" i$n: issueOrPullRequest(number: $n) { ... on Issue { state } ... on PullRequest { state } }"; done
   q+=" } }"
-  out="$(gh api graphql -f query="$q" --jq '.data.repository | to_entries[] | select(.value.state == "CLOSED" or .value.state == "MERGED") | .key' 2>/dev/null)" || exit 0
-  while read -r k; do [[ -n "$k" ]] && closed["${k#i}"]=1; done <<<"$out"
-done
-
-victims=() reasons=()
-for b in "${!sha_of[@]}"; do
-  n="${issue_of[$b]:-}"
-  if [[ -n "$n" && -n "${closed[$n]:-}" ]]; then victims+=("$b"); reasons+=("closed-issue-$n")
-  elif [[ -z "$n" && -n "${age_ok[$b]:-}" ]]; then victims+=("$b"); reasons+=("no-issue-older-${max_age_days}d")
+  if out="$(gh api graphql -f query="$q" --jq '.data.repository | to_entries[] | select(.value.state == "CLOSED" or .value.state == "MERGED") | .key' 2>/dev/null)"; then
+    while read -r k; do [[ -n "$k" ]] && closed["${k#i}"]=1; done <<< "$out"
+  else
+    echo "rescued_gc: issue state lookup failed for a batch; its branches are kept" >&2
   fi
 done
-(( ${#victims[@]} )) || exit 0
 
-deleted=0 failed=0
+mapfile -t sorted < <(printf '%s\n' "${!tip[@]}" | sort)
+for b in "${sorted[@]}"; do
+  n="${num_of["$b"]:-}"
+  if is_family "$b"; then
+    if [[ -n "$n" && -z "${closed["$n"]:-}" ]]; then continue
+    elif [[ "$b" == rescued/* && -n "$n" ]]; then reason_of["$b"]="closed-issue-$n"
+    elif (( now - when_of["$b"] > max_age_days * 86400 )); then reason_of["$b"]="${b%%/*}-older-${max_age_days}d"
+    fi
+  elif pr_aged "$b" && { [[ -z "$n" ]] || [[ -n "${closed["$n"]:-}" ]]; }; then
+    reason_of["$b"]="pr-closed-older-${pr_age_days}d"
+  fi
+done
+victims=(); for b in "${sorted[@]}"; do [[ -n "${reason_of["$b"]:-}" ]] && victims+=("$b"); done
+echo "rescued_gc: ${#victims[@]} of ${#tip[@]} authored heads are due for collection"
+
+deleted=0 failed=()
+declare -A archived=() remaining=()
 for ((i = 0; i < ${#victims[@]}; i += 50)); do
-  batch=("${victims[@]:i:50}")
-  specs=(); for b in "${batch[@]}"; do specs+=("${sha_of[$b]}:refs/vecta-rescue/archived/${b#rescued/}"); done
-  # 先把提交以非分支 ref 存档到 GitHub；存档推送失败则这批一条不删。
-  if ! git -C "$repo" push -q origin "${specs[@]}" 2>/dev/null; then failed=1; continue; fi
-  git -C "$repo" push -q origin --delete "${batch[@]}" 2>/dev/null || continue
+  batch=("${victims[@]:i:50}") specs=() refs=() ok=() leases=()
+  for b in "${batch[@]}"; do
+    ref="$archive_prefix/$b-${tip["$b"]:0:12}"; refs+=("$ref"); specs+=("+${tip["$b"]}:$ref")
+  done
+  git push -q origin "${specs[@]}" 2>/dev/null || :
+  archived=()
+  if rows="$(git ls-remote origin "${refs[@]}" 2>/dev/null)"; then
+    while read -r sha ref; do [[ -n "$ref" ]] && archived["$ref"]="$sha"; done <<< "$rows"
+  fi
   for ((j = 0; j < ${#batch[@]}; j++)); do
-    printf '%s deleted %s %s reason=%s archive=refs/vecta-rescue/archived/%s\n' "$stamp" "${batch[j]}" "${sha_of[${batch[j]}]}" "${reasons[i + j]}" "${batch[j]#rescued/}" >> "$log"
+    b="${batch[j]}"
+    if [[ "${archived["${refs[j]}"]:-}" == "${tip["$b"]}" ]]; then ok+=("$b"); leases+=("--force-with-lease=refs/heads/$b:${tip["$b"]}")
+    else failed+=("$b"); fi
+  done
+  (( ${#ok[@]} )) || continue
+  git push -q origin --delete "${leases[@]}" "${ok[@]}" 2>/dev/null || :
+  remaining=()
+  if rows="$(git ls-remote --heads origin "${ok[@]/#/refs/heads/}" 2>/dev/null)"; then
+    while read -r sha ref; do [[ -n "$ref" ]] && remaining["$ref"]=1; done <<< "$rows"
+  else
+    for b in "${ok[@]}"; do remaining["refs/heads/$b"]=1; done
+  fi
+  for b in "${ok[@]}"; do
+    if [[ -n "${remaining["refs/heads/$b"]:-}" ]]; then failed+=("$b"); continue; fi
+    printf '%s deleted %s %s reason=%s archive=%s\n' "$stamp" "$b" "${tip["$b"]}" "${reason_of["$b"]}" "$archive_prefix/$b-${tip["$b"]:0:12}" >> "$log"
     deleted=$((deleted + 1))
   done
 done
-echo "rescued_gc: deleted $deleted of ${#sha_of[@]} rescued branches (archived under refs/vecta-rescue/archived/)"
-(( failed == 0 )) || { echo "rescued_gc: archive push failed for at least one batch; that batch was not deleted" >&2; exit 1; }
+echo "rescued_gc: deleted $deleted of ${#victims[@]} candidate branches (archived under $archive_prefix/)"
+(( ${#failed[@]} == 0 )) || die "archive or delete failed for ${#failed[@]} of ${#victims[@]} branches, kept: ${failed[*]:0:5}"

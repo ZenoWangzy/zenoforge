@@ -194,6 +194,7 @@ The unit files are in `engine/systemd/`:
 | `zenoforge-health-mail` | daily, 08:00 Beijing (00:00 UTC) | `engine/night/health-maintenance.sh founder-mail` | Sends the owner report mail. A short immediate mail is sent only for a production outage. Not in `pipeline-timers.list`, so `run-tick.sh` does not enable it |
 | `zenoforge-label-churn` | every 30 min | `engine/detect-label-churn.sh` | Finds issues that loop between labels |
 | `zenoforge-daily-perf-report` | daily at 01:00 UTC | `engine/night/daily-perf-report.sh` | Daily report |
+| `zenoforge-branch-gc` | every 6 hours (:40 UTC) | `engine/mac-autopilot/rescued_gc.sh` | Archives, then deletes stale remote branches. A failed batch appends `BRANCH-GC-FAILED` to `alerts/branch-gc.md`. Set `BRANCH_GC_AUTHOR_EMAILS` in `engine.env` if the automation commits use other author emails |
 
 **First install (by hand).** `run-tick.sh` installs unit files only from inside a running tick, so the first copy is manual:
 
