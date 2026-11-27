@@ -125,6 +125,24 @@ run_ctl claim clear bad-json
   echo 'ctl.test.sh: claim clear left a malformed claim' >&2
   exit 1
 }
+future_expiry=$(( $(date +%s) + 600 ))
+unsupported_claim="$(jq -cn --argjson expires "$future_expiry" \
+  '{version:2,key:"issue-778",owner:"owner-future",owner_kind:"scheduler-worker",subject:"778",unit:"issue-778",stage:"implement",expires_at:$expires}')"
+seed_remote_ref refs/claims/issue-778 claim.json "$unsupported_claim"
+run_ctl claim clear issue-778
+[[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/issue-778)" ]] || {
+  echo 'ctl.test.sh: claim clear left an unsupported claim' >&2
+  exit 1
+}
+oversized_data="$(printf '%09000d' 0)"
+oversized_claim="$(jq -cn --arg checkpoint "$oversized_data" --argjson expires "$future_expiry" \
+  '{version:1,key:"issue-779",owner:"owner-large",owner_kind:"scheduler-worker",subject:"779",unit:"issue-779",stage:"implement",expires_at:$expires,checkpoint:$checkpoint}')"
+seed_remote_ref refs/claims/issue-779 claim.json "$oversized_claim"
+run_ctl claim clear issue-779
+[[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/issue-779)" ]] || {
+  echo 'ctl.test.sh: claim clear left an oversized claim' >&2
+  exit 1
+}
 seed_remote_ref refs/claims/issue-777 claim.json '{"version":1,"key":"issue-777","owner":null,"owner_kind":"scheduler-worker","subject":"777","unit":"issue-777","stage":"release","expires_at":0,"effects":{"deploy:9":{"state":"unknown","class":"once"}}}'
 run_ctl effect clear issue-777 deploy:9
 claim="$(git --git-dir="$remote" cat-file blob refs/claims/issue-777:claim.json)"

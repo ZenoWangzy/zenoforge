@@ -71,10 +71,6 @@ ctl_probe() {
   echo 'probe passed'
 }
 
-ctl_validate_control() {
-  coord_control_record_valid "$1"
-}
-
 ctl_read_control() {
   coord_remote_control_read || return 3
   CTL_CONTROL="$COORD_CONTROL"
@@ -134,7 +130,7 @@ ctl_write_ref_file() {
 
 ctl_write_control() {
   local expected="$1" record="$2"
-  ctl_validate_control "$record" || return 2
+  coord_control_record_valid "$record" || return 2
   ctl_write_ref_file refs/coord/control control.json "$expected" "$record" 'coord control'
 }
 
@@ -330,26 +326,32 @@ ctl_claim_clear() {
     ctl_error 'claim ref unavailable or unknown'
     return 3
   fi
-  if jq -e 'type == "object"' <<<"$record" >/dev/null 2>&1; then
-    owner="$(jq -r '.owner // empty' <<<"$record")"
-    expires="$(jq -r '.expires_at // empty' <<<"$record")"
-    now="$(date +%s)"
-    if [[ -n "$owner" ]]; then
-      if [[ ! "$expires" =~ ^[0-9]+$ ]]; then
-        ctl_error 'claim owner lease is unknown'
-        return 3
-      fi
-      if (( expires > now )); then
-        ctl_error 'refusing to clear a live claim'
-        return 1
-      fi
-    fi
-    if _coord_remote_record_valid "$key" "$record" && jq -e '.checkpoint != null' <<<"$record" >/dev/null 2>&1; then
+  if _coord_remote_record_valid "$key" "$record"; then
+    checkpoint_size=0
+    if jq -e '.checkpoint != null' <<<"$record" >/dev/null 2>&1; then
       checkpoint_size="$(jq -c -j '.checkpoint' <<<"$record" | wc -c)"
-      max_checkpoint="${ZF_COORD_CHECKPOINT_MAX:-8192}"
-      [[ "$max_checkpoint" =~ ^[0-9]+$ ]] || max_checkpoint=8192
-      (( checkpoint_size <= max_checkpoint )) || ctl_error 'clearing an oversized checkpoint claim'
     fi
+    max_checkpoint="${ZF_COORD_CHECKPOINT_MAX:-8192}"
+    [[ "$max_checkpoint" =~ ^[0-9]+$ ]] || max_checkpoint=8192
+    if (( checkpoint_size > max_checkpoint )); then
+      ctl_error "clearing oversized checkpoint claim $key"
+    else
+      owner="$(jq -r '.owner // empty' <<<"$record")"
+      expires="$(jq -r '.expires_at // empty' <<<"$record")"
+      now="$(date +%s)"
+      if [[ -n "$owner" ]]; then
+        if [[ ! "$expires" =~ ^[0-9]+$ ]]; then
+          ctl_error 'claim owner lease is unknown'
+          return 3
+        fi
+        if (( expires > now )); then
+          ctl_error 'refusing to clear a live claim'
+          return 1
+        fi
+      fi
+    fi
+  else
+    ctl_error "clearing malformed or unsupported claim $key"
   fi
   ctl_remote_delete "$ref" "$CTL_REF_OID"
 }
