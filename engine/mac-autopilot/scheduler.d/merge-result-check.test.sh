@@ -82,6 +82,7 @@ tick_prs() { TICK_PRS="$(cat "$fixture/prs.json")"; printf '%s' "$TICK_PRS"; }
 gh() {
   case "$1 $2" in
     'pr merge') printf '%s\n' "$*" >> "$GH_MERGES_FILE"; return 0 ;;
+    'api --paginate') return 0 ;;
     # checks come per head SHA now: serve the fixture row's rollup as REST check-runs
     'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
       jq -c --arg h "$GH_HEAD" '[.[] | select(.headRefOid == $h)][0].statusCheckRollup // []
@@ -123,5 +124,31 @@ set_candidate 772 "$good_head" agent/issue-772 merge-result-valid
 run_merge_lane || :
 [[ "$(cat "$GH_MERGES_FILE")" == *'pr merge 772'* && "$(unit_field merge-result-valid .stage)" == merged ]] \
   || fail 'a syntactically valid merge result was not allowed through the merge lane'
+
+export WORKER_SCRATCH_ROOT="$fixture/worker-scratch"
+WT_ROOT="$fixture/worktrees"
+worker_dir="$WORKER_SCRATCH_ROOT/luna/live-merge-worker"
+clone="$WT_ROOT/wt-merge-result-live"
+mkdir -p "$worker_dir" "$clone"
+lane_worker_pid=""
+trap '[[ -z "$lane_worker_pid" ]] || { kill "$lane_worker_pid" 2>/dev/null || :; wait "$lane_worker_pid" 2>/dev/null || :; }; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
+sleep 600 &
+lane_worker_pid=$!
+printf '%s\n' "$clone" > "$worker_dir/cwd"
+printf '%s\n' "$lane_worker_pid" > "$worker_dir/wrapper.pid"
+set_candidate 772 "$good_head" agent/issue-772 merge-result-live
+run_merge_lane || :
+[[ ! -s "$GH_MERGES_FILE" && "$(unit_field merge-result-live .stage)" == ready-to-merge ]] \
+  || fail 'the merge lane merged a PR while its luna worker still owned the clone'
+grep -Fq 'held: worker live-merge-worker still running' "$LOG" \
+  || fail 'the live luna worker hold was not recorded'
+kill "$lane_worker_pid" 2>/dev/null || :
+wait "$lane_worker_pid" 2>/dev/null || :
+printf '0\n' > "$worker_dir/rc"
+lane_worker_pid=""
+set_candidate 772 "$good_head" agent/issue-772 merge-result-ended
+run_merge_lane || :
+[[ "$(cat "$GH_MERGES_FILE")" == *'pr merge 772'* && "$(unit_field merge-result-ended .stage)" == merged ]] \
+  || fail 'the merge lane did not merge on the first pass after its luna worker ended'
 
 printf 'merge-result-check.test.sh: PASS\n'
