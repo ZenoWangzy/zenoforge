@@ -40,19 +40,16 @@ land_direct_main_judging_landing() {
 }
 
 land_direct_main_rule_actor() {
-  local base="$1" head="$2" actor="${ZF_AGENT_NAME-}" branch
+  local actor="${ZF_AGENT_NAME-}" branch
   case "$actor" in
     supervisor) printf supervisor; return 0 ;;
     ''|head) ;;
     *) printf '%s' "$actor"; return 0 ;;
   esac
   branch="$(git branch --show-current 2>/dev/null || true)"
-  case "$branch" in
-    agent/issue-*|agent/auto-issue-*|factory/*|hand/*) printf 'unit:%s' "$branch"; return 0 ;;
-  esac
-  if syntax_only_landing "$base" "$head" && land_direct_main_judging_landing "$base" "$head"; then
-    printf supervisor
+  if [[ -n "$branch" ]]; then
+    printf 'unit:%s' "$branch"
   else
-    printf '%s' "${actor:-unit}"
+    printf unit
   fi
 }

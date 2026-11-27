@@ -106,8 +106,16 @@ assert_supervisor_actor() {
   git -C "$repo" commit -q -m 'fixture: change judged config'
   head="$(git -C "$repo" rev-parse HEAD)"
   assert_result 0 "$head" "$label"
-  assert_actor supervisor head "$head" "$label owner session"
-  assert_actor supervisor '' "$head" "$label unlabelled session"
+  assert_actor supervisor supervisor "$head" "$label supervisor session"
+  git -C "$repo" switch -q --detach "$head"
+  assert_actor unit '' "$head" "$label unlabelled detached HEAD"
+  assert_actor unit head "$head" "$label head-named detached HEAD"
+  git -C "$repo" switch -q -
+  git -C "$repo" switch -q -c session/probe
+  assert_actor unit:session/probe '' "$head" "$label unlabelled other branch"
+  assert_actor unit:session/probe head "$head" "$label head-named other branch"
+  git -C "$repo" switch -q -
+  git -C "$repo" branch -q -D session/probe
   assert_actor unit:agent/issue-probe unit:agent/issue-probe "$head" "$label unit actor"
   assert_unit_rejected "$path" "$head" "$label"
   for unit_branch in factory/probe agent/issue-probe agent/auto-issue-probe hand/probe; do
