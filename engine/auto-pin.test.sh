@@ -569,6 +569,64 @@ run_anchor "$anchor/fail-a.log"
 run_anchor "$anchor/fail-c.log"
 [[ $(grep -c "" "$ANCHOR_CREATE_CALLS") == 1 ]] || fail 'a pin log without the anchor line filed an issue'
 
+printf 'some avg10=0 avg60=0 avg300=0 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"; unset ZF_AUTO_PIN_LOAD_WAIT_SECS
+retry=0.2; export ZF_AUTO_PIN_PRODUCT_FETCH_SECS=99999; date +%s > "$product_fetch_time"; unset ZF_LAND_DIRECT_MAIN
+g -C "$tmp/clone" reset -q --hard
+base_sha=$(g -C "$tmp/work" rev-parse HEAD); g -C "$tmp/clone" fetch -q origin main
+printf '{"engine":"%s"}\n' "$base_sha" > "$tmp/agent/checkout/.zenoforge/build.json"
+g -C "$tmp/agent/checkout" add -A; g -C "$tmp/agent/checkout" commit -qm 'pin build.json'
+echo "$base_sha" > "$ZF_AUTO_PIN_HOME/auto-pin.last"
+export LANDER_MSG=$tmp/lander-msg; echo 'paired evaluation admission: stage mapping is unavailable' > "$LANDER_MSG"
+printf '#!/usr/bin/env bash\ncat "$LANDER_MSG" >&2; exit 1\n' > "$AGENT_HOME/engine-live/land-direct-main.sh"
+cat > "$tmp/work/tools/pin-vecta.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$1${ZF_LAND_DIRECT_MAIN:+ fallback}" >> "$PIN_CALLS"
+rc=0; bash "${ZF_LAND_DIRECT_MAIN:-$AGENT_HOME/engine-live/land-direct-main.sh}" || rc=$?
+((rc == 0)) || printf 'pin-vecta: result=land-failed route=land-direct-main landed=unknown (lander exit %s; check origin/main before retrying)\n' "$rc"
+exit "$rc"
+STUB
+mkdir -p "$tmp/work/engine"; printf '#!/usr/bin/env bash\necho candidate-lander-ok\n' > "$tmp/work/engine/land-direct-main.sh"
+lander_alerts=$AGENT_HOME/logs/head-watch.alerts; : > "$PIN_CALLS"
+k1=$(commit lander-bootstrap-1)
+auto_pin_pass > "$tmp/lander1.out" & pass=$!
+wait_for_pin_calls "$k1" 1 || fail 'lander case did not start its first failed pin'
+k2=$(commit lander-bootstrap-2)
+wait_for_pass_exit "$pass" || fail 'lander case: a new main commit did not end the wait'
+wait "$pass"; [[ $(last) == "$k1" ]] || fail 'lander case: the first refused candidate was not skipped'
+! grep -q LANDER-FALLBACK "$tmp/lander1.out" || fail 'one refused candidate fell back'
+auto_pin_pass > "$tmp/lander2.out"
+[[ $(last) == "$k1" ]] || fail 'lander case: the fallback decision moved the state'
+grep -Fq "LANDER-FALLBACK ${k2:0:12} the live lander refused 2 candidates in a row" "$tmp/lander2.out" || fail 'lander case: no fallback line after 2 refusals'
+[[ -e $logdir/${k2:0:12}.log.lander-fallback-pending ]] || fail 'lander case: no pending fallback marker'
+auto_pin_pass > "$tmp/lander3.out"
+[[ $(last) == "$k2" ]] || fail 'lander case: the fallback did not pin the newest candidate'
+grep -q "PINNED ${k2:0:12} via-lander-fallback" "$tmp/lander3.out" || fail 'lander case: PINNED line does not name the fallback'
+[[ $(tr '\n' ' ' < "$PIN_CALLS") == "$k1 $k2 $k2 fallback wrapper " ]] || fail "lander case calls: $(tr '\n' ' ' < "$PIN_CALLS")"
+grep -q 'LANDER-FALLBACK' "$logdir/${k2:0:12}.log" || fail 'lander case: the pin log does not record the fallback'
+grep -q "LANDER-FALLBACK retry commit=$k2" "$lander_alerts" || fail 'lander case: no retry alert'
+grep -q "LANDER-FALLBACK pinned commit=$k2" "$lander_alerts" || fail 'lander case: no pinned alert'
+[[ ! -e $ZF_AUTO_PIN_HOME/lander-candidates/${k2:0:12} && ! -e $ZF_AUTO_PIN_HOME/auto-pin-lander-refusal ]] || fail 'lander case: the candidate lander or the refusal count was left behind'
+echo 'preflight: NUL byte in staged file' > "$LANDER_MSG"; : > "$PIN_CALLS"
+j1=$(commit vecta-side-1)
+auto_pin_pass > "$tmp/vside1.out" & pass=$!
+wait_for_pin_calls "$j1" 1 || fail 'VectA-side case did not start its first failed pin'
+j2=$(commit vecta-side-2)
+wait_for_pass_exit "$pass" || fail 'VectA-side case: a new main commit did not end the wait'
+wait "$pass"
+auto_pin_pass > "$tmp/vside2.out" & pass=$!
+wait_for_pin_calls "$j2" 1 || fail 'VectA-side case did not start its second failed pin'
+sleep 1
+kill -0 "$pass" 2>/dev/null || fail 'a VectA-side refusal ended the wait'
+[[ ! -e $logdir/${j2:0:12}.log.lander-fallback-pending ]] || fail 'a VectA-side refusal scheduled a fallback'
+! grep -q fallback "$PIN_CALLS" || fail 'a VectA-side refusal ran the fallback'
+[[ $(grep -c 'LANDER-FALLBACK retry' "$lander_alerts") == 1 ]] || fail 'a VectA-side refusal alerted a fallback'
+kill "$pass" 2>/dev/null; wait "$pass" 2>/dev/null
+cat > "$tmp/work/tools/pin-vecta.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$1" >> "$PIN_CALLS"; [[ ! -e "$PIN_RC.rate" ]] || echo 'pin-vecta: GraphQL: API rate limit already exceeded' >&2; exit "$(cat "$PIN_RC" 2>/dev/null || echo 0)"
+STUB
+restored=$(commit restore-stub); g -C "$tmp/clone" fetch -q origin main; echo "$restored" > "$ZF_AUTO_PIN_HOME/auto-pin.last"
+
 # The pin also moves the shared tool clone (ZF_AUTO_PIN_TOOL_CLONE) to the pinned commit; the sync never fails or undoes the pin (row 887).
 printf 'some avg10=0 avg60=0 avg300=0 total=1\n' > "$ZF_AUTO_PIN_PSI_FILE"
 unset ZF_AUTO_PIN_LOAD_WAIT_SECS
