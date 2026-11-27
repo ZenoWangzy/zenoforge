@@ -20,3 +20,17 @@ All 26 cancelled runs had zero jobs. Sample runs [44918044701](https://github.co
 ## Method
 
 Read up to 1,000 runs for `engine-tests.yml` with `event=push`, selected completed runs whose branch was `main` and whose `createdAt` was at or after the #1335 merge time, sorted them by creation time, and counted the first 50. The #1335 merge push run is included.
+
+## Change (#1603)
+
+`engine-tests.yml` keys the concurrency group by `github.sha` for push and workflow_dispatch runs, and by PR number for pull requests. Each main push now has its own group and no newer push can replace it while it waits. Pull-request runs keep `cancel-in-progress` and stay isolated from main.
+
+## Evidence for remaining cancellations
+
+A cancelled main push run after this change is not a concurrency replacement. List them with the first 50 completed runs created after the change merged:
+
+```
+gh run list -R ZenoWangzy/zenoforge --workflow engine-tests.yml --event push --branch main --limit 200 --json databaseId,conclusion,status,createdAt,headSha,url
+```
+
+For each cancelled run, `gh run view <id> --json jobs` and the run log name the cause: a manual cancel, a job timeout, or a runner loss. Close #1340 when cancelled/50 is below 10%.

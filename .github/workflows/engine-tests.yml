@@ -44,11 +44,12 @@ on:
       - engine/systemd/zenoforge-supervisor.service
   workflow_dispatch:
 
-# main: one run plus the newest waiting, so a merge burst still gets a verdict. PRs: the latest push wins.
+# main: every push has its own group, so a merge burst never replaces a waiting run. PRs: the latest push wins.
 concurrency:
   # A pull_request run that starts after its PR merged resolves github.ref to the base branch; keyed by ref alone it
   # joined the main group with cancel-in-progress and cancelled main runs (8 in a row on 2026-11-21, row 875).
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  # Keyed by sha, a push run never shares a group, so a newer push cannot replace it while it waits (52% cancelled, #1603).
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
