@@ -43,7 +43,7 @@ import os
 import pathlib
 import sys
 
-pathlib.Path(sys.argv[1]).write_text(json.dumps({name: os.readlink(f'/proc/self/ns/{name}') for name in ('user', 'mount', 'net', 'pid')}))
+pathlib.Path(sys.argv[1]).write_text(json.dumps({name: os.readlink(f'/proc/self/ns/{name}') for name in ('user', 'mnt', 'net', 'pid')}))
 PY
 cat > "$repo/dispatch-probe.py" <<'PY'
 import json
