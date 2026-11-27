@@ -137,6 +137,8 @@ case "$1:$2" in
 esac
 SH
 chmod +x "$fake_bin/gh"
+gh() { command gh "$@"; }
+export -f gh
 printf '%s\n' bug priority:top needs-triage auto-filed > "$test_env_root/labels"
 printf '[]\n' > "$test_env_root/issues.json"
 : > "$test_env_root/comments.jsonl"

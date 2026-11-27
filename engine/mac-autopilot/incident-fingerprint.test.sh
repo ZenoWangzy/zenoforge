@@ -29,6 +29,8 @@ esac
 SH
 chmod +x "$tmp/gh"
 mkdir -p "$tmp/bin" "$tmp/lock"; mv "$tmp/gh" "$tmp/bin/gh"
+gh() { command gh "$@"; }
+export -f gh
 printf 'occurrence\n' > "$tmp/body.md"
 upsert() {
   STUB_CLASS="$1" STUB_LOG="$tmp/log" ZF_REPO=ZenoWangzy/zenoforge ZF_ISSUE_LOCK_DIR="$tmp/lock" PATH="$tmp/bin:$PATH" \
