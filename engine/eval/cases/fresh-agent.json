@@ -11,7 +11,8 @@
       "expected_divergence": "complete-incident-coverage",
       "remediation": {
         "doc": { "path": "docs/enforced-rules.md", "line": "The lesson-enforcer index covers every incident in the registry and fails when stale." },
-        "guard": "Reject a lesson-enforcer index that omits a registry incident or differs from the generated output."
+        "guard": "Reject a lesson-enforcer index that omits a registry incident or differs from the generated output.",
+        "lesson_lint": "If this rule can be expressed as a lesson, add it to engine/lesson-lints.mjs as a landing check."
       }
     },
     {

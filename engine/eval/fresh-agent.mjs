@@ -27,6 +27,7 @@ export function validateFreshCase(c) {
     else {
       if (!c.remediation.doc || !nonEmpty(c.remediation.doc.path) || !nonEmpty(c.remediation.doc.line)) failures.push('remediation.doc: path and line required');
       if (!nonEmpty(c.remediation.guard)) failures.push('remediation.guard: rule required');
+      if (c.remediation.lesson_lint !== undefined && !nonEmpty(c.remediation.lesson_lint)) failures.push('remediation.lesson_lint: guidance required');
     }
   }
   return failures;
@@ -67,6 +68,7 @@ export function buildFreshAgentGapIssue(c, results) {
   const change = gapClass === 'missing-doc'
     ? `Doc file: \`${detail.path}\`\nLine to add: \`${detail.line}\``
     : `Rule to enforce: \`${detail}\``;
+  const lessonLint = gapClass === 'missing-guard' && remediation.lesson_lint ? `\n${remediation.lesson_lint}` : '';
   return {
     class: issueClass,
     title: `Fresh-agent ${gapClass === 'missing-doc' ? 'missing doc' : 'missing guard'}: ${c.id}`,
@@ -74,7 +76,7 @@ export function buildFreshAgentGapIssue(c, results) {
       `Fresh-agent case \`${c.id}\` failed with classification \`${gapClass}\`.`,
       `Source: ${c.source_url ?? 'not recorded'}\nTask: ${c.prompt}`,
       `First divergence:\n${runs}`,
-      `## Repo change to make\n${change}`,
+      `## Repo change to make\n${change}${lessonLint}`,
     ].join('\n\n'),
   };
 }
