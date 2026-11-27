@@ -7,7 +7,6 @@ on:
     paths:
       - engine/**
       - tools/**
-      - .github/workflows/engine-tests.yml
       - tools/merge-pr.sh
       - tools/merge-pr-bootstrap.sh
       - tools/pin-vecta.sh
