@@ -219,7 +219,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ['engine/state/rule-files.json', ['engine/land-direct-main.test.sh']],
   ['engine/state/rulings.json', ['engine/state/rulings.test.mjs']],
   ['engine/land-queue.sh', ['engine/land-queue.test.sh', 'engine/land-direct-main.test.sh', 'engine/land-queue-completed-rebase.test.sh']],
-  ['engine/roadmap.sh', ['engine/roadmap-order.test.sh']], ['engine/mac-autopilot/gh_caller.py', ['engine/gh-measure/gh-measure.test.sh']], ['engine/roadmap-body-check.sh', ['engine/roadmap-issue-create.test.sh']],
+  ['engine/roadmap.sh', ['engine/roadmap-order.test.sh']], ['engine/mac-autopilot/gh_caller.py', ['engine/gh-measure/gh-measure.test.sh']], ['engine/mac-autopilot/intake_laneless_health.py', ['engine/mac-autopilot/node_health.test.sh']], ['engine/mac-autopilot/gh_key_cache.py', ['engine/gh-key-cache.test.sh', 'engine/mac-autopilot/gh-keyed-readers.test.sh']], ['engine/roadmap-body-check.sh', ['engine/roadmap-issue-create.test.sh']],
   ['engine/check-rulings.sh', [
     'engine/check-rulings.test.sh',
     'engine/night/night.test.sh',
