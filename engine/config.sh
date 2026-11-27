@@ -193,32 +193,14 @@ fi
 coord_source_if_enabled() {
   [[ "$ZF_COORD" == on ]] || return 0
   source "$ZF_ENGINE_DIR/coord.sh"
+  source "$ZF_ENGINE_DIR/coord-remote.sh"
 }
 if [[ "$ZF_COORD" != on ]]; then
-  COORD_DIR="$AGENT_HOME/coord/claims"
-  COORD_LEASE_SECONDS="${ZF_COORD_LEASE_SECONDS:-900}"
-  coord_remote_enabled() { return 1; }
-  coord_init() { return 0; }
-  coord_refresh() { return 0; }
-  coord_issue_key() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || return 2; printf 'issue-%s\n' "$1"; }
-  coord_unit_key() { [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || return 2; printf 'unit-%s\n' "$1"; }
-  coord_new_owner() { printf 'owner-off-%s-%s\n' "$BASHPID" "$RANDOM"; }
-  coord_read() { return 1; }
-  coord_acquire() { return 0; }
-  coord_acquire_many() { return 0; }
-  coord_release() { return 0; }
-  coord_release_many() { return 0; }
-  coord_renew() { return 0; }
-  coord_assert_owned() { return 0; }
-  coord_remote_active() { return 1; }
-  coord_reap_expired() { return 0; }
-  coord_reconcile_systemd_workers() { return 0; }
-  coord_with_scheduler_lock() { "$@"; }
-  coord_enter() { return 0; }
-  coord_exit() { return 0; }
-  coord_issue_live_worker() { return 1; }
-  coord_process_start_ticks_into() { return 1; }
-  coord_process_start_ticks() { return 1; }
+  if [[ -r "$ZF_ENGINE_DIR/coord-off.sh" ]]; then
+    source "$ZF_ENGINE_DIR/coord-off.sh"
+  else
+    source "$(dirname -- "${BASH_SOURCE[0]}")/coord-off.sh"
+  fi
 fi
 
 # Deployment identity (Line B seam G9): names of hosts, runners, repositories, CI checks and people that engine code used to

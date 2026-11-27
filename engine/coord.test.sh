@@ -85,6 +85,7 @@ coord_remote_run() {
     ZF_COORD_TEST_RACE_DIR="${ZF_COORD_TEST_RACE_DIR:-}" ZF_COORD_TEST_RACE_KEY="${ZF_COORD_TEST_RACE_KEY:-}" \
     bash -c '
       source "$SIM_ENGINE_DIR/coord.sh"
+      source "$SIM_ENGINE_DIR/coord-remote.sh"
       git() {
         local status=0 push=0 arg
         for arg in "$@"; do [[ "$arg" == push ]] && push=1; done
@@ -199,6 +200,23 @@ if coord_remote_run A read "$malformed_remote" >/dev/null 2>&1; then
 else
   rc=$?
   (( rc == 3 )) || fail "malformed remote claim read returned $rc instead of unknown (3)"
+fi
+
+missing_owner_remote="issue-81014"
+missing_owner_record="$(jq -cn --arg key "$missing_owner_remote" \
+  '{version:1,key:$key,owner_kind:"test",subject:$key,unit:"test-unit",stage:"test",expires_at:200}')"
+coord_remote_publish "$missing_owner_remote" "$missing_owner_record"
+if coord_remote_run A read "$missing_owner_remote" >/dev/null 2>&1; then
+  fail 'remote claim without owner read as free or owned'
+else
+  rc=$?
+  (( rc == 3 )) || fail "remote claim without owner read returned $rc instead of unknown (3)"
+fi
+if coord_remote_run B acquire "$missing_owner_remote" owner-b test "$missing_owner_remote" unit-b implement; then
+  fail 'remote claim without owner was replaced'
+else
+  rc=$?
+  (( rc == 3 )) || fail "acquire with missing owner returned $rc instead of unknown (3)"
 fi
 
 trial 7 'long observation gap resets the takeover interval'

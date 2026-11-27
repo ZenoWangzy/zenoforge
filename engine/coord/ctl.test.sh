@@ -36,7 +36,7 @@ run_coord() {
   local host="$1"
   shift
   AGENT_HOME="$fixture/agent-$host" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID="$host" ZF_COORD=on \
-    bash -c 'REPO_DIR="$ZF_REPO_DIR"; GIT_FETCH_TIMEOUT_SEC=60; source "$ZF_ENGINE_DIR/lib.d/transport.sh"; source "$ZF_ENGINE_DIR/coord.sh"; "$@"' _ "$@"
+    bash -c 'REPO_DIR="$ZF_REPO_DIR"; GIT_FETCH_TIMEOUT_SEC=60; source "$ZF_ENGINE_DIR/lib.d/transport.sh"; source "$ZF_ENGINE_DIR/coord.sh"; source "$ZF_ENGINE_DIR/coord-remote.sh"; "$@"' _ "$@"
 }
 
 clear_claim_fixtures() {

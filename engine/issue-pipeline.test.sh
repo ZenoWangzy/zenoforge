@@ -1993,6 +1993,7 @@ PROVIDER_DISPATCH_OUT="$(
   # scheduler-runtime census is IO to mock -- this fixture has no runtime ledgers.
   eval "$(sed -n '/^pipeline_claim_clear() {/,/^}/p; /^pipeline_live_worker_check() {/,/^}/p; /^pipeline_claim_begin() {/,/^}/p; /^pipeline_claim_drop() {/,/^}/p; /^pipeline_claim_keep() {/,/^}/p' "$PIPELINE_SRC")"
   source "$SCRIPT_DIR/coord.sh"
+  [[ "${ZF_COORD:-off}" != on ]] || source "$SCRIPT_DIR/coord-remote.sh"
   coord_issue_live_worker() { return 1; }
   state_read() { echo '{}'; }
   state_merge() { :; }
@@ -2039,6 +2040,7 @@ PROVIDER_DISPATCH_OUT="$(
       PIPELINE_CLAIM_KEY='' PIPELINE_CLAIM_OWNER='' PIPELINE_CLAIM_UNIT='' PIPELINE_CLAIM_STAGE=''
       mkdir -p "$AGENT_HOME"
       source "$SCRIPT_DIR/coord.sh"
+      [[ "${ZF_COORD:-off}" != on ]] || source "$SCRIPT_DIR/coord-remote.sh"
       coord_issue_live_worker() { return 1; }
       if pipeline_claim_begin 910558 implement "zf-implement-910558"; then
         if coord_assert_owned "$PIPELINE_CLAIM_KEY" "$PIPELINE_CLAIM_OWNER" >/dev/null; then
@@ -2058,11 +2060,13 @@ PROVIDER_DISPATCH_OUT="$(
     run_manual_enter_exit() (
       AGENT_HOME="$remote_home/a/home" REPO_DIR="$remote_home/a/repo" ZF_COORD=on
       source "$SCRIPT_DIR/coord.sh"
+      [[ "${ZF_COORD:-off}" != on ]] || source "$SCRIPT_DIR/coord-remote.sh"
       coord_enter 910561 triage
     )
     run_manual_enter_exit
     AGENT_HOME="$remote_home/a/home" REPO_DIR="$remote_home/a/repo" ZF_COORD=on
     source "$SCRIPT_DIR/coord.sh"
+    [[ "${ZF_COORD:-off}" != on ]] || source "$SCRIPT_DIR/coord-remote.sh"
     if coord_read issue-910561 >/dev/null; then echo 'manual-release=no'; else status=$?; echo "manual-release=$([[ "$status" -eq 1 ]] && echo yes || echo unknown)"; fi
   )
   run_unknown_remote_dispatch() (
@@ -2074,6 +2078,7 @@ PROVIDER_DISPATCH_OUT="$(
     dispatch() { : > "$bad_home/dispatched"; }
     AGENT_HOME="$bad_home/home" REPO_DIR="$bad_home/repo" ZF_COORD=on
     source "$SCRIPT_DIR/coord.sh"
+    [[ "${ZF_COORD:-off}" != on ]] || source "$SCRIPT_DIR/coord-remote.sh"
     coord_issue_live_worker() { return 1; }
     dispatch_policy_unit implement 910559 ready-for-agent 1 || status=$?
     echo "status=$status attempts=$attempts dispatched=$([[ -e "$bad_home/dispatched" ]] && echo yes || echo no)"
@@ -2084,6 +2089,7 @@ PROVIDER_DISPATCH_OUT="$(
   run_off_mode_entry() (
     AGENT_HOME="$AGENT_HOME/off-mode" ZF_COORD=off
     source "$SCRIPT_DIR/coord.sh"
+    [[ "${ZF_COORD:-off}" != on ]] || source "$SCRIPT_DIR/coord-remote.sh"
     git() { echo unexpected-git-call >&2; return 99; }
     coord_enter 910560 triage
     [ ! -e "$AGENT_HOME/coord" ]

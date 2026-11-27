@@ -8,6 +8,7 @@ CALLS="${TRIAGE_EVENT_CALLS:-$TMP/calls}"
 export CALLS
 unset MAC_AUTOPILOT_RUNTIME_DIR
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/coord.sh"
 source "$SCRIPT_DIR/lib.d/issue-rest.sh"
 source "$SCRIPT_DIR/lib.d/triage-filter.sh"
 FAILED=0

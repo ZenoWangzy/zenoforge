@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 export ZF_REPO=test/repo ZF_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 export ZF_WORKTREE_ROOT="$test_env_root/worktrees"
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/coord.sh"
 eval "$(sed -n '/^ensure_issue_roadmap_parent_for_dispatch() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 eval "$(sed -n '/^route_pipeline_fastlane_issue() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 trap 'rm -rf -- "$test_env_root"' EXIT

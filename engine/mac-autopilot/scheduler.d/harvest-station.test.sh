@@ -20,6 +20,7 @@ echo '{"units":[]}' > "$supervisor/autopi/units.json"
 echo '{"workers":[]}' > "$supervisor/autopi/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$engine_dir/mac-autopilot/scheduler.sh"
+source "$engine_dir/coord.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
 
 td="$fixture/run"; mkdir -p "$td/alerts"

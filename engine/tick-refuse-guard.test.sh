@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE_SRC="$SCRIPT_DIR/issue-pipeline.sh"
 export AGENT_HOME="$AGENT_HOME"
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/coord.sh"
 
 FAILED=0
 assert_eq() {
