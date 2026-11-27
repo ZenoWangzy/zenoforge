@@ -1,11 +1,4 @@
 # gh transport baseline: one unwrapped script path per line; remove entries as callers load the wrapper.
-engine/hotfix/hf-apply-dist.sh
-engine/hotfix/hf-install-gate.sh
-engine/hotfix/hf-merge.sh
-engine/hotfix/hf-pr.sh
-engine/hotfix/hf-source-check.sh
-engine/hotfix/hf-stale.sh
-engine/hotfix/hf-start.sh
 engine/mac-autopilot/land-pr.sh
 engine/mac-autopilot/rescued_gc.sh
 engine/night/hand-exit-handoff.sh
