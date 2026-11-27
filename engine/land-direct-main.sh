@@ -1606,7 +1606,7 @@ land_phase preflight-passed
 # The engine pin preflight refuses the push before it happens, so a pin that cannot build or
 # check at the target never reaches main (2026-11-03 incident; runs only when the range touches
 # the pin file or the override table).
-land_prompt_byte_budget_check "$repo_root" "$tested_base" "$(git rev-parse HEAD)" && land_engine_pin_preflight "$tested_base" "$(git rev-parse HEAD)" || exit $?
+land_prompt_byte_budget_check "$repo_root" "$tested_base" "$(git rev-parse HEAD)" '' "${self%/*}" && land_engine_pin_preflight "$tested_base" "$(git rev-parse HEAD)" || exit $?
 if [[ "$preflight_only" == 1 ]]; then
   echo "land-direct-main: preflight-only passed for $tested_base; not pushing"
   exit 0
@@ -1634,7 +1634,7 @@ while :; do
   base_before_push="$tested_base"
   candidate_head="$(git rev-parse HEAD)"
   # Re-verify after any rebase (the memo inside skips an unchanged base+head).
-  land_prompt_byte_budget_check "$repo_root" "$tested_base" "$candidate_head" && land_engine_pin_preflight "$tested_base" "$candidate_head" || exit $?
+  land_prompt_byte_budget_check "$repo_root" "$tested_base" "$candidate_head" '' "${self%/*}" && land_engine_pin_preflight "$tested_base" "$candidate_head" || exit $?
   land_register_post_push_range "$base_before_push" "$candidate_head"
   if land_git_transport_retry land_git_network push origin HEAD:main; then
     echo "land-direct-main: pushed $branch to main"

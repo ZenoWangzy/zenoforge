@@ -17,14 +17,16 @@ land_always_loaded_text_byte_budget_check() {
 }
 
 land_candidate_eval_admission_check() {
-  local root="${1:-}" changed="${2:-}" output
+  local root="${1:-}" changed="${2:-}" output map
   [[ -n "$changed" ]] || return 0
   [[ -d "$root" ]] || { printf 'paired evaluation admission: repository root is unavailable\n' >&2; return 1; }
-  [[ -r "$root/engine/eval/decision-stages.sh" ]] || {
+  map="$root/engine/eval/decision-stages.sh"
+  [[ -r "$map" ]] || map="$root/eval/decision-stages.sh"
+  [[ -r "$map" ]] || {
     printf 'paired evaluation admission: stage mapping is unavailable\n' >&2
     return 1
   }
-  if ! output="$(bash "$root/engine/eval/decision-stages.sh" --pin <<<"$changed" 2>&1)"; then
+  if ! output="$(bash "$map" --pin <<<"$changed" 2>&1)"; then
     printf 'paired evaluation admission: candidate input is unmeasurable; leave it as an observation\n%s\n' "$output" >&2
     return 1
   fi

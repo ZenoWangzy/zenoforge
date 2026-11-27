@@ -21,6 +21,18 @@ for path in engine/prompts/retro.md .zenoforge/prompts/retro.md .agents/skills/r
     || fail "paired evaluation refusal did not explain that $path stays an observation"
 done
 
+pin_target="$test_env_root/pin-target"
+mkdir -p "$pin_target/.zenoforge" "$test_env_root/published-engine/eval"
+printf '{}\n' >"$pin_target/.zenoforge/build.json"
+cp "$repo_root/engine/eval/decision-stages.sh" "$test_env_root/published-engine/eval/decision-stages.sh"
+if land_prompt_byte_budget_check "$pin_target" '' '' '.zenoforge/build.json' "$pin_target" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'admission passed without a stage mapping'
+fi
+land_prompt_byte_budget_check "$pin_target" '' '' '.zenoforge/build.json' "$repo_root" \
+  || fail 'pin-only diff refused with the stage mapping in the engine root'
+land_prompt_byte_budget_check "$pin_target" '' '' '.zenoforge/build.json' "$test_env_root/published-engine" \
+  || fail 'pin-only diff refused with the stage mapping in a published engine directory'
+
 assert_green_rc() {
   local expected_rc="$1" receipt="$2" expected_stderr="${3-}" actual_rc
   if land_receipt_green "$receipt" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
