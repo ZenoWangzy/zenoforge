@@ -382,8 +382,6 @@
 1	engine/mac-autopilot/repair-trigger.test.sh
 9	engine/mac-autopilot/report-gate-reask.test.sh
 6	engine/mac-autopilot/report-gate-repeat.test.sh
-7	engine/mac-autopilot/rescued_gc.sh
-2	engine/mac-autopilot/rescued_gc.test.sh
 23	engine/mac-autopilot/review-contract.sh
 1	engine/mac-autopilot/review-contract.test.sh
 21	engine/mac-autopilot/review-family.test.sh
@@ -424,7 +422,7 @@
 6	engine/mac-autopilot/scheduler.d/ci-status-relabel.test.sh
 92	engine/mac-autopilot/scheduler.d/ci-status.sh
 3	engine/mac-autopilot/scheduler.d/ci-stuck-unqueued.sh
-70	engine/mac-autopilot/scheduler.d/cleanup.sh
+69	engine/mac-autopilot/scheduler.d/cleanup.sh
 12	engine/mac-autopilot/scheduler.d/clone-recovery.test.sh
 51	engine/mac-autopilot/scheduler.d/clones.sh
 27	engine/mac-autopilot/scheduler.d/conflict-resolve.sh

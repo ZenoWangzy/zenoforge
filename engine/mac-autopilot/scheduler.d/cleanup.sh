@@ -644,10 +644,5 @@ cleanup_tick() {
         git -C "$ROOT" branch -q -D "$b" 2>/dev/null && say "cleanup local branch $b (upstream gone)"
       done < <(git -C "$ROOT" for-each-ref --format='%(refname:short) %(upstream:track)' 'refs/heads/agent/' 'refs/heads/fix/' 2>/dev/null)
     fi
-    # 远端 rescued/* 收尾：issue 已关闭或无 issue 号超龄的先进 bundle（${AGENT_ARCHIVE}）再删，逐条记 rescued-gc.log。
-    if [[ -f "$HERE/rescued_gc.sh" ]]; then
-      r="$(timeout 600 bash "$HERE/rescued_gc.sh" "$ROOT" "$A/rescued-gc.log" 2>&1 | tail -1)"
-      [[ -n "$r" ]] && say "$r"
-    fi
   fi
 }

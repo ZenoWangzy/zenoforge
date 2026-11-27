@@ -14,3 +14,4 @@ zenoforge-health-mail.timer - timer-alerted-zenoforge-health-mail.timer
 zenoforge-prod-anomaly.timer - timer-alerted-zenoforge-prod-anomaly.timer
 zenoforge-roi-collector.timer - timer-alerted-zenoforge-roi-collector.timer
 zenoforge-retro.timer - timer-alerted-zenoforge-retro.timer
+zenoforge-branch-gc.timer - timer-alerted-zenoforge-branch-gc.timer

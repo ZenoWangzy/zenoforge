@@ -1,0 +1,13 @@
+{
+  "engine/systemd/zenoforge-branch-gc.service": [
+    "engine/mac-autopilot/rescued_gc.test.sh",
+    "engine/unitgen.test.sh"
+  ],
+  "engine/systemd/zenoforge-branch-gc.timer": [
+    "engine/mac-autopilot/rescued_gc.test.sh",
+    "engine/unitgen.test.sh"
+  ],
+  "engine/unitgen.golden/zenoforge.zenoforge-branch-gc.plist": [
+    "engine/unitgen.test.sh"
+  ]
+}
