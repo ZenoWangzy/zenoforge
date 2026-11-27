@@ -443,11 +443,10 @@ console.log(JSON.stringify({ steps: [{ id: 'read-doc', ok, doc_available: false,
 process.exitCode = ok ? 0 : 1;
 `);
     const baseSha = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').at(-1);
-    const fixSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const cases = join(f.dir, 'fresh-cases.json');
     writeFileSync(cases, JSON.stringify({ stage: 'fresh-agent', cases: [
-      { id: 'pass', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_PASS', hidden_check: `node ${check}`, expected_divergence: 'read-doc', remediation: { doc: { path: 'docs/enforced-rules.md', line: 'The evaluator reads the routing rule.' }, guard: 'Keep the routing rule enforced.' } },
-      { id: 'fail', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_FAIL', hidden_check: `node ${check}`, expected_divergence: 'read-doc', remediation: { doc: { path: 'docs/enforced-rules.md', line: 'The evaluator reads the routing rule.' }, guard: 'Keep the routing rule enforced.' } },
+      { id: 'pass', base_sha: baseSha, prompt: 'FIXTURE_PASS', hidden_check: `node ${check}`, expected_divergence: 'read-doc', remediation: { doc: { path: 'docs/enforced-rules.md', line: 'The evaluator reads the routing rule.' }, guard: 'Keep the routing rule enforced.' } },
+      { id: 'fail', base_sha: baseSha, prompt: 'FIXTURE_FAIL', hidden_check: `node ${check}`, expected_divergence: 'read-doc', remediation: { doc: { path: 'docs/enforced-rules.md', line: 'The evaluator reads the routing rule.' }, guard: 'Keep the routing rule enforced.' } },
     ] }));
     const r = f.run(['--stage', 'fresh-agent', '--cases', cases, '--runs', '1', '--label', 'fresh']);
     assert.equal(r.status, 0, r.stderr);
