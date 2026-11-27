@@ -2,5 +2,3 @@
 engine/pre-push-guard.sh
 engine/supervisor/watch/oversight.sh
 tools/auto-pin.sh
-tools/main-red-revert.sh
-tools/merge-pr.sh
