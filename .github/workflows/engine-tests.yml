@@ -197,3 +197,12 @@ jobs:
           done
           [[ -e "$marker" ]] || { echo 'FAIL: launchd did not touch the marker file' >&2; exit 1; }
           echo 'PASS unitgen load launchd smoke'
+
+  portable-shim-contract-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run portable-shim contract test
+        env:
+          ZF_RUNNER: pidfile
+        run: bash engine/portable-shim/zf_units.test.sh
