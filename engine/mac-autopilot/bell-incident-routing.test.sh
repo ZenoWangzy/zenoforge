@@ -111,6 +111,8 @@ esac
 SH
 chmod +x "$bin/"*
 export PATH="$bin:$PATH"
+gh() { command gh "$@"; }
+export -f gh
 
 make_runtime() { # $1=name → prints the autopilot runtime dir
   local a="$tmp/$1"
