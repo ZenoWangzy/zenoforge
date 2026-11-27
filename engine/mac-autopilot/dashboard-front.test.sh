@@ -23,6 +23,7 @@ utc_hour=$((10#$(date -u +%H))); off=$((12 - utc_hour))
 if (( off > 0 )); then tz="Etc/GMT-$off"; elif (( off < 0 )); then tz="Etc/GMT+$((-off))"; else tz="Etc/GMT"; fi
 export SESSION_TZ="$tz" CODEX_SESSIONS_DIR="$f/sessions" MAC_AUTOPILOT_ROOT="$root" \
   MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a" ZF_REPO_DIR="$root" ZF_REPO="example/fixture-repo"
+export ZF_ENGINE_REPO="example/fixture-repo"
 export ZF_HOME="$f/zenoforge-home" AUTOPILOT_PAUSE_FILE="$AGENT_HOME/PAUSE"
 mkdir -p "$AGENT_HOME/engine-versions/6da8c7285e8b/engine" "$ZF_HOME"
 ln -s "$AGENT_HOME/engine-versions/6da8c7285e8b/engine" "$AGENT_HOME/engine-live"
@@ -192,8 +193,9 @@ run
 [[ $(grep -c '^runner$' "$FAKE_GH_LOG") == 1 ]] || fail 'dashboard refetched runners before the shared five-minute TTL'
 out="$(front)"
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
-  '.front.fetched_at == .front.github.fetched_at
-   and (.repo_sections | length == 1 and .[0].fetched_at == .front.github.fetched_at and .[0].factory_live != null)
+  '.front.github.fetched_at as $front_fetched_at
+   | .front.fetched_at == $front_fetched_at
+   and (.repo_sections | length == 1 and .[0].fetched_at == $front_fetched_at and .[0].factory_live != null)
    and (.source_freshness.units.fetched_at != null)
    and (.front.advisor.fetched_at | type) == "string"
    and (.front.advisor_loop.fetched_at == .source_freshness.units.fetched_at)

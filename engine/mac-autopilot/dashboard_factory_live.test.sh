@@ -47,6 +47,7 @@ with tempfile.TemporaryDirectory() as agent_home:
     version_engine = os.path.join(agent_home, "engine-versions", "6da8c7285e8b", "engine")
     os.makedirs(version_engine)
     os.symlink(version_engine, os.path.join(agent_home, "engine-live"))
+    engine_pin = live.engine_live_pin(agent_home)
     line_pause = os.path.join(agent_home, "line-pause")
     with open(line_pause, "w", encoding="utf-8") as target:
         json.dump({"timestamp": "2026-11-27T17:00:00Z", "reason": "line maintenance"}, target)
@@ -75,7 +76,7 @@ assert result["dispatch_decisions"][0]["at"] == "2026-11-27T17:30:00Z", result
 assert result["dispatch_decisions"][0]["issue"] == 2713, result
 assert "capacity detail" not in json.dumps(result), result
 assert result["merge_lane_today"] == [321], result
-assert live.engine_live_pin(agent_home) == "6da8c7285e8b"
+assert engine_pin == "6da8c7285e8b"
 assert pause_states["vecta_line"]["paused"] is True, pause_states
 assert pause_states["vecta_line"]["since"] == "2026-11-27T17:00:00Z", pause_states
 assert pause_states["zenoforge_factory"]["paused"] is False, pause_states

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, triage_split, intake_laneless_health, traffic_trend, gh_caller, gh_key_cache, dashboard_source_freshness, dashboard_factory_live
 import ledger_history
+import repo_identity
 from config_paths import zf_config_file
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
