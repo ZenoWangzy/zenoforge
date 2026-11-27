@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shim_dir="$(cd -- "$(dirname -- "$BASH_SOURCE")" && pwd -P)"
+exec python3 "$shim_dir/zf_units.py" "${0##*/}" "$@"
