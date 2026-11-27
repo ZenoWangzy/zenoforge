@@ -33,7 +33,7 @@ sim_host_new() {
   repo="$host/coord/repo.git"
   [[ ! -e $host ]] || { echo "simulation host already exists: $id" >&2; return 1; }
   mkdir -p -- "${repo%/*}"
-  "$SIM_REAL_GIT" clone --quiet "$SIM_REMOTE" "$repo" >/dev/null 2>&1
+  "$SIM_REAL_GIT" clone --bare --quiet "$SIM_REMOTE" "$repo" >/dev/null 2>&1
   "$SIM_REAL_GIT" -C "$repo" config user.name "Simulation $id"
   "$SIM_REAL_GIT" -C "$repo" config user.email "$id@simulation.invalid"
   printf '%s-instance\n' "$id" > "$host/instance"
