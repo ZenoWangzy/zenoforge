@@ -126,7 +126,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
   WORKER_STDOUT_REPORT=0  # stream-json 不是报告：harvest 从 result 行取最终回答
   CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'  # result 行是本次调用自己的用量
   common=(--model "$model" --effort "$effort" --output-format stream-json --verbose \
-    --bare --permission-mode dontAsk --safe-mode --setting-sources "" --strict-mcp-config \
+    --settings '{"env":{"CLAUDE_CODE_DISABLE_CLAUDE_MDS":"1"}}' --permission-mode dontAsk --safe-mode --setting-sources "" --strict-mcp-config \
     --tools "$tools" --allowedTools "$allowed")
   CODEX_COMMAND=(claude -p "$prompt" ${resume[@]+"${resume[@]}"} "${common[@]}")
   # codex-repair-run.sh falls back to this cold start when a resume dies before any work.
@@ -188,8 +188,8 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     CODEX_COMMAND=(claude -p "$prompt_arg
 （把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。本次评审只读：不要编辑、提交、推送或运行测试；发现问题时保持 finding 为 open 并写明修复建议，由 repair 阶段处理。
 当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」。可用命令：git diff/log/show/rev-parse/merge-base/ls-files/status、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort/uniq。优先用 Read/Grep 工具读代码。）" \
-      --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
-      --bare --model "$model" --effort "$effort" --permission-mode plan --strict-mcp-config \
+      --settings '{"disableAllHooks":true,"env":{"CLAUDE_CODE_DISABLE_CLAUDE_MDS":"1"}}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
+      --model "$model" --effort "$effort" --permission-mode plan --strict-mcp-config \
       --tools "$claude_cli_tools" --allowedTools "$review_allowed_tools" --disallowedTools "$(claude_review_disallowed_tools)")
     return 0
   fi

@@ -62,7 +62,7 @@ jq '.switches["roadmap-order"] = false' "$SCRIPT_DIR/model-policy.default.json" 
 FAKE_BIN="$TEST_ROOT/bin"
 mkdir -p "$FAKE_BIN"
 export FAKE_GH_LOG="$TEST_ROOT/gh.log" FAKE_CODEX_ARGS="$TEST_ROOT/codex-args.log" FAKE_CLAUDE_ARGS="$TEST_ROOT/claude-args.log"
-export FAKE_CLAUDE_PROMPT="$TEST_ROOT/claude-prompt.log"
+export FAKE_CLAUDE_PROMPT="$TEST_ROOT/claude-prompt.log" FAKE_CLAUDE_ENV="$TEST_ROOT/claude-env.log"
 export FAKE_CODEX_OUTPUT="$TEST_ROOT/codex-output.ndjson" FAKE_CLAUDE_RESULT="$TEST_ROOT/claude-result.ndjson" FAKE_CLAUDE_STRUCTURED="$TEST_ROOT/claude-structured.json"
 cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -99,6 +99,7 @@ EOF
 cat > "$FAKE_BIN/claude" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_CLAUDE_ARGS"
+printf 'CLAUDE_CODE_DISABLE_CLAUDE_MDS=%s\n' "${CLAUDE_CODE_DISABLE_CLAUDE_MDS-}" >> "$FAKE_CLAUDE_ENV"
 cat > "$FAKE_CLAUDE_PROMPT"
 if [[ " $* " == *" --json-schema "* ]]; then
   jq -nc --slurpfile so "$FAKE_CLAUDE_STRUCTURED" '{type:"result",is_error:false,result:"",structured_output:$so[0],total_cost_usd:0.01,usage:{input_tokens:1000,cache_read_input_tokens:5000,cache_creation_input_tokens:300,output_tokens:200}}'
@@ -134,7 +135,8 @@ OUT="$(bash "$SCRIPT_DIR/run-triage.sh" 920102 2>&1)" || { echo "not ok - run-tr
 assert_eq "run-triage over the stop makes no Codex call" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
 assert_contains "run-triage Claude call uses haiku and the triage schema" "$(cat "$FAKE_CLAUDE_ARGS")" '--model claude-haiku-5-5'
 assert_contains "run-triage Claude call is schema-constrained" "$(cat "$FAKE_CLAUDE_ARGS")" '--json-schema'
-assert_contains "run-triage Claude skips candidate project instructions" "$(cat "$FAKE_CLAUDE_ARGS")" '--bare'
+assert_contains "run-triage Claude skips candidate project instructions" "$(cat "$FAKE_CLAUDE_ENV")" 'CLAUDE_CODE_DISABLE_CLAUDE_MDS=1'
+if grep -Fq -- '--bare' "$FAKE_CLAUDE_ARGS"; then echo 'not ok - run-triage Claude must not use --bare (OAuth login)' >&2; FAILED=1; fi
 assert_contains "run-triage Claude receives accepted engine instructions" "$(cat "$FAKE_CLAUDE_PROMPT")" 'Project instruction file: AGENTS.md'
 if grep -Fq 'candidate Claude instruction' "$FAKE_CLAUDE_PROMPT" || grep -Fq 'candidate AGENTS instruction' "$FAKE_CLAUDE_PROMPT"; then
   echo 'not ok - run-triage Claude loaded unaccepted target instructions' >&2
