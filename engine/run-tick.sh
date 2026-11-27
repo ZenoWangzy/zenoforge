@@ -461,6 +461,10 @@ run_tick() {
   if [ ! -r "$timer_list" ]; then
     refuse "unexpected" "pipeline timer list is missing or unreadable: $timer_list"
   fi
+  timer_pause_resume=""
+  if [ -s "$PAUSE_FILE" ]; then
+    timer_pause_resume="$(jq -r '(.resume? // empty) | strings' "$PAUSE_FILE" 2>/dev/null | tr -s ' \t;,' '\n' || true)"
+  fi
   while read -r timer timer_off_variable timer_alert_marker; do
     case "$timer" in
       ""|\#*) continue ;;
@@ -471,6 +475,11 @@ run_tick() {
     timer_alert_marker="${timer_alert_marker/-${timer%%-*}-/-$UNIT_PREFIX-}"
     timer="$UNIT_PREFIX-${timer#*-}"
     timer_alerted_file="$AGENT_HOME/$timer_alert_marker"
+    if [ -n "$timer_pause_resume" ] && grep -Fxq -- "$timer" <<<"$timer_pause_resume"; then
+      echo "run-tick: left $timer alone: the PAUSE file names it in resume" >&2
+      rm -f "$timer_alerted_file"
+      continue
+    fi
     if [ "$timer_off_variable" != "-" ]; then
       timer_mode="$(timeout "${timer_gh_timeout_sec}s" gh variable get "$timer_off_variable" \
         --repo "$timer_repo" 2>/dev/null || echo observe)"
