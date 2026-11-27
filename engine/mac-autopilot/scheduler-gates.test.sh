@@ -792,10 +792,12 @@ gh() {
   esac
 }
 stack_tick_prs="$TICK_PRS"; tick_prs_changed; tick_prs_changed() { :; } # the stub answers the live per-head lookup; a census (or the 60 s shared file) left by an earlier case would answer instead
+TICK_PRS='[]'
 scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
 [[ "$SCHED_PR_NUM" == 102 && "$(cat "$fixture/stack-pr-create.args")" == *'--draft --label agent/ci-gated --base agent/issue-1'* ]] \
   || fail 'stacked unit PR did not target its predecessor branch'
 STACK_PR_EXISTING=1
+TICK_PRS='[{"number":102,"headRefName":"agent/issue-23","isDraft":true}]'
 scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
 [[ "$SCHED_PR_NUM" == 102 && "$(tail -1 "$fixture/stack-pr-edit.args")" == 'pr edit 102 --base agent/issue-1' ]] \
   || fail 'an existing stacked unit PR did not retarget its predecessor branch'

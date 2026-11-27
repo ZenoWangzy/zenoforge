@@ -1936,7 +1936,7 @@ fi
 if grep -Fq 'issue comment 9701' "$TF/actions"; then
   echo 'not ok - scheduler.test.sh: tick emitted a budget comment for an in-budget unit' >&2; exit 1
 fi
-grep -Fq 'gh pr view 9701' "$TF/calls" \
+grep -Eq 'repos/\{owner\}/\{repo\}/pulls/9701( |$)' "$TF/calls" \
   || { echo 'not ok - scheduler.test.sh: high-cache tick bypassed the guarded gh-shim' >&2; exit 1; }
 }
 sched_run_case high_cache_lifetime
@@ -2353,7 +2353,7 @@ sched_case_size_admission_repair() {
     command jq '[.units[] | {id,stage,note}]' "$TF/supervisor/autopi/units.json" >&2
     exit 1
   }
-  grep -Fq 'gh pr view 901 --json headRefName' "$TF/calls" || {
+  grep -Eq 'repos/\{owner\}/\{repo\}/pulls/901( |$)' "$TF/calls" || {
     echo 'not ok - scheduler.test.sh: size escalation bypassed gh-shim' >&2; exit 1;
   }
 
@@ -2614,7 +2614,7 @@ sched_case_oversized_repair_pre_dispatch_recut() {
     cat "$TF/tick.out" "$TF/actions" >&2
     exit 1
   }
-  grep -Fq '/pulls/930/files?per_page=100' "$TF/calls" \
+  grep -Eq 'repos/\{owner\}/\{repo\}/pulls/930/files' "$TF/calls" \
     || { echo 'not ok - scheduler.test.sh: footprint did not come from the PR file list' >&2; exit 1; }
   command jq -e '.state=="needs-recut" and .size_admission.lines==802 and .size_admission.limit==800' \
     "$TF/agent-home/state/930.json" >/dev/null || { echo 'not ok - scheduler.test.sh: repair preflight size evidence was not recorded' >&2; exit 1; }
@@ -2624,7 +2624,7 @@ sched_case_oversized_repair_pre_dispatch_recut() {
     || { echo 'not ok - scheduler.test.sh: repair preflight did not use the existing recut label transition' >&2; exit 1; }
   grep -Fq 'unit issue-930 size admission routed issue #930 to recut' "$TF/supervisor/autopi/scheduler.log" \
     || { echo 'not ok - scheduler.test.sh: repair recut event was not emitted' >&2; exit 1; }
-  grep -Fq 'gh pr view 930 --json headRefOid' "$TF/calls" \
+  grep -Eq 'repos/\{owner\}/\{repo\}/pulls/930( |$)' "$TF/calls" \
     || { echo 'not ok - scheduler.test.sh: repair size preflight bypassed gh-shim' >&2; exit 1; }
 }
 sched_run_case oversized_repair_pre_dispatch_recut
@@ -4183,7 +4183,7 @@ SH
     echo 'scheduler.test.sh: refill handoff lookup read an uninitialized PR census' >&2
     exit 1
   fi
-  grep -Fq 'gh pr view 9302 --json number,headRefName,title,body,state,labels' "$TF/calls" \
+  grep -Eq 'repos/\{owner\}/\{repo\}/pulls/9302( |$)' "$TF/calls" \
     || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: refill candidate did not reach handoff_include_pr' >&2; exit 1; }
   grep -Fq 'refill done' "$TF/supervisor/autopi/scheduler.log" \
     || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill intake failure omitted its completion log line' >&2; exit 1; }
@@ -5244,7 +5244,7 @@ sched_case_hold_handoff_pr_lookup_failure() {
   if [[ "$mode" == partial ]]; then
     command jq -e '.units[1].hold_handoff_lookup_pending==true and .units[1].hold_handoff_waiting==true' "$TF/supervisor/autopi/units.json" >/dev/null \
       || { echo 'not ok - unreadable PR was not held during partial lookup' >&2; exit 1; }
-    ! grep -q 'gh pr view 902 --json number,headRefName,title,body,state' "$TF/calls" \
+    ! grep -Eq 'repos/\{owner\}/\{repo\}/pulls/902( |$)' "$TF/calls" \
       || { echo 'not ok - fallback queried a closed historical PR' >&2; exit 1; }
   fi
   if [[ "$mode" == nonstandard || "$mode" == partial ]]; then
