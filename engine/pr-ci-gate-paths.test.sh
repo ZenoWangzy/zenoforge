@@ -57,6 +57,7 @@ for f in "${gate_files[@]}"; do
   [[ "$f" =~ $regex ]] || fail "gate regex does not match listed gate file $f"
 done
 
+engine_tests_self_trigger='.github/workflows/engine-tests.yml'
 for wf in engine-tests cli-tests; do
   file="$root/.github/workflows/$wf.yml"
   [[ -f "$file" ]] || fail "missing $file"
@@ -73,9 +74,11 @@ for wf in engine-tests cli-tests; do
   # merge-pr.sh's gate regex stays the narrow set that merge-pr itself holds for PR CI.
   if [[ $wf == engine-tests ]]; then
     for p in 'engine/**' 'tools/**'; do printf '%s\n' "${globs[@]}" | grep -qxF "$p" || fail "engine-tests.yml pull_request paths lost $p"; done
+    printf '%s\n' "${globs[@]}" | grep -qxF "$engine_tests_self_trigger" \
+      || fail "engine-tests.yml pull_request paths lost its workflow self-trigger"
   fi
   for g in "${globs[@]}"; do
-    [[ $wf == engine-tests && ( $g == 'engine/**' || $g == 'tools/**' ) ]] && continue
+    [[ $wf == engine-tests && ( $g == 'engine/**' || $g == 'tools/**' || $g == "$engine_tests_self_trigger" ) ]] && continue
     sample="${g//\*\*/sample.sh}"
     [[ "$sample" =~ $regex ]] || fail "$wf.yml path $g is not a gate file in merge-pr.sh"
   done
