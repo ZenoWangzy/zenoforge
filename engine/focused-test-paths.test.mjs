@@ -48,6 +48,20 @@ test('maps both shared-pool provisioners to their owner suites', () => {
   assert.deepEqual(focusedTestPaths(paths, new Set(suites)), [...suites].sort());
 });
 
+test('maps release exploration dispatch and runner to their behavior tests', () => {
+  const suite = 'engine/explore.test.sh';
+  for (const source of [
+    'engine/issue-pipeline-slices.sh',
+    'engine/run-explore.sh',
+    'engine/lib.d/explore.sh',
+  ]) {
+    assert.ok(focusedTestPaths([source], new Set([suite])).includes(suite));
+  }
+  assert.deepEqual(focusedTestPaths(['engine/pipeline-issue-upsert.sh'], new Set([
+    'engine/pipeline-issue-upsert.test.sh',
+  ])), ['engine/pipeline-issue-upsert.test.sh']);
+});
+
 test('Python and CommonJS pipeline sources require owner coverage', () => {
   const suite = 'engine/network-traffic.test.sh';
   assert.deepEqual(focusedTestPaths(['engine/network-traffic.py'], new Set([suite])), [suite]);

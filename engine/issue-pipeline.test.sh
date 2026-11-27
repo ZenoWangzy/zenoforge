@@ -2727,7 +2727,7 @@ TRIAGE_MAINTENANCE_ORDER="$(awk '
   END { print (mode && call && finish && mode < call && call < finish) ? 1 : 0 }
 ' "$PIPELINE_SRC")"
 assert_cond "the implement stage runs maintenance after its intake dispatch" "$TRIAGE_MAINTENANCE_ORDER"
-assert_contains "release and maintenance own separate bounded slices" "$(cat "$SCRIPT_DIR/issue-pipeline-slices.sh")" "recut release maintenance"
+assert_contains "release and maintenance own separate bounded slices" "$(cat "$SCRIPT_DIR/issue-pipeline-slices.sh")" "recut release explore maintenance"
 
 # --- static: each issue unit dispatch uses persisted policy state -----------
 if grep -q 'codex_implement_model_for_level "\$(state_read "\$n"' "$PIPELINE_SRC"; then

@@ -1,0 +1,6 @@
+{
+  "engine/issue-pipeline-slices.sh": ["engine/issue-pipeline.test.sh", "engine/tick-speed.test.sh", "engine/explore.test.sh"],
+  "engine/run-explore.sh": ["engine/explore.test.sh"],
+  "engine/lib.d/explore.sh": ["engine/explore.test.sh"],
+  "engine/pipeline-issue-upsert.sh": ["engine/pipeline-issue-upsert.test.sh"]
+}

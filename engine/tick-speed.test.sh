@@ -51,6 +51,12 @@ if [ "$2" = fastlane ]; then
   read -r _ < "$AGENT_HOME/overrun-fifo"
 fi
 CHILD
+cat > "$AGENT_HOME/run-explore.sh" <<'CHILD'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$AGENT_HOME/explore-runner-arg"
+printf '%s\n' explore >> "$AGENT_HOME/stages"
+CHILD
+chmod +x "$AGENT_HOME/run-explore.sh"
 gh() { printf 'release\n'; }
 check_gmail_credential() { :; }
 roadmap_switch_value() { printf 'true\n'; }
@@ -68,21 +74,22 @@ timeout() {
 LOCK_FILE="$AGENT_HOME/slice.lock"
 run_pipeline_slices "$AGENT_HOME/scheduler" 2> "$AGENT_HOME/slice-log"
 stages="$(cat "$AGENT_HOME/stages")"
-[ "${stages#fastlane$'\n'}" = $'triage\nadvisor\nrecut\nmaintenance' ] || {
+[ "${stages#fastlane$'\n'}" = $'triage\nadvisor\nrecut\nexplore\nmaintenance' ] || {
   printf '%s\n' "$stages"; cat "$AGENT_HOME/slice-log"; exit 1;
 }
 [ "$(cat "$AGENT_HOME/roadmap-reads")" = . ]
+[ "$(cat "$AGENT_HOME/explore-runner-arg")" = dispatch ]
 [ "$ZF_PIPELINE_ROADMAP_STALE/$ZF_PIPELINE_ROADMAP_AGE" = 1/50 ]
 grep -q 'stage=fastlane.*status=124' "$AGENT_HOME/slice-log"
 if grep -q 'FAIL' "$AGENT_HOME/slice-log"; then
   echo 'unexpected match' >&2
   exit 1
 fi
-echo 'ok - real stage overrun still gives triage, advisor, recut and maintenance a slice (implement and release belong to the autopilot)'
+echo 'ok - real stage overrun still gives triage, advisor, recut, explore and maintenance a slice (implement and release belong to the autopilot)'
 
 
 eval "$(sed -n '/^fastlane_scan_order() {/,/^}/p; /^fastlane_snapshot_candidates() {/,/^}/p; /^fastlane_read_path_contexts() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-held="$(command jq -cn '[range(1;201) | {number:.,labels:[{name:"on-hold"}],subIssuesSummary:{total:0},blockedBy:{nodes:[]}}]')"
+held="$(command jq -cn '[range(1;201) | {number:.,labels:[{name:"on-hold"}],subIssues:[],subIssuesSummary:{total:0},blockedBy:{nodes:[]}}]')"
 gh() { echo 'FAIL held fastlane point read' >&2; exit 1; }
 PIPELINE_SYSTEM_LABELS_JSON='["pipeline-system"]'
 [ -z "$(fastlane_read_path_contexts "$held")" ]
@@ -91,8 +98,13 @@ printf 'STATUS: DONE\n' > "$NIGHT/hand-1.report"
 [ "$(fastlane_snapshot_candidates "$held" | command jq 'length')" = 1 ]
 echo 'ok - held fastlane cohort makes zero point reads; completed reports remain consumable'
 
-gh() { printf '{"number":999,"state":"OPEN","labels":[],"body":"","comments":[{"body":"engine/lib.sh"}]}\n'; }
+gh() {
+  case "$*" in
+    *'/comments?'*) printf '[{"body":"engine/lib.sh","created_at":"2026-01-01T00:00:00Z","html_url":"","user":{"login":"maintainer"}}]\n' ;;
+    *) printf '{"number":999,"state":"open","labels":[],"body":"","created_at":"2025-01-01T00:00:00Z","pull_request":null}\n' ;;
+  esac
+}
 route_nonproduct_path_issue_rows() { printf '%s\n' "$1" >> "$AGENT_HOME/contexts-routed"; }
-fastlane_read_path_contexts '[{"number":999,"labels":[]}]'
+fastlane_read_path_contexts '[{"number":999,"labels":[],"blockedBy":{"nodes":[]},"subIssues":[],"subIssuesSummary":{"total":0,"completed":0}}]'
 command jq -e '.[0].comments[0].body == "engine/lib.sh"' "$AGENT_HOME/contexts-routed" >/dev/null
 echo 'ok - rich comments reach routing immediately after the leaf read'

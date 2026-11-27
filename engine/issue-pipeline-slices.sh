@@ -163,7 +163,8 @@ pipeline_slice_overrun_note() { # stage
 }
 
 run_pipeline_slices() {
-  local scheduler="$1" mode stage budget status=0 started tick="" deadline night
+  local scheduler="$1" mode stage budget status=0 started tick="" deadline night explore_runner
+  local -a stage_command=()
   exec 9>"$LOCK_FILE"
   flock -n 9 || { pipeline_lock_skipped slice-runner "$LOCK_FILE"; return 0; }
   pipeline_lock_acquired
@@ -196,11 +197,11 @@ run_pipeline_slices() {
   export ZF_OPEN_ISSUES_CACHE_FILE ZF_ROADMAP_TREE_CACHE_FILE \
     ZF_PIPELINE_ROADMAP_SWITCH ZF_PIPELINE_ROADMAP_READY \
     ZF_PIPELINE_ROADMAP_STALE ZF_PIPELINE_ROADMAP_AGE
-  for stage in fastlane triage advisor recut release maintenance; do
+  for stage in fastlane triage advisor recut release explore maintenance; do
     case "$stage:$mode" in release:triage) continue ;; esac
     case "$stage" in
       fastlane) budget=150 ;; triage) budget=120 ;; advisor) budget=150 ;;
-      recut) budget=60 ;; release) budget=120 ;; maintenance) budget=150 ;;
+      recut) budget=60 ;; release) budget=120 ;; explore) budget=60 ;; maintenance) budget=150 ;;
     esac
     if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
       ZF_CALL_PROFILE_STAGE="$stage"
@@ -210,12 +211,17 @@ run_pipeline_slices() {
     started=$SECONDS
     deadline=$(( $(date +%s) * 1000 + (budget - 15) * 1000 ))
     status=0
+    stage_command=(bash "$scheduler" --stage "$stage")
+    if [ "$stage" = explore ]; then
+      explore_runner="$(dirname -- "$scheduler")/run-explore.sh"
+      stage_command=(bash "$explore_runner" dispatch)
+    fi
     # FD 9 keeps the decision lock across children. timeout owns only this child
     # process group; dispatched systemd units are outside it and survive.
     TICK_UNIT_TIMEOUT_SECONDS="$budget" MAINTENANCE_STEP_RESERVE_SECONDS=15 \
       ZF_PIPELINE_SLICE_TICK="$tick" \
       ZF_GH_CALL_DEADLINE_EPOCH_MS="$deadline" \
-      timeout --kill-after=5s "${budget}s" bash "$scheduler" --stage "$stage" || status=$?
+      timeout --kill-after=5s "${budget}s" "${stage_command[@]}" || status=$?
     echo "issue-pipeline: slice tick=$tick stage=$stage elapsed_sec=$((SECONDS - started)) status=$status" >&2
     case "$status" in
       0) [ "$stage" != maintenance ] || rm -f -- "$AGENT_HOME/night/maintenance-current-step" ;;

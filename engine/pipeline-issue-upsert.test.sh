@@ -87,6 +87,7 @@ printf 'same class, new run evidence\n' > "$tmp/repeat.md"
 printf 'distinct class\n' > "$tmp/distinct.md"
 printf 'first product red\n' > "$tmp/product.md"
 printf 'repeat product red\n' > "$tmp/product-repeat.md"
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/R0cAAAAASUVORK5CYII=' | base64 -d > "$tmp/reproduction.png"
 
 run_upsert() {
   ZF_ISSUE_LOCK_DIR="$tmp/locks" ZF_GH_REPO=test/repo \
@@ -110,18 +111,21 @@ grep -Fq 'issue comment 4999 --body-file' "$FAKE_GH_LOG"
 : > "$FAKE_GH_LOG"
 : > "$FAKE_COMMENTS"
 
-run_upsert --class merge-health-probe --title 'Merge health probe fails' --body-file "$tmp/first.md"
+run_upsert --class merge-health-probe --title 'Merge health probe fails' --body-file "$tmp/first.md" --attach "$tmp/reproduction.png"
 jq -e 'length == 1 and any(.[0].labels[]; .name == "pipeline-system") and any(.[0].labels[]; .name == "ready-for-agent")' \
   <(jq '[.[] | select(.number == 5001)]' "$FAKE_ISSUES") >/dev/null
 jq -e '[.[] | select(.number == 5001)][0].body | contains("<!-- vecta-incident-class:merge-health-probe -->") and contains("<!-- vecta-agent-comment -->")' \
   "$FAKE_ISSUES" >/dev/null
 
-run_upsert --class merge-health-probe --title 'Merge health probe fails again' --body-file "$tmp/repeat.md"
+run_upsert --class merge-health-probe --title 'Merge health probe fails again' --body-file "$tmp/repeat.md" --attach "$tmp/reproduction.png"
 [[ "$(jq 'length' "$FAKE_ISSUES")" == 2 ]]
 [[ "$(wc -l < "$FAKE_COMMENTS" | tr -d ' ')" == 1 ]]
 jq -se '.[0] as $comment | $comment.number == 5001 and ($comment.body | contains("same class, new run evidence"))' \
   "$FAKE_COMMENTS" >/dev/null
 [[ "$(grep -c '^issue create ' "$FAKE_GH_LOG")" == 1 ]]
+grep -Fq "issue create --repo test/repo" "$FAKE_GH_LOG"
+grep -Fq -- "--attach $tmp/reproduction.png" "$FAKE_GH_LOG"
+grep -Fq "issue comment 5001 --repo test/repo" "$FAKE_GH_LOG"
 grep -Fq 'api --method GET --paginate --slurp repos/test/repo/issues' "$FAKE_GH_LOG"
 echo 'ok - second occurrence of an open class comments on the existing issue'
 
