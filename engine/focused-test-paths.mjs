@@ -402,6 +402,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ]],
   ['scripts/branch-delivery-policy.mjs', ['scripts/branch-delivery-policy.test.mjs']],
   ['engine/ci-repair-receipt.mjs', ['engine/ci-repair-receipt.test.mjs', 'scripts/branch-delivery-preflight.test.mjs', 'engine/pre-push-guard.test.sh']],
+  ['engine/pre-push-guard.sh', ['engine/pre-push-guard.test.sh']],
   ['scripts/branch-delivery-preflight.mjs', ['scripts/branch-delivery-preflight.test.mjs', 'engine/landing-fast-path.test.mjs']],
   ['engine/focused-test-paths.mjs', ['engine/focused-test-paths.test.mjs', 'engine/landing-fast-path.test.mjs']],
   ['engine/pack-dir.mjs', ['engine/risk-class.test.mjs', 'engine/verification-plan.test.mjs']],
