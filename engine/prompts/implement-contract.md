@@ -32,10 +32,9 @@ Do not read the whole lessons tree.
 ## Handle flaky tests
 
 Do not skip a flaky test, add a sleep, retry it, or rerun it until it passes.
-Find and fix its root cause. If the cause is unknown, keep the test in place,
-record the failing evidence, and file it for diagnosis. Delete a test only
-when it is shown to be obsolete, to assert nothing valid, or to be covered by
-a named equivalent test.
+Find and fix its root cause. If the cause is unknown, keep the test and file
+the evidence for diagnosis. Delete a test only if it is obsolete or invalid,
+or a named test covers it.
 
 ## Verify an optimization premise before implementing
 
