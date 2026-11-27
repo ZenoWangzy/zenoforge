@@ -18,7 +18,7 @@ for role in work production review; do
   assert_eq "$role has no configured fallback identity" "" "$(model_policy fallback-identity "$role" 2>/dev/null || true)"
 done
 assert_eq "work service tier resolves from policy" "$POLICY_WORK_TIER" "$(model_policy tier work)"
-assert_eq "service tier also resolves from the policy identity" "$POLICY_WORK_TIER" "$(model_policy tier "$POLICY_WORK_IDENTITY")"
+assert_eq "service tier from the policy identity is empty (unit-implement shares it, no tier since #1599)" "" "$(model_policy tier "$POLICY_WORK_IDENTITY")"
 assert_eq "production role has no policy service tier" "" "$(model_policy tier production)"
 POLICY_INVALID_TIER="$(mktemp)"
 jq '.roles.work.service_tier = []' "$MODEL_POLICY_DEFAULT" > "$POLICY_INVALID_TIER"
