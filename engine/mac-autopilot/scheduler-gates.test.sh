@@ -1138,12 +1138,12 @@ printf '%s\n' "$*" >> "$RG_CALLS"
 if [[ "$*" == --refill ]]; then
   mkdir "$RG_LOCK" 2>/dev/null || exit 75
   printf '%s\n' "$BASHPID" > "$RG_LOCK/pid"
-  trap 'rm -rf -- "$RG_LOCK"' EXIT
   if [[ "${RG_SLOW_PID:-}" =~ ^[1-9][0-9]*$ ]] && kill -0 "$RG_SLOW_PID" 2>/dev/null; then
     printf 'during-slow-tick\n' >> "$RG_DURING"
   fi
   jq '{"workers": [.workers[] | .harvested = true]}' "$RG_STATE/workers.json" > "$RG_STATE/workers.json.tmp" \
     && mv "$RG_STATE/workers.json.tmp" "$RG_STATE/workers.json"
+  rm -rf -- "$RG_LOCK"
 fi
 SH
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
