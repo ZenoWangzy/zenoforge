@@ -5,6 +5,7 @@
 # Run a copy, not the clone's file: the loop checks out new commits in its clone (see tools/zf-auto-pin.service).
 # State and stop file live in ZF_AUTO_PIN_HOME; engine/mac-autopilot/pin-lag.sh (bell) reads auto-pin.last to alert on a stall.
 set -u
+export ZF_GH_NO_CACHE=1
 ZF_AUTO_PIN_HOME=${ZF_AUTO_PIN_HOME:-$HOME/.zenoforge}
 AGENT_HOME=${AGENT_HOME:-$HOME/.vecta-agent}
 C=${ZF_AUTO_PIN_CLONE:-$ZF_AUTO_PIN_HOME/clones/pz-zf-review-verdict-clobber}

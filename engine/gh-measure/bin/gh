@@ -19,12 +19,73 @@ if [[ "${1:-}" == api ]]; then
   done
 fi
 
+cache_dir="${ZF_GH_CACHE_DIR:-${log%/*}/gh-cache}"
+gh_demote() { [[ "$gh_kind" == write ]] || gh_kind=$1; }
+gh_classify() {
+  gh_kind=read gh_repo="${GH_REPO:-}"
+  local args=("$@") i a v
+  case "${1:-} ${2:-}" in
+    "issue view"|"issue list"|"pr view"|"pr list"|"pr checks"|"pr diff"|"repo view"|"run view"|"run list"|"api "*) gh_kind=cache ;;
+    *" view"|*" list"|*" get"|*" checks"|*" diff"|*" status"|*" token"|*" watch"|*" download"|search" "*|auth" "*|browse" "*|config" "*|--version" "*|version" "*|help" "*|completion" "*) ;;
+    *) gh_kind=write ;;
+  esac
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    a="${args[$i]}" v="${args[$((i + 1))]:-}"
+    case "$a" in
+      -R|--repo) gh_repo="$v" ;;
+      --repo=*) gh_repo="${a#--repo=}" ;;
+      -w|--web|--watch) gh_demote read ;;
+    esac
+    [[ "${1:-}" == api ]] || continue
+    case "$a" in
+      -X|--method) i=$((i + 1)); [[ "${v^^}" == GET ]] || gh_kind=write ;;
+      --method=*) [[ "${a#--method=}" == [Gg][Ee][Tt] ]] || gh_kind=write ;;
+      -X?*) [[ "${a#-X}" == [Gg][Ee][Tt] ]] || gh_kind=write ;;
+      -f|-F|--field|--raw-field|--input|-f?*|-F?*|--field=*|--raw-field=*|--input=*) gh_kind=write ;;
+      -H|--header) i=$((i + 1)); [[ "${v,,}" != *if-none-match* ]] || gh_demote read ;;
+      --header=*) [[ "${a,,}" != *if-none-match* ]] || gh_demote read ;;
+      graphql) gh_kind=write ;;
+      rate_limit) gh_demote read ;;
+    esac
+  done
+}
+cache_state=miss gh_hit=false cache_file="" cache_now="" cache_ttl=""
+gh_classify "$@"
+if [[ "$gh_kind" == write ]]; then
+  rm -f -- "$cache_dir"/* 2>/dev/null
+elif [[ "$gh_kind" == cache && "${ZF_GH_NO_CACHE:-}" != 1 ]]; then
+  cache_ttl="${ZF_GH_CACHE_TTL:-30}"
+  [[ "$cache_ttl" =~ ^[0-9]+$ ]] || cache_ttl=30
+  ((cache_ttl <= 60)) || cache_ttl=60
+  cache_key="$(printf '%s\0' "${gh_repo:-$PWD}" "$@" | { sha256sum 2>/dev/null || shasum -a 256; })"
+  cache_key="${cache_key%% *}"
+  if [[ -n "$cache_key" ]]; then
+    cache_file="$cache_dir/$cache_key"
+    printf -v cache_now '%(%s)T' -1
+    if [[ -f "$cache_file" ]] && read -r cache_exp < "$cache_file" && [[ "$cache_exp" =~ ^[0-9]+$ ]] && ((cache_exp > cache_now)) \
+      && tail -n +2 "$cache_file" > "$stdout_file" 2>/dev/null; then
+      gh_hit=true cache_state=hit
+    fi
+  fi
+fi
+
+if [[ "$gh_hit" == true ]]; then
+  : > "$stderr_file"; rc=0
+else
 # Background the real gh so a TERM from an outer `timeout` reaches it; `<&0` keeps stdin (`--input -`).
 "$real" "$@" <&0 >"$stdout_file" 2>"$stderr_file" &
 child=$!
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
 wait "$child"; rc=$?
 while kill -0 "$child" 2>/dev/null; do wait "$child"; rc=$?; done
+if [[ "$gh_kind" == write ]]; then
+  rm -f -- "$cache_dir"/* 2>/dev/null
+elif [[ -n "$cache_file" && "$rc" == 0 ]]; then
+  (umask 077; mkdir -p "$cache_dir" && cache_tmp="$(mktemp "$cache_dir/.tmp.XXXXXX")" \
+    && { printf '%s\n' "$((cache_now + cache_ttl))"; cat "$stdout_file"; } > "$cache_tmp" && mv -f -- "$cache_tmp" "$cache_file") 2>/dev/null || :
+  ((RANDOM % 100)) || find "$cache_dir" -type f -mmin +2 -delete 2>/dev/null
+fi
+fi
 cat "$stdout_file"
 cat "$stderr_file" >&2
 error_class=other
@@ -62,7 +123,7 @@ fi
     done
     caller="${caller##*/}"
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "$caller" "$sub" "$endpoint" "$rc" \
-    "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" "$error_class" >> "$log"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "$caller" "$sub" "$endpoint" "$rc" \
+    "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" "$error_class" "$cache_state" >> "$log"
 } 2>/dev/null
 exit "$rc"
