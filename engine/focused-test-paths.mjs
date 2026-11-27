@@ -31,13 +31,13 @@ const CI_TREE_TESTS = Object.freeze([
 ].map(packPath));
 
 export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() => ({ addRelatedTestFragments: (map) => map }))).addRelatedTestFragments(new Map([ // new rows: related-tests.d/*.json; a lone copy of this file has none
-  ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh', 'tools/pin-fail-triage.test.sh']],
-  ['tools/pin-fail-triage.sh', ['tools/pin-fail-triage.test.sh']],
+  ['engine/bin/agent-sandbox.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent-sandbox-run', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent_sandbox_state.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent_sandbox_workspace.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent_sandbox_network.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/luna', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/zc', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/worker', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/worker-remote.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/dispatch-codex.sh', ['engine/bin/agent-sandbox.test.sh', 'engine/dispatch-codex.test.sh']], ['engine/lib.d/codex-budget.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/lib.d/model-calls.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/lib.d/triage-claude.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/mac-autopilot/scheduler.d/dispatch.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/mac-autopilot/scheduler.d/worker-scope.sh', ['engine/bin/agent-sandbox.test.sh']],
+  ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh', 'tools/pin-fail-triage.test.sh']], ['tools/pin-fail-triage.sh', ['tools/pin-fail-triage.test.sh']],
   ['engine/supervisor/**', ['engine/supervisor.test.sh']],
   ['engine/eval/graders.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/compare.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/run-eval.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
-  ['engine/eval/stage-call.sh', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
+  ['engine/eval/stage-call.sh', ['engine/bin/agent-sandbox.test.sh', 'engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/cases/triage.json', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['.zenoforge/eval/cases/triage.json', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
   ['engine/eval/cases/advisor.json', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
@@ -73,7 +73,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ['engine/mac-autopilot/scheduler.d/review-rules.sh', ['engine/mac-autopilot/incident-prior-art-gate.test.sh']], ['engine/mac-autopilot/scheduler.d/self-check.sh', ['engine/mac-autopilot/scheduler-gates.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh']],
   ['engine/mac-autopilot/scheduler.d/stop-loss.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-station.test.sh']], ['engine/mac-autopilot/scheduler.d/harvest-workers.sh', ['engine/mac-autopilot/incident-report-resume.test.sh']], ['engine/mac-autopilot/scheduler.d/worker-command.sh', ['engine/mac-autopilot/incident-report-resume.test.sh', 'engine/mac-autopilot/worker-command.test.sh']], ['engine/hotfix/hf-release.sh', ['engine/hotfix/hf-release.test.sh', 'engine/batch-units-slice.test.sh']], ['engine/hotfix/hf-merge.sh', ['engine/hotfix/hf-merge.test.sh', 'engine/batch-units-slice.test.sh']], ['engine/web-advisor-provider-job.sh', ['engine/web-advisor-provider-job.test.sh', 'engine/batch-units-slice.test.sh']], ['engine/providers/web-advisor-provider.sh', ['engine/batch-units-slice.test.sh']], ['engine/mac-autopilot/scheduler.d/health-release.sh', ['engine/mac-autopilot/scheduler.test.sh', 'engine/batch-units-slice.test.sh']], ['engine/batch-units-slice.test.sh', ['engine/batch-units-slice.test.sh']], ['engine/mac-autopilot/scheduler.d/harvest-collect.sh', ['engine/mac-autopilot/harvest-late-report.test.sh']], ['engine/mac-autopilot/scheduler.d/pr-body.sh', ['engine/mac-autopilot/pr-body-merge-lane.test.sh', 'engine/mac-autopilot/pr-body-rerender.test.sh']], ['engine/mac-autopilot/scheduler.d/lock-free-calls.sh', ['engine/mac-autopilot/stuck-worker-disposition.test.sh', 'engine/mac-autopilot/harvest-late-report.test.sh']],
   ['engine/mac-autopilot/scheduler.d/evals-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/eval-regression-revert.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/scheduler.test.sh']],
+  ['engine/mac-autopilot/scheduler.d/supervisor-arbiter.sh', ['engine/bin/agent-sandbox.test.sh', 'engine/mac-autopilot/noop-repair-rounds.test.sh', 'engine/mac-autopilot/scheduler.test.sh']],
   ['engine/mac-autopilot/scheduler.d/ci-admission.sh', ['engine/mac-autopilot/scheduler-gates-ci-slots.test.sh', 'engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh']],
   ['engine/mac-autopilot/scheduler.d/ci-status.sh', ['engine/mac-autopilot/no-finding-repair-route.test.sh']],
   ['engine/mac-autopilot/scheduler.d/ci-stuck-unqueued.sh', ['engine/mac-autopilot/scheduler.d/ci-merge-admission-batch.test.sh']],
@@ -259,7 +259,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'engine/run-advisor.test.sh',
     'engine/run-advisor-batch.test.sh',
   ]],
-  ['engine/night/dispatch.sh', ['engine/night/night.test.sh', 'engine/night/hand-handoff-chain.test.sh']],
+  ['engine/night/dispatch.sh', ['engine/bin/agent-sandbox.test.sh', 'engine/night/night.test.sh', 'engine/night/hand-handoff-chain.test.sh']],
   ['engine/night/hand-exit-handoff.sh', ['engine/night/hand-handoff-chain.test.sh', 'engine/night/night.test.sh']],
   ['engine/night/night-test-progress.mjs', [
     'engine/night/night-test-progress.test.mjs',

@@ -59,6 +59,8 @@ const env = {
   CODEX_HOME: join(home, '.codex'),
   TASK_RESUME_CAPTURE_DIR: capture,
   TMPDIR: root,
+  ZF_AGENT_TEST_MODE: '1',
+  ZF_AGENT_TEST_ROOT: root,
   PATH: `${bin}:${process.env.PATH}`,
 };
 

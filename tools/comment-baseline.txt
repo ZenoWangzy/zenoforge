@@ -237,7 +237,7 @@
 60	engine/lib.d/main-red-bisect.sh
 67	engine/lib.d/main-red.sh
 179	engine/lib.d/merge-lane.sh
-233	engine/lib.d/model-calls.sh
+232	engine/lib.d/model-calls.sh
 1	engine/lib.d/model-calls.test.sh
 7	engine/lib.d/model-not-found-cache.bash
 40	engine/lib.d/model-policy-fallback.sh
@@ -587,7 +587,7 @@
 5	engine/night/brief-addendum.test.sh
 2	engine/night/daily-perf-report.sh
 2	engine/night/daily-perf-report.test.sh
-55	engine/night/dispatch.sh
+50	engine/night/dispatch.sh
 2	engine/night/efficiency-metrics-events.test.sh
 18	engine/night/efficiency-regression.mjs
 1	engine/night/efficiency-regression.test.mjs

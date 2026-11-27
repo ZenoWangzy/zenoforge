@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Hand dispatch with the permissions the merged wrapper omits.
-# engine/dispatch-codex.sh (#1555) launches codex at its default
-# `workspace-write` sandbox, which has no network: an agent that has to
-# `git push` or call `gh` dies within minutes (pid 866946 did, on #1605).
-# Filed separately; this is the path that works meanwhile.
 set -euo pipefail
 WT="$1"; BRIEF="$2"; NAME="$3"; ROLE="${4:-work}"
 REPORT="${5:-}"; ATTEMPT="${6:-0}"
@@ -363,13 +358,14 @@ if [ "$PROVIDER" = codex ]; then
       set -euo pipefail
       script_dir="$1"; worktree="$2"; model="$3"; effort="$4"; service_tier="$5"; prompt="$6"; log="$7"; role="$8"; name="$9"; budget_id="${10}"
       source "$script_dir/lib.sh"
+      agent_sandbox="$script_dir/bin/agent-sandbox-run"
       codex_budget_adopt "$budget_id" "$$" || { echo "hand dispatch: Codex budget reservation $budget_id could not be adopted; agent not started" >&2; exit 75; }
       service_tier_args=()
       [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
       started="$(date +%s)"
       status=0
       matt_codex_context_prepare "$worktree"
-      codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json "${MATT_CODEX_CONTEXT_ARGS[@]}" -m "$model" \
+      codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && "$agent_sandbox" codex write "$worktree" "" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json "${MATT_CODEX_CONTEXT_ARGS[@]}" -m "$model" \
         -c "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
         -s danger-full-access \
         -c sandbox_workspace_write.network_access=true \
@@ -394,7 +390,7 @@ else
     -E "NODE_USE_ENV_PROXY=1" \
     -E "https_proxy=http://127.0.0.1:3128" -E "HTTPS_PROXY=http://127.0.0.1:3128" \
     -E "http_proxy=http://127.0.0.1:3128" -E "HTTP_PROXY=http://127.0.0.1:3128" \
-    --unit="$HAND_UNIT" -- setsid nohup env -u GH_TOKEN -u GITHUB_TOKEN "${worker_env[@]}" "${zcode_cmd[@]}" -p "$zcode_prompt" --cwd "$WT" --mode yolo \
+    --unit="$HAND_UNIT" -- setsid nohup env -u GH_TOKEN -u GITHUB_TOKEN "${worker_env[@]}" "$SCRIPT_DIR/bin/agent-sandbox-run" zcode write "$WT" "" -- "${zcode_cmd[@]}" -p "$zcode_prompt" --cwd "$WT" --mode yolo \
     > "$LOG" 2>&1 &
   launcher_pid=$!
 fi

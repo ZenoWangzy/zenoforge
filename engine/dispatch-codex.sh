@@ -249,7 +249,7 @@ dispatch_owner_session() {
   local worktree="$6" kind="$7" model="$8" effort="$9" access="${10}" unit_name="${11}"
   local budget_id="${12:-}" budget_source="${13:-node-auto-owner}"
   local base_repo_dir="$REPO_DIR"
-  local pid ticks final_log now exit_code last_error exit_reason tmp role identity provider service_tier tokens primary_identity fallback_identity
+  local pid ticks final_log now exit_code last_error exit_reason tmp role identity provider service_tier tokens primary_identity fallback_identity agent_access agent_sandbox
   local -a sandbox_args=() service_tier_args=() codex_context_args=()
   OWNER_SESSION_BUDGET_ID=""
   OWNER_SESSION_FAILURE_RECORDED=0
@@ -315,6 +315,8 @@ dispatch_owner_session() {
     delivery) sandbox_args=(-s danger-full-access -c sandbox_workspace_write.network_access=true) ;;
     *) return 2 ;;
   esac
+  agent_sandbox="$SCRIPT_DIR/bin/agent-sandbox-run"
+  agent_access=edit; [[ "$access" != delivery ]] || agent_access=write
 
   matt_codex_context_prepare "$worktree"
   codex_context_args=("${MATT_CODEX_CONTEXT_ARGS[@]}")
@@ -335,7 +337,7 @@ dispatch_owner_session() {
   agent_thread_budget
   OWNER_SESSION_BUDGET_STARTED_AT="$(date +%s)"
   set +e
-  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --model "$model" --config "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run "$agent_sandbox" codex "$agent_access" "$worktree" "" -- codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --model "$model" --config "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
     --config mcp_servers.gitnexus.enabled=false \
     "${codex_context_args[@]}" "${sandbox_args[@]}" - <&3 2>&1 | dispatch_log_output "$final_log"
   exit_code="${PIPESTATUS[0]}"

@@ -20,6 +20,7 @@ if (( held_until > $(date +%s) )) && [[ "${ZC_IGNORE_HOLD:-0}" != 1 ]]; then
   exit 75
 fi
 root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
+agent_sandbox="$B/agent-sandbox-run"
 out="${ZC_OUT_ROOT:-$root/zc}/$key"   # bin/worker sets ZC_OUT_ROOT=.scratch/luna so every backend reports in one place
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
@@ -100,8 +101,9 @@ prompt_args=(--prompt "$(<"$prompt")")
 systemd_args=(--user --scope --quiet --slice="${ZF_WORKER_SLICE:-zf-workers.slice}" --unit="$scope")
 TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NODE_USE_ENV_PROXY=1 BASH_MAX_OUTPUT_LENGTH="$(worker_output_cap_chars)" \
   systemd-run "${systemd_args[@]}" -p MemoryHigh="${mem_high:-1536M}" -p MemoryMax="${mem_max:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+  "$agent_sandbox" zcode "${ZF_AGENT_ACCESS:-read}" "$run_cwd" "" -- \
   "${zcode_cmd[@]}" \
-  "${prompt_args[@]}" --cwd "$cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
+  "${prompt_args[@]}" --cwd "$run_cwd" --mode "${ZC_MODE:-yolo}" --output-format stream-json --no-color \
   >"$out/events.jsonl" 2>"$out/stderr.log" &
 zpid=$!; echo "$zpid" >"$out/codex.pid"; sleep 3; rm -f -- "$wait_f" "$out/gate-wait"
 # Sample the scope's memory.peak while it lives: systemd reaps the cgroup the moment the run ends (11-21: four

@@ -21,10 +21,11 @@ triage_claude_identity() {
 claude_triage_call() {
   local cwd="$1" identity="$2" timeout_minutes="$3" settings_file="$4" prompt_file="$5" schema_file="${6:-}" tools="${7-Read,Grep,Glob,Bash}" model
   local -a schema_args=()
+  local sandbox="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/bin/agent-sandbox-run"
   model="${identity#*:}"; model="${model%:*}"
   [ -z "$schema_file" ] || schema_args=(--json-schema "$(cat "$schema_file")")
   matt_codex_context_prepare "$cwd"
-  ( cd "$cwd" && timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN claude -p \
+  ( cd "$cwd" && timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "$sandbox" claude read "$cwd" "" -- claude -p \
       --bare --model "$model" --output-format json --settings "$settings_file" --setting-sources project,local \
       --strict-mcp-config --permission-mode dontAsk --tools "$tools" ${schema_args[@]+"${schema_args[@]}"} \
       < <(matt_claude_prompt_input "$prompt_file" "$cwd" "$MATT_CODEX_CONTEXT_ROOT") )

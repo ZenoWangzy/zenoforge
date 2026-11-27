@@ -106,6 +106,8 @@ jobs:
         with:
           node-version: 22
       - run: git config --global user.name ci && git config --global user.email ci@example.com
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # comment-ratchet parses shell with shfmt and TypeScript sources with typescript; the release binary goes on PATH without sudo.
       - name: Install comment-ratchet tools
         run: |

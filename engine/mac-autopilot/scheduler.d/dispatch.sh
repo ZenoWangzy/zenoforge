@@ -250,6 +250,12 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   rm -f -- "$worker_exit_file"
   launch_command=(bash -c 'exit_file=$1; shift; rc=0; "$@" || rc=$?; printf "{\"type\":\"pipeline.exit\",\"rc\":%s}\\n" "$rc" > "$exit_file"; exit "$rc"' autopilot-worker "$worker_exit_file" "${launch_command[@]}")
   local worker_pid_file WORKER_PIDFILE WORKER_COST_TAG # not exported: the worker must not inherit them; worker_scope_launch reads them
+  local agent_access agent_engine_dir
+  agent_access=read
+  if [[ "$report_only" != true && ( "$type" == implement || "$type" == repair ) ]]; then agent_access=write; fi
+  if [[ "$(unit_field "$unit" '.lane // empty')" == direct-main && "$type" == implement ]]; then agent_access=edit; fi
+  agent_engine_dir="${ZF_ENGINE_DIR:-$ROOT/engine}"
+  local WORKER_AGENT_PROVIDER="$provider" WORKER_AGENT_ACCESS="$agent_access" WORKER_AGENT_ENGINE_DIR="$agent_engine_dir"
   WORKER_PIDFILE="$(worker_pidfile "$unit")"
   WORKER_COST_TAG="type=$type unit=$unit"
   worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || { [[ "$type" != implement || ! "$issue" =~ ^[1-9][0-9]*$ ]] || scheduler_clear_canary_after_failed_start "$issue" || :; return 1; }
