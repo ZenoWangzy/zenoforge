@@ -49,11 +49,13 @@ cat > "$repo/dispatch-probe.py" <<'PY'
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
 
 mode, branch = sys.argv[1:]
+assert shutil.which('git') == '/run/zf-agent/bin/git', shutil.which('git')
 workspace = pathlib.Path('/run/zf-agent/workspace')
 host_home = pathlib.Path((workspace / 'host-home').read_text().strip())
 host_namespaces = json.loads((workspace / 'host-namespaces.json').read_text())
