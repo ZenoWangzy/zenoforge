@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
+transport_path="$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
+if [[ ! -f "$transport_path" ]]; then transport_path="$(git rev-parse --show-toplevel)/engine/lib.d/transport.sh"; fi
+source "$transport_path"
 
 repo="${ZF_REPO:-$(git config --get zenoforge.repo 2>/dev/null || true)}"
 agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}"

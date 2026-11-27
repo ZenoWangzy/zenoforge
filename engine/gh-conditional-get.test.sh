@@ -58,6 +58,11 @@ esac
 FAKE_GH
 chmod +x "$test_root/bin/gh"
 export PATH="$test_root/bin:$PATH" ZF_ENGINE_DIR="$engine_dir" ZF_REPO_DIR="$repo_dir"
+if ! preserved_gh="$(ZF_AGENT_TEST_MODE=1 bash -c 'gh() { printf preserved; }; source "$1"; gh' _ "$engine_dir/lib.d/transport.sh" 2>/dev/null)"; then
+  echo 'gh-conditional-get.test.sh: transport replaced a caller gh function' >&2
+  exit 1
+fi
+[[ "$preserved_gh" == preserved ]] || { echo 'gh-conditional-get.test.sh: transport replaced a caller gh function' >&2; exit 1; }
 source "$engine_dir/lib.sh"
 
 stub_response="$(gh api repos/example/repo/stub-mode)"

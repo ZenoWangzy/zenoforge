@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 repo="${1:?repo}" log="$(realpath -m -- "${2:?log file}")"
 max_age_days="${RESCUED_MAX_AGE_DAYS:-14}"
 pr_age_days="${BRANCH_GC_PR_AGE_DAYS:-7}"

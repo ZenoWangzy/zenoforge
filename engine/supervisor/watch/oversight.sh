@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+transport_path="$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d/transport.sh"
+if [[ ! -f "$transport_path" ]]; then transport_path="$(git rev-parse --show-toplevel)/engine/lib.d/transport.sh"; fi
+source "$transport_path"
 DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 values=$(node - "$DIR/lib/config.cjs" <<'NODE'
 const {config:c,expand} = require(process.argv[2]);

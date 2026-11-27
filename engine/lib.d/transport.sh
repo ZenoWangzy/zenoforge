@@ -242,7 +242,7 @@ _gh_api_conditional_call() {
   return "$status"
 }
 
-gh() {
+declare -F gh >/dev/null 2>&1 || gh() {
   local status attempt retry_read=0 api_get=0 api_paginate=0 api_include=0 api_conditional_header=0 api_conditional_get=0
   local api_cache_dir="" api_cache_key="" api_cache_hash="" api_cache_file="" stderr_file stderr i api_method="" api_fields=0 arg attempt_timeout
   local max_attempts="${ZF_GH_RETRY_MAX_ATTEMPTS:-3}" base_backoff="${ZF_GH_RETRY_BACKOFF_SECONDS:-2}" retry_delay
@@ -464,7 +464,6 @@ gh() {
     return "$status"
   done
 }
-
 
 # Preserve older short read deadlines while letting the optional scheduler
 # profiler observe the actual bounded GitHub invocation at its callsite.
