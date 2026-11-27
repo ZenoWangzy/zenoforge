@@ -270,6 +270,8 @@ Lessons are stored in the target repository, under `lessons/`, and not in this e
 - `engine/lesson-lints.mjs` adds landing-time checks for lessons that have recurred at least twice and have a structural prevention anchor.
 - `engine/lesson-recurrence-ranking.mjs` ranks lessons by recurrence.
 - `engine/lesson-fragments.sh` tracks lesson fragments and their guard registration.
+- `engine/retro/retro.py` retains source events and parent lesson IDs for every admitted candidate. An automated-check matcher must match its cited event and stay silent across ten successful recorded sessions; unmeasurable candidates remain observations, and lesson folding rejects missing admission evidence. Retraction tickets name transitive descendants.
+- Landing checks cap the always-loaded `AGENTS.md` at 8192 bytes. Engine pin evaluation uses the paired eval harness for global instructions and both target skill paths before switching the live version; tracked target skill overrides stay on the previous pin until that product revision is accepted.
 
 `engine/state/mechanism-registry.json` also exists. This page does not cover it.
 

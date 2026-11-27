@@ -66,6 +66,39 @@ unknown="$(comm -23 <(printf '%s\n' "$router_named") <(printf '%s\n' "$vendored"
 [[ -z "$unknown" ]] || fail "ask-zeno names skills that are not vendored: $(paste -sd' ' <<<"$unknown")"
 unrouted="$(comm -13 <(printf '%s\n' "$router_named") <(printf '%s\n' "$vendored") | grep -vE '^(principle-|ask-zeno$)' || true)"
 [[ -z "$unrouted" ]] || fail "vendored skills with no route in .agents/skills/ask-zeno/SKILL.md: $(paste -sd' ' <<<"$unrouted")"
+
+pinned_target="$test_env_root/pinned-target"
+pinned_version="$test_env_root/pinned-version"
+mkdir -p "$pinned_target/.agents/skills/tdd" "$pinned_target/.zenoforge/skills/tdd" "$pinned_version/.agents/skills/tdd"
+git -C "$pinned_target" init -q
+git -C "$pinned_target" config user.name 'Pinned skill fixture'
+git -C "$pinned_target" config user.email 'pinned-skill@example.invalid'
+printf 'before evaluation\n' > "$pinned_target/.agents/skills/tdd/SKILL.md"
+printf 'before evaluation\n' > "$pinned_target/.zenoforge/skills/tdd/SKILL.md"
+git -C "$pinned_target" add .
+git -C "$pinned_target" commit -qm 'accepted skill revision'
+accepted_sha="$(git -C "$pinned_target" rev-parse HEAD)"
+printf 'candidate skill\n' > "$pinned_target/.agents/skills/tdd/SKILL.md"
+printf 'candidate config skill\n' > "$pinned_target/.zenoforge/skills/tdd/SKILL.md"
+git -C "$pinned_target" add .
+git -C "$pinned_target" commit -qm 'candidate skill revision'
+candidate_sha="$(git -C "$pinned_target" rev-parse HEAD)"
+printf 'pinned skill\n' > "$pinned_version/.agents/skills/tdd/SKILL.md"
+printf 'product_sha=%s\n' "$accepted_sha" > "$pinned_version/BUILD-INFO"
+_MATT_SKILLS_ENGINE_DIR="$pinned_version/.agents/skills"
+[[ "$(matt_skill_md tdd "$pinned_target")" == "$pinned_version/.agents/skills/tdd/SKILL.md" ]] \
+  || fail 'an unevaluated target skill overrode the pinned engine copy'
+printf 'product_sha=%s\n' "$candidate_sha" > "$pinned_version/BUILD-INFO"
+[[ "$(matt_skill_md tdd "$pinned_target")" == .zenoforge/skills/tdd/SKILL.md ]] \
+  || fail 'a target config skill did not activate after its product revision was pinned'
+git -C "$pinned_target" rm -q .zenoforge/skills/tdd/SKILL.md
+git -C "$pinned_target" commit -qm 'remove config override'
+legacy_sha="$(git -C "$pinned_target" rev-parse HEAD)"
+printf 'product_sha=%s\n' "$legacy_sha" > "$pinned_version/BUILD-INFO"
+[[ "$(matt_skill_md tdd "$pinned_target")" == .agents/skills/tdd/SKILL.md ]] \
+  || fail 'a migration skill did not activate after its product revision was pinned'
+_MATT_SKILLS_ENGINE_DIR="$engine_skills"
+
 for rel in ../solve/SKILL.md ../tdd/SKILL.md ../../../engine/vendor/pstack/skills/reframe/SKILL.md ../../../engine/vendor/ub-mode/SKILL.md; do
   [[ -f "${router%/*}/$rel" ]] || fail "ask-zeno's path $rel does not resolve"
 done

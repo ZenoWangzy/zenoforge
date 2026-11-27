@@ -1,0 +1,6 @@
+{
+  "engine/eval/decision-stages.sh": ["engine/mac-autopilot/eval-regression-revert.test.sh"],
+  "engine/retro/retro-verify.py": ["engine/retro/retro.test.sh"],
+  "engine/retro/run-retro.sh": ["engine/retro/retro.test.sh"],
+  "engine/related-tests.d/retro-candidate-admission.json": ["engine/focused-test-paths.test.mjs"]
+}

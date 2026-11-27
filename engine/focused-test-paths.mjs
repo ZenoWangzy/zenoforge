@@ -841,6 +841,8 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
         ['advisor.schema.json', ['run-advisor', 'run-advisor-batch']],
         ['recut.md', 'run-recut'],
         ['recut.schema.json', 'run-recut'],
+        ['retro.md', 'retro/retro'],
+        ['retro.schema.json', 'retro/retro'],
       ]).get(prompt);
       // Every .md prompt also runs run-triage-batch.test.sh: it holds the prompt byte budgets (#1281 went past one; main red).
       candidates = [...(Array.isArray(promptOwner) ? promptOwner : promptOwner ? [promptOwner] : []), ...(prompt.endsWith('.md') ? ['run-triage-batch'] : [])]

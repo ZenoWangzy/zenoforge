@@ -13,13 +13,31 @@ _MATT_SKILLS_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -
 # from the code under review (reviewers).
 matt_engine_skill_md() { printf '%s/%s/SKILL.md\n' "$_MATT_SKILLS_ENGINE_DIR" "$1"; }
 
+matt_target_skill_revision_is_pinned() {
+  local checkout="$1" path="$2" version_root product_sha
+  version_root="$(cd -- "$(dirname -- "$_MATT_SKILLS_ENGINE_DIR")/.." && pwd -P)"
+  [[ -r "$version_root/BUILD-INFO" ]] || return 0
+  product_sha="$(sed -n 's/^product_sha=//p' "$version_root/BUILD-INFO" | head -n1)"
+  [[ -n "$product_sha" ]] || product_sha="$(sed -n 's/^pack_sha=\([0-9a-f]*\):.*/\1/p' "$version_root/BUILD-INFO" | head -n1)"
+  [[ -n "$product_sha" ]] || return 1
+  git -C "$checkout" diff --quiet "$product_sha" -- "$path" 2>/dev/null
+}
+
 # matt_skill_md <name> [<checkout>] -> path of that skill's SKILL.md, readable from <checkout> (default: cwd)
 matt_skill_md() {
   local name="$1" checkout="${2:-.}"
   if [ -f "$checkout/.zenoforge/skills/$name/SKILL.md" ]; then
-    printf '.zenoforge/skills/%s/SKILL.md\n' "$name"
+    if matt_target_skill_revision_is_pinned "$checkout" ".zenoforge/skills/$name/SKILL.md"; then
+      printf '.zenoforge/skills/%s/SKILL.md\n' "$name"
+    else
+      matt_engine_skill_md "$name"
+    fi
   elif [ -f "$checkout/.agents/skills/$name/SKILL.md" ]; then
-    printf '.agents/skills/%s/SKILL.md\n' "$name"
+    if matt_target_skill_revision_is_pinned "$checkout" ".agents/skills/$name/SKILL.md"; then
+      printf '.agents/skills/%s/SKILL.md\n' "$name"
+    else
+      matt_engine_skill_md "$name"
+    fi
   else
     matt_engine_skill_md "$name"
   fi

@@ -5,6 +5,11 @@ dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 retro="$dir/retro.py"
 root="$test_env_root/scratch"
 
+bash -n "$dir/run-retro.sh"
+jq -e '.properties.candidates.items.properties | has("check") and has("derived_from")' \
+  "$dir/../prompts/retro.schema.json" >/dev/null
+grep -Fq 'none of the latest ten successful recorded sessions' "$dir/../prompts/retro.md"
+
 # Fixture: twelve finished luna workers (rc written, older for smaller numbers), one unfinished, one retro run.
 mk() {
   local d="$root/luna/$1"
@@ -48,14 +53,26 @@ publish_root="$test_env_root/publish-scratch"
 publish_repo="$test_env_root/publish-repo"
 fake_bin="$test_env_root/publish-bin"
 engine="$(cd -- "$dir/.." && pwd -P)"
-mkdir -p "$publish_root/luna/p1" "$publish_root/luna/p2" "$publish_repo/.zenoforge/state" "$fake_bin"
+mkdir -p "$publish_root/luna/p1" "$publish_root/luna/p2" "$publish_root/luna/p3" "$publish_root/luna/p4" "$publish_repo/.zenoforge/state" "$fake_bin"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T10:00:00Z"}' > "$publish_root/luna/p1/events.jsonl"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T11:00:00Z"}' > "$publish_root/luna/p2/events.jsonl"
+printf '%s\n' '{"type":"failure","message":"unmeasurable"}' > "$publish_root/luna/p3/events.jsonl"
+printf '%s\n' '{"type":"failure","message":"false positive"}' > "$publish_root/luna/p4/events.jsonl"
+for i in $(seq -w 1 10); do
+  mkdir -p "$publish_root/luna/normal-$i"
+  printf '0\n' > "$publish_root/luna/normal-$i/rc"
+  printf '%s\n' '{"type":"item.completed"}' > "$publish_root/luna/normal-$i/events.jsonl"
+done
+printf '%s\n' '{"type":"failure","message":"ordinary recovered failure"}' > "$publish_root/luna/normal-10/events.jsonl"
+mkdir -p "$publish_repo/lessons/full"
+printf '%s\n' '**V1272** Existing lesson.' > "$publish_repo/lessons/RULES.md"
 cat > "$test_env_root/candidates.json" <<'JSON'
 {"candidates":[
-  {"category":"navigation","severity":"medium","session_key":"p1","event_line":1,"evidence":"first event evidence","proposal":"Add a pointer to the schema"},
-  {"category":"navigation","severity":"high","session_key":"p2","event_line":1,"evidence":"second event evidence","proposal":"Add a pointer to the schema"},
-  {"category":"automated-checks","severity":"high","session_key":"p1","event_line":1,"evidence":"lint evidence","proposal":"Add a lint check for this case"}
+  {"category":"navigation","severity":"medium","session_key":"p1","event_line":1,"evidence":"first event evidence","proposal":"Add a pointer to the schema","derived_from":["V1272"]},
+  {"category":"navigation","severity":"high","session_key":"p2","event_line":1,"evidence":"second event evidence","proposal":"Add a pointer to the schema","derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p1","event_line":1,"evidence":"lint evidence","proposal":"Add a lint check for this case","check":{"type":"failure","message":"same event"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"medium","session_key":"p3","event_line":1,"evidence":"missing executable matcher","proposal":"Add a lint check without a matcher","derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"medium","session_key":"p4","event_line":1,"evidence":"matcher hits ordinary recovered events","proposal":"Add a broad lint check","check":{"type":"failure"},"derived_from":["V1272"]}
 ]}
 JSON
 cat > "$fake_bin/gh" <<'SH'
@@ -120,6 +137,7 @@ ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publi
   FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
   python3 -B "$retro" publish "$publish_root" "$publish_repo" "$test_env_root/candidates.json"
 jq -e 'length == 1 and (.[0].body | contains("first event evidence"))
+  and (.[0].body | contains("Source: p1 events.jsonl line 1") and contains("Derived from: V1272"))
   and (([.[0].labels[].name] | index("needs-triage")) != null)' "$test_env_root/issues.json" >/dev/null \
   || { echo "retro.test.sh: duplicate candidates did not create exactly one issue:" >&2; cat "$test_env_root/issues.json" >&2; exit 1; }
 [[ "$(wc -l < "$test_env_root/comments.jsonl" | tr -d ' ')" == 1 ]] \
@@ -129,17 +147,49 @@ jq -e '.body | contains("second event evidence")' "$test_env_root/comments.jsonl
 echo "publish dedupe rc=0"
 # (a) Every merged retro change is recorded: the intake issue and the lesson fragment alike.
 jq -e '.changes | length == 2
-  and any(.[]; .issue == 7001 and .category == "navigation" and (.filed_at | type == "string"))
+  and any(.[]; .issue == 7001 and .category == "navigation" and (.filed_at | type == "string")
+    and .lineage_id != null and .derived_from == ["V1272"]
+    and .sources == [{session_key:"p1",event_line:1},{session_key:"p2",event_line:1}])
   and any(.[]; .category == "automated-checks" and .verifiable == false and (.lesson | type == "string")
-    and (.reason | contains("lesson fragment")))' \
+    and .sources == [{session_key:"p1",event_line:1}] and .derived_from == ["V1272"]
+    and (.admission.normal_sessions | length == 10))' \
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
   || { echo "retro.test.sh: candidate issue was not recorded for verification:" >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 fragment="$(printf '%s\n' "$publish_repo"/lessons/pending/*.json)"
 [[ -f "$fragment" ]] || { echo 'retro.test.sh: mechanical candidate created no lesson fragment' >&2; exit 1; }
+jq -e '.check == {type:"failure",message:"same event"} and .derived_from == ["V1272"]
+  and .source_event == {session_key:"p1",event_line:1} and .admission.matched_normal_events == 0' "$fragment" >/dev/null \
+  || { echo 'retro.test.sh: admitted fragment omitted its matcher, lineage or measurement' >&2; cat "$fragment" >&2; exit 1; }
+jq -e '.observations | length == 2
+  and any(.[]; .source_event.session_key == "p3" and (.reason | contains("no check matcher")))
+  and any(.[]; .source_event.session_key == "p4" and (.reason | contains("normal session")))' \
+  "$test_env_root/publish-out/retro-verify.json" >/dev/null \
+  || { echo 'retro.test.sh: an unmeasurable candidate was not retained as an observation' >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
+lesson_id="$(jq -r '.changes[] | select(.category == "automated-checks") | .lesson' "$test_env_root/publish-out/retro-verify.json")"
+python3 -B "$retro" lineage "$publish_repo" "$test_env_root/publish-out" > "$test_env_root/lineage.txt"
+grep -Fq 'V1272' "$test_env_root/lineage.txt" || { echo 'retro.test.sh: lineage context omitted the existing lesson id' >&2; cat "$test_env_root/lineage.txt" >&2; exit 1; }
+grep -Fq "$lesson_id" "$test_env_root/lineage.txt" || { echo 'retro.test.sh: lineage context omitted the admitted candidate id' >&2; cat "$test_env_root/lineage.txt" >&2; exit 1; }
 printf '%s\n' '{"incidents":[]}' > "$publish_repo/registry.json"
 ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" ZF_CONFIG_ROOT="$publish_repo/.zenoforge" \
   bash "$engine/lesson-fragments.sh" --check "$publish_repo" "$publish_repo/registry.json" --files "$fragment"
 echo "publish fragment accepted rc=0"
+
+short_root="$test_env_root/short-scratch"
+short_repo="$test_env_root/short-repo"
+mkdir -p "$short_root/luna/source" "$short_root/luna/normal" "$short_repo/lessons"
+printf '%s\n' '{"type":"failure","message":"short sample"}' > "$short_root/luna/source/events.jsonl"
+printf '0\n' > "$short_root/luna/normal/rc"
+printf '%s\n' '{"type":"item.completed"}' > "$short_root/luna/normal/events.jsonl"
+printf '%s\n' '**V1272** Existing lesson.' > "$short_repo/lessons/RULES.md"
+cat > "$test_env_root/short-candidate.json" <<'JSON'
+{"candidates":[{"category":"automated-checks","severity":"high","session_key":"source","event_line":1,
+  "evidence":"only one normal session is available","proposal":"Add a measured check","check":{"type":"failure","message":"short sample"},"derived_from":["V1272"]}]}
+JSON
+RETRO_OUT_DIR="$test_env_root/short-out" python3 -B "$retro" publish "$short_root" "$short_repo" "$test_env_root/short-candidate.json"
+test ! -d "$short_repo/lessons/pending" || { echo 'retro.test.sh: a candidate with too few normal sessions was loaded' >&2; exit 1; }
+jq -e '.observations | length == 1 and .[0].reason == "only 1 of 10 normal sessions is available"' \
+  "$test_env_root/short-out/retro-verify.json" >/dev/null \
+  || { echo 'retro.test.sh: insufficient samples were not retained as an observation' >&2; cat "$test_env_root/short-out/retro-verify.json" >&2; exit 1; }
 
 # The verifier uses filtered retro candidates from equal ten-session windows.
 verify_root="$test_env_root/verify-scratch"
@@ -184,7 +234,11 @@ touch -d "@$((merge_epoch - 20))" "$verify_out/before.keys"
 touch -d "@$((merge_epoch + 20))" "$verify_out/after.keys"
 jq -n --arg merged "$merge_at" '{closedByPullRequestsReferences:[{mergedAt:$merged}]}' > "$test_env_root/closed-issue.json"
 cat > "$verify_out/retro-verify.json" <<'JSON'
-{"changes":[{"issue":9001,"category":"navigation","class":"navigation-retract-fixture"}]}
+{"changes":[
+ {"issue":9001,"category":"navigation","class":"navigation-retract-fixture","lineage_id":"navigation-retract-fixture"},
+ {"issue":9002,"category":"navigation","class":"candidate-9002","lineage_id":"candidate-9002","derived_from":["navigation-retract-fixture"],"verifiable":false},
+ {"issue":9003,"category":"navigation","class":"candidate-9003","lineage_id":"candidate-9003","derived_from":["candidate-9002"],"verifiable":false}
+]}
 JSON
 ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
   ZF_ISSUE_LOCK_DIR="$test_env_root/locks" PATH="$fake_bin:$PATH" \
@@ -200,7 +254,8 @@ jq -es 'any(.[]; .number == 9001 and (.body | contains("Before: 3 candidate even
   and contains("After: 4 candidate events in 10 sessions.")))' "$test_env_root/comments.jsonl" >/dev/null \
   || { echo "retro.test.sh: merged issue comment omitted the equal-window counts:" >&2; cat "$test_env_root/comments.jsonl" >&2; exit 1; }
 jq -e 'any(.[]; .title == "Retro: retract or rewrite navigation change"
-  and (.body | contains("3 events in 10 sessions") and contains("4 events in 10 sessions")))' \
+  and (.body | contains("3 events in 10 sessions") and contains("4 events in 10 sessions")
+    and contains("#9002") and contains("#9003")))' \
   "$test_env_root/issues.json" >/dev/null \
   || { echo "retro.test.sh: no retract-or-rewrite issue included both counts:" >&2; cat "$test_env_root/issues.json" >&2; exit 1; }
 echo "verification before/after rc=0"

@@ -66,6 +66,18 @@ fi
 [[ "$(cat "$test_env_root/stderr")" == 'engine/prompts/review-contract.md is 8193 bytes, budget 8192 bytes' ]] \
   || fail "prompt byte-budget refusal omitted its path, size or budget: $(cat "$test_env_root/stderr")"
 
+agent_budget_fixture="$test_env_root/agent-budget"
+mkdir -p "$agent_budget_fixture"
+head -c 8193 /dev/zero > "$agent_budget_fixture/AGENTS.md"
+if land_prompt_byte_budget_check "$agent_budget_fixture" '' '' 'AGENTS.md' >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'landing accepted over-budget always-loaded instructions'
+else
+  rc=$?
+fi
+[[ "$rc" == 1 ]] || fail "always-loaded text budget returned $rc instead of 1"
+[[ "$(cat "$test_env_root/stderr")" == 'AGENTS.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text' ]] \
+  || fail "always-loaded text refusal omitted its size, budget or remedy: $(cat "$test_env_root/stderr")"
+
 selective_fixture="$test_env_root/selective-prompt-budget"
 mkdir -p "$selective_fixture/engine/prompts"
 printf 'review-contract.md\t4\nother.md\t4\n' > "$selective_fixture/engine/prompts/byte-budgets.tsv"
@@ -348,6 +360,29 @@ unset -f git
 [[ "$(cat "$test_env_root/stderr")" == *'engine/prompts/review-contract.md is 5 bytes, budget 4 bytes'* ]] \
   || fail "pinned PR check omitted the prompt size or budget: $(cat "$test_env_root/stderr")"
 [[ "$(gh_call_count)" == 1 ]] || fail 'over-budget PR reached the GitHub merge command'
+GH_FILES_OUTPUT=''
+
+agent_remote="$test_env_root/agent-remote.git"
+agent_repo="$test_env_root/agent-repo"
+git init --bare -q "$agent_remote"
+git init -q "$agent_repo"
+git -C "$agent_repo" config user.email agent@example.invalid
+git -C "$agent_repo" config user.name agent
+head -c 8193 /dev/zero > "$agent_repo/AGENTS.md"
+git -C "$agent_repo" add AGENTS.md
+git -C "$agent_repo" commit -qm 'fixture: over-budget agent instructions'
+agent_sha="$(git -C "$agent_repo" rev-parse HEAD)"
+git -C "$agent_repo" remote add origin "$agent_remote"
+git -C "$agent_repo" push -q origin HEAD:refs/pull/38/head
+GH_FILES_OUTPUT='AGENTS.md'
+reset_gh_calls
+if (cd "$agent_repo" && land_merge_pr 38 "$agent_sha" --repo owner/project) \
+  >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'land_merge_pr accepted over-budget always-loaded instructions'
+fi
+[[ "$(cat "$test_env_root/stderr")" == *'AGENTS.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text'* ]] \
+  || fail "pinned PR check omitted the always-loaded text refusal: $(cat "$test_env_root/stderr")"
+[[ "$(gh_call_count)" == 1 ]] || fail 'over-budget AGENTS.md PR reached the GitHub merge command'
 GH_FILES_OUTPUT=''
 
 reset_gh_calls

@@ -25,6 +25,21 @@ test('maps the traffic installer to its executable owner contract', () => {
   assert.deepEqual(focusedTestPaths(['engine/install-traffic-monitor.sh'], new Set(suites)), suites);
 });
 
+test('maps retro admission and skill evaluation inputs to their changed suites', () => {
+  const cases = [
+    ['engine/eval/decision-stages.sh', 'engine/mac-autopilot/eval-regression-revert.test.sh'],
+    ['engine/retro/retro-verify.py', 'engine/retro/retro.test.sh'],
+    ['engine/retro/run-retro.sh', 'engine/retro/retro.test.sh'],
+    ['engine/matt-skills.sh', 'engine/matt-skills.test.sh'],
+    ['engine/related-tests.d/retro-candidate-admission.json', 'engine/focused-test-paths.test.mjs'],
+    ['engine/prompts/retro.md', 'engine/retro/retro.test.sh'],
+    ['engine/prompts/retro.schema.json', 'engine/retro/retro.test.sh'],
+  ];
+  for (const [source, suite] of cases) {
+    assert.ok(focusedTestPaths([source], new Set([suite])).includes(suite), `${source} did not select ${suite}`);
+  }
+});
+
 test('maps pin-failure triage and its shared revert path to their regression test', () => {
   const suite = 'tools/pin-fail-triage.test.sh';
   for (const source of ['tools/pin-fail-triage.sh', 'tools/main-red-revert.sh']) {

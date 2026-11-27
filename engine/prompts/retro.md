@@ -8,4 +8,7 @@ Rules for this run:
 - Use exactly one category per candidate: navigation, automated-checks, coding-standards, global-agents-md, tool-economy, no-ops, information-access.
 - Severity: high = the worker failed, or repeated a failed step; medium = it cost many turns or tokens; low = minor friction.
 - `proposal` is one concrete change (a pointer, a check that would have caught it, a rule to move or delete). Prefer a deterministic check over a written rule for mechanical mistakes.
+- For `automated-checks`, include `check` as a non-empty JSON object of event fields and exact values that identifies the cited event. The system admits it only when it matches that event and none of the latest ten successful recorded sessions. Omit `check` when the failure cannot be expressed that way; it remains an observation.
+- Include `derived_from` with the earlier lesson or candidate IDs that influenced this proposal, using only IDs listed below. Use an empty array when none did.
+- Candidates that change prompts or skills remain proposals until the existing paired evaluation passes before the engine pin goes live.
 - Output only the JSON object required by the output schema, with `candidates` possibly empty.

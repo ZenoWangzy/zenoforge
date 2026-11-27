@@ -42,10 +42,12 @@ OPENED="$fixture/opened"; : > "$OPENED"
 real_open="$(declare -f eval_regression_open_revert)"
 eval_regression_open_revert() { printf '%s %s %s\n' "$1" "$2" "$3" >> "$OPENED"; echo https://example.invalid/pull/501; }
 
-# Covered paths: AGENTS.md and engine/vendor/ are evaluated like the other agent-facing instructions.
-for path in AGENTS.md engine/vendor/pstack/skills/x/SKILL.md; do
-  [[ "$(decision_eval_stages_for_paths "$path")" == 'triage advisor implement review end-to-end ' ]] || fail "$path is not evaluated"
-done
+[[ "$(decision_eval_stages_for_paths 'AGENTS.md')" == 'triage advisor implement review supervisor end-to-end ' ]] || fail 'AGENTS.md is not evaluated in every stage'
+[[ "$(decision_eval_stages_for_paths 'engine/vendor/pstack/skills/x/SKILL.md')" == 'triage advisor implement review end-to-end ' ]] || fail 'vendored skills are not evaluated'
+[[ "$(decision_eval_stages_for_paths '.agents/skills/new-stage/SKILL.md')" == 'triage advisor implement review supervisor end-to-end ' ]] \
+  || fail 'an unlisted agent skill is not evaluated against every stage'
+[[ "$(decision_eval_stages_for_paths '.zenoforge/skills/new-stage/SKILL.md')" == 'triage advisor implement review supervisor end-to-end ' ]] \
+  || fail 'an unlisted target skill is not evaluated against every stage'
 
 # First failure: rerun once under a fresh label, no revert and no escalation yet.
 workers_json="$(worker)"; printf '%s\n' "{\"workers\":[$workers_json]}" > "$WORKERS"

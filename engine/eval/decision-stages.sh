@@ -24,16 +24,20 @@ while IFS= read -r path; do
     engine/prompts/triage.*|.zenoforge/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
     engine/prompts/advisor*|.zenoforge/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
     engine/prompts/implement-contract.md|.zenoforge/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
-    engine/prompts/review-contract.md|.zenoforge/prompts/review-contract.md|".agents/skills/$review_skill"/*|engine/mac-autopilot/review-contract.sh)
+    engine/prompts/review-contract.md|.zenoforge/prompts/review-contract.md|".agents/skills/$review_skill"/*|".zenoforge/skills/$review_skill"/*|engine/mac-autopilot/review-contract.sh)
       affected[review]=1; affected[end-to-end]=1 ;;
-    .agents/skills/triage/*|.agents/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
-    .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;
-    .agents/skills/to-tickets/*|.agents/skills/to-spec/*) affected[end-to-end]=1 ;;
+    .agents/skills/triage/*|.agents/skills/ask-matt/*|.zenoforge/skills/triage/*|.zenoforge/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
+    .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*|.zenoforge/skills/implement/*|.zenoforge/skills/tdd/*|.zenoforge/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;
+    .agents/skills/to-tickets/*|.agents/skills/to-spec/*|.zenoforge/skills/to-tickets/*|.zenoforge/skills/to-spec/*) affected[end-to-end]=1 ;;
+    .agents/skills/*|.zenoforge/skills/*)
+      affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[supervisor]=1; affected[end-to-end]=1 ;;
+    AGENTS.md)
+      affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[supervisor]=1; affected[end-to-end]=1 ;;
     engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md|.zenoforge/prompts/recut.*|.zenoforge/prompts/guarded-recut-hand.md)
       affected[end-to-end]=1 ;;
     engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md|engine/prompts/supervisor-cap-triage.md|.zenoforge/prompts/supervisor-cap-triage.md)
       affected[supervisor]=1 ;;
-    engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json|AGENTS.md|engine/vendor/*)
+    engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json|engine/vendor/*)
       affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[end-to-end]=1 ;;
   esac
   if (( pin )); then

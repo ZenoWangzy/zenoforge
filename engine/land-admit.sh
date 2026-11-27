@@ -1,5 +1,18 @@
 # Shared admission checks for every landing entry point.
 # Each function returns 0 to admit and 1 to refuse.
+land_always_loaded_text_byte_budget_check() {
+  local root="${1:-}" changed="${2:-}" path budget=8192 bytes
+  [[ -d "$root" ]] || { printf 'always-loaded text byte budget: repository root is unavailable\n' >&2; return 1; }
+  [[ -z "$changed" ]] || grep -Fxq 'AGENTS.md' <<<"$changed" || return 0
+  path="$root/AGENTS.md"
+  [[ -f "$path" ]] || return 0
+  bytes="$(wc -c <"$path" | tr -d ' ')" || return 1
+  if (( bytes > budget )); then
+    printf 'AGENTS.md is %s bytes, budget %s bytes; remove or demote lower-value text\n' "$bytes" "$budget" >&2
+    return 1
+  fi
+}
+
 land_prompt_byte_budget_check() {
   local root="${1:-}" base="${2:-}" head="${3:-}" changed="${4:-}" table path name budget bytes
   local scan_all=0
@@ -12,6 +25,7 @@ land_prompt_byte_budget_check() {
   elif [[ -z "$changed" ]]; then
     scan_all=1
   fi
+  land_always_loaded_text_byte_budget_check "$root" "$changed" || return 1
   grep -q '^engine/prompts/' <<<"$changed" || (( scan_all == 1 )) || return 0
   table="$root/engine/prompts/byte-budgets.tsv"
   [[ -f "$table" ]] || { printf 'prompt byte budget: missing engine/prompts/byte-budgets.tsv\n' >&2; return 1; }
@@ -46,7 +60,9 @@ land_pr_prompt_byte_budget_check() {
     printf 'prompt byte budget: could not read PR #%s files\n' "$pr" >&2
     return 1
   }
-  grep -q '^engine/prompts/' <<<"$files" || return 0
+  if ! grep -q '^engine/prompts/' <<<"$files" && ! grep -Fxq 'AGENTS.md' <<<"$files"; then
+    return 0
+  fi
   root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     printf 'prompt byte budget: repository checkout is unavailable\n' >&2
     return 1
@@ -74,6 +90,10 @@ land_pr_prompt_byte_budget_check() {
     prompt_paths="$(grep -E '^engine/prompts/[^/]+\.md$' <<<"$prompt_paths" || true)"
   else
     prompt_paths="$(grep -E '^engine/prompts/[^/]+\.md$' <<<"$files" || true)"
+  fi
+  if grep -Fxq 'AGENTS.md' <<<"$files" && git -C "$root" cat-file -e "$ref:AGENTS.md" 2>/dev/null; then
+    git -C "$root" show "$ref:AGENTS.md" > "$tree/AGENTS.md" \
+      || { rc=1; output="always-loaded text byte budget: could not read PR #$pr AGENTS.md"; }
   fi
   while IFS= read -r path; do
     [[ "$path" =~ ^engine/prompts/[^/]+\.md$ ]] || continue

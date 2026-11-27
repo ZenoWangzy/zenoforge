@@ -128,6 +128,10 @@ also uses — and `decision-gate.mjs --subset` runs only those stages' cases onc
 (`--runs 1`) from inside the built version directory, comparing against the accepted
 baseline label of the currently live version id. The eval runs in the background, so a
 converge tick never waits for it; a later converge flips on the verdict.
+The shared mapping selects stages for global `AGENTS.md` changes and every target
+`.agents/skills/**` and `.zenoforge/skills/**` path; an unlisted skill directory
+selects the full stage set. Tracked target skill overrides stay on the pinned copy
+until their product revision passes the pin evaluation.
 
 A pass stores the pin label as the new id's accepted baseline (`.eval-baselines.json`
 beside the engine versions; the pipeline's `eval-accepted-label` and then the `baseline`

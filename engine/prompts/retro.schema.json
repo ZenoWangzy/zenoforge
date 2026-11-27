@@ -15,7 +15,9 @@
           "session_key": {"type": "string"},
           "event_line": {"type": "integer", "minimum": 1},
           "evidence": {"type": "string"},
-          "proposal": {"type": "string"}
+          "proposal": {"type": "string"},
+          "check": {"type": "object"},
+          "derived_from": {"type": "array", "items": {"type": "string"}}
         }
       }
     }
