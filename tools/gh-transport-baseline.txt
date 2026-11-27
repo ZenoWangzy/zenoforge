@@ -1,6 +1,4 @@
 # gh transport baseline: one unwrapped script path per line; remove entries as callers load the wrapper.
-engine/factory/feeder.sh
-engine/factory/launch.sh
 engine/hotfix/hf-apply-dist.sh
 engine/hotfix/hf-install-gate.sh
 engine/hotfix/hf-merge.sh
