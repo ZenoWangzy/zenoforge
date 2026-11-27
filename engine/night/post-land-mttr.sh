@@ -17,6 +17,7 @@
 #   fix     healthy 60 min (diagnosis plus one landing), unhealthy 120 min
 #   total   healthy 90 min (one detect cycle plus one fix cycle),
 #           unhealthy 180 min
+if ! declare -F gh >/dev/null 2>&1; then source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"; fi
 post_land_mttr_standard() {
   jq -cn '{detect_healthy_seconds:2700,detect_unhealthy_seconds:5400,
     fix_healthy_seconds:3600,fix_unhealthy_seconds:7200,
@@ -85,7 +86,7 @@ post_land_mttr_fix_candidates() {
 # gh call per digest; bisect train refs are excluded by branch=main.
 post_land_mttr_red_runs() {
   local created_since_iso="$1" runs
-  runs="$(timeout 30 gh api \
+  runs="$(gh_timeout 30 api \
     "repos/${REPO:-${ZF_REPO:?ZF_REPO is not set}}/actions/runs?branch=main&status=completed&per_page=100&page=1&created=%3E%3D${created_since_iso}" \
     2>/dev/null)" || return 1
   jq -c '[.workflow_runs[]?
