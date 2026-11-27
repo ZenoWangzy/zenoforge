@@ -11,6 +11,21 @@ mkdir -p "$fixture" "$repo" "$agent" "$fixture/autopi" "$fixture/bin"
 git init --bare --quiet "$remote"
 git -C "$repo" init --quiet
 git -C "$repo" remote add origin "$remote"
+export ZF_COORD_GH_LOG="$fixture/gh.log"
+cat >"$fixture/bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ZF_COORD_GH_LOG"
+if [[ "${1:-}" == run && "${2:-}" == list ]]; then
+  if [[ "${ZF_COORD_TEST_GH_RUNS:-}" == true ]]; then
+    printf '%s\n' '[{"databaseId":1}]'
+  else
+    printf '%s\n' '[]'
+  fi
+  exit 0
+fi
+exit 1
+GH
+chmod +x "$fixture/bin/gh"
 
 run_ctl() {
   AGENT_HOME="$agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-a \
@@ -45,6 +60,43 @@ seed_remote_ref() {
 run_ctl probe --host-id test-a
 [[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/)" ]] || {
   echo 'ctl.test.sh: probe ref was not deleted' >&2
+  exit 1
+}
+grep -q '^run list --commit ' "$fixture/gh.log" || {
+  echo 'ctl.test.sh: probe did not check for a workflow run' >&2
+  exit 1
+}
+cat >"$remote/hooks/post-receive" <<EOF
+#!/usr/bin/env bash
+while IFS=' ' read -r old new ref; do
+  if [[ "\$ref" == refs/claims/probe-* ]]; then
+    git --git-dir="$remote" update-ref refs/heads/probe-observed "\$new"
+  fi
+done
+EOF
+chmod +x "$remote/hooks/post-receive"
+if run_ctl probe --host-id test-a; then
+  echo 'ctl.test.sh: probe passed after its commit appeared as a branch' >&2
+  exit 1
+else
+  rc=$?
+  [[ "$rc" -eq 3 ]] || { echo "ctl.test.sh: branch probe returned $rc" >&2; exit 1; }
+fi
+[[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/)" ]] || {
+  echo 'ctl.test.sh: branch probe left its claim ref behind' >&2
+  exit 1
+}
+git --git-dir="$remote" update-ref -d refs/heads/probe-observed
+rm -f "$remote/hooks/post-receive"
+if ZF_COORD_TEST_GH_RUNS=true run_ctl probe --host-id test-a; then
+  echo 'ctl.test.sh: probe passed after a workflow run appeared' >&2
+  exit 1
+else
+  rc=$?
+  [[ "$rc" -eq 3 ]] || { echo "ctl.test.sh: workflow probe returned $rc" >&2; exit 1; }
+fi
+[[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/)" ]] || {
+  echo 'ctl.test.sh: workflow probe left its claim ref behind' >&2
   exit 1
 }
 
@@ -114,6 +166,7 @@ cat >"$fixture/active-units" <<'UNITS'
 zf-implement-123.service loaded active running worker
 zf-advisor-456.service loaded active running worker
 zf-health-check.service loaded active running worker
+zf-implement-790.service loaded active running worker
 UNITS
 cat >"$fixture/autopi/units.json" <<'JSON'
 {"units":[{"id":"issue-123","issue":123,"stage":"implement"},{"id":"issue-456","issue":456,"stage":"advisor"},{"id":"issue-789","issue":789,"stage":"implement"}]}
@@ -154,7 +207,7 @@ grep -Fxq -- '--user set-environment ZF_COORD=off ZF_HOST_ID=test-a' "$fixture/s
 AGENT_HOME="$agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-a \
   MAC_AUTOPILOT_RUNTIME_DIR="$fixture/autopi" ZF_COORD_TEST_ACTIVE_UNITS="$fixture/active-units" \
   PATH="$fixture/bin:$PATH" bash "$engine/coord/ctl.sh" adopt-local
-for issue in 123 456; do
+for issue in 123 456 790; do
   claim="$(git --git-dir="$remote" cat-file blob "refs/claims/issue-$issue:claim.json")"
   jq -e --arg issue "$issue" '.owner_kind == "systemd-worker" and .subject == $issue' <<<"$claim" >/dev/null || {
     echo "ctl.test.sh: local unit issue-$issue was not adopted" >&2
@@ -200,6 +253,15 @@ seed_remote_ref refs/claims/issue-779 claim.json "$oversized_claim"
 run_ctl claim clear issue-779
 [[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/issue-779)" ]] || {
   echo 'ctl.test.sh: claim clear left an oversized claim' >&2
+  exit 1
+}
+oversized_payload="$(printf '%018000d' 0)"
+oversized_record="$(jq -cn --arg payload "$oversized_payload" --argjson expires "$future_expiry" \
+  '{version:1,key:"issue-780",owner:"owner-large",owner_kind:"scheduler-worker",subject:"780",unit:"issue-780",stage:"implement",expires_at:$expires,checkpoint:{attempts:1},payload:$payload}')"
+seed_remote_ref refs/claims/issue-780 claim.json "$oversized_record"
+run_ctl claim clear issue-780
+[[ -z "$(git --git-dir="$remote" for-each-ref refs/claims/issue-780)" ]] || {
+  echo 'ctl.test.sh: claim clear left an oversized whole record' >&2
   exit 1
 }
 seed_remote_ref refs/claims/issue-776 claim.json \

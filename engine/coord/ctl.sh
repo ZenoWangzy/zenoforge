@@ -38,7 +38,7 @@ ctl_probe_cleanup() {
 }
 
 ctl_probe() {
-  local host="$1" key owner ref oid remote_line remote_oid remote_ref
+  local host="$1" key owner ref oid remote_line remote_oid remote_ref branches branch_oid branch_ref workflow_runs
   [[ "$host" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { ctl_error 'invalid host id'; return 2; }
   key="probe-$host-$$-$RANDOM"
   owner="$(coord_new_owner)"
@@ -70,6 +70,23 @@ ctl_probe() {
     ctl_error 'probe ref readback did not match its lease'
     return 3
   fi
+  branches="$(git -C "$COORD_REMOTE_REPO" ls-remote --heads origin)" || {
+    ctl_error 'could not inspect branches after probe'
+    return 3
+  }
+  while IFS=$'\t' read -r branch_oid branch_ref; do
+    [[ "$branch_oid" == "$oid" ]] || continue
+    ctl_error "probe commit appeared as branch $branch_ref"
+    return 3
+  done <<<"$branches"
+  workflow_runs="$(cd -- "$REPO_DIR" && gh run list --commit "$oid" --json databaseId --limit 1 2>/dev/null)" || {
+    ctl_error 'could not verify workflow runs for probe commit'
+    return 3
+  }
+  jq -e 'type == "array" and length == 0' <<<"$workflow_runs" >/dev/null 2>&1 || {
+    ctl_error 'workflow run appeared for probe commit'
+    return 3
+  }
   ctl_remote_delete "$ref" "$oid" || return 3
   CTL_PROBE_REF=""
   CTL_PROBE_OID=""
@@ -228,11 +245,6 @@ ctl_adopt_local() {
     issue="${base##*-}"
     stage="${base%-*}"
     [[ "$issue" =~ ^[1-9][0-9]*$ && "$stage" =~ ^[a-z][a-z0-9-]*$ ]] || continue
-    unit_row="$(ctl_unit_row "$issue" "$units_file")" \
-      || { ctl_error "unit ledger lookup failed for $unit"; return 3; }
-    [[ -n "$unit_row" ]] || continue
-    stage="$(jq -r '.stage // empty' <<<"$unit_row")"
-    [[ "$stage" =~ ^[a-z][a-z0-9-]*$ ]] || { ctl_error "unit ledger stage invalid for $unit"; return 3; }
     owner="$(coord_new_owner)"
     if coord_acquire "issue-$issue" "$owner" systemd-worker "$issue" "$unit" "$stage"; then
       adopted=$((adopted + 1))
@@ -420,11 +432,17 @@ ctl_status_show() {
 }
 
 ctl_claim_clear() {
-  local key="$1" ref record owner expires now rc checkpoint_size max_checkpoint
+  local key="$1" ref record owner expires now rc checkpoint_size max_checkpoint claim_size
   [[ "$key" == refs/claims/* ]] && key="${key#refs/claims/}"
   [[ "$key" =~ ^[A-Za-z0-9._-]+$ ]] || { ctl_error 'invalid claim key'; return 2; }
   ref="refs/claims/$key"
   if ctl_remote_read_ref "$ref"; then
+    claim_size="$(git -C "$COORD_REMOTE_REPO" cat-file -s "$CTL_REF_SEEN:claim.json" 2>/dev/null || true)"
+    if [[ "$claim_size" =~ ^[0-9]+$ ]] && (( claim_size > 16384 )); then
+      ctl_error "clearing oversized claim $key"
+      ctl_remote_delete "$ref" "$CTL_REF_OID"
+      return $?
+    fi
     record="$(git -C "$COORD_REMOTE_REPO" cat-file blob "$CTL_REF_SEEN:claim.json" 2>/dev/null || true)"
   else
     rc=$?
