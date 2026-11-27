@@ -294,7 +294,6 @@ echo "ok - ticket admission orders hotfix before normal and older waiters before
 remote_root="$root/fake-remote"
 local_root="$root/remote-fallback"
 mkdir -p "$remote_root/proc/pressure" "$remote_root/home" "$local_root/bin" "$local_root/scratch/tmp"
-ln -s "$(command -v node)" "$local_root/bin/node"
 printf '0.1 0.1 0.1 1/1 1\n' > "$remote_root/proc/loadavg"
 printf 'processor\t: 0\n' > "$remote_root/proc/cpuinfo"
 printf 'MemAvailable: 4194304 kB\n' > "$remote_root/proc/meminfo"

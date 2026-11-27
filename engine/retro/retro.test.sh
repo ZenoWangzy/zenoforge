@@ -6,9 +6,20 @@ retro="$dir/retro.py"
 root="$test_env_root/scratch"
 
 bash -n "$dir/run-retro.sh"
-jq -e '.properties.candidates.items.properties | has("check") and has("derived_from")' \
-  "$dir/../prompts/retro.schema.json" >/dev/null
+jq -e '
+  .properties.candidates.items as $candidate
+  | ($candidate.required | index("derived_from") != null)
+    and $candidate.properties.check.type == "object"
+    and $candidate.properties.check.minProperties == 1
+    and $candidate.properties.derived_from.type == "array"
+    and $candidate.properties.derived_from.items.type == "string"
+    and $candidate.properties.derived_from.uniqueItems == true
+' "$dir/../prompts/retro.schema.json" >/dev/null \
+  || { echo 'retro.test.sh: retro schema omits matcher or lineage fields' >&2; exit 1; }
 grep -Fq 'none of the latest ten successful recorded sessions' "$dir/../prompts/retro.md"
+grep -Fq 'For automated-checks, include a non-empty matcher object' "$dir/../prompts/retro.md"
+grep -Fq 'Use an empty derived_from array when none apply' "$dir/../prompts/retro.md"
+grep -Fq 'A prompt or skill change remains a proposal until the existing paired evaluation' "$dir/../prompts/retro.md"
 
 # Fixture: twelve finished luna workers (rc written, older for smaller numbers), one unfinished, one retro run.
 mk() {
