@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 unset GH_TOKEN
 branch=$(git symbolic-ref --quiet --short HEAD)
 case "$branch" in hotfix/*|agent/issue-hf-*) ;; *) echo 'hf-pr: expected a hotfix branch' >&2; exit 1 ;; esac

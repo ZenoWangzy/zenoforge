@@ -2,7 +2,6 @@
 # Run the CI-equivalent local suites for this exact HEAD, record their exit
 # codes under .git, then merge only if GitHub still reports the tested SHA.
 set -uo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/../engine/lib.d/transport.sh"
 export ZF_GH_NO_CACHE=1
 # Must match the shard matrix in .github/workflows/engine-tests.yml.
 MERGE_PR_ENGINE_SHARDS=8

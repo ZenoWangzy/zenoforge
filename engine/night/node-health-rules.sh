@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-if ! declare -F gh >/dev/null 2>&1; then source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"; fi
 PROD_ERRORS_RULES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$PROD_ERRORS_RULES_DIR/../config.sh"
 PROD_ERRORS_CONFIG_FILE="$(zf_config_file night.json || true)"

@@ -4,7 +4,6 @@
 # `gh issue list --sort` stopped every needs-info email reply from being read (2026-10-03).
 # Only flags on the same line as the gh subcommand are checked, up to the first pipe or command break.
 set -euo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 declare -A known=()
 bad=0

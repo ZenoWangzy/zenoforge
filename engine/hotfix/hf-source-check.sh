@@ -3,7 +3,6 @@
 # or in the head of an open `hotfix`-labelled PR. 10-29: a regex intent router (#4505, never merged)
 # lived in prod for 9 h because later live patches were built on the live file; anonymous code is refused.
 set -euo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 unset GH_TOKEN
 (($#)) || { echo 'usage: hf-source-check.sh <file>...' >&2; exit 2; }
 rc=0

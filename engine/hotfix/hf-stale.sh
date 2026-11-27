@@ -3,7 +3,6 @@
 # 10-29: #4576/#4587/#4588 sat red or conflicted for 6 h after a supervisor handover because open hotfix
 # work lived only in session notes; GitHub's label is the queue, this makes an idle one loud.
 set -euo pipefail
-source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 unset GH_TOKEN
 limit=${HF_STALE_MINUTES:-30}
 now=${HF_NOW:-$(date -u +%s)}

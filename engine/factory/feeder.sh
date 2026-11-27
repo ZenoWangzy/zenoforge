@@ -3,7 +3,6 @@
 # 10-30 #4724 (maintainer: pipeline-system tickets are the supervisor's, never the scheduler's): every 10 min, open
 # pipeline-system issues enter queue.txt and get opt-lane (scheduler intake skips opt-lane), or are excluded with a
 # reason in intake.log: on-hold, ops alerts (needs-triage / "pipeline health:", zf-ab), a live opt worker, an open PR.
-source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 S=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}; F=$S/factory; L=$S/luna
 unset GH_TOKEN
 intake() {
