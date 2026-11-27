@@ -43,6 +43,7 @@ check_review_contract_example() {
   local path="$1" parsed
   parsed="$(findings_block_of "$path")" || fail "review contract findings example was rejected: $path"
   [[ "$(jq -r '.findings|length' <<<"$parsed")" == 1 ]] || fail "review contract example did not keep one finding: $path"
+  [[ "$(jq -r '.findings[0].class // empty' <<<"$parsed")" == null-guard ]] || fail "review contract example did not preserve its class: $path"
   [[ "$(jq -r '.dropped' <<<"$parsed")" == 0 ]] || fail "review contract example dropped a finding: $path"
 }
 review_contract="$script_dir/../prompts/review-contract.md"
@@ -220,6 +221,61 @@ printf '%s\n' "\$*" >>"$recur_log"
 while (( \$# )); do [[ "\$1" == --body-file ]] && cat "\$2" >>"$recur_log.body"; shift; done
 EOF
 chmod +x "$recur_upsert"
+parsed_class_log="$tmp/recur/parsed-class-upsert.log"
+parsed_class_upsert="$tmp/recur/parsed-class-upsert.sh"
+cat >"$parsed_class_upsert" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$parsed_class_log"
+EOF
+chmod +x "$parsed_class_upsert"
+write_finding_report() {
+  local path="$1" id="$2" file="$3" class_json="$4" finding
+  finding="$(jq -cn --arg id "$id" --arg file "$file" --arg class_json "$class_json" '
+    {id:$id,severity:"P1",file:$file,line:17,rule:"Defect",status:"open",summary:"Missing a null guard.",introduced_by:"candidate",base_evidence:"The base does not guard null.",rerun_command:("test -f " + $file),rerun_output:"The candidate reaches an unguarded call."}
+    + (if $class_json=="-" then {} else {class:($class_json|fromjson)} end)')"
+  {
+    printf '%s\n' 'VERDICT: NOT_READY' '' '```review-findings'
+    jq -cn --argjson finding "$finding" '{findings:[$finding],dispositions:[]}'
+    printf '%s\n' '```'
+  } >"$path"
+}
+write_finding_report "$tmp/recur/class-a.md" class-a src/a.ts '"null-guard"'
+class_a_report="$(findings_block_of "$tmp/recur/class-a.md")" || fail 'a finding with class did not parse'
+[[ "$(jq -r '.findings|length' <<<"$class_a_report")" == 1 && "$(jq -r '.dropped' <<<"$class_a_report")" == 0 ]] \
+  || fail 'a class finding did not produce a usable canonical block'
+[[ "$(jq -r '.findings[0].class' <<<"$class_a_report")" == null-guard ]] || fail 'the parser dropped the finding class'
+review_findings_record_classes "$(jq -c '.findings' <<<"$class_a_report")" "$tmp/recur/class-state.json" "$parsed_class_upsert" class-unit-a \
+  || fail 'the parsed class finding did not record'
+write_finding_report "$tmp/recur/class-b.md" class-b src/b.ts '"null-guard"'
+class_b_report="$(findings_block_of "$tmp/recur/class-b.md")" || fail 'a second finding with class did not parse'
+review_findings_record_classes "$(jq -c '.findings' <<<"$class_b_report")" "$tmp/recur/class-state.json" "$parsed_class_upsert" class-unit-b \
+  || fail 'the second parsed class finding did not record'
+[[ "$(jq -r '."null-guard"' "$tmp/recur/class-state.json")" == 2 ]] || fail 'the parsed class was not counted across units'
+[[ "$(grep -c -- '--class review-null-guard' "$parsed_class_log")" == 1 ]] || fail 'the parsed class did not open exactly one rule ticket across files'
+write_finding_report "$tmp/recur/class-invalid.md" invalid-class src/invalid.ts '"Bad Class"'
+invalid_class_report="$(findings_block_of "$tmp/recur/class-invalid.md")" || fail 'a malformed class made the block fail'
+[[ "$(jq -r '.findings[0] | has("class")' <<<"$invalid_class_report")" == false ]] || fail 'a malformed class was not removed'
+invalid_class_key="$(review_finding_class_key "$(jq -c '.findings[0]' <<<"$invalid_class_report")")"
+[[ "$invalid_class_key" == finding-* ]] || fail 'a malformed class did not fall back to the derived key'
+review_findings_record_classes "$(jq -c '.findings' <<<"$invalid_class_report")" "$tmp/recur/class-invalid-state.json" "$parsed_class_upsert" invalid-unit \
+  || fail 'a malformed class fallback did not record'
+[[ "$(jq -r --arg key "$invalid_class_key" '.[$key]' "$tmp/recur/class-invalid-state.json")" == 1 ]] || fail 'the malformed class fallback was not counted'
+write_finding_report "$tmp/recur/class-null.md" null-class src/null.ts null
+null_class_report="$(findings_block_of "$tmp/recur/class-null.md")" || fail 'a null class made the block fail'
+[[ "$(jq -r '.findings[0] | has("class")' <<<"$null_class_report")" == false ]] || fail 'a null class was not removed'
+null_class_key="$(review_finding_class_key "$(jq -c '.findings[0]' <<<"$null_class_report")")"
+[[ "$null_class_key" == finding-* ]] || fail 'a null class did not fall back to the derived key'
+review_findings_record_classes "$(jq -c '.findings' <<<"$null_class_report")" "$tmp/recur/class-null-state.json" "$parsed_class_upsert" null-unit \
+  || fail 'a null class fallback did not record'
+[[ "$(jq -r --arg key "$null_class_key" '.[$key]' "$tmp/recur/class-null-state.json")" == 1 ]] || fail 'the null class fallback was not counted'
+write_finding_report "$tmp/recur/classless.md" classless src/classless.ts -
+classless_report="$(findings_block_of "$tmp/recur/classless.md")" || fail 'a finding without class did not parse'
+[[ "$(jq -r '.findings[0] | has("class")' <<<"$classless_report")" == false ]] || fail 'a finding without class gained one during normalization'
+classless_key="$(review_finding_class_key "$(jq -c '.findings[0]' <<<"$classless_report")")"
+[[ "$classless_key" == finding-* ]] || fail 'a finding without class did not get the derived key'
+review_findings_record_classes "$(jq -c '.findings' <<<"$classless_report")" "$tmp/recur/classless-state.json" "$parsed_class_upsert" classless-unit \
+  || fail 'a finding without class did not record'
+[[ "$(jq -r --arg key "$classless_key" '.[$key]' "$tmp/recur/classless-state.json")" == 1 ]] || fail 'the finding without class was not counted'
 review_findings_record_classes "$recur_findings" "$recur_state" "$recur_upsert" unit-a || fail 'first sighting failed'
 [[ ! -s "$recur_log" ]] || fail 'a first sighting opened a rule ticket'
 [[ "$(jq -r --arg key "$recur_key" '.[$key]' "$recur_state")" == 1 ]] || fail 'first sighting was not counted'

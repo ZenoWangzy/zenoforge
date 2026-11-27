@@ -95,17 +95,18 @@ End every review and every repair report with exactly one fenced block whose
 info string is `review-findings`, describing the same findings as your prose:
 
 ```review-findings
-{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":1,"rule":"Defect","status":"open","summary":"Broken query.","introduced_by":"candidate","base_evidence":"Base lacks it.","rerun_command":"git show HEAD:src/a.ts","rerun_output":"Candidate adds it."}],"dispositions":[]}
+{"findings":[{"id":"F1","severity":"P1","file":"src/a.ts","line":1,"rule":"Defect","class":"null-guard","status":"open","summary":"Broken query.","introduced_by":"candidate","base_evidence":"Base lacks it.","rerun_command":"git show HEAD:src/a.ts","rerun_output":"Candidate adds it."}],"dispositions":[]}
 ```
 
 One JSON object with required `findings` and `dispositions` arrays and optional
-`decision_log_flags`; no other keys. Empty arrays when nothing to list. Each finding has exactly these fields:
+`decision_log_flags`; no other keys. Empty arrays when nothing to list. Each finding has the required fields below and may include the optional `class` field:
 
 - `id`: `F1`, `F2`, ... (keep IDs across rounds)
 - `severity`: `P0`, `P1`, `P2`, or `P3`
 - `file`: repository-relative path
 - `line`: positive integer
 - `rule`: the rule or category, for example `Defect`, `Spec`, `Standards`, `Maintainability`
+- `class` (optional): a slug for the defect category, not its location; use the same slug across files for the same defect. Examples: `null-guard`, `tenant-isolation`, `missing-validation`. It must match `^[a-z0-9][a-z0-9-]{0,49}$`; a malformed value is ignored and falls back to the derived key.
 - `status`: `open`, `unverified`, `resolved`, or `inherited`
 - `summary`: one sentence
 - `introduced_by`: `candidate`, `pre_existing`, or `unknown`

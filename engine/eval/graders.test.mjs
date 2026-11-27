@@ -40,6 +40,7 @@ test('review needs an explicit verdict and the known defect file for rejection',
     rerun_command: 'node write.test.mjs', rerun_output: 'FAIL cross-tenant write allowed' };
   const report = (verdict, finding = candidate) => `VERDICT: ${verdict}\n\n\`\`\`review-findings\n${JSON.stringify({ findings: [finding], dispositions: [] })}\n\`\`\``;
   assert.equal(gradeReview(report('NOT_READY'), expected).pass, true);
+  assert.equal(gradeReview(report('NOT_READY', { ...candidate, class: 'null-guard' }), expected).pass, true);
   // 11-08 gpt-6-luna fenced its block with ~~~; the live parser reads it, so the grader must too.
   assert.equal(gradeReview(report('NOT_READY').replaceAll('```', '~~~'), expected).pass, true);
   assert.equal(gradeReview('NOT_READY in src/read.ts', expected).pass, false);
