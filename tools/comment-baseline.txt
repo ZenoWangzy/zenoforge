@@ -406,7 +406,7 @@
 9	engine/mac-autopilot/scheduler-gates-priority.test.sh
 28	engine/mac-autopilot/scheduler-gates-required-checks.test.sh
 10	engine/mac-autopilot/scheduler-gates-suites-retired.test.sh
-335	engine/mac-autopilot/scheduler-gates.test.sh
+334	engine/mac-autopilot/scheduler-gates.test.sh
 1	engine/mac-autopilot/scheduler-part-1.test.sh
 1	engine/mac-autopilot/scheduler-part-2.test.sh
 1	engine/mac-autopilot/scheduler-part-3.test.sh
