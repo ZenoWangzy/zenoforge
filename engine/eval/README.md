@@ -163,6 +163,10 @@ suite at every step:
 
 ## Paired repair arms
 
+The frozen end-to-end case set contains five issue tasks from the fresh-agent
+corpus, with known hidden checks pinned to their fix commits. `--from-implement`
+starts at those ready tasks so the run measures the downstream repair path.
+
 ```bash
 node engine/eval/run-eval.mjs --stage end-to-end --runs 2 --repair-arms paired --label repair-paired
 # Start at a ready ticket (no triage/advisor calls) when only a downstream decision is measured:

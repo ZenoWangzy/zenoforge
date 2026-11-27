@@ -173,7 +173,7 @@ function repairTokens(tokens, carried) {
   if (tokens == null || carried == null) return null;
   return tokens >= carried ? tokens - carried : null;
 }
-function callStage(stage, c, wt, dir, policyFile, context = {}, stageCall = join(here, 'stage-call.sh')) {
+function callStage(stage, c, wt, dir, policyFile, context = {}, stageCall = join(here, 'stage-call.sh'), testRoot) {
   mkdirSync(dir, { recursive: true });
   const promptFile = join(dir, 'prompt.md');
   const caseFile = join(dir, 'input.json');
@@ -190,6 +190,7 @@ function callStage(stage, c, wt, dir, policyFile, context = {}, stageCall = join
     started = performance.now();
     r = command(['bash', stageCall, stage === 'advisor' && c.mode === 'batch' ? 'advisor-batch' : stage, repo, wt, promptFile, dir, caseFile], repo, {
       env: { ...process.env, GH_TOKEN: '', GITHUB_TOKEN: '', EVAL_POLICY_FILE: policyFile,
+        ZF_AGENT_TEST_MODE: '1', ZF_AGENT_TEST_ROOT: testRoot,
         // Stage containment uses the pipeline's supported sandbox override.
         ZF_CODEX_SANDBOX: ['implement', 'fresh-agent'].includes(stage) ? 'workspace-write' : 'read-only' },
     });
@@ -280,7 +281,7 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
       const freshCase = { ...c, baseSha: c.base_sha, issue: { number: 0 }, priorState: {} };
       let call;
       try {
-        call = callStage(stage, freshCase, wt, join(dir, '1-fresh-agent'), policyFile, {}, stageCall);
+        call = callStage(stage, freshCase, wt, join(dir, '1-fresh-agent'), policyFile, {}, stageCall, dir);
       } catch (error) {
         if (error.measurement) calls.push(error.measurement);
         const failed = grade(false, freshAgentSteps(c, { stdout: '' }));
@@ -308,7 +309,7 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
     const stageDir = join(dir, '1-supervisor');
     try {
       mkdirSync(contextDir, { recursive: true });
-      const call = callStage(stage, c, contextDir, stageDir, policyFile, {}, stageCall);
+      const call = callStage(stage, c, contextDir, stageDir, policyFile, {}, stageCall, dir);
       const { output, ...measurement } = call;
       return { ...gradeSupervisor(output, c.expected), calls: [measurement] };
     } catch (error) {
@@ -320,7 +321,12 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
   let chainWt = wt, coldWt, repair_arms, coldGrade, implementReport;
   git(['update-ref', 'refs/remotes/origin/main', c.baseSha], wt);
   const calls = [];
-  const call = (s, context = {}) => { const r = callStage(s, c, chainWt, join(dir, `${calls.length + 1}-${s}`), policyFile, context, stageCall); const { output, ...measurement } = r; calls.push(measurement); return output; };
+  const call = (s, context = {}) => {
+    const r = callStage(s, c, chainWt, join(dir, `${calls.length + 1}-${s}`), policyFile, context, stageCall, dir);
+    const { output, ...measurement } = r;
+    calls.push(measurement);
+    return output;
+  };
   try {
     if (stage === 'triage') {
       const output = call(stage);
@@ -370,7 +376,7 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
             const armDir = join(dir, `repair-${name}`);
             let measurement, output, grade, executionFailure;
             try {
-              const r = callStage('implement', c, worker, join(armDir, 'call'), policyFile, context, stageCall);
+              const r = callStage('implement', c, worker, join(armDir, 'call'), policyFile, context, stageCall, dir);
               ({ output, ...measurement } = r);
             } catch (error) {
               measurement = error.measurement;

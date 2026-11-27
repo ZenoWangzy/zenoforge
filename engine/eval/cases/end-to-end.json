@@ -1,0 +1,194 @@
+{
+  "stage": "end-to-end",
+  "cases": [
+    {
+      "id": "zf-1049-lesson-enforcers",
+      "sourceUrl": "https://github.com/ZenoWangzy/zenoforge/issues/1049",
+      "baseSha": "d48870d44e61890e4a5ffe20aea01f2d6b0dca0b",
+      "source": {
+        "fixSha": "b30d3f7479520e1d24def978aa88b07a9617d6d4"
+      },
+      "issue": {
+        "number": 1049,
+        "title": "Lesson enforcer list is generated automatically and covers every registry incident",
+        "body": "Zenoforge issue #1049: Make the generated lesson-enforcer index cover every incident in the incident-guard registry. Each incident should be listed as enforced or named as lacking an enforcer, and a check should fail when the generated file is stale. Keep the docs and focused-test mapping aligned."
+      },
+      "priorState": {
+        "state": "ready-for-agent",
+        "brief_md": "Zenoforge issue #1049: Make the generated lesson-enforcer index cover every incident in the incident-guard registry. Each incident should be listed as enforced or named as lacking an enforcer, and a check should fail when the generated file is stale. Keep the docs and focused-test mapping aligned."
+      },
+      "hidden": {
+        "ref": "b30d3f7479520e1d24def978aa88b07a9617d6d4",
+        "files": [
+          "engine/generate-lesson-enforcers.test.mjs"
+        ],
+        "commands": [
+          [
+            "grep",
+            "-Fq",
+            "lists every registry incident and names one with no rules row as lacking an enforcer",
+            "engine/generate-lesson-enforcers.test.mjs"
+          ],
+          [
+            "grep",
+            "-Fq",
+            "lessons/enforcers.json is what the generator writes from the registry and RULES.md",
+            "engine/generate-lesson-enforcers.test.mjs"
+          ],
+          [
+            "node",
+            "--test",
+            "--test-name-pattern=lists every registry incident|lessons/enforcers.json is what the generator writes",
+            "engine/generate-lesson-enforcers.test.mjs"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "zf-1050-merge-boundary",
+      "sourceUrl": "https://github.com/ZenoWangzy/zenoforge/issues/1050",
+      "baseSha": "e18484a4ae3b31f2eaad91b14cd794e0fcf36002",
+      "source": {
+        "fixSha": "328384723396a361ddb26c764a7706223a8b1dde"
+      },
+      "issue": {
+        "number": 1050,
+        "title": "Enforce the issue-loop / unit-loop merge boundary with a source check",
+        "body": "Zenoforge issue #1050: Enforce the boundary that the issue loop does not own the merge queue. Keep the existing hand-owned factory-PR merge as one named exception, make a source check reject other direct PR-merge calls, and describe the enforced rule in the architecture and enforcement docs."
+      },
+      "priorState": {
+        "state": "ready-for-agent",
+        "brief_md": "Zenoforge issue #1050: Enforce the boundary that the issue loop does not own the merge queue. Keep the existing hand-owned factory-PR merge as one named exception, make a source check reject other direct PR-merge calls, and describe the enforced rule in the architecture and enforcement docs."
+      },
+      "hidden": {
+        "ref": "328384723396a361ddb26c764a7706223a8b1dde",
+        "files": [
+          "engine/issue-loop-merge-boundary.test.sh"
+        ],
+        "commands": [
+          [
+            "bash",
+            "engine/issue-loop-merge-boundary.test.sh"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "zf-1051-shortcut-ratchet",
+      "sourceUrl": "https://github.com/ZenoWangzy/zenoforge/issues/1051",
+      "baseSha": "b30d3f7479520e1d24def978aa88b07a9617d6d4",
+      "source": {
+        "fixSha": "00e805a175cbc2fc5c81d4f1f2971ecc497d8fff"
+      },
+      "issue": {
+        "number": 1051,
+        "title": "Ratchet for shortcut comments: the count may shrink, not grow",
+        "body": "Zenoforge issue #1051: Add a per-file ratchet for deliberate shortcut markers in non-test engine and tools code. Counts may shrink but cannot grow unless the baseline is explicitly raised. Refusals should name the file and both corrective options; add the test and enforcement row."
+      },
+      "priorState": {
+        "state": "ready-for-agent",
+        "brief_md": "Zenoforge issue #1051: Add a per-file ratchet for deliberate shortcut markers in non-test engine and tools code. Counts may shrink but cannot grow unless the baseline is explicitly raised. Refusals should name the file and both corrective options; add the test and enforcement row."
+      },
+      "hidden": {
+        "ref": "00e805a175cbc2fc5c81d4f1f2971ecc497d8fff",
+        "files": [
+          "engine/shortcut-ratchet.test.sh"
+        ],
+        "commands": [
+          [
+            "bash",
+            "engine/shortcut-ratchet.test.sh"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "zf-1037-eval-plugins-off",
+      "sourceUrl": "https://github.com/ZenoWangzy/zenoforge/issues/1037",
+      "baseSha": "54e03fb5459c1ba92e76e61dd9501dc3ae5710b8",
+      "source": {
+        "fixSha": "5ccfecea8c3a642f2801c533f3a25de6cbd4b089"
+      },
+      "issue": {
+        "number": 1037,
+        "title": "eval: start stage-call codex with plugins off",
+        "body": "Zenoforge issue #1037: Make every Codex launch in the eval stage call pass the shared plugins-off arguments, so stage runs do not download the plugin catalog. Follow the engine's existing launch pattern and keep its static launch check green."
+      },
+      "priorState": {
+        "state": "ready-for-agent",
+        "brief_md": "Zenoforge issue #1037: Make every Codex launch in the eval stage call pass the shared plugins-off arguments, so stage runs do not download the plugin catalog. Follow the engine's existing launch pattern and keep its static launch check green."
+      },
+      "hidden": {
+        "ref": "5ccfecea8c3a642f2801c533f3a25de6cbd4b089",
+        "files": [
+          "engine/codex-plugins-off-lint.test.sh"
+        ],
+        "commands": [
+          [
+            "bash",
+            "engine/codex-plugins-off-lint.test.sh"
+          ],
+          [
+            "grep",
+            "-q",
+            "CODEX_PLUGINS_OFF_ARGS",
+            "engine/eval/stage-call.sh"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "zf-1047-review-verification",
+      "sourceUrl": "https://github.com/ZenoWangzy/zenoforge/issues/1047",
+      "baseSha": "b09caad435f7ee8448d066b20d419da48dc09e41",
+      "source": {
+        "fixSha": "cb7e4a1de237e260b3d2a243a884da69801af1dc"
+      },
+      "issue": {
+        "number": 1047,
+        "title": "Review reads the verification evidence for the head it reviews",
+        "body": "Zenoforge issue #1047: Carry the reviewed head's verification result into the review prompt. State the command and exit code, include bounded evidence for a pass, and name RED or skipped explicitly. A finding only a test can prove stays unverified with its rerun command and evidence, and cannot pass READY. Update the related engine docs and checks."
+      },
+      "priorState": {
+        "state": "ready-for-agent",
+        "brief_md": "Zenoforge issue #1047: Carry the reviewed head's verification result into the review prompt. State the command and exit code, include bounded evidence for a pass, and name RED or skipped explicitly. A finding only a test can prove stays unverified with its rerun command and evidence, and cannot pass READY. Update the related engine docs and checks."
+      },
+      "hidden": {
+        "ref": "cb7e4a1de237e260b3d2a243a884da69801af1dc",
+        "files": [
+          "engine/mac-autopilot/verification-self-check.test.sh"
+        ],
+        "commands": [
+          [
+            "grep",
+            "-Fq",
+            "Verification evidence for head $sha: passed",
+            "engine/mac-autopilot/verification-self-check.test.sh"
+          ],
+          [
+            "grep",
+            "-Fq",
+            "Command output and evidence excerpts: not available",
+            "engine/mac-autopilot/verification-self-check.test.sh"
+          ],
+          [
+            "grep",
+            "-Fq",
+            "Verification evidence for head $sha: RED",
+            "engine/mac-autopilot/verification-self-check.test.sh"
+          ],
+          [
+            "grep",
+            "-Fq",
+            "Verification evidence for head $sha: SKIPPED",
+            "engine/mac-autopilot/verification-self-check.test.sh"
+          ],
+          [
+            "bash",
+            "engine/mac-autopilot/verification-self-check.test.sh"
+          ]
+        ]
+      }
+    }
+  ]
+}
