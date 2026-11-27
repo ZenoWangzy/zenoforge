@@ -43,6 +43,14 @@
 
 [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/deploy.env" ]] && source "$(dirname -- "${BASH_SOURCE[0]}")/deploy.env"
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}"
+if [[ -r "$AGENT_HOME/host.env" ]]; then
+  while IFS='=' read -r _zf_host_key _zf_host_value; do
+    case "$_zf_host_key" in
+      ZF_COORD) [[ -n "${ZF_COORD+x}" ]] || ZF_COORD="$_zf_host_value" ;;
+      ZF_HOST_ID) [[ -n "${ZF_HOST_ID+x}" ]] || ZF_HOST_ID="$_zf_host_value" ;;
+    esac
+  done <"$AGENT_HOME/host.env"
+fi
 
 # A directory this file derived on an earlier source is not an override: a script that then loads another
 # checkout's lib.sh must get that checkout's directories.
