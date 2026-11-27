@@ -10,6 +10,7 @@ import dashboard_repos as D
 
 primary = "ZenoWangzy/zenoforge"
 other = "example-maintainer/other-repo"
+factory = "example/factory-repo"
 workers = [
     {"key": "zen-worker", "repo": primary},
     {"key": "other-worker", "repo": other},
@@ -27,20 +28,21 @@ def load_counts(repo):
     return {}, {"issues_open": 55, "stages": {"ready-for-agent": 12}, "prs_open": 7, "prs_merged_24h": 1}, {"stale": False, "fetched_at": "2026-11-27T17:40:00Z", "freshness_window_s": 300}
 
 now = datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc).timestamp()
-sections = D.sections(f"{primary},{other}", primary, other, workers, front, load_counts, factory_live, now, factory_repo=primary)
-assert [section["repo"] for section in sections] == [other, primary], sections
+sections = D.sections(f"{primary},{other},{factory}", primary, other, workers, front, load_counts, factory_live, now, factory_repo=factory)
+assert [section["repo"] for section in sections] == [other, primary, factory], sections
 assert sections[0]["counts"] == {"issues_open": 55, "ready_for_agent": 12, "prs_open": 7, "prs_merged_24h": 1}, sections
 assert sections[1]["counts"] == {"issues_open": 21, "ready_for_agent": 8, "prs_open": 4, "prs_merged_24h": 3}, sections
 assert sections[1]["fetched_at"] == "2026-11-27T17:59:00Z", sections
 assert sections[1]["stale"] is False, sections
-assert sections[1]["factory_live"] == factory_live, sections
+assert sections[1]["factory_live"] is None, sections
+assert sections[2]["factory_live"] == factory_live, sections
 assert sections[0]["fetched_at"] == "2026-11-27T17:40:00Z", sections
 assert sections[0]["stale"] is True, sections
 assert sections[0]["factory_live"] is None, sections
 assert [worker["key"] for worker in sections[1]["workers"]] == ["zen-worker"], sections
 assert [worker["key"] for worker in sections[1]["waiters"]] == ["zen-waiter"], sections
 assert [worker["key"] for worker in sections[0]["workers"]] == ["other-worker"], sections
-assert loaded == [other], loaded
+assert loaded == [other, factory], loaded
 print("dashboard_repos.test.sh: PASS")
 PY
 node --input-type=module - "$script_dir/../focused-test-paths.mjs" <<'JS'

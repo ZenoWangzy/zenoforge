@@ -34,6 +34,13 @@ with tempfile.TemporaryDirectory() as agent_home:
     with open(codex_pid, "w", encoding="utf-8") as target:
         target.write("1122\n")
     os.utime(codex_pid, (now - 30, now - 30))
+    ended_codex = os.path.join(luna, "issue-2719-ended-codex")
+    os.makedirs(ended_codex)
+    ended_codex_pid = os.path.join(ended_codex, "codex.pid")
+    with open(ended_codex_pid, "w", encoding="utf-8") as target:
+        target.write("1122\n")
+    with open(os.path.join(ended_codex, "rc"), "w", encoding="utf-8") as target:
+        target.write("0\n")
     log = os.path.join(agent_home, "zenoforge-dispatch.log")
     with open(log, "w", encoding="utf-8") as target:
         target.write("[2026-11-27T17:30:00Z] issue #2713 skipped: capacity detail\n")
@@ -48,6 +55,12 @@ with tempfile.TemporaryDirectory() as agent_home:
     os.makedirs(version_engine)
     os.symlink(version_engine, os.path.join(agent_home, "engine-live"))
     engine_pin = live.engine_live_pin(agent_home)
+    composite_version = "93b119116077-4d98fad9ae9c-88271635b3c4-0c80b782d594"
+    composite_engine = os.path.join(agent_home, "engine-versions", composite_version, "engine")
+    os.makedirs(composite_engine)
+    os.unlink(os.path.join(agent_home, "engine-live"))
+    os.symlink(composite_engine, os.path.join(agent_home, "engine-live"))
+    composite_engine_pin = live.engine_live_pin(agent_home)
     line_pause = os.path.join(agent_home, "line-pause")
     with open(line_pause, "w", encoding="utf-8") as target:
         json.dump({"timestamp": "2026-11-27T17:00:00Z", "reason": "line maintenance"}, target)
@@ -70,6 +83,7 @@ assert workers["issue-2714-example"]["started_at"] == "2026-11-27T17:58:30Z", wo
 assert workers["issue-2718-codex-only"]["age_s"] == 30, workers
 assert workers["issue-2718-codex-only"]["rc"] is None, workers
 assert workers["issue-2718-codex-only"]["started_at"] == "2026-11-27T17:59:30Z", workers
+assert "issue-2719-ended-codex" not in workers, workers
 assert result["fetched_at"] == "2026-11-27T18:00:00Z", result
 assert [row["decision"] for row in result["dispatch_decisions"]] == ["skipped", "dispatched"], result
 assert result["dispatch_decisions"][0]["at"] == "2026-11-27T17:30:00Z", result
@@ -77,6 +91,7 @@ assert result["dispatch_decisions"][0]["issue"] == 2713, result
 assert "capacity detail" not in json.dumps(result), result
 assert result["merge_lane_today"] == [321], result
 assert engine_pin == "6da8c7285e8b"
+assert composite_engine_pin == "93b119116077"
 assert pause_states["vecta_line"]["paused"] is True, pause_states
 assert pause_states["vecta_line"]["since"] == "2026-11-27T17:00:00Z", pause_states
 assert pause_states["zenoforge_factory"]["paused"] is False, pause_states

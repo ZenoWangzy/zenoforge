@@ -24,9 +24,13 @@ if (( off > 0 )); then tz="Etc/GMT-$off"; elif (( off < 0 )); then tz="Etc/GMT+$
 export SESSION_TZ="$tz" CODEX_SESSIONS_DIR="$f/sessions" MAC_AUTOPILOT_ROOT="$root" \
   MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a" ZF_REPO_DIR="$root" ZF_REPO="example/fixture-repo"
 export ZF_ENGINE_REPO="example/fixture-repo"
-export ZF_HOME="$f/zenoforge-home" AUTOPILOT_PAUSE_FILE="$AGENT_HOME/PAUSE"
-mkdir -p "$AGENT_HOME/engine-versions/6da8c7285e8b/engine" "$ZF_HOME"
-ln -s "$AGENT_HOME/engine-versions/6da8c7285e8b/engine" "$AGENT_HOME/engine-live"
+export ZF_HOME="$f/zenoforge-home" ZF_FACTORY_HOME="$f/factory-home" AUTOPILOT_PAUSE_FILE="$AGENT_HOME/PAUSE"
+factory_pin="6da8c7285e8b-4d98fad9ae9c-88271635b3c4-0c80b782d594"
+factory_worker_key="issue-2713-factory-home"
+mkdir -p "$AGENT_HOME/engine-versions/$factory_pin/engine" "$ZF_HOME" "$ZF_FACTORY_HOME/scratch/luna/$factory_worker_key"
+ln -s "$AGENT_HOME/engine-versions/$factory_pin/engine" "$AGENT_HOME/engine-live"
+printf '%s\n' "$PPID" > "$ZF_FACTORY_HOME/scratch/luna/$factory_worker_key/wrapper.pid"
+printf '[%s] issue #2713 dispatched to worker\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$ZF_FACTORY_HOME/zenoforge-dispatch.log"
 mkdir -p "$AGENT_HOME/night"
 jq -n --argjson sampled_epoch "$(date -u +%s)" '{status:"OK",sampled_epoch:$sampled_epoch,gb_per_hour:0,daily:{wire_bytes:0,categories:{}}}' \
   > "$AGENT_HOME/night/network-traffic-last-result.json"
@@ -185,6 +189,8 @@ jq -n --arg sampled_at "$scorecard_sampled_at" \
   '{generated:$sampled_at,generated_at:$sampled_at,source_commit:"a1b2c3d4e5f6",paused:null,metrics:[]}' > "$a/node-health.json"
 jq -n --arg timestamp "$pause_since" \
   '{reason:"refactor",caller:"operator",issue:"none",provider:"none",model:"none",timestamp:$timestamp}' > "$AGENT_HOME/PAUSE"
+printf '{"reason":"marker in ZF_HOME","timestamp":"%s"}\n' "$pause_since" > "$ZF_HOME/PAUSE"
+printf '{"reason":"marker in ZF_FACTORY_HOME","timestamp":"%s"}\n' "$pause_since" > "$ZF_FACTORY_HOME/PAUSE"
 
 # 1. 全部可用：阶段计数 / 滞留 / 顾问 / triage / 发布；每个数字都有标准和状态
 run
@@ -311,12 +317,26 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.unit
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
   --arg sampled_at "$scorecard_sampled_at" --arg pause_since "$pause_since" \
   '.standards.generated_at == $sampled_at and .standards.source_commit == "a1b2c3d4e5f6"
-   and .standards.paused == null
+   and .standards.paused.reason == "marker in ZF_FACTORY_HOME"
    and .engine_live.pin == "6da8c7285e8b"
    and .pipeline_pauses.vecta_line.paused and (.pipeline_pauses.vecta_line.since == $pause_since)
-   and (.pipeline_pauses.zenoforge_factory.paused == false)
+   and (.pipeline_pauses.zenoforge_factory.paused == true)
+   and (.pipeline_pauses.zenoforge_factory.reason == "marker in ZF_FACTORY_HOME")
+   and ([.repo_sections[0].factory_live.luna_workers[].key] | index("issue-2713-factory-home") != null)
+   and .repo_sections[0].factory_live.dispatch_decisions[-1].issue == 2713
+   and .repo_sections[0].factory_live.merge_lane_today == []
    and (.pipeline_pauses.vecta_line.fetched_at | type) == "string"' >/dev/null \
   || fail 'dashboard did not report the independent current VectA and Zenoforge pause states'
+export ZF_FACTORY_REPO="example/factory-repo" ZF_DASHBOARD_REPOS="$ZF_REPO,example/factory-repo"
+run
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
+  --arg primary "$ZF_REPO" --arg factory "$ZF_FACTORY_REPO" --arg worker "$factory_worker_key" \
+  '([.repo_sections[] | select(.repo == $primary)][0].factory_live == null)
+   and ([.repo_sections[] | select(.repo == $factory)][0].factory_live.luna_workers | any(.key == $worker))
+   and ([.repo_sections[] | select(.repo == $factory)][0].factory_live.dispatch_decisions[-1].issue == 2713)
+   and ([.repo_sections[] | select(.repo == $factory)][0].factory_live.merge_lane_today == [])' >/dev/null \
+  || fail 'factory home or factory repo did not supply the live dashboard panel'
+unset ZF_FACTORY_REPO ZF_DASHBOARD_REPOS
 
 # 2. 5 分钟缓存：再跑一次不再调 GitHub
 cache="$MAC_AUTOPILOT_DASHBOARD_OUTPUT"; cache="$(dirname "$cache")/front-cache.json"

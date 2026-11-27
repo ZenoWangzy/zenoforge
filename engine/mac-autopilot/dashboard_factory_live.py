@@ -80,7 +80,7 @@ def read_pause_states(line_pause_file, factory_pause_file, now=None):
 
 def engine_live_pin(agent_home):
     target = os.path.realpath(os.path.join(agent_home, "engine-live"))
-    match = re.search(r"(?:^|/)engine-versions/([0-9a-f]{7,40})/engine/?$", target)
+    match = re.search(r"(?:^|/)engine-versions/([0-9a-f]{7,40})(?:-[0-9a-f]{7,40}(?:-[0-9a-f]{7,40}){2})?/engine/?$", target)
     if match:
         return match.group(1)
     version = os.path.basename(os.path.dirname(target))
@@ -96,6 +96,12 @@ def read_luna_workers(agent_home, now=None, pid_alive=None):
         key = os.path.basename(run_dir)
         if not os.path.isdir(run_dir) or not re.fullmatch(r"[\w.-]{1,160}", key):
             continue
+        rc_path = os.path.join(run_dir, "rc")
+        try:
+            if os.path.getsize(rc_path) > 0:
+                continue
+        except OSError:
+            pass
         pid_path = None
         for filename in ("wrapper.pid", "codex.pid"):
             candidate = os.path.join(run_dir, filename)
@@ -119,7 +125,7 @@ def read_luna_workers(agent_home, now=None, pid_alive=None):
             "age_s": max(0, int(now - started)),
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
             "state": "gate-wait" if os.path.exists(os.path.join(run_dir, "gate-wait")) else "running",
-            "rc": _rc(os.path.join(run_dir, "rc")),
+            "rc": _rc(rc_path),
         })
     return sorted(rows, key=lambda row: (row["age_s"], row["key"]), reverse=True)[:40]
 
