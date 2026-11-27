@@ -16,7 +16,7 @@ done
 # The pin self-check lists open PRs through gh; this fake answers with one open PR, so the suite needs neither network nor a GitHub login.
 cat > "$fixture/bin/gh" <<'SH'
 #!/usr/bin/env bash
-printf '%s' '[{"number":1,"headRefOid":"1111111111111111111111111111111111111111","headRefName":"agent/issue-1","baseRefName":"main","isDraft":false,"title":"t","labels":[],"body":"","statusCheckRollup":[]}]'
+printf 'HTTP/2 200 OK\r\n\r\n%s\n' '[{"number":1,"state":"open","draft":false,"head":{"ref":"agent/issue-1","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"main"},"title":"t","body":"","labels":[],"mergeable":null,"created_at":"2026-11-03T00:00:00Z","updated_at":"2026-11-03T00:00:00Z"}]'
 SH
 chmod +x "$fixture/bin/"*
 echo '{"max_workers":1,"keep":"operator"}' > "$root/.scratch-supervisor/autopi/config.json"
@@ -89,7 +89,7 @@ diff -u "$live/config.template.json" "$state/config.json" || fail 'resync left r
 
 # The pin self-check: a repository with zero open PRs is a valid (empty) census; a failed gh read still refuses the switch.
 mkdir -p "$fixture/gh-empty" "$fixture/gh-fail"
-printf '#!/usr/bin/env bash\nprintf "[]"\n' > "$fixture/gh-empty/gh"
+printf '#!/usr/bin/env bash\nprintf "HTTP/2 200 OK\\r\\n\\r\\n[]\\n"\n' > "$fixture/gh-empty/gh"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture/gh-fail/gh"
 chmod +x "$fixture/gh-empty/gh" "$fixture/gh-fail/gh"
 PATH="$fixture/gh-empty:$fixture/bin:$PATH" MAC_AUTOPILOT_ROOT="$root" bash "$script_dir/start.sh" --sync-only >/dev/null 2>&1 \

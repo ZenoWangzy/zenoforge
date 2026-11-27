@@ -22,7 +22,8 @@ echo "RULINGS uncommitted: $count"
 [ -z "$status" ] || printf '%s\n' "$status"
 unset GH_TOKEN
 now=$(date +%s)
-prs=$(gh pr list --state open --search "$W_pr_search" --json number,updatedAt 2>/dev/null)
+repo=${ZF_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##')}
+prs=$(gh api search/issues -X GET -f q="repo:$repo is:pr is:open $W_pr_search" --jq '[.items[] | {number, updatedAt:.updated_at}]' 2>/dev/null)
 open=$(jq length <<<"$prs")
 idle=$(jq -r --argjson threshold "$W_pr_idle" --argjson now "$now" '[.[] | select(($now - (.updatedAt | fromdateiso8601)) > $threshold) | "#\(.number)"] | join(" ")' <<<"$prs")
 echo "$W_pr_label open PRs: $open (limit $W_pr_limit); idle >$((W_pr_idle / 60))m: ${idle:-none}"

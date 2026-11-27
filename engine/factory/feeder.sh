@@ -19,7 +19,10 @@ intake() {
       for b in $(grep -l "issue #$n（" "$F"/opt-*.brief.md 2>/dev/null); do key=$(basename "$b" .brief.md)
         [[ -f $L/$key/rc ]] || ! kill -0 "$(cat "$L/$key/wrapper.pid" 2>/dev/null)" 2>/dev/null || why="live worker $key"; done
     fi
-    [[ -z $why && -n $(gh pr list -R example-maintainer/example-repo --state open --search "\"Refs #$n\" in:body" --json number -q '.[].number' 2>/dev/null) ]] && why="open PR"
+    if [[ -z $why ]]; then
+      open_pr_count="$(gh api search/issues -X GET -f q="repo:example-maintainer/example-repo is:pr is:open \"Refs #$n\" in:body" --jq '.total_count' 2>/dev/null || echo 0)"
+      [[ ${open_pr_count:-0} =~ ^[0-9]+$ && ${open_pr_count:-0} -gt 0 ]] && why="open PR"
+    fi
     if [[ -n $why ]]; then
       grep -qx "$n $why" "$F/.intake-excluded" || { echo "$n $why" >> "$F/.intake-excluded"; echo "$(date -u +%FT%TZ) exclude #$n: $why" >> "$F/intake.log"; }
       continue

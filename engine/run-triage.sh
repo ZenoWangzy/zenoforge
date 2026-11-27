@@ -44,6 +44,7 @@ source "$SCRIPT_DIR/lib.sh"
 coord_enter "$N" triage
 # shellcheck source=./lib.d/triage-default.sh
 source "$SCRIPT_DIR/lib.d/triage-default.sh"
+source "$SCRIPT_DIR/lib.d/triage-pr-census.sh"
 if [ -n "$BATCH_RESULT_FILE" ] && ! triage_result_matches_schema "$BATCH_RESULT_FILE" "$(zf_config_file prompts/triage.schema.json)"; then
   echo "run-triage: batch result for issue #$N does not match triage.schema.json" >&2
   exit 2
@@ -231,15 +232,10 @@ if [ -z "$BATCH_RESULT_FILE" ]; then
 # because a PR that already closed (the exact "abandoned" case) is precisely
 # what a stale comment cannot distinguish from "still open".
 PR_QUERY_OK=1
-PRS_BY_BRANCH="$(gh pr list --repo "$REPO" --head "agent/issue-$N" --state all \
-  --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
-PRS_BY_MENTION="$(gh pr list --repo "$REPO" --search "#$N in:body,title" --state all \
-  --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
-
 PRS_JSON="[]"
+triage_pr_census_load "$(jq -r '.createdAt // empty' <<<"$ISSUE_JSON")" "$REPO" "$N" 2>/dev/null || PR_QUERY_OK=0
 if [ "$PR_QUERY_OK" = "1" ]; then
-  PRS_JSON="$(jq -s -c 'add | unique_by(.number)' \
-    <(echo "$PRS_BY_BRANCH") <(echo "$PRS_BY_MENTION") 2>/dev/null)" || PR_QUERY_OK=0
+  PRS_JSON="$(triage_pr_census_for_issue "$N")" || PR_QUERY_OK=0
 fi
 
 # branch_exists is the one signal the issue thread structurally cannot
@@ -743,14 +739,7 @@ if [ "$STATE" = awaiting-release ]; then
     # The batch prompt has its own live PR census. Re-read the candidate set
     # here because only this apply wrapper may write release state.
     PR_QUERY_OK=1
-    PRS_BY_BRANCH="$(gh pr list --repo "$REPO" --head "agent/issue-$N" --state all \
-      --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
-    PRS_BY_MENTION="$(gh pr list --repo "$REPO" --search "#$N in:body,title" --state all \
-      --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
-    if [ "$PR_QUERY_OK" = 1 ]; then
-      PRS_JSON="$(jq -s -c 'add | unique_by(.number)' \
-        <(echo "$PRS_BY_BRANCH") <(echo "$PRS_BY_MENTION") 2>/dev/null)" || PR_QUERY_OK=0
-    fi
+    PRS_JSON="$(triage_pr_census_for_issue "$N")" || PR_QUERY_OK=0
   fi
   if ! TRIAGE_MERGED_PR="$(triage_merged_pr_for_issue "$N" "$PRS_JSON" "$PR_QUERY_OK" "$BRIEF")"; then
     echo "run-triage: #$N was judged already delivered, but no linked PR merged into main could be verified; leaving its stage unchanged" >&2

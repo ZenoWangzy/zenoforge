@@ -3,9 +3,125 @@
 # 进程还各自重读。现在列表只取轻字段；检查行按 head SHA 走 REST check-runs（tick_pr_check_runs），正文按 PR 单取
 # （tick_pr_body），成功的一次列表写进 $A 下的缓存文件，别的 station 进程 60s 内直接复用，不再各问 GitHub。
 # 读不到、格式错一律"不可用"（返回 1），调用方本拍不据此决策；自己改了 PR 后 tick_prs_changed 清掉重来。
-declare -gA TICK_PR_BODY=() TICK_PR_BODY_LOADED=() TICK_PR_CHECK_RUNS=()
+declare -gA TICK_PR_BODY=() TICK_PR_BODY_LOADED=() TICK_PR_CHECK_RUNS=() TICK_PR_REVIEWS=() TICK_PR_REVIEWS_LOADED=()
 declare -gi TICK_PR_BODY_FETCHES=0 # 本进程真正走 GitHub 的正文读取次数（缓存命中不计），受 pr_body_fetch_cap 限制
 TICK_PR_BODY_CAP_SAID='' TICK_CENSUS_ERR_SAID=''
+tick_prs_rest_snapshot() {
+  local repo="${1:-}" cache_key=open-prs url='repos/{owner}/{repo}/pulls?state=open&per_page=100' pages
+  if [[ -n "$repo" ]]; then
+    cache_key="open-prs-${repo//\//-}"
+    url="repos/$repo/pulls?state=open&per_page=100"
+  fi
+  pages="$(gh_tick_cache_get "$cache_key.json" gh_api_cached -p "$cache_key" "$url")" || return 1
+  jqf -sc 'add | map({number, headRefOid:.head.sha, headRefName:.head.ref, baseRefName:.base.ref,
+    isDraft:(.draft // false), title, body, labels:[.labels[]? | {name}],
+    mergeable:(if .mergeable == true then "MERGEABLE" elif .mergeable == false then "CONFLICTING" else "UNKNOWN" end),
+    createdAt:.created_at, updatedAt:.updated_at})' <<<"$pages"
+}
+tick_prs_fetch() { tick_prs_rest_snapshot; }
+tick_pr_rest_json() {
+  local repo="${2:-}" cache_key="pr-$1" url
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 1
+  if [[ -n "$repo" ]]; then
+    cache_key="pr-${repo//\//-}-$1"
+    url="repos/$repo/pulls/$1"
+  else
+    url="repos/{owner}/{repo}/pulls/$1"
+  fi
+  gh_tick_cache_get "$cache_key.json" gh_api_cached "$cache_key" "$url"
+}
+tick_pr_rest_field() {
+  local field="$2" pr
+  pr="$(tick_pr_rest_json "$1")" || return 1
+  case "$field" in
+    number) jqf -r '.number // empty' <<<"$pr" ;;
+    state) jqf -r 'if .merged_at != null then "MERGED" else (.state // "" | ascii_upcase) end' <<<"$pr" ;;
+    isDraft) jqf -r '.draft // false' <<<"$pr" ;;
+    headRefOid) jqf -r '.head.sha // empty' <<<"$pr" ;;
+    headRefName) jqf -r '.head.ref // empty' <<<"$pr" ;;
+    baseRefName) jqf -r '.base.ref // empty' <<<"$pr" ;;
+    title) jqf -r '.title // empty' <<<"$pr" ;;
+    body) jqf -r '.body // empty' <<<"$pr" ;;
+    labels) jqf -c '[.labels[]? | {name}]' <<<"$pr" ;;
+    mergeable) jqf -r 'if .mergeable == true then "MERGEABLE" elif .mergeable == false then "CONFLICTING" else "UNKNOWN" end' <<<"$pr" ;;
+    mergeCommit) jqf -c 'if .merge_commit_sha == null then null else {oid:.merge_commit_sha} end' <<<"$pr" ;;
+    mergedAt) jqf -r '.merged_at // empty' <<<"$pr" ;;
+    *) return 1 ;;
+  esac
+}
+tick_pr_cli_view() {
+  local -a args=("$@")
+  local n='' repo='' fields='' filter='' i=2 key url raw json extra
+  while (( i < ${#args[@]} )); do
+    case "${args[$i]}" in
+      -R|--repo) ((i+=1)); repo="${args[$i]:-}" ;;
+      --repo=*) repo="${args[$i]#*=}" ;;
+      --json) ((i+=1)); fields="${args[$i]:-}" ;;
+      --json=*) fields="${args[$i]#*=}" ;;
+      -q|--jq) ((i+=1)); filter="${args[$i]:-}" ;;
+      -q=*|--jq=*) filter="${args[$i]#*=}" ;;
+      --*) return 1 ;;
+      *) [[ -n "$n" ]] || n="${args[$i]}" ;;
+    esac
+    ((i+=1))
+  done
+  [[ "$n" =~ ^[1-9][0-9]*$ && -n "$fields" ]] || return 1
+  raw="$(tick_pr_rest_json "$n" "$repo")" || return 1
+  json="$(jqf '{number, state:(if .merged_at != null then "MERGED" else (.state // "" | ascii_upcase) end), isDraft:(.draft // false), headRefName:.head.ref,
+    headRefOid:.head.sha, baseRefName:.base.ref, baseRefOid:.base.sha, title, body,
+    labels:[.labels[]? | {name}], mergeable:(if .mergeable == true then "MERGEABLE" elif .mergeable == false then "CONFLICTING" else "UNKNOWN" end),
+    mergeCommit:(if .merge_commit_sha == null then null else {oid:.merge_commit_sha} end), mergedAt:.merged_at}' <<<"$raw")" || return 1
+  key="${repo//\//-}-$n"; [[ -n "$repo" ]] || key="$n"
+  url="repos/{owner}/{repo}/pulls/$n/files?per_page=100"
+  [[ -z "$repo" ]] || url="repos/$repo/pulls/$n/files?per_page=100"
+  if [[ ",$fields," == *,files,* ]]; then
+    extra="$(gh_tick_cache_get "pr-files-$key.json" gh_api_cached -p "pr-files-$key" "$url")" || return 1
+    extra="$(jqf -sc 'add | map({path:.filename, additions, deletions, changeType:(.status // "" | ascii_upcase), previous_filename})' <<<"$extra")" || return 1
+    json="$(jqf --argjson files "$extra" '. + {files:$files}' <<<"$json")" || return 1
+  fi
+  url="repos/{owner}/{repo}/pulls/$n/commits?per_page=100"
+  [[ -z "$repo" ]] || url="repos/$repo/pulls/$n/commits?per_page=100"
+  if [[ ",$fields," == *,commits,* ]]; then
+    extra="$(gh_tick_cache_get "pr-commits-$key.json" gh_api_cached -p "pr-commits-$key" "$url")" || return 1
+    extra="$(jqf -sc 'add | map((.commit.message // "") as $message | {oid:.sha, message:$message,
+      messageBody:(if ($message | contains("\n")) then ($message[($message | index("\n") + 1):] | ltrimstr("\n")) else "" end),
+      authors:[{email:(.commit.author.email // ""), login:(.author.login // "")} ]})' <<<"$extra")" || return 1
+    json="$(jqf --argjson commits "$extra" '. + {commits:$commits}' <<<"$json")" || return 1
+  fi
+  if [[ -n "$filter" ]]; then jqf -r "$filter" <<<"$json"; else jqf -c <<<"$json"; fi
+}
+tick_pr_cli_list() {
+  local -a args=("$@")
+  local state='' repo='' head='' base='' limit='' fields='' filter='' i=2 rows
+  while (( i < ${#args[@]} )); do
+    case "${args[$i]}" in
+      -R|--repo) ((i+=1)); repo="${args[$i]:-}" ;;
+      --repo=*) repo="${args[$i]#*=}" ;;
+      --state) ((i+=1)); state="${args[$i]:-}" ;;
+      --state=*) state="${args[$i]#*=}" ;;
+      --head) ((i+=1)); head="${args[$i]:-}" ;;
+      --head=*) head="${args[$i]#*=}" ;;
+      --base) ((i+=1)); base="${args[$i]:-}" ;;
+      --base=*) base="${args[$i]#*=}" ;;
+      --limit) ((i+=1)); limit="${args[$i]:-}" ;;
+      --limit=*) limit="${args[$i]#*=}" ;;
+      --json) ((i+=1)); fields="${args[$i]:-}" ;;
+      --json=*) fields="${args[$i]#*=}" ;;
+      -q|--jq) ((i+=1)); filter="${args[$i]:-}" ;;
+      -q=*|--jq=*) filter="${args[$i]#*=}" ;;
+      --*) return 1 ;;
+      *) return 1 ;;
+    esac
+    ((i+=1))
+  done
+  [[ "$state" == open && -n "$fields" ]] || return 1
+  if [[ -z "$repo" || "$repo" == "${REPO:-}" ]]; then rows="$(tick_prs)" || return 1; else rows="$(tick_prs_rest_snapshot "$repo")" || return 1; fi
+  rows="$(jqf --arg head "$head" --arg base "$base" --arg limit "$limit" --arg fields "$fields" '
+    map(select(($head == "" or .headRefName == $head) and ($base == "" or .baseRefName == $base)))
+    | if ($limit | test("^[0-9]+$")) then .[:($limit | tonumber)] else . end
+    | map(with_entries(select(.key as $key | ($fields | split(",") | index($key)) != null)))' <<<"$rows")" || return 1
+  if [[ -n "$filter" ]]; then jqf -r "$filter" <<<"$rows"; else jqf -c <<<"$rows"; fi
+}
 tick_prs_read() { # → open-PR census JSON；进程内未缓存时先看 60s 窗口文件，再问 GitHub
   local f out now err rc
   if [[ -n "${A:-}" ]]; then
@@ -18,7 +134,7 @@ tick_prs_read() { # → open-PR census JSON；进程内未缓存时先看 60s �
     fi
   fi
   err="$(mktemp 2>/dev/null)" || err=""
-  out="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,labels,mergeable,createdAt,reviewDecision,updatedAt 2>"${err:-/dev/null}")" || {
+  out="$(tick_prs_fetch 2>"${err:-/dev/null}")" || {
     rc=$?
     printf 'tick census read failed rc=%s err=%s\n' "$rc" "$(head -n1 "$err" 2>/dev/null | cut -c1-200)" >&2
     [[ -z "$err" ]] || rm -f -- "$err"
@@ -55,7 +171,8 @@ tick_prs() {
 }
 tick_prs_prime() { [[ -n "$TICK_PRS" ]] || tick_prs >/dev/null 2>&1 || true; }
 tick_prs_changed() { # 本拍自己改了 PR（ready/draft/标签/创建/关闭/合并）：进程内缓存与共享文件一起作废
-  TICK_PRS=""; TICK_PR_STATE=(); TICK_PR_CHECK_RUNS=(); TICK_PR_BODY=(); TICK_PR_BODY_LOADED=()
+  TICK_PRS=""; TICK_PR_STATE=(); TICK_PR_CHECK_RUNS=(); TICK_PR_BODY=(); TICK_PR_BODY_LOADED=(); TICK_PR_REVIEWS=(); TICK_PR_REVIEWS_LOADED=()
+  [[ -z "${GH_TICK_CACHE_DIR:-}" ]] || rm -f -- "$GH_TICK_CACHE_DIR"/open-prs*.json "$GH_TICK_CACHE_DIR"/pr-*.json 2>/dev/null || :
   [[ -z "${A:-}" ]] || rm -f -- "$A/.tick-prs-census.json" 2>/dev/null || :
 }
 tick_prs_set_draft() { # PR ready/draft writes do not change its census identity, body or checks
@@ -92,19 +209,42 @@ tick_pr_body() { # PR number → body 正文：进程内缓存 → 按 updatedAt
     body="$(cat -- "$file")"; TICK_PR_BODY_LOADED[$n]=1; TICK_PR_BODY[$n]="$body"
     printf '%s' "$body"; return 0
   fi
+  if jqf -e --argjson n "$n" 'any(.[]; .number == $n and has("body"))' <<<"${TICK_PRS:-[]}" >/dev/null 2>&1; then
+    body="$(jqf -r --argjson n "$n" '[.[] | select(.number == $n) | .body][0] // ""' <<<"$TICK_PRS")" || return 1
+    TICK_PR_BODY_LOADED[$n]=1; TICK_PR_BODY[$n]="$body"
+    printf '%s' "$body"; return 0
+  fi
   cap="$(jqf -r '.pr_body_fetch_cap // 20' <<<"${CFG:-"{}"}" 2>/dev/null)"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=20
   if (( TICK_PR_BODY_FETCHES >= cap )); then
     [[ -n "${TICK_PR_BODY_CAP_SAID:-}" ]] || { say "pr body fetch cap reached cap=$cap"; TICK_PR_BODY_CAP_SAID=1; }
     return 1
   fi
   TICK_PR_BODY_FETCHES=$((TICK_PR_BODY_FETCHES + 1))
-  body="$(gh pr view "$n" --json body --jq '.body // ""' 2>/dev/null)" || return 1
+  body="$(tick_pr_rest_field "$n" body)" || return 1
   TICK_PR_BODY_LOADED[$n]=1; TICK_PR_BODY[$n]="$body"
   if file="$(tick_pr_body_file "$n" "$updated")"; then # 写文件失败只是没有缓存，不影响本次读取
     mkdir -p -- "${file%/*}" 2>/dev/null && tmp="$(mktemp "${file%/*}/.XXXXXX" 2>/dev/null)" \
       && { printf '%s' "$body" > "$tmp" && mv -f "$tmp" "$file" 2>/dev/null || rm -f -- "$tmp"; }
   fi
   printf '%s' "$body"
+}
+tick_pr_reviews() {
+  local n="$1" reviews
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 1
+  if [[ -n "${TICK_PR_REVIEWS_LOADED[$n]:-}" ]]; then printf '%s' "${TICK_PR_REVIEWS[$n]}"; return 0; fi
+  reviews="$(gh_tick_cache_get "pr-reviews-$n.json" gh_api_cached -p "pr-reviews-$n" \
+    "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100")" || return 1
+  reviews="$(jqf -sc 'add // []' <<<"$reviews")" || return 1
+  jqf -e 'type == "array" and all(.[]; type == "object" and (.state | type == "string"))' <<<"$reviews" >/dev/null || return 1
+  TICK_PR_REVIEWS[$n]="$reviews"; TICK_PR_REVIEWS_LOADED[$n]=1
+  printf '%s' "$reviews"
+}
+tick_pr_has_changes_requested() {
+  local reviews
+  reviews="$(tick_pr_reviews "$1")" || return 1
+  jqf -r '[.[] | select(.user.type != "Bot" and ((.user.login // "") | endswith("[bot]") | not))]
+    | sort_by(.submitted_at // "") | group_by(.user.login // "") | map(last)
+    | any(.[]; .state == "CHANGES_REQUESTED")' <<<"$reviews"
 }
 prs_attach_body() { # stdin: census rows, $1 PR 号, $2 正文 → 该 PR 的 .body 补上（正文走 --rawfile，绕开 jqf 的 64KiB argv 上限）
   jqf --argjson n "$1" --rawfile b <(printf '%s' "$2") 'map(if .number == $n then .body = $b else . end)'

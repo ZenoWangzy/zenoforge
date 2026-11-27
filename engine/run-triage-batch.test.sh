@@ -105,6 +105,10 @@ export FAKE_PROMPT_CAPTURE="$TEST_ROOT/codex-prompt.txt"
 cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -u
+if [ -n "${TRIAGE_PR_CENSUS_FILE:-}" ]; then
+  [ -r "$TRIAGE_PR_CENSUS_FILE" ] || exit 97
+  printf '%s\n' "$TRIAGE_PR_CENSUS_FILE" >> "$FAKE_GH_LOG.census-child"
+fi
 case "$1 ${2:-}" in
   "issue view")
     n="$3"
@@ -189,7 +193,14 @@ case "$1 ${2:-}" in
   "pr list") echo '[]' ;;
   "api "*)
     # The shared admission guard requires a verified native-child read.
-    if [[ "${2:-}" == repos/test/repo/issues/*/sub_issues?per_page=100 ]]; then echo '[]'
+    if [[ " $* " == *'repos/test/repo/pulls?state=open&per_page=100'* ]]; then
+      printf '%s\n' open >> "$FAKE_GH_LOG.pr-census"
+      if [ -n "${FAKE_PR_CENSUS_OPEN_FILE:-}" ] && [ -f "$FAKE_PR_CENSUS_OPEN_FILE" ]; then cat "$FAKE_PR_CENSUS_OPEN_FILE"
+      else echo '[[]]'; fi
+    elif [[ " $* " == *'repos/test/repo/pulls?state=closed&sort=updated&direction=desc&per_page=100&page='* ]]; then
+      printf '%s\n' closed >> "$FAKE_GH_LOG.pr-census"
+      echo '[]'
+    elif [[ "${2:-}" == repos/test/repo/issues/*/sub_issues?per_page=100 ]]; then echo '[]'
     # Row 920: intake-priority's label writes (row 920 tests) land in the log like issue edit.
     elif [[ "${2:-}" == "-X" ]]; then printf '%s\n' "$*" >> "$FAKE_GH_LOG"
     else exit 1; fi ;;
@@ -260,12 +271,24 @@ MALFORMED_EXTERNAL="$(jq -c '. + {external_deliverable:{required:"true",location
 FAKE_TRIAGE_QUEUE_BEFORE_FILE="$TEST_ROOT/triage-before.json"
 FAKE_TRIAGE_QUEUE_AFTER_FILE="$TEST_ROOT/triage-after.json"
 export FAKE_TRIAGE_QUEUE_BEFORE_FILE FAKE_TRIAGE_QUEUE_AFTER_FILE
-jq -n '[{number:910301,labels:[{name:"needs-triage"}]},{number:910302,labels:[{name:"needs-triage"}]},{number:910303,labels:[{name:"needs-triage"}]},
-  {number:910304,labels:[{name:"needs-triage"}]},{number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},
-  {number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},{number:910307,labels:[{name:"needs-triage"}]}]' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
-jq -n '[{number:910302,labels:[{name:"needs-triage"}]},{number:910304,labels:[{name:"needs-triage"}]},
-  {number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},{number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},
-  {number:910307,labels:[{name:"needs-triage"}]}]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
+jq -nc --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '[[{number:9301,state:"open",draft:false,head:{ref:"fix/triage-910301",sha:"1111111111111111111111111111111111111111"},base:{ref:"main"},title:"batch PR fixture",body:"Refs #910301",updated_at:$now}]]' > "$TEST_ROOT/open-prs.json"
+export FAKE_PR_CENSUS_OPEN_FILE="$TEST_ROOT/open-prs.json"
+jq -n '[
+  {number:910301,labels:[{name:"needs-triage"}]},
+  {number:910302,labels:[{name:"needs-triage"}]},
+  {number:910303,labels:[{name:"needs-triage"}]},
+  {number:910304,labels:[{name:"needs-triage"}]},
+  {number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},
+  {number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},
+  {number:910307,labels:[{name:"needs-triage"}]}
+]' > "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
+jq -n '[
+  {number:910302,labels:[{name:"needs-triage"}]},
+  {number:910304,labels:[{name:"needs-triage"}]},
+  {number:910305,labels:[{name:"needs-triage"},{name:"on-hold"}]},
+  {number:910306,labels:[{name:"needs-triage"},{name:"pipeline-system"}]},
+  {number:910307,labels:[{name:"needs-triage"}]}
+]' > "$FAKE_TRIAGE_QUEUE_AFTER_FILE"
 jq -n --argjson retry "$(( $(date +%s) + 600 ))" '{triage_retry_after_epoch:$retry}' > "$AGENT_HOME/state/910307.json"
 printf '0\n' > "$FAKE_GH_LOG.triage-list-count"
 ZF_TRIAGE_TICK_ID=triage-batch-owner-multi-ticket-9103
@@ -279,6 +302,10 @@ RUN_STATUS=$?
 set -e
 
 assert_eq "one bad record does not fail the batch" 0 "$RUN_STATUS"
+assert_eq "one batch reads one open PR snapshot" 1 "$(grep -c '^open$' "$FAKE_GH_LOG.pr-census")"
+assert_eq "one batch reads one merged PR census page" 1 "$(grep -c '^closed$' "$FAKE_GH_LOG.pr-census")"
+assert_contains "triage child receives the shared census file" "$(cat "$FAKE_GH_LOG.census-child")" 'triage-pr-census.json'
+assert_contains "open PR snapshot match enters the batch prompt" "$(cat "$FAKE_PROMPT_CAPTURE")" '- PR #9301: OPEN'
 assert_contains "batch cap defers extra issue" "$RUN_OUTPUT" 'cap=3 deferred 1 issue(s)'
 assert_contains "valid records apply through single triage path" "$(cat "$FAKE_GH_LOG")" 'issue edit 910301'
 assert_contains "later valid record applies after bad record" "$(cat "$FAKE_GH_LOG")" 'issue edit 910303'
@@ -326,6 +353,7 @@ assert_eq "batch cleanup preserves another active marker" true \
 assert_eq "successful batch leaves no worktree behind" 0 "$(find "$HOME/wt" -maxdepth 1 -type d -name 'triage-batch-run-*' | wc -l | tr -d ' ')"
 
 # One issue per call provides directly comparable single-ticket token baseline.
+echo '[[]]' > "$FAKE_PR_CENSUS_OPEN_FILE"
 : > "$FAKE_CODEX_ARGS"
 cp "$SCRIPT_DIR/mac-autopilot/triage-fixture.json" "$FAKE_TRIAGE_QUEUE_BEFORE_FILE"
 cp "$SCRIPT_DIR/mac-autopilot/triage-fixture.json" "$FAKE_TRIAGE_QUEUE_AFTER_FILE"

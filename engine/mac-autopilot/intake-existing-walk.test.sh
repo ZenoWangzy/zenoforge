@@ -21,6 +21,7 @@ mkdir -p "$AGENT_HOME/state" "$A/alerts"
 jq -cn '{units: [range(1;6) | {id:"issue-\(.)",issue:.,branch:"agent/issue-\(.)",stage:"blocked-external",pr:null}]}' > "$UNITS"
 
 source "$script_dir/scheduler.d/core.sh"
+source "$script_dir/scheduler.d/tick-census.sh"
 source "$script_dir/scheduler.d/units.sh"
 source "$script_dir/scheduler.d/intake-steps.sh"
 source "$script_dir/scheduler.d/intake-index.sh"
@@ -161,7 +162,7 @@ stale_handoff_view() { # view issue row that is newer than the ledger but still 
   touch -d '2035-01-01T00:00:00Z' "$UNITS.view"
 }
 existing_handoff_candidates() { printf '%s\tpr\thandoff\t[]\n' "$handoff_issue"; }
-intake_gh_read() { # the census read carries the handoff PR with its "Refs #9417" body line
+tick_prs() {
   printf '%s\n' '[{"number":9418,"headRefName":"agent/issue-9417","title":"fixture","body":"Refs #9417","labels":[]}]'
 }
 handoff_fixture "$handoff_episode"
@@ -179,3 +180,16 @@ jq -e --argjson issue "$handoff_issue" '.units[0] | .hold_handoff_waiting == tru
   || { echo 'not ok - unconsumed episode did not keep the approval wait' >&2; jq -c '.units[0]' "$UNITS" >&2; exit 1; }
 
 echo 'ok - a walk reads the units view once and updates the census_partial rows in one ledger write'
+
+tick_prs_prime() { :; }
+tick_prs() { printf '%s\n' '[{"number":9418,"headRefName":"agent/issue-9417","title":"fixture","body":"Refs #9417","labels":[]}]'; }
+intake_gh_read() { return 1; }
+TICK_PR_BODY_FETCHES=0
+declare -A TICK_PR_BODY=()
+tick_pr_body() { TICK_PR_BODY_FETCHES=$((TICK_PR_BODY_FETCHES + 1)); TICK_PR_BODY[$1]='Refs #9417'; printf 'Refs #9417'; }
+HANDOFF_WAIT_PRS='[]'; HANDOFF_WAIT_BRANCHES='[]'; HANDOFF_PR_CENSUS=''; HANDOFF_CENSUS_PARTIAL=1
+intake_census_prime
+jq -e 'length == 1 and .[0].number == 9418 and .[0].headRefName == "agent/issue-9417" and .[0].body == "Refs #9417"' <<<"$HANDOFF_PR_CENSUS" >/dev/null \
+  || { echo "not ok - body-carrying snapshot changed: $HANDOFF_PR_CENSUS" >&2; exit 1; }
+[[ "$TICK_PR_BODY_FETCHES" == 0 ]] || { echo 'not ok - intake fetched a body already in its open-PR snapshot' >&2; exit 1; }
+echo 'ok - intake reuses the body-carrying open-PR snapshot'

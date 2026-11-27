@@ -287,16 +287,16 @@ gh_under_lock_case() (
   tick_gh_calls_begin; : > "$gh_stub" # begin's own rate-limit probe goes through the stub; start counting after it
   # fail mode, lock held: rc 97, the line on stderr, gh itself never runs
   ZF_GH_UNDER_LOCK=fail SCHED_LOCK_HELD=true
-  rc=0; gh pr view 123 --json mergeCommit >/dev/null 2>"$uld/err" || rc=$?
+  rc=0; gh run view 123 --json conclusion >/dev/null 2>"$uld/err" || rc=$?
   [[ "$rc" == 97 ]] || { echo "under-lock fail mode should return 97, got $rc" >&2; exit 1; }
-  grep -q '^gh-under-lock phase=harvest_workers caller=gh_under_lock_case args=pr view$' "$uld/err" \
+  grep -q '^gh-under-lock phase=harvest_workers caller=gh_under_lock_case args=run view$' "$uld/err" \
     || { echo "fail mode must print the gh-under-lock line to stderr: $(cat "$uld/err")" >&2; exit 1; }
   [[ ! -s "$gh_stub" ]] || { echo "fail mode must not call gh: $(cat "$gh_stub")" >&2; exit 1; }
   # fail mode, lock released: the call runs
   SCHED_LOCK_HELD=false
-  rc=0; gh pr view 123 --json mergeCommit >/dev/null 2>&1 || rc=$?
+  rc=0; gh run view 123 --json conclusion >/dev/null 2>&1 || rc=$?
   [[ "$rc" == 0 ]] || { echo "a call with the lock released should run the stub, got $rc" >&2; exit 1; }
-  grep -q 'pr view 123 --json mergeCommit' "$gh_stub" || { echo "the stub never ran with the lock released" >&2; exit 1; }
+  grep -q 'run view 123 --json conclusion' "$gh_stub" || { echo "the stub never ran with the lock released" >&2; exit 1; }
   # default mode: count every under-lock call, still run gh, log one line per caller per tick
   unset ZF_GH_UNDER_LOCK
   tick_gh_calls_begin; : > "$LOG"; : > "$gh_stub"

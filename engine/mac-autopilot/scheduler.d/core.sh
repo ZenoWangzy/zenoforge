@@ -200,6 +200,9 @@ gh_under_lock_record() { # gh-args… → 0 (counted, gh still runs) or 97 in fa
   return 0
 }
 gh() {
+  if [[ "${1:-} ${2:-}" == 'pr view' ]] && declare -F tick_pr_cli_view >/dev/null 2>&1; then tick_pr_cli_view "$@"; return $?; fi
+  if [[ "${1:-} ${2:-}" == 'pr list' && " $* " == *' --state open '* ]] \
+    && declare -F tick_pr_cli_list >/dev/null 2>&1; then tick_pr_cli_list "$@"; return $?; fi
   local api_class started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}" run_id
   local timeout_op="${1:-unknown}" timeout_unit="${id:-unknown}"
   local timeout_seconds="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"

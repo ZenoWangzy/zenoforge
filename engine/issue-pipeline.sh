@@ -2045,7 +2045,7 @@ route_pipeline_fastlane_issue() {
   # The feeder and scheduler share this ticket claim. Check GitHub and the
   # local runner immediately before acquiring it; the claim closes the race
   # between this snapshot and another local dispatcher.
-  if ! open_prs="$(gh pr list --repo "$REPO" --state open --search "Refs #$n" --limit 1 --json number 2>/dev/null)" \
+  if ! open_prs="$(gh api search/issues -X GET -f q="repo:$REPO is:pr is:open \"Refs #$n\" in:body" --jq '[.items[].number]')" \
       || ! jq -e 'type == "array"' <<<"$open_prs" >/dev/null 2>&1; then
     echo "issue-pipeline: fastlane #$n open-PR census unavailable; skipped" >&2
     return 1

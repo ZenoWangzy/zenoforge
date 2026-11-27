@@ -92,6 +92,13 @@ TMP_DIRS+=("$FAKE_BIN")
 # would for a missing branch; every mutation is logged to FAKE_GH_LOG.
 cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ] && [[ "$*" == *'pulls?state='* ]]; then
+  case "$*" in
+    *state=open*) jq -c '[[.[]? | select(.state == "OPEN") | {number, state:"open", draft:.isDraft, head:{ref:.headRefName}, base:{ref:.baseRefName}, title:"", body:"", merge_commit_sha:null, merged_at:null, updated_at:"2026-11-04T16:00:00Z"}]]' <<<"${FAKE_PR_LIST_JSON:-[]}" ;;
+    *) jq -c '[.[]? | select(.state == "MERGED") | {number, state:"closed", draft:.isDraft, head:{ref:.headRefName}, base:{ref:.baseRefName}, title:"", body:"", merge_commit_sha:"0123456789abcdef0123456789abcdef01234567", merged_at:"2026-11-04T16:00:00Z", updated_at:"2026-11-04T16:00:00Z"}]' <<<"${FAKE_PR_LIST_JSON:-[]}" ;;
+  esac
+  exit 0
+fi
 # Native sub-issue reads (issue 2046): these fixtures have none.
 if [ "${1:-}" = api ] && [[ "${2:-}" == */sub_issues* ]]; then
   if [[ "$*" == *'--method POST'* ]]; then echo "gh $*" >> "$FAKE_GH_LOG"; else echo '[]'; fi

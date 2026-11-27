@@ -1,0 +1,5 @@
+{
+  "engine/factory/feeder.sh": ["engine/factory/feeder.test.sh"],
+  "engine/lib.d/triage-pr-census.sh": ["engine/triage-pr-census.test.sh"],
+  "engine/supervisor/watch/oversight.sh": ["engine/supervisor.test.sh"]
+}

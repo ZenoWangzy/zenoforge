@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/lib.d/triage-filter.sh"
 # shellcheck source=./lib.d/triage-solo.sh
 source "$SCRIPT_DIR/lib.d/triage-solo.sh"
+source "$SCRIPT_DIR/lib.d/triage-pr-census.sh"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 source "$SCRIPT_DIR/night/hand-agent-watchdog.sh"
 TRIAGE_BATCH_ID="${ZF_TRIAGE_BATCH_ID:-}"
@@ -196,6 +197,26 @@ for n in "${BATCH_IDS[@]}"; do
   [ "$(state_read "$n" | jq -r '.triage_batch_retry_alone // false')" = "true" ] && SOLO_RETRY_AT_START["$n"]=1
 done
 [ "${#INCLUDED_IDS[@]}" -gt 0 ] || exit 0
+TRIAGE_PR_CENSUS_OK=1
+TRIAGE_PR_CENSUS_SINCE=""
+TRIAGE_PR_CENSUS_FILE=""
+for n in "${INCLUDED_IDS[@]}"; do
+  issue_created_at="$(jq -r '.createdAt // empty' "${ISSUE_FILES[$n]}")"
+  if [[ ! "$issue_created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+    TRIAGE_PR_CENSUS_OK=0
+    break
+  fi
+  if [[ -z "$TRIAGE_PR_CENSUS_SINCE" || "$issue_created_at" < "$TRIAGE_PR_CENSUS_SINCE" ]]; then
+    TRIAGE_PR_CENSUS_SINCE="$issue_created_at"
+  fi
+done
+if [ "$TRIAGE_PR_CENSUS_OK" = 1 ]; then
+  triage_pr_census_load "$TRIAGE_PR_CENSUS_SINCE" "$REPO" "${INCLUDED_IDS[*]}" 2>/dev/null || TRIAGE_PR_CENSUS_OK=0
+  if [ "$TRIAGE_PR_CENSUS_OK" = 1 ]; then
+    TRIAGE_PR_CENSUS_FILE="$SCRATCH_DIR/triage-pr-census.json"
+    printf '%s\n' "$TRIAGE_PR_CENSUS" > "$TRIAGE_PR_CENSUS_FILE" || TRIAGE_PR_CENSUS_OK=0
+  fi
+fi
 
 # Row 897 round 2: a valid result whose apply failed (2026-11-21 16:17Z lost
 # a 211,268-token result to an HTTP 403 secondary rate limit inside
@@ -259,7 +280,7 @@ triage_kept_pair_apply() {
     echo "run-triage-batch: #$n kept result could not be verified ($ISSUE_VERDICT_GUARD_REASON); triaging normally this run" >&2
     return 1
   fi
-  if bash "$SCRIPT_DIR/run-triage.sh" --batch-result "$result_file" --batch-snapshot "$snapshot_file" "$n"; then
+  if TRIAGE_PR_CENSUS_FILE="$TRIAGE_PR_CENSUS_FILE" bash "$SCRIPT_DIR/run-triage.sh" --batch-result "$result_file" --batch-snapshot "$snapshot_file" "$n"; then
     triage_kept_pair_delete "$n"
     echo "run-triage-batch: #$n applied its kept result without a model call" >&2
     return 0
@@ -367,14 +388,10 @@ for n in "${INCLUDED_IDS[@]}"; do
   RETRY_NOTE="$(state_read "$n" | jq -r 'select(.model_policy.retry_note.status == 124) | "Previous model call timed out at " + .model_policy.retry_note.stage + "; retry this same policy step without counting the timeout as a failure."')"
   PRECUT=0
   issue_is_precut "$ISSUE_BODY" && PRECUT=1
-  PR_QUERY_OK=1
-  PRS_BY_BRANCH="$(gh pr list --repo "$REPO" --head "agent/issue-$n" --state all \
-    --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
-  PRS_BY_MENTION="$(gh pr list --repo "$REPO" --search "#$n in:body,title" --state all \
-    --json number,state,isDraft,headRefName,baseRefName 2>/dev/null)" || PR_QUERY_OK=0
+  PR_QUERY_OK="$TRIAGE_PR_CENSUS_OK"
   PRS_JSON="[]"
   if [ "$PR_QUERY_OK" = "1" ]; then
-    PRS_JSON="$(jq -s -c 'add | unique_by(.number)' <(echo "$PRS_BY_BRANCH") <(echo "$PRS_BY_MENTION") 2>/dev/null)" || PR_QUERY_OK=0
+    PRS_JSON="$(triage_pr_census_for_issue "$n")" || PR_QUERY_OK=0
   fi
   if [ "$PR_QUERY_OK" = "1" ] && [ "$(jq 'length' <<< "$PRS_JSON")" -gt 0 ]; then
     ENRICHED="[]"
@@ -623,7 +640,7 @@ APPLIED_COUNT=0
 FAILED_RECORD_COUNT=0
 for n in "${INCLUDED_IDS[@]}"; do
   if [ -n "${RESULT_FILES[$n]:-}" ] && [ -z "${BAD_ISSUES[$n]:-}" ]; then
-    if TRIAGE_BATCH_INDEX_FRESHNESS_NOTE="$INDEX_FRESHNESS_NOTE" \
+    if TRIAGE_BATCH_INDEX_FRESHNESS_NOTE="$INDEX_FRESHNESS_NOTE" TRIAGE_PR_CENSUS_FILE="$TRIAGE_PR_CENSUS_FILE" \
       bash "$SCRIPT_DIR/run-triage.sh" --batch-result "${RESULT_FILES[$n]}" \
         --batch-snapshot "${ISSUE_FILES[$n]}" "$n"; then
       APPLIED_COUNT=$((APPLIED_COUNT + 1))

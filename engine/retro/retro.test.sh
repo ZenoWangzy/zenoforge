@@ -107,7 +107,7 @@ case "$1:$2" in
     [[ "${FAKE_ISSUE_VIEW_FAILURE:-0}" == 1 ]] && exit 1
     cat "$FAKE_ISSUE_VIEW"
     ;;
-  pr:list) cat "$FAKE_MERGED_PRS" ;;
+  pr:list|api:search/issues) cat "$FAKE_MERGED_PRS" ;;
   issue:create)
     title=""; body_file=""; labels='[]'
     while (($#)); do
