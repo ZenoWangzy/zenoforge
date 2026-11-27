@@ -16,5 +16,10 @@
   "engine/retro/run-retro.sh": ["engine/retro/retro.test.sh"],
   "engine/related-tests.d/retro-candidate-admission.json": ["engine/focused-test-paths.test.mjs"],
   "engine/advisor-config.sh": ["engine/run-advisor.test.sh", "engine/run-advisor-batch.test.sh"],
-  "engine/apply-model-policy-default.sh": ["engine/apply-model-policy-default-view.test.sh", "engine/model-policy-generic.test.sh"]
+  "engine/apply-model-policy-default.sh": ["engine/apply-model-policy-default-view.test.sh", "engine/model-policy-generic.test.sh"],
+  "engine/comms-format.sh": [
+    "engine/notify.test.sh",
+    "engine/night/maintainer-health-mail.test.sh",
+    "engine/night/maintainer-health-mail-output-contract.test.sh"
+  ]
 }
