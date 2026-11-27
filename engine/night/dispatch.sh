@@ -368,12 +368,13 @@ if [ "$PROVIDER" = codex ]; then
       [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
       started="$(date +%s)"
       status=0
-      codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --cd "$worktree" -m "$model" \
+      matt_codex_context_prepare "$worktree"
+      codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json "${MATT_CODEX_CONTEXT_ARGS[@]}" -m "$model" \
         -c "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
         -s danger-full-access \
         -c sandbox_workspace_write.network_access=true \
         -c mcp_servers.gitnexus.enabled=false \
-        - < "$prompt" || status=$?
+        - < <(matt_codex_prompt_input "$prompt" "$worktree" "$MATT_CODEX_CONTEXT_ROOT") || status=$?
       tokens="$(codex_tokens_used "$log" 2>/dev/null || true)"
       if [[ "$tokens" =~ ^[0-9]+$ ]]; then
         record_premium_spend "$role" "codex:$model:$effort" "hand:$name" "" "$started" "$tokens" || true

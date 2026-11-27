@@ -17,24 +17,32 @@ pin=0
 (($# == 0)) || { echo 'usage: decision-stages.sh [--pin] < paths' >&2; exit 2; }
 review_skill="${ZF_REVIEW_SKILL:-code-review}"
 declare -A affected=()
+unmeasurable=()
 path=''
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
   case "$path" in
-    engine/prompts/triage.*|.zenoforge/prompts/triage.*) affected[triage]=1; affected[end-to-end]=1 ;;
-    engine/prompts/advisor*|.zenoforge/prompts/advisor*) affected[advisor]=1; affected[end-to-end]=1 ;;
+    engine/prompts/triage.md|engine/prompts/triage.schema.json|.zenoforge/prompts/triage.md|.zenoforge/prompts/triage.schema.json) affected[triage]=1; affected[end-to-end]=1 ;;
+    engine/prompts/advisor.md|engine/prompts/advisor-batch.md|engine/prompts/advisor.schema.json|.zenoforge/prompts/advisor.md|.zenoforge/prompts/advisor-batch.md|.zenoforge/prompts/advisor.schema.json) affected[advisor]=1; affected[end-to-end]=1 ;;
+    engine/prompts/agent-settings.json|.zenoforge/prompts/agent-settings.json)
+      affected[triage]=1; affected[implement]=1; affected[end-to-end]=1 ;;
+    engine/prompts/byte-budgets.tsv) ;;
     engine/prompts/implement-contract.md|.zenoforge/prompts/implement-contract.md) affected[implement]=1; affected[end-to-end]=1 ;;
-    engine/prompts/review-contract.md|.zenoforge/prompts/review-contract.md|".agents/skills/$review_skill"/*|engine/mac-autopilot/review-contract.sh)
+    engine/prompts/review-contract.md|.zenoforge/prompts/review-contract.md|".agents/skills/$review_skill"/*|".zenoforge/skills/$review_skill"/*)
       affected[review]=1; affected[end-to-end]=1 ;;
-    .agents/skills/triage/*|.agents/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
-    .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;
-    .agents/skills/to-tickets/*|.agents/skills/to-spec/*) affected[end-to-end]=1 ;;
-    engine/prompts/recut.*|engine/prompts/guarded-recut-hand.md|.zenoforge/prompts/recut.*|.zenoforge/prompts/guarded-recut-hand.md)
+    .agents/skills/triage/*|.agents/skills/ask-matt/*|.zenoforge/skills/triage/*|.zenoforge/skills/ask-matt/*) affected[triage]=1; affected[end-to-end]=1 ;;
+    .agents/skills/implement/*|.agents/skills/tdd/*|.agents/skills/diagnosing-bugs/*|.zenoforge/skills/implement/*|.zenoforge/skills/tdd/*|.zenoforge/skills/diagnosing-bugs/*) affected[implement]=1; affected[end-to-end]=1 ;;
+    .agents/skills/to-tickets/*|.agents/skills/to-spec/*|.zenoforge/skills/to-tickets/*|.zenoforge/skills/to-spec/*) affected[end-to-end]=1 ;;
+    CLAUDE.md|AGENTS.md|AGENTS.override.md)
+      affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[supervisor]=1; affected[end-to-end]=1 ;;
+    engine/prompts/recut.md|engine/prompts/recut.schema.json|.zenoforge/prompts/recut.md|.zenoforge/prompts/recut.schema.json)
       affected[end-to-end]=1 ;;
-    engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md|engine/prompts/supervisor-cap-triage.md|.zenoforge/prompts/supervisor-cap-triage.md)
+    engine/prompts/supervisor-arbiter.md|.zenoforge/prompts/supervisor-arbiter.md)
       affected[supervisor]=1 ;;
-    engine/prompts/*|engine/model-policy.default.json|.zenoforge/prompts/*|.zenoforge/model-policy.default.json|AGENTS.md|engine/vendor/*)
+    engine/model-policy.default.json|.zenoforge/model-policy.default.json)
       affected[triage]=1; affected[advisor]=1; affected[implement]=1; affected[review]=1; affected[end-to-end]=1 ;;
+    engine/prompts/advisor-batch.md|.zenoforge/prompts/advisor-batch.md|engine/prompts/*|.zenoforge/prompts/*|.agents/skills/*|.zenoforge/skills/*|engine/vendor/*|engine/mac-autopilot/review-contract.sh)
+      (( pin )) && unmeasurable+=("$path") || true ;;
   esac
   if (( pin )); then
     case "$path" in
@@ -45,6 +53,11 @@ while IFS= read -r path; do
     esac
   fi
 done
+if ((${#unmeasurable[@]})); then
+  printf 'paired evaluation does not consume these decision inputs:\n' >&2
+  printf '  %s\n' "${unmeasurable[@]}" >&2
+  exit 3
+fi
 for stage in triage advisor implement review supervisor end-to-end; do
   [[ -n "${affected[$stage]:-}" ]] && printf '%s ' "$stage"
 done

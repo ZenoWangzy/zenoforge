@@ -42,9 +42,20 @@ OPENED="$fixture/opened"; : > "$OPENED"
 real_open="$(declare -f eval_regression_open_revert)"
 eval_regression_open_revert() { printf '%s %s %s\n' "$1" "$2" "$3" >> "$OPENED"; echo https://example.invalid/pull/501; }
 
-# Covered paths: AGENTS.md and engine/vendor/ are evaluated like the other agent-facing instructions.
-for path in AGENTS.md engine/vendor/pstack/skills/x/SKILL.md; do
-  [[ "$(decision_eval_stages_for_paths "$path")" == 'triage advisor implement review end-to-end ' ]] || fail "$path is not evaluated"
+[[ "$(decision_eval_stages_for_paths 'AGENTS.md')" == 'triage advisor implement review supervisor end-to-end ' ]] || fail 'AGENTS.md is not evaluated in every stage'
+[[ "$(decision_eval_stages_for_paths 'CLAUDE.md')" == 'triage advisor implement review supervisor end-to-end ' ]] || fail 'CLAUDE.md is not evaluated in every stage'
+[[ "$(decision_eval_stages_for_paths 'engine/vendor/pstack/skills/x/SKILL.md')" == '' ]] || fail 'unmeasured vendored skills were assigned eval stages'
+[[ "$(decision_eval_stages_for_paths '.agents/skills/new-stage/SKILL.md')" == '' ]] \
+  || fail 'an unlisted agent skill was assigned eval stages'
+[[ "$(decision_eval_stages_for_paths '.zenoforge/skills/new-stage/SKILL.md')" == '' ]] \
+  || fail 'an unlisted target skill was assigned eval stages'
+eval_map="$script_dir/../eval/decision-stages.sh"
+for path in engine/vendor/pstack/skills/x/SKILL.md .agents/skills/new-stage/SKILL.md .zenoforge/skills/new-stage/SKILL.md engine/prompts/retro.md engine/prompts/supervisor-cap-triage.md engine/prompts/guarded-recut-hand.md; do
+  if bash "$eval_map" --pin <<<"$path" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+    fail "pin gate accepted unmeasurable decision input $path"
+  fi
+  grep -Fq 'paired evaluation does not consume these decision inputs' "$test_env_root/stderr" \
+    || fail "pin gate did not explain why $path remains an observation"
 done
 
 # First failure: rerun once under a fresh label, no revert and no escalation yet.

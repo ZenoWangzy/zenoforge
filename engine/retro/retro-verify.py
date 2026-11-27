@@ -124,11 +124,44 @@ def issue_comment(repo, issue, body):
         os.unlink(body_path)
 
 
-def file_retract_issue(engine, change):
+def change_lineage_ids(change):
+    ids = {value for value in (change.get("lineage_id"), change.get("class"), change.get("lesson"))
+           if isinstance(value, str) and value}
+    issue = change.get("issue")
+    if isinstance(issue, int) and not isinstance(issue, bool) and issue > 0:
+        ids.add(f"issue:{issue}")
+    return ids
+
+
+def descendants(state, change):
+    known = change_lineage_ids(change)
+    found = []
+    included = {id(change)}
+    updated = True
+    while updated:
+        updated = False
+        for candidate in state["changes"]:
+            if id(candidate) in included or not (set(candidate.get("derived_from", [])) & known):
+                continue
+            found.append(candidate)
+            included.add(id(candidate))
+            known.update(change_lineage_ids(candidate))
+            updated = True
+    return found
+
+
+def file_retract_issue(engine, change, children):
+    descendant_ids = [
+        f"#{child['issue']} ({child.get('lineage_id') or child.get('class') or child.get('lesson')})"
+        if isinstance(child.get("issue"), int)
+        else str(child.get("lineage_id") or child.get("class") or child.get("lesson"))
+        for child in children
+    ]
     body = (
         "## Retract or rewrite\n\n"
         f"Merged retro change #{change['issue']} targeted category {change['category']} "
         f"(class {change['class']}) at {change['merged_at']}.\n\n"
+        f"Descendants: {', '.join(descendant_ids) if descendant_ids else 'none recorded'}.\n\n"
         f"The same candidate rule found {change['before_count']} events in {len(change['before_sessions'])} "
         f"sessions before the merge and {change['after_count']} events in {len(change['after_sessions'])} "
         "sessions after it. The event count did not drop; retract or rewrite the change.\n"
@@ -197,7 +230,7 @@ def verify_change(root, out_dir, repo, engine, state, change):
         change["reported_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         retro.write_verify_state(out_dir, state)
     if change["after_count"] >= change["before_count"] and not change.get("retraction_filed_at"):
-        file_retract_issue(engine, change)
+        file_retract_issue(engine, change, descendants(state, change))
         change["retraction_filed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         retro.write_verify_state(out_dir, state)
 

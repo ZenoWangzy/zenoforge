@@ -18,6 +18,8 @@ prompt="$out_dir/$stamp.prompt.md"
   echo
   echo "Sessions (events.jsonl has one JSON event per line; the line number is the event position):"
   while read -r k; do echo "- $k: $root/luna/$k/events.jsonl and $root/luna/$k/last.md"; done < "$keys"
+  echo
+  python3 -B "$here/retro.py" lineage "$repo" "$out_dir"
 } > "$prompt"
 rc=0
 "$engine/bin/luna" "$key" "$repo" "$prompt" "$engine/prompts/retro.schema.json" || rc=$?

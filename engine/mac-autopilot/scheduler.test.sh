@@ -340,7 +340,8 @@ JSONL
 printf 'session id: 11111111-2222-3333-4444-555555555555\n' > "$fixture_supervisor/impl-pr-resume.worker.log"
 printf 'session id: 99999999-aaaa-bbbb-cccc-dddddddddddd\n' > "$fixture_supervisor/impl-pr-mixed.worker.log"
 build_codex_command repair model max pr-resume 'incremental repair'
-[[ "$CODEX_MODE" == resume && "${CODEX_COMMAND[0]} ${CODEX_COMMAND[1]} ${CODEX_COMMAND[3]} ${CODEX_COMMAND[4]}" == 'codex exec danger-full-access resume' ]]
+[[ "$CODEX_MODE" == resume && "${CODEX_COMMAND[0]} ${CODEX_COMMAND[1]}" == 'codex exec' \
+  && " ${CODEX_COMMAND[*]} " == *' -s danger-full-access resume '* ]]
 [[ "${CODEX_COMMAND[*]}" == *'11111111-2222-3333-4444-555555555555'* ]]
 [[ "$(session_last_tokens_for_id 11111111-2222-3333-4444-555555555555)" == 1002000 ]]
 fallback_session_id=cccccccc-dddd-eeee-ffff-000000000001
@@ -358,7 +359,8 @@ JSONL
 build_codex_command rereview model max pr-fresh 'incremental review'
 [[ "$CODEX_MODE" == fresh ]]
 build_codex_command rereview model max pr-resume 'incremental review'
-[[ "$CODEX_MODE" == fresh && "${CODEX_COMMAND[*]}" == *'codex exec -m model'* ]]
+[[ "$CODEX_MODE" == fresh && "${CODEX_COMMAND[0]} ${CODEX_COMMAND[1]}" == 'codex exec' \
+  && " ${CODEX_COMMAND[*]} " == *' -m model '* ]]
 
 # Attribute usage by event timestamp, including files created on prior days.
 SESSION_FIXTURE_ROOT="$fixture_sessions" python3 - <<'PY'
@@ -2701,8 +2703,8 @@ sched_run_case stuck_worker_disposition
 [[ "$(decision_eval_stages_for_paths 'engine/prompts/supervisor-arbiter.md')" == 'supervisor ' ]] || {
   echo 'not ok - scheduler.test.sh: supervisor arbiter prompt did not select only supervisor' >&2; exit 1;
 }
-[[ "$(decision_eval_stages_for_paths 'engine/prompts/supervisor-cap-triage.md')" == 'supervisor ' ]] || {
-  echo 'not ok - scheduler.test.sh: supervisor cap-triage prompt did not select only supervisor' >&2; exit 1;
+[[ "$(decision_eval_stages_for_paths 'engine/prompts/supervisor-cap-triage.md')" == '' ]] || {
+  echo 'not ok - scheduler.test.sh: unmeasured supervisor cap-triage prompt was assigned eval stages' >&2; exit 1;
 }
 [[ "$(decision_eval_stages_for_paths 'engine/lib.d/model-calls.sh')" == '' ]] || {
   echo 'not ok - scheduler.test.sh: stage execution code selected eval stages for prompt dispatch' >&2; exit 1;

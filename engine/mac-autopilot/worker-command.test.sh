@@ -3,6 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$MAC_AUTOPILOT_ENV_ROOT"
+source "$script_dir/../matt-skills.sh"
 source "$script_dir/scheduler.d/worker-command.sh"
 
 # Keep this focused on the command builder's public boundary; unrelated scheduler policy is stubbed.
@@ -14,6 +15,7 @@ last_review_side_failed() { [[ "${TEST_REVIEW_SIDE:-}" == true ]]; }
 fail() { printf 'worker-command.test.sh: %s\n' "$*" >&2; exit 1; }
 SESSION_RE='^[0-9a-f-]{36}$'
 contains_arg() { [[ " $1 " == *" $2 "* ]]; }
+arg_value() { local i; for ((i = 0; i < ${#CODEX_COMMAND[@]}; i++)); do [[ "${CODEX_COMMAND[i]}" == "$1" ]] && { printf '%s' "${CODEX_COMMAND[i + 1]:-}"; return 0; }; done; return 1; }
 
 CFG='{"models":[["gpt-6-luna","max","fast"]]}'
 CODEX_ENV_ARGS=(-c shell_environment_policy.inherit=all)
@@ -47,6 +49,37 @@ worker_sentinel_dir="$(<"$CODEX_CONTEXT_MODE_DIR_FILE")"
 [[ "$worker_sentinel_dir" == "$test_env_root/context-mode-mcp-ready."* \
   && -d "$worker_sentinel_dir" && -z "$(ls -A "$worker_sentinel_dir")" ]] \
   || fail "Codex worker command sentinel directory is missing, non-empty, or outside its unit: $worker_sentinel_dir"
+
+context_repo="$test_env_root/context-repo"
+context_version="$test_env_root/context-version"
+mkdir -p "$context_repo" "$context_version/.agents/skills"
+git -C "$context_repo" init -q -b main
+git -C "$context_repo" config user.name fixture
+git -C "$context_repo" config user.email fixture@example.invalid
+printf 'accepted instructions\n' > "$context_repo/AGENTS.md"
+git -C "$context_repo" add .
+git -C "$context_repo" commit -qm accepted
+accepted_context_sha="$(git -C "$context_repo" rev-parse HEAD)"
+printf 'candidate instructions\n' > "$context_repo/AGENTS.md"
+git -C "$context_repo" add .
+git -C "$context_repo" commit -qm candidate
+candidate_context_sha="$(git -C "$context_repo" rev-parse HEAD)"
+printf 'product_sha=%s\n' "$accepted_context_sha" > "$context_version/BUILD-INFO"
+printf 'accepted worker instruction\n' > "$context_version/AGENTS.md"
+_MATT_SKILLS_ENGINE_DIR="$context_version/.agents/skills"
+build_codex_command implement gpt-6-luna max implement-1 'implement prompt' 'implement prompt' "$context_repo" codex
+[[ "$(arg_value --cd)" == "$context_version" && "$(arg_value --add-dir)" == "$context_repo" ]] \
+  || fail 'Codex did not use the pinned instructions while keeping the candidate checkout available'
+build_codex_command implement claude-sonnet-5-5 high implement-1 'implement prompt' 'implement prompt' "$context_repo" claude \
+  || fail 'Claude implement with unaccepted project instructions was refused'
+impl_command=" ${CODEX_COMMAND[*]} "
+[[ "$impl_command" == *' --bare '* && "${CODEX_COMMAND[*]}" == *'accepted worker instruction'* \
+  && "${CODEX_COMMAND[*]}" != *'candidate instructions'* ]] \
+  || fail 'Claude implement did not skip candidate instructions and receive the accepted copy'
+printf 'product_sha=%s\n' "$candidate_context_sha" > "$context_version/BUILD-INFO"
+build_codex_command implement gpt-6-luna max implement-1 'implement prompt' 'implement prompt' "$context_repo" codex
+[[ -z "$(arg_value --add-dir || true)" ]] || fail 'accepted AGENTS.md was opened as an extra workspace'
+source "$script_dir/../matt-skills.sh"
 implement_args=" ${CODEX_COMMAND[*]} "
 contains_arg "$implement_args" '-c mcp_servers.chrome-devtools-shared.enabled=false' \
   || fail "implement command omitted chrome MCP override: ${CODEX_COMMAND[*]}"

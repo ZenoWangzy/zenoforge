@@ -23,9 +23,11 @@ claude_triage_call() {
   local -a schema_args=()
   model="${identity#*:}"; model="${model%:*}"
   [ -z "$schema_file" ] || schema_args=(--json-schema "$(cat "$schema_file")")
+  matt_codex_context_prepare "$cwd"
   ( cd "$cwd" && timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN claude -p \
-      --model "$model" --output-format json --settings "$settings_file" --setting-sources project,local \
-      --strict-mcp-config --permission-mode dontAsk --tools "$tools" ${schema_args[@]+"${schema_args[@]}"} < "$prompt_file" )
+      --bare --model "$model" --output-format json --settings "$settings_file" --setting-sources project,local \
+      --strict-mcp-config --permission-mode dontAsk --tools "$tools" ${schema_args[@]+"${schema_args[@]}"} \
+      < <(matt_claude_prompt_input "$prompt_file" "$cwd" "$MATT_CODEX_CONTEXT_ROOT") )
 }
 
 # claude_tokens_used < <claude json result> -> fresh tokens of that call (input + output; cache read and creation stay out,

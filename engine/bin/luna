@@ -77,9 +77,11 @@ fi
 # Workers need no MCP servers; each codex run otherwise spawns chrome-devtools, gbrain and gitnexus (~360 MB).
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/codex-mcp.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d" && pwd -P)/worker-output-cap.sh"
+source "$engine_dir/matt-skills.sh"
 mcp_off=(); while IFS= read -r arg; do mcp_off+=("$arg"); done < <(codex_mcp_disable_args)
-args=(exec -C "$cwd" "${mcp_off[@]}" "${CODEX_PLUGINS_OFF_ARGS[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_reasoning_effort=\"${CODEX_EFFORT:-max}\"" -c shell_environment_policy.inherit=all
-  -c "tool_output_token_limit=$(worker_output_cap_tokens)" -s danger-full-access --skip-git-repo-check -o "$out/last.md" --json)
+matt_codex_context_prepare "$run_cwd"
+args=(exec "${MATT_CODEX_CONTEXT_ARGS[@]}" "${mcp_off[@]}" "${CODEX_PLUGINS_OFF_ARGS[@]}" -m "${CODEX_MODEL:-gpt-6-luna}" -c "model_reasoning_effort=\"${CODEX_EFFORT:-max}\"" -c shell_environment_policy.inherit=all
+  -c "tool_output_token_limit=$(worker_output_cap_tokens)" -s danger-full-access -o "$out/last.md" --json)
 [[ -n "$schema" ]] && args+=(--output-schema "$schema")
 # Each run lives in its own cgroup scope with a memory cap, so one runaway tool (2026-10-24: three shellcheck runs
 # took 8.7 GB and pushed memory pressure to 32%) is OOM-killed inside its job instead of freezing WSL.
@@ -97,7 +99,7 @@ if [[ ${ZF_WORKER_REMOTE_INNER:-0} == 1 ]]; then cpu_weight="${ZF_WORKER_REMOTE_
 elif [[ ${LUNA_PRIORITY:-} == hotfix ]]; then cpu_weight=1000; fi
 codex_mcp_context_mode_sentinel_dir "$root/tmp/$key" && TMPDIR="$root/tmp/$key" PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/install-guard:$root/bin:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
   systemd-run "${systemd_args[@]}" -p MemoryHigh="${mem_high:-1536M}" -p MemoryMax="${mem_max:-2G}" -p CPUQuota="${LUNA_CPU_QUOTA:-${AGENT_WORKER_CPU_QUOTA:-200%}}" -p CPUWeight="$cpu_weight" -p TasksMax="${AGENT_WORKER_TASKS_MAX:-500}" -p MemorySwapMax=0 -p OOMPolicy=continue -- \
-  codex ${CODEX_SEARCH:+--search} "${args[@]}" - <"$prompt" >"$out/events.jsonl" 2>"$out/stderr.log" &
+  codex ${CODEX_SEARCH:+--search} "${args[@]}" - < <(matt_codex_prompt_input "$prompt" "$run_cwd" "$MATT_CODEX_CONTEXT_ROOT") >"$out/events.jsonl" 2>"$out/stderr.log" &
 cpid=$!; echo "$cpid" >"$out/codex.pid"; sleep 3; rm -f -- "$wait_f" "$out/gate-wait"
 # Sample the scope's memory.peak while it lives: systemd reaps the cgroup the moment the run ends (11-21: four
 # ended runs had no scope dir left at a read after wait), so the peak must come from a read made during the run.

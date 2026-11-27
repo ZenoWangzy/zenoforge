@@ -4,6 +4,7 @@ set -euo pipefail
 unset GH_TOKEN GITHUB_TOKEN
 stage=$1; repo=$2; wt=$3; prompt=$4; artifact=$5; input=$6
 export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo}"
+export ZF_EVAL_CANDIDATE_ROOT="$wt"
 source "$repo/engine/config.sh"
 resolved_repo="$(zf_env_get REPO_DIR "$repo")"
 export REPO_DIR="$resolved_repo" ZF_REPO_DIR="$resolved_repo" TMPDIR="$artifact/tmp" AGENT_HOME="$artifact/agent-home"
@@ -70,17 +71,16 @@ case "$stage" in
       tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
       # The end-to-end implementer must persist its session; the usual text
       # seam is ephemeral. Resume uses the scheduler's exec ... resume ID shape.
-      codex_args=(exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE")
+      matt_codex_context_prepare "$wt" "$repo"
+      codex_args=(exec "${CODEX_PLUGINS_OFF_ARGS[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE")
       if [[ -n "$session_id" ]]; then
         codex_args+=(resume "$session_id")
-      else
-        codex_args+=(--cd "$wt")
       fi
       status=0
       (cd "$wt"; codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 120m codex "${codex_args[@]}" \
-        --skip-git-repo-check -m "$model" -c "model_reasoning_effort=$effort" \
+        -m "$model" -c "model_reasoning_effort=$effort" \
         "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false --json \
-        --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1) || status=$?
+        --output-last-message "$artifact/report.md" - < <(matt_codex_prompt_input "$prompt" "$wt" "$MATT_CODEX_CONTEXT_ROOT") > "$artifact/worker.log" 2>&1) || status=$?
       [[ ! -f "$artifact/report.md" ]] || cat "$artifact/report.md"
       exit "$status"
     else
@@ -102,10 +102,11 @@ case "$stage" in
       codex)
         tier=$(model_policy tier "$identity")
         tier_args=(); [[ -z "$tier" ]] || tier_args=(-c "service_tier=\"$tier\"")
-        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" --cd "$wt" \
-          --skip-git-repo-check --ephemeral -m "$model" -c "model_reasoning_effort=$effort" \
+        matt_codex_context_prepare "$wt" "$repo"
+        codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+          --ephemeral -m "$model" -c "model_reasoning_effort=$effort" \
           "${tier_args[@]}" -c mcp_servers.gitnexus.enabled=false \
-          --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1
+          --output-last-message "$artifact/report.md" - < <(matt_codex_prompt_input "$prompt" "$wt" "$MATT_CODEX_CONTEXT_ROOT") > "$artifact/worker.log" 2>&1
         ;;
       zcode)
         # Same invocation as run_zcode_json (prompt via -p, --cwd, yolo mode, proxied egress,
@@ -135,9 +136,10 @@ case "$stage" in
       record_identity "codex:profile:$profile"
     fi
     status=0
-    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec -p "$profile" "${CODEX_PLUGINS_OFF_ARGS[@]}" "${model_args[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
-      --skip-git-repo-check --ephemeral --json \
-      --output-last-message "$artifact/report.md" - < "$prompt" > "$artifact/worker.log" 2>&1 || status=$?
+    matt_codex_context_prepare "$wt" "$repo"
+    codex_mcp_context_mode_sentinel_dir "$artifact/tmp" && pipeline_execution_run timeout 45m codex exec -p "$profile" "${CODEX_PLUGINS_OFF_ARGS[@]}" "${model_args[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" --sandbox "$CODEX_SANDBOX_MODE" \
+      --ephemeral --json \
+      --output-last-message "$artifact/report.md" - < <(matt_codex_prompt_input "$prompt" "$wt" "$MATT_CODEX_CONTEXT_ROOT") > "$artifact/worker.log" 2>&1 || status=$?
     [[ -z "$swap_log" ]] || printf '%s\n' "$swap_log" >> "$artifact/worker.log"
     if (( status != 0 )) && [[ -n "$attempt_model" ]]; then model_not_found_cache_observe_log "$attempt_model" "$artifact/worker.log" || true; fi
     (( status == 0 )) || exit "$status"

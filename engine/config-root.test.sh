@@ -70,7 +70,40 @@ mkdir -p "$target/.zenoforge/prompts" "$pack/prompts" "$engine/prompts"
 printf 'target prompt\n' > "$target/.zenoforge/prompts/advisor.md"
 printf 'pack prompt\n' > "$pack/prompts/advisor.md"
 printf 'engine prompt\n' > "$engine/prompts/advisor.md"
-check 'a nested prompt read uses the target config override' "$(cat "$(zf_config_file prompts/advisor.md)")" 'target prompt'
+check 'an unversioned target prompt stays on the pack copy' "$(cat "$(zf_config_file prompts/advisor.md)")" 'pack prompt'
+
+revision_target="$test_env_root/revision-target"
+revision_version="$test_env_root/revision-version"
+mkdir -p "$revision_target/.zenoforge/prompts" "$revision_version/engine/prompts" "$revision_version/.zenoforge/prompts" "$revision_version/.agents/skills"
+git -C "$revision_target" init -q -b main
+git -C "$revision_target" config user.name fixture
+git -C "$revision_target" config user.email fixture@example.invalid
+printf 'accepted prompt\n' > "$revision_target/.zenoforge/prompts/advisor.md"
+git -C "$revision_target" add .
+git -C "$revision_target" commit -qm accepted
+accepted_prompt_sha="$(git -C "$revision_target" rev-parse HEAD)"
+printf 'candidate prompt\n' > "$revision_target/.zenoforge/prompts/advisor.md"
+git -C "$revision_target" add .
+git -C "$revision_target" commit -qm candidate
+candidate_prompt_sha="$(git -C "$revision_target" rev-parse HEAD)"
+printf 'pinned prompt\n' > "$revision_version/engine/prompts/advisor.md"
+printf 'accepted prompt\n' > "$revision_version/.zenoforge/prompts/advisor.md"
+printf 'product_sha=%s\n' "$accepted_prompt_sha" > "$revision_version/BUILD-INFO"
+ZF_REPO_DIR="$revision_target" ZF_ENGINE_DIR="$revision_version/engine" ZF_CONFIG_ROOT="$revision_target/.zenoforge" ZF_PACK_DIR=
+source "$SCRIPT_DIR/matt-skills.sh"
+_MATT_SKILLS_ENGINE_DIR="$revision_version/.agents/skills"
+check 'unaccepted target prompt stays on its accepted product copy' "$(zf_config_file prompts/advisor.md)" "$revision_version/.zenoforge/prompts/advisor.md"
+printf 'product_sha=%s\n' "$candidate_prompt_sha" > "$revision_version/BUILD-INFO"
+printf 'candidate prompt\n' > "$revision_version/.zenoforge/prompts/advisor.md"
+check 'target prompt activates after the product revision is pinned' "$(zf_config_file prompts/advisor.md)" "$revision_target/.zenoforge/prompts/advisor.md"
+git -C "$revision_target" rm -q .zenoforge/prompts/advisor.md
+git -C "$revision_target" commit -qm remove-prompt
+deleted_prompt_sha="$(git -C "$revision_target" rev-parse HEAD)"
+check 'unaccepted target prompt deletion stays on its accepted product copy' "$(zf_config_file prompts/advisor.md)" "$revision_version/.zenoforge/prompts/advisor.md"
+printf 'product_sha=%s\n' "$deleted_prompt_sha" > "$revision_version/BUILD-INFO"
+check 'target prompt deletion activates after the product revision is pinned' "$(zf_config_file prompts/advisor.md)" "$revision_version/engine/prompts/advisor.md"
+ZF_REPO_DIR="$target" ZF_ENGINE_DIR="$engine" ZF_CONFIG_ROOT="$target/.zenoforge" ZF_PACK_DIR="$pack"
+source "$SCRIPT_DIR/matt-skills.sh"
 
 override="$test_env_root/config-override"
 mkdir -p "$override"

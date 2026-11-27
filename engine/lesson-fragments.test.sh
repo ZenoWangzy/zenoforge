@@ -3,7 +3,6 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 tmp="$(mktemp -d)"
-trap 'rm -r -- "$tmp"' EXIT
 mkdir -p "$tmp/repo/lessons/pending" "$tmp/repo/lessons/full" "$tmp/repo/engine/state" "$tmp/repo/.zenoforge/state"
 cp "$REPO_DIR/engine/lesson-fragments.sh" "$REPO_DIR/engine/config.sh" "$REPO_DIR/engine/incident-guards.mjs" "$tmp/repo/engine/"
 printf '{"incidents":[]}\n' > "$tmp/registry.json"
@@ -11,9 +10,14 @@ printf 'Rule: [V-NEXT](../RULES.md#v-next).\n' > "$tmp/repo/lessons/full/registr
 cat > "$tmp/valid-fragment.json" <<'JSON'
 {
   "id":"registry-parity",
+  "category":"automated-checks",
   "rule":"<a id=\"v-next\"></a>\n**V-NEXT** fixture rule.",
   "catalog_entry":"Applies: [V-NEXT](RULES.md#v-next); full: ./full/registry-parity.md",
   "full_lesson_path":"lessons/full/registry-parity.md",
+  "source_event":{"session_key":"fixture","event_line":1},
+  "derived_from":["V1272"],
+  "check":{"type":"failure"},
+  "admission":{"status":"passed","source_match":true,"normal_sessions":["n1","n2","n3","n4","n5","n6","n7","n8","n9","n10"],"matched_normal_events":0},
   "enforcement":{"level":"architecture","enforced_by":["engine/lesson-fragments.sh"]},
   "guard":{
     "id":"registry-parity","date":"2026-10-12","class":"fixture",
@@ -47,6 +51,18 @@ rm "$tmp/repo/lessons/pending/override-stale.json"
 printf '{"id":"unselected-invalid"}\n' > "$tmp/repo/lessons/pending/unselected-invalid.json"
 bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json" --files "$tmp/repo/lessons/pending/registry-parity.json"
 rm "$tmp/repo/lessons/pending/unselected-invalid.json"
+jq 'del(.guard, .enforcement, .admission) | .id="unmeasured" | .full_lesson_path="lessons/full/unmeasured.md"' \
+  "$tmp/valid-fragment.json" > "$tmp/repo/lessons/pending/unmeasured.json"
+cp "$tmp/repo/lessons/full/registry-parity.md" "$tmp/repo/lessons/full/unmeasured.md"
+if bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json" --files "$tmp/repo/lessons/pending/unmeasured.json" >"$tmp/stdout" 2>"$tmp/stderr"; then
+  echo 'lesson-fragments.test.sh: unmeasured candidate check was accepted' >&2
+  exit 1
+fi
+grep -Fq 'candidate check has no passing event measurement' "$tmp/stderr" || {
+  echo "lesson-fragments.test.sh: refusal omitted its reason: $(cat "$tmp/stderr")" >&2
+  exit 1
+}
+rm "$tmp/repo/lessons/pending/unmeasured.json"
 bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json"
 jq 'del(.guard, .enforcement)' "$tmp/valid-fragment.json" > "$tmp/expected-fragment.json"
 cmp "$tmp/expected-fragment.json" "$tmp/repo/lessons/pending/registry-parity.json"

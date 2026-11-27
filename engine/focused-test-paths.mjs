@@ -95,7 +95,11 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'scripts/deploy-regression-contract.test.mjs',
   ]],
   // The worker prompt reads the product-boundary lines from CLAUDE.md.
-  ['CLAUDE.md', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],
+  ['CLAUDE.md', [
+    'engine/mac-autopilot/worker-rules-lanes.test.sh', 'engine/mac-autopilot/eval-regression-revert.test.sh',
+    'engine/mac-autopilot/worker-command.test.sh', 'engine/land-admit.test.sh',
+    'engine/matt-skills.test.sh', 'engine/triage-claude-fallback.test.sh',
+  ]],
   ['CONTRIBUTING.md', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],
   ['GLOSSARY.md', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],
   ['docs/adr/**', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],
@@ -841,6 +845,8 @@ export function focusedTestPaths(changedPaths, trackedPaths, refs = {}) {
         ['advisor.schema.json', ['run-advisor', 'run-advisor-batch']],
         ['recut.md', 'run-recut'],
         ['recut.schema.json', 'run-recut'],
+        ['retro.md', 'retro/retro'],
+        ['retro.schema.json', 'retro/retro'],
       ]).get(prompt);
       // Every .md prompt also runs run-triage-batch.test.sh: it holds the prompt byte budgets (#1281 went past one; main red).
       candidates = [...(Array.isArray(promptOwner) ? promptOwner : promptOwner ? [promptOwner] : []), ...(prompt.endsWith('.md') ? ['run-triage-batch'] : [])]

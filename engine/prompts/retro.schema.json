@@ -8,14 +8,16 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["category", "severity", "session_key", "event_line", "evidence", "proposal"],
+        "required": ["category", "severity", "session_key", "event_line", "evidence", "proposal", "derived_from"],
         "properties": {
           "category": {"type": "string", "enum": ["navigation", "automated-checks", "coding-standards", "global-agents-md", "tool-economy", "no-ops", "information-access"]},
           "severity": {"type": "string", "enum": ["low", "medium", "high"]},
           "session_key": {"type": "string"},
           "event_line": {"type": "integer", "minimum": 1},
           "evidence": {"type": "string"},
-          "proposal": {"type": "string"}
+          "proposal": {"type": "string"},
+          "check": {"type": "object", "minProperties": 1},
+          "derived_from": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"}, "uniqueItems": true}
         }
       }
     }

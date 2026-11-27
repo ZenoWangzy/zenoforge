@@ -238,9 +238,9 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       fi
     } > "$SUP/$q"
     launcher=(); command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-    if [[ "$over_stop" != true ]]; then codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" || return 1; fi; worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); exec timeout -k 30 900 codex exec -p "$1" -c features.plugins=false "${extra[@]}" \
-      --skip-git-repo-check -s read-only --json --output-last-message "$2" - < "$3"' \
-      supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$MODEL_NOT_FOUND_ARBITER_MODEL" "$MODEL_NOT_FOUND_ARBITER_EFFORT")
+    if [[ "$over_stop" != true ]]; then codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" || return 1; fi; worker_command=(bash -c 'extra=(); [[ -z "$4" ]] || extra=(-m "$4" -c "model_reasoning_effort=$5"); source "$6/engine/matt-skills.sh"; matt_codex_context_prepare "$7"; exec timeout -k 30 900 codex exec -p "$1" -c features.plugins=false "${extra[@]}" "${MATT_CODEX_CONTEXT_ARGS[@]}" \
+      -s read-only --json --output-last-message "$2" - < <(matt_codex_prompt_input "$3" "$7" "$MATT_CODEX_CONTEXT_ROOT")' \
+      supervisor-arbiter "$arbiter_profile" "$SUP/$report" "$SUP/$q" "$MODEL_NOT_FOUND_ARBITER_MODEL" "$MODEL_NOT_FOUND_ARBITER_EFFORT" "$ENGINE_ROOT" "$ROOT")
     # stream-json to the log (usage and answer on the result line; harvest writes the report). The frozen record rides in the prompt, so no tools.
     # --safe-mode --setting-sources "" as in build_claude_implement_command; an empty effort drops --effort.
     [[ "$over_stop" != true ]] || worker_command=(bash -c 'exec timeout -k 30 900 claude -p \

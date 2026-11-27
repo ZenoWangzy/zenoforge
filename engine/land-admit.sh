@@ -1,17 +1,49 @@
 # Shared admission checks for every landing entry point.
 # Each function returns 0 to admit and 1 to refuse.
+land_always_loaded_text_byte_budget_check() {
+  local root="${1:-}" changed="${2:-}" path budget=8192 bytes total=0 files=''
+  [[ -d "$root" ]] || { printf 'always-loaded text byte budget: repository root is unavailable\n' >&2; return 1; }
+  [[ -z "$changed" ]] || grep -Eq '^(CLAUDE\.md|AGENTS\.md|AGENTS\.override\.md)$' <<<"$changed" || return 0
+  for path in CLAUDE.md AGENTS.md AGENTS.override.md; do
+    [[ -f "$root/$path" ]] || continue
+    bytes="$(wc -c <"$root/$path" | tr -d ' ')" || return 1
+    total=$((total + bytes))
+    files+="${files:+ + }$path"
+  done
+  if (( total > budget )); then
+    printf '%s is %s bytes, budget %s bytes; remove or demote lower-value text\n' "$files" "$total" "$budget" >&2
+    return 1
+  fi
+}
+
+land_candidate_eval_admission_check() {
+  local root="${1:-}" changed="${2:-}" output
+  [[ -n "$changed" ]] || return 0
+  [[ -d "$root" ]] || { printf 'paired evaluation admission: repository root is unavailable\n' >&2; return 1; }
+  [[ -r "$root/engine/eval/decision-stages.sh" ]] || {
+    printf 'paired evaluation admission: stage mapping is unavailable\n' >&2
+    return 1
+  }
+  if ! output="$(bash "$root/engine/eval/decision-stages.sh" --pin <<<"$changed" 2>&1)"; then
+    printf 'paired evaluation admission: candidate input is unmeasurable; leave it as an observation\n%s\n' "$output" >&2
+    return 1
+  fi
+}
+
 land_prompt_byte_budget_check() {
-  local root="${1:-}" base="${2:-}" head="${3:-}" changed="${4:-}" table path name budget bytes
+  local root="${1:-}" base="${2:-}" head="${3:-}" changed="${4:-}" table path name budget bytes map_root="${5:-${1:-}}"
   local scan_all=0
   local -a prompt_paths=()
   [[ -d "$root" ]] || { printf 'prompt byte budget: repository root is unavailable\n' >&2; return 1; }
   if [[ -n "$base" || -n "$head" ]]; then
     [[ -n "$base" && -n "$head" ]] || { printf 'prompt byte budget: both base and head are required\n' >&2; return 1; }
-    changed="$(git -C "$root" diff --name-only "$base...$head" 2>/dev/null)" \
+    changed="$(git -C "$root" diff --no-renames --name-only "$base...$head" 2>/dev/null)" \
       || { printf 'prompt byte budget: could not read the landing diff\n' >&2; return 1; }
   elif [[ -z "$changed" ]]; then
     scan_all=1
   fi
+  land_candidate_eval_admission_check "$map_root" "$changed" || return 1
+  land_always_loaded_text_byte_budget_check "$root" "$changed" || return 1
   grep -q '^engine/prompts/' <<<"$changed" || (( scan_all == 1 )) || return 0
   table="$root/engine/prompts/byte-budgets.tsv"
   [[ -f "$table" ]] || { printf 'prompt byte budget: missing engine/prompts/byte-budgets.tsv\n' >&2; return 1; }
@@ -41,16 +73,19 @@ land_pr_prompt_byte_budget_check() {
   local pr="$1" head_sha="$2" repo="${3:-}" files root ref tree actual_sha prompt_paths path output='' rc=0
   local -a repo_args=()
   [[ -n "$repo" ]] && repo_args=(--repo "$repo")
-  files="$(gh api --paginate "${repo_args[@]}" --jq '.[].filename' \
+  files="$(gh api --paginate "${repo_args[@]}" --jq '.[] | .filename, (.previous_filename // empty)' \
     "repos/{owner}/{repo}/pulls/$pr/files?per_page=100" 2>/dev/null)" || {
     printf 'prompt byte budget: could not read PR #%s files\n' "$pr" >&2
     return 1
   }
-  grep -q '^engine/prompts/' <<<"$files" || return 0
   root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     printf 'prompt byte budget: repository checkout is unavailable\n' >&2
     return 1
   }
+  land_candidate_eval_admission_check "$root" "$files" || return 1
+  if ! grep -q '^engine/prompts/' <<<"$files" && ! grep -Eq '^(CLAUDE\.md|AGENTS\.md|AGENTS\.override\.md)$' <<<"$files"; then
+    return 0
+  fi
   ref="refs/zf-land-prompt-budget/$pr"
   git -C "$root" fetch -q origin "+refs/pull/$pr/head:$ref" 2>/dev/null || {
     printf 'prompt byte budget: could not fetch PR #%s head\n' "$pr" >&2
@@ -75,6 +110,12 @@ land_pr_prompt_byte_budget_check() {
   else
     prompt_paths="$(grep -E '^engine/prompts/[^/]+\.md$' <<<"$files" || true)"
   fi
+  for path in CLAUDE.md AGENTS.md AGENTS.override.md; do
+    if git -C "$root" cat-file -e "$ref:$path" 2>/dev/null; then
+      git -C "$root" show "$ref:$path" > "$tree/$path" \
+        || { rc=1; output="always-loaded text byte budget: could not read PR #$pr $path"; }
+    fi
+  done
   while IFS= read -r path; do
     [[ "$path" =~ ^engine/prompts/[^/]+\.md$ ]] || continue
     if git -C "$root" cat-file -e "$ref:$path" 2>/dev/null; then
@@ -83,7 +124,7 @@ land_pr_prompt_byte_budget_check() {
     fi
   done <<<"$prompt_paths"
   if (( rc == 0 )); then
-    output="$(land_prompt_byte_budget_check "$tree" '' '' "$files" 2>&1)" || rc=$?
+    output="$(land_prompt_byte_budget_check "$tree" '' '' "$files" "$root" 2>&1)" || rc=$?
   fi
   rm -rf -- "$tree"
   git -C "$root" update-ref -d "$ref" 2>/dev/null || true

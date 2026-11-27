@@ -30,4 +30,61 @@ test_provider_quota_classification() {
 }
 test_provider_quota_classification
 
+fail() { printf 'model-calls.test.sh: %s\n' "$*" >&2; exit 1; }
+
+test_codex_uses_pinned_project_instructions() {
+  local fixture="$test_env_root/pinned-context" repo="$test_env_root/candidate-context" version="$test_env_root/accepted-version" fakebin="$test_env_root/fake-codex" accepted_sha candidate_sha result
+  mkdir -p "$repo" "$version/.agents/skills" "$fakebin"
+  git -C "$repo" init -q -b main
+  git -C "$repo" config user.name fixture
+  git -C "$repo" config user.email fixture@example.invalid
+  printf 'accepted instructions\n' > "$repo/AGENTS.md"
+  git -C "$repo" add .
+  git -C "$repo" commit -qm accepted
+  accepted_sha="$(git -C "$repo" rev-parse HEAD)"
+  printf 'candidate instructions\n' > "$repo/AGENTS.md"
+  git -C "$repo" add .
+  git -C "$repo" commit -qm candidate
+  candidate_sha="$(git -C "$repo" rev-parse HEAD)"
+  printf 'product_sha=%s\n' "$accepted_sha" > "$version/BUILD-INFO"
+  _MATT_SKILLS_ENGINE_DIR="$version/.agents/skills"
+  printf 'prompt\n' > "$fixture.prompt"
+  printf '{}' > "$fixture.schema"
+  cat > "$fakebin/codex" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CODEX_CAPTURE_ARGS"
+cat > "$CODEX_CAPTURE_STDIN"
+while (($#)); do
+  if [[ "$1" == --output-last-message ]]; then output_file="$2"; shift 2; else shift; fi
+done
+printf '{"ok":true}' > "$output_file"
+SH
+  chmod +x "$fakebin/codex"
+  export CODEX_CAPTURE_ARGS="$fixture.args" CODEX_CAPTURE_STDIN="$fixture.stdin"
+  PATH="$fakebin:$PATH"
+  model_policy_require_implementer_identity() { return 0; }
+  model_policy() { return 0; }
+  pipeline_execution_run() { "$@"; }
+  codex_mcp_context_mode_sentinel_dir() { return 0; }
+  CODEX_SANDBOX_MODE=read-only CODEX_PLUGINS_OFF_ARGS=() CODEX_JSON_TIMEOUT_SECONDS=10
+  result="$(run_codex_json "$repo" model effort "$fixture.schema" "$fixture.prompt")"
+  [[ "$result" == *'"is_error":false'* ]] || fail 'pinned-context Codex call did not complete'
+  grep -Fxq "$version" "$CODEX_CAPTURE_ARGS" || fail 'Codex did not start from the accepted instruction revision'
+  grep -Fxq "$repo" "$CODEX_CAPTURE_ARGS" || fail 'Codex was not given the candidate checkout as an added directory'
+  grep -Fq "$repo" "$CODEX_CAPTURE_STDIN" || fail 'Codex prompt did not name the candidate checkout'
+  run_codex_implement "$repo" model effort "$fixture.prompt" "$fixture.log" 1 context-test
+  grep -Fxq "$version" "$CODEX_CAPTURE_ARGS" || fail 'Codex implement loaded an unevaluated AGENTS.md'
+  grep -Fxq "$repo" "$CODEX_CAPTURE_ARGS" || fail 'Codex implement lost access to the candidate checkout'
+  grep -Fq "$repo" "$CODEX_CAPTURE_STDIN" || fail 'Codex implement prompt did not name the candidate checkout'
+  printf 'product_sha=%s\n' "$candidate_sha" > "$version/BUILD-INFO"
+  run_codex_json "$repo" model effort "$fixture.schema" "$fixture.prompt" >/dev/null
+  grep -Fxq "$repo" "$CODEX_CAPTURE_ARGS" || fail 'accepted AGENTS.md did not restore the target checkout context'
+}
+test_codex_uses_pinned_project_instructions
+
+grep -Fq 'matt_codex_context_prepare "$REPO_DIR"' "$LIB_TEST_ROOT/lib.d/codex-budget.sh" \
+  || fail 'Codex recovery probe does not use the accepted project instruction context'
+grep -Fq -- '--cd "$MATT_CODEX_CONTEXT_ROOT" --skip-git-repo-check' "$LIB_TEST_ROOT/lib.d/codex-budget.sh" \
+  || fail 'Codex recovery probe does not launch from the accepted project instruction root'
+
 lib_case_exit

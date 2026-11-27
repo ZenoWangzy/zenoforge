@@ -98,6 +98,9 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
   local -a resume=() common=()
   local note="
 （本次运行只能写当前工作目录，无权写其他路径：把完整报告正文作为最终回答输出，调度器会原样落盘为报告。Bash 只认白名单单条命令：git status/diff/log/show/add/commit/stash/merge/fetch、git push origin 本单元分支、pnpm、npx vitest、node --test、bash <file>.test.sh、node scripts/branch-delivery-preflight.mjs、rg/grep/sed/cat/ls/head/tail/wc/jq；一条被拒就拆成白名单单条命令重试，命令不要以 cd 或变量赋值开头，不要用子 shell 和重定向到工作目录以外；被拒也不能放弃交付，git add、git commit、git push origin 本单元分支 这三条单独命令始终可用，改完必须用它们提交并推送，不要换路绕过。）"
+  matt_codex_context_prepare "$workdir"
+  [[ -z "$MATT_CODEX_CONTEXT_NOTE" ]] || prompt+="$MATT_CODEX_CONTEXT_NOTE"
+  prompt+="$(matt_instruction_context_text "$MATT_CODEX_INSTRUCTIONS_ROOT")"
   prompt+="$note"; cold_prompt="$prompt"
   if [[ "$type" == repair ]]; then
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
@@ -123,7 +126,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
   WORKER_STDOUT_REPORT=0  # stream-json 不是报告：harvest 从 result 行取最终回答
   CODEX_USAGE_START='{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}'  # result 行是本次调用自己的用量
   common=(--model "$model" --effort "$effort" --output-format stream-json --verbose \
-    --permission-mode dontAsk --safe-mode --setting-sources "" --strict-mcp-config \
+    --bare --permission-mode dontAsk --safe-mode --setting-sources "" --strict-mcp-config \
     --tools "$tools" --allowedTools "$allowed")
   CODEX_COMMAND=(claude -p "$prompt" ${resume[@]+"${resume[@]}"} "${common[@]}")
   # codex-repair-run.sh falls back to this cold start when a resume dies before any work.
@@ -132,7 +135,7 @@ build_claude_implement_command() { # type model effort unit prompt failure workd
 
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider] [report-only-resume] [expected-session-id]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" session_file="" stored_service_tier="" usage prompt_arg role tier self_fix prior config_arg review_allowed_tools claude_cli_tools zcode_mode=yolo
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" report_only="${9:-false}" expected_session_id="${10:-}" sandbox_mode="danger-full-access" session_id="" session_file="" stored_service_tier="" usage prompt_arg role tier self_fix prior config_arg review_allowed_tools claude_cli_tools zcode_mode=yolo context_note
   local -a tier_args=() codex_config_args=() zcode_cmd=()
   local output_tokens
   CODEX_MODE=fresh
@@ -172,6 +175,9 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   fi
   if [[ "$provider" == claude ]]; then
     [[ "$type" == review || "$type" == rereview ]] || return 1
+    matt_codex_context_prepare "$workdir"
+    [[ -z "$MATT_CODEX_CONTEXT_NOTE" ]] || prompt_arg+="$MATT_CODEX_CONTEXT_NOTE"
+    prompt_arg+="$(matt_instruction_context_text "$MATT_CODEX_INSTRUCTIONS_ROOT")"
     # Review report stays on stdout; plan mode and explicit denies keep the review clone read-only.
     # --strict-mcp-config：不加载用户级 MCP 服务器（4 个评审曾拉起 426 个进程、2.5 GB 内存，且 chrome-devtools 会碰用户浏览器）。
     WORKER_STDOUT_REPORT=1
@@ -183,9 +189,15 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
 （把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。本次评审只读：不要编辑、提交、推送或运行测试；发现问题时保持 finding 为 open 并写明修复建议，由 repair 阶段处理。
 当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」。可用命令：git diff/log/show/rev-parse/merge-base/ls-files/status、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort/uniq。优先用 Read/Grep 工具读代码。）" \
       --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
-      --model "$model" --effort "$effort" --permission-mode plan --strict-mcp-config \
+      --bare --model "$model" --effort "$effort" --permission-mode plan --strict-mcp-config \
       --tools "$claude_cli_tools" --allowedTools "$review_allowed_tools" --disallowedTools "$(claude_review_disallowed_tools)")
     return 0
+  fi
+  matt_codex_context_prepare "$workdir"
+  context_note="$MATT_CODEX_CONTEXT_NOTE"
+  if [[ -n "$context_note" ]]; then
+    prompt_arg+="$context_note"
+    failure+="$context_note"
   fi
   tier="$(jqf -r --arg m "$model" '[.models[] | select(type=="array") | select(.[0]==$m) | .[2] // empty][0] // empty' <<<"$CFG")"
   [[ -n "$tier" ]] || tier="${PICK_SERVICE_TIER:-default}"
@@ -197,7 +209,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
   [[ "$type" != implement ]] || (( output_tokens <= 8000 )) || output_tokens=8000
   codex_config_args+=(-c "tool_output_token_limit=$output_tokens")
   # Persistent implementer sessions: never add --ephemeral here.
-  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_FRESH_COMMAND=(codex exec -m "$model" -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
+  codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_FRESH_COMMAND=(codex exec "${MATT_CODEX_CONTEXT_ARGS[@]}" -m "$model" -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
     ${codex_config_args[@]+"${codex_config_args[@]}"} -s "$sandbox_mode" --json "$prompt_arg") || return 1
   if [[ "$type" == repair ]]; then
     prior="$(unit_field "$unit" '.sessions.repair // {}')"
@@ -229,7 +241,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$(session_usage_for_id "$session_id")"
         if [[ "$report_only" == true && "$session_id" != "$expected_session_id" ]]; then return 1; fi
-        codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
+        codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_COMMAND=(codex exec "${MATT_CODEX_CONTEXT_ARGS[@]}" -s "$sandbox_mode" resume "$session_id" -m "$model" \
           -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
           ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$failure") || return 1
         return 0
@@ -256,7 +268,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
         CODEX_SESSION_ID="$session_id"
         CODEX_USAGE_START="$snapshot"
         prompt_arg="继续沿用本会话已有上下文，仅处理本次增量任务，不重读未变化背景：$prompt"
-        codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_COMMAND=(codex exec -s "$sandbox_mode" resume "$session_id" -m "$model" \
+        codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && CODEX_COMMAND=(codex exec "${MATT_CODEX_CONTEXT_ARGS[@]}" -s "$sandbox_mode" resume "$session_id" -m "$model" \
           -c "model_reasoning_effort=$effort" ${tier_args[@]+"${tier_args[@]}"} "${CODEX_ENV_ARGS[@]}" \
           ${codex_config_args[@]+"${codex_config_args[@]}"} --json "$prompt_arg") || return 1
         return 0

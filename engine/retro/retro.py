@@ -16,6 +16,7 @@ from collections import Counter
 CATEGORIES = {"navigation", "automated-checks", "coding-standards", "global-agents-md",
               "tool-economy", "no-ops", "information-access"}
 SEVERITIES = {"low", "medium", "high"}
+NORMAL_SAMPLE_SIZE = 10
 
 
 def select(root, n):
@@ -85,6 +86,130 @@ def event_at(root, candidate):
     raise ValueError(f"candidate event line is missing: {session}:{line}")
 
 
+def source_event(candidate):
+    return {"session_key": candidate["session_key"], "event_line": candidate["event_line"]}
+
+
+def valid_lineage_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", value) is not None
+
+
+def known_lineage_ids(repo, out_dir):
+    ids = set()
+    rules_path = os.path.join(repo, "lessons", "RULES.md")
+    if os.path.isfile(rules_path):
+        with open(rules_path, encoding="utf-8", errors="replace") as rules:
+            ids.update(re.findall(r"\*\*(V[A-Z0-9-]+)\*\*", rules.read()))
+    for directory in ("full", "pending"):
+        for path in glob.glob(os.path.join(repo, "lessons", directory, "*")):
+            if os.path.isfile(path):
+                ids.add(os.path.splitext(os.path.basename(path))[0])
+    state = read_verify_state(out_dir)
+    for change in state["changes"]:
+        for key in ("lineage_id", "class", "lesson"):
+            value = change.get(key)
+            if valid_lineage_id(value):
+                ids.add(value)
+        issue = change.get("issue")
+        if isinstance(issue, int) and not isinstance(issue, bool) and issue > 0:
+            ids.add(f"issue:{issue}")
+    return sorted(ids)
+
+
+def lineage_context(repo, out_dir):
+    ids = known_lineage_ids(repo, out_dir)
+    return "Earlier lesson or candidate IDs for derived_from: " + (", ".join(ids) if ids else "none recorded")
+
+
+def candidate_lineage(repo, out_dir, candidate):
+    parents = candidate.get("derived_from", [])
+    if not isinstance(parents, list) or any(not valid_lineage_id(parent) for parent in parents):
+        return [], "derived_from must contain only valid earlier lesson or candidate ids"
+    parents = list(dict.fromkeys(parents))
+    unknown = sorted(set(parents) - set(known_lineage_ids(repo, out_dir)))
+    if unknown:
+        return parents, "unknown earlier lesson or candidate ids: " + ", ".join(unknown)
+    return parents, None
+
+
+def session_events(root, key):
+    path = os.path.join(root, "luna", key, "events.jsonl")
+    if not os.path.isfile(path):
+        return None
+    events = []
+    try:
+        with open(path, encoding="utf-8") as event_file:
+            for line in event_file:
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    return None
+                events.append(event)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return events if events else None
+
+
+def normal_session_samples(root, excluded):
+    sessions = []
+    for directory in glob.glob(os.path.join(root, "luna", "*")):
+        key = os.path.basename(directory)
+        rc_path = os.path.join(directory, "rc")
+        if key.startswith("retro-") or key in excluded or not os.path.isfile(rc_path):
+            continue
+        try:
+            with open(rc_path, encoding="utf-8") as rc_file:
+                if rc_file.read().strip() != "0":
+                    continue
+            events = session_events(root, key)
+        except OSError:
+            continue
+        if events is not None:
+            sessions.append((os.path.getmtime(rc_path), key, events))
+    sessions.sort(reverse=True)
+    return sessions[:NORMAL_SAMPLE_SIZE]
+
+
+def event_matches(event, matcher):
+    if not isinstance(event, dict) or not isinstance(matcher, dict) or not matcher:
+        return False
+    for field, expected in matcher.items():
+        if not isinstance(field, str) or not field or field not in event:
+            return False
+        actual = event[field]
+        if isinstance(expected, dict):
+            if not expected or not event_matches(actual, expected):
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+def measure_check(root, candidate):
+    matcher = candidate.get("check")
+    if not isinstance(matcher, dict) or not matcher:
+        return None, "no check matcher was provided"
+    try:
+        event = json.loads(event_at(root, candidate))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None, "source event is not a readable JSON object"
+    if not event_matches(event, matcher):
+        return None, "check matcher did not fire on the source event"
+    samples = normal_session_samples(root, {candidate["session_key"]})
+    if len(samples) < NORMAL_SAMPLE_SIZE:
+        return None, f"only {len(samples)} of {NORMAL_SAMPLE_SIZE} normal sessions is available"
+    for _, key, events in samples:
+        if any(event_matches(normal_event, matcher) for normal_event in events):
+            return None, f"check matcher also fired on normal session {key}"
+    return {
+        "status": "passed",
+        "source_match": True,
+        "normal_sessions": [key for _, key, _ in samples],
+        "matched_normal_events": 0,
+    }, None
+
+
 def candidate_class(engine, category, event):
     helper = os.path.join(engine, "mac-autopilot", "incident-fingerprint.sh")
     script = 'source "$1"; fingerprint="$(incident_fingerprint "$3")"; incident_class "$2 $fingerprint"'
@@ -103,11 +228,13 @@ def verify_state_path(out_dir):
 def read_verify_state(out_dir):
     path = verify_state_path(out_dir)
     if not os.path.isfile(path):
-        return {"changes": []}
+        return {"changes": [], "observations": []}
     with open(path, encoding="utf-8") as state_file:
         state = json.load(state_file)
-    if not isinstance(state, dict) or not isinstance(state.get("changes"), list):
+    if (not isinstance(state, dict) or not isinstance(state.get("changes"), list)
+            or not isinstance(state.get("observations", []), list)):
         raise ValueError(f"invalid retro verification state: {path}")
+    state.setdefault("observations", [])
     return state
 
 
@@ -130,35 +257,80 @@ def retro_out_dir():
     )
 
 
-def record_candidate_issue(out_dir, issue, category, key):
+def merge_record_values(record, field, values):
+    merged = record.get(field, [])
+    for value in values:
+        if value not in merged:
+            merged.append(value)
+    record[field] = merged
+
+
+def record_observation(out_dir, candidate, key, parents, reason):
     state = read_verify_state(out_dir)
-    if not any(change.get("issue") == issue for change in state["changes"]):
-        state["changes"].append({
+    source = source_event(candidate)
+    identity = (key, source["session_key"], source["event_line"])
+    observations = state["observations"]
+    if not any((row.get("class"), row.get("source_event", {}).get("session_key"),
+                row.get("source_event", {}).get("event_line")) == identity for row in observations):
+        observations.append({
+            "class": key,
+            "lineage_id": key,
+            "category": candidate["category"],
+            "severity": candidate["severity"],
+            "proposal": candidate["proposal"],
+            "source_event": source,
+            "derived_from": parents,
+            "reason": reason,
+            "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        write_verify_state(out_dir, state)
+
+
+def record_candidate_issue(out_dir, issue, category, key, candidate):
+    state = read_verify_state(out_dir)
+    change = next((row for row in state["changes"] if row.get("issue") == issue), None)
+    if change is None:
+        change = {
             "issue": issue,
             "category": category,
             "class": key,
+            "lineage_id": key,
+            "derived_from": candidate["derived_from"],
+            "sources": [source_event(candidate)],
             "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        })
-        write_verify_state(out_dir, state)
+        }
+        state["changes"].append(change)
+    else:
+        merge_record_values(change, "sources", [source_event(candidate)])
+        merge_record_values(change, "derived_from", candidate["derived_from"])
+    write_verify_state(out_dir, state)
 
 
-def record_lesson_change(out_dir, category, key):
+def record_lesson_change(out_dir, category, key, candidate, admission):
     state = read_verify_state(out_dir)
-    if not any(change.get("lesson") == key for change in state["changes"]):
-        # A lesson fragment lands with no issue and no merged PR, so no merge time can
-        # date a before/after count; verify skips it by verifiable, not by absence.
-        state["changes"].append({
+    change = next((row for row in state["changes"] if row.get("lesson") == key), None)
+    if change is None:
+        change = {
             "lesson": key,
             "category": category,
             "class": key,
+            "lineage_id": key,
+            "derived_from": candidate["derived_from"],
+            "sources": [source_event(candidate)],
+            "admission": admission,
             "verifiable": False,
-            "reason": "lesson fragment has no issue or merged PR to date a before/after window",
+            "reason": "measured event check is recorded as a lesson fragment without a merged PR window",
             "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        })
-        write_verify_state(out_dir, state)
+        }
+        state["changes"].append(change)
+    else:
+        merge_record_values(change, "sources", [source_event(candidate)])
+        merge_record_values(change, "derived_from", candidate["derived_from"])
+        change["admission"] = admission
+    write_verify_state(out_dir, state)
 
 
-def write_lesson_fragment(repo, candidate, key):
+def write_lesson_fragment(repo, candidate, key, admission):
     lesson_id = key
     pending_dir = os.path.join(repo, "lessons", "pending")
     full_path = os.path.join(repo, "lessons", "full", f"{lesson_id}.md")
@@ -176,14 +348,22 @@ def write_lesson_fragment(repo, candidate, key):
         f"- Severity: {candidate['severity']}\n"
         f"- Session: {candidate['session_key']}\n"
         f"- Event line: {candidate['event_line']} in events.jsonl\n"
+        f"- Derived from: {', '.join(candidate['derived_from']) or 'none recorded'}\n"
+        f"- Matcher: `{json.dumps(candidate['check'], sort_keys=True)}`\n"
+        f"- Admission: matched the source event and stayed silent in {len(admission['normal_sessions'])} normal sessions\n"
         f"- Observation: {evidence}\n\n"
         "The pending rule is [V-NEXT](../RULES.md#v-next).\n"
     )
     fragment = {
         "id": lesson_id,
+        "category": candidate["category"],
         "rule": '<a id="v-next"></a>\n**V-NEXT** Add the deterministic check described in the full lesson.',
         "catalog_entry": f"Applies: [V-NEXT](RULES.md#v-next); full: ./full/{lesson_id}.md",
         "full_lesson_path": f"lessons/full/{lesson_id}.md",
+        "source_event": source_event(candidate),
+        "derived_from": candidate["derived_from"],
+        "check": candidate["check"],
+        "admission": admission,
     }
     with open(full_path, "w", encoding="utf-8") as full_file:
         full_file.write(full_lesson)
@@ -200,7 +380,10 @@ def file_intake_candidate(repo, engine, candidate, key):
         f"- Category: {candidate['category']}\n"
         f"- Severity: {candidate['severity']}\n"
         f"- Fingerprint: {key}\n"
-        f"- Source: {candidate['session_key']} events.jsonl line {candidate['event_line']}\n\n"
+        f"- Source: {candidate['session_key']} events.jsonl line {candidate['event_line']}\n"
+        f"- Lineage ID: {key}\n"
+        f"- Derived from: {', '.join(candidate['derived_from']) or 'none recorded'}\n"
+        "- Activation gate: the existing paired eval must pass before changed instructions become live.\n\n"
         f"## Proposal\n\n{candidate['proposal']}\n\n"
         f"## Evidence\n\n{candidate.get('evidence', '')}\n"
     )
@@ -220,13 +403,14 @@ def file_intake_candidate(repo, engine, candidate, key):
         match = re.search(r"(?:created \S+/issues/|commented issue #)([1-9][0-9]*)", result.stdout)
         if not match:
             raise ValueError("pipeline issue upsert returned no issue number")
-        record_candidate_issue(retro_out_dir(), int(match.group(1)), candidate["category"], key)
+        record_candidate_issue(retro_out_dir(), int(match.group(1)), candidate["category"], key, candidate)
     finally:
         os.unlink(body_path)
 
 
 def publish_candidates(root, repo, candidates_path):
     engine = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    out_dir = retro_out_dir()
     with open(candidates_path, encoding="utf-8") as candidates_file:
         document = json.load(candidates_file)
     candidates = document.get("candidates") if isinstance(document, dict) else None
@@ -241,14 +425,33 @@ def publish_candidates(root, repo, candidates_path):
             raise ValueError("candidate file contains an invalid proposal or evidence")
         event = event_at(root, candidate)
         key = candidate_class(engine, candidate["category"], event)
+        candidate = dict(candidate)
+        parents, lineage_error = candidate_lineage(repo, out_dir, candidate)
+        candidate["derived_from"] = parents
+        if lineage_error:
+            record_observation(out_dir, candidate, key, parents, lineage_error)
+            print(f"retro.py: candidate {key} kept as an observation: {lineage_error}")
+            continue
         if candidate["category"] == "automated-checks":
-            write_lesson_fragment(repo, candidate, key)
-            record_lesson_change(retro_out_dir(), candidate["category"], key)
+            admission, measurement_error = measure_check(root, candidate)
+            if measurement_error:
+                record_observation(out_dir, candidate, key, parents, measurement_error)
+                print(f"retro.py: candidate {key} kept as an observation: {measurement_error}")
+                continue
+            write_lesson_fragment(repo, candidate, key, admission)
+            record_lesson_change(out_dir, candidate["category"], key, candidate, admission)
         else:
             file_intake_candidate(repo, engine, candidate, key)
 
 
 def main(argv):
+    if len(argv) == 4 and argv[1] == "lineage":
+        try:
+            print(lineage_context(argv[2], argv[3]))
+        except (OSError, ValueError) as exc:
+            print(f"retro.py: lineage failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if len(argv) >= 4 and argv[1] == "select":
         print("\n".join(select(argv[2], int(argv[3]))))
         return 0
