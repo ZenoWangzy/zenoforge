@@ -57,9 +57,10 @@ node engine/eval/run-eval.mjs --stage implement --verify-gold --runs 1 --label g
 node --test engine/eval/*.test.mjs
 ```
 
-The first fresh-agent run records `fresh-agent-baseline`; the same-label
-comparison prints its starting pass rate. Reruns use a new label and compare
-against that baseline so pass-to-fail changes are visible.
+The first fresh-agent run records `fresh-agent-baseline`; comparing that label
+to itself prints the starting pass rate. Reruns use a new label, then compare
+it against `fresh-agent-baseline`; pass-to-fail regressions print before the
+pass rates.
 
 `--case` runs only the listed case ids of each stage's set (unknown ids fail the
 run instead of silently producing a smaller label); `--cases` is the same
