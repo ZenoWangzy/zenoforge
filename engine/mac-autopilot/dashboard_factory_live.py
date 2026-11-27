@@ -80,7 +80,7 @@ def read_pause_states(line_pause_file, factory_pause_file, now=None):
 
 def engine_live_pin(agent_home):
     target = os.path.realpath(os.path.join(agent_home, "engine-live"))
-    match = re.search(r"(?:^|/)engine-versions/([0-9a-f]{7,40})/engine/?$", target)
+    match = re.search(r"(?:^|/)engine-versions/([0-9a-f]{7,40})(?:-[0-9a-f]{7,40}(?:-[0-9a-f]{7,40}){2})?/engine/?$", target)
     if match:
         return match.group(1)
     version = os.path.basename(os.path.dirname(target))
