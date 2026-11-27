@@ -413,7 +413,7 @@ assert [pr["mergedAt"][:10] for pr in prs] == [
     today.isoformat(),
 ]
 with open(sys.argv[1], "w", encoding="utf-8") as output:
-    json.dump(prs, output)
+    output.writelines(json.dumps(pr) + "\n" for pr in prs)
 PY
 export MERGED_PR_FIXTURE="$merged_pr_fixture"
 tick_gh_pr_rest_payload() {
