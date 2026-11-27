@@ -110,6 +110,13 @@ assert_supervisor_actor() {
   assert_actor supervisor '' "$head" "$label unlabelled session"
   assert_actor unit:agent/issue-probe unit:agent/issue-probe "$head" "$label unit actor"
   assert_unit_rejected "$path" "$head" "$label"
+  for unit_branch in factory/probe agent/issue-probe agent/auto-issue-probe hand/probe; do
+    git -C "$repo" switch -q -c "$unit_branch"
+    assert_actor "unit:$unit_branch" '' "$head" "$label unlabelled worker on $unit_branch"
+    assert_actor "unit:$unit_branch" head "$head" "$label head-named worker on $unit_branch"
+    git -C "$repo" switch -q -
+    git -C "$repo" branch -q -D "$unit_branch"
+  done
 }
 
 assert_supervisor_actor .zenoforge/prompts/review-contract.md 'Review contract' 'review contract'
