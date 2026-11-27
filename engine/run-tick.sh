@@ -85,6 +85,7 @@
 # the other reason this fix does not lean on the journal at all -- the
 # failure counter above is a direct file write from inside this same
 # process, and its supervisor-inbox event is durable outside the checkout.
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 set -Eeuo pipefail
 
 run_tick() {
@@ -472,7 +473,7 @@ run_tick() {
     timer="$UNIT_PREFIX-${timer#*-}"
     timer_alerted_file="$AGENT_HOME/$timer_alert_marker"
     if [ "$timer_off_variable" != "-" ]; then
-      timer_mode="$(timeout "${timer_gh_timeout_sec}s" gh variable get "$timer_off_variable" \
+      timer_mode="$(gh_timeout "${timer_gh_timeout_sec}s" variable get "$timer_off_variable" \
         --repo "$timer_repo" 2>/dev/null || echo observe)"
       timer_mode="$(echo "$timer_mode" | tr -d '[:space:]')"
       if [ "$timer_mode" = "off" ]; then

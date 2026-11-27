@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Migration gate settings come from the target release configuration.
+if ! declare -F gh >/dev/null 2>&1; then source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"; fi
 migration_gate_setting() {
   local file value
   file="$(zf_config_file release.json)" || return 1

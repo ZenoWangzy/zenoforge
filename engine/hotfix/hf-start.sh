@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 unset GH_TOKEN
 [[ $# == 3 && $1 =~ ^[0-9]+$ && $2 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && -f $3 ]] || { echo 'usage: hf-start.sh <issue-number> <slug> <brief-file>' >&2; exit 2; }
 issue=$1; slug=$2; brief=$3
