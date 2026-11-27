@@ -36,11 +36,12 @@ pr_body_source() { # issue report-path [unit-json] → the body text before clos
     report="$(awk '/^## decision-log[[:space:]]*$/{skip=1; next} /^##[[:space:]]/{skip=0} !skip' <<<"$report")"
     report+=$'\n\n'"$sec"
   fi
-  printf '%s%s%s' "${1:+Refs #$1
+  printf '%s%s%s%s' "${1:+Refs #$1
 
 }" "Implemented by the the product autopilot. Implementer report (first lines):
 
-${report}" "$(self_check_verification_body "${3:-}")"
+${report}" "$(self_check_verification_body "${3:-}")" \
+    "$(risk_tiered_review_body "${3:-}")"
 }
 pr_body_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 pr_body_unit_current() { # id pr → 0 while the unit row still owns this PR (revalidation after a lock-free window)
@@ -52,10 +53,12 @@ pr_body_append_missing() { # unit pr report hash unit-json → a legacy PR (open
   [[ "$PR_BODY_VIEW_OK" == true ]] || return 0
   body="$PR_BODY_VIEW_JSON"
   new="$body"
-  for h in root-cause recurrence-guard prior-art decision-log verification; do
+  for h in root-cause recurrence-guard prior-art decision-log verification review; do
     grep -qE "^## $h[[:space:]]*\$" <<<"$body" && continue
-    if [[ "$h" == verification ]]; then sec="$(self_check_verification_body "$unit")"; else sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"; fi
-    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else [[ "$h" == verification ]] || missing=true; fi
+    if [[ "$h" == verification ]]; then sec="$(self_check_verification_body "$unit")"
+    elif [[ "$h" == review ]]; then sec="$(risk_tiered_review_body "$unit")"
+    else sec="$(awk -v h="## $h" '$0 ~ "^" h "[ \t]*$" { p = 1; print; next } /^## / { p = 0 } p' "$3")"; fi
+    if [[ -n "$sec" ]]; then new+=$'\n\n'"$sec"; added=true; else [[ "$h" == verification || "$h" == review ]] || missing=true; fi
   done
   if [[ "$added" == true ]]; then
     file="$(mktemp)" || return 0

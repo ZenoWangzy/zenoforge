@@ -728,6 +728,7 @@ run_merge_lane_pass() {
         merge_sha="$(gh pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid // empty' 2>/dev/null)"; [[ "$merge_sha" =~ $SHA_RE ]] || merge_sha=""
         if [[ -n "$merge_sha" ]]; then
           set_unit "$id" "$(hist merged "verified_by=$verified_by; merged on green PR CI; main CI verifies $merge_sha") | (.stage=\"merged\") | .verified_by=\"$verified_by\" | .merge_sha=\"$merge_sha\" | .pre_merge_sha=\"$pre_merge_sha\" | $(awaiting_release_mark "$pr")"
+          risk_tiered_review_record_escape "$ready" "$pre_merge_sha" "$approved" || say "risk-tiered-review: escape invalidation deferred PR#$pr"
           merge_lane_awaiting_release "$ready" "$pr"
           merged_count=$((merged_count + 1))
           say "merged PR#$pr merge=$merge_sha (own checks green; main CI verifies)"
@@ -735,6 +736,7 @@ run_merge_lane_pass() {
           pass_step_end merged "$pr"; continue
         fi
         set_unit "$id" "$(hist merged "verified_by=$verified_by; merged on green PR CI; mergeCommit SHA unavailable") | (.stage=\"merged\") | .verified_by=\"$verified_by\" | $(awaiting_release_mark "$pr")"
+        risk_tiered_review_record_escape "$ready" "$pre_merge_sha" "$approved" || say "risk-tiered-review: escape invalidation deferred PR#$pr"
         merge_lane_awaiting_release "$ready" "$pr"
         echo "[$STAMP] merged PR#$pr but mergeCommit SHA unavailable; unit=$id marked merged, main CI covers it" >> "$A/alerts/merge.md"
         pass_step_end merged-sha-unavailable "$pr"; break

@@ -276,7 +276,7 @@ daily_perf_report_check_contract() {
 }
 
 daily_perf_report_build() {
-  local agent_home="$1" repo_root="$2" day="$3" guard_audit="$4" dry_run="${5:-0}" start_epoch end_epoch now label releases efficiency timing anomalies reason work_data active queued work_reason pipeline_efficiency guard_section report contract_errors
+  local agent_home="$1" repo_root="$2" day="$3" guard_audit="$4" dry_run="${5:-0}" start_epoch end_epoch now label releases efficiency timing anomalies reason work_data active queued work_reason pipeline_efficiency guard_section risk_review risk_tool report contract_errors
   start_epoch="$(date -u -d "$day 00:00:00" +%s)" || return 1
   end_epoch="$(date -u -d "$day +1 day 00:00:00" +%s)" || return 1
   now="$(date +%s)" || return 1
@@ -295,11 +295,16 @@ daily_perf_report_build() {
   work_reason="$(maintainer_health_mail_no_work_reason "$active" "$queued")"
   pipeline_efficiency="$(maintainer_health_mail_pipeline_efficiency_block "$agent_home" daily "$day")" || return 1
   guard_section="$(daily_perf_report_guard_section "$guard_audit")" || return 1
+  risk_review='近7日已成熟合并单元：0；跳过评审：0（无数据）；其中后续7日逃逸：0（无数据）。'
+  risk_tool="$repo_root/${ZF_PACK_REL:-engine}/mac-autopilot/risk-tiered-review.mjs"
+  if [ -f "$risk_tool" ]; then
+    risk_review="$(node "$risk_tool" --report --units "$agent_home/autopi/units.json" --archive "$agent_home/autopi/units-archive.json")" || return 1
+  fi
   report="$( {
     printf '**今日汇总（%s）**\n\n**上线情况**\n' "$label"
     if [ -n "$releases" ]; then printf '%s' "$releases"
     else printf '%s没有上线：%s。\n' "$label" "$reason"; fi
-    printf '\n%s\n\n%s\n\n%s\n\n%s\n' "$efficiency" "$pipeline_efficiency" "$timing" "$guard_section"
+    printf '\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n' "$efficiency" "$pipeline_efficiency" "$timing" "$guard_section" "$risk_review"
     [ -z "$work_reason" ] || printf '\n%s\n' "$work_reason"
     printf '\n**异常**\n%s\n' "$anomalies"
   } )" || return 1

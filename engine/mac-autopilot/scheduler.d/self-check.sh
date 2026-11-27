@@ -153,8 +153,7 @@ self_check_run() (
         done <<<"$3"
         if [[ "$paths" == test ]]; then echo "self-check: test duration=$((SECONDS-test_started))s"; fi
       done
-      if ZF_ESCAPE_SUITE_RUNNER=1 ZF_ESCAPE_SUITE_BASE="$1" ZF_ESCAPE_SUITE_HEAD="$9" ZF_ESCAPE_SUITE_TIMEOUT_S="$step_s" node --input-type=module -e "${10}"; then :
-      else srg=$?; rc=1; fi
+      if ZF_ESCAPE_SUITE_RUNNER=1 ZF_ESCAPE_SUITE_BASE="$1" ZF_ESCAPE_SUITE_HEAD="$9" ZF_ESCAPE_SUITE_TIMEOUT_S="$step_s" node --input-type=module -e "${10}"; then :; else srg=$?; rc=1; fi; if [[ -f "${ZF_PACK_REL:-engine}/lesson-lints.mjs" ]]; then if node "${ZF_PACK_REL:-engine}/lesson-lints.mjs" --repo "$PWD" --base "$1" --head "$9"; then echo "risk-review-check: lesson-lints rc=0"; else srg=$?; echo "risk-review-check: lesson-lints rc=$srg"; rc=1; fi; else echo "risk-review-check: lesson-lints unavailable"; fi
       exit "$rc"' self-check "$base" "$builds_arg" "$targets" "$test_targets" "$cached_tests" "$step_s" "$tree" "$delegate_tests" \
       "$sha" "$runner_source" \
       | tee "$remote_output"; then

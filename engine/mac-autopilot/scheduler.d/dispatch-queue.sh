@@ -24,6 +24,7 @@ dcapture() { local var=$1 step=$2 callee=$3 rc=0 out; shift 3; out="$("$callee" 
 # Every caller reads the live-worker count as $(live_workers), and a cache refresh inside that subshell is lost: the cache stayed cold, so each
 # capacity, priority and implement-cap check re-ran the refresh (one jq and three jq per worker plus ps: 2244 of about 8000 processes in a
 # five-unit fixture pass). Refreshing here, in dispatch_pending's own shell, lets those subshells inherit it; the 10 s TTL is unchanged.
+source "$(dirname -- "${BASH_SOURCE[0]}")/risk-tiered-review.sh"
 dispatch_live_prime() { (( SECONDS < ${LIVE_WORKER_CACHE_UNTIL:-0} )) || refresh_live_worker_cache; dmark live_workers; }
 dispatch_steps_say() {
   (( ${#dispatch_step_secs[@]} )) || return 0
@@ -617,9 +618,10 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
         [[ "$sha" =~ $SHA_RE ]] || { dispatch_skip review-target; continue; }
         dstep handoff_delivery verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || { dispatch_skip handoff-delivery; continue; }
         [[ "$lane" == direct-main ]] || ! dstep pr_conflict review_conflict_to_repair "$id" "$pr_num" "$pr_head" || { dispatch_skip pr-conflict; continue; }
-        dstep reviewer_pick pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
         dcapture wt clone ensure_clone "$id" || { say "review-pending unit=$id: clone unavailable"; continue; }
         dstep checkout checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" "$branch" || { recover_local_ahead_head "$id" "$wt" "$pr_head" "$branch" || say "review-pending unit=$id: PR head $sha unavailable"; continue; }
+        if [[ "$pr_num" =~ ^[1-9][0-9]*$ ]] && risk_tiered_review_try_skip "$id" "$u" "$wt" "$sha" "$pr_head"; then continue; fi
+        dstep reviewer_pick pick_review_for_unit "$u" || { dispatch_skip reviewer-wait; continue; }
         rep="review-${key}-${TAG}.md"
         prompt="$(review_prompt "$subject" "$title" "$sha" "$rep" "$lane" "$wt")$(review_inputs_rule "$u" "$wt" "$sha")$(arbiter_rule "$u")$(hotpatch_rule "$u")$(supervisor_rule "$u")"
         prompt+="$(ci_red_evidence_rule "$u" "$sha" "$(jqf -r '.reviewed_sha // empty' <<<"$u")")"
