@@ -1,0 +1,46 @@
+{
+  "engine/mac-autopilot/risk-tiered-review.mjs": [
+    "engine/mac-autopilot/risk-tiered-review.test.mjs",
+    "engine/mac-autopilot/risk-tiered-review-runtime.test.sh"
+  ],
+  "engine/mac-autopilot/risk-tiered-review.test.mjs": [
+    "engine/mac-autopilot/risk-tiered-review.test.mjs"
+  ],
+  "engine/mac-autopilot/risk-tiered-review-runtime.test.sh": [
+    "engine/mac-autopilot/risk-tiered-review-runtime.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/risk-tiered-review.sh": [
+    "engine/mac-autopilot/risk-tiered-review-runtime.test.sh",
+    "engine/mac-autopilot/risk-tiered-review.test.mjs"
+  ],
+  "engine/mac-autopilot/scheduler.d/dispatch-queue.sh": [
+    "engine/mac-autopilot/risk-tiered-review-runtime.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/self-check.sh": [
+    "engine/mac-autopilot/escape-suite-self-check.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/pr-body.sh": [
+    "engine/mac-autopilot/pr-body-rerender.test.sh",
+    "engine/mac-autopilot/risk-tiered-review-runtime.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/merge-lane.sh": [
+    "engine/mac-autopilot/scheduler-gates.test.sh",
+    "engine/mac-autopilot/risk-tiered-review-runtime.test.sh"
+  ],
+  "engine/mac-autopilot/escape-suite-self-check.test.sh": [
+    "engine/mac-autopilot/escape-suite-self-check.test.sh"
+  ],
+  "engine/night/daily-perf-report.sh": [
+    "engine/night/daily-perf-report.test.sh"
+  ],
+  "engine/night/daily-perf-report.test.sh": [
+    "engine/night/daily-perf-report.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/escape-suite-runner.mjs": [
+    "engine/mac-autopilot/escape-suite-self-check.test.sh",
+    "engine/mac-autopilot/risk-tiered-review-runtime.test.sh"
+  ],
+  "engine/related-tests.d/risk-tiered-review.json": [
+    "engine/focused-test-paths.test.mjs"
+  ]
+}

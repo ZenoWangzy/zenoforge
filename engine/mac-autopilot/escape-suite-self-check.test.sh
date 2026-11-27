@@ -10,7 +10,7 @@ HERE="$repo_root/engine/mac-autopilot"
 ROOT="$test_env_root/product"
 SUP="$test_env_root/sup"
 export PNPM_LOG="$test_env_root/pnpm.log"
-mkdir -p "$ROOT/scripts/ci" "$ROOT/scripts/checks" "$ROOT/packages/fruit/tests" "$ROOT/packages/fruit/src" "$ROOT/.zenoforge/state" "$SUP"
+mkdir -p "$ROOT/scripts/ci" "$ROOT/scripts/checks" "$ROOT/engine" "$ROOT/packages/fruit/tests" "$ROOT/packages/fruit/src" "$ROOT/.zenoforge/state" "$SUP"
 source "$HERE/scheduler.d/self-check.sh"
 source "$HERE/scheduler.d/review-rules.sh"
 source "$HERE/scheduler.d/reports.sh"
@@ -43,6 +43,9 @@ console.log(JSON.stringify({rootNames:["fruit"],affectedNames:["fruit"],affected
 EOF
 cat > "$ROOT/scripts/checks/authenticated-origin-contract-packages.mjs" <<'EOF'
 export {};
+EOF
+cat > "$ROOT/engine/lesson-lints.mjs" <<'EOF'
+console.log('lesson lint fixture');
 EOF
 cat > "$ROOT/packages/fruit/package.json" <<'EOF'
 {"name":"fruit","scripts":{"test":"true"}}
@@ -80,6 +83,8 @@ if grep -Fxq -- '--filter fruit --if-present run test' "$PNPM_LOG"; then
 fi
 grep -q '^escape-suite: package=packages/fruit test=packages/fruit/tests/tenant-timezone.test.sh rc=0 ' <<<"$green_output" \
   || { printf '%s\n' "$green_output" >&2; echo 'escape-suite-self-check.test.sh: pre-review self-check did not report the registered test and rc=0' >&2; exit 1; }
+grep -q '^risk-review-check: lesson-lints rc=0$' <<<"$green_output" \
+  || { printf '%s\n' "$green_output" >&2; echo 'escape-suite-self-check.test.sh: pre-review self-check omitted the deterministic lint result' >&2; exit 1; }
 
 # Opting in runs the touched package's normal test target and records the step duration.
 : > "$PNPM_LOG"

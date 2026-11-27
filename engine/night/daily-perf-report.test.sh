@@ -141,6 +141,7 @@ assert_contains() {
   if [[ "$content" == *"$expected"* ]]; then printf 'ok - %s\n' "$label"
   else printf 'not ok - %s (missing [%s])\n%s\n' "$label" "$expected" "$content" >&2; exit 1; fi
 }
+assert_contains 'daily summary includes risk-tiered review and escape rates' "$REPORT" '近7日已成熟合并单元：0；跳过评审：0（无数据）；其中后续7日逃逸：0（无数据）。'
 assert_contains 'daily summary names reporting day in Chinese' "$REPORT" '今日汇总（9月25日）'
 assert_contains 'daily summary includes node and check timing section' "$REPORT" '流程环节与检查耗时'
 assert_contains 'daily summary includes the incident guard section' "$REPORT" '**事故防护检查**'
