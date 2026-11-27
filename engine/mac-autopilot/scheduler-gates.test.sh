@@ -28,7 +28,7 @@ command git -C "$gr" update-ref refs/remotes/origin/main "$g3"
 [[ "$(ROOT="$gr" gate_eval_sha | tr '\n' ' ')" == "$g3 $g2 $g1 " ]] || fail "gate chain did not walk past product commits: $(ROOT="$gr" gate_eval_sha | tr '\n' ' ')"
 
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { tick_prs_changed; local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { [[ -z "${GH_KEY_CACHE_DIR:-}" ]] || rm -rf -- "$GH_KEY_CACHE_DIR"; TICK_PR_CHECK_RUNS=(); tick_prs_changed; local report="$sup/review-implementation.md"; printf '## decision-log\nTried the scheduler fixture, kept the expected state transition, and verified the result.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nCommit 97ed8be added this report gate for issue #880.\n' > "$report"; jq --arg report "$report" '.units |= map(if has("implementation_report") then . else . + {implementation_report:$report} end)' <<<"$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 command_arg() { local flag="$1" i; for ((i=0; i<${#CODEX_COMMAND[@]}; i++)); do [[ "${CODEX_COMMAND[i]}" == "$flag" ]] && { printf '%s' "${CODEX_COMMAND[i + 1]:-}"; return 0; }; done; return 1; }
 
@@ -1730,14 +1730,15 @@ unset GH_CHECKS; eval "$gh_merge_stub"; GH_RERUNS=()
 # ---------- 队头阻塞：窗口里 CI 已出结论的单元排在还在跑的、被挡的前面 ----------
 gh_hol_saved="$(declare -f gh)"
 H31="${H2:0:36}0031"; H32="${H2:0:36}0032"; H33="${H2:0:36}0033" # checks are per head now, so each PR needs its own head
+gh_commit_check_runs_invalidate "$H31"; gh_commit_check_runs_invalidate "$H32"; gh_commit_check_runs_invalidate "$H33"
 gh() { if [[ "$1 $2" == "pr list" ]]; then
   jq -n --arg h31 "$H31" --arg h32 "$H32" --arg h33 "$H33" '[{number:31,headRefOid:$h31,isDraft:false},{number:32,headRefOid:$h32,isDraft:false},{number:33,headRefOid:$h33,isDraft:false}]'
   elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H31/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"in_progress","conclusion":null}]}'
+    jq -c '.' <<<'{"total_count":1,"check_runs":[{"name":"gate","status":"in_progress","conclusion":null}]}'
   elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H32/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
+    jq -c '.' <<<'{"total_count":1,"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
   elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H33/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"failure"}]}'
+    jq -c '.' <<<'{"total_count":1,"check_runs":[{"name":"gate","status":"completed","conclusion":"failure"}]}'
   else eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; fi; }
 units "{\"units\":[{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T01:00:00Z\"},{\"id\":\"pr-34\",\"pr\":34,\"stage\":\"ready-to-merge\",\"critical\":true,\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T00:00:00Z\"},{\"id\":\"pr-32\",\"pr\":32,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T03:00:00Z\"},{\"id\":\"pr-33\",\"pr\":33,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"ready_since\":\"2026-10-20T02:00:00Z\"}]}"
 [[ "$(merge_candidates 3 | jq -r .id | tr '\n' ' ')" == "pr-34 pr-32 pr-33 " ]] || fail "merge window still blocked at the head of the line ($(merge_candidates 3 | jq -r .id | tr '\n' ' '))"
@@ -1748,7 +1749,7 @@ units "{\"units\":[{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"ap
   gh() { if [[ "$1 $2" == "pr list" ]]; then
     jq -n --arg h "$H1" '[31,32,33] | map({number:., headRefOid:$h, isDraft:false})'
     elif [[ "$1" == api && "$2" == "repos/{owner}/{repo}/commits/$H1/check-runs?per_page=100" ]]; then
-    jq -c '.check_runs // []' <<<'{"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
+    jq -c '.' <<<'{"total_count":1,"check_runs":[{"name":"gate","status":"completed","conclusion":"success"}]}'
     else eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; fi; }
   units '{"units":[
     {"id":"pr-31","pr":31,"stage":"ready-to-merge","merge_checked_epoch":100,"ready_since":"2026-10-20T01:00:00Z"},
@@ -1761,20 +1762,24 @@ units "{\"units\":[{\"id\":\"pr-31\",\"pr\":31,\"stage\":\"ready-to-merge\",\"ap
 eval "$gh_hol_saved"
 # 候选带回 PR 的 draft 状态；仍是同一次批量列表调用，不为 draft 多一次 gh（未在 open 列表里的单元为 null）
 (
-  GH_PR_TABLE="$fixture/gh-prs-candidates.json"; echo '[]' > "$GH_PR_TABLE"; CALLS="$fixture/candidate-gh.calls"; : > "$CALLS"
+  GH_TICK_CACHE_DIR="$fixture/candidate-check-runs-cache"; mkdir -p "$GH_TICK_CACHE_DIR"; export GH_TICK_CACHE_DIR
+  GH_PR_TABLE="$fixture/gh-prs-candidates.json"; echo '[]' > "$GH_PR_TABLE"; : > "$GH_PR_CALLS"; : > "$GH_CHECK_RUNS_CALLS"
   gh_pr_open 31 "$H2" true MERGEABLE agent/issue-31
   gh_pr_open 32 "$H2" false MERGEABLE agent/issue-32 '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]'
   units "{\"units\":[$(gated_unit pr-31 31 agent/issue-31 "$H1"),$(gated_unit pr-32 32 agent/issue-32 "$H1"),$(gated_unit pr-34 34 agent/issue-34 "$H1")]}"
-  gh() { echo "$*" >> "$CALLS"; eval "${gh_hol_saved/gh ()/gh_h ()}"; gh_h "$@"; }
+  : > "$GH_PR_CALLS"; : > "$GH_CHECK_RUNS_CALLS"
   [[ "$(merge_candidates 3 | jq -r '"\(.id)=\(.pr_open_draft)"' | sort | tr '\n' ' ')" == "pr-31=true pr-32=false pr-34=null " ]] \
     || fail "merge candidates lack the bulk-listed draft state ($(merge_candidates 3 | jq -c '{id,pr_open_draft}' | tr '\n' ' '))"
-  : > "$CALLS"; merge_candidates 3 > /dev/null
-  [[ "$(wc -l < "$CALLS")" == 2 && "$(head -n1 "$CALLS")" == "pr list --state open"* && "$(tail -n1 "$CALLS")" == "api repos/{owner}/{repo}/commits/$H2/check-runs?per_page=100"* ]] \
-    || fail "draft state or per-head checks cost an extra provider call ($(tr '\n' '|' < "$CALLS"))"
+  [[ "$(grep -c '^pr list' "$GH_PR_CALLS")" == 1 && "$(grep -cx "check-runs $H2" "$GH_CHECK_RUNS_CALLS")" == 1 ]] \
+    || fail "draft state or per-head checks cost an extra provider call (pr=$(tr '\n' '|' < "$GH_PR_CALLS") checks=$(tr '\n' '|' < "$GH_CHECK_RUNS_CALLS"))"
+  : > "$GH_PR_CALLS"; : > "$GH_CHECK_RUNS_CALLS"; merge_candidates 3 > /dev/null
+  [[ "$(grep -c '^pr list' "$GH_PR_CALLS")" == 1 && ! -s "$GH_CHECK_RUNS_CALLS" ]] \
+    || fail "second candidate read repeated a check-run provider call (pr=$(tr '\n' '|' < "$GH_PR_CALLS") checks=$(tr '\n' '|' < "$GH_CHECK_RUNS_CALLS"))"
 )
 
 # 检查行按 head SHA 单取后：一次 merge_candidates 只有 1 次轻量列表 + 每个不同 head 一次 check-runs 读取；
 # 红 / 未完成的行不合并（前面 red、pending、pass 各段已按结果断言），这里钉调用形状。
+gh_commit_check_runs_invalidate "$H1"
 (
   GH_PR_TABLE="$fixture/checks-ondemand.json"; echo '[]' > "$GH_PR_TABLE"; : > "$GH_PR_CALLS"; : > "$GH_CHECK_RUNS_CALLS"
   gh_pr_open 21 "$H1" false MERGEABLE agent/issue-21 '[{"__typename":"CheckRun","name":"Required CI gates","status":"COMPLETED","conclusion":"SUCCESS"}]'
@@ -1963,6 +1968,10 @@ gh() {
     "pr view mergeable,headRefOid") echo "${GH_FRESH:-MERGEABLE $H1}"; return 0 ;;
     "pr view files") printf '%s\n' "${GH_PR_FILES:-packages/x/a.ts}"; return 0 ;;
   esac
+  if [[ "$1 $2" == "api --paginate" && "$*" == *"/pulls/19/files?per_page=100"* ]]; then
+    printf '%s\n' "${GH_PR_FILES:-packages/x/a.ts}" | jqf -Rsc 'split("\n") | map(select(length > 0) | {filename:.})'
+    return 0
+  fi
   # the per-head check-runs read is not a conflict-update call: it goes to the base stub
   if [[ "$1" == api && "$2" != */check-runs* ]]; then GH_API_CALLS+=("$*"); return "${GH_API_FAIL:-0}"; fi
   eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
@@ -1979,6 +1988,7 @@ for cc_case in cleared still-conflicted lockfile update-fails; do
     lockfile) GH_PR_FILES=$'packages/x/a.ts\npnpm-lock.yaml' ;;
     update-fails) GH_API_FAIL=1 ;;
   esac
+  rm -rf -- "$AGENT_HOME/state/gh-key-cache"
   units "{\"units\":[{\"id\":\"pr-19\",\"pr\":19,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
   run_merge_lane || :
   if [[ "$cc_case" == cleared ]]; then
@@ -1996,22 +2006,25 @@ GH_HEAD="$GH_HEAD_SAVED"; unset GH_CHECKS GH_MERGEABLE_STATE GH_FRESH GH_PR_FILE
 GH_HEAD="$GH_HEAD_SAVED"; unset GH_CHECKS GH_PR_TABLE GH_FRESH GH_PR_FILES GH_API_FAIL; eval "$gh_merge_stub"
 
 # ---------- 非产品快车道：分类、批准后派 land worker、不进合并车道 ----------
-GH_FILES_RESPONSE='[[{"filename":"engine/lib.sh"},{"filename":"docs/x.md"}]]'
+GH_FILES_RESPONSE='[{"filename":"engine/lib.sh"},{"filename":"docs/x.md"}]'
 gh_base_stub="$(declare -f gh)"
-gh() { if [[ "$1 $2" == "api --paginate" ]]; then jq -r '.[][] | .filename, (.previous_filename // empty)' <<<"$GH_FILES_RESPONSE"; else eval "${gh_base_stub/gh ()/gh_base ()}"; gh_base "$@"; fi; }
+tick_pr_head_saved="$(declare -f tick_pr_head)"
+tick_pr_head() { printf '%s\n' "$H1"; }
+gh() { if [[ "$1 $2" == "api --paginate" ]]; then printf '%s\n' "$GH_FILES_RESPONSE"; else eval "${gh_base_stub/gh ()/gh_base ()}"; gh_base "$@"; fi; }
 [[ "$(classify_lane 80)" == direct-main ]] || fail 'non-product PR not classified direct-main'
-GH_FILES_RESPONSE='[[{"filename":"engine/lib.sh"},{"filename":"engine/new-name.ts","previous_filename":"packages/example/src/a.ts"}]]'
+GH_FILES_RESPONSE='[{"filename":"engine/lib.sh"},{"filename":"engine/new-name.ts","previous_filename":"packages/example/src/a.ts"}]'
 [[ "$(classify_lane 81)" == pr ]] || fail 'renamed product path was classified as direct-main'
-GH_FILES_RESPONSE='[[{"filename":"packages/example/src/a.ts"},{"filename":"engine/lib.sh"}]]'
+GH_FILES_RESPONSE='[{"filename":"packages/example/src/a.ts"},{"filename":"engine/lib.sh"}]'
 [[ "$(classify_lane 81)" == pr ]] || fail 'product PR classified as direct-main'
 # 策略变了，之前记成 pr 的单元重分一次；同一策略下不重复查 GitHub
-GH_FILES_RESPONSE='[[{"filename":"engine/lib.sh"}]]'
+GH_FILES_RESPONSE='[{"filename":"engine/lib.sh"}]'
 units '{"units":[{"id":"pr-84","pr":84,"stage":"ready-to-merge","lane":"pr","lane_policy":"old-policy","history":[]}]}'
 [[ "$(ensure_lane pr-84 84)" == direct-main && "$(field pr-84 .lane)" == direct-main ]] || fail "pr lane not reclassified after a policy change ($(field pr-84 .lane))"
 units '{"units":[{"id":"pr-85","pr":85,"stage":"ready-to-merge","lane":"pr","history":[]}]}'
 ensure_lane pr-85 85 >/dev/null; p85="$(field pr-85 .lane_policy)"
-GH_FILES_RESPONSE='[[{"filename":"packages/example/src/a.ts"}]]'
+GH_FILES_RESPONSE='[{"filename":"packages/example/src/a.ts"}]'
 [[ "$(ensure_lane pr-85 85)" == direct-main && "$(field pr-85 .lane_policy)" == "$p85" ]] || fail 'same policy reclassified again'
+eval "$tick_pr_head_saved"
 LANDS=(); launch_land() { LANDS+=("$2:$3:$8"); }
 GH_HEAD="$H1"; GH_MERGES=()
 units "{\"units\":[{\"id\":\"pr-82\",\"pr\":82,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]},{\"id\":\"pr-83\",\"pr\":83,\"stage\":\"ready-to-merge\",\"lane\":\"direct-main\",\"approved_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"history\":[]}]}"

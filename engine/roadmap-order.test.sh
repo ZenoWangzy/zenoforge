@@ -3,8 +3,9 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/roadmap.sh"
-test_tmp="$(mktemp -d)"
-trap 'rm -rf -- "$test_tmp"' EXIT
+test_tmp="$test_env_root/roadmap-order"
+mkdir -p -- "$test_tmp"
+trap 'rm -rf -- "$test_env_root"' EXIT
 
 assert_eq() {
   local name="$1" expected="$2" actual="$3"
@@ -168,6 +169,8 @@ assert_eq 'switch reads persistent model policy' true "$(roadmap_switch_value)"
 REPO=fixture/repo
 ROADMAP_COMMANDS="$test_tmp/commands.log"
 ROADMAP_GH_CALLS="$test_tmp/gh-calls.log"
+ROADMAP_INVALIDATIONS="$test_tmp/invalidations.log"
+gh_issue_subissues_invalidate() { printf '%s %s\n' "$1" "$2" >> "$ROADMAP_INVALIDATIONS"; }
 gh() {
   printf '%s\n' "$*" >> "$ROADMAP_GH_CALLS"
   [[ "$1" == api && "$2" =~ /issues/([0-9]+)$ ]] || return 2
@@ -180,6 +183,7 @@ assert_eq 'inherited ticket attaches to source epic before milestone write' \
   "$(cat "$ROADMAP_COMMANDS")"
 assert_eq 'sub-issue API receives the issue database id' 'api repos/fixture/repo/issues/120 --jq .id | select(type == "number" and . > 0)' \
   "$(cat "$ROADMAP_GH_CALLS")"
+: > "$ROADMAP_INVALIDATIONS"
 : > "$ROADMAP_COMMANDS"
 : > "$ROADMAP_GH_CALLS"
 roadmap_place_issue "$test_tmp/tree.json" 106 '{"title":"Domain pack intake"}' '' 904
@@ -189,6 +193,8 @@ assert_eq 'adopted route reparents an existing ticket to the selected epic' \
 assert_eq 'selected route still reads the issue database id before reparenting' \
   'api repos/fixture/repo/issues/106 --jq .id | select(type == "number" and . > 0)' \
   "$(cat "$ROADMAP_GH_CALLS")"
+assert_eq 'reparenting invalidates both old and new parent lists' $'fixture/repo 904\nfixture/repo 902' \
+  "$(cat "$ROADMAP_INVALIDATIONS")"
 ROADMAP_RETRY_COMMANDS="$test_tmp/retry-commands.log"
 MILESTONE_FAIL_ONCE=1
 guarded_write() {

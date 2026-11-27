@@ -255,6 +255,7 @@ report_only_pr_requeue_harvest() { # unit worker-json report-name report-path ty
           to_supervisor "$unit" "report-only requeue CI rerun failed for unchanged head $head run $run"
           return 0
         fi
+        gh_commit_check_runs_invalidate "$head"
       done
     fi
   fi

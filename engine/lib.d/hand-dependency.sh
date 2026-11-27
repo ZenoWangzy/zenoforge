@@ -10,13 +10,14 @@ add_issue_blocked_by() {
   endpoint="repos/$REPO/issues/$issue/dependencies/blocked_by"
   issue_json="$(gh api "repos/$REPO/issues/$blocker")" || return 1
   blocker_id="$(jq -er '.id | numbers | select(. > 0 and . == floor)' <<< "$issue_json")" || return 1
-  dependencies="$(gh api "$endpoint")" || return 1
+  dependencies="$(gh_issue_blocked_by_cached "$REPO" "$issue")" || return 1
   jq -e 'type == "array"' <<< "$dependencies" >/dev/null 2>&1 || return 1
   if jq -e --argjson id "$blocker_id" --argjson number "$blocker" \
     'any(.[]; .id == $id or .number == $number)' <<< "$dependencies" >/dev/null 2>&1; then
     return 0
   fi
-  guarded_write gh api --method POST "$endpoint" -F "issue_id=$blocker_id"
+  guarded_write gh api --method POST "$endpoint" -F "issue_id=$blocker_id" || return 1
+  gh_issue_blocked_by_invalidate "$REPO" "$issue"
 }
 
 
@@ -39,7 +40,7 @@ intake_sync_blocked_by() {
         state="$(gh api "repos/$repo/issues/$blocker" 2>/dev/null | jq -r '.state' 2>/dev/null)" || state=''
         [[ "$state" == open ]] || continue
       fi
-      if ! existing="$(gh api "repos/$repo/issues/$n/dependencies/blocked_by")"; then
+      if ! existing="$(gh_issue_blocked_by_cached "$repo" "$n")"; then
         echo "intake: could not read blockers of #$n; edge to #$blocker skipped" >&2
         continue
       fi

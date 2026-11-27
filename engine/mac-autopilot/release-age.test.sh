@@ -33,6 +33,10 @@ regress="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR SEQ_COUNT="$seq_count" PATH
   bash -ec 'source "$1"; bash "$2" "$3" >/dev/null; bash "$2" "$3"' _ "$script_dir/../lib.d/release-close.sh" "$script_dir/../production-deployment-read.sh" REPO)" \
   || fail 'lib.sh reader second read failed'
 jq -e 'length == 1 and .[0].id == 501' <<< "$regress" >/dev/null || fail "second read kept the in_progress status: $regress"
+env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR SEQ_COUNT="$seq_count" PATH="$seq_bin:$PATH" REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
+  bash -ec 'source "$1"; bash "$2" "$3" >/dev/null' _ "$script_dir/../lib.d/release-close.sh" "$script_dir/../production-deployment-read.sh" REPO \
+  || fail 'terminal deployment status was not reusable'
+[[ "$(cat "$seq_count")" == 2 ]] || fail 'terminal deployment status made another network call'
 cache_dir="$work/deployment-status.tick-one"
 export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$cache_dir"
 # Fake gh: serves the deployment list and each record's statuses from FAKE_GH_DIR; FAKE_GH_FAIL=1 makes it fail.
@@ -126,7 +130,7 @@ done = subprocess.run(["bash", reader, REPO], capture_output=True, text=True,
                       env={**os.environ, "ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR": cache_two})
 check(done.returncode == 0, f"next tick reader failed: {done.stderr}")
 status_calls = [line for line in open(os.environ["FAKE_GH_LOG"]).read().splitlines() if line.endswith("/statuses")]
-check(len(status_calls) == 4, f"next tick did not refresh each deployment status: {len(status_calls)} calls")
+check(len(status_calls) == 2, f"terminal deployment statuses were not reused across ticks: {len(status_calls)} calls")
 os.remove(os.environ["FAKE_GH_LOG"])
 
 # Healthy: one hour since the live deployment is under the 2 h bound.

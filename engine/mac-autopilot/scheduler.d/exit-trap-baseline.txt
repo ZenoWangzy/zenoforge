@@ -48,7 +48,6 @@ engine/night/production-tenant-marker-readonly.test.sh
 engine/owner-stop-request.test.sh
 engine/pipeline-issue-upsert-label-limit.test.sh
 engine/pipeline-system-close-evidence.test.sh
-engine/roadmap-order.test.sh
 engine/rule-lane.test.sh
 engine/run-advisor.test.sh
 engine/scheduler-gh-timeout-safety.test.sh

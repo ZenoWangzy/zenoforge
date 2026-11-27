@@ -23,7 +23,7 @@ main_red_failed_checks() { # main SHA -> check names that failed on that SHA
     printf '%s\n' "${CI_MAIN_RED_CHECKS_CACHE[$sha]}"
     return 0
   fi
-  raw="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || return 1
+  raw="$(gh_commit_check_runs_cached "$sha")" || return 1
   failed="$(jqf -c '[.check_runs[]? | select(.conclusion | IN("failure","timed_out","action_required","startup_failure")) | .name? | select(type=="string" and length>0)] | unique' <<<"$raw" 2>/dev/null)" || return 1
   jqf -e 'type=="array" and all(.[]; type=="string")' <<<"$failed" >/dev/null 2>&1 || return 1
   CI_MAIN_RED_CHECKS_CACHE["$sha"]="$failed"
@@ -98,7 +98,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
     runs="$(jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' <<<"$runs_json")" || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
     for r in $runs; do
-      gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
+      gh run rerun "$r" --failed >/dev/null 2>&1 && { n=$((n+1)); gh_commit_check_runs_invalidate "$3"; }
     done
     set_unit "$1" "$(hist ci-deferred-start "$4") | del(.ci_deferred_sha)"
     say "merge skipped PR#$2 (approved head; CI deferred during review) -> started $n run(s)"
@@ -108,7 +108,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
     runs="$(jqf -r '.[] | select(.conclusion=="failure") | .databaseId' <<<"$runs_json")" || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
     for r in $runs; do
-      gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
+      gh run rerun "$r" --failed >/dev/null 2>&1 && { n=$((n+1)); gh_commit_check_runs_invalidate "$3"; }
     done
     set_unit "$1" "$(hist ci-red-rerun "$4") | .ci_rerun_sha=$(js "$3")"
     say "merge skipped PR#$2 (checks red: $4) -> reran $n failed run(s) once"
@@ -123,7 +123,7 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
       runs_json="$(gh_run_list_cached --commit "$3")" || { say "CI infra red unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
       runs="$(jqf -r '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' <<<"$runs_json")" || { say "CI infra red unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
       for r in $runs; do
-        gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
+        gh run rerun "$r" --failed >/dev/null 2>&1 && { n=$((n+1)); gh_commit_check_runs_invalidate "$3"; }
       done
       set_unit "$1" "$(hist ci-infra-red "$4") | .ci_infra_reruns=$((k+1))"
       say "merge skipped PR#$2 (runner environment failure, not the code: $4) -> reran $n run(s), approval kept"
@@ -165,7 +165,7 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
   runs="$(jqf -r ".[] | select($sel) | .databaseId" <<<"$runs_json")" || { say "CI cancelled unit=$1: could not list cancelled runs for head $3"; return 1; }
   for r in $runs; do
     ci_admission_cancelled "$r" && say "ci cancel-rerun unit=$1 head=$3 run=$r: rerun of a check admission cancelled"
-    gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
+    gh run rerun "$r" --failed >/dev/null 2>&1 && { n=$((n+1)); gh_commit_check_runs_invalidate "$3"; }
   done
   set_unit "$1" "$(hist ci-cancelled-restart "$4") | .ci_cancel_head=$(js "$3") | .ci_cancel_reruns=$((k+1))"
   say "merge skipped PR#$2 (checks cancelled, not failed: $4) -> restarted $n run(s), approval and rerun credit kept"
@@ -761,11 +761,12 @@ ci_jobs_data() { # run id [completed] [attempt] → shared tick snapshot, or dur
 ci_jobs_status() { ci_jobs_data "$1" | jqf '[.[] | .status]'; }
 ci_jobs_active_runner_ids() { ci_jobs_data "$1" | jqf -r '.[] | select(.status == "in_progress") | .runner_id // empty'; }
 ci_pr_free_slots() { # → online PR-capable runners minus runners with a job already assigned
-  local runner_busy runner_busy_json runner_count active
+  local runner_pages runner_busy_json runner_count active
   local ci_label="${ZF_CI_RUNNER_PREFIX-cihost-ci}" # default mirrors config.sh, which the scheduler does not source
-  runner_busy="$(gh_api_cached -p runners "repos/{owner}/{repo}/actions/runners?per_page=100" \
-    --jq ".runners[] | select(.status == \"online\" and any(.labels[]; .name | IN(\"$ci_label\",\"$ci_label-light\",\"$ci_label-priority\",\"vecta-suites\"))) | .busy")" || return 1
-  runner_busy_json="$(jqf -s '.' <<<"$runner_busy")" || return 1
+  runner_pages="$(gh_runners_cached)" || return 1
+  runner_busy_json="$(jqf -s --arg ci_label "$ci_label" \
+    '[.[] | .runners[]? | select(.status == "online" and any(.labels[]?; .name | IN($ci_label,$ci_label + "-light",$ci_label + "-priority","vecta-suites"))) | .busy]' \
+    <<<"$runner_pages")" || return 1
   runner_count="$(jqf -r 'length' <<<"$runner_busy_json")"
   if (( runner_count == 0 )); then
     # 前缀配错或 runner 全下线时名额静默算 0（不派 CI 也不告警）：一行日志让它可发现

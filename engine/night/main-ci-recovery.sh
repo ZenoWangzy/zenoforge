@@ -150,7 +150,7 @@ main_ci_record_successful_rerun() {
     pipeline-suites) workflow_label='Pipeline suites' ;;
     *) return 0 ;;
   esac
-  jobs_json="$(gh run view "$run_id" --attempt 1 --json jobs --repo "$REPO")" || return 1
+  jobs_json="$(gh_run_view_cached_for_repo "$REPO" "$run_id" 1 true)" || return 1
   jq -e '.jobs | type == "array"' <<< "$jobs_json" >/dev/null || return 1
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   since="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
@@ -193,7 +193,7 @@ main_ci_first_red_window() {
   local green_sha="" first_red_sha="" first_red_run="" first_red_attempt="" target_found=0
   # ponytail: 10k-run history cap; raise only if inbox evidence shows older green anchors.
   while ((page <= 100)); do
-    runs="$(gh api "repos/$REPO/actions/workflows/$workflow.yml/runs?branch=main&per_page=100&page=$page")" || return 1
+    runs="$(gh_workflow_runs_page_cached_for_repo "$REPO" "workflow:$workflow:run:$run_id:page:$page" "repos/$REPO/actions/workflows/$workflow.yml/runs?branch=main&per_page=100&page=$page")" || return 1
     jq -e '.workflow_runs | type == "array"' <<< "$runs" >/dev/null || return 1
     timeline="$(jq -r '
       [.workflow_runs[]
@@ -213,7 +213,7 @@ main_ci_first_red_window() {
         if [[ "$conclusion" != failure ]]; then
           [[ "$workflow" == ci && "$allow_rerun_success" == 1 && "$attempt" =~ ^[2-9][0-9]*$ ]] || return 1
           local first_attempt_json first_attempt_conclusion
-          first_attempt_json="$(gh run view "$run_id" --attempt 1 --json conclusion --repo "$REPO")" || return 1
+          first_attempt_json="$(gh_run_view_cached_for_repo "$REPO" "$run_id" 1 true)" || return 1
           first_attempt_conclusion="$(jq -er '.conclusion' <<< "$first_attempt_json")" || return 1
           [[ "$first_attempt_conclusion" == failure ]] || return 1
           conclusion=failure
@@ -319,7 +319,7 @@ main_ci_product_read_failure() {
   MAIN_CI_FAILURE_JOB_NAME='Postsubmit validate'
   MAIN_CI_FAILURE_PACKAGES_JSON='[]'
   MAIN_CI_FAILURE_TESTS_JSON='[]'
-  jobs_json="$(gh run view "$run_id" --attempt "$attempt" --json jobs --repo "$REPO")" || {
+  jobs_json="$(gh_run_view_cached_for_repo "$REPO" "$run_id" "$attempt" true)" || {
     MAIN_CI_FAILURE_REASON=failure-job-list-unavailable
     return 0
   }
@@ -636,7 +636,7 @@ main_ci_direct_pipeline_candidates() {
 
 main_ci_failed_pipeline_suite() {
   local run_id="$1" attempt="$2" jobs_json job_id job_log suite
-  jobs_json="$(gh run view "$run_id" --attempt "$attempt" --json jobs --repo "$REPO")" || return 1
+  jobs_json="$(gh_run_view_cached_for_repo "$REPO" "$run_id" "$attempt" true)" || return 1
   job_id="$(jq -r '[.jobs[] | select(.conclusion=="failure")][0].databaseId // empty' <<< "$jobs_json")" || return 1
   [[ "$job_id" =~ ^[0-9]+$ ]] || return 1
   job_log="$(gh run view "$run_id" --attempt "$attempt" --job "$job_id" --log-failed --repo "$REPO")" || return 1
@@ -900,7 +900,7 @@ main_ci_handle_event() {
       local eligibility=0
       main_ci_recovery_current "$workflow" "$run_id" "$head_sha" || eligibility=$?
       case "$eligibility" in 0) ;; 1) return 0 ;; *) return "$eligibility" ;; esac
-      guarded_write gh run rerun "$run_id" --repo "$REPO" --failed
+      guarded_write gh run rerun "$run_id" --repo "$REPO" --failed && gh_commit_check_runs_invalidate "$head_sha"
       ;;
     completed/success/1)
       if [[ "$workflow" == ci ]]; then
@@ -974,7 +974,7 @@ main_ci_cancel_closed_pr_runs() {
   }
   # ponytail: GitHub caps filtered run listings at 1,000; add time-window partitioning if active PR runs reach that ceiling.
   for status in in_progress queued; do
-    pages="$(gh api "repos/$REPO/actions/runs?status=$status&per_page=100" --paginate --slurp)" || return 1
+    pages="$(gh_workflow_runs_slurped_cached_for_repo "$REPO" "status:$status" "repos/$REPO/actions/runs?status=$status&per_page=100")" || return 1
     jq -e 'type == "array" and all(.[]; (.workflow_runs | type == "array"))' <<< "$pages" >/dev/null || return 1
     run_ids="$(jq -r --arg status "$status" --slurpfile snapshot "$cache_file" '
       ($snapshot[0].open_prs) as $open

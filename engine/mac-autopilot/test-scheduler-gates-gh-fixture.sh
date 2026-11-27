@@ -109,7 +109,7 @@ gh() {
         "repos/{owner}/{repo}/actions/runners?per_page=100")
           local runners_jq="" runners_prev="" arg
           for arg in "$@"; do [[ "$runners_prev" == --jq ]] && runners_jq="$arg"; runners_prev="$arg"; done
-          jq -r "${runners_jq:-.runners[].id}" <<<"$GH_RUNNERS" ;;
+          if [[ -n "$runners_jq" ]]; then jq -r "$runners_jq" <<<"$GH_RUNNERS"; else printf '%s\n' "$GH_RUNNERS"; fi ;;
         # 按状态列 run（8ca4eceaa 的 unfinished_runs / ci_pr_free_slots）：从 GH_RUNS 过滤，
         # 调用方 --jq 只做形状映射，这里直接给映射后的行（run 对象或 id）
         "repos/{owner}/{repo}/actions/runs?status="*)

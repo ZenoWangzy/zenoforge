@@ -43,6 +43,7 @@ export MAC_AUTOPILOT_ROOT="$fixture/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MA
 # 本套件在本机跑时也会撞到生产 luna-slots 路径：指向 fixture，隔离在用的门。
 export LUNA_SLOTS="$fixture/luna-slots"; mkdir -p "$LUNA_SLOTS"
 export CODEX_SESSIONS_DIR="$fixture/sessions"
+export GH_KEY_CACHE_DIR="$fixture/gh-key-cache"
 export ZF_TEST_EVIDENCE_LEDGER="$sup/test-evidence.jsonl"
 # Existing state-machine fixtures intentionally use synthetic check names. The scheduler must select this target override.
 mkdir -p "$fixture/repo/.zenoforge/mac-autopilot"

@@ -223,7 +223,7 @@ ci_assign_wip() {
         && cancelled_runs="$(jqf -r '.[] | select(.conclusion=="cancelled") | .databaseId' <<<"$cancelled_runs_json")" \
         || { say "ci wip unit=$id: could not list cancelled runs for head $head; admission deferred"; k=$((k-1)); deferred=$((deferred + 1)); continue; }
       for r in $cancelled_runs; do
-        gh run rerun "$r" --failed >/dev/null 2>&1 || true
+        if gh run rerun "$r" --failed >/dev/null 2>&1; then gh_commit_check_runs_invalidate "$head"; fi
       done
       set_unit "$id" "$(hist ci-wip-start "slot $k/$wip") | del(.ci_wip_wait) | del(.ci_cancel_reruns)"
       started=$((started + 1))

@@ -119,7 +119,7 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   return 1
 }
 size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-current]
-  local lines base_branch head="${5:-}" files pr unit_json limit memo
+  local lines base_branch head="${5:-}" files pr raw unit_json limit memo
   unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   size_admission_exempt_unit "$unit_json" && return 0
   [[ -n "${head}" ]] || say "size recheck without head: $1 $4"
@@ -137,7 +137,13 @@ size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-c
     pr="$(unit_field "$1" '.pr // empty')"
     files=""
     if [[ "$pr" =~ ^[0-9]+$ ]]; then
-      files="$(gh pr view "$pr" --json files --jq '.files[].path' | jqf -Rsc '[split("\n")[] | select(length > 0)]' || true)"
+      [[ "$head" =~ $SHA_RE ]] || head="$(tick_pr_head "$pr" 2>/dev/null || true)"
+      if [[ "$head" =~ $SHA_RE ]] && declare -F gh_pr_files_cached >/dev/null 2>&1; then
+        raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$pr" "$head" 2>/dev/null)" || raw=""
+        files="$(jqf -cs '[.[][] | .filename]' <<<"$raw" 2>/dev/null)" || files=""
+      else
+        files="$(gh pr view "$pr" --json files --jq '.files[].path' | jqf -Rsc '[split("\n")[] | select(length > 0)]' || true)"
+      fi
     fi
     jqf -e 'type == "array" and length > 0 and length < 100' <<<"$files" >/dev/null 2>&1 || files="$(changed_files_of "$2" "$3" "$base_branch")"
     if [[ -n "$head" && "${TICK_SIZE_RECHECK_PASS:-false}" == true ]]; then TICK_SIZE_RECHECK_MEMO[$memo]="$lines"$'\t'"$files"; fi

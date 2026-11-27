@@ -93,7 +93,7 @@ jq -e '
 fixture="$test_env_root/roi-fixture"
 fixture_supervisor="$fixture/supervisor"
 fixture_sessions="$fixture/sessions"
-mkdir -p "$fixture_supervisor/autopi/alerts" "$fixture_sessions"
+mkdir -p "$fixture_supervisor/autopi/alerts" "$fixture_sessions" "$fixture/repo"
 mkdir -p "$HOME/.claude/projects"
 cp "$template" "$fixture_supervisor/autopi/config.json"
 jq '.focus_mode = "release"' "$template" > "$fixture_supervisor/autopi/config.json"
@@ -154,12 +154,12 @@ gh() {
     'issue view 6201 --json state --jq .state') echo OPEN ;;
     'issue view 6202 --json state --jq .state') echo CLOSED ;;
     'issue view 6207 --json state --jq .state') return 1 ;;
-    'api repos/example-maintainer/example-repo/issues/6200/sub_issues?per_page=100'|\
-    'api repos/example-maintainer/example-repo/issues/6203/sub_issues?per_page=100'|\
-    'api repos/example-maintainer/example-repo/issues/6210/sub_issues?per_page=100'|\
-    'api repos/example-maintainer/example-repo/issues/6211/sub_issues?per_page=100') echo '[]' ;;
-    'api repos/example-maintainer/example-repo/issues/6205/sub_issues?per_page=100') echo '[{"number":6206,"state":"open"}]' ;;
-    'api repos/example-maintainer/example-repo/issues/6204/sub_issues?per_page=100') return 1 ;;
+    'api repos/example-maintainer/example-repo/issues/6200/sub_issues?per_page=100 --paginate'|\
+    'api repos/example-maintainer/example-repo/issues/6203/sub_issues?per_page=100 --paginate'|\
+    'api repos/example-maintainer/example-repo/issues/6210/sub_issues?per_page=100 --paginate'|\
+    'api repos/example-maintainer/example-repo/issues/6211/sub_issues?per_page=100 --paginate') echo '[]' ;;
+    'api repos/example-maintainer/example-repo/issues/6205/sub_issues?per_page=100 --paginate') echo '[{"number":6206,"state":"open"}]' ;;
+    'api repos/example-maintainer/example-repo/issues/6204/sub_issues?per_page=100 --paginate') return 1 ;;
     *) echo "unexpected parent-admission gh call: $*" >&2; return 97 ;;
   esac
 }
@@ -420,9 +420,9 @@ if [[ "$*" == 'api repos/example-maintainer/example-repo/deployments?environment
   cat "$DEPLOYMENT_FIXTURE"
 elif [[ "$*" == 'api repos/example-maintainer/example-repo/deployments/1/statuses' && -n "${DEPLOYMENT_FIXTURE:-}" ]]; then
   printf '%s\n' '[{"state":"success","created_at":"2026-10-24T00:00:00Z"}]'
-elif [[ "$*" == 'api repos/{owner}/{repo}/actions/runners?per_page=100'* ]]; then
+elif [[ "$*" == 'api --paginate '*'/actions/runners?per_page=100'* ]]; then
   # 看板 60ba960cf 起按 runner 池展示 CI 现状：PR 池一个在线且忙，Mac 池一个离线
-  printf '%s\n' '[{"name":"cihost-ci-1","status":"online","busy":true,"labels":["cihost-ci"]},{"name":"zf-mac-2","status":"offline","busy":false,"labels":["other"]}]'
+  printf '%s\n' '{"runners":[{"name":"cihost-ci-1","status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"name":"zf-mac-2","status":"offline","busy":false,"labels":[{"name":"other"}]}]}'
 elif [[ "$*" == 'pr list --state merged --search merged:>='*' --limit 200 --json number,mergedAt' ]]; then
   cat "$MERGED_PR_FIXTURE"
 else
@@ -891,7 +891,7 @@ tick_gh() {
           for arg in "$@"; do [[ "$runners_prev" == --jq ]] && runners_q="$arg"; runners_prev="$arg"; done
           command jq -r "${runners_q:-.}" < "$TF/ci-runners.json"
         else
-          echo 1
+          printf '%s\n' '{"runners":[{"status":"online","busy":false,"labels":[{"name":"cihost-ci"}]}]}'
         fi
       elif [[ "$*" =~ actions/runs/([0-9]+)/jobs ]] && [[ -f "$TF/ci-admission-jobs.json" ]]; then
         command jq -c --arg id "${BASH_REMATCH[1]}" '.[$id] // []' "$TF/ci-admission-jobs.json"
@@ -899,6 +899,9 @@ tick_gh() {
         command jq -c '.[]' "$TF/ci-admission-runs.json"
       elif [[ "$*" == *'actions/runs?status=queued'* && -f "$TF/queued-pr-runs.json" ]]; then
         command jq -c '.[]' "$TF/queued-pr-runs.json"
+      elif [[ "$*" == *'--paginate'* && "$*" == *'/pulls/'*'/files?per_page=100'* ]]; then
+        [[ ! -f "$TF/pr-files-fail" ]] || return 1
+        if [[ -f "$TF/pr-files" ]]; then command jq -Rn '[inputs | select(length > 0) | {filename:.}]' < "$TF/pr-files"; else echo '[{"filename":"packages/fixture/src/index.ts"}]'; fi
       elif [[ "$*" == *'/pulls/'*'/files'* ]]; then
         [[ ! -f "$TF/pr-files-fail" ]] || return 1
         if [[ -f "$TF/pr-files" ]]; then cat "$TF/pr-files"; else echo 'packages/fixture/src/index.ts'; fi
@@ -1111,6 +1114,7 @@ prepare_tick_config() {
 tick() (
   unset AUTOPI_TEST_LIBRARY_ONLY
   unset GH_TOKEN
+  unset GH_KEY_CACHE_DIR GH_KEY_CACHE_REPO
   [[ "${TYPESAFE_TEST_MOCK:-0}" == 1 ]] || unset TYPESAFE_API_KEY
   prepare_tick_config
   export MAC_AUTOPILOT_ROOT="$TF/repo" MAC_AUTOPILOT_SUPERVISOR_DIR="$TF/supervisor" MAC_AUTOPILOT_RUNTIME_DIR="$TF/supervisor/autopi" CODEX_SESSIONS_DIR="$TF/sessions"
@@ -2553,7 +2557,7 @@ sched_case_oversized_repair_pre_dispatch_recut() {
     cat "$TF/tick.out" "$TF/actions" >&2
     exit 1
   }
-  grep -Fq 'gh pr view 930 --json files' "$TF/calls" \
+  grep -Fq '/pulls/930/files?per_page=100' "$TF/calls" \
     || { echo 'not ok - scheduler.test.sh: footprint did not come from the PR file list' >&2; exit 1; }
   command jq -e '.state=="needs-recut" and .size_admission.lines==802 and .size_admission.limit==800' \
     "$TF/agent-home/state/930.json" >/dev/null || { echo 'not ok - scheduler.test.sh: repair preflight size evidence was not recorded' >&2; exit 1; }
@@ -3592,10 +3596,13 @@ lane_dir="$(mktemp -d)"
 classify_case() ( # files... → classify_lane 的输出或 FAIL
   printf '%s\n' "$@" > "$lane_dir/files"
   ROOT="$script_dir/../.."; POLICY_SCRIPT="$POLICY_FIXTURE"
+  GH_KEY_CACHE_DIR="$lane_dir/cache"
+  rm -rf -- "$GH_KEY_CACHE_DIR"
+  tick_pr_head() { printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; }
   gh() {
     [[ " $* " == *" --slurp "* && " $* " == *" --jq "* ]] && { echo 'the `--slurp` option is not supported with `--jq` or `--template`' >&2; return 1; }
-    [[ "$1 $2" == "api --paginate" && "$3" == "repos/{owner}/{repo}/pulls/77/files" ]] || return 1
-    command cat "$lane_dir/files"
+    [[ "$1 $2" == "api --paginate" && "$3" == "repos/{owner}/{repo}/pulls/77/files?per_page=100" ]] || return 1
+    command jq -Rn '[inputs | select(length > 0) | {filename:.}]' < "$lane_dir/files"
   }
   eval "$(command sed -n '/^classify_lane() {/,/^}/p' "$scheduler")"
   classify_lane 77 || echo FAIL
@@ -4794,7 +4801,7 @@ sched_case_hold_handoff_existing_unit() {
 sched_run_case hold_handoff_existing_unit
 
 sched_case_hold_handoff_new_pr_contract() {
-  local mode previous_pr previous_lane expected_lane sha
+  local mode previous_pr previous_lane expected_lane sha cache_file cache_json
   for mode in product nonproduct closed absent same same-changed; do
     new_tick_fixture "hold-handoff-new-pr-$mode"
     enable_rule_lane_fixture
@@ -4853,6 +4860,12 @@ sched_case_hold_handoff_new_pr_contract() {
       tick
       ! grep -q '^merge 779$' "$TF/actions" || { echo 'not ok - replacement PR accepted old CI checks' >&2; exit 1; }
       printf 'fresh\n' > "$TF/pipeline-ci-adoption"
+      for cache_file in "$TF/agent-home/state/gh-key-cache/"*.json; do
+        [[ -f "$cache_file" ]] || continue
+        cache_json="$(tail -n +2 "$cache_file")"
+        jq -e 'type == "object" and (.check_runs | type == "array")' <<<"$cache_json" >/dev/null 2>&1 || continue
+        sed -i '1s/.*/0/' "$cache_file"
+      done
       tick
       grep -q '^merge 779$' "$TF/actions" || { echo 'not ok - replacement PR did not merge after fresh CI' >&2; exit 1; }
       export REQUIRED_PR_CHECKS_FILE="$test_env_root/required-pr-checks.json"

@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, repo_identity, triage_split, intake_laneless_health, traffic_trend, gh_caller
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, repo_identity, triage_split, intake_laneless_health, traffic_trend, gh_caller, gh_key_cache
 import ledger_history
 from config_paths import zf_config_file
 
@@ -427,9 +427,8 @@ def runner_pool(r):
     if r.get("name", "").startswith("zf-mac"):
         return "Mac"
     return "其他"
-runners = gh(["api", "repos/{owner}/{repo}/actions/runners?per_page=100", "--jq",
-              "[.runners[] | {name, status, busy, labels: [.labels[].name]}]"])
-runners = runners if isinstance(runners, list) else []
+runners = gh_key_cache.read_or_empty("runners", os.environ.get("ZF_REPO", ""))
+runners = [{"name": r.get("name"), "status": r.get("status"), "busy": r.get("busy"), "labels": [label.get("name") for label in r.get("labels", []) if isinstance(label, dict)]} for r in runners if isinstance(r, dict)] if isinstance(runners, list) else []
 pools = {}
 for r in runners:
     pool = pools.setdefault(runner_pool(r), {"total": 0, "online": 0, "busy": 0})

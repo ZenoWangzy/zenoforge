@@ -351,7 +351,7 @@ $marker"
 # Retry only registered, open signatures. New all-passed/unhandled-error
 # signatures create one issue and leave their first occurrence blocking.
 ci_flake_retry_failed_run() {
-  local run_id="$1" issue="$2" pr_number="$3" allow_retry="$4" jobs="$5"
+  local run_id="$1" issue="$2" pr_number="$3" allow_retry="$4" jobs="$5" head_sha="${6:-}"
   local failed_jobs job_line job_id job_name log failed_ids failed_test_id match_status record first_run signature
   local status=1 matches='[]' attempt
   CI_FLAKE_CLASSIFICATION=real; CI_FLAKE_REASON=""
@@ -423,6 +423,7 @@ ci_flake_retry_failed_run() {
       elif ! ci_flake_record_occurrences_unlocked "$matches" "$run_id" "$pr_number"; then status=2
       elif ! guarded_write gh run rerun "$run_id" --repo "$REPO" --failed; then status=2
       else
+        [[ "$head_sha" =~ ^[0-9a-f]{40,64}$ ]] && gh_commit_check_runs_invalidate "$head_sha"
         CI_FLAKE_CLASSIFICATION=rerun; CI_FLAKE_REASON="known flake rerun once"; status=0
       fi
     fi
@@ -459,11 +460,25 @@ ci_flake_log_matches_open_issue() {
 
 
 ci_run_is_retryable_infra_failure() {
-  local run_id="$1" issue="${2:-0}" pr_number="${3:-0}" allow_flake_retry="${4:-0}" jobs checkout_failed capacity_gate_failed failed_step_count failed_job_without_steps logs capacity_f capacity_since seen now lock_fd flake_status=0
+  local run_id="$1" issue="${2:-0}" pr_number="${3:-0}" allow_flake_retry="${4:-0}" jobs checkout_failed capacity_gate_failed failed_step_count failed_job_without_steps logs capacity_f capacity_since seen now lock_fd flake_status=0 run_view run_rows run_row head_sha attempt
   CI_RETRYABLE_INFRA_REASON=""
   CI_RETRYABLE_INFRA_KIND=""
   [ -n "$run_id" ] || return 1
-  jobs="$(gh run view "$run_id" --repo "$REPO" --json jobs -q '.jobs' 2>/dev/null)" || return 2
+  if declare -F gh_run_list_cached >/dev/null && declare -F gh_run_jobs_cached >/dev/null; then
+    run_rows="$(gh_run_list_cached --limit 1000 2>/dev/null)" || run_rows=""
+    run_row="$(jq -c --arg id "$run_id" '[.[] | select((.databaseId // .id // "") | tostring == $id)][0] // empty' <<< "$run_rows" 2>/dev/null || true)"
+  else
+    run_row=""
+  fi
+  if [ -n "$run_row" ]; then
+    head_sha="$(jq -r '.headSha // empty' <<< "$run_row")" || return 2
+    attempt="$(jq -r '.attempt // 1' <<< "$run_row")" || return 2
+    jobs="$(gh_run_jobs_cached "$run_id" true "$attempt")" || return 2
+  else
+    run_view="$(gh_run_view_cached_for_repo "$REPO" "$run_id" latest false 2>/dev/null)" || return 2
+    head_sha="$(jq -r '.headSha // empty' <<< "$run_view")" || return 2
+    jobs="$(jq -c '.jobs // empty' <<< "$run_view")" || return 2
+  fi
   checkout_failed="$(jq -r '[.[]? | .steps[]? | select((.name | startswith("Run actions/checkout")) and .conclusion=="failure")] | length > 0' <<< "$jobs")" || return 2
   if [ "$checkout_failed" = true ]; then
     CI_RETRYABLE_INFRA_REASON="GitHub Actions checkout step failed before project checks"
@@ -495,7 +510,7 @@ ci_run_is_retryable_infra_failure() {
     unlock_fd "$lock_fd"
     return 0
   fi
-  ci_flake_retry_failed_run "$run_id" "$issue" "$pr_number" "$allow_flake_retry" "$jobs" || flake_status=$?
+  ci_flake_retry_failed_run "$run_id" "$issue" "$pr_number" "$allow_flake_retry" "$jobs" "$head_sha" || flake_status=$?
   case "$flake_status" in
     0) CI_RETRYABLE_INFRA_REASON="$CI_FLAKE_REASON"; CI_RETRYABLE_INFRA_KIND=flake; return 0 ;;
     3) return 1 ;;

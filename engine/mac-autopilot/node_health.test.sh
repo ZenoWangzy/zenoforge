@@ -565,16 +565,21 @@ for number in (40, 41, 43):
 native_issues = [{"number": number, "state": "open", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name": "tracker"}]} for number in (40, 41, 43)]
 native_subs = {40: [{"number": 4281, "state": "open", "closed_at": None, "labels": []}],
                41: [{"number": 4282, "state": "closed", "closed_at": "2026-10-20T10:00:00Z", "labels": []}]}
+native_cache_calls = []
 def native_gh(command, timeout):
     if command[-1].endswith("/sub_issues?per_page=100"):
         number = int(command[-1].split("/")[4])
         return None if number == 43 else [native_subs[number]]
     return [native_issues]
+def cached_native_subs(repo, issue_number):
+    native_cache_calls.append((repo, issue_number))
+    return None if issue_number == 43 else native_subs[issue_number]
 native_err = io.StringIO()
 with contextlib.redirect_stderr(native_err):
-    native_count = laneless.open_laneless_count(str(native_runtime), "test/repo", now, native_gh, str(native_runtime))
+    native_count = laneless.open_laneless_count(str(native_runtime), "test/repo", now, native_gh, str(native_runtime), cached_native_subs)
 assert native_count == 1, "only the tracker with no open native sub-issue is laneless"
 assert "#43" in native_err.getvalue(), "an unreadable sub-issue read must be logged"
+assert native_cache_calls == [("test/repo", 40), ("test/repo", 41), ("test/repo", 43)], native_cache_calls
 priority_now = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
 priority_config = {"intake_priority": {"live_at": "2026-11-12T00:00:00Z", "labels": {"priority": "p:", "route": "r:"}}}
 before_hook = {"number": 30, "state": "open", "created_at": "2026-11-11T23:59:59Z", "labels": []}

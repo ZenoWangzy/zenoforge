@@ -55,7 +55,7 @@ supervisor_hold_cached_open_blocker() {
     fi
   fi
 
-  if ids="$(gh api "repos/$REPO/issues/$n/dependencies/blocked_by" 2>/dev/null)"; then
+  if ids="$(gh_issue_blocked_by_cached "$REPO" "$n" 2>/dev/null)"; then
     if OPEN_BLOCKER_IDS="$(open_blocker_ids_from_rest_json "$ids" 2>/dev/null)"; then
       failed=false
       ids_json='[]'
@@ -115,6 +115,26 @@ supervisor_hold_cached_open_blocker() {
   [[ "$failed" == true ]] && return 0
   [ -n "$OPEN_BLOCKER_IDS" ]
 }
+supervisor_hold_invalidate_open_blocker() {
+  local n="$1" cache_root="${A:-${MAC_AUTOPILOT_RUNTIME_DIR:-}}" cache_file cache_lock lock_fd cache_json tmp
+  [[ -n "$cache_root" ]] || cache_root="${REPO_DIR:-$PWD}/.scratch-supervisor/autopi"
+  cache_file="$cache_root/dep-check.cache.json"
+  [[ -f "$cache_file" ]] || return 0
+  cache_lock="$cache_root/dep-check.cache.lock"
+  mkdir -p -- "$cache_root" 2>/dev/null || return 0
+  exec {lock_fd}>>"$cache_lock" || return 0
+  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 0; }
+  if cache_json="$(jqf_optional_file "$cache_file" -c 'if type == "object" then . else {} end' 2>/dev/null)"; then
+    cache_json="$(jqf -c --arg n "$n" 'del(.blocked_by[$n])' <<<"$cache_json" 2>/dev/null)" || cache_json=""
+    if [[ -n "$cache_json" ]]; then
+      tmp="$cache_file.tmp.$BASHPID"
+      printf '%s\n' "$cache_json" >"$tmp" && mv -f -- "$tmp" "$cache_file" || rm -f -- "$tmp"
+    fi
+  fi
+  flock -u "$lock_fd" || :
+  exec {lock_fd}>&-
+}
+
 supervisor_hold_landing_rows() {
   local requests="${ZF_LAND_QUEUE_DIR:-$AGENT_HOME/land-queue}/requests"
   local -a files=()

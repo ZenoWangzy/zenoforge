@@ -320,7 +320,7 @@ BACKOFF_QUOTA_PROVIDER=""
 GH_CALL_TIMEOUT_SEC="${GH_CALL_TIMEOUT_SEC:-60}"
 GIT_FETCH_TIMEOUT_SEC="${GIT_FETCH_TIMEOUT_SEC:-60}"
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"; source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/gh-key-cache.sh"
 
 # Every mutating call in issue-pipeline.sh/run-*.sh — gh issue/pr writes,
 # `git push`, `gh pr merge`, and (run-release.sh) the ssh/docker compose calls

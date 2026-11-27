@@ -9,6 +9,9 @@ export ZF_GH_NO_CACHE=1
 ZF_AUTO_PIN_HOME=${ZF_AUTO_PIN_HOME:-$HOME/.zenoforge}
 AGENT_HOME=${AGENT_HOME:-$HOME/.vecta-agent}
 C=${ZF_AUTO_PIN_CLONE:-$ZF_AUTO_PIN_HOME/clones/pz-zf-review-verdict-clobber}
+cache_helper="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../engine/lib.d" 2>/dev/null && pwd -P)/gh-key-cache.sh"
+[[ -f "$cache_helper" ]] || cache_helper="$C/engine/lib.d/gh-key-cache.sh"
+source "$cache_helper"
 idle=${ZF_AUTO_PIN_IDLE_SECS:-30} retry=${ZF_AUTO_PIN_RETRY_SECS:-60}
 state=$ZF_AUTO_PIN_HOME/auto-pin.last; stop=$ZF_AUTO_PIN_HOME/auto-pin.stop
 logdir=$ZF_AUTO_PIN_HOME/auto-pin-logs
@@ -17,10 +20,15 @@ product_fetch_time=$ZF_AUTO_PIN_HOME/auto-pin-product-fetch.last
 # Only a PR holding build.json, overrides.tsv and, optionally, the pack copies merged by this pin, with no failed check.
 # A clean three-way merge that leaves a pack copy byte-identical adds no pack file, so the PR is base-only.
 merge_override_pin() { # log [intended-row expected-head] -> 0 merged, 1 leave for head
-  local log=$1 kind=${2:-override} expected_head=${3:-} url pr allowed files bad head_sha checks i
+  local log=$1 kind=${2:-override} expected_head=${3:-} url pr repo allowed files raw bad head_sha checks i
   url=$(sed -n 's/.*result=pr-open route=PR landed=no pr=\([^ ]*\).*/\1/p' "$log" | tail -1)
   pr=${url##*/}; [[ $pr =~ ^[1-9][0-9]*$ ]] || { echo 'override-pin: no PR number in the pin log'; return 1; }
-  files=$(gh api --paginate "repos/ZenoWangzy/vecta/pulls/$pr/files" --jq '.[].filename') || return 1
+  repo=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pull/[0-9]+$#\1#' <<<"$url")
+  [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  head_sha=$(gh api "repos/$repo/pulls/$pr" --jq .head.sha) || return 1
+  [[ -z $expected_head || $head_sha == "$expected_head" ]] || { echo "override-pin: #$pr head changed before merge"; return 1; }
+  raw=$(gh_pr_files_cached_for_repo "$repo" "$pr" "$head_sha") || return 1
+  files=$(jq -rs 'add // [] | .[].filename' <<<"$raw") || return 1
   if [[ $kind == intended-row ]]; then
     [[ $files == .zenoforge/build/intended-changes.tsv ]] \
       || { echo "override-pin: #$pr files are not only the intended-changes row"; return 1; }
@@ -33,11 +41,9 @@ merge_override_pin() { # log [intended-row expected-head] -> 0 merged, 1 leave f
     fi
   fi
   # Failed = a completed check run or a legacy commit status in failure/error. Pending runs are not failed.
-  head_sha=$(gh api "repos/ZenoWangzy/vecta/pulls/$pr" --jq .head.sha) || return 1
-  [[ -z $expected_head || $head_sha == "$expected_head" ]] || { echo "override-pin: #$pr head changed before merge"; return 1; }
-  checks=$(gh api --paginate --slurp "repos/ZenoWangzy/vecta/commits/$head_sha/check-runs?per_page=100") || return 1
-  bad=$(jq '[.[].check_runs[] | select(.status == "completed") | select((.conclusion // "") | test("^(failure|cancelled|timed_out|action_required|startup_failure)$"))] | length' <<<"$checks") || return 1
-  statuses=$(gh api "repos/ZenoWangzy/vecta/commits/$head_sha/status" --jq '[.statuses[] | select(.state == "failure" or .state == "error")] | length') || return 1
+  checks=$(gh_commit_check_runs_persisted "$head_sha" "$repo") || return 1
+  bad=$(jq '[.check_runs[]? | select(.status == "completed") | select((.conclusion // "") | test("^(failure|cancelled|timed_out|action_required|startup_failure)$"))] | length' <<<"$checks") || return 1
+  statuses=$(gh api "repos/$repo/commits/$head_sha/status" --jq '[.statuses[] | select(.state == "failure" or .state == "error")] | length') || return 1
   bad=$((bad + statuses))
   [[ $bad == 0 ]] || { echo "override-pin: #$pr has $bad failed check(s)"; return 1; }
   gh pr merge "$pr" -R ZenoWangzy/vecta --squash >>"$log" 2>&1 || { echo "override-pin: gh pr merge #$pr failed"; return 1; }

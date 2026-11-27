@@ -21,7 +21,7 @@ utc_hour=$((10#$(date -u +%H))); off=$((12 - utc_hour))
 if (( off > 0 )); then tz="Etc/GMT-$off"; elif (( off < 0 )); then tz="Etc/GMT+$((-off))"; else tz="Etc/GMT"; fi
 export SESSION_TZ="$tz" CODEX_SESSIONS_DIR="$f/sessions" MAC_AUTOPILOT_ROOT="$root" \
   MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a" ZF_REPO_DIR="$root" ZF_REPO="example/fixture-repo"
-export MAC_AUTOPILOT_COST_CACHE="$f/cost.json" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/out.js"
+export MAC_AUTOPILOT_COST_CACHE="$f/cost.json" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/out.js" GH_KEY_CACHE_DIR="$f/gh-key-cache"
 export FAKE_DEPLOYMENTS="$f/deployments.json" FAKE_DEPLOYMENT_WRITES="$f/deployment-writes"
 export FAKE_SSH_LOG="$f/ssh.log"
 mkdir -p "$root/.zenoforge/mac-autopilot"
@@ -137,6 +137,9 @@ elif [[ "$1 $2" == "api repos/"* ]]; then
       echo '{"id":8}' ;;
     *) echo "unexpected fake gh API call: $*" >&2; exit 2 ;;
   esac
+elif [[ "$1 $2" == "api --paginate" && " $* " == *"/actions/runners?per_page=100 "* ]]; then
+  echo runner >> "$FAKE_GH_LOG"
+  echo '{"runners":[{"name":"fixture","status":"online","busy":false,"labels":[{"name":"cihost-ci"}]}]}'
 elif [[ "$1 $2" == "pr list" ]]; then
   printf '%s\n' "$*" >> "$FAKE_PR_LOG"; cat "${FAKE_PR_JSON:-/dev/null}"
 elif [[ "$1 $2" == "api --paginate" && " $* " == *"/issues?state=open&per_page=100 "* ]]; then
@@ -172,6 +175,9 @@ jq -n --arg timestamp "$pause_since" \
 
 # 1. 全部可用：阶段计数 / 滞留 / 顾问 / triage / 发布；每个数字都有标准和状态
 run
+[[ $(grep -c '^runner$' "$FAKE_GH_LOG") == 1 ]] || fail 'dashboard did not make one keyed runner read'
+run
+[[ $(grep -c '^runner$' "$FAKE_GH_LOG") == 1 ]] || fail 'dashboard refetched runners before the shared five-minute TTL'
 out="$(front)"
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | \
   jq -e '.founder_reqs.items | any(.[]; .issue == 555 and .text == "config override wording" and .from_ruling == true)' \
@@ -187,7 +193,7 @@ jq -e '.errors == {}
   and ([.stages[] | {(.label): .count}] | add) == {"needs-triage":2,"finish-first":0,"needs-info":2,"needs-advisor":3,"needs-recut":0,"ready-for-agent":9,"awaiting-release":5,"awaiting-pipeline-sync":0}
   and (.stages[0].idle_hours > 24 and .stages[0].oldest.number == 9)
   and (.stages[1].idle_hours == 0) and (.stages[2].idle_hours > 1.9 and .stages[2].idle_hours < 2.2)
-  and .github.cached == false' <<<"$out" >/dev/null || fail "stage rows wrong: $(jq -c '{errors, stages, github}' <<<"$out")"
+  and .github.cached == true' <<<"$out" >/dev/null || fail "stage rows wrong: $(jq -c '{errors, stages, github}' <<<"$out")"
 jq -e '(.stages[0].excluded | map({key, name, count}) == [{"key":"session_owned","name":"会话持有","count":0},{"key":"system","name":"系统通道","count":99},{"key":"roadmap","name":"路线图排序","count":1},{"key":"on_hold","name":"暂停中","count":0},{"key":"model_backoff","name":"模型退避","count":0},{"key":"retry_deferred","name":"等待刷新","count":0},{"key":"scheduler_inflight","name":"调度器处理中","count":0}])
   and (.stages[0].excluded | all(.tooltip | contains("不计入待分诊")))' <<<"$out" >/dev/null \
   || fail "excluded triage figures wrong: $(jq -c '.stages[0] | {count, oldest, excluded}' <<<"$out")"
@@ -283,16 +289,18 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
 
 # 2. 5 分钟缓存：再跑一次不再调 GitHub
 cache="$MAC_AUTOPILOT_DASHBOARD_OUTPUT"; cache="$(dirname "$cache")/front-cache.json"
+github_reads_before_cached_run="$(wc -l < "$FAKE_GH_LOG")"
 run
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 6 ]] || fail "GitHub reads repeated inside the cache window: $(cat "$FAKE_GH_LOG")"
+[[ "$(wc -l < "$FAKE_GH_LOG")" == "$github_reads_before_cached_run" ]] || fail "GitHub reads repeated inside the cache window: $(cat "$FAKE_GH_LOG")"
 front | jq -e '.github.cached == true and .github.stale == false and .stages[5].count == 9 and .search_counts.issues_open == 128' >/dev/null || fail "cached run not marked cached"
 
 # A pre-split cache must be refreshed instead of restoring its raw needs-triage count.
 jq '(.github.stages) |= map(if .label == "needs-triage" then .excluded |= map(select(.key != "session_owned")) else . end)' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
+github_reads_before_split_refresh="$(wc -l < "$FAKE_GH_LOG")"
 run
 front | jq -e '.github.cached == false and .stages[0].count == 2 and (.stages[0].excluded | length == 7)' >/dev/null \
   || fail "pre-split cache kept the raw needs-triage count: $(front | jq -c '{github, stage: .stages[0]}')"
-[[ "$(wc -l < "$FAKE_GH_LOG")" == 9 ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
+[[ "$(wc -l < "$FAKE_GH_LOG")" == "$((github_reads_before_split_refresh + 3))" ]] || fail "pre-split cache was not refreshed: $(cat "$FAKE_GH_LOG")"
 
 # 3. 缓存过期而 GitHub 失败：沿用旧缓存并标明失败原因（最长 30 分钟）
 [[ -s "$cache" ]] || fail "front cache file not written next to dashboard.data.js"

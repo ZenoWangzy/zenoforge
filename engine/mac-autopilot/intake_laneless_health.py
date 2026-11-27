@@ -2,6 +2,7 @@
 import json, os, sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import gh_key_cache
 
 CRITERIA = {
     "intake.laneless_open_issues": (
@@ -14,7 +15,7 @@ MEANING = {
 SOURCE = {
     "intake.laneless_open_issues": (
         "GitHub REST GET issues?state=open&per_page=100，用 --paginate 读完所有页；读取失败为 NO-DATA。"
-        "tracker 按 recut_children 与 GitHub 原生子票判断（读取失败按仍有开放子票处理），路线图容器先排除；子票号与同一份开放 issue 列表匹配；结果缓存在 runtime，每 DEP_CHECK_SECONDS（默认 600 秒）最多请求一次"),
+        "tracker 按 recut_children 与 GitHub 原生子票判断（读取失败按仍有开放子票处理），路线图容器先排除；子票号与同一份开放 issue 列表匹配；子票列表由共享缓存按父票键保存 600 秒"),
 }
 
 LANE_LABELS = frozenset({
@@ -51,15 +52,22 @@ def _write_cache(path, value):
         return False
 
 
-def _native_sub_issue_open(gh_json, repo, issue_number):
+def read_native_sub_issues(repo, issue_number):
+    return gh_key_cache.read("sub-issues", repo, issue_number, timeout=30)
+
+
+def _native_sub_issue_open(gh_json, repo, issue_number, cached_sub_issues=None):
     """True when GitHub lists an open native sub-issue, or when that read cannot prove there is none."""
     try:
-        pages = gh_json(["api", "--paginate", "--slurp", "--method", "GET",
-                         f"repos/{repo}/issues/{issue_number}/sub_issues?per_page=100"], 30)
+        if cached_sub_issues:
+            children = cached_sub_issues(repo, issue_number)
+        else:
+            pages = gh_json(["api", "--paginate", "--slurp", "--method", "GET",
+                             f"repos/{repo}/issues/{issue_number}/sub_issues?per_page=100"], 30)
+            children = [child for page in pages for child in page] if isinstance(pages, list) and all(
+                isinstance(page, list) for page in pages) else None
     except Exception:
-        pages = None
-    children = [child for page in pages for child in page] if isinstance(pages, list) and all(
-        isinstance(page, list) for page in pages) else None
+        children = None
     if children is None or any(not isinstance(child, dict) or child.get("state") not in ("open", "closed")
                                 for child in children):
         print(f"intake-laneless: sub-issue read unavailable for #{issue_number}; keeping it out of laneless",
@@ -68,7 +76,7 @@ def _native_sub_issue_open(gh_json, repo, issue_number):
     return any(child["state"] == "open" for child in children)
 
 
-def _tracker_has_open_children(agent_home, issue_number, open_issue_numbers, gh_json, repo):
+def _tracker_has_open_children(agent_home, issue_number, open_issue_numbers, gh_json, repo, cached_sub_issues=None):
     path = Path(agent_home) / "state" / f"{issue_number}.json"
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -86,7 +94,7 @@ def _tracker_has_open_children(agent_home, issue_number, open_issue_numbers, gh_
             return None
         if any(child in open_issue_numbers for child in children):
             return True
-    return _native_sub_issue_open(gh_json, repo, issue_number)
+    return _native_sub_issue_open(gh_json, repo, issue_number, cached_sub_issues)
 
 
 def _priority_route_config(runtime):
@@ -113,7 +121,7 @@ def _priority_route_config(runtime):
     return prefixes, cutoff, True
 
 
-def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
+def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home, cached_sub_issues=None):
     if not isinstance(repo, str) or not repo.strip():
         return None
     try:
@@ -209,7 +217,7 @@ def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
                     continue
                 if "tracker" in names.intersection(CONTAINER_LABELS):
                     has_open_children = _tracker_has_open_children(
-                        agent_home, issue["number"], open_issue_numbers, gh_json, repo)
+                        agent_home, issue["number"], open_issue_numbers, gh_json, repo, cached_sub_issues)
                     if has_open_children is None:
                         count = None
                         break
@@ -229,16 +237,16 @@ def _open_issue_snapshot(runtime, repo, now, gh_json, agent_home):
     return snapshot if _write_cache(path, snapshot) else None
 
 
-def open_laneless_count(runtime, repo, now, gh_json, agent_home):
+def open_laneless_count(runtime, repo, now, gh_json, agent_home, cached_sub_issues=None):
     """Count mature laneless product issues from a cached, paginated REST list read."""
-    snapshot = _open_issue_snapshot(runtime, repo, now, gh_json, agent_home)
+    snapshot = _open_issue_snapshot(runtime, repo, now, gh_json, agent_home, cached_sub_issues)
     count = snapshot.get("count") if isinstance(snapshot, dict) else None
     return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
 
 
-def open_priority_route_counts(runtime, repo, now, gh_json, agent_home):
+def open_priority_route_counts(runtime, repo, now, gh_json, agent_home, cached_sub_issues=None):
     """Count missing priority and route prefixes from the laneless row's cached issue read."""
-    snapshot = _open_issue_snapshot(runtime, repo, now, gh_json, agent_home)
+    snapshot = _open_issue_snapshot(runtime, repo, now, gh_json, agent_home, cached_sub_issues)
     counts = snapshot.get("priority_route") if isinstance(snapshot, dict) else None
     if not isinstance(counts, dict):
         return None
@@ -258,7 +266,7 @@ def add_front_priority_data(front, now, runtime, repo, run, root, agent_home, fr
         return json.loads(run(["gh", *command], timeout, cwd=root))
 
     try:
-        counts = open_priority_route_counts(runtime, repo, datetime.fromtimestamp(now, timezone.utc), gh_json, agent_home)
+        counts = open_priority_route_counts(runtime, repo, datetime.fromtimestamp(now, timezone.utc), gh_json, agent_home, read_native_sub_issues)
     except Exception as error:
         counts = None
         front.setdefault("errors", {})["intake_priority"] = str(error).strip()[:240]

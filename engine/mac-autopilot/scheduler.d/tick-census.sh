@@ -113,7 +113,8 @@ tick_pr_check_runs() { # head SHA → 归一化检查行 [{name,link,started_at,
   local sha="$1" raw
   [[ "$sha" =~ $SHA_RE ]] || return 1
   if [[ -n "${TICK_PR_CHECK_RUNS[$sha]:-}" ]]; then printf '%s' "${TICK_PR_CHECK_RUNS[$sha]}"; return 0; fi
-  raw="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" --jq '.check_runs // []' 2>/dev/null)" || return 1
+  raw="$(gh_commit_check_runs_cached "$sha")" || return 1
+  raw="$(jqf -c '.check_runs // []' <<<"$raw")" || return 1
   # REST 的 check-run：未完成时 conclusion 是 ""（或 null），不是绿；skipped 映射成 skipping，让同管线的
   # pr-required-aggregate.mjs --latest-checks 照旧在选行前丢弃 SKIPPED 副本（#4687，列表带 statusCheckRollup
   # 时的原语义：raw 结论先过 mjs 再分档）；同名多行由 node 留最新 run。

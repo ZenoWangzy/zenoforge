@@ -58,7 +58,7 @@ merge_conflict_files() { # main_sha pr_head [pr]
 # 冲突的单元送修复：作废批准、留历史、给 repair 提示。合并车道两处发现冲突（checks 未齐时、合并失败后）共用；
 # cause 同时进历史和日志，hint 各处自己的话（热修回迁 / 迁移编号）。
 merge_conflict_to_repair() { # id pr cause repair_hint head
-  local head="${5:-}" fresh files conflict_files paths attempts same_head rebase_hint extra=""
+  local head="${5:-}" fresh files raw conflict_files paths attempts same_head rebase_hint extra=""
   # 已排队：上一次冲突送了 repair-pending 且其后没有 write-start。修复 worker 合并的是它开跑时的 main，再标一次（扫描+评审，
   # 或 main 又动了）只多记一次 merge-conflict，merge.conflict_repairs_per_day 把它算成又一次修复。
   if [[ "$(unit_field "$1" '(.stage // "") + " " + ([(.history // [])[] | select(.stage | IN("merge-conflict","write-start")) | .stage] | last // "")')" == "repair-pending merge-conflict" ]]; then
@@ -72,7 +72,8 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
     set_unit "$1" ".conflict_update_head=$(js "$head")" || :
     fresh="$(gh pr view "$2" --json mergeable,headRefOid --jq '"\(.mergeable) \(.headRefOid)"' 2>/dev/null)"
     if [[ "$fresh" == "MERGEABLE $head" ]]; then
-      files="$(gh pr view "$2" --json files --jq '.files[].path' 2>/dev/null)"
+      raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$2" "$head" 2>/dev/null)" || raw=""
+      files="$(jqf -r '.[] | .filename' <<<"$raw" 2>/dev/null)" || files=""
       if [[ -n "$files" ]] && ! grep -qE '(^|/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$|(^|/)migrations/' <<<"$files" \
         && ci_update_branch "$2" "$head"; then
         set_unit "$1" "$(hist conflict-cleared "PR#$2 GitHub reports no conflict; update-branch at $head")"
@@ -361,6 +362,7 @@ run_merge_lane_pass() {
       if jqf --arg sha "$eval_sha" --argjson record "$CI_RETRY_RECORD" \
         '.[$sha]=$record' "$A/gate-net-rerun.json" | write_state "$A/gate-net-rerun.json"; then
         if gh run rerun "$CI_RUN_ID" --failed >/dev/null 2>&1; then
+          gh_commit_check_runs_invalidate "$eval_sha"
           CI_REASON="$CI_REASON; first-failure rerun requested (1/1), awaiting a later attempt"
         else
           CI_REASON="$CI_REASON; first-failure rerun request unconfirmed (1/1), awaiting server evidence"
@@ -529,6 +531,7 @@ run_merge_lane_pass() {
         if tick_prs_changed \
           && { [[ "$adopted_label" != true ]] || gh pr edit "$pr" --remove-label "$PIPELINE_CI_LABEL" >/dev/null 2>&1; } \
           && gh pr edit "$pr" --add-label "$PIPELINE_CI_LABEL" >/dev/null 2>&1; then
+          gh_commit_check_runs_invalidate "$head"
           set_unit "$id" "$(hist ci-adopt "non-agent branch gets a fresh $PIPELINE_CI_LABEL labeled event; heavy PR CI starts") | .ci_adopt_head=$(js "$head") | .ci_adopt_at=$(js "$STAMP")"
           say "adopt PR#$pr: $PIPELINE_CI_LABEL label event started branch policy and heavy gates"
         else

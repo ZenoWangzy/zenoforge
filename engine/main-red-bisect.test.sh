@@ -116,6 +116,11 @@ case "${1:-} ${2:-}" in
     if [ "${FAKE_FAIL_WORKFLOW_DISPATCH:-0}" = 1 ]; then printf '%s\n' "${FAKE_GH_WORKFLOW_ERROR:-fake workflow dispatch failed}" >&2; exit 1; fi
     printf 'dispatch %s %s %s\n' "$3" "$7" "${9#source_sha=}" >> "$state/actions.log"
     exit 0 ;;
+  "run view")
+    printf '%s\n' "$*" >> "$state/run-view-calls"
+    run_view='{"headSha":"0123456789012345678901234567890123456789","attempt":1,"status":"completed","conclusion":"failure","jobs":[{"name":"Pipeline suites focused","status":"completed","conclusion":"success","steps":[{"name":"Run focused pipeline suites","conclusion":"failure"}]}]}'
+    if [[ " $* " == *" -q .jobs "* ]]; then jq -c '.jobs' <<< "$run_view"; else printf '%s\n' "$run_view"; fi
+    exit 0 ;;
   "pr create")
     count=0
     [ ! -r "$state/pr-create-count" ] || count="$(cat "$state/pr-create-count")"
@@ -179,6 +184,15 @@ main_runs > "$FAKE_GH_STATE/completed-runs.json"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/issue-pipeline-slices.sh"
 MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400)) # the fixtures carry fixed dates; the age bound has its own case below
+export GH_KEY_CACHE_DIR="$test_root/main-red-run-cache"
+: > "$FAKE_GH_STATE/run-view-calls"
+focused_result=0
+main_red_focused_suite_step_failed 501 1 || focused_result=1
+assert_eq "focused failure fixture is recognized" 0 "$focused_result"
+focused_result=0
+main_red_focused_suite_step_failed 501 1 || focused_result=1
+assert_eq "cached focused failure is recognized" 0 "$focused_result"
+assert_eq "completed focused run jobs are fetched once per attempt" 1 "$(wc -l < "$FAKE_GH_STATE/run-view-calls")"
 
 # The list crosses the 128 KiB argv limit in production: 100 runs, about 1.4 MB, failed every tick for 39 hours.
 big_runs="$(jq -cn '{workflow_runs:[range(0;400) | {id:.,head_sha:"x",status:"completed",conclusion:"success",created_at:"2026-11-07T00:00:00Z",padding:("y"*1000)}]}')"
@@ -234,9 +248,13 @@ assert_eq "a run with no date is not current" old "$NO_DATE"
 MAIN_RED_MAX_RUN_AGE_SECONDS=$((10 * 365 * 86400))
 
 # Tick 1: the red appears; the same-SHA rerun (flaky check) is requested.
+red_check_cache="$(gh_key_cache_file "check-runs:$REPO:$RED_SHA")"
+mkdir -p -- "${red_check_cache%/*}"
+{ date +%s; printf '%s' '{"total_count":1,"check_runs":[{"status":"completed"}]}'; } > "$red_check_cache"
 maintenance_tick
 assert_contains "tick 1 requests the one same-SHA rerun" "$(cat "$FAKE_GH_STATE/actions.log")" "rerun 501"
 assert_eq "tick 1 opens a rerun-requested session" rerun-requested "$(session_json | jq -r .status)"
+[[ ! -e "$red_check_cache" ]] || { printf 'not ok - successful same-SHA rerun kept completed check-run cache\n' >&2; FAILED=1; }
 
 # Tick 2: the rerun finished red; the bisect window opens. The bound stops new sessions only: this one is older than it and still advances.
 main_runs failure failure 2 > "$FAKE_GH_STATE/completed-runs.json"
