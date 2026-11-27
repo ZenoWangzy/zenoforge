@@ -2,6 +2,7 @@
 # Count masked log line shapes and file or update one issue per failing class (#999, slice of #390).
 # shortcut: reads each log whole, so the caller passes a 24 h slice; upgrade when lines carry a usable timestamp filter.
 set -euo pipefail
+if ! declare -F gh >/dev/null 2>&1; then source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"; fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$script_dir/../config.sh"
