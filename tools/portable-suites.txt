@@ -41,6 +41,7 @@ engine/supervise-pipeline.test.sh
 engine/sweep-brief-banners.test.sh
 engine/worktree-lifecycle.test.sh
 engine/platform-env.test.sh
+engine/portable-shim/zf_units.test.sh
 engine/unitgen.test.sh
 engine/proc.test.sh
 engine/coord/caps.test.sh
