@@ -55,7 +55,7 @@ worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose re
     return 0
   fi
   [[ -n "$pushed_refs" ]] || { printf 'HEAD is not reachable from a remote-tracking ref'; return 0; }
-  if ! unpushed_commits="$(git -C "$wt" rev-list --all --not --remotes -n 1 2>/dev/null)"; then
+  if ! unpushed_commits="$(git -C "$wt" rev-list --exclude='refs/heads/hand/*' --all --not --remotes -n 1 2>/dev/null)"; then
     printf 'could not inspect local commits'
     return 0
   fi
