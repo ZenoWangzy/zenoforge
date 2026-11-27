@@ -8,6 +8,10 @@ export ZF_ENGINE_DIR
 source "$ZF_ENGINE_DIR/config.sh"
 source "$RELEASE_RUNNER_DIR/delivery.sh"
 source "$RELEASE_RUNNER_DIR/images.sh"
+source "$RELEASE_RUNNER_DIR/drift-filter.sh"
+source "$RELEASE_RUNNER_DIR/rollback.sh"
+source "$RELEASE_RUNNER_DIR/loss-probe.sh"
+source "$RELEASE_RUNNER_DIR/post-deploy.sh"
 declare -A RELEASE_DESIRED_IDS RELEASE_IMAGE_TAGS
 
 release_config_value() {
