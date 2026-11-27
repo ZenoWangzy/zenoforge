@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 engine="$(cd -- "$(dirname -- "$BASH_SOURCE")/.." && pwd -P)"
-source "$engine/test-env.sh"
 fail() { echo "zf_units.test.sh: $*" >&2; exit 1; }
 source_shims="$(cd -- "$(dirname -- "$BASH_SOURCE")" && pwd -P)"
 shim_dir="$test_env_root/portable-shim"
