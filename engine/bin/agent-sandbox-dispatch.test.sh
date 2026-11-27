@@ -55,9 +55,10 @@ import sys
 import time
 
 mode, branch = sys.argv[1:]
-assert shutil.which('git') == '/run/zf-agent/bin/git', (shutil.which('git'), os.environ.get('PATH'), pathlib.Path('/run/zf-agent/bin/git').exists(), os.access('/run/zf-agent/bin/git', os.X_OK))
+assert shutil.which('git') == '/run/zf-agent/bin/git'
 workspace = pathlib.Path('/run/zf-agent/workspace')
 host_home = pathlib.Path((workspace / 'host-home').read_text().strip())
+assert str(host_home.parent) not in os.environ['PATH']
 host_namespaces = json.loads((workspace / 'host-namespaces.json').read_text())
 for name, identity in host_namespaces.items():
     assert os.readlink(f'/proc/self/ns/{name}') != identity, (name, identity)
