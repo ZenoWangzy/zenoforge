@@ -237,11 +237,9 @@ dispatch_pending_pass() {
     if [[ "$ordered" == *$'\n'* ]]; then ordered="${ordered#*$'\n'}"; else ordered=""; fi
   fi
   if [[ "${DISPATCH_STATION_ACTIVE:-false}" == true && "$dispatch_candidate_limit" =~ ^[1-9][0-9]*$ ]]; then
-    dispatch_candidate_count="$(grep -c . <<<"$ordered" || :)"
-    if (( dispatch_candidate_count > dispatch_candidate_limit )); then
+    dispatch_candidate_count="$(grep -c . <<<"$ordered" || :)"; if (( dispatch_candidate_count > dispatch_candidate_limit )); then
       dispatch_next_cursor="$(sed -n "$((dispatch_candidate_limit + 1))p" <<<"$ordered" | jqf -r '.id // empty')"; ordered="$(head -n "$dispatch_candidate_limit" <<<"$ordered")"
-      dispatch_station_advance_cursor "$dispatch_next_cursor" || say 'dispatch station cursor update failed'
-    fi
+      dispatch_station_advance_cursor "$dispatch_next_cursor" || say 'dispatch station cursor update failed'; fi
   fi
   [[ -z "${DISPATCH_STATION_CANDIDATES+x}" ]] || DISPATCH_STATION_CANDIDATES="$(grep -c . <<<"$ordered" || :)"
   if [[ "$local_refill" == true ]]; then
