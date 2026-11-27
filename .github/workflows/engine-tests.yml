@@ -113,6 +113,18 @@ jobs:
           chmod +x "$RUNNER_TEMP/shfmt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           npm install -g typescript
+      - name: Check GitHub transport ratchet
+        if: ${{ matrix.shard == 0 }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            node tools/gh-transport-ratchet.mjs --base FETCH_HEAD
+          else
+            node tools/gh-transport-ratchet.mjs
+          fi
       # Installs exactly the lockfile, which includes @typesafe-ai/sdk (engine/ts-judge.mjs's only npm runtime dependency).
       - run: npm ci
       - name: Run engine suites
