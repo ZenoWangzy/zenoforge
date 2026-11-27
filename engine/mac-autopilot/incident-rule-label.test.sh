@@ -28,10 +28,11 @@ declare -F implement_report_sections >/dev/null \
   || { echo 'not ok - implement report section helper is missing from the dispatch queue' >&2; exit 1; }
 report_sections="$(implement_report_sections)"
 
-flaky_method_rule='flaky 测试不得跳过、添加 sleep 或重试，也不得反复运行直到通过；必须找到根因并修复；若找不到根因，则删除该测试，并在报告和提交说明中写明原因及被删断言覆盖的内容。'
+flaky_method_rule='若找不到根因，则保留测试、记录失败证据并提交诊断工单；仅当已证明测试过时、不验证任何有效行为，或有具名等效测试覆盖时，才可删除。'
+obsolete_flaky_method_rule='若找不到根因，则删除该测试'
 actual_method_rule="$(matt_method_rule "$fixture/repo")"
-[[ "$actual_method_rule" == *"$flaky_method_rule"* ]] \
-  || { echo 'not ok - METHOD lacks the flaky-test root-cause rule' >&2; exit 1; }
+[[ "$actual_method_rule" == *"$flaky_method_rule"* && "$actual_method_rule" != *"$obsolete_flaky_method_rule"* ]] \
+  || { echo 'not ok - METHOD lacks the flaky-test diagnosis rule or still permits deleting a test for an unknown cause' >&2; exit 1; }
 
 bug_prompt="$(incident_worker_prompt implement "$bug_unit" "$report_sections")"
 [[ "$bug_prompt" == *"$line"$'\nINCIDENT_RULE\n'* ]] \
