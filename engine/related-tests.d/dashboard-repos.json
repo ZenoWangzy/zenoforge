@@ -5,5 +5,11 @@
   ],
   "engine/mac-autopilot/repo_identity.py": [
     "engine/mac-autopilot/live_workers.test.sh"
+  ],
+  "engine/mac-autopilot/dashboard_source_freshness.py": [
+    "engine/mac-autopilot/dashboard_source_freshness.test.sh"
+  ],
+  "engine/mac-autopilot/dashboard_factory_live.py": [
+    "engine/mac-autopilot/dashboard_factory_live.test.sh"
   ]
 }

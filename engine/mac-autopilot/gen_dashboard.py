@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, repo_identity, triage_split, intake_laneless_health, traffic_trend, gh_caller, gh_key_cache
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, repo_identity, triage_split, intake_laneless_health, traffic_trend, gh_caller, gh_key_cache, dashboard_source_freshness, dashboard_factory_live
 import ledger_history
 from config_paths import zf_config_file
 
@@ -1111,9 +1111,9 @@ for section, build in (
 front["standards"] = front_standards
 front["values"] = front_values
 front["status"] = {k: ("N/A" if k in front_na else front_judge(front_values.get(k), sd)) for k, sd in front_standards.items()}
-front["elapsed_s"] = round(time.time() - front_started, 2); repo_sections = dashboard_repos.sections(os.environ.get("ZF_DASHBOARD_REPOS"), os.environ.get("ZF_REPO", ""),
+front["elapsed_s"] = round(time.time() - front_started, 2); dashboard_now = time.time(); dashboard_pause = current_pause(); source_freshness = dashboard_source_freshness.read_sources(A, dashboard_now, cfg.get("tick_seconds"), (dashboard_pause or {}).get("since")); factory_live = dashboard_factory_live.read_live(AGENT_HOME, units, dashboard_now, today_text, session_date_of); repo_sections = dashboard_repos.sections(os.environ.get("ZF_DASHBOARD_REPOS"), os.environ.get("ZF_REPO", ""),
     os.environ.get("ZF_ENGINE_REPO") or repo_identity.origin_repo(os.environ.get("ZF_ENGINE_REPO_DIR") or os.environ.get("ZF_ENGINE_DIR") or _HERE),
-    live_workers_data.get("items") or [], front, lambda repo: front_github_stages(front_now, repo))
+    live_workers_data.get("items") or [], front, lambda repo: front_github_stages(front_now, repo), factory_live)
 
 data = {
     "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1164,10 +1164,10 @@ data = {
         "alert_count": len(alerts),
     },
     "alerts_tail": alerts[-8:],
-    "ci_live": ci_live,
+    "ci_live": ci_live, "source_freshness": source_freshness,
     "knobs": knobs,
     # One source of standards: node_health.py writes the scorecard, meanings and work-order bounds each tick.
-    "standards": {**(read_json(f"{A}/node-health.json") or {}), "paused": current_pause()},
+    "standards": {**dashboard_source_freshness.annotate_standards(read_json(f"{A}/node-health.json") or {}, source_freshness), "paused": dashboard_pause},
 }
 # Write then rename: the page re-reads this file every 30 s, and an in-place write let it catch a half-written file.
 with open(dashboard_output + ".tmp", "w") as out:

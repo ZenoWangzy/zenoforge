@@ -40,7 +40,7 @@ def configured_repos(raw, default_repo, engine_repo):
     return unique
 
 
-def sections(raw, default_repo, engine_repo, workers, front, load_counts):
+def sections(raw, default_repo, engine_repo, workers, front, load_counts, factory_live=None):
     output = []
     try: repos = configured_repos(raw, default_repo, engine_repo)
     except ValueError as exc: return [{"repo": "ZF_DASHBOARD_REPOS", "counts": {"issues_open": None, "ready_for_agent": None, "prs_open": None, "prs_merged_24h": None}, "workers": [], "waiters": [], "error": str(exc), "stale": False}]
@@ -61,5 +61,6 @@ def sections(raw, default_repo, engine_repo, workers, front, load_counts):
             error = (str(exc).strip().splitlines() or [type(exc).__name__])[-1][:240]
         own = [dict(worker) for worker in workers if str(worker.get("repo") or "").casefold() == repo.casefold()]
         output.append({"repo": repo, "counts": counts, "workers": [w for w in own if not w.get("waiting")],
-                       "waiters": [w for w in own if w.get("waiting")], "error": error, "stale": stale})
+                       "waiters": [w for w in own if w.get("waiting")], "error": error, "stale": stale,
+                       "factory_live": factory_live if repo.casefold() == str(engine_repo).casefold() else None})
     return output

@@ -564,8 +564,8 @@ function bullet(o) {
   const pct = x => Math.max(0, Math.min(100, 100 * x / top));
   const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
   const v = o.value==null ? null : Number(o.value), nl = !String(o.label||"").trim();
-  const short = (o.long_status ? ` · 长窗 ${o.long_status}` : "") + (o.status==="LOW-N" && o.sample_n!=null ? ` · n=${o.sample_n}` : "") + (Object.prototype.hasOwnProperty.call(o,"value_1h") ? ` · ${o.value_1h==null?"短窗无数据":`${o.short_window||"1h"} ${num(o.value_1h)} ${o.trend_1h?`${o.trend_1h.direction==="up"?"↑":o.trend_1h.direction==="down"?"↓":"→"}${o.trend_1h.delta>0?"+":""}${num(o.trend_1h.delta)}`:"趋势无数据"}`}` : "") + (o.data_at ? ` · 数据截至 ${esc(o.data_at)}` : "");
-  const tip = [o.label, o.desc, o.meaning, o.standard_basis, o.data_at ? `GitHub 读取被挡，沿用 ${o.data_at} 的数据` : null, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
+  const short = (o.long_status ? ` · 长窗 ${o.long_status}` : "") + (o.status==="LOW-N" && o.sample_n!=null ? ` · n=${o.sample_n}` : "") + (Object.prototype.hasOwnProperty.call(o,"value_1h") ? ` · ${o.value_1h==null?"短窗无数据":`${o.short_window||"1h"} ${num(o.value_1h)} ${o.trend_1h?`${o.trend_1h.direction==="up"?"↑":o.trend_1h.direction==="down"?"↓":"→"}${o.trend_1h.delta>0?"+":""}${num(o.trend_1h.delta)}`:"趋势无数据"}`}` : "") + (o.data_at ? " · 数据截至 "+esc(o.data_at) : o.source_at ? " · 数据截至 "+esc(o.source_at) : "") + (o.source_stale ? " · 来源较旧" : "") + (o.source_paused ? " · 流水线暂停"+(o.source_paused_since ? "，暂停自 "+esc(o.source_paused_since) : "") : "");
+  const tip = [o.label, o.desc, o.meaning, o.standard_basis, o.data_at ? "GitHub 读取被挡，沿用 "+o.data_at+" 的数据" : o.source_at ? (o.source_name||"来源")+"时间 "+o.source_at : null, o.source_stale ? "来源超过新鲜度窗口" : null, o.source_paused ? "流水线暂停自 "+(o.source_paused_since||"时间未知") : null, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
   return `<div class="bul zr s-${s}${nl?" nl":""}" data-tip="${esc(tip)}">${nl?"":`<i class="ad s-${s}"></i><span class="bul-l">${esc(o.label)}</span>`}
     <span class="a-t">${zones.filter(z=>pct(z[1])>pct(z[0])).map(z=>`<i class="z-${z[2]}" style="left:${pct(z[0])}%;width:${pct(z[1])-pct(z[0])}%"></i>`).join("")}${v==null?"":`<b style="left:${Math.min(pct(v),99)}%"></b>`}</span>
     <span class="bul-v"><b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}${short}</small></span></div>`;
@@ -596,7 +596,7 @@ function stack(parts, fmt=num) {
 }
 const CAT = ["var(--c1)","var(--c2)","var(--c3)","var(--c4)","var(--c5)","var(--c6)","var(--c7)","var(--c8)"];
 const panel = (icon, title, body, aside="", cls="") => `<section class="panel ${cls}"><h2 class="ph">${ic(icon)}${esc(title)}${aside?`<span class="aside">${aside}</span>`:""}</h2>${body}</section>`;
-const repoPanels = D => (D.repo_sections||[]).map(r => { const c = r.counts || {}, cell = (label,value) => `<div class="ts-m" title="GitHub repo:${esc(r.repo)}"><span>${label}</span><b>${value==null?"未读取":num(value)}</b></div>`, cells = [["开放 Issue",c.issues_open],["待实现",c.ready_for_agent],["开放 PR",c.prs_open],["24 小时合并 PR",c.prs_merged_24h]].map(([label,value]) => cell(label,value)).join(""), row = (w,waiting) => `<div class="srow"><div class="nm">${esc(w.key||w.task||"worker")}</div><b>${w.age_s==null?"—":fDur(w.age_s)}</b><div class="sub">${waiting?`等待容量门${w.waiter_ahead?` · 前方 ${esc(w.waiter_ahead)}`:""}`:"运行中"}</div></div>`, workers = (r.workers||[]).map(w => row(w,false)).join(""), waiters = (r.waiters||[]).map(w => row(w,true)).join(""); return panel("git",r.repo||"仓库",`<div class="ts-row">${cells}</div>${r.error?`<div class="unavail">${esc(r.error)}</div>`:""}<div class="sub" style="margin-top:10px">在岗 workers</div>${workers?`<div class="rows">${workers}</div>`:emptyMsg("没有在岗 workers")}<div class="sub" style="margin-top:10px">容量门等待</div>${waiters?`<div class="rows">${waiters}</div>`:emptyMsg("没有容量门等待者")}`,r.stale?stChip("warn","数据较旧"):"","repo-section"); }).join("");
+const repoPanels = D => (D.repo_sections||[]).map(r => { const c = r.counts || {}, f = r.factory_live || {}, merged = f.merge_lane_today || [], cell = (label,value) => `<div class="ts-m" title="GitHub repo:${esc(r.repo)}"><span>${label}</span><b>${value==null?"未读取":num(value)}</b></div>`, cells = [["开放 Issue",c.issues_open],["待实现",c.ready_for_agent],["开放 PR",c.prs_open],["24 小时合并 PR",c.prs_merged_24h]].map(([label,value]) => cell(label,value)).join(""), row = (w,waiting) => `<div class="srow"><div class="nm">${esc(w.key||w.task||"worker")}</div><b>${w.age_s==null?"—":fDur(w.age_s)}</b><div class="sub">${waiting?`等待容量门${w.waiter_ahead?` · 前方 ${esc(w.waiter_ahead)}`:""}`:"运行中"}</div></div>`, workers = (r.workers||[]).map(w => row(w,false)).join(""), waiters = (r.waiters||[]).map(w => row(w,true)).join(""), lunaRows = (f.luna_workers||[]).map(w => '<div class="srow"><div class="nm">'+esc(w.key||"worker")+(w.issue!=null?" · #"+esc(w.issue):"")+'</div><b>'+(w.age_s==null?"—":fDur(w.age_s))+'</b><div class="sub">'+esc(w.state||"")+(w.rc==null?" · rc —":" · rc "+esc(w.rc))+'</div></div>').join(""), dispatchRows = (f.dispatch_decisions||[]).map(d => '<div class="srow"><div class="nm">'+(d.issue!=null?"#"+esc(d.issue)+" ":"")+esc(d.decision||"recorded")+'</div><b>'+esc(d.at||"—")+'</b></div>').join(""), mergeRows = merged.map(n => '<span class="tag">#'+esc(n)+'</span>').join(""), liveHtml = r.factory_live ? '<div class="sub" style="margin-top:10px">Luna workers</div>'+sourceFresh(D,"units")+(lunaRows?'<div class="rows">'+lunaRows+'</div>':emptyMsg("没有在岗 Luna workers"))+'<div class="sub" style="margin-top:10px">最近调度决策</div>'+(dispatchRows?'<div class="rows">'+dispatchRows+'</div>':emptyMsg("没有调度决策记录"))+'<div class="sub" style="margin-top:10px">合并车道今日合并 '+merged.length+'</div><div class="issue-chips">'+mergeRows+'</div>' : ""; return panel("git",r.repo||"仓库",`<div class="ts-row">${cells}</div>${liveHtml}${r.error?`<div class="unavail">${esc(r.error)}</div>`:""}<div class="sub" style="margin-top:10px">在岗 workers</div>${workers?`<div class="rows">${workers}</div>`:emptyMsg("没有在岗 workers")}<div class="sub" style="margin-top:10px">容量门等待</div>${waiters?`<div class="rows">${waiters}</div>`:emptyMsg("没有容量门等待者")}`,r.stale?stChip("warn","数据较旧"):"","repo-section"); }).join("");
 const unavailable = (what, err) => `<div class="unavail" data-tip="${esc(String(err||""))}">${ic("bad")}<div><b style="color:inherit">数据不可用</b>，${esc(what)}</div></div>`;
 const emptyMsg = t => `<div class="empty">${ic("none")}${esc(t)}</div>`;
 const kcard = (icon, label, v, vis="", st="", tip="") => `<div class="kc"${tip?` data-tip="${esc(tip)}"`:""}><div class="kc-h">${ic(icon)}${esc(label)}${st?`<i class="ad s-${sk(st)}"></i>`:""}</div><div class="kc-v">${v}</div>${vis}</div>`;
@@ -645,7 +645,7 @@ const isTrendMetric = m => String(m.id||"").includes("_30d");
 const metricStatus = m => m.status==="STANDARD-INVALID" || m.status==="LOW-N" ? m.status : Object.prototype.hasOwnProperty.call(m,"value_1h") ? judge(m.value_1h,m) : m.status;
 const modMetrics = (D, mod) => nodeMetrics(D).filter(m => !isTrendMetric(m) && (ID_MOD[m.id] || NODE_MOD[m.node]) === mod);
 const bNode = m => { const lb = LABELS[m.id] || [/[\u4e00-\u9fff]/.test(m.desc || "") ? m.desc : ((PLAIN[m.id] || [])[0] || firstSentence(m.meaning) || m.desc), ""];
-  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, value_1h:m.value_1h, trend_1h:m.trend_1h, short_window:m.short_window, long_status:m.status, sample_n:m.sample_n, standard_basis:m.standard_basis, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:metricStatus(m), desc:m.desc, meaning:m.meaning, source:m.source, data_at:m.data_at}); };
+  return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, value_1h:m.value_1h, trend_1h:m.trend_1h, short_window:m.short_window, long_status:m.status, sample_n:m.sample_n, standard_basis:m.standard_basis, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:metricStatus(m), desc:m.desc, meaning:m.meaning, source:m.source, data_at:m.data_at, source_at:m.source_at, source_name:m.source_name, source_stale:m.source_stale, source_paused:m.source_paused, source_paused_since:m.source_paused_since}); };
 const FR = D => D.front || {};
 // 指标行列表：异常、警告、无数据的行直接显示，正常的折成一行
 const isOk = h => /^<div class="bul zr s-ok/.test(h);
@@ -660,12 +660,12 @@ const frontStatus = (D, pred) => Object.entries(FR(D).status||{}).filter(([k]) =
 const ciStd = D => ((D.standards||{}).ci_standards || {});
 const ciStatus = (D, k) => judge(((D.ci_live||{}).values||{})[k], ciStd(D)[k]);
 const bCi = (D, k, label) => { const sd = ciStd(D)[k]; if (!sd) return "";
-  const v = ((D.ci_live||{}).values||{})[k];
-  return bullet({id:"ci_live."+k, label: label || sd.desc, value: v, healthy: sd.healthy, unhealthy: sd.unhealthy, hib: sd.higher_is_better, status: judge(v, sd), meaning: sd.meaning, source: sd.source, desc: sd.desc}); };
+  const v = ((D.ci_live||{}).values||{})[k], src = (D.source_freshness||{}).ci_live || {};
+  return bullet({id:"ci_live."+k, label: label || sd.desc, value: v, healthy: sd.healthy, unhealthy: sd.unhealthy, hib: sd.higher_is_better, status: judge(v, sd), meaning: sd.meaning, source: sd.source, desc: sd.desc, source_at:src.at, source_name:"CI 快照", source_stale:!!src.stale, source_paused:!!src.paused, source_paused_since:src.paused_since}); };
 const stageRow = (D, label) => ((FR(D).stages||[]).find(x => x.label===label));
 const units = D => D.units || [];
 const unitsIn = (D, stages) => units(D).filter(u => stages.includes(u.stage));
-const liveWorkers = D => (D.workers||[]).filter(w => w.alive);
+const liveWorkers = D => (D.workers||[]).filter(w => w.alive); const sourceFresh = (D,key) => { const s=((D||{}).source_freshness||{})[key]; if(!s||(!s.stale&&!s.paused)) return ""; const label={units:"单元",workers:"员工",ci_live:"CI",node_health:"健康评分",stations:"车站",merge_wait:"合并等待",delivery_rows:"交付台账"}[key]||key; return stChip(s.paused?"none":"warn",label+" "+(s.at?"数据截至 "+esc(s.at):"数据时间未知")+(s.paused?" · 流水线暂停"+(s.paused_since?"，暂停自 "+esc(s.paused_since):""):" · 来源较旧")); }; const sourceFreshnessPanel = (D,keys) => { const chips=keys.map(key=>sourceFresh(D,key)).filter(Boolean).join(""); return chips?panel("timer","数据来源",'<div class="lg">'+chips+'</div>'):""; };
 // 新鲜度：bell.sh 在 dashboard.data.js 超过 900 秒没刷新时报警；生成器与 tick 无关，600 秒内算健康（loop.sh 每 300 秒起一次 --views dashboard，跑一次约 90 秒，最旧约 400 秒）
 const freshness = D => { const age = D.generated ? (Date.now() - new Date(D.generated).getTime())/1000 : null, s = age==null ? "none" : age<=600 ? "ok" : age<900 ? "warn" : "bad";
   return {age, s, display_s: D.standards?.paused && s === "bad" ? "none" : s}; };
@@ -714,7 +714,7 @@ function vIntake(D) {
   const queueCount = F.ready_queue ? F.ready_queue.dispatchable : null;
   const ticketCounts = TICKET_TOTAL_STAGES.map(([label]) => count((C.stages||{})[label])), open = count(C.issues_open), stageSum = ticketCounts.reduce((n,v) => n+(v||0),0), complete = ticketCounts.every(v => v!=null), partitionError = open!=null && complete && stageSum>open ? "阶段标签总数超过开放 issue 总数，无法分组" : "";
   const ticketCells = TICKET_TOTAL_STAGES.map(([label,name],i) => { const value = partitionError ? null : ticketCounts[i], key = `stages.${label}`; return cell(`tickets.${label}`,name,value,`GitHub 搜索 repo:${repo} is:issue is:open label:${label}；gen_dashboard.py 缓存 5 分钟`,value==null?(partitionError||countError(key)):""); }).join(""), unknown = open!=null && complete && !partitionError ? open-stageSum : null, unknownWhy = partitionError || "开放 issue 总数或阶段标签计数未读取";
-  return `<div class="stack16"><div class="totals-strip"><div class="ts-note" title="GitHub issue 和 PR 共用同一编号序列">Issue 与 PR 共用同一编号序列；#5975 是编号，不代表 issue 数量。</div><div class="ts-row"><span class="ts-head">GitHub 计数</span>${repoCells}</div><div class="ts-row"><span class="ts-head">需求阶梯</span>${reqCells}</div><div class="ts-row"><span class="ts-head">开放 tickets</span>${ticketCells}${cell("tickets.unclassified","未分类",unknown,`GitHub 搜索 repo:${repo} is:issue is:open 总数减去八个 intake 阶段搜索数；gen_dashboard.py 缓存 5 分钟`,unknown==null?unknownWhy:"")}</div></div>
+  return `<div class="stack16">${sourceFreshnessPanel(D,["units"])}<div class="totals-strip"><div class="ts-note" title="GitHub issue 和 PR 共用同一编号序列">Issue 与 PR 共用同一编号序列；#5975 是编号，不代表 issue 数量。</div><div class="ts-row"><span class="ts-head">GitHub 计数</span>${repoCells}</div><div class="ts-row"><span class="ts-head">需求阶梯</span>${reqCells}</div><div class="ts-row"><span class="ts-head">开放 tickets</span>${ticketCells}${cell("tickets.unclassified","未分类",unknown,`GitHub 搜索 repo:${repo} is:issue is:open 总数减去八个 intake 阶段搜索数；gen_dashboard.py 缓存 5 分钟`,unknown==null?unknownWhy:"")}</div></div>
     <div class="kcs">${kcard("intake", "开放 issue", num(T.issues_open))}${kcard("git", "开放 PR", num(T.prs_open))}${kcard("layers", "待分诊", num(cnt("needs-triage")), "", stS("stage.needs-triage.count"))}${kcard("arrow", "待实现·可派发", num(queueCount), "", F.ready_queue ? stS("ready_queue.dispatchable") : "NO-DATA")}</div>
     ${panel("health", "收单标签检查", bFront(D,"intake.priority_route_missing","Issues without priority", (()=>{const p=F.priority_route;return p?`after hook: priority ${num(p.active.priority)}, route ${num(p.active.route)} · backlog: priority ${num(p.backlog.priority)}, route ${num(p.backlog.route)}`:"未读取"})()))}
     ${panel("arrow", "待实现拆分", readyQueueDetail(D))}
@@ -764,7 +764,7 @@ function vAdvisor(D) {
         <div class="lg"><span>${ic("clock")} 上次裁决 ${fAge(hoursAgo(AL.last_ruling_at))}前</span><span>正在问 <b>${num(AL.asking_now)}</b></span></div></div></div>
       <div class="buls" style="margin-top:14px">${modMetrics(D,"advisor").map(bNode).join("")}</div>`;
   }
-  return `<div class="stack16">${panel("advisor","批量处理", batch)}${panel("workers","评审中的顾问", loop)}</div>`;
+  return `<div class="stack16">${sourceFreshnessPanel(D,["units","node_health"])}${panel("advisor","批量处理", batch)}${panel("workers","评审中的顾问", loop)}</div>`;
 }
 
 // 3. 开发与评审
@@ -807,7 +807,7 @@ function vWorkers(D) {
     : emptyMsg("尚无 PR 大小数据");
   const SKs = ((D.standards||{}).time_sinks||[]).filter(r => /^(repair|rereview|review|implement)/.test(r.id));
   const e = D.efficiency || {};
-  return `<div class="stack16">
+  return `<div class="stack16">${sourceFreshnessPanel(D,["units","workers","node_health"])}
     <div class="grid g2">
       ${panel("workers","在岗", `<div class="ringbox">${ring(100*(s.live_workers||0)/Math.max(1,s.max_workers||1), (s.live_workers||0)>0?"ok":"bad", 96, `${num(s.live_workers)}/${num(s.max_workers)}`)}
         <div class="kpis" style="flex:1">${kpi("orders", num(e.delivered_reports), "", "已交付报告")}${kpi("bad", num(e.wasted_workers), "", "白跑的员工")}</div></div>
@@ -906,7 +906,7 @@ function vOrders(D) {
       <div class="tk-cost">${unitCostText(CM, u.id)}<div class="sm">${ft(u.tokens)} tok</div></div></div>`;
   };
   const aggT = Math.max(1, agg.work+agg.ready+agg.supervisor);
-  return `<div class="stack16">
+  return `<div class="stack16">${sourceFreshnessPanel(D,["units","node_health"])}
     ${panel("orders","工作单状态", stripHtml)}
     ${panel("health","哪些工作单超标", strips(D), (()=>{ const m = nodeMetrics(D).find(x=>x.id==="workorders.over_standard"); return m ? stChip(m.status, `超标 ${num(m.value)} 单`) : ""; })())}
     ${panel("layers", `「${FILTERS[view.f][0]}」${list.length} 单`, `<div style="margin-bottom:6px">${stack([{label:"开发/质检", value:agg.work, color:"var(--c1)"},{label:"等合并", value:agg.ready, color:"var(--c2)"},{label:"等主管", value:agg.supervisor, color:"var(--c8)"}], fMin)}</div>
@@ -928,7 +928,7 @@ function vCi(D) {
   const verdict = v => { const s = !v || String(v).startsWith("unknown") ? "warn" : String(v).startsWith("success") ? "ok" : "bad"; return stChip(s, s==="ok"?"通过":s==="bad"?"失败":"未知"); };
   const ws = sp.waste_pct, wst = ws==null?"none":ws>=35?"bad":ws>20?"warn":"ok";
   const sinks = ((D.standards||{}).time_sinks||[]).filter(r => /^approve/.test(r.id));
-  return `<div class="stack16">
+  return `<div class="stack16">${sourceFreshnessPanel(D,["ci_live","units","node_health"])}
     <div class="grid g2">
       ${panel("ci","Runner", poolHtml, `${num((CL.values||{}).runners_online)} 在线`)}
       ${panel("git","main 分支", `<div class="kcs">
@@ -972,7 +972,7 @@ function vRelease(D) {
   const steps = ((D.release||{}).steps||[]);
   const stI = {blocked:"bad", in_progress:"none", done:"ok", pending:"none"};
   const merged = t.merged_today || [];
-  return `<div class="stack16">
+  return `<div class="stack16">${sourceFreshnessPanel(D,["units","node_health"])}
     ${panel("release","自动发布列车", `<div class="lg" style="margin-top:0"><span data-tip="${esc(rt.reason||"")}">${stChip(rtn[1], rtn[0])}</span><span>候选 <code>${esc((rt.candidate||"—").slice(0,9))}</code></span>
         ${rt.released_sha?`<span>${ic("ok")} 最近发布 <code>${esc(rt.released_sha.slice(0,9))}</code>，${fAge(hoursAgo(rt.released_at))}前</span>`:""}
         ${(rt.images||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join("")}${rt.consecutive_failures?stChip("bad","连续失败 "+rt.consecutive_failures):""}</div>
@@ -1034,9 +1034,9 @@ function vHealth(D) {
   const okNodes = Object.entries(groups).filter(([, g]) => !g.some(abn)).map(([node]) => node);
   const abnPanels = bad.map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, g.map(anomRow).join(""), stChip(worst(g.map(metricStatus))))).join("");
   const SRows = Object.entries(((D.stations||{}).stations)||{});
-  const stationPanel = SRows.length ? panel("layers", "车站：等待、产出与停顿（24 h）", `<div class="buls">${SRows.map(([s, r]) => `<div><span class="bul-l">${esc(PLAIN_NODE[s]||s)} · ${esc(r.status)}</span><span class="bul-v">等待 ${num(r.waiting)} · 产出 ${num(r.out_24h)} · 停顿 ${num(r.stall_min)} / 上限 ${num(r.stall_bound_min)} 分</span></div>`).join("")}</div>`, `${SRows.filter(([,r]) => STSK[r.status] === "bad").length} 停顿`) : "";
+  const stationPanel = SRows.length ? panel("layers", "车站：等待、产出与停顿（24 h）", `<div class="buls">${SRows.map(([s, r]) => `<div><span class="bul-l">${esc(PLAIN_NODE[s]||s)} · ${esc(r.status)}${r.status==="PAUSED" ? " · 暂停自 "+esc(((D.standards||{}).paused||{}).since||"时间未知") : ""}</span><span class="bul-v">等待 ${num(r.waiting)} · 产出 ${num(r.out_24h)} · 停顿 ${num(r.stall_min)} / 上限 ${num(r.stall_bound_min)} 分</span></div>`).join("")}</div>`, `${SRows.filter(([,r]) => STSK[r.status] === "bad").length} 停顿`) : "";
   const okChips = okNodes.length ? panel("ok", "正常的环节", `<div class="lg">${okNodes.map(n => stChip("ok", PLAIN_NODE[n]||n)).join("")}</div>`) : "";
-  return `<div class="stack16">
+  return `<div class="stack16">${sourceFreshnessPanel(D,["node_health","stations","merge_wait","delivery_rows"])}
     ${panel("health","全部标准", `<div class="ringbox">${ring(a.length?100*cnt("ok")/a.length:0, cnt("bad")?"bad":cnt("warn")?"warn":"ok", 96, `${cnt("ok")}/${a.length}`)}
         <div style="flex:1;min-width:0">${stack([{label:"健康",value:cnt("ok"),color:COL.ok},{label:"警告",value:cnt("warn"),color:COL.warn},{label:"不健康",value:cnt("bad"),color:COL.bad},{label:"无数据",value:cnt("none"),color:COL.none}])}</div></div>`)}
     ${STD.metrics ? abnPanels + okChips : panel("health","节点评分", emptyMsg("尚无评分"))}
@@ -1076,7 +1076,7 @@ function vCost(D) {
   const phases = Object.entries(cl.by_phase||{}), backends = Object.entries(cl.by_backend||{});
   const evLabels = ((cl.eval||{}).labels||[]).slice(0, 8);
   const spendTip = r => `${r.unit!=null?"单元 "+r.unit:"#"+r.ticket}：输入 ${ft(r.in||0)}，未命中缓存 ${r.uncached==null?"未知":ft(r.uncached)}，输出 ${ft(r.out||0)}\n墙钟 ${fMin(Math.round(r.wall_min||0))}，失败切换 ${num(r.failovers)}，${num(r.runs)} 次运行${r.unknown_runs?`，${r.unknown_runs} 次用量未知`:""}${r.ticket!=null?`\nticket #${r.ticket}`:""}`;
-  return `<div class="stack16">
+  return `<div class="stack16">${sourceFreshnessPanel(D,["units"])}
     <div class="kcs">
       ${kcard("cost", "今日花费", money(s.real_daily_cost, 2), "", "", cs.pricing_note||"按价目表估算")}
       ${kcard("git", "每个合入 PR 花费", money(s.dollars_per_merged, 2), "", "", `今日合入 ${(t.merged_today||[]).length} 个`)}
@@ -1547,7 +1547,7 @@ function vOverview(D) {
       `<div class="sub">raw ${ft(TE.unattributed?.tokens)} tokens</div>`, TE.unattributed?.ledger_keys ? "warn" : "ok",
       "cost_ledger.by_unit 中无法关联到 units.json / units-archive.json 的 key 独立计数和汇总，不混入近 7 天 cohort。")}
     </div>`);
-  return `<div class="stack16">${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}${t7}</div>${repoPanels(D)}
+  return `<div class="stack16">${sourceFreshnessPanel(D,["units","workers","ci_live","node_health","stations","merge_wait","delivery_rows"])}${verdict}<div class="hks">${t1}${t2}${t3}${t4}${t5}${t6}${t7}</div>${repoPanels(D)}
     ${panel("warn", "要处理", pbody)}
     <div id="ov-workers">${livePanel(D)}</div>
     ${panel("arrow", "流水线", pipeStrip(D), (F.errors || {}).stages ? stChip("bad", "阶段计数不可用") : "")}
