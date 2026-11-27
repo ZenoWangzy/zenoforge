@@ -40,7 +40,8 @@ intake_candidates() {
 hotfix_issue_numbers() { return 0; }
 hotfix_lane_label() { printf 'hotfix-lane\n'; }
 tick_prs_prime() { :; }
-tick_prs() { [[ "${FUNCNAME[1]}" != intake_census_prime ]] || return 1; printf '[]\n'; }intake_gh_read() { printf '[]\n'; }
+tick_prs() { [[ "${FUNCNAME[1]}" != intake_census_prime ]] || return 1; printf '[]\n'; }
+intake_gh_read() { printf '[]\n'; }
 closed_unit_calls="$fixture/closed-unit-calls"
 intake_reopen_episodes() { :; }
 intake_ruling_episodes() { :; }
