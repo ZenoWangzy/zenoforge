@@ -1,0 +1,16 @@
+{
+  "engine/mac-autopilot/scheduler.d/acceptance-criteria-coverage.py": [
+    "engine/mac-autopilot/incident-report-self-check.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/review-rules.sh": [
+    "engine/mac-autopilot/incident-report-self-check.test.sh",
+    "engine/mac-autopilot/self-check-main-sync.test.sh"
+  ],
+  "engine/prompts/implement-contract.md": [
+    "engine/mac-autopilot/incident-report-self-check.test.sh",
+    "engine/run-triage-batch.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/intake.sh": [
+    "engine/mac-autopilot/intake-task-untrusted.test.sh"
+  ]
+}

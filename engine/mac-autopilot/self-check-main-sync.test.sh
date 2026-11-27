@@ -9,6 +9,7 @@ ROOT="$test_env_root/product"
 SUP="$test_env_root/sup"
 mkdir -p "$ROOT" "$SUP"
 source "$HERE/scheduler.d/self-check.sh"
+source "$HERE/scheduler.d/review-rules.sh"
 
 jqf() { command jq "$@"; }
 test_evidence_has_pass() { return 1; }
@@ -78,7 +79,7 @@ clean_main="${clean_repo[3]}"
 ROOT="$clean"
 clean_output=""
 clean_rc=0
-if clean_output="$(self_check_run "$clean" "$clean_head" pr main clean-unit agent/clean 101 2>&1)"; then :; else clean_rc=$?; fi
+if clean_output="$(self_check_run "$clean" "$clean_head" pr main clean-unit agent/clean 101 "$(jqf -cn '{task:"No criteria"}')" 2>&1)"; then :; else clean_rc=$?; fi
 [[ "$clean_rc" == 0 ]] || { printf '%s\n' "$clean_output" >&2; fail "clean merge self-check returned $clean_rc"; }
 git -C "$clean" merge-base --is-ancestor "$clean_main" HEAD \
   || fail 'clean stale branch did not merge origin/main'
@@ -86,6 +87,8 @@ git -C "$clean" merge-base --is-ancestor "$clean_main" HEAD \
   || fail 'clean main merge was not pushed to the unit branch'
 grep -Fq 'self-check main sync: merged clean' <<<"$clean_output" \
   || fail 'clean main merge outcome was not logged'
+grep -Fq 'acceptance-criteria coverage: skipped' <<<"$clean_output" \
+  || fail 'post-merge acceptance coverage was not checked'
 grep -Fq 'run build' "$PNPM_LOG" || fail 'clean main merge did not continue to builds'
 
 run_direct_main_sync() {

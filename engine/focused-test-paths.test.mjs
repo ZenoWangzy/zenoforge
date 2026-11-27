@@ -1246,6 +1246,35 @@ test('a stage prompt change runs the prompt byte-budget suite', () => {
   assert.deepEqual(focusedTestPaths(['engine/prompts/recut.md'], tracked).sort(), ['engine/run-recut.test.sh', 'engine/run-triage-batch.test.sh']);
 });
 
+test('maps acceptance-criteria coverage and its worker contract to the self-check regression', () => {
+  const coverageSuite = 'engine/mac-autopilot/incident-report-self-check.test.sh';
+  assert.deepEqual(
+    focusedTestPaths(['engine/mac-autopilot/scheduler.d/acceptance-criteria-coverage.py'], new Set([coverageSuite])),
+    [coverageSuite],
+  );
+  const reportGateSuites = [coverageSuite, 'engine/mac-autopilot/incident-prior-art-gate.test.sh', 'engine/mac-autopilot/self-check-main-sync.test.sh'].sort();
+  assert.deepEqual(
+    focusedTestPaths(['engine/mac-autopilot/scheduler.d/review-rules.sh'], new Set(reportGateSuites)),
+    reportGateSuites,
+  );
+  const promptSuites = [coverageSuite, 'engine/run-triage-batch.test.sh'].sort();
+  assert.deepEqual(
+    focusedTestPaths(['engine/prompts/implement-contract.md'], new Set(promptSuites)),
+    promptSuites,
+  );
+  const intakeSuites = [
+    'engine/mac-autopilot/intake-existing-walk.test.sh',
+    'engine/mac-autopilot/intake-handoff-skip.test.sh',
+    'engine/mac-autopilot/intake-task-untrusted.test.sh',
+    'engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh',
+    'engine/mac-autopilot/scheduler.d/recut-reopen.test.sh',
+  ].sort();
+  assert.deepEqual(
+    focusedTestPaths(['engine/mac-autopilot/scheduler.d/intake.sh'], new Set(intakeSuites)),
+    intakeSuites,
+  );
+});
+
 // 2026-11-20: rows appended to the RELATED_TESTS literal and to docs/enforced-rules.md conflicted with every parallel land.
 test('the RELATED_TESTS literal does not grow: new rows go to engine/related-tests.d', () => {
   const source = readFileSync(new URL('./focused-test-paths.mjs', import.meta.url), 'utf8');

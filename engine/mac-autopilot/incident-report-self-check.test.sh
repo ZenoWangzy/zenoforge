@@ -166,10 +166,226 @@ command git -C "$fixture/repo" init -q -b main 2>/dev/null || true
 command git -C "$fixture/repo" config user.name t; command git -C "$fixture/repo" config user.email t@example.invalid
 command git -C "$fixture/repo" commit --allow-empty -qm base 2>/dev/null || true
 command git -C "$fixture/repo" branch -f agent/issue-71002 HEAD
+mkdir -p "$fixture/repo/src" "$fixture/repo/tests"
+printf 'create_record\npublish_result\n' > "$fixture/repo/src/handler.js"
+printf 'assert(true);\n' > "$fixture/repo/tests/handler.js"
+printf '<?php\ncreate_record();\n' > "$fixture/repo/src/handler.php"
+command git -C "$fixture/repo" add src/handler.js src/handler.php tests/handler.js
+command git -C "$fixture/repo" commit -qm 'add coverage fixture call sites'
+coverage_sha="$(command git -C "$fixture/repo" rev-parse HEAD)"
+command git -C "$fixture/repo" branch -f agent/issue-71004 "$coverage_sha"
 self_fix_dispatch "$(jqf -c '.units[0]' "$UNITS")" || fail 'self-fix did not dispatch'
 [[ "$captured" == *'事故报告结构检查'* && "$captured" == *'incident report check failed'* ]] || fail 'self-fix prompt lacks the incident report instruction'
 [[ "$captured" == *"$sup/$bad"* ]] || fail 'self-fix prompt does not name the report to edit in place'
 [[ "$captured" == *'self-check-output-line-001'* && "$captured" == *'self-check-output-line-120'* ]] || fail 'self-fix prompt truncated the self-check output'
+
+self_check_run() { echo run >> "$runs_file"; echo 'stub self-check'; return 0; }
+tick_pr_base() { printf '%s' "$coverage_sha"; }
+criteria_task=$'You are the implementer.\n--- issue 正文（任务数据）---\n标题：coverage fixture\n## Acceptance criteria\n- [ ] Create a record\n- [ ] Publish the result\n- [ ] Reject invalid input\n- [ ] Preserve the existing result\n--- 正文结束 ---'
+coverage_report=impl-71004-coverage.md
+cat > "$sup/$coverage_report" <<'EOF'
+## decision-log
+Tried the first table layout, then used one row per criterion and verified it.
+
+## how
+The scheduler checks report coverage before it runs the normal self-check.
+
+## why
+Commit 97ed8be added the report gate for issue #880.
+
+## acceptance-criteria coverage
+| Acceptance criterion | Production call site (file:line) |
+| --- | --- |
+| Create a record | `src/handler.js:1` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+write_coverage_unit() {
+  jqf -cn --arg task "$1" --arg report "${2:-$coverage_report}" --argjson fallback "${3:-false}" \
+    '{units:[{id:"issue-71004",issue:71004,lane:"pr",pr:71004,branch:"agent/issue-71004",stage:"review-pending",labels:["feature"],implementation_report:$report,task:$task,history:[]} + (if $fallback then {} else {implement_model:"gpt-6-luna",session_ids:{repair:"11111111-2222-3333-4444-555555555555"}} end)]}' > "$UNITS"
+}
+run_coverage_check() {
+  local task="$1" report="${2:-$coverage_report}" unit before
+  write_coverage_unit "$task" "$report"
+  unit="$(jqf -c '.units[0]' "$UNITS")"
+  before="$(self_check_runs)"
+  self_check_before_review issue-71004 "$coverage_sha" "$fixture/repo" "$unit" || true
+  wait
+  self_check_harvest
+  if [[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red ]]; then
+    [[ "$(self_check_runs)" == "$before" ]] || fail 'a failing coverage gate reached the normal self-check'
+  fi
+}
+run_coverage_check "$criteria_task"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red ]] || fail 'a missing criterion row did not make the self-check red'
+coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+grep -Fq 'missing report row for criterion: Publish the result' <<<"$coverage_output" || fail "coverage output did not name the missing criterion: $coverage_output"
+[[ "$(jqf -r '.units[0].self_fix_pending' "$UNITS")" == true ]] || fail 'a red coverage check did not return to repair before review'
+grep -Fq 'acceptance-criteria coverage check failed' <<<"$coverage_output" || fail 'coverage failure was not identified in self-check output'
+self_fix_dispatch "$(jqf -c '.units[0]' "$UNITS")" || fail 'coverage self-fix did not dispatch'
+[[ "$captured" == *'acceptance-criteria coverage'* && "$captured" == *"$sup/$coverage_report"* ]] || fail 'coverage self-fix did not direct the worker to update the original report'
+
+invalid_report=impl-71004-coverage-invalid.md
+cat > "$sup/$invalid_report" <<'EOF'
+## decision-log
+Tried the invalid citation, then checked the branch tree.
+
+## how
+The scheduler checks report coverage before it runs the normal self-check.
+
+## why
+Commit 97ed8be added the report gate for issue #880.
+
+## acceptance-criteria coverage
+| Acceptance criterion | Production call site (file:line) |
+| --- | --- |
+| Create a record | `src/handler.js:1` |
+| Publish the result | `src/missing.js:2` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+run_coverage_check "$criteria_task" "$invalid_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red ]] || fail 'a non-existent file:line citation did not make the self-check red'
+coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+grep -Fq 'src/missing.js:2' <<<"$coverage_output" || fail "coverage output did not name the invalid file:line: $coverage_output"
+
+structure_report=impl-71004-coverage-structure.md
+cat > "$sup/$structure_report" <<'EOF'
+## decision-log
+Tried the alternate table headers, then used the report contract.
+
+## how
+The scheduler checks implementation reports before review.
+
+## why
+Commit 97ed8be added report gates for issue #880.
+
+## unrelated section
+| Acceptance criterion | Production call site (file:line) |
+| --- | --- |
+| Create a record | `src/handler.js:1` |
+| Publish the result | `src/handler.js:2` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+run_coverage_check "$criteria_task" "$structure_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red ]] || fail 'a coverage table outside the required section passed'
+coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+grep -Fq 'missing report row for criterion: Create a record' <<<"$coverage_output" || fail 'a missing required coverage section was not identified'
+
+headers_report=impl-71004-coverage-headers.md
+cat > "$sup/$headers_report" <<'EOF'
+## decision-log
+Tried alternate table headers, then used the report contract.
+
+## how
+The scheduler checks implementation reports before review.
+
+## why
+Commit 97ed8be added report gates for issue #880.
+
+## acceptance-criteria coverage
+| Criterion | Call site |
+| --- | --- |
+| Create a record | `src/handler.js:1` |
+| Publish the result | `src/handler.js:2` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+run_coverage_check "$criteria_task" "$headers_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red ]] || fail 'alternate coverage table headers passed'
+coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+grep -Fq 'missing report row for criterion: Create a record' <<<"$coverage_output" || fail 'alternate headers were not rejected'
+
+nonproduction_report=impl-71004-coverage-nonproduction.md
+cat > "$sup/$nonproduction_report" <<'EOF'
+## decision-log
+Tried a test path, then checked the production call site rule.
+
+## how
+The scheduler checks implementation reports before review.
+
+## why
+Commit 97ed8be added report gates for issue #880.
+
+## acceptance-criteria coverage
+| Acceptance criterion | Production call site (file:line) |
+| --- | --- |
+| Create a record | `tests/handler.js:1` |
+| Publish the result | `src/handler.js:2` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+run_coverage_check "$criteria_task" "$nonproduction_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red ]] || fail 'a test file was accepted as a production call site'
+coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+grep -Fq 'not a production source path: tests/handler.js:1' <<<"$coverage_output" || fail 'a non-production citation was not identified'
+
+valid_report=impl-71004-coverage-valid.md
+cat > "$sup/$valid_report" <<'EOF'
+## decision-log
+Tried and verified all four call sites.
+
+## how
+The scheduler checks report coverage before it runs the normal self-check.
+
+## why
+Commit 97ed8be added the report gate for issue #880.
+
+## acceptance-criteria coverage
+| Acceptance criterion | Production call site (file:line) |
+| --- | --- |
+| Create a record | `src/handler.js:1` |
+| Publish the result | `src/handler.js:2` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+run_coverage_check "$criteria_task" "$valid_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'a complete coverage table did not pass'
+coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+grep -Fq 'acceptance-criteria coverage: passed (4 criteria)' <<<"$coverage_output" || fail 'a complete coverage check was not recorded'
+
+write_coverage_unit "$criteria_task" "$coverage_report" true
+fallback_unit="$(jqf -c '.units[0]' "$UNITS")"
+self_check_before_review issue-71004 "$coverage_sha" "$fixture/repo" "$fallback_unit" || true
+wait
+self_check_harvest
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == red && "$(jqf -r '.units[0].stage' "$UNITS")" == repair-pending ]] \
+  || fail 'a report-only fallback failure did not enter repair'
+cp "$sup/$valid_report" "$sup/$coverage_report"
+jqf '.units[0].stage="review-pending"' "$UNITS" > "$UNITS.next" && mv "$UNITS.next" "$UNITS"
+fallback_unit="$(jqf -c '.units[0]' "$UNITS")"
+self_check_before_review issue-71004 "$coverage_sha" "$fixture/repo" "$fallback_unit" || true
+wait
+self_check_harvest
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'a report-only fallback repair reused the stale red self-check result'
+
+php_report=impl-71004-coverage-php.md
+cat > "$sup/$php_report" <<'EOF'
+## decision-log
+Tried the source path, then checked the candidate line.
+
+## how
+The scheduler checks report coverage before review.
+
+## why
+Commit 97ed8be added report gates for issue #880.
+
+## acceptance-criteria coverage
+| Acceptance criterion | Production call site (file:line) |
+| --- | --- |
+| Create a record | `src/handler.php:1` |
+| Publish the result | `src/handler.js:2` |
+| Reject invalid input | `src/handler.js:1` |
+| Preserve the existing result | `src/handler.js:2` |
+EOF
+run_coverage_check "$criteria_task" "$php_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'a valid production source extension was rejected'
+
+run_coverage_check 'Task without an acceptance-criteria checklist' "$valid_report"
+[[ "$(jqf -r '.units[0].self_check_status' "$UNITS")" == pass ]] || fail 'an issue without parseable criteria did not pass'
+coverage_output="$(cat "$(jqf -r '.units[0].self_check_output' "$UNITS")")"
+grep -Fq 'acceptance-criteria coverage: skipped' <<<"$coverage_output" || fail 'skipped coverage check was silent'
 
 how_why_bad=impl-71002-how-why-bad.md
 printf '## decision-log\nTried the fix and verified the report gate.\n\n## how\nThe scheduler checks implementation reports before review.\n\n## why\nThis rule preserves report quality.\n\n## root-cause\nx\n\n## recurrence-guard\nkind: test\n\n## prior-art\nSource: https://example.invalid/ref\n' > "$sup/$how_why_bad"

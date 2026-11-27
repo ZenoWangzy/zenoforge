@@ -7,7 +7,7 @@ self_check_deferred_count() { jqf -r --arg id "$1" --arg sha "$2" 'def entry_sha
 self_check_run() (
   set -o pipefail
   local dir="$1" sha="$2" lane="${3:-}" pr_base="${4:-}" base paths pkg targets test_targets cached_tests tree selection selection_dir selection_log manifest part changed_helpers=0 rc=0 marker target runner_source runner_path
-  local unit_id="${5:-}" branch="${6:-}" pr="${7:-}" main_head merge_rc checked_head branch_head
+  local unit_id="${5:-}" branch="${6:-}" pr="${7:-}" main_head merge_rc checked_head branch_head initial_sha="$2" unit_json="${8:-}"
   local entry_fallback="${ZF_ENGINE_DIR:-$ROOT/engine}/cihost-exec.py"
   local entry="${ZF_CIHOST_EXEC:-$(source "$HERE/../config.sh" && zf_host_ops_file "scripts/agent/${ZF_CIHOST_FILE_STEM:-cihost}-exec.py" "$entry_fallback")}"
   local step_s="${SELF_CHECK_STEP_TIMEOUT:-900}" srg test_started
@@ -49,7 +49,7 @@ self_check_run() (
     fi
   fi
   tree="$(git rev-parse "$sha^{tree}")" || return 1
-  base="$(git merge-base "$main_head" "$sha")" || return 1
+  base="$(git merge-base "$main_head" "$sha")" || return 1; [[ "$sha" == "$initial_sha" || -z "$unit_json" ]] || acceptance_criteria_coverage_check "$unit_json" "$dir" "$base" "$sha" || return 1
   # CI preserves candidate edits and backfills the remaining helpers from main.
   # Never execute a candidate helper on the controller: use the isolated cihost
   # checkout, where the full candidate module environment is available.
@@ -205,7 +205,6 @@ self_check_run() (
   else rc=1; fi
   return "$rc"
 )
-
 pid_start() { pid_start_id "$1"; } # start ticks: tells a reused pid from the gate
 self_check_verification_run() ( # unit head clone config output metadata; success writes the verification evidence record
   local id="$1" sha="$2" dir="$3" config="$4" command_output="$5" metadata="$6" argv_json timeout_s evidence_dir files_json rc=0 arg
@@ -266,16 +265,16 @@ self_check_verification_body() { # unit JSON → the PR's verification section w
     "$(jq -c '.verification.argv' <<<"$1")" "$(jq -r '.verification.exit_code' <<<"$1")" "$(jq -c '.verification.evidence_files' <<<"$1")"
 }
 self_check_before_review() { # unit sha clone; false means wait for the gate/self-fix
-  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" reason gate config_file="" config_base="" config_temp="" incident_reason
+  local id="$1" sha="$2" dir="$3" u="${4:-}" out result pid rc lane pr pr_base="" reason gate config_file="" config_base="" config_temp="" incident_reason report_hash
   [[ -n "$u" ]] || u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
-  lane="$(jqf -r '.lane // empty' <<<"$u")"
+  lane="$(jqf -r '.lane // empty' <<<"$u")"; report_hash="$(self_check_report_fingerprint "$u")"
   if [[ "$lane" == pr ]]; then
     pr="$(jqf -r '.pr // empty' <<<"$u")"
     pr_base="$(tick_pr_base "$pr")" || pr_base=""
   fi
   if [[ "$(jqf -r '.self_check_sha // empty' <<<"$u")" == "$sha" && -n "$(jqf -r '.self_check_status // empty' <<<"$u")" \
       && "$(jqf -r '.self_check_lane // empty' <<<"$u")" == "$lane" \
-      && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" ]]; then
+      && "$(jqf -r '.self_check_base // empty' <<<"$u")" == "$pr_base" && "$(jqf -r '.self_check_report_hash // empty' <<<"$u")" == "$report_hash" ]]; then
     if [[ "$(jqf -r '.self_check_status // empty' <<<"$u")" == red ]]; then self_check_red_to_repair "$id" "$(jqf -r '.self_check_output // empty' <<<"$u")"; return 1; fi
     # No fetched main ref can establish staleness; self_check_run requires one before it runs.
     if self_check_main_fresh "$dir" "$sha" || ! git -C "$dir" rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null 2>&1; then return 0; fi
@@ -313,9 +312,10 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
     if [[ -n "$reason" ]]; then
       printf '%s check failed: %s\nreport: %s\n' "$gate" "$reason" "$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
       printf 'red\n' > "$result"
+    elif ! acceptance_criteria_coverage_check "$u" "$dir" "$config_base" "$sha"; then printf 'red\n' > "$result"
     elif [[ -n "$config_file" ]] && ! self_check_verification_run "$id" "$sha" "$dir" "$config_file" "$out.verification-output" "$out.verification.json" "$config_base"; then
       printf 'red\n' > "$result"
-    elif self_check_run "$dir" "$sha" "$lane" "$pr_base" "$id" "$(jqf -r '.branch // empty' <<<"$u")" "$(jqf -r '.pr // empty' <<<"$u")"; then
+    elif self_check_run "$dir" "$sha" "$lane" "$pr_base" "$id" "$(jqf -r '.branch // empty' <<<"$u")" "$(jqf -r '.pr // empty' <<<"$u")" "$u"; then
       printf 'pass\n' > "$result"
     else
       rc=$?
@@ -328,7 +328,7 @@ self_check_before_review() { # unit sha clone; false means wait for the gate/sel
     git -C "$dir" rev-parse HEAD > "$out.head" 2>/dev/null || :
   ) > "$out" 2>&1 < /dev/null &
   pid=$!
-  set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
+  set_unit "$id" ".self_check_pid=$pid | .self_check_start=$(js "$(pid_start "$pid")") | .self_check_sha=$(js "$sha") | .self_check_lane=$(js "$lane") | .self_check_base=$(js "$pr_base") | .self_check_report_hash=$(js "$report_hash") | .self_check_status=null | .self_check_output=$(js "$out") | .self_check_workdir=$(js "$dir") | .self_check_return_stage=.stage"
   say "self-check pid=$pid unit=$id head=$sha (before review)"
   return 1
 }
@@ -413,6 +413,7 @@ $(matt_method_rule "$dir")"
     impl_report="$(jqf -r '.implementation_report // empty' <<<"$u")"
     prompt+="
 失败项是事故报告结构检查：请就地修改原实现报告 $SUP/${impl_report:-$rep}（保留原有内容，补齐 ## root-cause、带 kind: 行的 ## recurrence-guard、带 http(s) 来源 URL 的 ## prior-art），不要另写一份替代它；$SUP/${rep} 只写修复说明。"
+  elif grep -q '^acceptance-criteria coverage check failed' "$out"; then prompt+="$(acceptance_criteria_coverage_repair_prompt "$u" "$rep")"
   elif grep -q '^decision-log check failed' "$out"; then
     impl_report="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
     prompt+="
@@ -442,7 +443,6 @@ unit_dispatch_priority() { # unit-json → hotfix|opt|normal
   else printf 'normal\n'; fi
 }
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../bin" && pwd -P)/luna-capacity.sh"
-
 higher_priority_waiting() { # priority → sets waiter and age; always drops stale files
   local priority="$1" f pid name hotfix="" opt="" hotfix_age=0 opt_age=0 max age mtime now=""
   max="${AUTOPI_PRIORITY_HOLD_MAX_SECONDS:-1200}"
