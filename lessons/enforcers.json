@@ -235,7 +235,10 @@
         "engine/engine-sync.test.sh",
         "engine/publish-preflight/run.test.sh"
       ],
-      "source_refs": [],
+      "source_refs": [
+        "engine/lesson-fragments.test.sh",
+        "engine/retro/retro.test.sh"
+      ],
       "incident_refs": [
         "product-pin-rollback-blocked-by-preflight"
       ]

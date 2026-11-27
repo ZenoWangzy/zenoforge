@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/matt-skills.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/reports.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/review-fixes.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/clones.sh"

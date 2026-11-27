@@ -311,7 +311,9 @@ context_status=0; context_out="$(scheduler_issue_intake_parent_reason 5564 '{"nu
 SCHEDULER_AGENT_LIB="$saved_parent_lib"; SCHEDULER_LIB_CONTEXT_FOR="$saved_parent_context"
 parent_case() { # issue json
   : > "$parent_log"; local old_rc=0 new_rc=0 old_out new_out old_gh new_gh
+  gh_issue_subissues_invalidate "$(gh_key_cache_repo)" 55
   old_out="$(legacy_parent_reason 55 "$1" 2>/dev/null)" || old_rc=$?; old_gh="$(cat "$parent_log")"; : > "$parent_log"
+  gh_issue_subissues_invalidate "$(gh_key_cache_repo)" 55
   new_out="$(scheduler_issue_intake_parent_reason 55 "$1" 2>/dev/null)" || new_rc=$?; new_gh="$(cat "$parent_log")"
   if [[ "$new_rc" == 2 ]]; then
     [[ "$old_rc" == "$new_rc" && "$new_out" == parent-check-failure\ step=* && "$old_gh" == "$new_gh" ]] \
