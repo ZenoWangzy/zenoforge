@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Remote branch collector: archives stale rescued/backup/salvage/train heads and heads of PRs closed 7+ days ago, then deletes them.
-# The archive ref refs/vecta-rescue/archived/<branch>-<sha12> is read back before each delete; a failed batch appends BRANCH-GC-FAILED to alerts/branch-gc.md next to the log.
-# Kept: open PR heads and bases, resume points of open issues, tips not authored by the automation account.
-# Usage: rescued_gc.sh <repo> <log>; any lookup that fails stops the round without deleting.
 set -euo pipefail
 repo="${1:?repo}" log="$(realpath -m -- "${2:?log file}")"
 max_age_days="${RESCUED_MAX_AGE_DAYS:-14}"
@@ -49,10 +45,11 @@ done <<< "$rows"
 open_ref["$default_branch"]=1
 
 declare -A tip=() when_of=() num_of=() reason_of=()
+foreign=0
 while read -r b when sha email; do
   [[ "$b" == HEAD || -n "${open_ref["$b"]:-}" ]] && continue
   email="${email#<}"; email="${email%>}"
-  [[ "$own" == *" ${email,,} "* ]] || continue
+  [[ "$own" == *" ${email,,} "* ]] || { foreign=$((foreign + 1)); continue; }
   tip["$b"]="$sha" when_of["$b"]="$when"
   [[ "$b" =~ (issue-|hand-)([0-9]+) ]] && num_of["$b"]="${BASH_REMATCH[2]}"
 done < <(git for-each-ref --format='%(refname:lstrip=3) %(committerdate:unix) %(objectname) %(authoremail)' refs/remotes/origin/)
@@ -62,6 +59,7 @@ is_family() { [[ "$1" == rescued/* || "$1" == backup/* || "$1" == salvage/* || "
 pr_aged() { local key="$1 ${tip[$1]}" at; at="${pr_closed[$key]:-}"; [[ -n "$at" ]] && (( now - at > pr_age_days * 86400 )); }
 
 declare -A closed=()
+problems=0
 mapfile -t nums < <(for b in "${!tip[@]}"; do
   if [[ -n "${num_of["$b"]:-}" ]] && { is_family "$b" || pr_aged "$b"; }; then echo "${num_of["$b"]}"; fi
 done | sort -un)
@@ -69,10 +67,11 @@ for ((i = 0; i < ${#nums[@]}; i += 100)); do
   q="query { repository(owner: \"${owner_repo%/*}\", name: \"${owner_repo#*/}\") {"
   for n in "${nums[@]:i:100}"; do q+=" i$n: issueOrPullRequest(number: $n) { ... on Issue { state } ... on PullRequest { state } }"; done
   q+=" } }"
-  if out="$(gh api graphql -f query="$q" --jq '.data.repository | to_entries[] | select(.value.state == "CLOSED" or .value.state == "MERGED") | .key' 2>/dev/null)"; then
-    while read -r k; do [[ -n "$k" ]] && closed["${k#i}"]=1; done <<< "$out"
+  out="$(gh api graphql -f query="$q" 2>/dev/null || :)"
+  if jq -e '.data.repository != null and ([.errors[]? | select(.type != "NOT_FOUND")] | length == 0)' > /dev/null 2>&1 <<< "$out"; then
+    while read -r k; do [[ -n "$k" ]] && closed["${k#i}"]=1; done < <(jq -r '.data.repository | to_entries[] | select(.value.state == "CLOSED" or .value.state == "MERGED") | .key' <<< "$out")
   else
-    echo "rescued_gc: issue state lookup failed for a batch; its branches are kept" >&2
+    alert "issue state lookup failed for one batch of up to 100 numbers, its branches were kept"; problems=1
   fi
 done
 
@@ -89,7 +88,7 @@ for b in "${sorted[@]}"; do
   fi
 done
 victims=(); for b in "${sorted[@]}"; do [[ -n "${reason_of["$b"]:-}" ]] && victims+=("$b"); done
-echo "rescued_gc: ${#victims[@]} of ${#tip[@]} authored heads are due for collection"
+echo "rescued_gc: ${#victims[@]} of ${#tip[@]} authored heads are due for collection, $foreign skipped for another author"
 
 deleted=0 failed=()
 declare -A archived=() remaining=()
@@ -123,4 +122,5 @@ for ((i = 0; i < ${#victims[@]}; i += 50)); do
   done
 done
 echo "rescued_gc: deleted $deleted of ${#victims[@]} candidate branches (archived under $archive_prefix/)"
-(( ${#failed[@]} == 0 )) || die "archive or delete failed for ${#failed[@]} of ${#victims[@]} branches, kept: ${failed[*]:0:5}"
+(( ${#failed[@]} == 0 )) || { alert "archive or delete failed for ${#failed[@]} of ${#victims[@]} branches, kept: ${failed[*]:0:5}"; problems=1; }
+exit "$problems"

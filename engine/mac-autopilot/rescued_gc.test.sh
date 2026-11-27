@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# rescued_gc.sh: archives each stale head under a unique ref, reads it back, then deletes it; a collision or a rejected archive push cannot fail the batch and a failed batch raises an alert.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 
@@ -21,7 +20,7 @@ mk() {
 sha() { git -C "$f/repo" rev-parse "refs/heads/$1"; }
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 mk main $old
-for b in rescued/issue-10-x rescued/issue-20-y rescued/advisor-old rescued/tree rescued/reject-me backup/pre-cleanup-1 salvage/s1 train/t1 backup/open-pr feat/merged feat/fresh-closed feat/moved feat/no-pr; do mk "$b" $old; done
+for b in rescued/issue-10-x rescued/issue-20-y rescued/issue-99-gone rescued/advisor-old rescued/tree rescued/reject-me backup/pre-cleanup-1 salvage/s1 train/t1 backup/open-pr feat/merged feat/fresh-closed feat/moved feat/no-pr; do mk "$b" $old; done
 mk rescued/advisor-new $((now - 3600))
 mk backup/foreign $old other@example.invalid
 jq -n --arg merged "$(sha feat/merged)" --arg fresh "$(sha feat/fresh-closed)" --arg open "$(sha backup/open-pr)" --arg old "$(iso $old)" --arg recent "$(iso $((now - 86400)))" '[
@@ -35,7 +34,10 @@ cat > "$f/bin/gh" <<'EOF'
 case "$1 $2" in
   "repo view") printf 'owner/repo\tmain\n' ;;
   "api user") echo '7 bot' ;;
-  "api graphql") echo i10 ;;
+  "api graphql")
+    [[ "${GH_GRAPHQL_FAIL:-0}" == 1 ]] && { echo '{"errors":[{"type":"FORBIDDEN"}]}'; exit 1; }
+    echo '{"data":{"repository":{"i10":{"state":"CLOSED"},"i20":{"state":"OPEN"},"i99":null}},"errors":[{"type":"NOT_FOUND","path":["repository","i99"]}]}'
+    exit 1 ;;
   "pr list") cat "$PRS_JSON" ;;
 esac
 EOF
@@ -62,7 +64,7 @@ tips="$(sha rescued/tree) $(sha backup/pre-cleanup-1)"
 
 rc=0; out="$(run_gc)" || rc=$?
 [[ $rc == 1 ]] || fail "rejected archive push must exit 1, got $rc: $out"
-survivors=(main rescued/advisor-new rescued/issue-20-y rescued/reject-me backup/foreign backup/open-pr feat/fresh-closed feat/moved feat/no-pr)
+survivors=(main rescued/advisor-new rescued/issue-20-y rescued/issue-99-gone rescued/reject-me backup/foreign backup/open-pr feat/fresh-closed feat/moved feat/no-pr)
 [[ "$(heads)" == "$(want "${survivors[@]}")" ]] || fail "wrong survivors after rejected archive: $(heads)"
 [[ "$out" == *'deleted 7 of 8'* ]] || fail "summary wrong: $out"
 grep -q 'BRANCH-GC-FAILED.*rescued/reject-me' "$alerts" || fail 'rejected archive push raised no alert naming the branch'
@@ -78,9 +80,17 @@ for b in backup/pre-cleanup-1 salvage/s1 train/t1; do grep -q "deleted $b " "$f/
 rm "$f/origin.git/hooks/update"
 alert_lines="$(wc -l < "$alerts")"
 out="$(run_gc)" || fail "clean rerun failed: $out"
-[[ "$(heads)" == "$(want main rescued/advisor-new rescued/issue-20-y backup/foreign backup/open-pr feat/fresh-closed feat/moved feat/no-pr)" ]] || fail "rerun survivors wrong: $(heads)"
+[[ "$(heads)" == "$(want main rescued/advisor-new rescued/issue-20-y rescued/issue-99-gone backup/foreign backup/open-pr feat/fresh-closed feat/moved feat/no-pr)" ]] || fail "rerun survivors wrong: $(heads)"
 [[ "$(wc -l < "$alerts")" == "$alert_lines" ]] || fail 'clean rerun raised an alert'
 git -C "$f/origin.git" rev-parse -q --verify "refs/vecta-rescue/archived/rescued/reject-me-$(sha rescued/reject-me | cut -c1-12)" >/dev/null || fail 'rerun did not archive the previously rejected branch'
+
+mk rescued/issue-77-old $old
+mk rescued/lonely-old $old
+rc=0; out="$(GH_GRAPHQL_FAIL=1 run_gc)" || rc=$?
+[[ $rc == 1 ]] || fail "issue state lookup failure must exit 1, got $rc: $out"
+grep -q 'BRANCH-GC-FAILED issue state lookup' "$alerts" || fail 'issue state lookup failure raised no alert'
+git -C "$f/origin.git" rev-parse -q --verify refs/heads/rescued/issue-77-old > /dev/null || fail 'branch with an unresolved issue state was deleted'
+! git -C "$f/origin.git" rev-parse -q --verify refs/heads/rescued/lonely-old > /dev/null || fail 'issue state failure stopped a branch without an issue number'
 
 timer="$systemd_dir/zenoforge-branch-gc.timer"
 service="$systemd_dir/zenoforge-branch-gc.service"
