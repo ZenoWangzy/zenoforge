@@ -3,7 +3,6 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 tmp="$(mktemp -d)"
-trap 'rm -r -- "$tmp"' EXIT
 mkdir -p "$tmp/repo/lessons/pending" "$tmp/repo/lessons/full" "$tmp/repo/engine/state" "$tmp/repo/.zenoforge/state"
 cp "$REPO_DIR/engine/lesson-fragments.sh" "$REPO_DIR/engine/config.sh" "$REPO_DIR/engine/incident-guards.mjs" "$tmp/repo/engine/"
 printf '{"incidents":[]}\n' > "$tmp/registry.json"
