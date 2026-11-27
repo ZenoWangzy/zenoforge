@@ -18,6 +18,7 @@
     "engine/mac-autopilot/proof-review-gate.test.sh"
   ],
   "engine/verify-proof-check.mjs": [
-    "engine/mac-autopilot/proof-review-gate.test.sh"
+    "engine/mac-autopilot/proof-review-gate.test.sh",
+    "engine/verify-proof-check.test.mjs"
   ]
 }

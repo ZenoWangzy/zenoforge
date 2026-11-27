@@ -418,13 +418,13 @@ review_proof_result() {
   fi
   plan_file="$(mktemp)" || return 0
   printf '%s' "$plan" > "$plan_file"
-  out="$(node "$HERE/../verify-proof-check.mjs" --plan "$plan_file" --proof "$proof" --head "$sha" 2>/dev/null)" || out=''
+  out="$(node "$HERE/../verify-proof-check.mjs" --plan "$plan_file" --proof "$proof" --head "$sha")" || out=''
   rm -f "$plan_file"
   jqf -ce --argjson plan "$plan" '. + {matched:($plan.matched_features // [])}' <<<"$out" 2>/dev/null \
     || printf '{"status":"unavailable","matched":[],"features":{},"reasons":["proof checker failed"]}'
 }
 review_proof_blocks() {
-  jqf -e '.status | IN("missing","invalid","stale")' <<<"$1" >/dev/null 2>&1
+  jqf -e '.status | IN("missing","invalid","stale","over-budget")' <<<"$1" >/dev/null 2>&1
 }
 review_proof_rule() {
   local r

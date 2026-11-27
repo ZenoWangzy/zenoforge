@@ -29,6 +29,9 @@ new_unit() {
 }
 write_report() { printf '## how\nfixture\n\n%s\n' "$1" > "$sup/impl-9.md"; }
 write_proof() { jq -n --arg sha "$1" --arg status "$2" '{source_sha:$sha,features:[{feature_id:"F1",status:$status}]}' > "$sup/proof-9.json"; }
+write_over_budget_proof() {
+  jq -n --arg sha "$1" '{source_sha:$sha,features:[{feature_id:"F1",status:"PASS",performance:{first_paint_ms:150,largest_contentful_paint_ms:400,js_heap_used_mb:80,long_task_count:0,run_count:5,error_count:0,work_count:3}}]}' > "$sup/proof-9.json"
+}
 gate() { proof_review_gate pr-9 "$WORKER" "$SHA" "$REVIEWED"; }
 
 new_unit; write_proof "$SHA" PASS; write_report "Proof: $sup/proof-9.json"
@@ -76,6 +79,14 @@ new_unit; write_proof "$SHA" FAIL; write_report "Proof: $sup/proof-9.json"
 rc=0; gate || rc=$?
 [[ "$rc" == 0 && "$(field '.history[-1].result')" == "$SHA invalid features=F1" && "$(field .stage)" == repair-pending ]] || fail "a failed feature must route to repair (rc=$rc: $(field '.history[-1].result'))"
 echo 'ok - stale and failed proofs route to repair'
+
+export ZF_CONFIG_ROOT="$test_env_root/perf-config/.zenoforge"
+mkdir -p "$ZF_CONFIG_ROOT/state"
+printf '%s\n' '{"default":{"basis":"Measured fixture values across five completed runs.","first_paint_ms":100,"largest_contentful_paint_ms":600,"js_heap_used_mb":100,"long_task_count":1}}' > "$ZF_CONFIG_ROOT/state/perf-budget.json"
+new_unit; write_over_budget_proof "$SHA"; write_report "Proof: $sup/proof-9.json"
+rc=0; gate || rc=$?
+[[ "$rc" == 0 && "$(field .stage)" == repair-pending && "$(field '.history[-1].result')" == "$SHA over-budget features=F1" ]] || fail "an over-budget proof must route to repair (rc=$rc: $(field '.history[-1].result'))"
+echo 'ok - over-budget proof routes to repair'
 
 new_unit; write_report "Proof: $sup/proof-9.json"
 jq '.units[0].lane = "direct-main"' "$UNITS" > "$UNITS.next" && mv "$UNITS.next" "$UNITS"
