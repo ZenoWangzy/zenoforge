@@ -107,6 +107,9 @@ p2_drop='{"findings":[
 ],"dispositions":[]}'
 { printf 'VERDICT: READY\n\n```review-findings\n%s\n```\n' "$p2_drop"; } > "$sup/review-dropped-p2-T1.md"
 [[ "$(verdict_of "$sup/review-dropped-p2-T1.md")" == READY ]] || fail 'a dropped P2 changed the verdict'
+{ printf 'VERDICT: INPUT_INCOMPLETE\n\n```review-findings\n%s\n```\n' "$dropped_only"; } > "$sup/review-dropped-incomplete-T1.md"
+[[ "$(verdict_of "$sup/review-dropped-incomplete-T1.md")" == INPUT_INCOMPLETE ]] \
+  || fail 'a dropped P1 changed INPUT_INCOMPLETE'
 
 unverified_p1='{"findings":[{"id":"F-UNVERIFIED","severity":"P1","file":"src/e.ts","line":9,"rule":"Defect","status":"unverified","summary":"x","introduced_by":"candidate","base_evidence":"absent in base","rerun_command":"pnpm test","rerun_output":"FAIL"}],"dispositions":[]}'
 { printf 'VERDICT: READY\n\n```review-findings\n%s\n```\n' "$unverified_p1"; } > "$sup/review-unverified-p1-T1.md"

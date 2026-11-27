@@ -91,7 +91,7 @@ verdict_of() {
   if [[ -n "$found" ]]; then
     [[ "$(wc -l <<<"$found")" -eq 1 ]] || return 1
     if findings="$(findings_block_of "$1")"; then
-      if has_dropped_blocking_finding "$findings"; then
+      if [[ "$found" == READY || "$found" == NOT_READY ]] && has_dropped_blocking_finding "$findings"; then
         return 0
       elif jqf -e 'any(.findings[]; .status=="unverified" and (.severity=="P0" or .severity=="P1"))' \
         <<<"$findings" >/dev/null 2>&1; then

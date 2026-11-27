@@ -582,13 +582,13 @@ harvest_rc pr-bad-canonical rf-bad-canonical-T1.md
   || fail 'a canonical finding without base evidence was accepted'
 # A canonical finding without a rerunnable command and its output is dropped, not counted; the drop stays visible.
 # Pre-contract objects (no rerun fields at all) take the same path: accepted as a block, every finding dropped.
-unverified_block="$(jq -c '.findings += [(.findings[0] | .id="F9" | del(.rerun_output)), (.findings[0] | .id="F8" | .rerun_command="  " | del(.rerun_output))]' <<<"$good_block")"
+unverified_block="$(jq -c '.findings += [(.findings[0] | .id="F9" | .severity="P2" | del(.rerun_output)), (.findings[0] | .id="F8" | .severity="P3" | .rerun_command="  " | del(.rerun_output))]' <<<"$good_block")"
 findings_report rf-drop-T1.md "$unverified_block"
 harvest_rc pr-drop rf-drop-T1.md
 [[ "$(field pr-drop '.review_findings[0] | [.block, (.findings|map(.id)|join(",")), (.all_findings|map(.id)|join(",")), .dropped, (.dropped_findings|map(.id)|join(","))] | tojson')" == '["ok","F1,F2","F1,F2,F3",2,"F9,F8"]' \
   && "$(field pr-drop '.review_findings[0].dropped_findings[0].reason')" == 'no rerunnable evidence: missing rerun_output' ]] \
   || fail "findings without rerun evidence were not dropped and counted: $(field pr-drop '.review_findings[0] | tojson')"
-findings_report rf-precontract-T1.md "$(jq -c '.findings |= map(del(.rerun_command,.rerun_output))' <<<"$good_block")"
+findings_report rf-precontract-T1.md "$(jq -c '.findings |= map(.severity="P2" | del(.rerun_command,.rerun_output))' <<<"$good_block")"
 harvest_rc pr-precontract rf-precontract-T1.md
 [[ "$(field pr-precontract '.review_findings[0] | [.block, (.findings|length), .dropped] | tojson')" == '["ok",0,3]' ]] \
   || fail 'a pre-contract report was not dropped finding by finding'

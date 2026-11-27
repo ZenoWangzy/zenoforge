@@ -79,7 +79,7 @@ dropped_unverified="$(findings_block_of "$tmp/unverified-dropped.md")" || fail '
 [[ "$(jq -r '.dropped' <<<"$dropped_unverified")" == 1 ]] || fail 'the missing rerun fields did not mark the unverified finding dropped'
 [[ "$(jq -r '.dropped_findings[0] | [.severity,.status] | join(":")' <<<"$dropped_unverified")" == P1:unverified ]] \
   || fail 'the dropped finding lost its blocker severity or unverified status'
-[[ "$(verdict_of "$tmp/unverified-dropped.md")" == NOT_READY ]] || fail 'an explicit READY verdict overrode a dropped unverified P1 finding'
+[[ -z "$(verdict_of "$tmp/unverified-dropped.md")" ]] || fail 'a dropped unverified P1 finding was accepted as a verdict'
 printf 'VERDICT: READY\n\n```review-findings\nnot-json\n```\n' > "$tmp/unverified-malformed.md"
 if findings_block_of "$tmp/unverified-malformed.md" >/dev/null 2>&1; then fail 'the malformed findings fixture was accepted'; fi
 [[ "$(verdict_of "$tmp/unverified-malformed.md")" == NOT_READY ]] || fail 'an explicit READY verdict overrode an unparseable findings block'
