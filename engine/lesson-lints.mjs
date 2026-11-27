@@ -38,6 +38,7 @@ export const lessonLints = [
   {
     lesson: 'V936',
     classTag: 'state-single-writer',
+    mode: 'enforce',
     files: {
       [libIssueState]: {
         require: [
@@ -52,6 +53,7 @@ export const lessonLints = [
   {
     lesson: 'V882',
     classTag: 'land-queue-serializes-nonproduct-landings',
+    mode: 'enforce',
     files: {
       [lander]: {
         require: [/mem_mb >= 3072/, /required_mb=3072/],
@@ -65,6 +67,7 @@ export const lessonLints = [
   {
     lesson: 'V915',
     classTag: 'ci-runner-label-pool',
+    mode: 'enforce',
     files: {
       'scripts/ops/provision-cihost-ci-runner.sh': {
         require: [
@@ -78,6 +81,7 @@ export const lessonLints = [
   {
     lesson: 'V975',
     classTag: 'large-json-never-on-argv',
+    mode: 'enforce',
     files: {
       [libIssueState]: {
         require: [/jq_arg_file\(\)/],
@@ -91,6 +95,7 @@ export const lessonLints = [
   {
     lesson: 'V797',
     classTag: 'postsubmit-in-progress-masks-red',
+    mode: 'enforce',
     files: {
       [libCiChecks]: {
         require: [/ci_main_completed_push_runs\(\)/, /status=completed&per_page=\d+&page=1/],
@@ -101,6 +106,7 @@ export const lessonLints = [
   {
     lesson: 'V803',
     classTag: 'commit-preflight-lone-negative',
+    mode: 'enforce',
     // Landing-test fixtures stub this file, so unlike the other lints the
     // runner path is not a gate here; V803 gets its own dedicated fixture.
     gate: [rankingPath],
@@ -114,6 +120,7 @@ export const lessonLints = [
   {
     lesson: 'V955',
     classTag: 'worktree-stats-per-worktree-scans',
+    mode: 'enforce',
     files: {
       [worktreeLifecycle]: {
         require: [
@@ -128,6 +135,7 @@ export const lessonLints = [
   {
     lesson: 'V1144',
     classTag: 'worktree-reap-issue-query-failure',
+    mode: 'enforce',
     files: {
       [worktreeLifecycle]: {
         require: [
@@ -143,6 +151,7 @@ export const lessonLints = [
   {
     lesson: 'V1188',
     classTag: 'write-guard-blocked-scratch-homes',
+    mode: 'enforce',
     files: {
       'engine/write-guard.sh': {
         require: [/\[\[ -e "\$agent_home\/checkout" \]\] \|\| return 0/],
@@ -153,6 +162,7 @@ export const lessonLints = [
   {
     lesson: 'V1203',
     classTag: 'github-egress-transient-fetch-retry',
+    mode: 'enforce',
     files: {
       [libTransport]: {
         require: [
@@ -167,6 +177,7 @@ export const lessonLints = [
   {
     lesson: 'V1267',
     classTag: 'hand-addendum-delivery-1011',
+    mode: 'enforce',
     files: {
       [landQueue]: {
         require: [
@@ -181,6 +192,7 @@ export const lessonLints = [
   {
     lesson: 'V368',
     classTag: 'cihost-ci-rootless-anonymous-volume-age-bound',
+    mode: 'enforce',
     files: {
       'engine/systemd/cihost-ci-rootless-volume-reclaim.sh': {
         require: [
@@ -195,6 +207,7 @@ export const lessonLints = [
   {
     lesson: 'V370',
     classTag: 'cihost-nexus-soft-deleted-blobs-fill-root',
+    mode: 'enforce',
     files: {
       'scripts/ops/nexus-retention.py': {
         require: [/blobstore\.compact/, /assetBlob\.cleanup/],
@@ -205,6 +218,7 @@ export const lessonLints = [
   {
     lesson: 'V429',
     classTag: 'focused-test-filename-reference-miss',
+    mode: 'enforce',
     files: {
       'engine/focused-test-paths.mjs': {
         require: [/function filenameReferencedTests/, /'-F', filename/],
@@ -215,6 +229,7 @@ export const lessonLints = [
   {
     lesson: 'V603',
     classTag: 'transient-github-reads-in-direct-main-landing',
+    mode: 'enforce',
     files: {
       [lander]: {
         require: [/land_git_transport_retry\(\)/],
@@ -228,6 +243,7 @@ export const lessonLints = [
   {
     lesson: 'V651',
     classTag: 'postsubmit-read-failed-landed-push',
+    mode: 'enforce',
     files: {
       [lander]: {
         require: [
@@ -241,6 +257,7 @@ export const lessonLints = [
   {
     lesson: 'V890',
     classTag: 'land-queue-network-and-worktree-recovery',
+    mode: 'enforce',
     files: {
       [landQueue]: {
         require: [
@@ -254,6 +271,7 @@ export const lessonLints = [
   {
     lesson: 'V925',
     classTag: 'failure-decisive-line-blind-rerun',
+    mode: 'enforce',
     files: {
       [libImplementGates]: {
         require: [
@@ -270,6 +288,7 @@ export const lessonLints = [
   {
     lesson: 'V931',
     classTag: 'cihost-units-landed-never-installed',
+    mode: 'enforce',
     files: {
       [lander]: {
         require: [/cihost_sync_path\(\)/, /landed but not installed on cihost/],
@@ -280,6 +299,7 @@ export const lessonLints = [
   {
     lesson: 'V933',
     classTag: 'hand-efficiency-regression-alarm',
+    mode: 'enforce',
     files: {
       'engine/night/efficiency-regression.mjs': {
         require: [/MIN_HISTORY_HOURS = 24/, /function violates\(/],
@@ -290,6 +310,7 @@ export const lessonLints = [
   {
     lesson: 'V1003',
     classTag: 'paused-implement-held-hands-redispatch',
+    mode: 'enforce',
     files: {
       [libHolds]: {
         require: [
@@ -306,6 +327,7 @@ export const lessonLints = [
   {
     lesson: 'V1044',
     classTag: 'release-chain-gate-blames-preexisting-owner-content',
+    mode: 'enforce',
     files: {
       'scripts/release/run-release.sh': {
         require: [/record_preexisting_timing_miss\(\)/, /record_preexisting_e2e_failure\(\)/],
@@ -316,6 +338,7 @@ export const lessonLints = [
   {
     lesson: 'V1126',
     classTag: 'direct-main-dagger-prepush-suites',
+    mode: 'enforce',
     files: {
       [lander]: {
         require: [
@@ -329,6 +352,7 @@ export const lessonLints = [
   {
     lesson: 'V1147',
     classTag: 'worktree-reap-multi-commit-patch-equivalence',
+    mode: 'enforce',
     files: {
       [worktreeLifecycle]: {
         require: [
@@ -345,6 +369,7 @@ export const lessonLints = [
 // Exact-second greps fail when a stall moves the elapsed value (three CI failures 11-07). No ranking row backs this class, so it is a plain scan of changed test files.
 export const exactSecondLint = {
   classTag: 'exact-second-elapsed-grep',
+  mode: 'enforce',
   pattern: /grep -Fq\b.*\b(?:after|at) [0-9]+s\b/,
   alternative: 'Match an elapsed-seconds value with grep -Eq and [0-9]+s, never one exact second: SECONDS and scheduler timers keep ticking, so a stall moves the value by one. Example: grep -Eq "after [0-9]+s: ..." "$LOG".',
 };
@@ -352,6 +377,7 @@ export const exactSecondLint = {
 // A script run through the engine-live symlink has import.meta.url by real path and argv[1] as typed, so a plain compare is false and the script exits 0 doing nothing (release batch #1147, 11-07).
 export const entryCheckLint = {
   classTag: 'symlink-blind-entry-check',
+  mode: 'enforce',
   pattern: /^\s*if \((?=.*process\.argv\[1\])(?=.*===)/,
   alternative: 'Use process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)), inline, so a script copied alone still runs; without existsSync an import under a non-path argv[1] throws: an entry check that compares process.argv[1] without realpathSync silently does nothing through a symlink and exits 0.',
 };
@@ -391,6 +417,7 @@ export function exactSecondFailures(files, readSource) {
 // A %(...Z)T or date +...Z stamp formats in the process TZ but ends in a literal Z, so Asia/Shanghai scopes wrote worker cost rows 8 h ahead (worker-scope.sh, 11-09).
 export const utcStampLint = {
   classTag: 'local-tz-z-stamp',
+  mode: 'enforce',
   pattern: /%\(.*Z\)T|\bdate\s+(?!-u\b)[^|;&]*\+[^\s'"]*Z\b/,
   alternative: 'Put TZ=UTC0 on the stamp\'s own line (TZ=UTC0 printf -v now \'%(%Y-%m-%dT%H:%M:%SZ)T\' -1 in a builtin-only watcher) or use date -u +%Y-%m-%dT%H:%M:%SZ. The lint reads one line at a time, so a TZ set on an earlier line does not count.',
 };
@@ -498,7 +525,7 @@ function appendLifecycleRow(ledger, row, log) {
 }
 
 function effectiveMode(lint) {
-  const mode = lint.mode ?? 'enforce';
+  const mode = lint.mode ?? 'observe';
   if (mode !== 'observe' && mode !== 'enforce') throw new Error(`invalid lesson lint mode: ${mode}`);
   return mode;
 }

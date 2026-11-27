@@ -125,7 +125,7 @@ test('no engine script keeps a symlink-blind entry check', () => {
   assert.deepEqual(entryCheckFailures(files, (file) => readFileSync(file, 'utf8')), []);
 });
 
-test('an observe lint prints would-fail and does not fail the run', () => {
+test('a lesson lint without a mode prints would-fail and does not fail the run', () => {
   const fixture = lintRepoFixture();
   const lint = lessonLints[0];
   const standaloneLint = utcStampLint;
@@ -133,10 +133,9 @@ test('an observe lint prints would-fail and does not fail the run', () => {
   const originalStandaloneMode = standaloneLint.mode;
   const lines = [];
   try {
-    assert.equal(runLessonLints({ ...fixture, log: (line) => lines.push(line) }), 2, 'missing mode defaults to enforce');
-    lint.mode = 'observe';
-    standaloneLint.mode = 'observe';
-    assert.equal(runLessonLints({ ...fixture, log: (line) => lines.push(line) }), 0);
+    delete lint.mode;
+    delete standaloneLint.mode;
+    assert.equal(runLessonLints({ ...fixture, log: (line) => lines.push(line) }), 0, 'missing mode defaults to observe');
     assert(lines.some((line) => line.includes('lesson=V936') && line.includes('verdict=would-fail')));
     assert(lines.some((line) => line.includes('local-tz-z-stamp') && line.includes('verdict=would-fail')));
   } finally {

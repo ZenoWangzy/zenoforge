@@ -61,7 +61,7 @@ Single-context. See `docs/agents/domain.md`. Before designing anything that runs
 
 Code and tests enforce the engine's gates. `docs/enforced-rules.md` lists each rule beside its enforcer: read the rows for the files you touch before you change an enforcer, and add a row there when you add an enforced rule. Every change meets these five:
 
-- A new lesson lint ships with `mode: 'observe'` and moves to `enforce` only in a change that cites its ledger counts.
+- Lesson lints default to `mode: 'observe'`; a new lesson lint moves to `enforce` only in a change that cites its ledger counts.
 - A pipeline unit never changes the protected paths in `engine/state/rule-files.json`.
 - A source file over 800 lines may shrink but not grow, and a new file stays at or under 800 (`tools/size-ratchet.sh`).
 - An ordinary change lands on main in one command, no PR: `bash tools/quick-land.sh --test "<cmd>" --prior-art "<URL or no external prior art: reason>" "<subject>"` (repeat `--test`). Code needs `--prior-art` and at least one `--test`; a Markdown-only change needs neither. Gate files, rule files and VectA override files still go through a PR.
