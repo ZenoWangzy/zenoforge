@@ -13,7 +13,7 @@ This file is the machine-readable contract the scheduler parses: the verdict
 line and the `review-findings` block. The review method is Matt Pocock's
 `code-review` skill: Standards (repository rules, then its smell baseline) and
 Spec (what the issue asked for), run by you in this context with no sub-agents.
-A finding's `rule` names its axis. Where the skill differs from this file, this file wins.
+A finding's `rule` names its axis. This file wins over the skill.
 
 ## Scope
 
@@ -27,8 +27,7 @@ A finding's `rule` names its axis. Where the skill differs from this file, this 
   authority. A missing optional report or contract block does not make the
   input incomplete.
 - Red or pending CI, report formatting, and production acceptance do not
-  decide the verdict. If the
-  issue names an undelivered prerequisite, write `BLOCKED-ON: #<number>` and
+  decide the verdict. If the issue names an undelivered prerequisite, write `BLOCKED-ON: #<number>` and
   report `INPUT_INCOMPLETE`.
 - When the prompt includes `INCIDENT_RULE`, apply its report requirements before `READY`; the incident report gate requires `NOT_READY` and a reason naming any missing section or invalid recurrence-guard kind.
 - A `Verification evidence for head <sha>` paragraph is an input: check the command, exit code and excerpts it names for that exact head against the acceptance criteria. `RED` or `SKIPPED` means unproven, not a finding by itself. If `passed` evidence contradicts a needed behaviour or does not show it, report a finding (`rule` `Spec`, `file` the evidence copy named, `line` 1; P1 when it contradicts, else P2). Evidence never replaces reading the diff.
@@ -81,10 +80,9 @@ A yes with unbounded cost is a finding; name the principle.
 
 Write exactly one standalone line: `VERDICT: READY`, `VERDICT: NOT_READY`, or
 `VERDICT: INPUT_INCOMPLETE`. The line must contain only that token and value:
-no bold or code formatting, no heading, no label prefix such as `结论：`, no
-trailing remark or second verdict value on the same line. `READY` means no
-candidate P0/P1 finding remains open.
-Advisory, pre-existing, and unknown findings do not block. `NOT_READY`
+no bold, code formatting, heading, label prefix such as `结论：`,
+trailing remark, or second verdict value. `READY` means no
+candidate P0/P1 finding remains open. `NOT_READY`
 requires at least one such blocker; `INPUT_INCOMPLETE` means an essential scope
 input or a named prerequisite is unavailable. Older reports may still use
 `APPROVE`, `REQUEST-CHANGES`, or `BLOCK`; do not write those.
@@ -99,14 +97,14 @@ info string is `review-findings`, describing the same findings as your prose:
 ```
 
 One JSON object with required `findings` and `dispositions` arrays and optional
-`decision_log_flags`; no other keys. Empty arrays when nothing to list. Each finding has the required fields below and may include the optional `class` field:
+`decision_log_flags`; no other keys. Empty arrays when nothing to list. Each finding has these fields:
 
 - `id`: `F1`, `F2`, ... (keep IDs across rounds)
 - `severity`: `P0`, `P1`, `P2`, or `P3`
 - `file`: repository-relative path
 - `line`: positive integer
 - `rule`: the rule or category, for example `Defect`, `Spec`, `Standards`, `Maintainability`
-- `class` (optional): a slug for the defect category, not its location; use the same slug across files for the same defect. Examples: `null-guard`, `tenant-isolation`, `missing-validation`. It must match `^[a-z0-9][a-z0-9-]{0,49}$`; a malformed value is ignored and falls back to the derived key.
+- `class` (optional): defect-category slug, same across files; must match `^[a-z0-9][a-z0-9-]{0,49}$`
 - `status`: `open`, `unverified`, `resolved`, or `inherited`
 - `summary`: one sentence
 - `introduced_by`: `candidate`, `pre_existing`, or `unknown`
