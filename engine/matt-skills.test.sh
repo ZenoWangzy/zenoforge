@@ -28,10 +28,33 @@ done
 note="$(matt_skills_note "$target" tdd triage)"
 [[ "$note" == *"tdd=.agents/skills/tdd/SKILL.md; triage=$engine_skills/triage/SKILL.md" ]] || fail "unexpected note: $note"
 # Every stage prompt builder names its Matt skill. Exception: release (engine/run-release.sh has no agent prompt on origin/main).
-for entry in run-triage.sh:ask-matt run-triage-batch.sh:ask-matt run-recut.sh:to-tickets run-advisor.sh:ask-matt run-advisor-batch.sh:ask-matt; do
+for entry in run-triage.sh:ask-matt run-triage-batch.sh:ask-matt run-recut.sh:to-tickets run-recut.sh:to-spec run-advisor.sh:ask-matt run-advisor-batch.sh:ask-matt; do
   script="${entry%%:*}" skill="${entry##*:}"
   grep -Eq "matt_skills_note .*\b$skill\b" "$SCRIPT_DIR/$script" || fail "$script must name Matt skill $skill in its prompt"
   [[ -f "$engine_skills/$skill/SKILL.md" ]] || fail "Matt skill $skill for $script is not vendored"
+done
+unset ZF_REVIEW_SKILL
+sched_config_file() { printf '%s\n' engine/prompts/review-contract.md; }
+source "$SCRIPT_DIR/mac-autopilot/scheduler.d/evals-arbiter.sh"
+unit_rule="$(matt_method_rule "$target")"
+for skill in implement tdd diagnosing-bugs; do
+  expected="$(matt_skill_md "$skill" "$target")"
+  [[ "$unit_rule" == *"$skill"*"$expected"* ]] || fail "unit stage must default to Matt $skill"
+done
+review_rule="$(review_contract_rule)"
+[[ "$review_rule" == *"code-review"*"$engine_skills/code-review/SKILL.md"* ]] || fail "review stage must default to Matt code-review"
+grep -Fq '`ask-matt` first to route each incoming issue' "$SCRIPT_DIR/prompts/triage.md" || fail "new incoming issues must enter through ask-matt"
+method_doc="$SCRIPT_DIR/../docs/architecture.md"
+for row in \
+  '| triage | `ask-matt` routing' \
+  '| advisor | `ask-matt` routes judgment calls' \
+  '| recut | `to-tickets`' \
+  '| implement | `implement`, test-first with `tdd`' \
+  '| repair, CI repair, self-fix | `diagnosing-bugs`' \
+  '| review | `code-review`' \
+  '| release | **Exception:** the engine supplies no Matt skill' \
+  '| supervisor arbiter | **Exception:** no Matt skill runs'; do
+  grep -Fq "$row" "$method_doc" || fail "stage method map is missing $row"
 done
 solve="$(matt_engine_skill_md solve)" router="$(matt_engine_skill_md ask-zeno)"
 [[ -f "$solve" && -f "$router" ]] || fail "the engine must ship solve and ask-zeno"

@@ -49,10 +49,10 @@ context.
 
 ## Method: Matt skills
 
-Triage runs Matt Pocock's `triage` skill, entered through `ask-matt`. The
-line "Matt skill files for this run" above this prompt gives their paths. Read
-`triage` (and its `AGENT-BRIEF.md`) before step 1; read `ask-matt` only when
-you cannot tell what kind of issue this is.
+Triage runs Matt Pocock's `ask-matt` router, then its `triage` skill. The line
+"Matt skill files for this run" above this prompt gives their paths. Read
+`ask-matt` first to route each incoming issue, then read `triage` (and its
+`AGENT-BRIEF.md`) before step 1.
 
 - **Routing.** `triage` is for issues nobody has shaped yet. A ticket that
   `to-tickets` produced is already agent-ready (the wrapper says so in a
