@@ -238,13 +238,21 @@ The merge lane can rerun a check that admission cancelled before `ci_wip_wait` i
 The harvest group is a station process too (`scheduler.sh --harvest-station`, `scheduler.d/harvest-station.sh`): `loop.sh` starts a
 detached pass every 60 s (`AUTOPI_HARVEST_STATION_SECONDS`, kill at 600 s) that runs `harvest_workers`, the claim sweeps,
 `self_check_harvest`, `precheck_harvest` and `recover_orphans` with a 240 s bound (`AUTOPI_HARVEST_STATION_LIMIT_SECONDS`). It takes
-the ledger lock one worker at a time, so the tick, the refill and the merge lane run between workers, and it re-checks under the lock
-that a worker is still unharvested. The full tick runs that group itself only while no pass started within 600 s
+the ledger lock one worker at a time, so the tick, refill and merge lane run between workers, and it re-checks under the lock
+that a worker is still unharvested. It reads at most 16 rows from the named `workers.json` buffer per pass by default; set
+`AUTOPI_HARVEST_STATION_BATCH_SIZE` to change that bound. A worker exit wakes harvest directly. The full tick and refill run that
+group themselves only while no pass started within 600 s
 (`AUTOPI_HARVEST_STATION_FRESH_SECONDS`). Live workers are visited once per 900 s (`AUTOPI_HARVEST_LIVE_SECONDS`), so the SLOW/BURN
 alert lines stay one per sweep. Each pass logs `harvest-station done secs= gh_calls= lock_wait= lock_hold= workers= harvested=
 deferred= limit= ended= phases=` (the stamp is the pass start); `scheduler.harvest_gap_p50` is the median gap between those stamps. Its
 bounds are 120 / 300 (maintainer decision: the station runs every 60 s, so a median above 2 min means it lags), not measured: re-measure on the first 7 live days, and change them only with that
 measurement and this table. Before the split the tick spent 128-215 s in `harvest_workers` (9-19 gh calls) on 2026-11-08.
+
+The dispatch controller is a station process too (`scheduler.sh --dispatch-station`): every 30 s by default it consumes priority-ordered
+pending rows from `units.json`, up to 8 per pass (`AUTOPI_DISPATCH_STATION_BATCH_SIZE`), under `.dispatch-station.lock` and the shared
+dispatch-step flock. Worker exits wake dispatch directly. Tick and refill fallbacks run only when no dispatch pass started in the prior
+90 s. Each `dispatch-station done` line reports the buffer, batch size, elapsed time and result; the 30 s start cadence is the initial
+measurement target before splitting another stage.
 
 The intake existing walk is a station process too (`scheduler.sh --existing-walk`, `scheduler.d/existing-walk-station.sh`): `loop.sh`
 starts a detached pass every 60 s (`AUTOPI_EXISTING_WALK_SECONDS`, minimum 30, kill at 600 s) that runs `register_new_issues 1`, the walk

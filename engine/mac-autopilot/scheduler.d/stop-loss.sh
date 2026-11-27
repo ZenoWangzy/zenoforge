@@ -413,8 +413,9 @@ repair_cap_admission() { # unit-id unit-json → two failed repair rounds escala
 # 2026-10-20 三个热修回迁在 review-pending 等了 56 分钟，名额被新收的孤儿 PR 先拿走（L62）。
 # dispatch_pending can request the WIP total from this ledger read; other callers still receive candidate rows only.
 dispatch_order() {
-  local started=$SECONDS rc=0 elapsed include_wip="${1:-false}"
-  jqf -L "$ENGINE_ROOT/engine" -cr --argjson include_wip "$include_wip" --argjson wip_stages "$STARTED_WIP_STAGES" --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" \
+  local started=$SECONDS rc=0 elapsed include_wip="${1:-false}" candidate_limit="${2:-0}"
+  [[ "$candidate_limit" =~ ^[1-9][0-9]*$ ]] || candidate_limit=0
+  jqf -L "$ENGINE_ROOT/engine" -cr --argjson include_wip "$include_wip" --argjson candidate_limit "$candidate_limit" --argjson wip_stages "$STARTED_WIP_STAGES" --argjson priority_order "$DISPATCH_PRIORITY_ORDER" --argjson first_issues "${DISPATCH_FIRST_ISSUES:-[]}" \
     --argjson intake_priority "$(jqf -c '.intake_priority // {}' <<<"$CFG")" '
     import "intake-priority-policy" as intake_policy;
     (.units | map({unit: ., started_wip: (.stage as $stage | ($wip_stages | index($stage)) != null), pending: (.stage | test("-pending$"))})) as $dispatch_units |
@@ -440,7 +441,9 @@ dispatch_order() {
         ((if .hotpatch == true then "hotfix" elif (.lane // "") == "direct-main" then "opt" else "normal" end) as $tier
           | ($priority_order | index($tier) // ($priority_order | length))),
         (.id // "")
-      ])[])
+      ])
+    | if $candidate_limit > 0 then .[0:$candidate_limit] else . end
+    | .[])
   ' "$UNITS" || rc=$?
   elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( elapsed < 2 )) || say "dispatch detail candidate_order secs=${elapsed}s"

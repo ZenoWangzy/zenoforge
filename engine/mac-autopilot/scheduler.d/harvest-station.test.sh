@@ -69,6 +69,15 @@ line="$(grep 'harvest-station done' "$LOG")"
 [[ "$line" =~ secs=[0-9]+\ gh_calls=[0-9]+\ gql=[0-9]+\ rest=[0-9]+\ gh_locked=[0-9]+\ lock_wait=[0-9]+\ lock_hold=[0-9]+\ workers=2\ harvested=2\ deferred=0\ limit=240s\ ended=[0-9:]+Z\ phases=harvest_workers:[0-9]+s/[0-9]+gh,coord_reap:[0-9]+s/[0-9]+gh,coord_systemd: ]] \
   || fail "the pass line lacks its measured fields: $line"
 
+reset
+printf '%s\n' '{"workers":[{"pid":4101,"unit":"pr-1","type":"review"},{"pid":4102,"unit":"pr-2","type":"repair"},{"pid":4103,"unit":"pr-3","type":"implement"}]}' > "$WORKERS"
+AUTOPI_HARVEST_STATION_BATCH_SIZE=1 harvest_station_tick
+[[ "$(jq '[.workers[] | select(.harvested == true)] | length' "$WORKERS")" == 1 ]] || fail 'one harvest pass exceeded its worker batch'
+grep -Fq 'buffer=workers.json batch_size=1' "$LOG" || fail 'the harvest pass did not report its input buffer and batch size'
+rm -rf "$HARVEST_STATION_LOCK"
+harvest_station_tick
+[[ "$(jq '[.workers[] | select(.harvested == true)] | length' "$WORKERS")" == 3 ]] || fail 'a later harvest batch did not collect the remaining workers'
+
 # --- case 2: a worker another pass harvested after the list was read is not harvested twice. ---
 reset
 real_candidates="$(declare -f hs_candidates)"
@@ -170,14 +179,14 @@ printf '%s\n' "$*" >> "$HL_CALLS"
 SH
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$engine_dir/mac-autopilot/loop.sh"
   A="$hl/state"; LIVE="$hl/live"; export HL_CALLS="$hl/calls"; : > "$HL_CALLS"
-  export AUTOPI_HARVEST_STATION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647
+  export AUTOPI_HARVEST_STATION_SECONDS=30 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647
   echo '{"workers":[]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 25 ) || fail 'refill window failed before the harvest station cadence'
 [[ ! -s "$hl/calls" ]] || fail "the harvest station started before its cadence ($(cat "$hl/calls"))"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$engine_dir/mac-autopilot/loop.sh"
   A="$hl/state"; LIVE="$hl/live"; export HL_CALLS="$hl/calls"
-  export AUTOPI_HARVEST_STATION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647
+  export AUTOPI_HARVEST_STATION_SECONDS=30 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 40 ) || fail 'refill window failed at the harvest station cadence'
 for _ in $(seq 50); do [[ -s "$hl/calls" ]] && break; command sleep 0.1; done
@@ -196,7 +205,7 @@ chmod +x "$rf/live/scheduler.sh"
   export HL_CALLS="$rf/calls" HL_REFILL_ACTIVE="$rf/refill-active" HL_DURING_REFILL="$rf/during-refill" HL_TICKS="$rf/ticks"
   : > "$HL_CALLS"
   echo 0 > "$HL_TICKS"
-  export AUTOPI_HARVEST_STATION_SECONDS=60 AUTOPI_REFILL_SECONDS=30 \
+  export AUTOPI_HARVEST_STATION_SECONDS=60 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=30 \
     AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647 AUTOPI_MERGE_STATION_SECONDS=2147483647
   echo '{"workers":[]}' > "$A/workers.json"
   unset REFILL_PID REFILL_ACTIVE_SIGNATURE

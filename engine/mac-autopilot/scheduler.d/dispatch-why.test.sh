@@ -155,12 +155,28 @@ tick_prs_changed() { :; }
 live_workers() { echo 0; }
 refill_dispatch_metrics() { echo 'free_slots=1'; }
 paused_midrun() { return 0; }
+rm -f "$A/.dispatch-station-epoch"
 refill_tick
 phase_line="$(grep 'tick-phases kind=refill' "$SAY_LOG" | tail -1)"
 [[ -n "$phase_line" ]] || fail 'the refill printed no tick-phases line'
 for step in state_schema coord_reap coord_systemd coord_scheduler dep_snapshot record_run_spend dispatch_pending; do
   grep -Eq "(phases=|,)${step}:[0-9]+s/[0-9]+gh" <<<"$phase_line" || fail "the tick-phases line lacks $step: $phase_line"
 done
+
+# A lock-held station retry preserves skips; acquiring dispatch_pending resets them.
+printf '1\n' > "$SKIP_COUNTER"
+exec {held_lock_fd}>>"$A/.tick-step-dispatch_pending.lock"
+flock -x "$held_lock_fd" || fail 'could not hold the dispatch_pending lock for the station retry check'
+TICK_STEP_LOCK_RESULT=""
+tick_step_lock_run dispatch_pending :
+[[ "$TICK_STEP_LOCK_RESULT" == skipped && "$(cat "$SKIP_COUNTER")" == 2 ]] \
+  || fail 'a skipped dispatch attempt did not preserve the accumulated count'
+flock -u "$held_lock_fd" || fail 'could not release the dispatch_pending station retry lock'
+exec {held_lock_fd}>&-
+DISPATCH_RESET_SKIPS_ON_LOCK=true tick_step_lock_run dispatch_pending :
+[[ "$TICK_STEP_LOCK_RESULT" == acquired && "$(cat "$SKIP_COUNTER")" == 0 ]] \
+  || fail 'an acquired dispatch pass did not reset accumulated skips'
+rm -f "$A/.dispatch-station-epoch"
 
 # A real detached dispatch_pending tick-step clears the count when it runs its phase.
 printf '2\n' > "$SKIP_COUNTER"

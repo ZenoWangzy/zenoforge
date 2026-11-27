@@ -1062,6 +1062,12 @@ grep -Fq 'MECH_REGISTRY_FILE="$([[ "$RULE_COMMAND" == true ]] || sched_mechanism
   || fail 'mechanism registry must resolve through sched_mechanism_registry'
 hotfix_list_calls="$fixture/hotfix-issue-list.calls"; : > "$hotfix_list_calls"
 hotfix_label_edits=()
+issue_rest_list_saved="$(declare -f issue_rest_list)"
+issue_rest_list() {
+  printf '%s\n' "$*" >> "$hotfix_list_calls"
+  [[ "$2" == open && "$3" == hotfix && "$4" == 200 ]] || fail "hotfix issue census ignored config or labels ($*)"
+  printf '%s\n' '[{"number":31,"labels":[{"name":"hotfix"}]}]'
+}
 hotfix_reg_prs="$(jq -cn --arg sha "$H1" '[
   {number:10,headRefOid:$sha,headRefName:"agent/issue-31-cells",isDraft:false,title:"branch linked",labels:[],body:""},
   {number:11,headRefOid:$sha,headRefName:"feat/plain",isDraft:false,title:"body linked",labels:[],body:"work\n\nRefs #31"},
@@ -1078,10 +1084,6 @@ gh() {
     printf '%s\n' '[{"number":31,"state":"open","labels":[{"name":"hotfix"}],"user":{"login":"author"}}]'
   elif [[ "$1 $2" == "pr view" && "$*" == *'--json body'* ]]; then # the light census carries no body; registration reads it per PR
     jq -r --argjson n "$3" 'first(.[] | select(.number == $n) | .body // "")' <<<"$hotfix_reg_prs"
-  elif [[ "$1 $2" == "issue list" ]]; then
-    printf '%s\n' "$*" >> "$hotfix_list_calls"
-    [[ "$*" == *"--label hotfix"* && "$*" == *"--json number,labels"* ]] || fail "hotfix issue census ignored config or labels ($*)"
-    printf '%s\n' '[{"number":31,"labels":[{"name":"hotfix"}]}]'
   elif [[ "$1 $2" == "pr edit" ]]; then
     hotfix_label_edits+=("$3:$5")
     [[ "$3" != 15 ]]
@@ -1092,6 +1094,7 @@ tick_prs_changed; TICK_HOTFIX_ISSUES='[]'; TICK_HOTFIX_ISSUES_LOADED=false; unit
 [[ "${hotfix_label_edits[*]}" == "15:hotfix 13:hotfix 12:hotfix 11:hotfix 10:hotfix" ]] || fail "hotfix PRs were not auto-labeled (${hotfix_label_edits[*]:-none})"
 grep -Fq 'hotfix PR#15: could not add configured label hotfix' "$LOG" || fail 'hotfix label write failure was not recorded'
 [[ "$(wc -l < "$hotfix_list_calls")" == 1 ]] || fail "register_new_prs read issue labels $(wc -l < "$hotfix_list_calls") times for one tick"
+eval "$issue_rest_list_saved"
 # The decision follows the loaded config, so a CTO rule change takes effect on the next tick.
 CFG="$(jq '.hotfix_lane = {branch_prefixes:["urgent/"],label:"urgent-hotfix"}' <<<"$CFG")"
 hotfix_label_edits=(); : > "$hotfix_list_calls"
@@ -1131,15 +1134,17 @@ eval "$register_saved"; eval "$gh_reg_saved"; CFG="$cfg_saved"; ROOT="$root_save
 rg="$fixture/refill-gap"; mkdir -p "$rg/live" "$rg/state"
 cat > "$rg/live/scheduler.sh" <<'SH'
 #!/usr/bin/env bash
-mkdir "$RG_LOCK" 2>/dev/null || exit 75
-printf '%s\n' "$BASHPID" > "$RG_LOCK/pid"
-trap 'rm -rf -- "$RG_LOCK" "$test_env_root"' EXIT
 printf '%s\n' "$*" >> "$RG_CALLS"
-if [[ "${RG_SLOW_PID:-}" =~ ^[1-9][0-9]*$ ]] && kill -0 "$RG_SLOW_PID" 2>/dev/null; then
-  printf 'during-slow-tick\n' >> "$RG_DURING"
+if [[ "$*" == --refill ]]; then
+  mkdir "$RG_LOCK" 2>/dev/null || exit 75
+  printf '%s\n' "$BASHPID" > "$RG_LOCK/pid"
+  trap 'rm -rf -- "$RG_LOCK"' EXIT
+  if [[ "${RG_SLOW_PID:-}" =~ ^[1-9][0-9]*$ ]] && kill -0 "$RG_SLOW_PID" 2>/dev/null; then
+    printf 'during-slow-tick\n' >> "$RG_DURING"
+  fi
+  jq '{"workers": [.workers[] | .harvested = true]}' "$RG_STATE/workers.json" > "$RG_STATE/workers.json.tmp" \
+    && mv "$RG_STATE/workers.json.tmp" "$RG_STATE/workers.json"
 fi
-jq '{"workers": [.workers[] | .harvested = true]}' "$RG_STATE/workers.json" > "$RG_STATE/workers.json.tmp" \
-  && mv "$RG_STATE/workers.json.tmp" "$RG_STATE/workers.json"
 SH
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$rg/state"; LIVE="$rg/live"; export RG_CALLS="$rg/calls" RG_STATE="$rg/state" RG_LOCK="$rg/lock" RG_DURING="$rg/during"
@@ -1148,8 +1153,12 @@ SH
   jq -n --argjson d "$dead" '{workers:[{pid:$d}]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 6
-  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window failed with an exited worker'
-[[ "$(cat "$rg/calls")" == '--refill' ]] || fail "an exited worker did not trigger exactly one immediate refill tick ($(cat "$rg/calls" 2>/dev/null))"
+  [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID"
+  while IFS= read -r pid; do wait "$pid" || :; done < <(jobs -pr) ) || fail 'refill window failed with an exited worker'
+grep -qx -- '--refill' "$rg/calls" \
+  && grep -qx -- '--harvest-station' "$rg/calls" \
+  && grep -qx -- '--dispatch-station' "$rg/calls" \
+  || fail "an exited worker did not wake harvest, dispatch and refill directly ($(cat "$rg/calls" 2>/dev/null))"
 : > "$rg/calls"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$rg/state"; LIVE="$rg/live"; export RG_CALLS="$rg/calls" RG_STATE="$rg/state" RG_LOCK="$rg/lock" RG_DURING="$rg/during"
@@ -1196,7 +1205,7 @@ while [[ ! -e "$DV_RELEASE" ]]; do command sleep 0.1; done
 SH
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$dv/state"; LIVE="$dv/live"; export DV_CALLS="$dv/calls" DV_RELEASE="$dv/release"; : > "$DV_CALLS"
-  export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647
+  export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647
   echo '{"workers":[]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 25
@@ -1204,7 +1213,7 @@ SH
 [[ ! -s "$dv/calls" ]] || fail "dashboard views started before their cadence ($(cat "$dv/calls"))"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$dv/state"; LIVE="$dv/live"; export DV_CALLS="$dv/calls" DV_RELEASE="$dv/release"
-  export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647
+  export AUTOPI_DASHBOARD_SECONDS=30 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 40
   [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window blocked on a running dashboard views process'
@@ -1221,7 +1230,7 @@ while [[ ! -e "$CS_RELEASE" ]]; do command sleep 0.1; done
 SH
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$cs/state"; LIVE="$cs/live"; export CS_CALLS="$cs/calls" CS_RELEASE="$cs/release"; : > "$CS_CALLS"
-  export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
+  export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
   echo '{"workers":[]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 25
@@ -1229,7 +1238,7 @@ SH
 [[ ! -s "$cs/calls" ]] || fail "the ci station started before its cadence ($(cat "$cs/calls"))"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$(dirname "$0")/loop.sh"
   A="$cs/state"; LIVE="$cs/live"; export CS_CALLS="$cs/calls" CS_RELEASE="$cs/release"
-  export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
+  export AUTOPI_CI_ADMISSION_SECONDS=30 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 40
   [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID" ) || fail 'refill window blocked on a running ci station pass'
