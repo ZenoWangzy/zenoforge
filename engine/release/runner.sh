@@ -27,7 +27,7 @@ release_config_value() {
 
 release_runner_load_config() {
   RELEASE_CONFIG="$(zf_config_file release.json 2>/dev/null || true)"
-  DEPLOY_HOST="${DEPLOY_HOST:-$(release_config_value deployHost)}"
+  DEPLOY_HOST="$(release_config_value deployHost)"
   REGISTRY="$(release_config_value imageRegistry)"
   INFRA_WORKFLOW_REPOSITORY="$(release_config_value infraWorkflowRepository)"
   INFRA_BUILD_WORKFLOW="$(release_config_value infraBuildWorkflow)"

@@ -38,6 +38,10 @@ assert_eq "$INFRA_BUILD_WORKFLOW" 'build-images.yml' 'workflow name config'
 assert_eq "$INFRA_WORKFLOW_RUN_URL" 'https://build.example.invalid/runs' 'workflow run URL config'
 assert_eq "$PRODUCTION_URL" 'https://service.example.invalid' 'production URL config'
 
+DEPLOY_HOST='override.example.invalid'
+release_runner_load_config
+assert_eq "$DEPLOY_HOST" 'deploy.example.invalid' 'target config owns deploy host'
+
 jq 'del(.release.productionUrl)' "$config" > "$config.next"
 mv "$config.next" "$config"
 if output="$(release_config_value productionUrl 2>&1)"; then
