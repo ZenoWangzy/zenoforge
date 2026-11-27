@@ -127,8 +127,7 @@
   "models": {
     "review": [
       "gpt-6-luna",
-      "max",
-      "fast"
+      "max"
     ],
     "review_cross": [
       "GLM-5.3",
@@ -136,8 +135,7 @@
     ],
     "implement": [
       "gpt-6-luna",
-      "max",
-      "fast"
+      "max"
     ],
     "implement_share": {
       "claude": 50,
@@ -146,8 +144,7 @@
     },
     "triage": [
       "gpt-6-luna",
-      "max",
-      "fast"
+      "max"
     ],
     "review_fallback": [
       "claude-haiku-5-5",

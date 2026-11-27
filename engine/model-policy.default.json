@@ -42,7 +42,6 @@
       "provider": "codex",
       "model": "gpt-6-luna",
       "effort": "max",
-      "service_tier": "fast",
       "fallback_model": "gpt-6-luna"
     },
     "unit-review-cross": {
@@ -54,14 +53,12 @@
       "provider": "codex",
       "model": "gpt-6-luna",
       "effort": "max",
-      "service_tier": "fast",
       "fallback_model": "gpt-6-luna"
     },
     "unit-triage": {
       "provider": "codex",
       "model": "gpt-6-luna",
       "effort": "max",
-      "service_tier": "fast",
       "fallback_model": "gpt-6-luna"
     },
     "unit-review-fallback": {
