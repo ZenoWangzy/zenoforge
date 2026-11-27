@@ -4,6 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 python3 -I - "$script_dir" <<'PY'
 import sys
+from datetime import datetime, timezone
 sys.path.insert(0, sys.argv[1])
 import dashboard_repos as D
 
@@ -16,21 +17,29 @@ workers = [
 ]
 front = {
     "search_counts": {"issues_open": 21, "stages": {"ready-for-agent": 8}, "prs_open": 4, "prs_merged_24h": 3},
-    "github": {"stale": False},
+    "github": {"stale": False, "fetched_at": "2026-11-27T17:59:00Z"},
 }
+factory_live = {"fetched_at": "2026-11-27T17:59:30Z", "luna_workers": [{"key": "luna-2718", "started_at": "2026-11-27T17:58:00Z"}], "dispatch_decisions": [], "merge_lane_today": []}
 loaded = []
 
 def load_counts(repo):
     loaded.append(repo)
-    return {}, {"issues_open": 55, "stages": {"ready-for-agent": 12}, "prs_open": 7, "prs_merged_24h": 1}, {"stale": False}
+    return {}, {"issues_open": 55, "stages": {"ready-for-agent": 12}, "prs_open": 7, "prs_merged_24h": 1}, {"stale": False, "fetched_at": "2026-11-27T17:40:00Z", "freshness_window_s": 300}
 
-sections = D.sections(f"{primary},{other}", primary, primary, workers, front, load_counts)
-assert [section["repo"] for section in sections] == [primary, other], sections
-assert sections[0]["counts"] == {"issues_open": 21, "ready_for_agent": 8, "prs_open": 4, "prs_merged_24h": 3}, sections
-assert sections[1]["counts"] == {"issues_open": 55, "ready_for_agent": 12, "prs_open": 7, "prs_merged_24h": 1}, sections
-assert [worker["key"] for worker in sections[0]["workers"]] == ["zen-worker"], sections
-assert [worker["key"] for worker in sections[0]["waiters"]] == ["zen-waiter"], sections
-assert [worker["key"] for worker in sections[1]["workers"]] == ["other-worker"], sections
+now = datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc).timestamp()
+sections = D.sections(f"{primary},{other}", primary, other, workers, front, load_counts, factory_live, now, factory_repo=primary)
+assert [section["repo"] for section in sections] == [other, primary], sections
+assert sections[0]["counts"] == {"issues_open": 55, "ready_for_agent": 12, "prs_open": 7, "prs_merged_24h": 1}, sections
+assert sections[1]["counts"] == {"issues_open": 21, "ready_for_agent": 8, "prs_open": 4, "prs_merged_24h": 3}, sections
+assert sections[1]["fetched_at"] == "2026-11-27T17:59:00Z", sections
+assert sections[1]["stale"] is False, sections
+assert sections[1]["factory_live"] == factory_live, sections
+assert sections[0]["fetched_at"] == "2026-11-27T17:40:00Z", sections
+assert sections[0]["stale"] is True, sections
+assert sections[0]["factory_live"] is None, sections
+assert [worker["key"] for worker in sections[1]["workers"]] == ["zen-worker"], sections
+assert [worker["key"] for worker in sections[1]["waiters"]] == ["zen-waiter"], sections
+assert [worker["key"] for worker in sections[0]["workers"]] == ["other-worker"], sections
 assert loaded == [other], loaded
 print("dashboard_repos.test.sh: PASS")
 PY

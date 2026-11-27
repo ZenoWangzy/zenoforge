@@ -21,9 +21,9 @@ fi
 snap="$test_env_root/live.data.js"
 if [[ -n "$live" && -s "$live" ]]; then cp "$live" "$snap"; else : > "$snap"; echo "dashboard-modules.test.sh: no live dashboard.data.js here; empty and synthetic data only" >&2; fi
 
-node - "$script_dir/dashboard.html" "$snap" <<'JS'
+node - "$script_dir/dashboard.html" "$snap" "$script_dir/fixtures/dashboard-truth.data.js" <<'JS'
 const fs = require("fs"), vm = require("vm");
-const [html, dataPath] = process.argv.slice(2);
+const [html, dataPath, truthFixturePath] = process.argv.slice(2);
 const src = fs.readFileSync(html, "utf8");
 const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 if (inline.length !== 1) throw new Error("expected one inline script, got " + inline.length);
@@ -76,8 +76,25 @@ const pausedStale = {generated: new Date().toISOString(), config: {tick_seconds:
 const pausedView = load(pausedStale);
 pausedView.ctx.__dash.renderModule("overview");
 const header = pausedView.els.fresh.innerHTML;
-for (const detail of ["评分已过期", "运行版本", "a1b2c3d4e5f6", "流水线暂停", "10-26 08:15 UTC", "refactor"])
+for (const detail of ["评分已过期", "运行版本", "未知", "Zenoforge 工厂暂停", "10-26 08:15 UTC", "refactor"])
   if (!header.includes(detail)) throw new Error(`paused stale scorecard header lacks ${detail}: ${header}`);
+if (header.includes("a1b2c3d4e5f6")) throw new Error(`runtime version fell back to the old scorecard pin: ${header}`);
+
+const truthContext = {window: {}};
+vm.runInNewContext(fs.readFileSync(truthFixturePath, "utf8"), truthContext, {filename: truthFixturePath});
+const truth = truthContext.window.DASH;
+if (!truth || !Array.isArray(truth.repo_sections) || !truth.repo_sections[0]?.counts || !truth.repo_sections[0]?.workers || !truth.repo_sections[0]?.waiters || !Object.prototype.hasOwnProperty.call(truth.repo_sections[0], "error") || !Object.prototype.hasOwnProperty.call(truth.repo_sections[0], "stale") || !truth.repo_sections[0]?.factory_live)
+  throw new Error("truth fixture does not match the generated dashboard.data.js repo_sections shape");
+const truthView = load(truth);
+truthView.ctx.Date = class extends Date { static now() { return Date.parse("2026-11-27T19:22:01Z"); } };
+truthView.ctx.__dash.renderModule("overview");
+const truthHeader = truthView.els.fresh.innerHTML, truthPanel = truthView.els.view.innerHTML;
+for (const detail of ["6da8c7285e8b", "VectA 线路暂停", "Zenoforge 工厂运行中"])
+  if (!truthHeader.includes(detail)) throw new Error(`dashboard header lacks ${detail}: ${truthHeader}`);
+if (truthHeader.includes("b31045988e8c")) throw new Error(`dashboard header shows the old scorecard pin: ${truthHeader}`);
+for (const detail of ["GitHub counts 读取于 11-27 19:17 UTC", "issue-2718-luna", "11-27T19:15:00Z", "dispatched", "#1649"])
+  if (!truthPanel.includes(detail)) throw new Error(`repo panel lacks ${detail}: ${truthPanel}`);
+if (!truthPanel.includes("数据较旧")) throw new Error(`repo panel did not judge freshness from fetched_at: ${truthPanel}`);
 
 // The health sample cadence follows observed scheduler gaps: 727s p50 supports two gaps before stale.
 const scorecardAtAge = ageSeconds => {

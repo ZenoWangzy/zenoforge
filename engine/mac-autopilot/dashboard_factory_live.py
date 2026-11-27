@@ -1,4 +1,4 @@
-import glob, os, re, time
+import glob, json, os, re, time
 
 STAMP = re.compile(r"^\[?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]?\s+(.*)$")
 ISSUE = re.compile(r"\bissue\s*#?(\d+)\b|(?<![\w])#(\d+)\b", re.I)
@@ -46,6 +46,47 @@ def _rc(path):
         return None
 
 
+def read_pause_marker(path):
+    try:
+        with open(path, encoding="utf-8") as source:
+            raw = source.read(8192).strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {"error": "unreadable"}
+    try:
+        value = json.loads(raw) if raw else {}
+    except ValueError:
+        value = {}
+    if not isinstance(value, dict):
+        value = {}
+    return {"since": value.get("timestamp"), "reason": value.get("reason") or (raw[:240] if raw else None)}
+
+
+def read_pause_states(line_pause_file, factory_pause_file, now=None):
+    now = time.time() if now is None else float(now)
+    fetched_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+    line_pause = read_pause_marker(line_pause_file)
+    factory_pause = read_pause_marker(factory_pause_file)
+    def status(value):
+        return {"paused": None if value and value.get("error") else value is not None,
+                "since": (value or {}).get("since"), "reason": (value or {}).get("reason"), "fetched_at": fetched_at}
+    return {
+        "fetched_at": fetched_at,
+        "vecta_line": status(line_pause),
+        "zenoforge_factory": status(factory_pause),
+    }
+
+
+def engine_live_pin(agent_home):
+    target = os.path.realpath(os.path.join(agent_home, "engine-live"))
+    match = re.search(r"(?:^|/)engine-versions/([0-9a-f]{7,40})/engine/?$", target)
+    if match:
+        return match.group(1)
+    version = os.path.basename(os.path.dirname(target))
+    return version if re.fullmatch(r"[0-9a-f]{7,40}", version) else None
+
+
 def read_luna_workers(agent_home, now=None, pid_alive=None):
     now = time.time() if now is None else float(now)
     alive = pid_alive or _pid_alive
@@ -55,12 +96,20 @@ def read_luna_workers(agent_home, now=None, pid_alive=None):
         key = os.path.basename(run_dir)
         if not os.path.isdir(run_dir) or not re.fullmatch(r"[\w.-]{1,160}", key):
             continue
-        pid_path = os.path.join(run_dir, "wrapper.pid")
+        pid_path = None
+        for filename in ("wrapper.pid", "codex.pid"):
+            candidate = os.path.join(run_dir, filename)
+            try:
+                with open(candidate, encoding="utf-8") as source:
+                    pid = source.readline().strip()
+                if pid.isdigit() and alive(pid):
+                    pid_path = candidate
+                    break
+            except OSError:
+                pass
+        if pid_path is None:
+            continue
         try:
-            with open(pid_path, encoding="utf-8") as source:
-                pid = source.readline().strip()
-            if not pid.isdigit() or not alive(pid):
-                continue
             started = os.path.getmtime(pid_path)
         except OSError:
             continue
@@ -68,6 +117,7 @@ def read_luna_workers(agent_home, now=None, pid_alive=None):
             "key": key,
             "issue": _issue(key, run_dir, root),
             "age_s": max(0, int(now - started)),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
             "state": "gate-wait" if os.path.exists(os.path.join(run_dir, "gate-wait")) else "running",
             "rc": _rc(os.path.join(run_dir, "rc")),
         })
@@ -119,6 +169,7 @@ def merge_lane_merges_today(units, today, date_of):
 
 def read_live(agent_home, units, now, today, date_of, pid_alive=None):
     return {
+        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "luna_workers": read_luna_workers(agent_home, now, pid_alive),
         "dispatch_decisions": read_dispatch_decisions(agent_home),
         "merge_lane_today": merge_lane_merges_today(units, today, date_of),

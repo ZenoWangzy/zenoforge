@@ -11,5 +11,13 @@
   ],
   "engine/mac-autopilot/dashboard_factory_live.py": [
     "engine/mac-autopilot/dashboard_factory_live.test.sh"
+  ],
+  "engine/mac-autopilot/dashboard.html": [
+    "engine/mac-autopilot/dashboard-modules.test.sh",
+    "engine/mac-autopilot/models-shape.test.sh"
+  ],
+  "engine/mac-autopilot/gen_dashboard.py": [
+    "engine/mac-autopilot/dashboard-front.test.sh",
+    "engine/mac-autopilot/models-shape.test.sh"
   ]
 }
