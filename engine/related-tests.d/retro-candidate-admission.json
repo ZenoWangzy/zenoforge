@@ -21,5 +21,6 @@
     "engine/notify.test.sh",
     "engine/night/maintainer-health-mail.test.sh",
     "engine/night/maintainer-health-mail-output-contract.test.sh"
-  ]
+  ],
+  "engine/rule-lane.sh": ["engine/rule-lane.test.sh"]
 }
