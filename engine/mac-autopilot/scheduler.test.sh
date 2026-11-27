@@ -847,8 +847,7 @@ tick_gh() {
           context_result="$(command jq -c --argjson result "$context_result" --argjson n "$context_n" '
             (if type == "array" then . else [.] end) as $issues
             | reduce $issues[] as $issue ($result; if $issue.number == $n then . + {
-                ("i" + ($n | tostring)): {number:$n,title:($issue.title // ""),body:($issue.body // ""),
-                  state:($issue.state // "OPEN"),labels:{nodes:($issue.labels // [])},blockedBy:($issue.blockedBy // {nodes:[]}),
+                ("i" + ($n | tostring)): {number:$n,blockedBy:($issue.blockedBy // {nodes:[]}),
                   subIssues:($issue.subIssues // {totalCount:0,nodes:[]}),
                   subIssuesSummary:($issue.subIssuesSummary // {total:0,completed:0})}
               } else . end)' "$context_source")" || return 1

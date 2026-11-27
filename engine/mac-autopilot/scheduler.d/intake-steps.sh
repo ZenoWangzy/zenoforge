@@ -102,11 +102,7 @@ intake_skip() {
   intake_skip_counts[$1]=$(( ${intake_skip_counts[$1]:-0} + 1 )); intake_mark "skip_$1"
   if [[ "${2:-}" != cached && -n "${issue_updated_at:-}" && "${n:-}" =~ ^[0-9]+$ ]]; then
     case "$1" in
-      parent)
-        if ! jqf -e --arg n "$n" '(.intake_parent_retry // {}) | has($n)' "$UNITS" >/dev/null 2>&1; then
-          intake_skip_cache_at["$n"]="$issue_updated_at"; intake_skip_cache_verdict["$n"]="$1"; intake_skip_cache_stamp["$n"]="$(date +%s)"; intake_skip_cache_pending["$n"]=1
-        fi ;;
-      author_hold|m5|task)
+      parent|author_hold|m5|task)
         intake_skip_cache_at["$n"]="$issue_updated_at"; intake_skip_cache_verdict["$n"]="$1"; intake_skip_cache_stamp["$n"]="$(date +%s)"; intake_skip_cache_pending["$n"]=1 ;;
     esac
   fi
