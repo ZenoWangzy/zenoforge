@@ -795,15 +795,18 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"fixture-session"}' '{"type
     const input = join(dir, 'input.json'), prompt = join(dir, 'prompt.md');
     writeFileSync(prompt, 'same repair prompt');
     const policy = JSON.parse(readFileSync(resolve('engine/model-policy.default.json'), 'utf8'));
-    const work = policy.roles.work;
+    const implement = policy.roles['unit-implement'];
+    implement.service_tier = 'fast';
+    const policyFile = join(dir, 'policy.json');
+    writeFileSync(policyFile, JSON.stringify(policy));
     for (const mode of ['initial', 'cold', 'resume']) {
       const artifact = join(dir, mode); mkdirSync(artifact);
       writeFileSync(input, JSON.stringify({ issue: { number: 1 }, priorState: {}, failure: '', recordSession: mode === 'initial',
         sessionId: mode === 'resume' ? 'fixture-session' : null,
-        repairIdentity: mode === 'initial' ? null : `${work.provider}:${work.model}:${work.effort}` }));
+        repairIdentity: mode === 'initial' ? null : `${implement.provider}:${implement.model}:${implement.effort}` }));
       const raw = execFileSync('bash', ['engine/eval/stage-call.sh', 'implement', resolve('.'), dir, prompt, artifact, input], {
         encoding: 'utf8', env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: '', GITHUB_TOKEN: '',
-          EVAL_POLICY_FILE: resolve('engine/model-policy.default.json'),
+          EVAL_POLICY_FILE: policyFile,
           EVAL_FAKE_ARG_FILE: join(artifact, 'args.txt'), EVAL_FAKE_CWD_FILE: join(artifact, 'cwd.txt'), EVAL_FAKE_PROMPT_FILE: join(artifact, 'stdin.txt'),
           EVAL_FAKE_TIMEOUT_FILE: join(artifact, 'timeout.txt'),
           ZF_AGENT_TEST_MODE: '1', ZF_AGENT_TEST_ROOT: dir, ZF_CODEX_SANDBOX: 'workspace-write',
@@ -813,9 +816,9 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"fixture-session"}' '{"type
       assert.equal(args.includes('resume'), mode === 'resume');
       assert.equal(args.includes('--ephemeral'), mode === 'cold');
       assert.equal(args.includes('--json'), mode !== 'cold');
-      assert.equal(args[args.indexOf('-m') + 1], work.model);
-      assert.ok(args.includes(`model_reasoning_effort=${work.effort}`));
-      if (work.service_tier) assert.ok(args.includes(`service_tier="${work.service_tier}"`));
+      assert.equal(args[args.indexOf('-m') + 1], implement.model);
+      assert.ok(args.includes(`model_reasoning_effort=${implement.effort}`));
+      if (implement.service_tier) assert.ok(args.includes(`service_tier="${implement.service_tier}"`));
       if (mode === 'resume') assert.equal(args[args.indexOf('resume') + 1], 'fixture-session');
       else assert.equal(args[args.indexOf('--cd') + 1], dir);
       assert.equal(args[args.indexOf('--sandbox') + 1], 'workspace-write');

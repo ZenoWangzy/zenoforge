@@ -9,6 +9,19 @@ MODEL_POLICY_FILE=""
 source "$root/engine/lib.d/model-policy.sh"
 
 fail() { printf 'model-policy-unit-roles.test.sh: %s\n' "$*" >&2; exit 1; }
+while IFS= read -r -d '' template; do
+  jq -e '
+    [(.models // {} | to_entries[])
+      | .value as $entry
+      | if ($entry | type) == "array" then $entry[2]
+        elif ($entry | type) == "object" then $entry.service_tier
+        else empty
+        end
+      | select(. == "fast" or . == "priority")
+    ] | length == 0
+  ' "$template" >/dev/null || fail "$template: models entry names a forbidden service tier"
+done < <(find "$root/engine" -type f -name '*.template.json' -print0)
+
 while IFS= read -r key; do
   role="unit-${key//_/-}"
   jq -e --arg role "$role" '.roles | has($role)' "$MODEL_POLICY_DEFAULT" >/dev/null || fail "$key: missing role $role"

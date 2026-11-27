@@ -39,7 +39,7 @@ test('config template: caps, kill switches, and family-independent review candid
   assert.equal(claude.release_train.enabled, false);
   assert.equal(claude.supervisor_arbiter.enabled, false);
   assert.deepEqual(claude.models.review, JSON.parse(tpl).models.review);
-  assert.deepEqual(claude.models.review, ['gpt-6-luna', 'max', 'fast']);
+  assert.deepEqual(claude.models.review, ['gpt-6-luna', 'max']);
   assert.deepEqual(claude.models.review_cross, ['GLM-5.3', 'max']);
   assert.deepEqual(claude.models.review_fallback, ['claude-haiku-5-5', 'high']);
   const codex = JSON.parse(renderConfigTemplate(tpl, { ...base, reviewProvider: 'codex', autoMerge: true }));

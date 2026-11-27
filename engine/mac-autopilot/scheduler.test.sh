@@ -61,11 +61,11 @@ fi
 jq -e '.focus_mode == "all" and .budget_meter == "sessions_dir"' "$template" >/dev/null
 jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .release_train.enabled == false and .supervisor_arbiter.enabled == true
-  and .models.review == ["gpt-6-luna", "max", "fast"]
+  and .models.review == ["gpt-6-luna", "max"]
   and .models.review_cross == ["GLM-5.3", "max"]
-  and .models.implement == ["gpt-6-luna", "max", "fast"]
+  and .models.implement == ["gpt-6-luna", "max"]
   and .models.implement_share == {"claude":50,"codex":50,"zcode":0}
-  and .models.triage == ["gpt-6-luna", "max", "fast"]
+  and .models.triage == ["gpt-6-luna", "max"]
   and .models.review_fallback == ["claude-haiku-5-5", "high"]
   and .supervisor_arbiter.cap_triage == true
   and .supervisor_arbiter.cap_triage_per_tick == 3
