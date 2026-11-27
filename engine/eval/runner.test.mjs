@@ -373,7 +373,7 @@ function cliFixture() {
   const dir = mkdtempSync(join(scratch, 'eval-cli-'));
   const bin = join(dir, 'bin'), home = join(dir, 'home');
   mkdirSync(bin); mkdirSync(home);
-  const events = join(dir, 'codex-events.log');
+  const events = join(dir, 'codex-events.log'); const issueUpsert = join(dir, 'issue-upsert.sh'); writeFileSync(issueUpsert, '#!/usr/bin/env bash\nset -euo pipefail\nbody=""\nwhile (($#)); do if [[ "$1" == --body-file ]]; then body=$2; shift 2; else shift; fi; done\ntest -s "$body"\n', { mode: 0o755 });
   const output = { category: 'bug', state: 'ready-for-agent', risk_class: 'P0', level: 'L0', entry_surface: 'API', acceptor: 'none', advisor_reason: 'none', brief_md: 'fixture', notes_md: '', expected_packages: ['engine'], expected_paths: [], related: [], suspected_shared_cause: null, estimated_changed_lines: 40, external_deliverable: { required: false, location: '', reason: '' } };
   const outputFile = join(dir, 'triage-output.json');
   writeFileSync(outputFile, JSON.stringify(output));
@@ -397,7 +397,7 @@ printf 'tokens used\n1,234\n'
   const baseSha = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').at(-1);
   const caseFile = join(dir, 'cases.json');
   writeFileSync(caseFile, JSON.stringify({ stage: 'triage', cases: ['c1', 'c2', 'c3'].map((id) => ({ id, baseSha, issue: { number: 1, title: id, body: 'fixture' }, expected: output })) }));
-  const env = { ...process.env, HOME: home, AGENT_HOME: join(home, '.zenoforge'), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: '', GITHUB_TOKEN: '',
+  const env = { ...process.env, HOME: home, AGENT_HOME: join(home, '.zenoforge'), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: '', GITHUB_TOKEN: '', ZF_EVAL_ISSUE_UPSERT: issueUpsert,
     ZF_AGENT_TEST_MODE: '1', ZF_AGENT_TEST_ROOT: dir, AGENT_EXECUTION_MIN_MEM_MB: '1', AGENT_EXECUTION_MAX_LOAD: '1000000' };
   const run = (args, envOverrides = {}) => spawnSync('node', ['engine/eval/run-eval.mjs', ...args], {
     encoding: 'utf8', env: { ...env, ...envOverrides },
@@ -446,8 +446,8 @@ process.exitCode = ok ? 0 : 1;
     const fixSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const cases = join(f.dir, 'fresh-cases.json');
     writeFileSync(cases, JSON.stringify({ stage: 'fresh-agent', cases: [
-      { id: 'pass', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_PASS', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
-      { id: 'fail', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_FAIL', hidden_check: `node ${check}`, expected_divergence: 'read-doc' },
+      { id: 'pass', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_PASS', hidden_check: `node ${check}`, expected_divergence: 'read-doc', remediation: { doc: { path: 'docs/enforced-rules.md', line: 'The evaluator reads the routing rule.' }, guard: 'Keep the routing rule enforced.' } },
+      { id: 'fail', base_sha: baseSha, fix_sha: fixSha, prompt: 'FIXTURE_FAIL', hidden_check: `node ${check}`, expected_divergence: 'read-doc', remediation: { doc: { path: 'docs/enforced-rules.md', line: 'The evaluator reads the routing rule.' }, guard: 'Keep the routing rule enforced.' } },
     ] }));
     const r = f.run(['--stage', 'fresh-agent', '--cases', cases, '--runs', '1', '--label', 'fresh']);
     assert.equal(r.status, 0, r.stderr);

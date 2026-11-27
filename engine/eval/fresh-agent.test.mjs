@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execute } from './run-eval.mjs';
-import { validateFreshCase, classifyFailedRun } from './fresh-agent.mjs';
+import { validateFreshCase, classifyFailedRun, buildFreshAgentGapIssue, buildFreshAgentGapIssues } from './fresh-agent.mjs';
 
 const SHA = 'a'.repeat(40);
 const validCase = { id: 'fresh-1', source_url: 'https://github.com/ZenoWangzy/zenoforge/issues/984', base_sha: SHA, fix_sha: 'b'.repeat(40), prompt: 'Add a retry guard.', hidden_check: 'node check.mjs', expected_divergence: 'read-doc' };
@@ -31,6 +31,7 @@ test('frozen fresh-agent corpus has five to eight valid cases with unique ids', 
   assert.ok(set.cases.length >= 5 && set.cases.length <= 8);
   assert.equal(new Set(set.cases.map((c) => c.id)).size, set.cases.length);
   assert.ok(set.cases.every((c) => c.source_url));
+  assert.ok(set.cases.every((c) => c.remediation?.doc?.path && c.remediation?.doc?.line && c.remediation?.guard));
   assert.ok(set.cases.every((c) => validateFreshCase(c).length === 0));
 });
 
@@ -42,6 +43,44 @@ test('classifies missing-doc when the first failing step had no doc at base', ()
 test('classifies missing-guard when a doc existed but no guard would have caught the step', () => {
   const run = { passed: false, steps: [step('edit', false, true, false)] };
   assert.deepEqual(classifyFailedRun(run), { class: 'missing-guard', first_divergence: 'edit' });
+});
+
+test('routes a missing-doc result to an actionable tracked issue body', () => {
+  const id = 'zf-1049-lesson-enforcers';
+  const issue = buildFreshAgentGapIssue({ id, source_url: 'https://github.com/ZenoWangzy/zenoforge/issues/1049',
+    prompt: 'Keep the lesson-enforcer index aligned.', remediation: {
+      doc: { path: 'docs/enforced-rules.md', line: 'The index covers every registry incident.' },
+      guard: 'Reject stale lesson-enforcer indexes.',
+    } }, { stage: 'fresh-agent', caseId: id, run: 1, pass: false, class: 'missing-doc', first_divergence: 'read-doc' });
+  assert.equal(issue.class, 'fresh-agent-zf-1049-lesson-enforcers-missing-doc');
+  assert.equal(issue.title, 'Fresh-agent missing doc: zf-1049-lesson-enforcers');
+  assert.match(issue.body, /First divergence:\n- Run 1: `read-doc`/);
+  assert.match(issue.body, /Doc file: `docs\/enforced-rules\.md`/);
+  assert.match(issue.body, /Line to add: `The index covers every registry incident\.`/);
+  assert.match(issue.body, /https:\/\/github\.com\/ZenoWangzy\/zenoforge\/issues\/1049/);
+});
+
+test('routes a missing-guard result with the rule to enforce', () => {
+  const id = 'zf-1050-merge-boundary';
+  const issue = buildFreshAgentGapIssue({ id, prompt: 'Keep the issue loop out of the merge queue.', remediation: {
+    doc: { path: 'docs/architecture.md', line: 'The issue loop does not own the merge queue.' },
+    guard: 'Reject unlisted direct pull-request merge calls from the issue loop.',
+  } }, { stage: 'fresh-agent', caseId: id, run: 1, pass: false, class: 'missing-guard', first_divergence: 'reject-unlisted-merge' });
+  assert.equal(issue.class, 'fresh-agent-zf-1050-merge-boundary-missing-guard');
+  assert.equal(issue.title, 'Fresh-agent missing guard: zf-1050-merge-boundary');
+  assert.match(issue.body, /Rule to enforce: `Reject unlisted direct pull-request merge calls from the issue loop\.`/);
+});
+
+test('groups repeated gap results into one routed issue body', () => {
+  const c = { id: 'zf-1049-lesson-enforcers', prompt: 'Keep the index current.', remediation: {
+    doc: { path: 'docs/enforced-rules.md', line: 'The index covers every registry incident.' },
+    guard: 'Reject stale lesson-enforcer indexes.',
+  } };
+  const rows = [1, 2].map((run) => ({ stage: 'fresh-agent', caseId: c.id, run, pass: false,
+    class: 'missing-doc', first_divergence: 'read-doc' }));
+  const [issue] = buildFreshAgentGapIssues(rows, [c]);
+  assert.equal(issue.class, 'fresh-agent-zf-1049-lesson-enforcers-missing-doc');
+  assert.match(issue.body, /Run 1: `read-doc`[\s\S]*Run 2: `read-doc`/);
 });
 
 test('classifies agent-error when doc and guard were both available', () => {

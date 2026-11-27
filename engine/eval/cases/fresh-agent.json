@@ -8,7 +8,11 @@
       "fix_sha": "b30d3f7479520e1d24def978aa88b07a9617d6d4",
       "prompt": "Zenoforge issue #1049: Make the generated lesson-enforcer index cover every incident in the incident-guard registry. Each incident should be listed as enforced or named as lacking an enforcer, and a check should fail when the generated file is stale. Keep the docs and focused-test mapping aligned.",
       "hidden_check": "grep -Fq 'lists every registry incident and names one with no rules row as lacking an enforcer' engine/generate-lesson-enforcers.test.mjs && grep -Fq 'lessons/enforcers.json is what the generator writes from the registry and RULES.md' engine/generate-lesson-enforcers.test.mjs && node --test --test-name-pattern='lists every registry incident|lessons/enforcers.json is what the generator writes' engine/generate-lesson-enforcers.test.mjs",
-      "expected_divergence": "complete-incident-coverage"
+      "expected_divergence": "complete-incident-coverage",
+      "remediation": {
+        "doc": { "path": "docs/enforced-rules.md", "line": "The lesson-enforcer index covers every incident in the registry and fails when stale." },
+        "guard": "Reject a lesson-enforcer index that omits a registry incident or differs from the generated output."
+      }
     },
     {
       "id": "zf-1050-merge-boundary",
@@ -17,7 +21,11 @@
       "fix_sha": "328384723396a361ddb26c764a7706223a8b1dde",
       "prompt": "Zenoforge issue #1050: Enforce the boundary that the issue loop does not own the merge queue. Keep the existing hand-owned factory-PR merge as one named exception, make a source check reject other direct PR-merge calls, and describe the enforced rule in the architecture and enforcement docs.",
       "hidden_check": "bash engine/issue-loop-merge-boundary.test.sh",
-      "expected_divergence": "reject-unlisted-merge"
+      "expected_divergence": "reject-unlisted-merge",
+      "remediation": {
+        "doc": { "path": "docs/architecture.md", "line": "The issue loop does not own the merge queue; the factory PR merge is the only named exception." },
+        "guard": "Reject unlisted direct pull-request merge calls from the issue loop."
+      }
     },
     {
       "id": "zf-1051-shortcut-ratchet",
@@ -26,7 +34,11 @@
       "fix_sha": "00e805a175cbc2fc5c81d4f1f2971ecc497d8fff",
       "prompt": "Zenoforge issue #1051: Add a per-file ratchet for deliberate shortcut markers in non-test engine and tools code. Counts may shrink but cannot grow unless the baseline is explicitly raised. Refusals should name the file and both corrective options; add the test and enforcement row.",
       "hidden_check": "bash engine/shortcut-ratchet.test.sh",
-      "expected_divergence": "refuse-unbaselined-shortcut"
+      "expected_divergence": "refuse-unbaselined-shortcut",
+      "remediation": {
+        "doc": { "path": "docs/enforced-rules.md", "line": "Shortcut markers in non-test engine and tools code stay at or below the per-file baseline." },
+        "guard": "Reject each non-test engine or tools file whose shortcut marker count exceeds its checked-in baseline."
+      }
     },
     {
       "id": "zf-1037-eval-plugins-off",
@@ -35,7 +47,11 @@
       "fix_sha": "5ccfecea8c3a642f2801c533f3a25de6cbd4b089",
       "prompt": "Zenoforge issue #1037: Make every Codex launch in the eval stage call pass the shared plugins-off arguments, so stage runs do not download the plugin catalog. Follow the engine's existing launch pattern and keep its static launch check green.",
       "hidden_check": "bash engine/codex-plugins-off-lint.test.sh && grep -q CODEX_PLUGINS_OFF_ARGS engine/eval/stage-call.sh",
-      "expected_divergence": "disable-eval-plugins"
+      "expected_divergence": "disable-eval-plugins",
+      "remediation": {
+        "doc": { "path": "engine/eval/README.md", "line": "Eval Codex launches use the shared plugins-off arguments so worker startup does not fetch the plugin catalog." },
+        "guard": "Reject an eval Codex launch that omits CODEX_PLUGINS_OFF_ARGS."
+      }
     },
     {
       "id": "zf-1047-review-verification",
@@ -44,7 +60,11 @@
       "fix_sha": "cb7e4a1de237e260b3d2a243a884da69801af1dc",
       "prompt": "Zenoforge issue #1047: Carry the reviewed head's verification result into the review prompt. State the command and exit code, include bounded evidence for a pass, and name RED or skipped explicitly. A finding only a test can prove stays unverified with its rerun command and evidence, and cannot pass READY. Update the related engine docs and checks.",
       "hidden_check": "grep -Fq 'Verification evidence for head $sha: passed' engine/mac-autopilot/verification-self-check.test.sh && grep -Fq 'Command output and evidence excerpts: not available' engine/mac-autopilot/verification-self-check.test.sh && grep -Fq 'Verification evidence for head $sha: RED' engine/mac-autopilot/verification-self-check.test.sh && grep -Fq 'Verification evidence for head $sha: SKIPPED' engine/mac-autopilot/verification-self-check.test.sh && bash engine/mac-autopilot/verification-self-check.test.sh",
-      "expected_divergence": "carry-verification-evidence"
+      "expected_divergence": "carry-verification-evidence",
+      "remediation": {
+        "doc": { "path": "docs/architecture.md", "line": "Reviews receive the verified result for the reviewed head, including command, exit code and bounded evidence; unverified findings cannot pass READY." },
+        "guard": "Prevent READY when a finding requires a test but no passing verification evidence exists for the reviewed head."
+      }
     }
   ]
 }

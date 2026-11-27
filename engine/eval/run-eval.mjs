@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, statSync, readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -8,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
 import { gradeTriage, gradeAdvisor, gradeReview, gradeSupervisor, gradeTests, gradeImplementDecision, validateStageOutput } from './graders.mjs';
-import { classifyFailedRun, validateFreshCase } from './fresh-agent.mjs';
+import { buildFreshAgentGapIssues, classifyFailedRun, validateFreshCase } from './fresh-agent.mjs';
 import { compareResults, formatComparison, compareArms, formatArmComparison, summarizeSupervisor } from './compare.mjs';
 import { zfConfigFile } from '../pack-dir.mjs';
 
@@ -599,6 +600,38 @@ export async function runPool(jobs, concurrency, run) {
     for (let index = next++; index < jobs.length; index = next++) await run(jobs[index]);
   }));
 }
+function githubRepoSlug() {
+  const configured = process.env.ZF_GH_REPO || process.env.ZF_REPO;
+  if (configured) return configured;
+  const remote = git(['remote', 'get-url', 'origin']).trim();
+  const match = remote.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (!match) throw new Error('fresh-agent issue routing needs a GitHub origin or ZF_GH_REPO');
+  return match[1];
+}
+function routeFreshAgentIssues(result, cases, out, resultsPath) {
+  const issues = buildFreshAgentGapIssues(result.results, cases);
+  if (!issues.length) return;
+  const targetRepo = githubRepoSlug();
+  const issueDir = join(out, 'routed-issues');
+  const helper = resolve(process.env.ZF_EVAL_ISSUE_UPSERT ?? join(repo, 'engine/pipeline-issue-upsert.sh'));
+  const routed = result.routedFreshAgentIssues ?? {};
+  mkdirSync(issueDir, { recursive: true });
+  for (const issue of issues) {
+    const signature = createHash('sha256').update(issue.body).digest('hex');
+    if (routed[issue.class] === signature) continue;
+    const bodyFile = join(issueDir, `${issue.class}.md`);
+    writeFileSync(bodyFile, `${issue.body}\n`);
+    const env = { ZF_GH_REPO: targetRepo };
+    for (const key of ['GH_TOKEN', 'GITHUB_TOKEN']) if (process.env[key]) env[key] = process.env[key];
+    const call = command(['bash', helper, '--class', issue.class, '--title', issue.title,
+      '--body-file', bodyFile, '--lane', 'pipeline-system', '--repo', targetRepo], repo, { env });
+    if (call.status !== 0) throw new Error(`fresh-agent issue routing failed for ${issue.class}: ${call.stderr || call.stdout}`);
+    routed[issue.class] = signature;
+    result.routedFreshAgentIssues = routed;
+    writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n');
+    if (call.stdout.trim()) console.log(call.stdout.trim());
+  }
+}
 export async function main(args = process.argv.slice(2)) {
   const { values, positionals } = parseEvalArgs(args);
   const labelPath = (label) => {
@@ -672,6 +705,9 @@ export async function main(args = process.argv.slice(2)) {
   const supervisor = summarizeSupervisor(result.results);
   if (supervisor.total) result.supervisor = supervisor;
   writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n');
+  if (!values['verify-gold'] && selected.some(({ stage }) => stage === 'fresh-agent')) {
+    routeFreshAgentIssues(result, selected.filter(({ stage }) => stage === 'fresh-agent').map(({ c }) => c), out, resultsPath);
+  }
   console.log(`results: ${resultsPath}`);
 }
 // In a worker, process.argv[1] is this file's path, so the CLI guard below needs isMainThread.
