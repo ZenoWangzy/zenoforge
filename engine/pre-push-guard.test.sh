@@ -13,21 +13,29 @@ git init -q --initial-branch=main "$repo"
 git -C "$repo" config user.name 'Push Guard Test'
 git -C "$repo" config user.email 'push-guard@example.test'
 mkdir -p "$repo/engine/ci"
+cp "$root/engine/land-admit.sh" "$repo/engine/land-admit.sh"
 cp "$root/engine/ci-repair-receipt.mjs" "$repo/engine/ci-repair-receipt.mjs"
 cp "$root/engine/ci/pr-required-aggregate.mjs" "$repo/engine/ci/pr-required-aggregate.mjs"
-printf 'base\n' > "$repo/file.txt"
-git -C "$repo" add file.txt engine/ci-repair-receipt.mjs engine/ci/pr-required-aggregate.mjs
+printf 'base\n' > "$repo/file.js"
+git -C "$repo" add file.js engine/land-admit.sh engine/ci-repair-receipt.mjs engine/ci/pr-required-aggregate.mjs
 git -C "$repo" commit -qm base
 base_sha="$(git -C "$repo" rev-parse HEAD)"
 git init -q --bare --initial-branch=main "$remote"
 git -C "$repo" remote add origin "$remote"
 git -C "$repo" push -q origin main
+git -C "$repo" fetch -q origin main
 git -C "$repo" checkout -qb agent/issue-123
-printf 'local\n' >> "$repo/file.txt"
+printf 'local\n' >> "$repo/file.js"
 git -C "$repo" commit -qam local
 local_sha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout -qb agent/issue-docs "$base_sha"
+printf 'docs\n' > "$repo/README.md"
+git -C "$repo" add README.md
+git -C "$repo" -c user.name='Push Guard Test' -c user.email=push-guard@example.test commit -qm docs
+docs_sha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout -q agent/issue-123
 git -C "$repo" checkout -qb remote-fixture "$base_sha"
-printf 'remote\n' >> "$repo/file.txt"
+printf 'remote\n' >> "$repo/file.js"
 git -C "$repo" commit -qam remote
 diverged_sha="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" push -q origin "$diverged_sha:refs/heads/agent/issue-123"
@@ -71,11 +79,61 @@ set_remote_head() {
 }
 
 run_guard() {
-  local remote_sha="$1" status=0
-  (cd "$repo" && printf 'refs/heads/agent/issue-123 %s refs/heads/agent/issue-123 %s\n' "$local_sha" "$remote_sha" \
+  local remote_sha="$1" branch="${2:-agent/issue-123}" pushed_sha="${3:-$local_sha}" status=0
+  (cd "$repo" && printf 'refs/heads/%s %s refs/heads/%s %s\n' "$branch" "$pushed_sha" "$branch" "$remote_sha" \
     | "$guard" origin "$remote" > "$tmp/stdout" 2> "$tmp/stderr") || status=$?
   return "$status"
 }
+
+write_green_test_receipt() {
+  local target="$1" common sha
+  common="$(git -C "$target" rev-parse --git-common-dir)"
+  [[ "$common" == /* ]] || common="$target/$common"
+  sha="$(git -C "$target" rev-parse HEAD)"
+  mkdir -p "$common/zf-test-receipts"
+  printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$sha"
+}
+
+common="$(git -C "$repo" rev-parse --git-common-dir)"
+[[ "$common" == /* ]] || common="$repo/$common"
+receipt="$common/zf-test-receipts/$local_sha"
+mkdir -p "$(dirname -- "$receipt")"
+set_remote_head "$base_sha"
+export PUSH_GUARD_MERGEABLE=CONFLICTING PUSH_GUARD_CHECKS="$pass_checks" PUSH_GUARD_CHECK_EXIT=0
+printf '0\tbash engine/example.test.sh\n1\tbash engine/example.test.sh\n' > "$receipt"
+if run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - failed local receipt is refused' >&2; exit 1; fi
+grep -Fq 'is not green' "$tmp/stderr"
+echo 'ok - failed local receipt is refused'
+rm -f -- "$receipt"
+if run_guard "$base_sha"; then echo 'not ok - missing local receipt is refused' >&2; exit 1; fi
+grep -Fq 'no test receipt' "$tmp/stderr"
+echo 'ok - missing local receipt is refused'
+printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$base_sha"
+if run_guard "$base_sha"; then echo 'not ok - receipt for another SHA is refused' >&2; exit 1; fi
+grep -Fq 'no test receipt' "$tmp/stderr"
+echo 'ok - receipt for another SHA is refused'
+rm -f -- "$common/zf-test-receipts/$base_sha"
+printf '0\tbash engine/example.test.sh\n' > "$receipt"
+if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - green local receipt' >&2; exit 1; fi
+echo 'ok - green local receipt allows push'
+printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$diverged_sha"
+if run_guard "$base_sha" agent/issue-other "$diverged_sha"; then echo 'not ok - pushed ref must match current HEAD' >&2; exit 1; fi
+grep -Fq 'does not match current HEAD' "$tmp/stderr"
+echo 'ok - receipt for current HEAD cannot authorize a different pushed ref'
+rm -f -- "$common/zf-test-receipts/$diverged_sha"
+if ! run_guard "$base_sha" agent/issue-docs "$docs_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - documentation-only push exemption' >&2; exit 1; fi
+echo 'ok - documentation-only push remains exempt'
+rm -f -- "$receipt"
+git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge.git
+if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - Zenoforge engine push exemption' >&2; exit 1; fi
+echo 'ok - Zenoforge engine push remains exempt'
+git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge-vecta-pack.git
+if run_guard "$base_sha"; then echo 'not ok - Vecta pack still requires a receipt' >&2; exit 1; fi
+grep -Fq 'no test receipt' "$tmp/stderr"
+echo 'ok - Zenoforge Vecta pack still requires a receipt'
+git -C "$repo" remote set-url origin "$remote"
+write_green_test_receipt "$repo"
+: > "$ZF_PUSH_GUARD_LOG"
 
 set_remote_head "$diverged_sha"
 export PUSH_GUARD_MERGEABLE=MERGEABLE PUSH_GUARD_CHECKS="$pass_checks" PUSH_GUARD_CHECK_EXIT=0
@@ -242,6 +300,7 @@ git -C "$size_repo" config user.email 'push-guard-size@example.test'
 cp "$guard" "$size_repo/engine/pre-push-guard.sh"
 cp "$root/engine/install-pre-push-guard.sh" "$size_repo/engine/install-pre-push-guard.sh"
 cp "$root/engine/mac-autopilot/scheduler.d/size-admission.sh" "$size_repo/engine/mac-autopilot/scheduler.d/size-admission.sh"
+cp "$root/engine/land-admit.sh" "$size_repo/engine/land-admit.sh"
 printf 'base\n' > "$size_repo/base.txt"
 git -C "$size_repo" add .
 git -C "$size_repo" commit -qm base
@@ -267,6 +326,7 @@ mkdir -p "$size_worker/src"
 awk 'BEGIN { for (i = 0; i < 801; i++) print "line" }' > "$size_worker/src/change.ts"
 git -C "$size_worker" add src/change.ts
 git -C "$size_worker" commit -qm oversized
+write_green_test_receipt "$size_worker"
 size_count="$(changed_lines_in_checkout "$size_worker" main)"
 [[ "$size_count" == 801 ]] || { echo "not ok - size admission counted $size_count lines instead of 801" >&2; exit 1; }
 if size_output="$(git -C "$size_worker" push origin agent/issue-801 2>&1)"; then
@@ -280,6 +340,7 @@ echo 'ok - worker push refuses 801 changed lines, reports SPLIT, and uses change
 awk 'BEGIN { for (i = 0; i < 800; i++) print "line" }' > "$size_worker/src/change.ts"
 git -C "$size_worker" add src/change.ts
 git -C "$size_worker" commit -qm 'trim to admitted size'
+write_green_test_receipt "$size_worker"
 if ! git -C "$size_worker" push -q origin agent/issue-801; then
   echo 'not ok - 800-line worker push was refused' >&2
   exit 1
@@ -291,6 +352,7 @@ mkdir -p "$size_waived_worker/src"
 awk 'BEGIN { for (i = 0; i < 801; i++) print "line" }' > "$size_waived_worker/src/change.ts"
 git -C "$size_waived_worker" add src/change.ts
 git -C "$size_waived_worker" commit -qm 'waived size'
+write_green_test_receipt "$size_waived_worker"
 if ! git -C "$size_waived_worker" push -q origin agent/issue-802; then
   echo 'not ok - waived 801-line worker push was refused' >&2
   exit 1
