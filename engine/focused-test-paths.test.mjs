@@ -108,6 +108,23 @@ test('maps shared merge-policy changes to aggregate-check consumer suites', () =
   }
 });
 
+test('maps release helper modules to their focused suites', () => {
+  const suites = new Set([
+    'engine/release/runner.test.sh',
+    'engine/release/drift-filter.test.sh',
+    'engine/release/helpers.test.sh',
+  ]);
+  for (const [source, expected] of [
+    ['engine/release/runner.sh', ['engine/release/runner.test.sh', 'engine/release/drift-filter.test.sh', 'engine/release/helpers.test.sh']],
+    ['engine/release/drift-filter.sh', ['engine/release/drift-filter.test.sh']],
+    ['engine/release/rollback.sh', ['engine/release/helpers.test.sh']],
+    ['engine/release/loss-probe.sh', ['engine/release/helpers.test.sh']],
+    ['engine/release/post-deploy.sh', ['engine/release/helpers.test.sh']],
+  ]) {
+    assert.deepEqual([...focusedTestPaths([source], suites)].sort(), [...expected].sort(), source);
+  }
+});
+
 test('maps target config data to its reader suites', () => {
   for (const [source, suites] of [
     ['.zenoforge/model-policy.default.json', ['engine/lib.test.sh', 'engine/apply-model-policy-default-view.test.sh']],

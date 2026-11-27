@@ -1,0 +1,19 @@
+{
+  "engine/release/runner.sh": [
+    "engine/release/runner.test.sh",
+    "engine/release/drift-filter.test.sh",
+    "engine/release/helpers.test.sh"
+  ],
+  "engine/release/drift-filter.sh": [
+    "engine/release/drift-filter.test.sh"
+  ],
+  "engine/release/loss-probe.sh": [
+    "engine/release/helpers.test.sh"
+  ],
+  "engine/release/post-deploy.sh": [
+    "engine/release/helpers.test.sh"
+  ],
+  "engine/release/rollback.sh": [
+    "engine/release/helpers.test.sh"
+  ]
+}
