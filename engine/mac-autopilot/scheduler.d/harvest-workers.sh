@@ -366,7 +366,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
               fi ;;
             NOT_READY)
               if findings_block_of "$rep" >/dev/null 2>&1; then
-                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
+                set_unit "$unit" "$(hist review-request-changes "$wsha") | $reviewed | .approved_sha=null | .stage=\"repair-pending\"$(review_findings_update "$rep" "$report" "$w")$(review_findings_hint_update "$rep") | .author_dispositions_pending=true"
                 review_class_recurrence_record "$rep" "$unit"
                 cancel_unit_runs "$unit" "review requested changes; head will change"
               else
@@ -374,7 +374,7 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
                 # 照记 block=missing（node_health 看得见），但绝不带着零发现进修复：同 head 重问一次
                 # （review-pending + history 标记，派发时附契约要点），再失败按评审失败转 supervisor，
                 # 不把「无发现」当成一次有效的打回结论。
-                set_unit "$unit" "$reviewed | .approved_sha=null$(review_findings_update "$rep" "$report")"
+                set_unit "$unit" "$reviewed | .approved_sha=null$(review_findings_update "$rep" "$report" "$w")"
                 if [[ "$(unit_retries "$unit" review-findings-missing)" == 0 ]]; then
                   set_unit "$unit" "$(hist review-findings-missing "$report") | .reviewed_sha=null | .reviewed_pr_head=null | .stage=\"review-pending\""
                   say "review-findings-missing unit=$unit report=$report: re-asking once with the findings contract"
@@ -476,7 +476,15 @@ harvest_workers() { # [local-only] [pid:unit]: fast refill completes direct-main
             *) # 冲突、预检失败、落地卡死：改动本身要修，交给 repair 并附落地日志
                set_unit "$unit" "$(hist land-failed "$land_result") | .approved_sha=null | .land_log=$(js "${report}.land.log") | .repair_hint=$(js "直落 main 失败：${land_result}。落地日志 $SUP/${report}.land.log；与 main 冲突就 merge origin/main 解决；检查失败或卡死就修复根因。") | .stage=\"repair-pending\"" ;;
           esac ;;
-        implement|triage) harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only" ;;
+        implement|triage)
+          harvest_implement_worker_result "$unit" "$wtype" "$rep" "$report" "$local_only"
+          if [[ "$wtype" == implement && "$(unit_field "$unit" '.stage // empty')" == review-pending &&
+            "$(jqf -r '.report // empty' <<<"$w")" == "$report" ]]; then
+            local prompt_update
+            prompt_update="$(unit_prompt_update "$(harvest_unit_snapshot "$unit")" "$w")"
+            [[ "$prompt_update" == '.' ]] || set_unit "$unit" "$prompt_update"
+          fi
+          ;;
       esac
       fi
       [[ "$wtype" != implement || "$report_only_requeue_handled" == true ]] || incident_report_pre_review "$w" "$report" "$rep" "$session_id" || :

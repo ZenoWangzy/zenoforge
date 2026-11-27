@@ -15,7 +15,12 @@ import roi_rollup
 BLOCKING_VERDICTS = frozenset(("review-request-changes", "review-block"))
 REVIEW_VERDICTS = BLOCKING_VERDICTS | {"review-approve"}
 REPAIR_STAGES = frozenset(("repair-delivered", "repair-no-push"))
+REVIEW_DISPOSITIONS = frozenset(("fixed", "disproved", "intentional", "out-of-scope"))
 SHA_RE = re.compile(r"[0-9a-f]{40}")
+PROMPT_VERSION_RE = re.compile(r"[0-9a-f]{64}")
+PROMPT_STAGES = {
+    "engine/mac-autopilot/scheduler.d/dispatch-queue.sh": "implement",
+}
 
 
 def _history_stages(unit):
@@ -25,10 +30,49 @@ def _history_stages(unit):
     return [entry.get("stage") for entry in history if isinstance(entry, dict)]
 
 
+def _disproved_findings(unit):
+    reviews = unit.get("review_findings")
+    if not isinstance(reviews, list):
+        return []
+    groups = {}
+    for review in reviews:
+        if not isinstance(review, dict) or review.get("disposition_block") != "ok":
+            continue
+        prompt = review.get("prompt")
+        version = review.get("prompt_version")
+        if prompt != "engine/prompts/review-contract.md" or not isinstance(version, str) or not PROMPT_VERSION_RE.fullmatch(version):
+            continue
+        dispositions = review.get("dispositions")
+        if not isinstance(dispositions, list) or not dispositions:
+            continue
+        if any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or not isinstance(item.get("disposition"), str)
+            or item["disposition"] not in REVIEW_DISPOSITIONS
+            for item in dispositions
+        ):
+            continue
+        ids = [item["id"] for item in dispositions]
+        if len(ids) != len(set(ids)):
+            continue
+        group = groups.setdefault((prompt, version), {"prompt": prompt, "prompt_version": version, "disproved": 0, "total": 0})
+        group["total"] += len(dispositions)
+        group["disproved"] += sum(item["disposition"] == "disproved" for item in dispositions)
+    return [groups[key] for key in sorted(groups)]
+
+
 def unit_signals(unit, reverted):
     """One unit dict and the reverted-SHA map (None when git could not be read) -> stage, prompt and signals."""
     stages = _history_stages(unit)
-    signals = {"overturned": None, "repair": None, "rereview": None, "reverted": None}
+    findings = _disproved_findings(unit)
+    signals = {
+        "overturned": None,
+        "repair": None,
+        "rereview": None,
+        "reverted": None,
+    }
     if stages is not None:
         # A supervisor approve while the last review verdict still blocks overrules that verdict.
         blocked = overturned = repaired = rereviewed = False
@@ -49,7 +93,23 @@ def unit_signals(unit, reverted):
         signals["reverted"] = True
     elif isinstance(sha, str) and SHA_RE.fullmatch(sha) and reverted is not None:
         signals["reverted"] = sha in reverted
-    return {"unit": unit.get("id"), "stage": unit.get("stage"), "prompt": unit.get("prompt"), "signals": signals}
+    prompt = unit.get("prompt")
+    prompt_stage = unit.get("prompt_stage")
+    if prompt not in PROMPT_STAGES or prompt_stage != PROMPT_STAGES.get(prompt):
+        prompt = None
+        prompt_stage = None
+    prompt_version = unit.get("prompt_version")
+    if prompt is None or not isinstance(prompt_version, str) or not PROMPT_VERSION_RE.fullmatch(prompt_version):
+        prompt_version = None
+    return {
+        "unit": unit.get("id"),
+        "stage": unit.get("stage"),
+        "prompt": prompt,
+        "prompt_stage": prompt_stage,
+        "prompt_version": prompt_version,
+        "signals": signals,
+        "disproved_findings": findings,
+    }
 
 
 def main(argv=None):

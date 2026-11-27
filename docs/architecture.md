@@ -259,7 +259,7 @@ A change enters the hotfix lane when the issue has the `hotfix` label, or the br
 - **Bell.** `bell.sh` runs every 120 seconds and includes a stale-dashboard check.
 - **Dashboard.** `gen_dashboard.py` writes the dashboard data. `dashboard.html` is a static page in the runtime directory.
 - **Reports.** `health_report.py` and `waste_report.py` are read-only summaries of the pipeline's records, including token and CI-repair waste.
-- **Prompt observer.** `zenoforge-prompt-observer-report.timer` runs daily at 01:05 UTC. It reads the unit ledger and writes `$AGENT_HOME/night/prompt-observer-report.jsonl`, with one per-stage and per-prompt row containing sample size, unit IDs, and a score or `insufficient-data` status.
+- **Prompt observer.** `zenoforge-prompt-observer-report.timer` runs daily at 01:05 UTC. It reads the unit ledger and writes `$AGENT_HOME/night/prompt-observer-report.jsonl`, with per-stage and per-prompt rows containing sample size, unit IDs, and a score or `insufficient-data` status. Review rows also report the share of findings ending `disproved`, grouped by the review prompt content version.
 - **Cost.** `worker_cost.py` reports spend per unit, ticket, phase, and backend. `usage_reader.py` is the one reader for token use from session logs. `ci_spend.py` reports CI runner minutes and the share that could not change a verdict, and writes `ci-spend.json` for `node_health`. `config.template.json` holds a price table and a `daily_token_budget`. The file's own note says the prices are estimates based on public list prices, not a bill.
 
 ## 9. Lessons and rules

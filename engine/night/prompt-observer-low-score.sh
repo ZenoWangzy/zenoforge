@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Consume one prompt-observer JSONL report and upsert issues for persistent low scores.
-# Each report row has stage, prompt, sample_size, score or status=insufficient-data, and unit_ids.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -33,8 +31,12 @@ jq -e -s '
     type == "object"
     and (.stage | type == "string" and test("^[a-z0-9][a-z0-9-]{0,39}$"))
     and (.prompt | type == "string"
-      and test("^engine/prompts/[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$")
-      and (split("/") | all(.[]; . != "" and . != "." and . != "..")))
+      and ((. == "engine/mac-autopilot/scheduler.d/dispatch-queue.sh")
+        or (test("^engine/prompts/[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$")
+          and (split("/") | all(.[]; . != "" and . != "." and . != "..")))))
+    and ((has("prompt_stage") | not) or (.prompt_stage | type == "string" and test("^[a-z0-9][a-z0-9-]{0,39}$")))
+    and ((.prompt != "engine/mac-autopilot/scheduler.d/dispatch-queue.sh") or .prompt_stage == "implement")
+    and ((has("prompt_version") | not) or (.prompt_version | type == "string" and test("^[0-9a-f]{64}$")))
     and (.sample_size | type == "number" and . >= 0 and floor == .)
     and (.unit_ids | type == "array"
       and all(.[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")))
@@ -45,7 +47,7 @@ jq -e -s '
         and (.unit_ids | length > 0))
     )
   )
-  and ([.[] | [.stage, .prompt]] as $keys | ($keys | unique | length) == ($keys | length))
+  and ([.[] | [.stage, .prompt, (.prompt_version // "")]] as $keys | ($keys | unique | length) == ($keys | length))
 ' "$report" >/dev/null || {
   echo 'prompt-observer-low-score: invalid report; no issue created' >&2
   exit 65
@@ -62,7 +64,8 @@ if [[ -e "$state_file" ]]; then
     type == "object" and .version == 1
     and (.entries | type == "array" and all(.[];
       (.stage | type == "string" and test("^[a-z0-9][a-z0-9-]{0,39}$"))
-      and (.prompt | type == "string" and startswith("engine/prompts/"))
+      and (.prompt | type == "string" and (. == "engine/mac-autopilot/scheduler.d/dispatch-queue.sh" or startswith("engine/prompts/")))
+      and ((has("prompt_version") | not) or (.prompt_version | type == "string" and test("^[0-9a-f]{64}$")))
       and (.streak | type == "number" and floor == . and . > 0)
     ))
   ' "$state_file" >/dev/null || {
@@ -78,13 +81,14 @@ triggered=()
 while IFS= read -r row; do
   result="$(jq -c --argjson row "$row" --argjson threshold "$threshold" '
     . as $state
-    | ([$state.entries[] | select(.stage == $row.stage and .prompt == $row.prompt) | .streak][0] // 0) as $old
+    | ($row.prompt_version // "") as $version
+    | ([$state.entries[] | select(.stage == $row.stage and .prompt == $row.prompt and (.prompt_version // "") == $version) | .streak][0] // 0) as $old
     | (if ($row.status // "scored") == "insufficient-data" or $row.score >= $threshold then 0 else $old + 1 end) as $streak
     | {
         state: {
           version: 1,
-          entries: ([$state.entries[] | select(.stage != $row.stage or .prompt != $row.prompt)]
-            + (if $streak > 0 then [{stage:$row.stage,prompt:$row.prompt,streak:$streak}] else [] end))
+          entries: ([$state.entries[] | select(.stage != $row.stage or .prompt != $row.prompt or (.prompt_version // "") != $version)]
+            + (if $streak > 0 then [{stage:$row.stage,prompt:$row.prompt,streak:$streak} + (if $version == "" then {} else {prompt_version:$version} end)] else [] end))
         },
         streak: $streak
       }
@@ -118,15 +122,24 @@ if ((${#triggered[@]})); then
   for row in "${triggered[@]}"; do
     prompt="$(jq -r '.prompt' <<< "$row")"
     stage="$(jq -r '.stage' <<< "$row")"
+    prompt_stage="$(jq -r '.prompt_stage // empty' <<< "$row")"
+    prompt_version="$(jq -r '.prompt_version // empty' <<< "$row")"
     score="$(jq -r '.score' <<< "$row")"
-    unit_hash="$(printf '%s\n%s' "$stage" "$prompt" | sha256sum | cut -c1-24)"
+    if [[ -n "$prompt_version" ]]; then
+      unit_hash="$(printf '%s\n%s\n%s' "$stage" "$prompt" "$prompt_version" | sha256sum | cut -c1-24)"
+    else
+      unit_hash="$(printf '%s\n%s' "$stage" "$prompt" | sha256sum | cut -c1-24)"
+    fi
     class="prompt-low-score-$unit_hash"
     body="$(mktemp)"
     {
       printf 'Prompt path: `%s`\nStage: `%s`\nScore: %s (below threshold %s for at least %s consecutive reports)\n\nEvidence units:\n' \
         "$prompt" "$stage" "$score" "$threshold" "$required"
+      [[ -z "$prompt_stage" ]] || printf 'Prompt stage: `%s`\n' "$prompt_stage"
+      [[ -z "$prompt_version" ]] || printf 'Prompt version: `%s`\n' "$prompt_version"
+      [[ -z "$prompt_version" ]] || printf '\n'
       jq -r '.unit_ids[] | "- `\(.)`"' <<< "$row"
-      printf '\nSuggested change: Revise the prompt instructions to address the repeated low machine-signal score for this stage, then verify the edit through the existing `engine/eval` gate.\n'
+      printf '\nSuggested change: Revise the prompt or prompt builder to address the repeated low machine-signal score for this stage, then verify the edit through the existing `engine/eval` gate.\n'
     } > "$body"
     ZF_REPO="$repo_slug" bash "$upsert" --class "$class" --title "Improve low-scoring prompt: $prompt" \
       --body-file "$body" --lane product --repo "$repo_slug"

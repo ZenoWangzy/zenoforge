@@ -295,17 +295,40 @@ verdict_reask_rule() { # unit-json → prompt 片段
 # 一次打回在 .review_findings 里追加一条：round 是它在 history 里的第几次打回，findings 只含阻断级（P0/P1，
 # 含 resolved 状态，由复发规则排除）；块缺失或畸形记 block=missing（node_health 的 review.findings_missing_pct 数它）。
 # 不追加 history：分类附在已有的打回事件上，顾问仍按最后一条 stage 识别 REQUEST-CHANGES。
-review_findings_update() { # report-path report-name → set_unit 表达式片段（以 " | " 开头）
-  local rec block reason
+review_findings_update() {
+  local rec block reason prompt_version worker
+  worker="${3-}"
+  [[ -n "$worker" ]] || worker='{}'
+  prompt_version="$(jqf -r --arg report "$2" 'if (.type == "review" or .type == "rereview") and .report == $report and (.prompt_version | type == "string" and test("^[0-9a-f]{64}$")) then .prompt_version else empty end' <<<"$worker")"
   if block="$(findings_block_of "$1")"; then
     rec="$(jq -c '{block:"ok", findings:[.findings[] | select(.severity=="P0" or .severity=="P1")], all_findings:.findings, dispositions:[], dropped, dropped_findings}' <<<"$block")"
   else
     rec='{"block":"missing","findings":[],"dispositions":[]}'
   fi
+  if [[ -n "$prompt_version" ]]; then
+    rec="$(jqf --arg version "$prompt_version" '. + {prompt:"engine/prompts/review-contract.md",prompt_version:$version}' <<<"$rec")"
+  fi
   reason="$(jq -r '([.findings[0].rule?, .findings[0].severity?] | map(select(type=="string" and length>0)) | first // "")[:48]' <<<"$rec")"
   printf ' | .review_findings = ((.review_findings // []) + [{round:((.history // []) | map(select(.stage=="review-request-changes")) | length), at:%s, report:%s} + %s])' \
     "$(js "$STAMP")" "$(js "$2")" "$rec"
   if [[ -n "$reason" ]]; then printf ' | .history[-1].reason=%s' "$(js "$reason")"; fi
+}
+
+unit_prompt_update() {
+  local unit="$1" worker="$2" type prompt stage version expected
+  type="$(jqf -r '.type // empty' <<<"$worker")"
+  prompt="$(jqf -r '.prompt // empty' <<<"$worker")"
+  stage="$(jqf -r '.prompt_stage // empty' <<<"$worker")"
+  version="$(jqf -r '.prompt_version // empty' <<<"$worker")"
+  case "$type" in
+    implement) expected="engine/mac-autopilot/scheduler.d/dispatch-queue.sh"; [[ "$stage" == implement ]] || { printf '.'; return 0; } ;;
+    *) printf '.'; return 0 ;;
+  esac
+  [[ "$prompt" == "$expected" && "$version" =~ ^[0-9a-f]{64}$ ]] || { printf '.'; return 0; }
+  jqf -e '.stage == "review-pending"' <<<"$unit" >/dev/null || { printf '.'; return 0; }
+  if [[ "$type" == implement ]] \
+    && jqf -e '.prompt_stage == "implement" and (.prompt // "") != ""' <<<"$unit" >/dev/null; then printf '.'; return 0; fi
+  printf '.prompt=%s | .prompt_stage=%s | .prompt_version=%s' "$(js "$prompt")" "$(js "$stage")" "$(js "$version")"
 }
 
 # 同一发现类别的复现计数（只记 NOT_READY 的阻断级发现；合成门禁报告不记）。失败只记日志，下一次评审重试。

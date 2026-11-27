@@ -49,6 +49,7 @@ if report_path.resolve() in ledger_paths:
 repo = os.environ.get("ZF_REPO_DIR") or str(night_dir.parent.parent)
 reverted = roi_rollup._reverted_shas(repo)
 groups = {}
+finding_groups = {}
 threshold = int(sample_rate * (1 << 256))
 for unit in ledger_history.load_units(runtime):
     unit_id = unit.get("id")
@@ -58,10 +59,16 @@ for unit in ledger_history.load_units(runtime):
     if int.from_bytes(hashlib.sha256(unit_id.encode()).digest(), "big") >= threshold:
         continue
     result = unit_signals(unit, reverted)
-    stage, prompt = result.get("stage"), result.get("prompt")
-    if (stage is not None and not isinstance(stage, str)) or (prompt is not None and not isinstance(prompt, str)):
+    for finding_group in result.get("disproved_findings", []):
+        key = (finding_group["prompt"], finding_group["prompt_version"])
+        group = finding_groups.setdefault(key, {"disproved": 0, "total": 0, "unit_ids": set()})
+        group["disproved"] += finding_group["disproved"]
+        group["total"] += finding_group["total"]
+        group["unit_ids"].add(unit_id)
+    stage, prompt_stage, prompt, prompt_version = result.get("stage"), result.get("prompt_stage"), result.get("prompt"), result.get("prompt_version")
+    if not isinstance(stage, str) or not isinstance(prompt_stage, str) or not isinstance(prompt, str) or not prompt:
         continue
-    group = groups.setdefault((stage, prompt), {"scores": [], "unit_ids": []})
+    group = groups.setdefault((stage, prompt_stage, prompt, prompt_version), {"scores": [], "unit_ids": []})
     signals = result.get("signals", {}).values()
     known = [signal for signal in signals if signal is not None]
     if known:
@@ -70,14 +77,37 @@ for unit in ledger_history.load_units(runtime):
         group["unit_ids"].append(unit_id)
 
 rows = []
-for (stage, prompt), group in sorted(groups.items(), key=lambda item: (item[0][0] or "", item[0][1] or "")):
-    row = {"stage": stage, "prompt": prompt, "sample_size": len(group["scores"])}
+for (stage, prompt_stage, prompt, prompt_version), group in sorted(groups.items(), key=lambda item: (item[0][0] or "", item[0][1] or "", item[0][2] or "", item[0][3] or "")):
+    row = {"stage": stage, "prompt_stage": prompt_stage, "prompt": prompt, "sample_size": len(group["scores"])}
+    if prompt_version is not None:
+        row["prompt_version"] = prompt_version
     if row["sample_size"] < minimum:
         row["status"] = "insufficient-data"
     else:
         row["score"] = sum(group["scores"]) / row["sample_size"]
     row["unit_ids"] = sorted(group["unit_ids"])
     rows.append(row)
+
+for (prompt, prompt_version), group in sorted(finding_groups.items()):
+    share = group["disproved"] / group["total"]
+    unit_ids = sorted(group["unit_ids"])
+    row = {
+        "stage": "review",
+        "prompt_stage": "review",
+        "prompt": prompt,
+        "prompt_version": prompt_version,
+        "sample_size": len(unit_ids),
+        "disproved_findings": {"disproved": group["disproved"], "total": group["total"]},
+        "disproved_share": share,
+        "unit_ids": unit_ids,
+    }
+    if row["sample_size"] < minimum:
+        row["status"] = "insufficient-data"
+    else:
+        row["score"] = 1 - share
+    rows.append(row)
+
+rows.sort(key=lambda row: (row["stage"], row["prompt"], row.get("prompt_version", "")))
 
 content = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
 report_path.parent.mkdir(parents=True, exist_ok=True)

@@ -103,9 +103,57 @@ start_silent_breaker() { # worker-type
   return "$decide"
 }
 
+implementation_prompt_version() {
+  local worker_docs_version='' project_instructions_version='' product_skills_version='' product_skills_file="${PRODUCT_LANE_SKILLS:-$HERE/product-lane-skills.txt}"
+  local -a sources=(
+    scheduler.sh
+    scheduler.d/dispatch-queue.sh
+    scheduler.d/self-check.sh
+    scheduler.d/evals-arbiter.sh
+    scheduler.d/footprint.sh
+    scheduler.d/footprint-memo.sh
+    scheduler.d/reports.sh
+    scheduler.d/review-rules.sh
+    scheduler.d/worker-command.sh
+    ../lesson-recurrence-ranking.mjs
+  )
+  [[ -z "${IMPLEMENTATION_PROMPT_VERSION:-}" ]] || { printf '%s' "$IMPLEMENTATION_PROMPT_VERSION"; return 0; }
+  [[ -r "${WORKER_DOCS_FILE:-}" ]] && worker_docs_version="$(sha256sum < "$WORKER_DOCS_FILE" | cut -d' ' -f1)"
+  [[ -r "$ROOT/CLAUDE.md" ]] && project_instructions_version="$(sha256sum < "$ROOT/CLAUDE.md" | cut -d' ' -f1)"
+  [[ -r "$product_skills_file" ]] && product_skills_version="$(sha256sum < "$product_skills_file" | cut -d' ' -f1)"
+  IMPLEMENTATION_PROMPT_VERSION="$(
+    {
+      cd -- "$HERE" || exit
+      sha256sum -- "${sources[@]}"
+      printf 'worker-docs %s\nproject-instructions %s\nproduct-skills %s\n' \
+        "$worker_docs_version" "$project_instructions_version" "$product_skills_version"
+    } | sha256sum | cut -d' ' -f1
+  )" || return 1
+  [[ "$IMPLEMENTATION_PROMPT_VERSION" =~ ^[0-9a-f]{64}$ ]] || { IMPLEMENTATION_PROMPT_VERSION=""; return 1; }
+  printf '%s' "$IMPLEMENTATION_PROMPT_VERSION"
+}
+
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason] [worker-context-json]
-  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census dispatch_pr dispatch_body guard_env_word install_guard_path worker_exit_file
+  local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" worker_context="${15:-}" report_only=false expected_session_id="" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census dispatch_pr dispatch_body guard_env_word install_guard_path worker_exit_file worker_prompt="" worker_prompt_stage="" worker_prompt_source="" worker_prompt_version=""
   local -a launcher=() worker_env=() launch_command=()
+  case "$type" in
+    implement|repair)
+      worker_prompt="engine/mac-autopilot/scheduler.d/dispatch-queue.sh"
+      worker_prompt_stage="$type"
+      implementation_prompt_version >/dev/null 2>&1 || :
+      worker_prompt_version="${IMPLEMENTATION_PROMPT_VERSION:-}"
+      ;;
+    review|rereview)
+      worker_prompt="engine/prompts/review-contract.md"
+      worker_prompt_stage=review
+      worker_prompt_source="${REVIEW_CONTRACT_MD:-}"
+      ;;
+    *) worker_prompt_source="" ;;
+  esac
+  if [[ -n "$worker_prompt_source" && -r "$worker_prompt_source" ]]; then
+    if worker_prompt_version="$(sha256sum -- "$worker_prompt_source" 2>/dev/null | cut -d' ' -f1)" \
+      && [[ "$worker_prompt_version" =~ ^[0-9a-f]{64}$ ]]; then :; else worker_prompt_version=""; fi
+  fi
   if [[ -n "$worker_context" ]]; then
     report_only="$(jqf -r '.incident_report_resume // false' <<<"$worker_context")"
     expected_session_id="$(jqf -r '.incident_report_resume_session_id // empty' <<<"$worker_context")"
@@ -239,8 +287,8 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
     return 1
   fi
   if [[ "$type" == implement && "$issue" =~ ^[1-9][0-9]*$ ]] && ! scheduler_mark_canary_after_worker_start "$issue"; then say "dispatch canary mark failed unit=$unit issue=$issue"; fi
-  local w; w="$(jqf -cn --argjson pid "${pid:-0}" --argjson pid_start "$pid_started" --arg unit "$unit" --arg type "$type" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg mode "$CODEX_MODE" --arg session_id "$CODEX_SESSION_ID" --arg sha "$sha" --arg pr_head "$pr_head" --arg workdir "$workdir" --arg model "$model" --arg provider "$provider" --arg effort "$effort" --arg route_reason "$route_reason" --argjson hard_escalation "$hard_escalation" --arg issue "$issue" --arg claim_key "$claim_key" --arg claim_owner "$claim_owner" --argjson usage_start "$CODEX_USAGE_START" \
-    '{pid:$pid,pid_start:$pid_start,unit:$unit,type:$type,log:$log,report:$report,started:$at,mode:$mode,session_id:$session_id,sha:$sha,pr_head:$pr_head,workdir:$workdir,provider:$provider,model:$model,effort:$effort,hard_escalation:$hard_escalation,route_reason:$route_reason,token_usage_start:$usage_start,issue:$issue,claim_key:$claim_key,claim_owner:$claim_owner}')"
+  local w; w="$(jqf -cn --argjson pid "${pid:-0}" --argjson pid_start "$pid_started" --arg unit "$unit" --arg type "$type" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg mode "$CODEX_MODE" --arg session_id "$CODEX_SESSION_ID" --arg sha "$sha" --arg pr_head "$pr_head" --arg workdir "$workdir" --arg model "$model" --arg provider "$provider" --arg effort "$effort" --arg route_reason "$route_reason" --arg prompt "$worker_prompt" --arg prompt_stage "$worker_prompt_stage" --arg prompt_version "$worker_prompt_version" --argjson hard_escalation "$hard_escalation" --arg issue "$issue" --arg claim_key "$claim_key" --arg claim_owner "$claim_owner" --argjson usage_start "$CODEX_USAGE_START" \
+    '{pid:$pid,pid_start:$pid_start,unit:$unit,type:$type,log:$log,report:$report,started:$at,mode:$mode,session_id:$session_id,sha:$sha,pr_head:$pr_head,workdir:$workdir,provider:$provider,model:$model,effort:$effort,hard_escalation:$hard_escalation,route_reason:$route_reason,token_usage_start:$usage_start,issue:$issue,claim_key:$claim_key,claim_owner:$claim_owner} + (if ($prompt_version | test("^[0-9a-f]{64}$")) then {prompt:$prompt,prompt_stage:$prompt_stage,prompt_version:$prompt_version} else {} end)')"
   [[ -z "$worker_context" ]] || w="$(jqf --argjson context "$worker_context" '. + $context' <<<"$w")"
   if [[ ( "${WORKER_STDOUT_REPORT:-0}" == 1 || "$provider" == claude ) && ${#launcher[@]} -gt 0 ]]; then
     w="$(jqf --argjson pgid "$pid" '. + {process_group:$pgid}' <<<"$w")"

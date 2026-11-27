@@ -277,6 +277,54 @@ done
 grep -Fq 'unbounded cost is a finding; name the principle' <<<"$scale_section" \
   || fail 'scale checklist does not require a finding to name the principle'
 
+prompt_version='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+cat >"$tmp/versioned-review.md" <<'EOF'
+```review-findings
+{"findings":[],"dispositions":[]}
+```
+EOF
+worker="$(jq -cn --arg version "$prompt_version" '{type:"review",report:"review-report.md",prompt:"engine/prompts/review-contract.md",prompt_version:$version}')"
+update="$(review_findings_update "$tmp/versioned-review.md" review-report.md "$worker")"
+unit="$(jq -c ". $update" <<<'{"history":[{"stage":"review-request-changes"}],"review_findings":[]}')"
+jq -e --arg version "$prompt_version" '.review_findings[-1].prompt == "engine/prompts/review-contract.md" and
+  .review_findings[-1].prompt_version == $version' <<<"$unit" >/dev/null \
+  || fail 'review prompt version was not persisted with its finding record'
+override_update="$(review_findings_update "$tmp/versioned-review.md" engine-override-gate.md "$worker")"
+override_unit="$(jq -c ". $override_update" <<<'{"history":[{"stage":"review-request-changes"}],"review_findings":[]}')"
+jq -e '(.review_findings[-1] | has("prompt_version") | not) and
+  (.review_findings[-1] | has("prompt") | not)' <<<"$override_unit" >/dev/null \
+  || fail 'synthetic engine-override findings inherited the reviewer prompt version'
+cat >"$tmp/versioned-disposition.md" <<'EOF'
+```review-findings
+{"findings":[],"dispositions":[]}
+```
+EOF
+disposition_update="$(review_dispositions_update "$tmp/versioned-disposition.md" "$unit")"
+unit="$(jq -c ". $disposition_update" <<<"$unit")"
+jq -e --arg version "$prompt_version" '.review_findings[-1].disposition_block == "ok" and
+  .review_findings[-1].prompt_version == $version' <<<"$unit" >/dev/null \
+  || fail 'review prompt version was lost when dispositions were recorded'
+
+implement_worker="$(jq -cn --arg version "$prompt_version" '{type:"implement",prompt:"engine/mac-autopilot/scheduler.d/dispatch-queue.sh",prompt_stage:"implement",prompt_version:$version}')"
+failed_prompt_update="$(unit_prompt_update '{"stage":"implement-pending","prompt":"engine/prompts/triage.md"}' "$implement_worker")"
+failed_prompt_unit="$(jq -c "$failed_prompt_update" <<<'{"stage":"implement-pending","prompt":"engine/prompts/triage.md"}')"
+jq -e '(.prompt == "engine/prompts/triage.md") and (has("prompt_version") | not)' <<<"$failed_prompt_unit" >/dev/null \
+  || fail 'failed implementation attempt claimed the unit prompt identity'
+prompt_update="$(unit_prompt_update '{"stage":"review-pending","prompt":"engine/prompts/triage.md"}' "$implement_worker")"
+prompt_unit="$(jq -c "$prompt_update" <<<'{"stage":"review-pending","prompt":"engine/prompts/triage.md"}')"
+jq -e --arg version "$prompt_version" '.prompt == "engine/mac-autopilot/scheduler.d/dispatch-queue.sh" and .prompt_stage == "implement" and .prompt_version == $version' \
+  <<<"$prompt_unit" >/dev/null || fail 'implementation prompt attribution did not replace the initial triage prompt'
+review_worker="$(jq -cn --arg version "$prompt_version" '{type:"review",prompt:"engine/prompts/review-contract.md",prompt_version:$version}')"
+preserve_update="$(unit_prompt_update "$prompt_unit" "$review_worker")"
+preserved_unit="$(jq -c "$preserve_update" <<<"$prompt_unit")"
+jq -e --arg version "$prompt_version" '.prompt == "engine/mac-autopilot/scheduler.d/dispatch-queue.sh" and .prompt_stage == "implement" and .prompt_version == $version' \
+  <<<"$preserved_unit" >/dev/null || fail 'review attribution replaced the code prompt used for unit scoring'
+repair_worker="$(jq -cn --arg version "$prompt_version" '{type:"repair",prompt:"engine/mac-autopilot/scheduler.d/dispatch-queue.sh",prompt_stage:"repair",prompt_version:$version}')"
+repair_update="$(unit_prompt_update "$prompt_unit" "$repair_worker")"
+repaired_unit="$(jq -c "$repair_update" <<<"$prompt_unit")"
+jq -e --arg version "$prompt_version" '.prompt == "engine/mac-autopilot/scheduler.d/dispatch-queue.sh" and .prompt_stage == "implement" and .prompt_version == $version' \
+  <<<"$repaired_unit" >/dev/null || fail 'repair prompt replaced the initial implementation prompt used for unit scoring'
+
 # Review prompt ownership and scheduler wiring are exercised by scheduler-gates.test.sh.
 
 echo 'review-contract.test.sh: PASS'
