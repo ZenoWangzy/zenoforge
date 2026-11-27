@@ -38,7 +38,7 @@ case "${1:-} ${2:-}" in
     [[ "${TEST_GH_OPEN_FAIL:-false}" != true || "$*" != *'pulls?state=open&per_page=100'* ]] || { printf 'gh stub: REST PR census refused\n' >&2; exit 1; }
     case "$*" in
       *'pulls?state=open&per_page=100'*)
-        payload="$(jq -c --arg fallback "$(cat "$TEST_PR_BODY")" 'map(. as $p | {number, state:(.state // "open"), draft:(.isDraft // false), head:{sha:(.headRefOid // ""),ref:(.headRefName // "")}, base:{ref:(.baseRefName // "")}, title:(.title // ""), body:(.body // $fallback), labels:(.labels // []), mergeable:(if .mergeable == "MERGEABLE" then true elif .mergeable == "CONFLICTING" then false else null end), created_at:.createdAt, updated_at:.updatedAt})' "$TEST_PRS")" ;;
+        payload="$(jq -c --arg fallback "$(cat "$TEST_PR_BODY")" 'map(. as $p | {number, state:(.state // "open"), draft:(.isDraft // false), head:{sha:(.headRefOid // ""),ref:(.headRefName // "")}, base:{ref:(.baseRefName // "")}, title:(.title // ""), body:(.body // $fallback), labels:(.labels // []), created_at:.createdAt, updated_at:.updatedAt})' "$TEST_PRS")" ;;
       *'pulls/7/reviews?per_page=100'*) payload='[{"state":"CHANGES_REQUESTED","submitted_at":"2026-11-11T00:00:00Z","user":{"login":"human-reviewer","type":"User"}}]' ;;
       *'pulls/7/files?per_page=100'*) payload='[{"filename":"src/a.ts","status":"added","additions":2,"deletions":0}]' ;;
       *'pulls/7/commits?per_page=100'*) payload='[{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","commit":{"message":"subject\n\nbody","author":{"email":"dev@example.invalid"}},"author":{"login":"dev"}}]' ;;
@@ -262,6 +262,8 @@ test_light_census() { # 轻量列表：字段不带 body/statusCheckRollup；60s
   grep -Fq 'repos/{owner}/{repo}/pulls?state=open&per_page=100' "$TEST_GH_ARGS" \
     || fail "the open census is not the REST endpoint: $(cat "$TEST_GH_ARGS")"
   [[ -s "$A/.tick-prs-census.json" ]] || fail 'a successful list wrote no cross-process cache file'
+  jq -e '.[0].mergeable == null' <<<"$TICK_PRS" >/dev/null || fail "the REST list has no mergeable, the census must not invent one: $TICK_PRS"
+  [[ "$(tick_pr_mergeable 7)" == MERGEABLE ]] || fail 'a census row without mergeable did not fall back to the single-PR read'
   : > "$TEST_GH_ARGS"
   view="$(gh pr view 7 --json number,state,headRefOid,headRefName,baseRefName,isDraft,mergeable,title,body,labels,mergeCommit,mergedAt)" \
     || fail 'the PR view adapter failed'

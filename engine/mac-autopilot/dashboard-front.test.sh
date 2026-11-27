@@ -144,7 +144,8 @@ elif [[ "$1 $2" == "api --paginate" && " $* " == *"/actions/runners?per_page=100
   echo '{"runners":[{"name":"fixture","status":"online","busy":false,"labels":[{"name":"cihost-ci"}]}]}'
 elif [[ "$1 $2" == "api search/issues" ]]; then
   printf '%s\n' "$*" >> "$FAKE_PR_LOG"
-  jq -c '[.[] | {number,mergedAt:.mergedAt}]' "${FAKE_PR_JSON:-/dev/null}"
+  [[ " $* " != *" --slurp "* || " $* " != *" --jq "* ]] || { echo 'the --slurp option is not supported with --jq' >&2; exit 1; }
+  jq -c '.[] | {number,mergedAt:.mergedAt}' "${FAKE_PR_JSON:-/dev/null}"
 elif [[ "$1 $2" == "pr list" ]]; then
   printf '%s\n' "$*" >> "$FAKE_PR_LOG"; cat "${FAKE_PR_JSON:-/dev/null}"
 elif [[ "$1 $2" == "api --paginate" && " $* " == *"/issues?state=open&per_page=100 "* ]]; then
