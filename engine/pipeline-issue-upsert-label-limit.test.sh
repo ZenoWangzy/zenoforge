@@ -3,8 +3,8 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+tmp="$(mktemp -d "$test_env_root/label-limit.XXXXXX")"
+trap 'rm -rf -- "$test_env_root"' EXIT
 mkdir -p "$tmp/bin"
 # gh label list is GraphQL: above --limit 100 the stub answers with the
 # per-query resource-limit refusal, below it the label page succeeds.

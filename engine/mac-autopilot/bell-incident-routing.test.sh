@@ -10,8 +10,8 @@ unset AUTOPILOT_LOOP_UNIT
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 bell="$script_dir/bell.sh"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/bell-incident-route.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "$test_env_root/bell-incident-route.XXXXXX")"
+trap 'rm -rf -- "$test_env_root"' EXIT
 
 bin="$tmp/bin"
 mkdir -p "$bin" "$tmp/agent-home/logs"

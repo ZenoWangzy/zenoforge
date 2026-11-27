@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
-p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d "$test_env_root/hf-pr.XXXXXX"); trap 'rm -rf -- "$test_env_root"' EXIT
 cat > "$t/git" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
