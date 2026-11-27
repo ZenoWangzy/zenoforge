@@ -6,9 +6,13 @@ agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}"
 log_file="${ZF_PUSH_GUARD_LOG:-$agent_home/night/night.log}"
 receipts_file=""
 origin_repo="$(git remote get-url origin 2>/dev/null || true)"
-origin_repo="${origin_repo##*/}"
-origin_repo="${origin_repo%.git}"
 origin_repo="${origin_repo,,}"
+origin_repo="${origin_repo#https://github.com/}"
+origin_repo="${origin_repo#http://github.com/}"
+origin_repo="${origin_repo#ssh://git@github.com/}"
+origin_repo="${origin_repo#git@github.com:}"
+origin_repo="${origin_repo#git://github.com/}"
+origin_repo="${origin_repo%.git}"
 
 common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 if [[ -n "$common_dir" && "$common_dir" != /* ]]; then common_dir="$PWD/$common_dir"; fi
@@ -55,12 +59,18 @@ pre_push_non_code_only() {
 }
 
 pre_push_receipt_check() {
-  local branch="$1" local_sha="$2" remote_sha="$3" receipt helper receipt_status=0 detail
+  local branch="$1" local_sha="$2" remote_sha="$3" head_sha receipt helper receipt_status=0 detail
+  head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [[ -z "$head_sha" || "$local_sha" != "$head_sha" ]]; then
+    printf 'Push refused: pushed SHA %s does not match current HEAD %s. Check out and test the pushed head before retrying.\n' \
+      "${local_sha:0:12}" "${head_sha:0:12}" >&2
+    refuse test-receipt-head-mismatch "$branch" "$local_sha" "$remote_sha" ""
+  fi
   [[ -n "$common_dir" ]] || {
-    printf 'Push refused: cannot locate the test receipt directory for pushed SHA %s.\n' "$local_sha" >&2
+    printf 'Push refused: cannot locate the test receipt directory for HEAD %s.\n' "$head_sha" >&2
     refuse test-receipt-directory-unavailable "$branch" "$local_sha" "$remote_sha" ""
   }
-  receipt="$common_dir/zf-test-receipts/$local_sha"
+  receipt="$common_dir/zf-test-receipts/$head_sha"
   if [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
     printf 'Push refused: no test receipt at pushed SHA %s. Run tests at that SHA through tools/test-receipt.sh <command...>.\n' \
       "${local_sha:0:12}" >&2
@@ -179,7 +189,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
   [[ "$branch" == agent/issue-* || "$branch" == hand/* || "$branch" == hand-* ]] || continue
   [[ "$local_sha" =~ ^0+$ ]] && continue
-  if [[ "$origin_repo" != zenoforge ]] \
+  if [[ "$origin_repo" != zenowangzy/zenoforge ]] \
     && ! pre_push_non_code_only "$local_sha"; then
     pre_push_receipt_check "$branch" "$local_sha" "$remote_sha"
   fi

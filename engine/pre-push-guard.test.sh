@@ -116,13 +116,18 @@ rm -f -- "$common/zf-test-receipts/$base_sha"
 printf '0\tbash engine/example.test.sh\n' > "$receipt"
 if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - green local receipt' >&2; exit 1; fi
 echo 'ok - green local receipt allows push'
+printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$diverged_sha"
+if run_guard "$base_sha" agent/issue-other "$diverged_sha"; then echo 'not ok - pushed ref must match current HEAD' >&2; exit 1; fi
+grep -Fq 'does not match current HEAD' "$tmp/stderr"
+echo 'ok - receipt for current HEAD cannot authorize a different pushed ref'
+rm -f -- "$common/zf-test-receipts/$diverged_sha"
 if ! run_guard "$base_sha" agent/issue-docs "$docs_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - documentation-only push exemption' >&2; exit 1; fi
 echo 'ok - documentation-only push remains exempt'
 rm -f -- "$receipt"
-git -C "$repo" remote set-url origin https://github.com/example-maintainer/zenoforge.git
+git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge.git
 if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - Zenoforge engine push exemption' >&2; exit 1; fi
 echo 'ok - Zenoforge engine push remains exempt'
-git -C "$repo" remote set-url origin https://github.com/example-maintainer/zenoforge-vecta-pack.git
+git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge-vecta-pack.git
 if run_guard "$base_sha"; then echo 'not ok - Vecta pack still requires a receipt' >&2; exit 1; fi
 grep -Fq 'no test receipt' "$tmp/stderr"
 echo 'ok - Zenoforge Vecta pack still requires a receipt'
