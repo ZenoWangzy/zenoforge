@@ -53,7 +53,7 @@ function reviewFindingsBlock(text) {
   }
   const findingKeys = 'base_evidence,file,id,introduced_by,line,rule,severity,status,summary';
   const findingsValid = value.findings.every((finding) => finding && typeof finding === 'object'
-    && keys(Object.fromEntries(Object.entries(finding).filter(([key]) => !key.startsWith('rerun_')))) === findingKeys
+    && keys(Object.fromEntries(Object.entries(finding).filter(([key]) => !key.startsWith('rerun_') && key !== 'class'))) === findingKeys
     && typeof finding.id === 'string' && finding.id.length > 0
     && ['P0', 'P1', 'P2', 'P3'].includes(finding.severity)
     && typeof finding.file === 'string' && finding.file.length > 0

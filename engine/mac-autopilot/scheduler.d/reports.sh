@@ -196,12 +196,13 @@ findings_block_of() { # report → stdout: {findings:[...],dispositions:[...]}
       and (if .status=="fixed-in-review" then (.commit_sha|type)=="string" and (.commit_sha|test("^[0-9a-f]{40}$")) and (.test|test_case) else true end)
       and ((has("introduced_by")|not and $legacy) or (.introduced_by|IN("candidate","pre_existing","unknown")))
       and ((has("base_evidence")|not and $legacy) or ((.base_evidence|type)=="string" and (.base_evidence|test("\\S"))))
-      and (if $legacy then true elif .status=="fixed-in-review" then del(.rerun_command,.rerun_output)|keys==["base_evidence","commit_sha","file","id","introduced_by","line","rule","severity","status","summary","test"] else del(.rerun_command,.rerun_output)|keys==["base_evidence","file","id","introduced_by","line","rule","severity","status","summary"] end)
+      and (if $legacy then true elif .status=="fixed-in-review" then del(.class,.rerun_command,.rerun_output)|keys==["base_evidence","commit_sha","file","id","introduced_by","line","rule","severity","status","summary","test"] else del(.class,.rerun_command,.rerun_output)|keys==["base_evidence","file","id","introduced_by","line","rule","severity","status","summary"] end)
       and ((has("rule")|not) or (.rule|type)=="string")
       and ((has("summary")|not) or (.summary|type)=="string")
       and (if $legacy then true else (.rule|length)>0 and (.summary|length)>0 end);
     def evidence_gap: if .status=="fixed-in-review" then [] else [("rerun_command","rerun_output") as $k | select((.[$k]|type)!="string" or (.[$k]|test("\\S")|not)) | $k] end;
     def normalized_finding: {id,severity,file,line,rule:(.rule // null),status,summary:(.summary // null),introduced_by:(.introduced_by // null),base_evidence:(.base_evidence // null)}
+      + (if (.class|type)=="string" and (.class|test("^[a-z0-9][a-z0-9-]{0,49}$")) then {class} else {} end)
       + (if .status=="fixed-in-review" then {commit_sha,test} else {} end);
     def decision_log_flag: type=="object" and keys==["entry","reason"]
       and (.entry|type)=="string" and (.entry|test("\\S")) and (.entry|test("^[^\\r\\n]+$"))
