@@ -404,6 +404,33 @@ escape_suite_review_rule() { # self-check log → required report content, inclu
   [[ -n "$results" ]] || return 0
   printf '\nPre-review escape-suite results to inspect (the scheduler appends these under `## escape-suite` in the report):\n%s' "$results"
 }
+review_proof_result() {
+  local u="$1" wd="$2" sha="$3" rep proof plan_file plan out
+  [[ "$(jqf -r '.lane // empty' <<<"$u")" != direct-main ]] || { printf '{"status":"not-required","matched":[],"features":{},"reasons":["direct-main lane"]}'; return 0; }
+  rep="$(jqf -r '.implementation_report // .report // empty' <<<"$u")"
+  [[ -z "$rep" || "$rep" == /* ]] || rep="$SUP/$rep"
+  proof="$(grep -a -m1 -E '^Proof:[[:space:]]' "$rep" 2>/dev/null | sed -E 's/^Proof:[[:space:]]*//; s/[[:space:]]+$//' || true)"
+  [[ -n "$proof" && "$proof" != unavailable* ]] || proof=/dev/null
+  [[ "$proof" == /* ]] || proof="$wd/$proof"
+  plan="$(build_verification_exact_plan_json "$wd" "$HERE/.." origin/main "$sha" 2>/dev/null)" || plan=''
+  if ! jqf -e '.status == "available"' <<<"$plan" >/dev/null 2>&1; then
+    printf '{"status":"unavailable","matched":[],"features":{},"reasons":["verification plan unavailable"]}'; return 0
+  fi
+  plan_file="$(mktemp)" || return 0
+  printf '%s' "$plan" > "$plan_file"
+  out="$(node "$HERE/../verify-proof-check.mjs" --plan "$plan_file" --proof "$proof" --head "$sha" 2>/dev/null)" || out=''
+  rm -f "$plan_file"
+  jqf -ce --argjson plan "$plan" '. + {matched:($plan.matched_features // [])}' <<<"$out" 2>/dev/null \
+    || printf '{"status":"unavailable","matched":[],"features":{},"reasons":["proof checker failed"]}'
+}
+review_proof_blocks() {
+  jqf -e '.status | IN("missing","invalid","stale")' <<<"$1" >/dev/null 2>&1
+}
+review_proof_rule() {
+  local r
+  r="$(review_proof_result "$1" "$2" "$3")"
+  printf '\nProof for head %s: %s. Features: %s. Reasons: %s.' "$3" "$(jqf -r '.status' <<<"$r")" "$(jqf -r '(.matched | join(",")) | if . == "" then "none" else . end' <<<"$r")" "$(jqf -r '(.reasons | join("; ")) | if . == "" then "none" else . end' <<<"$r")"
+}
 # Reviewers run with no read access under $SUP, so copy the unit's implementation report and latest self-check log into the review
 # clone (git-ignored) and name only the copies. Shared by every reviewer provider; a missing input is left out of the prompt.
 # The third argument is the head under review; the verification status paragraph is printed after the copies.
@@ -422,6 +449,7 @@ review_inputs_rule() { # unit-json workdir [head] → copies the inputs, git-ign
     escape_suite_review_rule "$dir/self-check.log"
   fi
   review_verification_rule "$unit_json" "$dir" "$log" "$sha"
+  review_proof_rule "$unit_json" "$wd" "$sha"
   # The clone's info/exclude is shared by every worktree of it, so append the line only when it is absent.
   ex="$(git -C "$wd" rev-parse --git-path info/exclude 2>/dev/null)" && [[ -n "$ex" ]] || return 0
   [[ "$ex" == /* ]] || ex="$wd/$ex"

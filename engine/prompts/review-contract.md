@@ -27,11 +27,12 @@ A finding's `rule` names its axis. Where the skill differs from this file, this 
   authority. A missing optional report or contract block does not make the
   input incomplete.
 - Red or pending CI, report formatting, and production acceptance do not
-  decide the verdict; acceptance on production happens after release. If the
+  decide the verdict. If the
   issue names an undelivered prerequisite, write `BLOCKED-ON: #<number>` and
   report `INPUT_INCOMPLETE`.
 - When the prompt includes `INCIDENT_RULE`, apply its report requirements before `READY`; the incident report gate requires `NOT_READY` and a reason naming any missing section or invalid recurrence-guard kind.
-- When the prompt carries a `Verification evidence for head <sha>` paragraph, it is an input: read the command, exit code and excerpts it names for that exact head and check them against the acceptance criteria. `RED` or `SKIPPED` means the behaviour is unproven by evidence, not a finding by itself. If `passed` evidence contradicts a behaviour an acceptance criterion needs, or does not show it, report a finding (`rule` `Spec`, `file` the evidence copy the prompt names, `line` 1; P1 when it contradicts, else P2). Evidence never replaces reading the diff.
+- A `Verification evidence for head <sha>` paragraph is an input: check the command, exit code and excerpts it names for that exact head against the acceptance criteria. `RED` or `SKIPPED` means unproven, not a finding by itself. If `passed` evidence contradicts a needed behaviour or does not show it, report a finding (`rule` `Spec`, `file` the evidence copy named, `line` 1; P1 when it contradicts, else P2). Evidence never replaces reading the diff.
+- A `Proof for head <sha>: <status>` paragraph is the engine's proof check. A mapped change whose status is not `ok` goes back to repair even on `READY`.
 
 ## Review in this order
 

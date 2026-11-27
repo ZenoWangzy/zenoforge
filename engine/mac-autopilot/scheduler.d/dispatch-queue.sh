@@ -89,8 +89,8 @@ feature_verification_prompt() { # lane brief → product feature evidence instru
     printf '%s' 'Feature verification plan (direct-main): no product feature verification commands; the lander runs the tests.'
   else
     cat <<EOF
-Feature verification plan (advisory, from ticket-declared paths): $2
-After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Record the JSON output path. If no candidate target exists, say so; do not build a local stack. This is worker evidence, not a merge gate.
+Feature verification plan (from ticket-declared paths): $2
+After implementation, refresh IDs from the actual changed paths with node engine/verification-plan.mjs --root . --base origin/main --head HEAD. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature <IDs> --target <base-url> --json only when a candidate target already serves this build. Save the JSON to a file and record its absolute path on one report line, Proof: <path>. If no candidate target exists, record Proof: unavailable <reason> and do not build a local stack. Review requires a valid proof for head when the plan matches a feature: a missing, invalid, stale or failing proof, or Proof: unavailable, sends the unit back to repair once and then to the supervisor. Pending or red CI never blocks the merge lane through this path.
 EOF
   fi
 }

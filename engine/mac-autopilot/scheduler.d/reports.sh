@@ -111,6 +111,22 @@ verdict_of() {
 review_tools_denied() { # report-path → 0 when the report blames a denied tool (don't-ask mode / 权限模式)
   grep -qiE "don.t.ask|权限模式" "$1" 2>/dev/null
 }
+proof_review_gate() {
+  local unit="$1" w="$2" wsha="$3" reviewed="$4" result status ids reasons
+  result="$(review_proof_result "$(harvest_unit_snapshot "$unit")" "$(jqf -r '.workdir // empty' <<<"$w")" "$wsha")"
+  review_proof_blocks "$result" || return 1
+  status="$(jqf -r '.status' <<<"$result")"
+  ids="$(jqf -r '.matched | join(",")' <<<"$result")"
+  reasons="$(jqf -r '.reasons | join("; ")' <<<"$result")"
+  if [[ "$(unit_history_count "$unit" proof-missing "^$wsha")" == 0 ]]; then
+    set_unit "$unit" "$(hist proof-missing "$wsha $status features=$ids") | $reviewed | .approved_sha=null | .repair_hint=$(js "Review needs a valid real-product proof for head $wsha: status $status ($reasons). Mapped features: $ids. Run node scripts/e2e/yangfeng-regression/verify-feature.mjs --feature $ids --target <base-url> --json against a candidate target that already serves this head, save the JSON, and record 'Proof: <path>' in the report. With no candidate target, record 'Proof: unavailable <reason>'; that counts as missing.") | .stage=\"repair-pending\""
+    say "proof-missing unit=$unit head=$wsha status=$status features=$ids: READY not accepted, routed to repair"
+  else
+    set_unit "$unit" "$(hist proof-missing "$wsha $status features=$ids") | $reviewed | .approved_sha=null"
+    to_supervisor "$unit" "proof is still $status for head $wsha after one repair round (features $ids: $reasons)"
+  fi
+  return 0
+}
 harvest_input_incomplete() { # unit report-path report-name head reviewed-filter: an INPUT_INCOMPLETE review never leads to a commit repair
   local unit="$1" rep="$2" report="$3" wsha="$4" reviewed="$5" bdep event stage_update=""
   bdep="$(blocked_on_of "$rep" || :)"

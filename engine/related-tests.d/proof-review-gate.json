@@ -1,0 +1,23 @@
+{
+  "engine/mac-autopilot/scheduler.d/review-rules.sh": [
+    "engine/mac-autopilot/proof-review-gate.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/reports.sh": [
+    "engine/mac-autopilot/proof-review-gate.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/harvest-workers.sh": [
+    "engine/mac-autopilot/proof-review-gate.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/dispatch-queue.sh": [
+    "engine/mac-autopilot/proof-review-gate.test.sh"
+  ],
+  "engine/prompts/review-contract.md": [
+    "engine/mac-autopilot/proof-review-gate.test.sh"
+  ],
+  "engine/mac-autopilot/proof-review-gate.test.sh": [
+    "engine/mac-autopilot/proof-review-gate.test.sh"
+  ],
+  "engine/verify-proof-check.mjs": [
+    "engine/mac-autopilot/proof-review-gate.test.sh"
+  ]
+}
