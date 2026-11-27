@@ -103,6 +103,9 @@ if [[ "${1:-}" == --user && "${2:-}" == show && "${3:-}" == zenoforge-renewd.tim
   printf '%s\n' "${ZF_COORD_TEST_TIMER_LOAD_STATE:-loaded}"
   exit 0
 fi
+if [[ "${1:-}" == --user && "${2:-}" == start && "${ZF_COORD_TEST_TIMER_START_STATE:-ok}" == fail ]]; then
+  exit 1
+fi
 printf '%s\n' "$*" >>"$ZF_COORD_SYSTEMCTL_LOG"
 exit 0
 SYSTEMCTL
@@ -130,6 +133,22 @@ if AGENT_HOME="$missing_agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HO
 fi
 [[ ! -e "$missing_agent/host.env" && ! -e "$missing_agent/timers.local.list" ]] || {
   echo 'ctl.test.sh: enable changed coordination settings without the renewal timer' >&2
+  exit 1
+}
+failed_agent="$fixture/agent-failed-timer-start"
+if AGENT_HOME="$failed_agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-a \
+  MAC_AUTOPILOT_RUNTIME_DIR="$fixture/autopi" ZF_COORD_TEST_ACTIVE_UNITS="$fixture/active-units" \
+  ZF_COORD_TEST_TIMER_START_STATE=fail ZF_COORD_SYSTEMCTL_LOG="$fixture/systemctl.log" PATH="$fixture/bin:$PATH" \
+  bash "$engine/coord/ctl.sh" enable --host-id test-e; then
+  echo 'ctl.test.sh: enable succeeded after the renewal timer failed to start' >&2
+  exit 1
+fi
+[[ ! -e "$failed_agent/host.env" && ! -e "$failed_agent/host-id" && ! -e "$failed_agent/timers.local.list" ]] || {
+  echo 'ctl.test.sh: enable left settings after the renewal timer failed to start' >&2
+  exit 1
+}
+grep -Fxq -- '--user set-environment ZF_COORD=off ZF_HOST_ID=test-a' "$fixture/systemctl.log" || {
+  echo 'ctl.test.sh: enable did not restore the service environment after startup failed' >&2
   exit 1
 }
 AGENT_HOME="$agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-a \

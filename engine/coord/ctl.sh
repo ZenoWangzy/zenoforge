@@ -7,10 +7,16 @@ REPO_DIR="$ZF_REPO_DIR"
 GIT_FETCH_TIMEOUT_SEC="${GIT_FETCH_TIMEOUT_SEC:-60}"
 source "$engine_dir/lib.d/transport.sh"
 source "$engine_dir/coord.sh"
+CTL_PRIOR_COORD="${ZF_COORD:-off}"
+CTL_PRIOR_HOST_ID="${ZF_HOST_ID:-}"
 ZF_COORD=on
 
 ctl_error() {
   echo "ctl.sh: $*" >&2
+}
+
+ctl_restore_manager_environment() {
+  systemctl --user set-environment "ZF_COORD=$CTL_PRIOR_COORD" "ZF_HOST_ID=$CTL_PRIOR_HOST_ID" >/dev/null 2>&1 || :
 }
 
 ctl_remote_delete() {
@@ -298,6 +304,21 @@ ctl_enable() {
     ctl_error 'renewal timer unavailable; install the coordination unit before enabling'
     return 3
   fi
+  if ! systemctl --user set-environment ZF_COORD=on "ZF_HOST_ID=$host"; then
+    ctl_restore_manager_environment
+    ctl_error 'could not set coordination environment'
+    return 3
+  fi
+  if ! systemctl --user daemon-reload; then
+    ctl_restore_manager_environment
+    ctl_error 'could not reload the user service manager'
+    return 3
+  fi
+  if ! systemctl --user start "$timer"; then
+    ctl_restore_manager_environment
+    ctl_error 'could not start coordination renewal timer'
+    return 3
+  fi
   mkdir -p "$AGENT_HOME" || return 3
   umask 077
   temp="$(mktemp "$AGENT_HOME/.host-env.XXXXXX")" || return 3
@@ -340,9 +361,6 @@ ctl_enable() {
   }
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
-  systemctl --user set-environment ZF_COORD=on "ZF_HOST_ID=$host" \
-    && systemctl --user daemon-reload \
-    && systemctl --user start "$timer" || { ctl_error 'could not start coordination renewal timer'; return 3; }
   ZF_COORD=on
   ZF_HOST_ID="$host"
   ctl_adopt_local
