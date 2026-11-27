@@ -203,7 +203,7 @@ chmod +x "$rf/live/scheduler.sh"
 (
   AUTOPI_LOOP_LIBRARY_ONLY=true; source "$engine_dir/mac-autopilot/loop.sh"
   A="$rf/state"; LIVE="$rf/live"
-  export HL_CALLS="$rf/calls" HL_REFILL_ACTIVE="$rf/refill-active" HL_DURING_REFILL="$rf/during-refill" HL_TICKS="$rf/ticks"
+  export HL_CALLS="$rf/calls" HL_REFILL_ACTIVE="$rf/refill-active" HL_REFILL_RELEASE="$rf/refill-release" HL_DURING_REFILL="$rf/during-refill" HL_TICKS="$rf/ticks"
   : > "$HL_CALLS"
   echo 0 > "$HL_TICKS"
   export AUTOPI_HARVEST_STATION_SECONDS=60 AUTOPI_DISPATCH_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=30 \
@@ -225,14 +225,11 @@ chmod +x "$rf/live/scheduler.sh"
   run_refill() {
     echo "$SECONDS" >> "$rf/refill-calls"
     : > "$HL_REFILL_ACTIVE"
-    local remaining=120
-    while (( remaining > 0 )); do
-      command sleep 0.1
-      SECONDS=$((SECONDS + 5)); remaining=$((remaining - 5))
-    done
+    while [[ ! -e "$HL_REFILL_RELEASE" ]]; do command sleep 0.01; done
     rm -f "$HL_REFILL_ACTIVE"
   }
   refill_window 140
+  : > "$HL_REFILL_RELEASE"
   [[ -z "${REFILL_PID:-}" ]] || wait "$REFILL_PID"
 ) || fail 'refill-window setup failed during the slow-refill case'
 [[ -e "$rf/during-refill" ]] || fail 'the harvest station launch waited for the 120-second refill to finish'
