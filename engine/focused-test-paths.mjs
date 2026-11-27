@@ -388,6 +388,8 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'scripts/branch-delivery-preflight.test.mjs',
   ]],
   ['engine/verification-plan.mjs', ['engine/verification-plan.test.mjs']],
+  ['engine/verify-proof-check.mjs', ['engine/verify-proof-check.test.mjs']],
+  ['engine/verify-proof-check.test.mjs', ['engine/verify-proof-check.test.mjs']],
   ['engine/verification-plan-runtime.sh', [
     'engine/verification-plan-runtime.test.sh',
   ]],
