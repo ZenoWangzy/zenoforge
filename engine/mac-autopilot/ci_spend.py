@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI runner minutes, and the share that could not change a verdict (writes ci-spend.json for node_health).
 
-Usage: ci_spend.py [--runtime DIR] [--hours N] [--fixture FILE] [--repo OWNER/NAME]
+Usage: ci_spend.py [--runtime DIR] [--hours N] [--fixture FILE] [--repo OWNER/NAME] [--engine-repo OWNER/NAME]
 
 Waste is runner time on work whose result nobody can use:
   cancelled            a job that held a runner and was then cancelled (L64: mostly our own cancellations)
@@ -19,6 +19,7 @@ import gh_caller
 from node_health import LARGE_PR_WINDOW_DAYS, is_test_path, size_window_units
 
 PR_EVENTS = ("pull_request", "pull_request_target")
+MAIN_WORKFLOW = "engine-tests"
 JOB_WORKERS = 8  # bounded: a serial job fetch per run took longer than the 300 s sampler limit on a cold cache
 BREAKDOWN_ROWS = 15
 
@@ -185,6 +186,48 @@ def classify(runs, minutes, approved):
             "by_reason": {k: round(v) for k, v in by.items()}}
 
 
+def main_verdicts(runs, minutes, now):
+    pushes = sorted((r for r in runs if r["name"] == MAIN_WORKFLOW and r["event"] == "push" and r["branch"] == "main"),
+                    key=lambda r: r["created"])
+    replaced = cancelled = 0
+    for r in pushes:
+        if r["conclusion"] == "cancelled":
+            if minutes.get(str(r["id"])) == []:
+                replaced += 1
+            else:
+                cancelled += 1
+    finished = [(ts(r["created"]), ts(r["updated"]), r["conclusion"]) for r in pushes
+                if r["conclusion"] in ("success", "failure") and ts(r["created"]) and ts(r["updated"])]
+    cover = []
+    for r in pushes:
+        created = ts(r["created"])
+        end = next((e for c, e, _ in finished if created and c >= created), None)
+        if end:
+            cover.append(max(0.0, (end - created).total_seconds() / 60))
+    red, start = [], None
+    for _, end, conclusion in sorted(finished, key=lambda f: f[1]):
+        if conclusion == "failure" and start is None:
+            start = end
+        elif conclusion == "success" and start is not None:
+            red.append((end - start).total_seconds() / 60)
+            start = None
+    cover.sort()
+    return {"replaced_while_queued": replaced, "cancelled": cancelled, "covered_merges": len(cover),
+            "merge_to_cover_median_min": round(cover[len(cover) // 2]) if cover else None,
+            "merge_to_cover_max_min": round(cover[-1]) if cover else None,
+            "red_episodes": len(red), "red_longest_min": round(max(red)) if red else None,
+            "red_open_min": round((now - start).total_seconds() / 60) if start else None}
+
+
+def run_rows(raw):
+    return sorted(({"id": r["id"], "name": r.get("name") or "", "event": r.get("event") or "",
+                    "branch": r.get("head_branch") or "", "head": r.get("head_sha") or "",
+                    "created": r.get("created_at") or "", "updated": r.get("updated_at") or "",
+                    "status": r.get("status"), "conclusion": r.get("conclusion"),
+                    "skip_ci": ((r.get("head_commit") or {}).get("message") or "").startswith("[skip ci]")}
+                   for r in raw), key=lambda r: r["created"], reverse=True)
+
+
 def main():
     here = os.path.dirname(os.path.realpath(__file__))
     ap = argparse.ArgumentParser()
@@ -194,9 +237,11 @@ def main():
     ap.add_argument("--fixture")
     ap.add_argument("--now")
     ap.add_argument("--repo", help="OWNER/NAME; default: the repo of the current directory")
+    ap.add_argument("--engine-repo", help="OWNER/NAME whose engine-tests push runs on main are measured; default: not measured")
     args = ap.parse_args()
-    if args.repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo):
-        ap.error("--repo must be OWNER/NAME")
+    for repo in (args.repo, args.engine_repo):
+        if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+            ap.error("--repo and --engine-repo must be OWNER/NAME")
     # gh api has no -R, so the repo goes into the path; the default keeps gh's {owner}/{repo} from cwd.
     base = f"repos/{args.repo}" if args.repo else "repos/{owner}/{repo}"
     a = args.runtime
@@ -210,28 +255,33 @@ def main():
         cache = {}
 
     if fixture:
-        raw = fixture["runs"]
+        raw, engine_raw = fixture["runs"], fixture.get("engine_runs")
     else:
         pages = gh_json(f"{base}/actions/runs?per_page=100&created=>={since:%Y-%m-%dT%H:%M:%SZ}")
         raw = [r for page in pages for r in page.get("workflow_runs", [])]
-    runs = sorted(({"id": r["id"], "name": r.get("name") or "", "event": r.get("event") or "",
-                    "branch": r.get("head_branch") or "", "head": r.get("head_sha") or "",
-                    "created": r.get("created_at") or "", "status": r.get("status"),
-                    "skip_ci": ((r.get("head_commit") or {}).get("message") or "").startswith("[skip ci]")}
-                   for r in raw), key=lambda r: r["created"], reverse=True)
-    todo = [r for r in runs if r["status"] == "completed" and str(r["id"]) not in cache]
-    if fixture:
-        for r in todo:
-            key = str(r["id"])
-            cache[key] = {"created": r["created"], "jobs": job_minutes(fixture["jobs"].get(key, []))}
-    else:
-        cache.update(fetch_job_minutes(todo, base))
+        engine_raw = None
+        if args.engine_repo:
+            pages = gh_json(f"repos/{args.engine_repo}/actions/workflows/engine-tests.yml/runs"
+                            f"?branch=main&event=push&per_page=100&created=>={since:%Y-%m-%dT%H:%M:%SZ}")
+            engine_raw = [r for page in pages for r in page.get("workflow_runs", [])]
+    runs = run_rows(raw)
+    engine_runs = run_rows(engine_raw or [])
+    for repo_runs, repo_base in ((runs, base), (engine_runs, f"repos/{args.engine_repo}")):
+        todo = [r for r in repo_runs if r["status"] == "completed" and str(r["id"]) not in cache]
+        if fixture:
+            for r in todo:
+                key = str(r["id"])
+                cache[key] = {"created": r["created"], "jobs": job_minutes(fixture["jobs"].get(key, []))}
+        else:
+            cache.update(fetch_job_minutes(todo, repo_base))
     keep = now - timedelta(hours=max(24, args.hours))
     cache = {k: v for k, v in cache.items() if (ts(v.get("created")) or now) >= keep}
 
     units = ledger_history.load_units(a)
     minutes = {k: v["jobs"] for k, v in cache.items()}
     doc = classify(runs, minutes, approved_heads(units))
+    if engine_raw is not None:
+        doc["main_push"] = main_verdicts(engine_runs, minutes, now)
     doc.update({"sampled_at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "window_hours": args.hours, "runs": len(runs)})
     outputs = [(cache_path, cache), (os.path.join(a, "ci-spend.json"), doc)]
     # PR sizes for node_health's rework-by-size table (bigger PRs need more repair rounds).
@@ -266,6 +316,8 @@ def main():
         os.replace(path + ".tmp", path)
     print(f"ci spend {doc['sampled_at']} window={args.hours:g}h total={doc['total_min']}min "
           f"waste={doc['waste_min']}min ({doc['waste_pct']}%) {doc['by_reason']}")
+    if "main_push" in doc:
+        print(f"  main push {doc['main_push']}")
     rows = breakdown(runs, minutes)
     for (conclusion, branch, name), m in rows[:BREAKDOWN_ROWS]:
         print(f"  {conclusion} {branch} {name} {round(m)}min")
