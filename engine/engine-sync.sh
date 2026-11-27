@@ -93,7 +93,7 @@ engine_eval_state() { # state file, key=value... → atomic in-place update (num
 
 engine_eval_stages_for_pin() { # built version dir, live ref, new ref → comma-separated stages; empty when no stage surface is touched
   local dir="$1" paths stages stage csv=''
-  if ! paths="$(git -C "$ZF_REPO_DIR" diff --name-only "$2" "$3" 2>/dev/null)"; then
+  if ! paths="$(git -C "$ZF_REPO_DIR" diff --no-renames --name-only "$2" "$3" 2>/dev/null)"; then
     return 1
   fi
   [[ -r "$dir/engine/eval/decision-stages.sh" ]] || return 1

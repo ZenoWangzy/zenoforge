@@ -250,7 +250,7 @@ dispatch_owner_session() {
   local budget_id="${12:-}" budget_source="${13:-node-auto-owner}"
   local base_repo_dir="$REPO_DIR"
   local pid ticks final_log now exit_code last_error exit_reason tmp role identity provider service_tier tokens primary_identity fallback_identity
-  local -a sandbox_args=() service_tier_args=()
+  local -a sandbox_args=() service_tier_args=() codex_context_args=()
   OWNER_SESSION_BUDGET_ID=""
   OWNER_SESSION_FAILURE_RECORDED=0
   OWNER_SESSION_BUDGET_SOURCE="$budget_source"
@@ -316,7 +316,9 @@ dispatch_owner_session() {
     *) return 2 ;;
   esac
 
-  exec 3<"$prompt_file" || return 1
+  matt_codex_context_prepare "$worktree"
+  codex_context_args=("${MATT_CODEX_CONTEXT_ARGS[@]}")
+  exec 3< <(matt_codex_prompt_input "$prompt_file" "$worktree" "$MATT_CODEX_CONTEXT_ROOT") || return 1
   pid="$$"
   ticks="$(pid_start_id "$pid" 2>/dev/null || true)"
   case "$ticks" in ''|*[!0-9]*) return 1 ;; esac
@@ -335,7 +337,7 @@ dispatch_owner_session() {
   set +e
   codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" --json --model "$model" --config "model_reasoning_effort=\"$effort\"" "${service_tier_args[@]}" \
     --config mcp_servers.gitnexus.enabled=false \
-    --cd "$worktree" "${sandbox_args[@]}" - <&3 2>&1 | dispatch_log_output "$final_log"
+    "${codex_context_args[@]}" "${sandbox_args[@]}" - <&3 2>&1 | dispatch_log_output "$final_log"
   exit_code="${PIPESTATUS[0]}"
   set -e
 

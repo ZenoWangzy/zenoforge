@@ -47,6 +47,11 @@ git -C "$ZF_REPO_DIR" add seed.txt
 git -C "$ZF_REPO_DIR" commit -q -m seed
 git -C "$ZF_REPO_DIR" remote add origin "$FIXTURE_ORIGIN"
 git -C "$ZF_REPO_DIR" push -q -u origin main
+printf 'candidate Claude instruction\n' > "$ZF_REPO_DIR/CLAUDE.md"
+printf 'candidate AGENTS instruction\n' > "$ZF_REPO_DIR/AGENTS.md"
+git -C "$ZF_REPO_DIR" add CLAUDE.md AGENTS.md
+git -C "$ZF_REPO_DIR" commit -qm 'candidate project instructions'
+git -C "$ZF_REPO_DIR" push -q origin main
 mkdir -p "$ZF_REPO_DIR/.gitnexus" "$ZF_REPO_DIR/engine/state"
 jq -n --arg sha "$(git -C "$ZF_REPO_DIR" rev-parse HEAD)" '{lastCommit:$sha}' > "$ZF_REPO_DIR/.gitnexus/meta.json"
 cp "$SCRIPT_DIR/state/rulings.json" "$ZF_REPO_DIR/engine/state/rulings.json"
@@ -57,6 +62,7 @@ jq '.switches["roadmap-order"] = false' "$SCRIPT_DIR/model-policy.default.json" 
 FAKE_BIN="$TEST_ROOT/bin"
 mkdir -p "$FAKE_BIN"
 export FAKE_GH_LOG="$TEST_ROOT/gh.log" FAKE_CODEX_ARGS="$TEST_ROOT/codex-args.log" FAKE_CLAUDE_ARGS="$TEST_ROOT/claude-args.log"
+export FAKE_CLAUDE_PROMPT="$TEST_ROOT/claude-prompt.log"
 export FAKE_CODEX_OUTPUT="$TEST_ROOT/codex-output.ndjson" FAKE_CLAUDE_RESULT="$TEST_ROOT/claude-result.ndjson" FAKE_CLAUDE_STRUCTURED="$TEST_ROOT/claude-structured.json"
 cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -93,7 +99,7 @@ EOF
 cat > "$FAKE_BIN/claude" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_CLAUDE_ARGS"
-cat > /dev/null
+cat > "$FAKE_CLAUDE_PROMPT"
 if [[ " $* " == *" --json-schema "* ]]; then
   jq -nc --slurpfile so "$FAKE_CLAUDE_STRUCTURED" '{type:"result",is_error:false,result:"",structured_output:$so[0],total_cost_usd:0.01,usage:{input_tokens:1000,cache_read_input_tokens:5000,cache_creation_input_tokens:300,output_tokens:200}}'
 else
@@ -128,6 +134,12 @@ OUT="$(bash "$SCRIPT_DIR/run-triage.sh" 920102 2>&1)" || { echo "not ok - run-tr
 assert_eq "run-triage over the stop makes no Codex call" 0 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
 assert_contains "run-triage Claude call uses haiku and the triage schema" "$(cat "$FAKE_CLAUDE_ARGS")" '--model claude-haiku-5-5'
 assert_contains "run-triage Claude call is schema-constrained" "$(cat "$FAKE_CLAUDE_ARGS")" '--json-schema'
+assert_contains "run-triage Claude skips candidate project instructions" "$(cat "$FAKE_CLAUDE_ARGS")" '--bare'
+assert_contains "run-triage Claude receives accepted engine instructions" "$(cat "$FAKE_CLAUDE_PROMPT")" 'Project instruction file: AGENTS.md'
+if grep -Fq 'candidate Claude instruction' "$FAKE_CLAUDE_PROMPT" || grep -Fq 'candidate AGENTS instruction' "$FAKE_CLAUDE_PROMPT"; then
+  echo 'not ok - run-triage Claude loaded unaccepted target instructions' >&2
+  FAILED=1
+fi
 assert_eq "run-triage haiku verdict is applied" ready-for-agent "$(jq -r '.state' "$AGENT_HOME/state/920102.json")"
 assert_eq "run-triage records the Claude fresh token count on its spend row" 1200 "$(cat "$AGENT_HOME"/spend/*.log | awk -F'\t' '$2 == "triage" && $4 == 920102 { print $6 }')"
 

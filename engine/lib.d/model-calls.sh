@@ -550,8 +550,8 @@ codex_probe_ok() { [ -f "$CODEX_PROBE_MARKER" ]; }
 # Model and effort are separate Codex arguments; every caller gets both from
 # the persistent role policy.
 run_codex_json() {
-  local cwd="$1" model="$2" effort="$3" schema_file="$4" prompt_file="$5" service_tier
-  local -a service_tier_args=()
+  local cwd="$1" model="$2" effort="$3" schema_file="$4" prompt_file="$5" service_tier codex_context
+  local -a service_tier_args=() codex_context_args=()
   local out_file transcript status=0 body result_text tokens_used timeout_seconds started_at elapsed timeout_detail model_output_present=false
   model_policy_require_implementer_identity "codex:$model:$effort" || { jq -nc '{is_error: true, subtype: "unsupported_model_identity", result: "identity does not match the work role"}'; return 64; }
   service_tier="$(model_policy tier "codex:$model:$effort")" || return $?
@@ -571,13 +571,13 @@ run_codex_json() {
   # every model call. `cmd || status=$?` is the exempted-by-`||` bash
   # idiom instead: self-contained, works identically whether or not the
   # caller has `set -e` active, and never mutates shared shell state.
-  started_at="$(date +%s)"
+  matt_codex_context_prepare "$cwd"; codex_context="$MATT_CODEX_CONTEXT_ROOT"; codex_context_args=("${MATT_CODEX_CONTEXT_ARGS[@]}"); started_at="$(date +%s)"
   codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_seconds}s" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
-    --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
+    --sandbox "$CODEX_SANDBOX_MODE" "${codex_context_args[@]}" --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
     --output-schema "$schema_file" --output-last-message "$out_file" \
-    - < "$prompt_file" > "$transcript" 2>&1 || status=$?
+    - < <(matt_codex_prompt_input "$prompt_file" "$cwd" "$codex_context") > "$transcript" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ "$status" -eq 124 ]; then
     timeout_detail="codex exec timed out after ${timeout_seconds}s (elapsed ${elapsed}s)"
@@ -795,8 +795,8 @@ run_model_advisor_batch_async() {
 # is still a line worth trying to parse, so this always prints whatever the
 # output file holds, never conditioned on `status`.
 run_codex_text() {
-  local cwd="$1" model="$2" effort="$3" timeout_minutes="$4" prompt_file="$5" transcript_file="$6" service_tier
-  local -a service_tier_args=()
+  local cwd="$1" model="$2" effort="$3" timeout_minutes="$4" prompt_file="$5" transcript_file="$6" service_tier codex_context
+  local -a service_tier_args=() codex_context_args=()
   local out_file status=0 started_at elapsed timeout_detail
   model_policy_require_implementer_identity "codex:$model:$effort" || return $?
   service_tier="$(model_policy tier "codex:$model:$effort")" || return $?
@@ -807,13 +807,13 @@ run_codex_text() {
   # `$(...)` capture (its payload IS its stdout), which already shields the
   # caller's shell from this toggle regardless, but matching the sibling
   # function's idiom keeps the two functions safe to read the same way.
-  started_at="$(date +%s)"
+  matt_codex_context_prepare "$cwd"; codex_context="$MATT_CODEX_CONTEXT_ROOT"; codex_context_args=("${MATT_CODEX_CONTEXT_ARGS[@]}"); started_at="$(date +%s)"
   codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run timeout "${timeout_minutes}m" codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
-    --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
+    --sandbox "$CODEX_SANDBOX_MODE" "${codex_context_args[@]}" --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c mcp_servers.gitnexus.enabled=false \
     --output-last-message "$out_file" \
-    - < "$prompt_file" > "$transcript_file" 2>&1 || status=$?
+    - < <(matt_codex_prompt_input "$prompt_file" "$cwd" "$codex_context") > "$transcript_file" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   [ "$status" -eq 0 ] || printf 'codex-exec-elapsed-seconds=%s\n' "$elapsed" >> "$transcript_file"
   if [ "$status" -eq 124 ]; then
@@ -889,7 +889,7 @@ run_codex_text() {
 # of them.
 run_codex_implement() {
   local cwd="$1" model="$2" effort="$3" prompt_file="$4" log_file="$5" timeout_minutes="${6:-120}" caller="${7:-unknown}" status=0 service_tier
-  local -a service_tier_args=()
+  local -a service_tier_args=() codex_context_args=()
   local started_at elapsed timeout_detail out_file guard_log transcript_empty=true diagnostic signal_name issue stage model_identity
   MODEL_CALL_EXIT_STATUS=""
   MODEL_CALL_EXIT_CLASS=""
@@ -916,17 +916,17 @@ run_codex_implement() {
   # `codex` (not around the whole pipeline) so it only strips those two vars
   # from codex's own child environment -- this function's caller, and this
   # shell, keep them.
-  started_at="$(date +%s)"
+  matt_codex_context_prepare "$cwd"; codex_context_args=("${MATT_CODEX_CONTEXT_ARGS[@]}"); started_at="$(date +%s)"
   # Admission diagnostics are not model output. Capture them separately until
   # transcript emptiness is determined, then retain them in the same log.
   codex_mcp_context_mode_sentinel_dir "${TMPDIR:-/tmp}" && pipeline_execution_run bash -c 'log=$1; shift; exec "$@" > "$log" 2>&1' _ "$log_file" \
     timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN codex exec "${CODEX_PLUGINS_OFF_ARGS[@]}" \
-    --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
+    --sandbox "$CODEX_SANDBOX_MODE" "${codex_context_args[@]}" --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c sandbox_workspace_write.network_access=true \
     -c mcp_servers.gitnexus.enabled=false \
     --output-last-message "$out_file" \
-    - < "$prompt_file" 2> "$guard_log" || status=$?
+    - < <(matt_codex_prompt_input "$prompt_file" "$cwd" "$MATT_CODEX_CONTEXT_ROOT") 2> "$guard_log" || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ -s "$log_file" ] || [ -s "$out_file" ]; then transcript_empty=false; fi
   cat "$guard_log" >> "$log_file"

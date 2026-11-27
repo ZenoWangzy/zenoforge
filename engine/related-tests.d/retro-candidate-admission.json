@@ -1,5 +1,17 @@
 {
   "engine/eval/decision-stages.sh": ["engine/mac-autopilot/eval-regression-revert.test.sh"],
+  "engine/engine-sync.sh": ["engine/engine-sync.test.sh"],
+  "engine/eval/run-eval.mjs": ["engine/eval/skill-prompt.test.mjs"],
+  "engine/lib.d/triage-claude.sh": ["engine/triage-claude-fallback.test.sh"],
+  "engine/land-admit.sh": ["engine/land-admit.test.sh"],
+  "engine/mac-autopilot/scheduler.d/worker-command.sh": ["engine/mac-autopilot/worker-command.test.sh"],
+  "engine/matt-skills.sh": [
+    "engine/config-root.test.sh",
+    "engine/mac-autopilot/worker-command.test.sh",
+    "engine/matt-skills.test.sh",
+    "engine/triage-claude-fallback.test.sh"
+  ],
+  "engine/lib.d/codex-budget.sh": ["engine/lib.d/model-calls.test.sh"],
   "engine/retro/retro-verify.py": ["engine/retro/retro.test.sh"],
   "engine/retro/run-retro.sh": ["engine/retro/retro.test.sh"],
   "engine/related-tests.d/retro-candidate-admission.json": ["engine/focused-test-paths.test.mjs"]

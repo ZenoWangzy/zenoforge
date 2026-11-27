@@ -145,7 +145,7 @@ ticket_admission_cases() {
   if luna_waiter_has_room "$slots" "$normal" normal 0 2>>"$log"; then fail 'ordinary waiter passed a live hotfix ticket'; fi
   [[ "${LUNA_WAIT_AHEAD:-}" == "${hotfix##*/}" && "$box_calls" == 0 ]] || fail "hotfix ticket did not block before capacity check: ahead=${LUNA_WAIT_AHEAD:-} calls=$box_calls"
   if luna_waiter_has_room "$slots" "$normal" normal 0 2>>"$log"; then fail 'ordinary waiter passed a live hotfix ticket on a later poll'; fi
-  [[ "$(wc -l < "$log")" == 1 ]] || fail 'ticket yield was not logged exactly once within a minute'
+  [[ "$(wc -l < "$log")" == 1 ]] || fail "ticket yield was not logged exactly once within a minute: $(tail -n 4 "$log")"
   grep -Fq "waiter=${normal##*/} ahead=${hotfix##*/}" "$log" || fail 'ticket yield log omitted waiter keys'
 
   rm -rf -- "$slots"; mkdir -p "$slots"
@@ -287,11 +287,14 @@ for f in "$bin/luna" "$bin/zc"; do
   grep -Fq 'luna_wait_backoff "$wait_attempt"' "$f" || fail "$(basename "$f") does not use shared waiter backoff"
   grep -Fq 'luna_waiter_sleep "$slots" "$LUNA_WAIT_DELAY"' "$f" || fail "$(basename "$f") does not use the in-shell waiter sleep"
 done
+grep -Fq 'matt_codex_context_prepare "$run_cwd"' "$bin/luna" || fail 'luna does not select the accepted Codex instruction context'
+grep -Fq 'matt_codex_prompt_input "$prompt" "$run_cwd" "$MATT_CODEX_CONTEXT_ROOT"' "$bin/luna" || fail 'luna does not pass the candidate checkout explicitly when its instructions are unaccepted'
 echo "ok - ticket admission orders hotfix before normal and older waiters before newer ones; stale tickets drop; uncontended hotfix admitted"
 
 remote_root="$root/fake-remote"
 local_root="$root/remote-fallback"
 mkdir -p "$remote_root/proc/pressure" "$remote_root/home" "$local_root/bin" "$local_root/scratch/tmp"
+ln -s "$(command -v node)" "$local_root/bin/node"
 printf '0.1 0.1 0.1 1/1 1\n' > "$remote_root/proc/loadavg"
 printf 'processor\t: 0\n' > "$remote_root/proc/cpuinfo"
 printf 'MemAvailable: 4194304 kB\n' > "$remote_root/proc/meminfo"
@@ -343,7 +346,8 @@ env HOME="$local_root/home" AGENT_HOME="$local_root/agent-home" PATH="$local_roo
   ZF_TEST_REMOTE_ROOT="$remote_root" ZF_WORKER_SSH_CONNECT_TIMEOUT=1 LUNA_MIN=2 \
   LUNA_PROC_MEMINFO="$local_root/meminfo" LUNA_PROC_PSI_MEMORY="$local_root/psi" \
   LUNA_WORKER_SLICE_DIR="$local_root/no-slice" "$bin/luna" fallback "$local_root/worktree" "$local_root/prompt" \
-  > "$local_root/stdout" 2> "$local_root/stderr"
+  > "$local_root/stdout" 2> "$local_root/stderr" \
+  || fail "luna local fallback failed: $(cat "$local_root/stderr")"
 grep -Fq 'CPU PSI some avg60 61 is above 60' "$local_root/stderr" || fail 'remote refusal did not report the CPU PSI reason'
 grep -Fq 'is missing or not writable' "$local_root/stderr" || fail 'remote refusal did not report the missing run root'
 grep -Fq 'falling back to local capacity gate' "$local_root/stderr" || fail 'remote refusal did not fall back to local admission'

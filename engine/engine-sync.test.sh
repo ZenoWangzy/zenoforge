@@ -3,6 +3,8 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 trap 'rm -rf -- "$test_env_root"' EXIT
+grep -Fq 'diff --no-renames --name-only' "$here/engine-sync.sh" \
+  || { echo 'FAIL: engine pin diff can omit a renamed source path' >&2; exit 1; }
 target=$test_env_root/target
 mkdir -p "$target/.zenoforge" "$target/bin"
 printf '{"hook":"bin/build", "engine":"abc123"}\n' > "$target/.zenoforge/build.json"

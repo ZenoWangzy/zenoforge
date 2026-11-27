@@ -5,6 +5,21 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/land-admit.sh"
 
 fail() { printf 'land-admit.test.sh: %s\n' "$*" >&2; exit 1; }
+repo_root="$(git -C "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" rev-parse --show-toplevel)"
+seed_eval_map() {
+  mkdir -p "$1/engine/eval"
+  cp "$repo_root/engine/eval/decision-stages.sh" "$1/engine/eval/decision-stages.sh"
+}
+
+land_candidate_eval_admission_check "$repo_root" 'engine/prompts/triage.md' \
+  || fail 'paired evaluation admission refused a measured prompt'
+for path in engine/prompts/retro.md .zenoforge/prompts/retro.md .agents/skills/retro/SKILL.md; do
+  if land_candidate_eval_admission_check "$repo_root" "$path" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+    fail "paired evaluation admission accepted unmeasurable input $path"
+  fi
+  [[ "$(cat "$test_env_root/stderr")" == *'candidate input is unmeasurable; leave it as an observation'* ]] \
+    || fail "paired evaluation refusal did not explain that $path stays an observation"
+done
 
 assert_green_rc() {
   local expected_rc="$1" receipt="$2" expected_stderr="${3-}" actual_rc
@@ -69,7 +84,7 @@ fi
 agent_budget_fixture="$test_env_root/agent-budget"
 mkdir -p "$agent_budget_fixture"
 head -c 8193 /dev/zero > "$agent_budget_fixture/AGENTS.md"
-if land_prompt_byte_budget_check "$agent_budget_fixture" '' '' 'AGENTS.md' >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+if land_prompt_byte_budget_check "$agent_budget_fixture" '' '' 'AGENTS.md' "$repo_root" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
   fail 'landing accepted over-budget always-loaded instructions'
 else
   rc=$?
@@ -77,15 +92,37 @@ fi
 [[ "$rc" == 1 ]] || fail "always-loaded text budget returned $rc instead of 1"
 [[ "$(cat "$test_env_root/stderr")" == 'AGENTS.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text' ]] \
   || fail "always-loaded text refusal omitted its size, budget or remedy: $(cat "$test_env_root/stderr")"
+rm "$agent_budget_fixture/AGENTS.md"
+head -c 8193 /dev/zero > "$agent_budget_fixture/AGENTS.override.md"
+if land_prompt_byte_budget_check "$agent_budget_fixture" '' '' 'AGENTS.override.md' "$repo_root" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'landing accepted over-budget always-loaded override instructions'
+fi
+[[ "$(cat "$test_env_root/stderr")" == 'AGENTS.override.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text' ]] \
+  || fail "always-loaded override refusal omitted its size, budget or remedy: $(cat "$test_env_root/stderr")"
+head -c 4097 /dev/zero > "$agent_budget_fixture/AGENTS.md"
+head -c 4096 /dev/zero > "$agent_budget_fixture/AGENTS.override.md"
+if land_prompt_byte_budget_check "$agent_budget_fixture" '' '' 'AGENTS.override.md' "$repo_root" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'landing accepted combined over-budget always-loaded instructions'
+fi
+[[ "$(cat "$test_env_root/stderr")" == 'AGENTS.md + AGENTS.override.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text' ]] \
+  || fail "combined always-loaded text refusal omitted its size, budget or remedy: $(cat "$test_env_root/stderr")"
+claude_budget_fixture="$test_env_root/claude-budget"
+mkdir -p "$claude_budget_fixture"
+head -c 8193 /dev/zero > "$claude_budget_fixture/CLAUDE.md"
+if land_prompt_byte_budget_check "$claude_budget_fixture" '' '' 'CLAUDE.md' "$repo_root" >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'landing accepted over-budget always-loaded Claude instructions'
+fi
+[[ "$(cat "$test_env_root/stderr")" == 'CLAUDE.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text' ]] \
+  || fail "always-loaded Claude refusal omitted its size, budget or remedy: $(cat "$test_env_root/stderr")"
 
 selective_fixture="$test_env_root/selective-prompt-budget"
 mkdir -p "$selective_fixture/engine/prompts"
 printf 'review-contract.md\t4\nother.md\t4\n' > "$selective_fixture/engine/prompts/byte-budgets.tsv"
 head -c 4 /dev/zero > "$selective_fixture/engine/prompts/review-contract.md"
 head -c 5 /dev/zero > "$selective_fixture/engine/prompts/other.md"
-land_prompt_byte_budget_check "$selective_fixture" '' '' 'engine/prompts/review-contract.md' \
+land_prompt_byte_budget_check "$selective_fixture" '' '' 'engine/prompts/review-contract.md' "$repo_root" \
   || fail 'prompt landing check scanned an unchanged template'
-if land_prompt_byte_budget_check "$selective_fixture" '' '' 'engine/prompts/byte-budgets.tsv' \
+if land_prompt_byte_budget_check "$selective_fixture" '' '' 'engine/prompts/byte-budgets.tsv' "$repo_root" \
   >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
   fail 'budget-table change did not rescan every prompt template'
 fi
@@ -135,6 +172,7 @@ GH_DELETE_RC=0
 GH_META_RC=0
 GH_FILES_RC=0
 GH_FILES_OUTPUT=''
+GH_FILES_JSON_OUTPUT=''
 GH_META_OUTPUT='{"head":{"ref":"feature/topic"}}'
 
 gh() {
@@ -155,7 +193,17 @@ gh() {
       local arg
       for arg in "$@"; do
         if [[ "$arg" == *'/pulls/'*'/files?per_page='* ]]; then
-          printf '%s\n' "$GH_FILES_OUTPUT"
+          if [[ -n "$GH_FILES_JSON_OUTPUT" ]]; then
+            local jq_filter='' i
+            local -a api_args=("$@")
+            for ((i = 0; i + 1 < ${#api_args[@]}; i++)); do
+              [[ "${api_args[i]}" == --jq ]] || continue
+              jq_filter="${api_args[i + 1]}"
+            done
+            printf '%s\n' "$GH_FILES_JSON_OUTPUT" | command jq -r "$jq_filter"
+          else
+            printf '%s\n' "$GH_FILES_OUTPUT"
+          fi
           return "$GH_FILES_RC"
         fi
       done
@@ -338,6 +386,7 @@ git init --bare -q "$prompt_remote"
 git init -q "$prompt_repo"
 git -C "$prompt_repo" config user.email agent@example.invalid
 git -C "$prompt_repo" config user.name agent
+seed_eval_map "$prompt_repo"
 mkdir -p "$prompt_repo/engine/prompts"
 printf 'review-contract.md\t4\n' > "$prompt_repo/engine/prompts/byte-budgets.tsv"
 head -c 5 /dev/zero > "$prompt_repo/engine/prompts/review-contract.md"
@@ -368,9 +417,13 @@ git init --bare -q "$agent_remote"
 git init -q "$agent_repo"
 git -C "$agent_repo" config user.email agent@example.invalid
 git -C "$agent_repo" config user.name agent
-head -c 8193 /dev/zero > "$agent_repo/AGENTS.md"
+seed_eval_map "$agent_repo"
+printf 'x' > "$agent_repo/CLAUDE.md"
+git -C "$agent_repo" add -A
+git -C "$agent_repo" commit -qm 'fixture: accepted Claude instructions'
+head -c 8192 /dev/zero > "$agent_repo/AGENTS.md"
 git -C "$agent_repo" add AGENTS.md
-git -C "$agent_repo" commit -qm 'fixture: over-budget agent instructions'
+git -C "$agent_repo" commit -qm 'fixture: combined over-budget instructions'
 agent_sha="$(git -C "$agent_repo" rev-parse HEAD)"
 git -C "$agent_repo" remote add origin "$agent_remote"
 git -C "$agent_repo" push -q origin HEAD:refs/pull/38/head
@@ -380,9 +433,61 @@ if (cd "$agent_repo" && land_merge_pr 38 "$agent_sha" --repo owner/project) \
   >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
   fail 'land_merge_pr accepted over-budget always-loaded instructions'
 fi
-[[ "$(cat "$test_env_root/stderr")" == *'AGENTS.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text'* ]] \
+[[ "$(cat "$test_env_root/stderr")" == *'CLAUDE.md + AGENTS.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text'* ]] \
   || fail "pinned PR check omitted the always-loaded text refusal: $(cat "$test_env_root/stderr")"
 [[ "$(gh_call_count)" == 1 ]] || fail 'over-budget AGENTS.md PR reached the GitHub merge command'
+GH_FILES_OUTPUT=''
+
+rename_remote="$test_env_root/rename-remote.git"
+rename_repo="$test_env_root/rename-repo"
+git init --bare -q "$rename_remote"
+git init -q "$rename_repo"
+git -C "$rename_repo" config user.email agent@example.invalid
+git -C "$rename_repo" config user.name agent
+seed_eval_map "$rename_repo"
+mkdir -p "$rename_repo/.agents/skills/retro"
+printf 'unmeasured skill\n' > "$rename_repo/.agents/skills/retro/SKILL.md"
+git -C "$rename_repo" add -A
+git -C "$rename_repo" commit -qm 'fixture: unmeasured skill'
+git -C "$rename_repo" remote add origin "$rename_remote"
+git -C "$rename_repo" mv .agents/skills/retro/SKILL.md docs-retro.md
+git -C "$rename_repo" commit -qm 'fixture: rename unmeasured skill'
+rename_sha="$(git -C "$rename_repo" rev-parse HEAD)"
+git -C "$rename_repo" push -q origin HEAD:refs/pull/40/head
+GH_FILES_JSON_OUTPUT='[{"filename":"docs-retro.md","previous_filename":".agents/skills/retro/SKILL.md"}]'
+if (cd "$rename_repo" && land_pr_prompt_byte_budget_check 40 "$rename_sha" owner/project) \
+  >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'renamed unmeasurable skill passed PR admission'
+fi
+[[ "$(cat "$test_env_root/stderr")" == *'candidate input is unmeasurable; leave it as an observation'* ]] \
+  || fail 'PR admission missed the previous filename of a renamed skill'
+GH_FILES_JSON_OUTPUT=''
+
+override_remote="$test_env_root/override-remote.git"
+override_repo="$test_env_root/override-repo"
+git init --bare -q "$override_remote"
+git init -q "$override_repo"
+git -C "$override_repo" config user.email agent@example.invalid
+git -C "$override_repo" config user.name agent
+seed_eval_map "$override_repo"
+head -c 5000 /dev/zero > "$override_repo/AGENTS.md"
+git -C "$override_repo" add AGENTS.md
+git -C "$override_repo" commit -qm 'fixture: accepted base instructions'
+head -c 3193 /dev/zero > "$override_repo/AGENTS.override.md"
+git -C "$override_repo" add AGENTS.override.md
+git -C "$override_repo" commit -qm 'fixture: over-budget combined instructions'
+override_sha="$(git -C "$override_repo" rev-parse HEAD)"
+git -C "$override_repo" remote add origin "$override_remote"
+git -C "$override_repo" push -q origin HEAD:refs/pull/39/head
+GH_FILES_OUTPUT='AGENTS.override.md'
+reset_gh_calls
+if (cd "$override_repo" && land_merge_pr 39 "$override_sha" --repo owner/project) \
+  >"$test_env_root/stdout" 2>"$test_env_root/stderr"; then
+  fail 'land_merge_pr accepted combined over-budget always-loaded instructions'
+fi
+[[ "$(cat "$test_env_root/stderr")" == *'AGENTS.md + AGENTS.override.md is 8193 bytes, budget 8192 bytes; remove or demote lower-value text'* ]] \
+  || fail "pinned PR check omitted the combined instruction budget refusal: $(cat "$test_env_root/stderr")"
+[[ "$(gh_call_count)" == 1 ]] || fail 'over-budget instruction override PR reached the GitHub merge command'
 GH_FILES_OUTPUT=''
 
 reset_gh_calls

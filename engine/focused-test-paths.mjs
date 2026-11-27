@@ -95,7 +95,11 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'scripts/deploy-regression-contract.test.mjs',
   ]],
   // The worker prompt reads the product-boundary lines from CLAUDE.md.
-  ['CLAUDE.md', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],
+  ['CLAUDE.md', [
+    'engine/mac-autopilot/worker-rules-lanes.test.sh', 'engine/mac-autopilot/eval-regression-revert.test.sh',
+    'engine/mac-autopilot/worker-command.test.sh', 'engine/land-admit.test.sh',
+    'engine/matt-skills.test.sh', 'engine/triage-claude-fallback.test.sh',
+  ]],
   ['CONTRIBUTING.md', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],
   ['GLOSSARY.md', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],
   ['docs/adr/**', ['engine/mac-autopilot/worker-rules-lanes.test.sh']],

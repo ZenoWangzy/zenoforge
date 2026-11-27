@@ -263,14 +263,28 @@ pack_file() {
 # Target overrides win, then pack values retained during migration, then the engine's shipped defaults.
 zf_config_file() {
   [[ $# -eq 1 ]] || return 2
-  local relative_path="$1" candidate
+  local relative_path="$1" candidate target_path
   [[ "$relative_path" != /* ]] || return 2
   case "/$relative_path/" in
     */../*) return 2 ;;
   esac
 
+  if [[ "$relative_path" == prompts/* ]] && ! declare -F matt_target_file_revision_is_pinned >/dev/null 2>&1; then
+    source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/matt-skills.sh"
+  fi
   candidate="$ZF_CONFIG_ROOT/$relative_path"
-  if [[ -n "${ZF_CONFIG_ROOT-}" && -f "$candidate" ]]; then
+  if [[ "$relative_path" == prompts/* && -n "${ZF_CONFIG_ROOT-}" && "$candidate" == "$ZF_REPO_DIR/"* ]]; then
+    target_path="${candidate#"$ZF_REPO_DIR"/}"
+    if matt_target_file_revision_is_pinned "$ZF_REPO_DIR" "$target_path"; then
+      if [[ -f "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    elif candidate="$(matt_target_product_file "$ZF_REPO_DIR" "$target_path")"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  elif [[ -n "${ZF_CONFIG_ROOT-}" && -f "$candidate" ]]; then
     printf '%s\n' "$candidate"
     return 0
   fi
