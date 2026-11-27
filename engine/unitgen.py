@@ -7,8 +7,10 @@ import os
 import plistlib
 import re
 import shlex
+import subprocess
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -177,7 +179,222 @@ def render_plists(paths, out_dir):
         if target.exists() and target.read_bytes() == data:
             continue
         target.write_bytes(data)
+        remember_changed(out_dir, target.name)
     return status
+
+
+def remember_changed(directory, name):
+    marker = directory / ".unitgen.changed"
+    names = set(marker.read_text(encoding="utf-8").splitlines()) if marker.exists() else set()
+    names.add(name)
+    marker.write_text("".join(f"{item}\n" for item in sorted(names)), encoding="utf-8")
+
+
+def write_if_changed(directory, name, data, loadable=False):
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / name
+    if target.exists() and target.read_bytes() == data:
+        return False
+    target.write_bytes(data)
+    if loadable:
+        remember_changed(directory, name)
+    return True
+
+
+def next_calendar(value, after):
+    entries = calendar_entries(value, 0)
+    current = datetime.fromtimestamp(after, timezone.utc)
+    for offset in range(3):
+        day = current.date() + timedelta(days=offset)
+        for entry in entries:
+            candidate = datetime(
+                day.year, day.month, day.day, entry["Hour"], entry["Minute"], tzinfo=timezone.utc
+            ).timestamp()
+            if candidate > after:
+                return candidate
+    raise ValueError(f"no next OnCalendar occurrence for {value!r}")
+
+
+def loop_schedule(timer, home, start):
+    schedule = parse(timer).get("Timer", [])
+    service = timer_plist(timer, home, 0)
+    events = []
+    for directive in schedule:
+        key = directive["key"]
+        value = directive["value"]
+        if key == "OnActiveSec":
+            events.append({"kind": "once", "due": start + seconds(value)})
+        elif key == "OnUnitActiveSec":
+            interval = seconds(value)
+            events.append({"kind": "interval", "due": start + interval, "interval": interval})
+        elif key == "OnCalendar":
+            events.append({"kind": "calendar", "due": next_calendar(value, start), "value": value})
+    if not events:
+        raise ValueError(f"no supported timer schedule in {timer}")
+    return {
+        "name": timer.stem,
+        "events": events,
+        "argv": service["ProgramArguments"],
+        "environment": service.get("EnvironmentVariables", {}),
+        "cwd": service.get("WorkingDirectory"),
+    }
+
+
+def read_clock(clock_file):
+    if clock_file is None:
+        return time.time()
+    return float(clock_file.read_text(encoding="utf-8").strip())
+
+
+def run_loop(paths, clock_file=None, stop_at=None, poll_interval=1):
+    if poll_interval <= 0:
+        print("unitgen loop: poll interval must be positive", file=sys.stderr)
+        return 2
+    try:
+        now = read_clock(clock_file)
+        schedules = [
+            loop_schedule(timer, os.path.expanduser("~"), now)
+            for timer in unit_files(paths)
+            if timer.suffix == ".timer"
+        ]
+    except (OSError, ValueError) as error:
+        print(f"unitgen loop: {error}", file=sys.stderr)
+        return 2
+    active = {}
+    print("unitgen loop started", flush=True)
+    while True:
+        try:
+            now = read_clock(clock_file)
+        except (OSError, ValueError) as error:
+            print(f"unitgen loop: {error}", file=sys.stderr)
+            return 2
+        for name, process in list(active.items()):
+            result = process.poll()
+            if result is not None:
+                del active[name]
+                print(f"unitgen loop finished {name} rc={result}", flush=True)
+        for schedule in schedules:
+            due = [event for event in schedule["events"] if event["due"] <= now]
+            if not due:
+                continue
+            name = schedule["name"]
+            if name in active:
+                print(f"unitgen loop skipped active {name} at {int(now)}", flush=True)
+            else:
+                environment = os.environ.copy()
+                environment.update(schedule["environment"])
+                try:
+                    process = subprocess.Popen(
+                        schedule["argv"], env=environment, cwd=schedule["cwd"]
+                    )
+                except OSError as error:
+                    print(f"unitgen loop: {name}: {error}", file=sys.stderr)
+                    return 2
+                active[name] = process
+                print(f"unitgen loop starting {name} at {int(now)}", flush=True)
+            for event in due:
+                if event["kind"] == "once":
+                    schedule["events"].remove(event)
+                elif event["kind"] == "interval":
+                    event["due"] = now + event["interval"]
+                else:
+                    event["due"] = next_calendar(event["value"], now)
+        if stop_at is not None and now >= stop_at:
+            for process in active.values():
+                if process.poll() is None:
+                    process.terminate()
+            for process in active.values():
+                process.wait()
+            return 0
+        time.sleep(poll_interval)
+
+
+def timer_mode():
+    return os.environ.get("ZF_TIMERS", "launchd" if sys.platform == "darwin" else "systemd")
+
+
+def live_directory(value):
+    if value is not None:
+        return str(value)
+    supervisor = os.environ.get("MAC_AUTOPILOT_SUPERVISOR_DIR")
+    if supervisor:
+        return str(Path(supervisor) / "autopi-live")
+    root = Path(os.environ.get("MAC_AUTOPILOT_ROOT", SYSTEMD_DIR.parent.parent))
+    return str(root / ".scratch-supervisor" / "autopi-live")
+
+
+def template_files(template_dir):
+    return sorted(template_dir.glob("*.service.in"))
+
+
+def service_plist(template, live):
+    directives = parse(template).get("Service", [])
+    starts = [directive["value"] for directive in directives if directive["key"] == "ExecStart"]
+    if not starts:
+        raise ValueError(f"no ExecStart in {template}")
+    name = template.name.removesuffix(".service.in")
+    return {
+        "Label": f"zenoforge.{name.removesuffix('.service')}",
+        "ProgramArguments": shlex.split(starts[-1].replace("@LIVE@", live)),
+        "EnvironmentVariables": {"PATH": os.environ.get("PATH", "")},
+        "KeepAlive": True,
+        "SoftResourceLimits": {"NumberOfFiles": 8192},
+    }
+
+
+def install_units(mode, templates, systemd_dir, launchagents_dir, live):
+    if mode == "loop":
+        return 0
+    if mode not in {"systemd", "launchd"}:
+        print(f"unitgen install: unsupported ZF_TIMERS={mode}", file=sys.stderr)
+        return 2
+    try:
+        files = template_files(templates)
+        if not files:
+            raise FileNotFoundError(f"no service templates in {templates}")
+        for template in files:
+            if mode == "systemd":
+                target_name = template.name.removesuffix(".in")
+                data = template.read_text(encoding="utf-8").replace("@LIVE@", live).encode()
+                write_if_changed(systemd_dir, target_name, data)
+            else:
+                target_name = f"zenoforge.{template.name.removesuffix('.service.in')}.plist"
+                data = plistlib.dumps(service_plist(template, live), sort_keys=True)
+                write_if_changed(launchagents_dir, target_name, data, loadable=True)
+    except (OSError, ValueError) as error:
+        print(f"unitgen install: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def load_launchagents(directory, uid):
+    marker = directory / ".unitgen.changed"
+    if not marker.exists():
+        return 0
+    domain = f"gui/{uid}"
+    for name in marker.read_text(encoding="utf-8").splitlines():
+        target = directory / name
+        if not target.is_file():
+            print(f"unitgen load: missing plist {target}", file=sys.stderr)
+            return 2
+        try:
+            subprocess.run(
+                ["launchctl", "bootout", domain, str(target)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            result = subprocess.run(
+                ["launchctl", "bootstrap", domain, str(target)], check=False
+            )
+        except OSError as error:
+            print(f"unitgen load: {error}", file=sys.stderr)
+            return 2
+        if result.returncode != 0:
+            print(f"unitgen load: launchctl bootstrap failed for {target}", file=sys.stderr)
+            return 2
+    marker.unlink()
+    return 0
 
 
 def main():
@@ -189,9 +406,42 @@ def main():
     plist = commands.add_parser("plist")
     plist.add_argument("paths", nargs="*", type=Path, default=[SYSTEMD_DIR])
     plist.add_argument("--dir", type=Path, default=Path.home() / "Library" / "LaunchAgents")
+    loop = commands.add_parser("loop")
+    loop.add_argument("paths", nargs="*", type=Path, default=[SYSTEMD_DIR])
+    loop.add_argument("--clock-file", type=Path)
+    loop.add_argument("--stop-at", type=float)
+    loop.add_argument("--poll-interval", type=float, default=1)
+    install = commands.add_parser("install")
+    install.add_argument("--templates", type=Path, default=SYSTEMD_DIR / "templates")
+    install.add_argument(
+        "--systemd-unit-dir", type=Path, default=Path.home() / ".config" / "systemd" / "user"
+    )
+    install.add_argument(
+        "--launchagents-dir", type=Path, default=Path.home() / "Library" / "LaunchAgents"
+    )
+    install.add_argument("--live", type=Path)
+    load = commands.add_parser("load")
+    load.add_argument(
+        "--launchagents-dir", type=Path, default=Path.home() / "Library" / "LaunchAgents"
+    )
+    load.add_argument("--uid", type=int, default=os.getuid())
     args = parser.parse_args()
     if args.command == "plist":
         return render_plists(args.paths, args.dir)
+    if args.command == "loop":
+        return run_loop(args.paths, args.clock_file, args.stop_at, args.poll_interval)
+    if args.command == "install":
+        return install_units(
+            timer_mode(),
+            args.templates,
+            args.systemd_unit_dir,
+            args.launchagents_dir,
+            live_directory(args.live),
+        )
+    if args.command == "load":
+        if timer_mode() == "launchd":
+            return load_launchagents(args.launchagents_dir, args.uid)
+        return 0
     status = 0
     for path in unit_files(args.paths):
         try:

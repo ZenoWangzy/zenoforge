@@ -1,0 +1,7 @@
+[Unit]
+Description=Zenoforge autopilot bell loop
+
+[Service]
+Type=simple
+Restart=always
+ExecStart=@LIVE@/bell-loop.sh
