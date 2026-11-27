@@ -31,14 +31,22 @@ explore_state_update() {
 }
 
 explore_state_create() {
-  local sha="$1" state="$2" reason="$3" unit="$4" wall="$5" at="$6" path tmp
+  local sha="$1" state="$2" reason="$3" unit="$4" wall="$5" at="$6" path tmp reason_file status
   path="$(explore_state_file "$sha")"
   mkdir -p -- "$(dirname -- "$path")"
   tmp="$(mktemp "$(dirname -- "$path")/.state.XXXXXX")" || return 1
-  jq -cn --arg state "$state" --arg sha "$sha" --arg reason "$reason" --arg unit "$unit" \
+  reason_file="$(jq_arg_file "$reason")" || { rm -f -- "$tmp"; return 1; }
+  if jq -cn --arg state "$state" --arg sha "$sha" --rawfile reason "$reason_file" --arg unit "$unit" \
     --arg at "$at" --argjson wall "$wall" \
     '{state:$state,release_sha:$sha,reason:(if $reason=="" then null else $reason end),unit:(if $unit=="" then null else $unit end),wall_seconds:$wall,started_at:$at,started_epoch:(now|floor)}' \
-    > "$tmp" && mv -f -- "$tmp" "$path"
+    > "$tmp"; then
+    rm -f -- "$reason_file"
+    mv -f -- "$tmp" "$path"
+  else
+    status=$?
+    rm -f -- "$reason_file" "$tmp"
+    return "$status"
+  fi
 }
 
 explore_config_load() {
@@ -124,6 +132,7 @@ explore_pending_count() {
 
 explore_start_unit() {
   local sha="$1" mode="$2" wall="$3" unit="${UNIT_PREFIX_TRANSIENT:-zf}-explore-$1" status
+  export http_proxy="${http_proxy:-${HTTP_PROXY:-}}" https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" no_proxy="${no_proxy:-${NO_PROXY:-}}"
   local -a runtime_env=(-E PATH -E HOME -E http_proxy -E https_proxy -E HTTP_PROXY -E HTTPS_PROXY -E no_proxy -E NO_PROXY \
     -E ALL_PROXY -E NODE_USE_ENV_PROXY -E AGENT_HOME="$AGENT_HOME" -E ZF_ENGINE_DIR="$ZF_ENGINE_DIR" \
     -E ZF_REPO_DIR="$ZF_REPO_DIR" -E ZF_CONFIG_ROOT="$ZF_CONFIG_ROOT" -E MAC_AUTOPILOT_RUNTIME_DIR="${MAC_AUTOPILOT_RUNTIME_DIR:-}")
@@ -300,7 +309,7 @@ explore_issue_body() {
 }
 
 explore_upsert_finding() {
-  local sha="$1" feature_id="$2" title="$3" signature="$4" body="$5" class="$6" run_dir metadata pending_dir upsert attachment_json attachment
+  local sha="$1" feature_id="$2" title="$3" signature="$4" body_path="$5" class="$6" run_dir metadata pending_dir upsert attachment_json attachment
   shift 6
   local -a attachments=("$@") upsert_args=()
   run_dir="$(explore_run_dir "$sha")"
@@ -308,10 +317,10 @@ explore_upsert_finding() {
   mkdir -p -- "$pending_dir"
   metadata="$pending_dir/$class.json"
   attachment_json="$(jq -cn --args '$ARGS.positional' -- "${attachments[@]}")"
-  jq -cn --arg class "$class" --arg title "$title" --arg body "$body" --arg feature "$feature_id" --argjson attachments "$attachment_json" \
-    '{class:$class,title:$title,body_file:$body,feature_id:$feature,attachments:$attachments,state:"pending"}' > "$metadata"
+  jq -cn --arg class "$class" --arg title "$title" --arg body_file "$body_path" --arg feature "$feature_id" --argjson attachments "$attachment_json" \
+    '{class:$class,title:$title,body_file:$body_file,feature_id:$feature,attachments:$attachments,state:"pending"}' > "$metadata"
   upsert="${ZF_EXPLORE_ISSUE_UPSERT:-$ZF_ENGINE_DIR/pipeline-issue-upsert.sh}"
-  upsert_args=(--lane product --class "$class" --label explore-found --title "$title" --body-file "$body")
+  upsert_args=(--lane product --class "$class" --label explore-found --title "$title" --body-file "$body_path")
   for attachment in "${attachments[@]}"; do upsert_args+=(--attach "$attachment"); done
   if bash "$upsert" "${upsert_args[@]}"; then
     jq '.state="filed"' "$metadata" > "$metadata.tmp" && mv -f -- "$metadata.tmp" "$metadata"

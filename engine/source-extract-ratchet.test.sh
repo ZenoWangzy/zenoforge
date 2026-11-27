@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 
 source_extract_line_count() {
   local root="$1" path="$2" count rc
-  if count=$(grep -cE "sed -n ['\"]/\\^?[a-zA-Z_]" "$root/$path"); then
+  if count=$(grep -cE "sed -n ['\"]/[^/]*[a-zA-Z_][a-zA-Z0-9_]*\\(\\)[[:space:]]*[{(]/," "$root/$path"); then
     printf '%s\n' "$count"
   else
     rc=$?
@@ -60,6 +60,7 @@ git -C "$fixture_root" init -q -b main
   printf '%s%s%s%s\n' 'sed -n ' "'" '/^first() {/,/^}/p' "' engine/source.sh"
   printf '%s%s%s%s\n' 'sed -n ' '"' '/^second() {/,/^}/p' '" engine/source.sh'
 } > "$fixture_root/engine/fake.test.sh"
+printf '%s\n' "sed -n '/BEGIN EDGES/,/END EDGES/p' engine/model.tla" >> "$fixture_root/engine/fake.test.sh"
 git -C "$fixture_root" add engine/fake.test.sh
 fixture_baseline="$fixture_root/source-extract-baseline.txt"
 fixture_output="$fixture_root/output.txt"

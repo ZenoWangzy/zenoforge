@@ -34,7 +34,7 @@
 1	engine/night/hand-agent-session-discovery.test.sh
 3	engine/notify.test.sh
 1	engine/owner-admission-lanes.test.sh
-4	engine/queue-order.test.sh
+0	engine/queue-order.test.sh
 1	engine/recut-glm-route.test.sh
 1	engine/recut-parent-state.test.sh
 3	engine/roadmap-snapshot.test.sh
