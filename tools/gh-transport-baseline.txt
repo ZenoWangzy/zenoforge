@@ -1,4 +1,6 @@
 # gh transport baseline: one unwrapped script path per line; remove entries as callers load the wrapper.
+engine/hotfix/hf-apply-dist.sh
+engine/hotfix/hf-start.sh
 engine/pre-push-guard.sh
 engine/supervisor/watch/oversight.sh
 tools/auto-pin.sh
