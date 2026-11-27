@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Ship one Luna or ZCode worktree to an SSH worker and mirror its run files locally."""
+import fcntl
 import fnmatch
 import io
 import json
@@ -130,7 +131,7 @@ print(json.dumps({"load5": load5, "cores": cores, "uid": uid, "memavailable_mb":
 
 BACKEND_CHECKS = {
     # The cheap first step: luna's `codex login status` is the login check itself; zc's --version then probe_zc_login.
-    "luna": ("codex", "codex login status"),
+    "luna": ("codex", 'PATH="$PATH:$HOME/.local/bin" codex login status'),
     "zc": ("zcode", "timeout 10 zcode --version"),
 }
 
@@ -329,10 +330,10 @@ def sensitive_pathspecs():
     return [*directories, *files]
 
 
-def git_output(cwd, *args, allow_failure=False):
+def git_output(cwd, *args, allow_failure=False, failure=None):
     result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
     if result.returncode and not allow_failure:
-        raise RuntimeError("git operation failed: " + " ".join(args[:2]))
+        raise RuntimeError(failure or "git operation failed: " + " ".join(args[:2]))
     return result
 
 
@@ -438,37 +439,47 @@ def make_payload(top, cwd, prompt, schema, key, target, archive_path, backend="l
 
 
 def remote_prepare(staging, target):
-    staging = Path(staging)
-    target = Path(target)
+    staging, target = Path(staging), Path(target)
     job = json.loads((staging / "job.json").read_text())
     key, branch, base_branch, origin = job["key"], job["branch"], job["base_branch"], job["origin"]
     validate_key(key)
     target.parent.mkdir(parents=True, exist_ok=True)
     fresh = not (target / ".git").exists()
+    if origin:
+        mirror_root = target.parent / ".mirrors"
+        mirror_root.mkdir(parents=True, exist_ok=True)
+        digest = __import__("hashlib").sha256(origin.encode()).hexdigest()
+        mirror = mirror_root / f"{digest}.git"
+        with (mirror_root / f"{digest}.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if mirror.exists():
+                git_output(mirror, "fetch", "--quiet", "--prune", "origin")
+            else:
+                with tempfile.TemporaryDirectory(dir=mirror_root) as temporary:
+                    seed = Path(temporary) / "origin.git"
+                    subprocess.run(["git", "clone", "--quiet", "--mirror", origin, str(seed)],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    seed.rename(mirror)
     if fresh:
         if origin:
-            clone = subprocess.run(["git", "clone", "--quiet", "--single-branch", "--branch", base_branch, origin, str(target)],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            if clone.returncode:
-                raise RuntimeError("clone from GitHub failed")
+            git_output(target.parent, "clone", "--quiet", "--single-branch", "--branch", base_branch,
+                       str(mirror), str(target))
+            git_output(target, "remote", "set-url", "origin", origin)
         else:
             target.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "-C", str(target), "init", "-q"], check=True, stdout=subprocess.DEVNULL)
+            git_output(target, "init", "-q")
     dirty = bool(git_output(target, "status", "--porcelain").stdout.strip()) if not fresh else False
     current_branch = git_output(target, "branch", "--show-current", allow_failure=True).stdout.strip()
     if dirty and current_branch != branch:
         raise RuntimeError("remote worktree is dirty on a different branch")
     if not dirty:
         if origin:
-            subprocess.run(["git", "-C", str(target), "fetch", "--quiet", "origin", base_branch],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            git_output(target, "fetch", "--quiet", "origin", base_branch)
             if branch != base_branch:
                 git_output(target, "fetch", "--quiet", "origin", f"{branch}:refs/remotes/origin/{branch}", allow_failure=True)
-        bundle = staging / "snapshot.bundle"
-        input_ref = "refs/remotes/zf/worker-input"
+        bundle, input_ref = staging / "snapshot.bundle", "refs/remotes/zf/worker-input"
         if bundle.stat().st_size:
-            subprocess.run(["git", "-C", str(target), "fetch", "--quiet", str(bundle),
-                            f"+HEAD:{input_ref}"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            git_output(target, "fetch", "--quiet", str(bundle), f"+HEAD:{input_ref}")
         if current_branch != branch:
             if origin:
                 requested_ref = git_output(target, "show-ref", "--verify", "--quiet",
@@ -479,25 +490,14 @@ def remote_prepare(staging, target):
                 base_ref = input_ref
             else:
                 raise RuntimeError("remote branch has no base commit")
-            subprocess.run(["git", "-C", str(target), "checkout", "-B", branch, base_ref],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        elif origin:
-            remote_branch = git_output(target, "show-ref", "--verify", "--quiet",
-                                       f"refs/remotes/origin/{branch}", allow_failure=True)
-            if remote_branch.returncode == 0:
-                merge_remote = subprocess.run(["git", "-C", str(target), "merge", "--ff-only",
-                                               f"refs/remotes/origin/{branch}"],
-                                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                if merge_remote.returncode:
-                    raise RuntimeError("remote branch has diverged")
+            git_output(target, "checkout", "-B", branch, base_ref)
+        elif origin and git_output(target, "show-ref", "--verify", "--quiet",
+                                   f"refs/remotes/origin/{branch}", allow_failure=True).returncode == 0:
+            git_output(target, "merge", "--ff-only", f"refs/remotes/origin/{branch}", failure="remote branch has diverged")
         if bundle.stat().st_size:
-            merge = subprocess.run(["git", "-C", str(target), "merge", "--ff-only", input_ref],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            if merge.returncode:
-                raise RuntimeError("local branch and remote branch have diverged")
+            git_output(target, "merge", "--ff-only", input_ref, failure="local branch and remote branch have diverged")
         if (staging / "worktree.patch").stat().st_size:
-            subprocess.run(["git", "-C", str(target), "apply", "--3way", str(staging / "worktree.patch")],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            git_output(target, "apply", "--3way", str(staging / "worktree.patch"))
         for raw in (staging / "untracked").glob("**/*"):
             if not raw.is_file() or raw.is_symlink():
                 continue
@@ -526,9 +526,9 @@ def remote_run(staging):
         except FileNotFoundError:
             pass
     env = os.environ.copy()
-    if shutil.which("codex") is None:
-        npm = shutil.which("npm")
-        if npm:
+    env["PATH"] = os.pathsep.join(filter(None, (env.get("PATH"), str(Path.home() / ".local" / "bin"))))
+    if shutil.which("codex", path=env["PATH"]) is None:
+        if npm := shutil.which("npm"):
             prefix = subprocess.run([npm, "prefix", "-g"], capture_output=True, text=True)
             npm_bin = Path(prefix.stdout.strip()) / "bin" if prefix.returncode == 0 else None
             if npm_bin and (npm_bin / "codex").is_file():

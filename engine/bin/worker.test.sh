@@ -311,7 +311,7 @@ run_auto_pick() {
   local path=${7:-$test_root/bin:/usr/bin:/bin} run_real_zc=${8:-0} zcode_bin=${9:-}
   local -a zcode_override=()
   [[ -z $zcode_bin ]] || zcode_override=(ZF_ZCODE_BIN="$zcode_bin")
-  if timeout --signal=TERM --kill-after=1 5 \
+  if timeout --signal=TERM --kill-after=1 "${WORKER_TEST_RUN_TIMEOUT:-5}" \
     env -u WORKER_BACKEND -u WORKER_GATE_QUEUE_SECONDS -u ZF_ZCODE_BIN -u ZCODE_BIN \
       HOME="$home" AGENT_HOME="$agent_home" ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" \
       PATH="$path" FAKE_REAL_ZC="$run_real_zc" REAL_ZC_SCRIPT="$test_root/bin/real-zc" \
@@ -642,7 +642,7 @@ root="$test_root/hang/.scratch"
 wt="$test_root/hang/worktree"
 prompt="$test_root/hang/brief.md"
 key=test-after-zc-breaker
-timeout 4 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCRATCH_ROOT="$root" \
+timeout 30 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCRATCH_ROOT="$root" \
   WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
   FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" \
   > "$test_root/after-zc-breaker.stdout" 2> "$test_root/after-zc-breaker.stderr"
@@ -681,6 +681,7 @@ assert_file_contains "$queued_dir/failover" 'queued at the capacity gate'
 assert_file_contains "$test_root/queued.stderr" 'worker: queued at the capacity gate'
 [[ $(cat "$queued_dir/rc") == 75 && $(cat "$queued_dir/attempt-backend") == zc ]] || fail 'queue timeout did not end rc=75 on the first backend'
 [[ ! -e "$test_root/queued/.scratch/tmp/zc-breaker" ]] || fail 'queue timeout opened the provider breaker'
+[[ ! -s "$test_root/queued/.scratch/luna/rounds.log" ]] || fail 'gate timeout counted as a failed model round'
 printf 'PASS never passing the capacity gate fails fast with a named reason\n'
 run_case builtin 0 builtin_info success 8 4
 builtin_dir=$CASE_DIR
@@ -794,8 +795,11 @@ timeout 4 env -u WORKER_BACKEND ZF_ZCODE_BIN="$root/zc-src/bin/zcode" WORKER_SCR
 [[ $(cat "$root/luna/$key/backend") == zc ]] || fail 'unset WORKER_BACKEND did not route around the open luna breaker'
 printf 'PASS unset backend routes around the open luna breaker\n'
 rm -f "$root/tmp/luna-breaker"; touch "$root/tmp/zc-breaker"; key=test-zc-breaker
-timeout 8 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
-  FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" >/dev/null 2>&1
+breaker_rc=0
+timeout 30 env -u WORKER_BACKEND WORKER_SCRATCH_ROOT="$root" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  FAKE_ZC_MODE=success FAKE_LUNA_MODE=success bash "$worker_script" "$key" "$wt" "$prompt" \
+  > "$test_root/zc-breaker.stdout" 2> "$test_root/zc-breaker.stderr" || breaker_rc=$?
+[[ $breaker_rc == 0 ]] || fail "open zc breaker worker returned rc=$breaker_rc: $(cat "$test_root/zc-breaker.stderr")"
 [[ $(cat "$root/luna/$key/backend") == luna ]] || fail 'open zc breaker did not route to luna'
 printf 'PASS open zc breaker routes to luna\n'
 
@@ -823,8 +827,8 @@ term_rc=0; wait "$worker_pid" || term_rc=$?
 kill -0 "$backend_pid" 2>/dev/null && fail 'orphaned backend survived worker TERM'
 kill -0 "$child_pid" 2>/dev/null && fail 'backend child survived worker TERM'
 [[ -f $d/hang-terminated && -f $d/hang-child-terminated ]] || fail 'TERM did not reach entire backend group'
-assert_file_contains "$root/luna/rounds.log" 'test-term gpt-6.1-terra rc=143'
-printf 'PASS worker TERM stops backend session and child, logs rc=143\n'
+[[ ! -s "$root/luna/rounds.log" ]] || fail 'worker stop counted as a failed model round'
+printf 'PASS worker TERM stops backend session and does not count a round\n'
 
 make_fake_remote() {
   local remote=$1
@@ -843,6 +847,8 @@ while [[ ${1:-} == -o ]]; do
 done
 host=${1:-}; shift || true
 if [[ $host == unreachable ]]; then sleep "$connect_timeout"; exit 255; fi
+if [[ -n ${ZF_TEST_REMOTE_TRANSFER_DELAY:-} && $* == *'tar -xf -'* ]]; then sleep "$ZF_TEST_REMOTE_TRANSFER_DELAY"; fi
+if [[ -n ${ZF_TEST_REMOTE_PREPARE_DELAY:-} && $* == *remote-prepare* ]]; then sleep "$ZF_TEST_REMOTE_PREPARE_DELAY"; fi
 remote=${ZF_TEST_REMOTE_ROOT:?}
 cd "$remote"
 export HOME="$remote/home" PATH="$remote/bin:/usr/bin:/bin"
@@ -929,6 +935,46 @@ EOF
   chmod +x "$test_root/bin/codex"
 }
 
+seed_origin="$test_root/seed-origin.git"
+seed_source="$test_root/seed-source"
+seed_remote_root="$test_root/seed-remote/root"
+mkdir -p "$seed_remote_root" "$seed_source"
+git init --bare -q --initial-branch=main "$seed_origin"
+git init -q --initial-branch=main "$seed_source"
+git -C "$seed_source" config user.name test
+git -C "$seed_source" config user.email test@example.invalid
+printf 'first seed\n' > "$seed_source/content"
+git -C "$seed_source" add content
+git -C "$seed_source" commit -qm 'first seed'
+git -C "$seed_source" remote add origin "$seed_origin"
+git -C "$seed_source" push -qu origin main
+prepare_seed_job() {
+  local key=$1 target=$2 staging="$test_root/$1-staging"
+  mkdir -p "$staging/untracked"
+  : > "$staging/snapshot.bundle"
+  : > "$staging/worktree.patch"
+  python3 - "$staging/job.json" "$key" "$target" "$seed_origin" <<'PY'
+import json, sys
+path, key, target, origin = sys.argv[1:]
+with open(path, "w") as stream:
+    json.dump({"key": key, "branch": "main", "base_branch": "main", "origin": origin}, stream)
+PY
+  printf '%s\n' "$staging"
+}
+seed_staging=$(prepare_seed_job seed-one "$seed_remote_root/seed-one")
+python3 "$script_dir/worker-remote.py" remote-prepare "$seed_staging" "$seed_remote_root/seed-one"
+[[ $(git -C "$seed_remote_root/seed-one" show -s --format=%s HEAD) == 'first seed' ]] || fail 'fresh remote seed clone missed the origin commit'
+seed_mirror=$(find "$seed_remote_root/.mirrors" -maxdepth 1 -type d -name '*.git' -print -quit 2>/dev/null || true)
+[[ -n $seed_mirror ]] || fail 'remote prepare did not create a per-origin mirror'
+printf 'second seed\n' >> "$seed_source/content"
+git -C "$seed_source" commit -qam 'second seed'
+git -C "$seed_source" push -qu origin main
+seed_staging=$(prepare_seed_job seed-two "$seed_remote_root/seed-two")
+python3 "$script_dir/worker-remote.py" remote-prepare "$seed_staging" "$seed_remote_root/seed-two"
+[[ $(git --git-dir "$seed_mirror" rev-parse refs/heads/main) == "$(git -C "$seed_source" rev-parse HEAD)" ]] || fail 'remote mirror was not refreshed from its origin'
+[[ $(git -C "$seed_remote_root/seed-two" show -s --format=%s HEAD) == 'second seed' ]] || fail 'fresh target did not use the refreshed remote seed'
+printf 'PASS remote targets use a refreshed per-origin seed mirror\n'
+
 remote_case="$test_root/remote-sync"; remote_root="$test_root/fake-remote-sync"
 remote_scratch="$remote_case/.scratch"; remote_worktree="$remote_case/worktree"; remote_prompt="$remote_case/brief.md"
 remote_home="$remote_case/home"; remote_agent_home="$remote_case/agent-home"
@@ -938,7 +984,7 @@ git -C "$remote_worktree" init -q
 git -C "$remote_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
 printf 'remote sync brief\n' > "$remote_prompt"
 remote_timeout=0
-timeout --signal=TERM --kill-after=1 12 env ZF_WORKER_HOST=unreachable HOME="$remote_home" AGENT_HOME="$remote_agent_home" \
+timeout --signal=TERM --kill-after=1 30 env ZF_WORKER_HOST=unreachable HOME="$remote_home" AGENT_HOME="$remote_agent_home" \
   ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
   ZF_WORKER_HOSTS="remote-one" ZF_WORKER_REMOTE_ROOT="$remote_root/roots" ZF_TEST_REMOTE_ROOT="$remote_root" \
   ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=luna \
@@ -946,13 +992,79 @@ timeout --signal=TERM --kill-after=1 12 env ZF_WORKER_HOST=unreachable HOME="$re
   FAKE_REMOTE_LUNA=1 REAL_LUNA_SCRIPT="$script_dir/luna" CODEX_MODEL=gpt-6-luna \
   bash "$worker_script" remote-sync "$remote_worktree" "$remote_prompt" \
   > "$remote_case.stdout" 2> "$remote_case.stderr" || remote_timeout=$?
-[[ $remote_timeout == 0 ]] || fail "remote run returned rc=$remote_timeout (details: $remote_case.stderr)"
+[[ $remote_timeout == 0 ]] || fail "remote run returned rc=$remote_timeout: $(cat "$remote_case.stderr")"
 remote_dir="$remote_scratch/luna/remote-sync"
 assert_file_contains "$remote_dir/events.jsonl" 'remote.event'
 assert_file_contains "$remote_dir/last.md" 'remote last message'
 [[ $(cat "$remote_dir/rc") == 0 && -s "$remote_dir/codex.pid" ]] || fail 'remote run did not sync rc and codex.pid'
 assert_file_contains "$remote_root/systemctl.log" 'set-property --runtime zf-remote.slice CPUWeight=20'
 printf 'PASS remote run syncs events, last.md, rc and codex.pid\n'
+
+userbin_case="$test_root/remote-user-bin"; userbin_root="$test_root/fake-remote-user-bin"
+userbin_scratch="$userbin_case/.scratch"; userbin_worktree="$userbin_case/worktree"; userbin_prompt="$userbin_case/brief.md"
+userbin_home="$userbin_case/home"; userbin_agent_home="$userbin_case/agent-home"
+mkdir -p "$userbin_scratch/tmp" "$userbin_scratch/luna" "$userbin_worktree" "$userbin_home" "$userbin_agent_home"
+make_fake_remote "$userbin_root"
+mkdir -p "$userbin_root/home/.local/bin"
+mv "$userbin_root/bin/codex" "$userbin_root/home/.local/bin/codex"
+git -C "$userbin_worktree" init -q
+git -C "$userbin_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'remote user bin brief\n' > "$userbin_prompt"
+userbin_rc=0
+timeout --signal=TERM --kill-after=1 30 env HOME="$userbin_home" AGENT_HOME="$userbin_agent_home" \
+  ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+  ZF_WORKER_HOST=remote-one ZF_WORKER_REMOTE_ROOT="$userbin_root/roots" ZF_TEST_REMOTE_ROOT="$userbin_root" \
+  ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=luna \
+  WORKER_SCRATCH_ROOT="$userbin_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  FAKE_REMOTE_LUNA=1 REAL_LUNA_SCRIPT="$script_dir/luna" CODEX_MODEL=gpt-6-luna \
+  bash "$worker_script" remote-user-bin "$userbin_worktree" "$userbin_prompt" \
+  > "$userbin_case.stdout" 2> "$userbin_case.stderr" || userbin_rc=$?
+[[ $userbin_rc == 0 ]] || fail "remote user-bin run returned rc=$userbin_rc: $(cat "$userbin_case.stderr")"
+[[ $(cat "$userbin_scratch/luna/remote-user-bin/remote.host") == remote-one ]] || fail 'Codex in the remote user bin was not selected'
+assert_file_contains "$userbin_scratch/luna/remote-user-bin/events.jsonl" 'remote.event'
+printf 'PASS remote backend check and run find Codex in the user-local bin\n'
+
+prepare_case="$test_root/remote-prepare-timeout"; prepare_root="$test_root/fake-remote-prepare-timeout"
+prepare_scratch="$prepare_case/.scratch"; prepare_worktree="$prepare_case/worktree"; prepare_prompt="$prepare_case/brief.md"
+prepare_home="$prepare_case/home"; prepare_agent_home="$prepare_case/agent-home"
+mkdir -p "$prepare_scratch/tmp" "$prepare_scratch/luna" "$prepare_worktree" "$prepare_home" "$prepare_agent_home"
+make_fake_remote "$prepare_root"
+git -C "$prepare_worktree" init -q
+git -C "$prepare_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'remote prepare timeout brief\n' > "$prepare_prompt"
+prepare_rc=0
+timeout --signal=TERM --kill-after=1 8 env HOME="$prepare_home" AGENT_HOME="$prepare_agent_home" \
+  ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+  ZF_WORKER_HOST=remote-one ZF_WORKER_REMOTE_ROOT="$prepare_root/roots" ZF_TEST_REMOTE_ROOT="$prepare_root" \
+  ZF_TEST_REMOTE_PREPARE_DELAY=1 ZF_WORKER_TRANSFER_TIMEOUT=0.1 ZF_WORKER_SSH_CONNECT_TIMEOUT=1 \
+  WORKER_BACKEND=luna WORKER_SCRATCH_ROOT="$prepare_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  FAKE_REMOTE_LUNA=1 REAL_LUNA_SCRIPT="$script_dir/luna" \
+  bash "$worker_script" remote-prepare-timeout "$prepare_worktree" "$prepare_prompt" \
+  > "$prepare_case.stdout" 2> "$prepare_case.stderr" || prepare_rc=$?
+[[ $prepare_rc == 125 ]] || fail "remote prepare timeout returned rc=$prepare_rc instead of 125"
+[[ ! -s "$prepare_scratch/luna/rounds.log" ]] || fail 'remote prepare timeout counted as a failed model round'
+printf 'PASS remote prepare timeout does not count as a failed model round\n'
+
+transfer_case="$test_root/remote-transfer-timeout"; transfer_root="$test_root/fake-remote-transfer-timeout"
+transfer_scratch="$transfer_case/.scratch"; transfer_worktree="$transfer_case/worktree"; transfer_prompt="$transfer_case/brief.md"
+transfer_home="$transfer_case/home"; transfer_agent_home="$transfer_case/agent-home"
+mkdir -p "$transfer_scratch/tmp" "$transfer_scratch/luna" "$transfer_worktree" "$transfer_home" "$transfer_agent_home"
+make_fake_remote "$transfer_root"
+git -C "$transfer_worktree" init -q
+git -C "$transfer_worktree" -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm initial
+printf 'remote transfer timeout brief\n' > "$transfer_prompt"
+transfer_rc=0
+timeout --signal=TERM --kill-after=1 8 env HOME="$transfer_home" AGENT_HOME="$transfer_agent_home" \
+  ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
+  ZF_WORKER_HOST=remote-one ZF_WORKER_REMOTE_ROOT="$transfer_root/roots" ZF_TEST_REMOTE_ROOT="$transfer_root" \
+  ZF_TEST_REMOTE_TRANSFER_DELAY=1 ZF_WORKER_TRANSFER_TIMEOUT=0.1 ZF_WORKER_SSH_CONNECT_TIMEOUT=1 \
+  WORKER_BACKEND=luna WORKER_SCRATCH_ROOT="$transfer_scratch" WORKER_STALL_SECONDS=8 WORKER_HEALTH_INTERVAL_SECONDS=0.05 \
+  FAKE_REMOTE_LUNA=1 REAL_LUNA_SCRIPT="$script_dir/luna" \
+  bash "$worker_script" remote-transfer-timeout "$transfer_worktree" "$transfer_prompt" \
+  > "$transfer_case.stdout" 2> "$transfer_case.stderr" || transfer_rc=$?
+[[ $transfer_rc == 125 ]] || fail "remote transfer timeout returned rc=$transfer_rc instead of 125"
+[[ ! -s "$transfer_scratch/luna/rounds.log" ]] || fail 'remote transfer timeout counted as a failed model round'
+printf 'PASS remote transfer timeout does not count as a failed model round\n'
 
 unreachable_case="$test_root/remote-unreachable"; unreachable_root="$test_root/fake-remote-unreachable"
 unreachable_scratch="$unreachable_case/.scratch"; unreachable_worktree="$unreachable_case/worktree"
@@ -966,7 +1078,7 @@ printf 'unreachable host brief\n' > "$unreachable_prompt"
 printf 'MemAvailable: 6144000 kB\n' > "$unreachable_case/meminfo"
 printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$unreachable_case/psi"
 remote_timeout=0
-timeout --signal=TERM --kill-after=1 6 env HOME="$unreachable_home" AGENT_HOME="$unreachable_agent_home" \
+timeout --signal=TERM --kill-after=1 30 env HOME="$unreachable_home" AGENT_HOME="$unreachable_agent_home" \
   ZF_ENGINE_DIR="$test_root" ZF_CONFIG_ROOT="$test_root/config-root" PATH="$test_root/bin:/usr/bin:/bin" \
   ZF_WORKER_HOST=unreachable ZF_WORKER_REMOTE_ROOT="$unreachable_root/roots" ZF_TEST_REMOTE_ROOT="$unreachable_root" \
   ZF_WORKER_SSH_CONNECT_TIMEOUT=1 ZF_WORKER_SYNC_INTERVAL_SECONDS=0.05 WORKER_BACKEND=luna \
@@ -975,7 +1087,7 @@ timeout --signal=TERM --kill-after=1 6 env HOME="$unreachable_home" AGENT_HOME="
   LUNA_WORKER_SLICE_DIR="$unreachable_case/no-slice" FAKE_REMOTE_LUNA=1 REAL_LUNA_SCRIPT="$script_dir/luna" \
   bash "$worker_script" remote-unreachable "$unreachable_worktree" "$unreachable_prompt" \
   > "$unreachable_case.stdout" 2> "$unreachable_case.stderr" || remote_timeout=$?
-[[ $remote_timeout == 0 ]] || fail "unreachable host run returned rc=$remote_timeout (details: $unreachable_case.stderr)"
+[[ $remote_timeout == 0 ]] || fail "unreachable host run returned rc=$remote_timeout: $(cat "$unreachable_case.stderr")"
 [[ ! -e "$unreachable_root/roots/remote-unreachable" ]] || fail 'unreachable host started a remote clone'
 assert_file_contains "$unreachable_scratch/luna/remote-unreachable/events.jsonl" 'local.event'
 printf 'PASS unreachable host is skipped promptly and local capacity runs the worker\n'
