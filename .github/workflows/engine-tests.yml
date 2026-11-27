@@ -7,6 +7,7 @@ on:
     paths:
       - engine/**
       - tools/**
+      - .github/workflows/engine-tests.yml
       - tools/merge-pr.sh
       - tools/merge-pr-bootstrap.sh
       - tools/pin-vecta.sh
@@ -151,3 +152,48 @@ jobs:
           path: |
             engine-test-failures-${{ matrix.shard }}.txt
             test-logs/
+
+  unitgen-load-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise unitgen load with launchd
+        run: |
+          set -euo pipefail
+          smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/unitgen-load.XXXXXX")"
+          launchagents_dir="$smoke_root/LaunchAgents"
+          plist="$launchagents_dir/unitgen-load-smoke.plist"
+          marker="$smoke_root/loaded"
+          uid="$(id -u)"
+          domain="gui/$uid"
+          mkdir -p "$launchagents_dir"
+          cleanup() {
+            launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || true
+            rm -rf "$smoke_root"
+          }
+          trap cleanup EXIT
+          python3 - "$plist" "$marker" "$smoke_root" <<'PY'
+          import plistlib
+          import sys
+          from pathlib import Path
+
+          plist_path, marker_path, smoke_root = map(Path, sys.argv[1:])
+          label = f"org.zenoforge.unitgen.load.{smoke_root.name}"
+          with plist_path.open("wb") as output:
+              plistlib.dump(
+                  {
+                      "Label": label,
+                      "ProgramArguments": ["/usr/bin/touch", str(marker_path)],
+                      "RunAtLoad": True,
+                  },
+                  output,
+              )
+          PY
+          printf '%s\n' "$(basename "$plist")" > "$launchagents_dir/.unitgen.changed"
+          ZF_TIMERS=launchd python3 engine/unitgen.py load --launchagents-dir "$launchagents_dir" --uid "$uid"
+          deadline=$((SECONDS + 20))
+          while [[ ! -e "$marker" ]] && (( SECONDS < deadline )); do
+            sleep 0.1
+          done
+          [[ -e "$marker" ]] || { echo 'FAIL: launchd did not touch the marker file' >&2; exit 1; }
+          echo 'PASS unitgen load launchd smoke'
