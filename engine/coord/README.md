@@ -1,8 +1,8 @@
 # Coordination operator commands
 
-`ctl.sh` operates on the custom refs of the target repository's `origin`. It uses Git transport and does not call the GitHub REST API.
+`ctl.sh` operates on the custom refs of the target repository's `origin` using Git transport. `probe` also calls `gh run list` from the target repository to verify its commit did not trigger a workflow.
 
-Run `probe --host-id <id>` before enabling coordination. The probe creates a leased claim ref, reads it back, then deletes it with an object-id lease. A failed read or delete returns an error.
+Run `probe --host-id <id>` before enabling coordination. The probe creates a leased claim ref, reads it back, checks that no branch points at its commit and no workflow run exists, then deletes the ref with an object-id lease. A failed check or delete returns an error.
 
 `enable --host-id <id>` requires the renewal timer to be installed and loaded. It checks for the unit before writing host settings, adds `zenoforge-renewd.timer` to the local timer list, starts it, and adopts local work. `adopt-local` reads active `zf-<stage>-<issue>.service` units when `systemctl` is available, plus live issue workers with a matching row in `units.json`. Live workers are matched by PID start identity in `workers.json`.
 
