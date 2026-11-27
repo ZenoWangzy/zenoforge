@@ -160,14 +160,28 @@ say() { printf '%s\n' "$*" >> "$LOG"; }
 
 dispatch repair codex high issue-995 write.log report.md prompt '' "$repo" '' '' codex \
   || fail 'write worker did not dispatch'
-holder_socket=''
-for _ in $(seq 1 150); do
-  holder_socket="$(python3 - <<'PY'
+existing_sockets=()
+while IFS= read -r socket_path; do
+  [[ -n "$socket_path" ]] && existing_sockets+=("$socket_path")
+done < <(python3 - <<'PY'
 import pathlib
 
 for line in pathlib.Path('/proc/net/unix').read_text().splitlines():
     fields = line.split()
     if fields and fields[-1].endswith('/stage/push.sock'):
+        print(fields[-1])
+PY
+)
+holder_socket=''
+for _ in $(seq 1 150); do
+  holder_socket="$(python3 - "${existing_sockets[@]}" <<'PY'
+import pathlib
+import sys
+
+existing = set(sys.argv[1:])
+for line in pathlib.Path('/proc/net/unix').read_text().splitlines():
+    fields = line.split()
+    if fields and fields[-1].endswith('/stage/push.sock') and fields[-1] not in existing:
         print(fields[-1])
         break
 PY
