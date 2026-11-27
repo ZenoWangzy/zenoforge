@@ -3,7 +3,10 @@
 A frozen task suite for changing one pipeline decision at a time. Run the same
 cases before and after a change, twice by default, then inspect regressions and
 inconsistency. This is an evaluation suite, not an observation window. It does
-not change the pipeline architecture or write to GitHub.
+not change the pipeline architecture. Fresh-agent workers have no GitHub
+credentials; after a run, the evaluator sends `missing-doc` and `missing-guard`
+results to `engine/pipeline-issue-upsert.sh` as tracked `pipeline-system`
+issues. `agent-error` results stay in the evaluation report.
 
 Run on WSL with each selected `codex`/`zcode` CLI installed; the runner checks this before starting cases.
 
@@ -37,6 +40,12 @@ node engine/eval/run-eval.mjs --compare triage-before triage-after
 node engine/eval/run-eval.mjs --stage supervisor --runs 1 --concurrency 8 --label supervisor-arbiter-baseline
 node engine/eval/run-eval.mjs --compare supervisor-arbiter-baseline supervisor-arbiter-baseline
 
+node engine/eval/run-eval.mjs --stage fresh-agent --runs 1 --label fresh-agent-baseline
+node engine/eval/run-eval.mjs --compare fresh-agent-baseline fresh-agent-baseline
+
+node engine/eval/run-eval.mjs --stage fresh-agent --runs 1 --label fresh-agent-rerun
+node engine/eval/run-eval.mjs --compare fresh-agent-baseline fresh-agent-rerun
+
 # Inner loop: failing cases only, in parallel; fill an interrupted label; then one full run.
 node engine/eval/run-eval.mjs --stage review --case zf-4181,zf-4026 --runs 1 --concurrency 3 --label fix-wip
 node engine/eval/run-eval.mjs --stage review --runs 2 --concurrency 3 --resume --label fix-wip
@@ -47,6 +56,10 @@ node engine/eval/run-eval.mjs --stage implement --verify-gold --runs 1 --label g
 # Unit/fixture tests: no models, external APIs or production services.
 node --test engine/eval/*.test.mjs
 ```
+
+The first fresh-agent run records `fresh-agent-baseline`; the same-label
+comparison prints its starting pass rate. Reruns use a new label and compare
+against that baseline so pass-to-fail changes are visible.
 
 `--case` runs only the listed case ids of each stage's set (unknown ids fail the
 run instead of silently producing a smaller label); `--cases` is the same
@@ -308,4 +321,10 @@ no-memory agent does with the checkout it is given.
 
 A hidden check may print `{"steps":[{"id":"...","ok":false,"doc_available":true,"guard_available":false}]}` to provide per-step grader facts; an exit-only check records `expected_divergence` as an `agent-error` on failure.
 
-Fresh-agent cases retain their source issue URL. `--verify-gold` requires each case to record `fix_sha`; it runs the hidden check at `base_sha` and `fix_sha` without a model, and passes only when the base is red and the known fix is green. Regular fresh-agent runs still accept older cases without `source_url` or `fix_sha`.
+Fresh-agent cases retain their source issue URL. `--verify-gold` requires each case to record `fix_sha`; it runs the hidden check at `base_sha` and `fix_sha` without a model, and passes only when the base is red and the known fix is green. Regular fresh-agent runs still accept older cases without `source_url` or `fix_sha`; a `missing-doc` or `missing-guard` result requires remediation metadata and fails loudly if it is absent.
+
+Each case includes the exact documentation line and guard rule to route if a run
+is classified `missing-doc` or `missing-guard`. The evaluator groups repeated
+failures by case and class, then opens or updates the corresponding tracked issue
+through `pipeline-issue-upsert.sh`. The label's comparison prints the baseline
+and candidate pass counts and puts pass-to-fail changes first.

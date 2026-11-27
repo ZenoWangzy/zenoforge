@@ -2,7 +2,7 @@
 // The runner records facts per step; this module only reads them.
 
 const SHA = /^[0-9a-f]{40}$/;
-const CASE_KEYS = ['id', 'source_url', 'base_sha', 'fix_sha', 'prompt', 'hidden_check', 'expected_divergence'];
+const CASE_KEYS = ['id', 'source_url', 'base_sha', 'fix_sha', 'prompt', 'hidden_check', 'expected_divergence', 'remediation'];
 const nonEmpty = (v) => typeof v === 'string' && v.trim().length > 0;
 
 // Returns the list of problems; an empty list means the case is valid.
@@ -22,6 +22,14 @@ export function validateFreshCase(c) {
   if (!nonEmpty(c.prompt)) failures.push('prompt: required');
   if (!nonEmpty(c.hidden_check)) failures.push('hidden_check: required');
   if (!nonEmpty(c.expected_divergence)) failures.push('expected_divergence: required step id');
+  if (c.remediation !== undefined) {
+    if (!c.remediation || typeof c.remediation !== 'object' || Array.isArray(c.remediation)) failures.push('remediation: expected an object');
+    else {
+      if (!c.remediation.doc || !nonEmpty(c.remediation.doc.path) || !nonEmpty(c.remediation.doc.line)) failures.push('remediation.doc: path and line required');
+      if (!nonEmpty(c.remediation.guard)) failures.push('remediation.guard: rule required');
+      if (c.remediation.lesson_lint !== undefined && !nonEmpty(c.remediation.lesson_lint)) failures.push('remediation.lesson_lint: guidance required');
+    }
+  }
   return failures;
 }
 
@@ -39,4 +47,51 @@ export function classifyFailedRun(run) {
   if (!step.doc_available) return { class: 'missing-doc', first_divergence: step.id };
   if (!step.guard_available) return { class: 'missing-guard', first_divergence: step.id };
   return { class: 'agent-error', first_divergence: step.id };
+}
+
+export function buildFreshAgentGapIssue(c, results) {
+  const rows = Array.isArray(results) ? results : [results];
+  const failed = rows.filter((row) => row?.stage === 'fresh-agent' && row.caseId === c?.id && row.pass === false
+    && ['missing-doc', 'missing-guard'].includes(row.class));
+  if (!failed.length) return null;
+  const gapClass = failed[0].class;
+  if (failed.some((row) => row.class !== gapClass)) throw new Error(`fresh-agent issue mixes gap classes for ${c.id}`);
+  const remediation = c.remediation;
+  const detail = gapClass === 'missing-doc' ? remediation?.doc : remediation?.guard;
+  if (gapClass === 'missing-doc' && (!nonEmpty(detail?.path) || !nonEmpty(detail?.line))) {
+    throw new Error(`fresh-agent case ${c.id} needs a documentation remediation`);
+  }
+  if (gapClass === 'missing-guard' && !nonEmpty(detail)) throw new Error(`fresh-agent case ${c.id} needs a guard remediation`);
+  const issueClass = `fresh-agent-${c.id}-${gapClass}`;
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(issueClass)) throw new Error(`fresh-agent issue class is invalid: ${issueClass}`);
+  const runs = failed.map((row) => `- Run ${row.run}: \`${row.first_divergence ?? 'unknown'}\``).join('\n');
+  const change = gapClass === 'missing-doc'
+    ? `Doc file: \`${detail.path}\`\nLine to add: \`${detail.line}\``
+    : `Rule to enforce: \`${detail}\``;
+  const lessonLint = gapClass === 'missing-guard' && remediation.lesson_lint ? `\n${remediation.lesson_lint}` : '';
+  return {
+    class: issueClass,
+    title: `Fresh-agent ${gapClass === 'missing-doc' ? 'missing doc' : 'missing guard'}: ${c.id}`,
+    body: [
+      `Fresh-agent case \`${c.id}\` failed with classification \`${gapClass}\`.`,
+      `Source: ${c.source_url ?? 'not recorded'}\nTask: ${c.prompt}`,
+      `First divergence:\n${runs}`,
+      `## Repo change to make\n${change}${lessonLint}`,
+    ].join('\n\n'),
+  };
+}
+
+export function buildFreshAgentGapIssues(results, cases) {
+  const casesById = new Map(cases.map((c) => [c.id, c]));
+  const grouped = new Map();
+  for (const row of results) {
+    if (row.stage !== 'fresh-agent' || row.pass || !['missing-doc', 'missing-guard'].includes(row.class)) continue;
+    const key = `${row.caseId}/${row.class}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), row]);
+  }
+  return [...grouped.values()].map((rows) => {
+    const c = casesById.get(rows[0].caseId);
+    if (!c) throw new Error(`fresh-agent case is missing for result: ${rows[0].caseId}`);
+    return buildFreshAgentGapIssue(c, rows);
+  });
 }
