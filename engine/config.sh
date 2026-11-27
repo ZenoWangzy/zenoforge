@@ -289,7 +289,7 @@ zf_config_file() {
 zf_worker_mem_cap() {
   [[ $# -eq 1 && "$1" =~ ^mem_(high|max)$ ]] || return 2
   [[ -f "${ZF_CONFIG_ROOT:-}/config.json" ]] || return 0
-  jq -r --arg key "$1" '(.worker // {})[$key]? // empty | select(type == "string" and test("^[1-9][0-9]*[KMGT]?$"))' "$ZF_CONFIG_ROOT/config.json" 2>/dev/null || true
+  jq -r --arg key "$1" '(.worker // {})[$key]? // empty | select(type == "string" and test("^[1-9][0-9]*[KMGT]$"))' "$ZF_CONFIG_ROOT/config.json" 2>/dev/null || true
 }
 
 # zf_incident_guards_read <registry file> -- print the registry merged with the fragments beside it (engine/incident-guards.mjs).

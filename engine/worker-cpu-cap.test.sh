@@ -141,6 +141,12 @@ for backend in luna zc; do
   printf '{"worker":{"mem_high":"lots","mem_max":"3G"}}\n' > "$target_cfg/config.json"
   : > "$calls"; ZF_CONFIG_ROOT="$target_cfg" "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
   assert_luna_mem_props "bin/$backend invalid target value" 1536M 3G
+  printf '{"worker":{"mem_high":"2560","mem_max":"3G"}}\n' > "$target_cfg/config.json"
+  : > "$calls"; ZF_CONFIG_ROOT="$target_cfg" "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
+  assert_luna_mem_props "bin/$backend unitless mem_high" 1536M 3G
+  printf '{"worker":{"mem_high":"2560M","mem_max":"3072"}}\n' > "$target_cfg/config.json"
+  : > "$calls"; ZF_CONFIG_ROOT="$target_cfg" "$engine/bin/$backend" k1 "$root" "$root/prompt.md" >/dev/null 2>&1 || :
+  assert_luna_mem_props "bin/$backend unitless mem_max" 2560M 2G
 done
 
 # A wrapper terminated after its scope starts still stops that scope on exit.
