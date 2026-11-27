@@ -73,7 +73,7 @@ build_codex_command implement gpt-6-luna max implement-1 'implement prompt' 'imp
 build_codex_command implement claude-sonnet-5-5 high implement-1 'implement prompt' 'implement prompt' "$context_repo" claude \
   || fail 'Claude implement with unaccepted project instructions was refused'
 impl_command=" ${CODEX_COMMAND[*]} "
-[[ "$impl_command" == *' --bare '* && "${CODEX_COMMAND[*]}" == *'accepted worker instruction'* \
+[[ "$impl_command" == *'CLAUDE_CODE_DISABLE_CLAUDE_MDS'* && "$impl_command" != *' --bare '* && "${CODEX_COMMAND[*]}" == *'accepted worker instruction'* \
   && "${CODEX_COMMAND[*]}" != *'candidate instructions'* ]] \
   || fail 'Claude implement did not skip candidate instructions and receive the accepted copy'
 printf 'product_sha=%s\n' "$candidate_context_sha" > "$context_version/BUILD-INFO"

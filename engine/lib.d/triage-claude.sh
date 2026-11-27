@@ -25,8 +25,8 @@ claude_triage_call() {
   model="${identity#*:}"; model="${model%:*}"
   [ -z "$schema_file" ] || schema_args=(--json-schema "$(cat "$schema_file")")
   matt_codex_context_prepare "$cwd"
-  ( cd "$cwd" && timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN "$sandbox" claude read "$cwd" "" -- claude -p \
-      --bare --model "$model" --output-format json --settings "$settings_file" --setting-sources project,local \
+  ( cd "$cwd" && timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 "$sandbox" claude read "$cwd" "" -- claude -p \
+      --model "$model" --output-format json --settings "$settings_file" --setting-sources project,local \
       --strict-mcp-config --permission-mode dontAsk --tools "$tools" ${schema_args[@]+"${schema_args[@]}"} \
       < <(matt_claude_prompt_input "$prompt_file" "$cwd" "$MATT_CODEX_CONTEXT_ROOT") )
 }
