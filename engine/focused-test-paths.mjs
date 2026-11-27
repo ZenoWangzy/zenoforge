@@ -69,7 +69,6 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'engine/sweep-unlabeled-issues.test.sh', 'engine/batch-units-slice.test.sh',
   ]],
   ['engine/issue-pipeline-maintenance-budget.test.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
-  ['engine/notify.sh', ['engine/issue-pipeline-maintenance-budget.test.sh']],
   ['engine/lib.d/holds.sh', ['engine/hold.test.sh']], ['engine/lib.d/hand-dependency.sh', ['engine/intake-blocked-by-tick.test.sh', 'engine/hand-blocked-on-dependency.test.sh', 'engine/intake-backlog.test.sh']], ['engine/lib.d/issue-rest.sh', ['engine/issue-rest.test.sh', 'engine/hold.test.sh', 'engine/hold-rule.test.sh', 'engine/mac-autopilot/supervisor-arbiter.test.sh']], ['engine/lib.d/hold-rule.sh', ['engine/hold-rule.test.sh', 'engine/hold.test.sh']],
   ['engine/hold.test.sh', ['engine/hold.test.sh']],
   ['engine/mac-autopilot/advisor-provider-missing.test.sh', ['engine/mac-autopilot/advisor-provider-missing.test.sh']],
@@ -279,7 +278,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ]],
   ['engine/night/maintainer-health-mail.test.sh', ['scripts/release/run-release.test.sh']],
   ['engine/night/maintainer-health-mail-incident.test.sh', ['scripts/release/run-release.test.sh']],
-  ['engine/notify.sh', ['engine/notify.test.sh', 'scripts/release/run-release.test.sh']],
+  ['engine/notify.sh', ['engine/notify.test.sh', 'scripts/release/run-release.test.sh', 'engine/issue-pipeline-maintenance-budget.test.sh']],
   ['engine/notify.test.sh', ['scripts/release/run-release.test.sh']],
   ['engine/run-release.sh', ['engine/tests/release-runner.test.sh']],
   ['engine/lib.d/fix-forward.sh', ['engine/tests/fix-forward-release-helper.test.sh']],
@@ -362,11 +361,6 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'engine/night/merge-lock.test.sh',
     'engine/guarded-hand-brief.test.sh',
     'engine/git-fetch-bounded.test.sh',
-  ]],
-  ['.zenoforge/prompts/guarded-recut-hand.md', [
-    'engine/guarded-hand-brief.test.sh',
-    'engine/run-recut.test.sh',
-    'engine/hold.test.sh',
   ]],
   ['.zenoforge/prompts/guarded-recut-hand.md', [
     'engine/guarded-hand-brief.test.sh',

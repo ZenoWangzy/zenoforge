@@ -15,6 +15,13 @@ out="$root/luna/$key"
 mkdir -p "$out" "$root/tmp/$key"
 rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
 run_cwd="$cwd"; [[ "$run_cwd" == /* ]] || run_cwd="$PWD/$run_cwd"; printf '%s\n' "$run_cwd" >"$out/cwd"
+engine_dir="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+task_state_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$root}/.zenoforge}}"
+task_resume="$root/tmp/$key/task-resume.md"
+resumed_prompt="$root/tmp/$key/prompt-with-task-resume.md"
+node "$engine_dir/task-state.mjs" resume "$task_state_home/task-state" >"$task_resume" || exit 1
+{ printf '## Task state at session start\n\n' && cat "$task_resume" && printf '\n## Requested task\n\n' && cat "$prompt"; } >"$resumed_prompt" || exit 1
+prompt="$resumed_prompt"
 # Shared with bin/zc (lib.d/worker-remote-handoff.sh): a remote run exits there; a refusal falls back to the local gate below.
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib.d/worker-remote-handoff.sh"
 worker_remote_handoff luna "$out" "$key" "$cwd" "$prompt" "$schema"
