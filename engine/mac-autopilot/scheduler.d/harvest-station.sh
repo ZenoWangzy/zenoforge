@@ -127,7 +127,7 @@ harvest_station_pass() { # snapshot under lock; harvest and process checks outsi
   workers_snapshot="$(jqf -c '[.workers[] | select(.harvested != true)]' "$WORKERS" 2>/dev/null || echo '[]')"
   hs_unlock
   while IFS= read -r key; do
-    if (( HS_WORKERS >= HS_BATCH_SIZE )); then HS_DEFERRED=$((HS_DEFERRED + 1)); continue; fi
+    if (( HS_WORKERS >= HS_BATCH_SIZE )); then HS_DEFERRED=$((HS_DEFERRED + 1)); break; fi
     HS_WORKERS=$((HS_WORKERS + 1))
     if (( SECONDS >= HARVEST_STATION_DEADLINE )); then HS_DEFERRED=$((HS_DEFERRED + 1)); continue; fi
     hs_lock || { HS_DEFERRED=$((HS_DEFERRED + 1)); continue; }

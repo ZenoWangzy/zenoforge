@@ -89,7 +89,8 @@ eval "$real_candidates"
 # --- case 3: the ledger lock held by a live pid (the tick) is never taken; the pass defers and keeps its own bound. ---
 reset
 mkdir "$SCHED_LOCK"; printf '%s\n' "$$" > "$SCHED_LOCK/pid"
-AUTOPI_HARVEST_STATION_LIMIT_SECONDS=2 harvest_station_tick
+SECONDS=0
+AUTOPI_HARVEST_STATION_LIMIT_SECONDS=10 harvest_station_tick
 [[ "$(cat "$SCHED_LOCK/pid")" == "$$" ]] || fail 'the station took or released a lock it did not own'
 ! grep -q '^harvest ' "$calls" || fail "the station harvested while the tick held the ledger lock: $(cat "$calls")"
 grep -Eq 'harvest-station done .*workers=0 harvested=0 deferred=1 ' "$LOG" || fail "busy-lock pass did not defer before reading the worker ledger: $(cat "$LOG")"

@@ -248,9 +248,10 @@ deferred= limit= ended= phases=` (the stamp is the pass start); `scheduler.harve
 bounds are 120 / 300 (maintainer decision: the station runs every 60 s, so a median above 2 min means it lags), not measured: re-measure on the first 7 live days, and change them only with that
 measurement and this table. Before the split the tick spent 128-215 s in `harvest_workers` (9-19 gh calls) on 2026-11-08.
 
-The dispatch controller is a station process too (`scheduler.sh --dispatch-station`): every 30 s by default it consumes priority-ordered
-pending rows from `units.json`, up to 8 per pass (`AUTOPI_DISPATCH_STATION_BATCH_SIZE`), under `.dispatch-station.lock` and the shared
-dispatch-step flock. Worker exits wake dispatch directly. Tick and refill fallbacks run only when no dispatch pass started in the prior
+The dispatch controller is a station process too (`scheduler.sh --dispatch-station`): every 30 s by default it cycles through
+priority-ordered pending rows from `units.json`, up to 8 per pass (`AUTOPI_DISPATCH_STATION_BATCH_SIZE`), under
+`.dispatch-station.lock` and the shared dispatch-step flock. Its persisted cursor lets later rows progress past candidates held by
+row-level gates. Worker exits wake dispatch directly. Tick and refill fallbacks run only when no dispatch pass started in the prior
 90 s. Each `dispatch-station done` line reports the buffer, batch size, elapsed time and result; the 30 s start cadence is the initial
 measurement target before splitting another stage.
 

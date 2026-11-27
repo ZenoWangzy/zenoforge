@@ -188,7 +188,8 @@ dispatch_pending_pass() {
   local local_refill="${1:-false}" local_refill_prs_primed=false marked_dep blocked_dep u id why_unit stage self_fix rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver verify_rule issue key subject prless stack_branch stack_sha route route_head resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed dispatch_rc ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true TICK_STARTED_WIP_COUNT="" TICK_REVIEW_WAITS="" TICK_FOOTPRINT_ROOM_USEC=0 TICK_FOOTPRINT_ROOM_CALLS=0 TICK_FOOTPRINT_ROOM_WAITS=0 TICK_DISPATCH_HOST_CAPACITY_BLOCKED=false TICK_DISPATCH_HOST_CAPACITY_WHY="" dispatch_host_capacity_skipped=0 pending_started=$SECONDS revalidate_secs loop_started
   # A refill tick carries its start; a standalone dispatch pass starts on entry.
-  local dispatch_refill_started="${TICK_REFILL_STARTED:-$SECONDS}" refill_elapsed candidate_limit="${2:-0}"
+  local dispatch_refill_started="${TICK_REFILL_STARTED:-$SECONDS}" refill_elapsed dispatch_candidate_limit="${2:-0}" dispatch_selection_limit="${2:-0}" dispatch_candidate_count dispatch_next_cursor
+  if [[ "${DISPATCH_STATION_ACTIVE:-false}" == true && "$dispatch_candidate_limit" =~ ^[1-9][0-9]*$ ]]; then dispatch_selection_limit=$((dispatch_candidate_limit + 1)); fi
   local -A dispatch_step_secs=() dispatch_step_counts=(); local dispatch_step_at=${EPOCHREALTIME/[.,]/} dispatch_step_last=start
   # Probe at a fresh waiter's age; rows with a priority waiter keep the existing per-unit decision path.
   if [[ -r "${LUNA_PROC_MEMINFO:-/proc/meminfo}" ]] \
@@ -229,11 +230,18 @@ dispatch_pending_pass() {
     (( step_elapsed < 2 )) || say "dispatch detail advisor_harvest secs=${step_elapsed}s"
     dmark advisor_harvest
   fi
-  ordered="$(dispatch_order true "${2:-0}")" || true
+  ordered="$(dispatch_order true "$dispatch_selection_limit" "${DISPATCH_STATION_CURSOR:-}")" || true
   local wip_header="${ordered%%$'\n'*}"
   if [[ "$wip_header" == WIP_COUNT=* ]]; then
     TICK_STARTED_WIP_COUNT="${wip_header#WIP_COUNT=}"
     if [[ "$ordered" == *$'\n'* ]]; then ordered="${ordered#*$'\n'}"; else ordered=""; fi
+  fi
+  if [[ "${DISPATCH_STATION_ACTIVE:-false}" == true && "$dispatch_candidate_limit" =~ ^[1-9][0-9]*$ ]]; then
+    dispatch_candidate_count="$(grep -c . <<<"$ordered" || :)"
+    if (( dispatch_candidate_count > dispatch_candidate_limit )); then
+      dispatch_next_cursor="$(sed -n "$((dispatch_candidate_limit + 1))p" <<<"$ordered" | jqf -r '.id // empty')"; ordered="$(head -n "$dispatch_candidate_limit" <<<"$ordered")"
+      dispatch_station_advance_cursor "$dispatch_next_cursor" || say 'dispatch station cursor update failed'
+    fi
   fi
   [[ -z "${DISPATCH_STATION_CANDIDATES+x}" ]] || DISPATCH_STATION_CANDIDATES="$(grep -c . <<<"$ordered" || :)"
   if [[ "$local_refill" == true ]]; then
@@ -765,7 +773,7 @@ $deliver"
   done <<<"$ordered"
   (( dispatch_pass == 1 && ${#TICK_FOOTPRINT_DEFERRED[@]} > 0 )) || break
   defer_ids="$(printf '%s\n' "${!TICK_FOOTPRINT_DEFERRED[@]}" | jqf -R . | jqf -sc .)" || break
-  ordered="$(jqf -c --argjson ids "$defer_ids" 'select(.id as $i | $ids | index($i))' <<<"$(dispatch_order false "$candidate_limit")")" || true
+  ordered="$(jqf -c --argjson ids "$defer_ids" 'select(.id as $i | $ids | index($i))' <<<"$ordered")" || true
   TICK_FOOTPRINT_DEFER=false; TICK_FOOTPRINT_CAP_HIT=false; dmark pass2_order
   done
   (( dispatch_host_capacity_skipped == 0 )) \

@@ -131,6 +131,14 @@ ordered="$(dispatch_order true 2)"
 [[ "$(wc -l <<<"$ordered")" == 3 ]] || fail 'dispatch input batch exceeded its requested size'
 [[ "$(sed -n '2p' <<<"$ordered" | jq -r .id)" == unit-2 ]] || fail 'the bounded dispatch input lost priority order'
 [[ "$(sed -n '3p' <<<"$ordered" | jq -r .id)" == unit-3 ]] || fail 'the bounded dispatch input included the wrong second unit'
+DISPATCH_STATION_ACTIVE=true DISPATCH_STATION_CURSOR_FILE="$td/dispatch-cursor" DISPATCH_STATION_CURSOR=""
+lookahead="$(dispatch_order true 3)"
+[[ "$(sed -n '4p' <<<"$lookahead" | jq -r .id)" == unit-1 ]] || fail 'the dispatch station did not find the next row after its batch'
+DISPATCH_STATION_ACTIVE=true DISPATCH_STATION_CURSOR_FILE="$td/dispatch-cursor" dispatch_station_advance_cursor unit-1
+[[ "$(cat "$DISPATCH_STATION_CURSOR_FILE")" == unit-1 ]] || fail 'the dispatch station did not persist its next row'
+rotated="$(dispatch_order true 2 "$(cat "$DISPATCH_STATION_CURSOR_FILE")")"
+[[ "$(sed -n '2p' <<<"$rotated" | jq -r .id)" == unit-1 ]] || fail 'the next dispatch batch did not start at its cursor'
+[[ "$(sed -n '3p' <<<"$rotated" | jq -r .id)" == unit-2 ]] || fail 'the rotating dispatch batch did not wrap in priority order'
 grep -Fq -- '--dispatch-station) SCHED_STATION=true; dispatch_station_tick ;;' "$engine_dir/mac-autopilot/scheduler.sh" || fail 'scheduler.sh does not route the dispatch station'
 
 wake="$td/wake"; mkdir -p "$wake/live" "$wake/state"

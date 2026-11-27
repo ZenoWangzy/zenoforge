@@ -1,3 +1,14 @@
+dispatch_station_advance_cursor() {
+  local id="$1" tmp
+  [[ "${DISPATCH_STATION_ACTIVE:-false}" == true && -n "${DISPATCH_STATION_CURSOR_FILE:-}" && -n "$id" ]] || return 0
+  tmp="$(mktemp "${DISPATCH_STATION_CURSOR_FILE}.XXXXXX")" || return 1
+  if printf '%s\n' "$id" > "$tmp" && mv -f -- "$tmp" "$DISPATCH_STATION_CURSOR_FILE"; then
+    DISPATCH_STATION_CURSOR="$id"
+  else
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
 dispatch_station_fresh() {
   local at
   at="$(cat "$A/.dispatch-station-epoch" 2>/dev/null)"
@@ -5,8 +16,8 @@ dispatch_station_fresh() {
 }
 
 dispatch_station_tick() {
-  local SCHED_STATION=true old batch limit started=$SECONDS gh_calls rest_used rc=0 DISPATCH_STATION_CANDIDATES=0
-  local DISPATCH_STATION_LOCK="$A/.dispatch-station.lock" GH_ETAG_DIR="$A/.gh-etag-dispatch"
+  local SCHED_STATION=true old batch limit started=$SECONDS gh_calls rest_used rc=0 DISPATCH_STATION_CANDIDATES=0 DISPATCH_STATION_ACTIVE=true DISPATCH_STATION_CURSOR=""
+  local DISPATCH_STATION_LOCK="$A/.dispatch-station.lock" DISPATCH_STATION_CURSOR_FILE="$A/.dispatch-station-cursor" GH_ETAG_DIR="$A/.gh-etag-dispatch"
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
   if ! mkdir "$DISPATCH_STATION_LOCK" 2>/dev/null; then
     old="$(cat "$DISPATCH_STATION_LOCK/pid" 2>/dev/null || true)"
@@ -15,6 +26,7 @@ dispatch_station_tick() {
     mkdir "$DISPATCH_STATION_LOCK" 2>/dev/null || return 0
   fi
   echo "$BASHPID" > "$DISPATCH_STATION_LOCK/pid"
+  DISPATCH_STATION_CURSOR="$(cat "$DISPATCH_STATION_CURSOR_FILE" 2>/dev/null || :)"
   if [[ -e "$PAUSE_FILE" ]]; then
     say "dispatch station paused by $PAUSE_FILE: no dispatch"
   elif ! state_schema_ok; then
