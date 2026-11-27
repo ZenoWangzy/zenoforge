@@ -126,18 +126,18 @@ coord_control_record_valid() {
 }
 
 coord_remote_control_read() {
-  local line oid ref seen
+  local force="${1:-}" oid seen status
   COORD_CONTROL='{"proto":1,"primary":null,"drain":[],"min_proto":1}'
   COORD_CONTROL_OID=""
-  coord_remote_init || return 3
-  line="$(git -C "$COORD_REMOTE_REPO" ls-remote --refs origin refs/coord/control 2>/dev/null)" || return 3
-  [[ -n "$line" ]] || return 0
-  [[ "$line" != *$'\n'* ]] || return 3
-  IFS=$'\t' read -r oid ref <<<"$line"
-  [[ "$ref" == refs/coord/control && "$oid" =~ ^[0-9a-f]{40,64}$ ]] || return 3
   seen=refs/seen/coord/control
-  git_fetch_bounded "$COORD_REMOTE_REPO" "+$ref:$seen" >/dev/null 2>&1 || return 3
-  [[ "$(git -C "$COORD_REMOTE_REPO" rev-parse "$seen" 2>/dev/null)" == "$oid" ]] || return 3
+  coord_remote_refresh "$force" || return 3
+  if git -C "$COORD_REMOTE_REPO" show-ref --verify --quiet "$seen"; then :; else
+    status=$?
+    (( status == 1 )) && return 0
+    return 3
+  fi
+  oid="$(git -C "$COORD_REMOTE_REPO" rev-parse "$seen" 2>/dev/null)" || return 3
+  [[ "$oid" =~ ^[0-9a-f]{40,64}$ ]] || return 3
   COORD_CONTROL="$(git -C "$COORD_REMOTE_REPO" cat-file blob "$seen:control.json" 2>/dev/null)" || return 3
   coord_control_record_valid "$COORD_CONTROL" || return 3
   COORD_CONTROL_OID="$oid"
@@ -203,20 +203,23 @@ _coord_remote_record_valid() {
   ' <<<"$2" >/dev/null 2>&1
 }
 
-coord_remote_refresh() { # one complete remote claim snapshot per host every 30 s
-  local stamp="$AGENT_HOME/coord/refresh.stamp" lock_fd now last status=0
+coord_remote_refresh() { # one complete remote coordination snapshot per host every 30 s
+  local force="${1:-}" stamp="$AGENT_HOME/coord/refresh.stamp" lock_fd now last status=0
   coord_remote_init || return 3
   exec {lock_fd}>"$AGENT_HOME/coord/refresh.lock" || return 3
   flock -x "$lock_fd" || { exec {lock_fd}>&-; return 3; }
   now="$(date +%s)"; last="$(cat "$stamp" 2>/dev/null || true)"
-  if [[ "$last" =~ ^[0-9]+$ ]] && (( now >= last && now - last < 30 )); then
+  if [[ "$force" != force && "$last" =~ ^[0-9]+$ ]] && (( now >= last && now - last < 30 )); then
     flock -u "$lock_fd" || :; exec {lock_fd}>&-
     return 0
   fi
-  if git_fetch_bounded "$COORD_REMOTE_REPO" '+refs/claims/*:refs/seen/claims/*' >/dev/null 2>&1; then
+  if git_fetch_bounded "$COORD_REMOTE_REPO" \
+    '+refs/claims/*:refs/seen/claims/*' \
+    '+refs/status/*:refs/seen/status/*' \
+    '+refs/coord/*:refs/seen/coord/*' >/dev/null 2>&1; then
     printf '%s\n' "$now" >"$stamp" || status=3
   else
-    echo "coord_refresh: remote claim snapshot unknown" >&2
+    echo "coord_refresh: remote coordination snapshot unknown" >&2
     status=3
   fi
   flock -u "$lock_fd" || :

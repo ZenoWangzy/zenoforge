@@ -57,7 +57,18 @@ else
   rc=$?
   [[ "$rc" -eq 1 ]] || { echo "ctl.test.sh: primary gate returned $rc" >&2; exit 1; }
 fi
+control_oid="$(git --git-dir="$remote" rev-parse refs/coord/control)"
+git --git-dir="$remote" update-ref -d refs/coord/control
+if run_coord test-b coord_acquire issue-5 owner-b scheduler-worker 5 issue-5 implement; then
+  echo 'ctl.test.sh: acquisition ignored its recent coordination snapshot' >&2
+  exit 1
+else
+  rc=$?
+  [[ "$rc" -eq 1 ]] || { echo "ctl.test.sh: snapshot gate returned $rc" >&2; exit 1; }
+fi
+git --git-dir="$remote" update-ref refs/coord/control "$control_oid"
 run_ctl drain test-a
+rm -f "$fixture/agent-test-a/coord/refresh.stamp"
 if run_coord test-a coord_acquire issue-3 owner-a scheduler-worker 3 issue-3 implement; then
   echo 'ctl.test.sh: draining host acquired a new claim' >&2
   exit 1
@@ -78,6 +89,7 @@ jq -e '.owner == null' <<<"$claim" >/dev/null || {
 }
 
 run_ctl control clear primary
+rm -f "$fixture/agent-test-b/coord/refresh.stamp"
 run_coord test-b coord_acquire issue-4 owner-b scheduler-worker 4 issue-4 implement
 run_coord test-b coord_release issue-4 owner-b
 run_ctl control set drain=

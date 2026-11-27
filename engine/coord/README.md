@@ -4,7 +4,7 @@
 
 Run `probe --host-id <id>` before enabling coordination. The probe creates a leased claim ref, reads it back, then deletes it with an object-id lease. A failed read or delete returns an error.
 
-`enable --host-id <id>` requires the renewal timer unit to be installed. It checks for the unit before writing host settings, adds `zenoforge-renewd.timer` to the local timer list, starts it, and adopts active `zf-<stage>-<issue>.service` units plus live issue workers with a matching row in `units.json`. Live workers are matched by PID start identity in `workers.json`. `adopt-local` repeats only the adoption step.
+`enable --host-id <id>` requires the renewal timer to be installed and loaded. It checks for the unit before writing host settings, adds `zenoforge-renewd.timer` to the local timer list, starts it, and adopts local work. `adopt-local` reads active `zf-<stage>-<issue>.service` units when `systemctl` is available, plus live issue workers with a matching row in `units.json`. Live workers are matched by PID start identity in `workers.json`.
 
 `control set primary=<id>` selects which host may acquire new claims; `control set primary=` selects the current host. `control clear primary` clears that restriction. `control set min_proto=<number>` sets the minimum protocol. `control set drain=<id>,<id>` replaces the drain list. `drain <id>` adds a host to that list. A drained or non-primary host starts no new claims. Its active stages finish and release their own claims normally.
 

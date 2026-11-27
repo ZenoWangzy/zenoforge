@@ -72,7 +72,8 @@ ctl_probe() {
 }
 
 ctl_read_control() {
-  coord_remote_control_read || return 3
+  local force="${1:-}"
+  coord_remote_control_read "$force" || return 3
   CTL_CONTROL="$COORD_CONTROL"
   CTL_CONTROL_OID="$COORD_CONTROL_OID"
 }
@@ -104,13 +105,17 @@ ctl_remote_read_ref() {
 ctl_write_ref_file() {
   local ref="$1" file="$2" expected="$3" record="$4" message="$5"
   local blob tree commit output line oid remote_ref
+  CTL_WRITE_OID=""
   [[ "$file" =~ ^[A-Za-z0-9._-]+$ ]] || return 2
   blob="$(printf '%s\n' "$record" | git -C "$COORD_REMOTE_REPO" hash-object -w --stdin)" || return 3
   tree="$(printf '100644 blob %s\t%s\n' "$blob" "$file" | git -C "$COORD_REMOTE_REPO" mktree)" || return 3
   commit="$(GIT_AUTHOR_NAME=zenoforge-coord GIT_AUTHOR_EMAIL=zenoforge-coord@users.noreply.github.com \
     GIT_COMMITTER_NAME=zenoforge-coord GIT_COMMITTER_EMAIL=zenoforge-coord@users.noreply.github.com \
     git -C "$COORD_REMOTE_REPO" commit-tree "$tree" -m "$message")" || return 3
-  output="$(git -C "$COORD_REMOTE_REPO" push --porcelain --force-with-lease="$ref:$expected" origin "$commit:$ref" 2>&1)" && return 0
+  if output="$(git -C "$COORD_REMOTE_REPO" push --porcelain --force-with-lease="$ref:$expected" origin "$commit:$ref" 2>&1)"; then
+    CTL_WRITE_OID="$commit"
+    return 0
+  fi
   line="$(git -C "$COORD_REMOTE_REPO" ls-remote --refs origin "$ref" 2>/dev/null)" || { ctl_error "write outcome unknown for $ref: $output"; return 3; }
   if [[ "$line" == *$'\n'* ]]; then
     ctl_error "ref readback is ambiguous for $ref"
@@ -122,23 +127,36 @@ ctl_write_ref_file() {
     ctl_error "ref readback is malformed for $ref"
     return 3
   fi
-  [[ "$oid" == "$commit" ]] && return 0
+  if [[ "$oid" == "$commit" ]]; then
+    CTL_WRITE_OID="$commit"
+    return 0
+  fi
   [[ "$oid" != "$expected" ]] && return 1
   ctl_error "write failed for $ref: $output"
   return 3
 }
 
 ctl_write_control() {
-  local expected="$1" record="$2"
+  local expected="$1" record="$2" status
   coord_control_record_valid "$record" || return 2
-  ctl_write_ref_file refs/coord/control control.json "$expected" "$record" 'coord control'
+  if ctl_write_ref_file refs/coord/control control.json "$expected" "$record" 'coord control'; then
+    [[ "$CTL_WRITE_OID" =~ ^[0-9a-f]{40,64}$ ]] || return 3
+    git -C "$COORD_REMOTE_REPO" update-ref refs/seen/coord/control "$CTL_WRITE_OID" || return 3
+    COORD_CONTROL="$record"
+    COORD_CONTROL_OID="$CTL_WRITE_OID"
+    return 0
+  else
+    status=$?
+    return "$status"
+  fi
 }
 
 ctl_update_control() {
-  local operation="$1" value="$2" record rc attempt item
+  local operation="$1" value="$2" record rc attempt item force_refresh=""
   local -a hosts=()
   for attempt in 1 2 3 4 5; do
-    ctl_read_control || { ctl_error 'control record unavailable or invalid'; return 3; }
+    ctl_read_control "$force_refresh" || { ctl_error 'control record unavailable or invalid'; return 3; }
+    force_refresh=""
     case "$operation" in
       primary)
         [[ -n "$value" ]] || value="${ZF_HOST_ID:-}"
@@ -170,9 +188,15 @@ ctl_update_control() {
     esac
     if ctl_write_control "$CTL_CONTROL_OID" "$record"; then return 0; else rc=$?; fi
     (( rc == 1 )) || return "$rc"
+    force_refresh=force
   done
   ctl_error 'control changed concurrently; retry the command'
   return 1
+}
+
+ctl_unit_row() {
+  local issue="$1" units_file="$2"
+  jq -c --arg issue "$issue" '[.units[] | select((.issue | tostring) == $issue or .id == ("issue-" + $issue))][0] // empty' "$units_file"
 }
 
 ctl_adopt_local() {
@@ -184,8 +208,12 @@ ctl_adopt_local() {
   [[ -r "$units_file" ]] || { ctl_error 'unit ledger unavailable'; return 3; }
   jq -e 'type == "object" and (.units | type == "array")' "$units_file" >/dev/null 2>&1 \
     || { ctl_error 'unit ledger malformed'; return 3; }
-  active="$(systemctl --user list-units --state=active --no-legend --plain "$prefix-*.service" 2>&1)" \
-    || { ctl_error "active unit list unavailable: $active"; return 3; }
+  if command -v systemctl >/dev/null 2>&1; then
+    active="$(systemctl --user list-units --state=active --no-legend --plain "$prefix-*.service" 2>&1)" \
+      || { ctl_error "active unit list unavailable: $active"; return 3; }
+  else
+    active=""
+  fi
   while IFS= read -r line; do
     read -r unit _ <<<"$line"
     [[ "$unit" == "$prefix-"*'.service' ]] || continue
@@ -194,7 +222,7 @@ ctl_adopt_local() {
     issue="${base##*-}"
     stage="${base%-*}"
     [[ "$issue" =~ ^[1-9][0-9]*$ && "$stage" =~ ^[a-z][a-z0-9-]*$ ]] || continue
-    unit_row="$(jq -c --arg issue "$issue" '[.units[] | select((.issue | tostring) == $issue or .id == ("issue-" + $issue))][0] // empty' "$units_file")" \
+    unit_row="$(ctl_unit_row "$issue" "$units_file")" \
       || { ctl_error "unit ledger lookup failed for $unit"; return 3; }
     [[ -n "$unit_row" ]] || continue
     stage="$(jq -r '.stage // empty' <<<"$unit_row")"
@@ -242,7 +270,7 @@ ctl_adopt_local() {
         return 3
       fi
       [[ "$worker_live" == true ]] || continue
-      unit_row="$(jq -c --arg issue "$worker_issue" '[.units[] | select((.issue | tostring) == $issue or .id == ("issue-" + $issue))][0] // empty' "$units_file")" \
+      unit_row="$(ctl_unit_row "$worker_issue" "$units_file")" \
         || { ctl_error "unit ledger lookup failed for $worker_unit"; return 3; }
       [[ -n "$unit_row" ]] || { ctl_error "unit ledger row missing for live worker $worker_unit"; return 3; }
       stage="$(jq -r '.stage // empty' <<<"$unit_row")"
