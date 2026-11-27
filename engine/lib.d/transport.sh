@@ -155,21 +155,6 @@ gh_rate_limit_write() {
   fi
 }
 
-# gh_rate_limit_quota <graphql|rest> -- prints "<remaining> <reset epoch>" for that class. The
-# rate_limit endpoint is not counted against the quota.
-gh_rate_limit_quota() {
-  local key quota
-  case "$1" in
-    graphql) key=graphql ;;
-    rest) key=core ;;
-    *) return 1 ;;
-  esac
-  quota="$(command timeout --kill-after=1s 10s gh api rate_limit \
-    --jq ".resources.$key | \"\(.remaining) \(.reset)\"" 2>/dev/null)" || return 1
-  [[ "$quota" =~ ^[0-9]+[[:space:]][0-9]+$ ]] || return 1
-  printf '%s\n' "$quota"
-}
-
 # A secondary limit holds the class 60 s, doubling to 600 s while holds repeat. The length is the
 # marker's second line; readers take line 1 (the epoch) only.
 gh_rate_limit_secondary_hold() {
@@ -283,6 +268,7 @@ gh() {
   fi
   ZF_GH_CALLER="${caller_source}:${caller_line}"
   export ZF_GH_CALLER
+  [[ "${ZF_AGENT_TEST_MODE:-0}" == 1 ]] || gh_budget_sample || :
   if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
@@ -494,6 +480,7 @@ gh_timeout() {
   [ "$#" -ge 1 ] || return 2
   timeout_value="$1"
   shift
+  [[ "${ZF_AGENT_TEST_MODE:-0}" == 1 ]] || gh_budget_sample || :
   if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
@@ -798,3 +785,4 @@ main_gh() {
 
 # REST issue reads for hold/requeue/ruling paths; scheduler.sh sources the same file for its own process.
 source "$(dirname -- "${BASH_SOURCE[0]}")/issue-rest.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/gh-budget.sh"

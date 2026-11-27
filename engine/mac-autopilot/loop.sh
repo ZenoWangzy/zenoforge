@@ -75,6 +75,14 @@ launch_merge_station() {
   MERGE_STATION_NEXT=$((SECONDS + every))
   setsid timeout -k 30 "${AUTOPI_MERGE_STATION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --merge >> "$A/loop.out" 2>&1 < /dev/null &
 }
+launch_gh_budget_sampler() {
+  local every="${AUTOPI_GH_BUDGET_SAMPLE_SECONDS:-60}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=60
+  GH_BUDGET_SAMPLE_NEXT="${GH_BUDGET_SAMPLE_NEXT:-$SECONDS}"
+  (( SECONDS >= GH_BUDGET_SAMPLE_NEXT )) || return 0
+  GH_BUDGET_SAMPLE_NEXT=$((SECONDS + every))
+  setsid timeout -k 5 20 bash "$LIVE/gh-budget-sampler.sh" >> "$A/loop.out" 2>&1 < /dev/null &
+}
 # The harvest group as its own station (scheduler.sh --harvest-station): finished workers must not wait for the 800-1500 s tick.
 # Same pacing as the CI station: the scheduler holds its own lock, so this only spaces the launches, and the tick harvests itself
 # while no pass started recently (this loop is an older one, or the station is stuck).
@@ -141,6 +149,7 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     launch_dashboard_views
     launch_ci_admission
     launch_merge_station
+    launch_gh_budget_sampler
     launch_harvest_station
     launch_existing_walk
     launch_intake_judge

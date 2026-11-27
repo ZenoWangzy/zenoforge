@@ -599,7 +599,8 @@ session_day="${TODAY//-//}"
 tick_gh() {
   printf 'gh %s\n' "$*" >> "$TF/calls"
   case "$1 $2" in
-    'api rate_limit') printf '%s\n' '{"remaining":5000,"reset":1790000000}' ;;
+    'api rate_limit') command jq -cn --argjson reset "$(($(date +%s) + 3600))" \
+      '{resources:{graphql:{used:100,remaining:4900,reset:$reset},core:{used:0,remaining:5000,reset:$reset}}}' ;;
     # #4725 条件请求包装（gh_api_cached）发出的 `gh api -i [-H …] …`：剥掉 -i/-H 后按原样
     # 递归分发到下面的既有分支（会多记一行去掉 -i 的调用），再用 200 + ETag 头信封包一层。
     'api -i')
@@ -3107,8 +3108,19 @@ sleep 300
 SH
 chmod +x "$TF/bin/codex"
 touch "$TF/allow-dispatch"
+budget_sample_epoch="$(date +%s)"
+budget_sample_reset=$((budget_sample_epoch + 3600))
+budget_sampled_at="$(date -u +%FT%TZ)"
+mkdir -p "$TF/agent-home/state"
+budget_sample_minute="$((budget_sample_epoch / 60))"
+mkdir -p "$TF/agent-home/state/gh-budget-minute-$budget_sample_minute" \
+  "$TF/agent-home/state/gh-budget-minute-$((budget_sample_minute + 1))"
+command jq -cn --arg sampled_at "$budget_sampled_at" --argjson sampled_epoch "$budget_sample_epoch" \
+  --argjson reset "$budget_sample_reset" \
+  '{sampled_at:$sampled_at,sampled_epoch:$sampled_epoch,resources:{graphql:{used:100,remaining:4900,reset:$reset},core:{used:0,remaining:5000,reset:$reset}}}' \
+  > "$TF/agent-home/state/gh-budget.latest.json"
 calls_before="$(wc -l < "$TF/calls")"
-TF_REAL_PS=1 tick --refill
+ZF_AGENT_TEST_MODE=0 TF_REAL_PS=1 tick --refill
 command jq -e '.units | length==5
   and any(.[]; .id=="issue-8802" and .stage=="implement")
   and any(.[]; .id=="issue-8801" and .lane=="pr" and .stage=="implement-pending")
@@ -3125,9 +3137,9 @@ if grep -Fq 'tick done' "$TF/supervisor/autopi/scheduler.log"; then
   echo 'scheduler.test.sh: refill entry ran the slow tick' >&2; exit 1
 fi
 refill_calls="$(tail -n +$((calls_before + 1)) "$TF/calls")"
-[[ "$(grep -Fc 'gh api rate_limit --jq .resources.core' <<<"$refill_calls" || true)" == 2 ]] \
-  || { echo 'scheduler.test.sh: refill tick did not take exactly two rate-limit measurements' >&2; exit 1; }
-if grep -E '^gh ' <<<"$refill_calls" | grep -Evq '^gh api rate_limit --jq \.resources\.core$' \
+[[ "$(grep -Fc 'gh api rate_limit' <<<"$refill_calls" || true)" == 0 ]] \
+  || { echo 'scheduler.test.sh: refill tick did not reuse its fresh rate-limit sample' >&2; exit 1; }
+if grep -E '^gh ' <<<"$refill_calls" | grep -Evq '^gh api rate_limit$' \
   || grep -Eq '^git fetch .* origin([[:space:]]|$)' <<<"$refill_calls"; then
   printf '%s\n' "$refill_calls" >&2; echo 'scheduler.test.sh: refill tick touched GitHub or fetched a remote' >&2; exit 1
 fi

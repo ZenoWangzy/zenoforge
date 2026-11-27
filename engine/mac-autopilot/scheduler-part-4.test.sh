@@ -23,6 +23,9 @@ source "$scheduler_dir/scheduler.d/harvest-station.sh"
 jqf() { command jq "$@"; }
 gh_rate_limit_api_class() { printf 'rest\n'; }
 RATE_LIMIT_CORE='{"remaining":5000,"reset":1790000000}'
+RATE_LIMIT_SAMPLE='{"resources":{"core":{"remaining":5000,"reset":1790000000}}}'
+gh_budget_sample() { :; }
+gh_budget_latest() { printf '%s\n' "$RATE_LIMIT_SAMPLE"; }
 FAIL_RUN_LIST=false
 gh_timeout() {
   while [[ "${1:-}" == -k || "${1:-}" == --kill-after ]]; do shift 2; done
@@ -94,12 +97,11 @@ gh api -X POST repos/test/repo/actions/runs/901/rerun >/dev/null
 [[ ! -e "$A/.gh-run-jobs/901.json" ]] || fail 'REST rerun kept its completed snapshot'
 ci_jobs_data 901 true >/dev/null
 [[ "$(wc -l < "$JOB_CALLS" | tr -d ' ')" == 3 ]] || fail 'REST rerun did not refresh the job snapshot'
-RATE_LIMIT_CORE='{"remaining":5000,"reset":1790000000}'
 tick_rest_usage_begin
-RATE_LIMIT_CORE='{"remaining":4993,"reset":1790000000}'
+RATE_LIMIT_SAMPLE='{"resources":{"core":{"remaining":4993,"reset":1790000000}}}'
 [[ "$(tick_rest_usage_summary)" == 'rest_used=7' ]] || fail 'REST delta did not report remaining-before minus remaining-after'
 tick_rest_usage_begin
-RATE_LIMIT_CORE='{"remaining":4990,"reset":1790000001}'
+RATE_LIMIT_SAMPLE='{"resources":{"core":{"remaining":4990,"reset":1790000001}}}'
 [[ "$(tick_rest_usage_summary)" == 'rest_used=reset' ]] || fail 'REST delta did not report a changed reset time'
 
 cleanup_fixture="$fixture/lifecycle"
@@ -117,6 +119,9 @@ A="$CACHE_A" LOG="$CACHE_LOG" STAMP=fixture GH_ETAG_DIR="$CACHE_A/.gh-etag"
 source "$SCHEDULER_DIR/../lib.d/gh-tick-cache.sh"
 source "$SCHEDULER_DIR/scheduler.d/core.sh"
 jqf() { command jq "$@"; }
+RATE_LIMIT_SAMPLE='{"resources":{"core":{"remaining":5000,"reset":1790000000}}}'
+gh_budget_sample() { :; }
+gh_budget_latest() { printf '%s\n' "$RATE_LIMIT_SAMPLE"; }
 gh_timeout() { shift; [[ "$1 $2" == 'api rate_limit' ]] && printf '%s\n' '{"remaining":5000,"reset":1790000000}'; }
 trap 'touch "$PRIOR_MARKER"' EXIT # subshell trap: the probe is its own bash process and never sources test-env.sh
 tick_gh_calls_begin

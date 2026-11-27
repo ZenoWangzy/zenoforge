@@ -4287,7 +4287,13 @@ mkdir -p "$GH_API_PROBE_HOME/fake-bin"
 cat > "$GH_API_PROBE_HOME/fake-bin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "api rate_limit") if [ "$FAKE_GH_MODE" = ratelimit ]; then echo 0; else echo 4999; fi ;;
+  "api rate_limit")
+    if [ "$FAKE_GH_MODE" = ratelimit ]; then
+      printf '%s\n' '{"resources":{"graphql":{"used":5000,"remaining":0,"reset":1800003600},"core":{"used":0,"remaining":5000,"reset":1800003600}}}'
+    else
+      printf '%s\n' '{"resources":{"graphql":{"used":1,"remaining":4999,"reset":1800003600},"core":{"used":1,"remaining":4999,"reset":1800003600}}}'
+    fi
+    ;;
   "api graphql") if [ "$FAKE_GH_MODE" = ratelimit ]; then echo "HTTP 403: API rate limit exceeded" >&2; exit 1; fi; echo tester ;;
   *) exit 2 ;;
 esac

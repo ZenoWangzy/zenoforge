@@ -96,6 +96,27 @@ for _ in $(seq 50); do [[ -s "$ms/calls" ]] && break; command sleep 0.1; done
 touch "$ms/release"
 [[ "$(cat "$ms/calls")" == '--merge' ]] || fail "the merge station was not launched once on cadence ($(cat "$ms/calls" 2>/dev/null))"
 
+budget_ms="$fixture/gh-budget-loop"; mkdir -p "$budget_ms/live" "$budget_ms/state"
+cat > "$budget_ms/live/gh-budget-sampler.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'sample\n' >> "$MS_BUDGET_CALLS"
+SH
+(
+  AUTOPI_LOOP_LIBRARY_ONLY=true; source "$script_dir/loop.sh"
+  A="$budget_ms/state"; LIVE="$budget_ms/live"; export MS_BUDGET_CALLS="$budget_ms/calls"; : > "$MS_BUDGET_CALLS"
+  AUTOPI_GH_BUDGET_SAMPLE_SECONDS=30
+  SECONDS=0
+  launch_gh_budget_sampler
+  launch_gh_budget_sampler
+  for _ in $(seq 50); do [[ "$(wc -l < "$MS_BUDGET_CALLS" | tr -d ' ')" == 1 ]] && break; command sleep 0.1; done
+  [[ "$(wc -l < "$MS_BUDGET_CALLS" | tr -d ' ')" == 1 ]] || fail 'the sampler did not launch immediately and only once per interval'
+  SECONDS=29; launch_gh_budget_sampler
+  [[ "$(wc -l < "$MS_BUDGET_CALLS" | tr -d ' ')" == 1 ]] || fail 'the sampler launched before its next interval'
+  SECONDS=30; launch_gh_budget_sampler
+  for _ in $(seq 50); do [[ "$(wc -l < "$MS_BUDGET_CALLS" | tr -d ' ')" == 2 ]] && break; command sleep 0.1; done
+  [[ "$(wc -l < "$MS_BUDGET_CALLS" | tr -d ' ')" == 2 ]] || fail 'the sampler did not relaunch at the next interval'
+) || fail 'rate-limit sampler loop cadence failed'
+
 # ---- (c) no double merge: the station (skips a busy lane), a tick-style pass (waits) and a refill-style pass (skips) race on one CLEAN PR ----
 race() { # label: the merge calls of the three passes started together
   open_pr; ready_unit; : > "$MERGE_LOG"; : > "$LOG"; MERGE_CALL_SLEEP=1

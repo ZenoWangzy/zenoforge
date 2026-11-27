@@ -55,8 +55,6 @@ fi
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT
 stop_signal="$temp_dir/stop.signal"
-rate_limit_cache="$temp_dir/rate-limit.cache"
-rate_limit_cache_lock="$temp_dir/rate-limit-cache.lock"
 export ZF_INTAKE_RATE_LIMIT_SIGNAL="$stop_signal"
 records_file="$temp_dir/records.jsonl"
 judge_results_file="$temp_dir/judge-results.jsonl"
@@ -92,63 +90,30 @@ write_report() {
 }
 
 intake_backlog_rate_allows_apply() {
-  local lock_fd='' now='' checked_at='' response='' cache_temp='' core='' graphql='' rc=0
+  local response core graphql sample_status
   [[ ! -e "$stop_signal" ]] || return 1
-  exec {lock_fd}>"$rate_limit_cache_lock" || return 1
-  if ! flock -x "$lock_fd"; then
-    exec {lock_fd}>&-
+  gh_budget_sample '' allow-test || :
+  if response="$(gh_budget_fresh)"; then
+    :
+  else
+    sample_status=$?
+    if (( sample_status == 2 )); then
+      echo 'intake-backlog: rate-limit sample stale' >&2
+    else
+      echo 'intake-backlog: rate-limit sample unavailable' >&2
+    fi
+    intake_backlog_signal_stop rate-check-failed
     return 1
   fi
-  now="$(date +%s)" || rc=1
-  if (( rc == 0 )) && [[ -s "$rate_limit_cache" ]]; then
-    checked_at="$(jq -er '.checked_at | select(type == "number")' "$rate_limit_cache" 2>/dev/null || true)"
-    if [[ "$checked_at" =~ ^[0-9]+$ ]] && (( now >= checked_at && now - checked_at < 30 )); then
-      response="$(jq -c '.response' "$rate_limit_cache" 2>/dev/null || true)"
-    fi
+  core="$(jq -er '.resources.core.remaining | select(type == "number")' <<< "$response")" || return 1
+  graphql="$(jq -er '.resources.graphql.remaining | select(type == "number")' <<< "$response")" || return 1
+  if (( core < rate_floor || graphql < rate_floor )); then
+    printf 'intake-backlog: rate floor reached (core=%s graphql=%s floor=%s)\n' \
+      "$core" "$graphql" "$rate_floor" >&2
+    intake_backlog_signal_stop rate-limit
+    return 1
   fi
-  if (( rc == 0 )) && [[ -z "$response" ]]; then
-    if ! response="$(gh api rate_limit 2>&1)"; then
-      if [[ "$response" == *'API rate limit already exceeded'* ]]; then
-        printf 'intake-backlog: %s\n' "$response" >&2
-        intake_backlog_signal_stop rate-limit
-      else
-        printf 'intake-backlog: rate-limit check failed: %s\n' "${response//$'\n'/; }" >&2
-        intake_backlog_signal_stop rate-check-failed
-      fi
-      rc=1
-    elif ! jq -e 'type == "object"
-      and (.resources.core.remaining | type == "number" and . >= 0 and floor == .)
-      and (.resources.graphql.remaining | type == "number" and . >= 0 and floor == .)' <<< "$response" >/dev/null; then
-      echo 'intake-backlog: invalid gh api rate_limit response' >&2
-      intake_backlog_signal_stop rate-check-failed
-      rc=1
-    else
-      cache_temp="$rate_limit_cache.tmp.$$"
-      if jq -cn --argjson checked_at "$now" --argjson response "$response" \
-        '{checked_at:$checked_at,response:$response}' > "$cache_temp" \
-        && mv -f -- "$cache_temp" "$rate_limit_cache"; then
-        :
-      else
-        rm -f -- "$cache_temp"
-        echo 'intake-backlog: could not cache gh api rate_limit response' >&2
-        intake_backlog_signal_stop rate-check-failed
-        rc=1
-      fi
-    fi
-  fi
-  if (( rc == 0 )); then
-    core="$(jq -er '.resources.core.remaining | select(type == "number")' <<< "$response")" || rc=1
-    graphql="$(jq -er '.resources.graphql.remaining | select(type == "number")' <<< "$response")" || rc=1
-    if (( rc == 0 && (core < rate_floor || graphql < rate_floor) )); then
-      printf 'intake-backlog: rate floor reached (core=%s graphql=%s floor=%s)\n' \
-        "$core" "$graphql" "$rate_floor" >&2
-      intake_backlog_signal_stop rate-limit
-      rc=1
-    fi
-  fi
-  flock -u "$lock_fd" || true
-  exec {lock_fd}>&-
-  return "$rc"
+  return 0
 }
 
 if [[ -z "${ZF_ROADMAP_TREE_CACHE_FILE:-}" || ! -r "$ZF_ROADMAP_TREE_CACHE_FILE" ]]; then

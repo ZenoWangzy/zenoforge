@@ -1,0 +1,4 @@
+{
+  "engine/mac-autopilot/gh-budget-sampler.sh": ["engine/gh-budget.test.sh"],
+  "engine/mac-autopilot/gh_budget_health.py": ["engine/gh-budget.test.sh"]
+}
