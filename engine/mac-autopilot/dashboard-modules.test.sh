@@ -96,6 +96,17 @@ for (const detail of ["GitHub counts 读取于 11-27 19:17 UTC", "issue-2718-lun
   if (!truthPanel.includes(detail)) throw new Error(`repo panel lacks ${detail}: ${truthPanel}`);
 if (!truthPanel.includes("数据较旧")) throw new Error(`repo panel did not judge freshness from fetched_at: ${truthPanel}`);
 
+const factoryPanelData = JSON.parse(JSON.stringify(truth));
+factoryPanelData.repo_sections[0].workers = [];
+factoryPanelData.repo_sections[0].factory_live.merge_lane_today = [1650, 1651, 1652];
+const factoryPanelView = load(factoryPanelData);
+factoryPanelView.ctx.__dash.renderModule("overview");
+const factoryPanel = factoryPanelView.els.view.innerHTML;
+if (factoryPanel.includes("在岗 workers") || factoryPanel.includes("没有在岗 workers"))
+  throw new Error(`factory repo panel duplicated the Luna worker list: ${factoryPanel}`);
+for (const detail of ["Luna workers", "issue-2718-luna", "合并车道今日合并 3 · 来源 merge-lane.log"])
+  if (!factoryPanel.includes(detail)) throw new Error(`factory repo panel lacks ${detail}: ${factoryPanel}`);
+
 // The health sample cadence follows observed scheduler gaps: 727s p50 supports two gaps before stale.
 const scorecardAtAge = ageSeconds => {
   const D = {generated: new Date().toISOString(), config: {tick_seconds: 120}, standards: {

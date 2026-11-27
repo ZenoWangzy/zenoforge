@@ -12,6 +12,7 @@ git init -q -b main "$repo"
 
 cat > "$fixture/bin/gh" <<'SH'
 #!/usr/bin/env bash
+if [[ "$1 $2" == "api search/issues" ]]; then exit 0; fi
 echo '[]'
 SH
 cat > "$fixture/bin/ssh" <<'SH'
