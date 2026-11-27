@@ -9,6 +9,8 @@ NODE-HEALTH.md. A dimension a station cannot be measured on is listed in EXCEPTI
 import glob, os, re
 from datetime import datetime, timedelta, timezone
 
+import proof_browser_health
+
 STATIONS = ("intake", "triage", "advisor", "implement", "review", "repair", "merge", "ci", "release")
 WINDOW_HOURS = 24
 TRIAGE_LOG_RE = re.compile(r"^(tokens_used|issue_sample_size)=(\d+)$", re.M)
@@ -113,6 +115,10 @@ SOURCE = {
     "rereview.wall_p50": "7 d ending 2026-11-09T17:58Z: 450 rereview runs with output, minutes p75 11.9, p90 15.8 (rounded up)",
     "rereview.tokens_p50": "7 d ending 2026-11-09T17:58Z: 18 rereview runs with measured tokens: p75 270,358, p90 301,796. Healthy equals unhealthy, so no WARN band",
 }
+
+CRITERIA.update(proof_browser_health.CRITERIA)
+MEANING.update(proof_browser_health.MEANING)
+SOURCE.update(proof_browser_health.SOURCE)
 
 
 def _pct(values, q):
@@ -273,6 +279,8 @@ def collect(now, units, runs, runtime, agent_home, cost_rows=(), alert=False):
     import station_health  # lazy: station_health imports node_health, which imports this module
     values, _, items = _window_values(now, WINDOW_HOURS, units, runs, runtime, agent_home, cost_rows,
                                       station_health.outs(units, runtime, agent_home))
+    values.update(proof_browser_health.collect(
+        runtime, agent_home, now - timedelta(hours=WINDOW_HOURS), now, None, _pct))
     if alert:
         over_bound(runtime, now, values, items)
     return values
@@ -286,7 +294,16 @@ def collect_windows(now, units, runs, runtime, agent_home, cost_rows=()):
                for hours in (1, 6, 24)}
     previous = _window_values(now - timedelta(hours=1), 1, units, runs, runtime, agent_home, cost_rows, outs)
     result = {}
+    proof_counts = {}
+    proof_values = proof_browser_health.collect(
+        runtime, agent_home, now - timedelta(hours=WINDOW_HOURS), now, proof_counts, _pct)
     for key in CRITERIA:
+        if key in proof_browser_health.CRITERIA:
+            value = proof_values[key]
+            result[key] = {"value_1h": value, "trend_1h": None,
+                           "short_window": "24h" if value is not None else None,
+                           "sample_n": proof_counts[key]}
+            continue
         short = next((hours for hours in (1, 6, 24) if periods[hours][1][key] and periods[hours][0][key] is not None), None)
         current, prior = periods[1][0][key], previous[0][key]
         trend = None

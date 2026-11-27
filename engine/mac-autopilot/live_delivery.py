@@ -7,8 +7,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import proof_browser_health
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 NONPRODUCT_PATHS_RE = re.compile(r"^(scripts|lessons|docs|ops|[.]agents|[.]trellis|[.]github)/|^[^/]+[.]md$")
@@ -126,7 +128,10 @@ def collect_health_metrics(agent_home, now, repo=None, reader=None, fallback_rea
     if is_fallback:
         for metric_id, source in _SOURCE_DEFAULT.items():
             SOURCE[metric_id] = f"FALLBACK: {fallback['fallback']} (oldest running service SHA); {source}"
-    return health_metrics(repository_root(), record or read_live_sha(agent_home), now.timestamp())
+    values = health_metrics(repository_root(), record or read_live_sha(agent_home), now.timestamp())
+    runtime = os.environ.get("MAC_AUTOPILOT_RUNTIME_DIR")
+    values.update(proof_browser_health.collect(runtime, agent_home, now - timedelta(hours=24), now))
+    return values
 
 
 def is_product_change(paths):
