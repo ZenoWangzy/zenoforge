@@ -34,6 +34,13 @@ with tempfile.TemporaryDirectory() as agent_home:
     with open(codex_pid, "w", encoding="utf-8") as target:
         target.write("1122\n")
     os.utime(codex_pid, (now - 30, now - 30))
+    ended_codex = os.path.join(luna, "issue-2719-ended-codex")
+    os.makedirs(ended_codex)
+    ended_codex_pid = os.path.join(ended_codex, "codex.pid")
+    with open(ended_codex_pid, "w", encoding="utf-8") as target:
+        target.write("1122\n")
+    with open(os.path.join(ended_codex, "rc"), "w", encoding="utf-8") as target:
+        target.write("0\n")
     log = os.path.join(agent_home, "zenoforge-dispatch.log")
     with open(log, "w", encoding="utf-8") as target:
         target.write("[2026-11-27T17:30:00Z] issue #2713 skipped: capacity detail\n")
@@ -76,6 +83,7 @@ assert workers["issue-2714-example"]["started_at"] == "2026-11-27T17:58:30Z", wo
 assert workers["issue-2718-codex-only"]["age_s"] == 30, workers
 assert workers["issue-2718-codex-only"]["rc"] is None, workers
 assert workers["issue-2718-codex-only"]["started_at"] == "2026-11-27T17:59:30Z", workers
+assert "issue-2719-ended-codex" not in workers, workers
 assert result["fetched_at"] == "2026-11-27T18:00:00Z", result
 assert [row["decision"] for row in result["dispatch_decisions"]] == ["skipped", "dispatched"], result
 assert result["dispatch_decisions"][0]["at"] == "2026-11-27T17:30:00Z", result
