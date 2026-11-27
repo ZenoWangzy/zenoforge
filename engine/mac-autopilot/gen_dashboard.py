@@ -3,7 +3,7 @@
 import json, os, glob, time, subprocess, calendar, re, sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, repo_identity, triage_split, intake_laneless_health, traffic_trend, gh_caller, gh_key_cache, dashboard_source_freshness, dashboard_factory_live
+import worker_cost, live_workers, factory_trend, founder_reqs, dashboard_titles, dashboard_ready_queue, dashboard_repos, triage_split, intake_laneless_health, traffic_trend, gh_caller, gh_key_cache, dashboard_source_freshness, dashboard_factory_live
 import ledger_history
 from config_paths import zf_config_file
 
@@ -350,7 +350,7 @@ for w in workers:
         wl[-1]["activity"] = activity_of(w.get("log", ""))
 
 # ---- 网络流量（engine/network-traffic.py monitor 每 60 秒写一次结果） ----
-AGENT_HOME = os.environ.get("AGENT_HOME") or os.path.expanduser("~/.zenoforge")
+AGENT_HOME = os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
 # Same setting lib.sh resolves.
 UNIT_PREFIX_TRANSIENT = os.environ.get("ZF_UNIT_PREFIX") or "zf"
 def read_json(path):
@@ -360,12 +360,13 @@ def read_json(path):
     except (OSError, ValueError):
         return None
 
-def current_pause():
-    path = os.path.join(AGENT_HOME, "PAUSE")
-    if not os.path.exists(path):
-        return None
-    state = read_json(path) or {}
-    return {"since": state.get("timestamp"), "reason": state.get("reason")}
+def utc_at(epoch):
+    try: return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(epoch)))
+    except (OverflowError, TypeError, ValueError): return None
+def file_fetched_at(path, fallback=None):
+    try: return utc_at(os.path.getmtime(path))
+    except OSError: return utc_at(fallback)
+def add_fetch_meta(panel, fetched_at, freshness_window_s=300): panel.update(fetched_at=fetched_at, freshness_window_s=freshness_window_s, stale=dashboard_repos.fetched_stale(fetched_at, freshness_window_s, time.time()))
 
 traffic_last = read_json(os.path.join(AGENT_HOME, "night/network-traffic-last-result.json")) or {}
 traffic_budget = read_json(os.path.join(AGENT_HOME, "state/traffic-budget.json")) or {}
@@ -382,13 +383,13 @@ traffic = {
     "detail": (traffic_last.get("detail") or "")[:300],
     "history": traffic_trend.history(AGENT_HOME),
     "days": traffic_trend.days(AGENT_HOME),
-}
+}; add_fetch_meta(traffic, utc_at(traffic_last.get("sampled_epoch")) or file_fetched_at(os.path.join(AGENT_HOME, "night/network-traffic-last-result.json")), 300)
 
 # ---- worker 成本账（worker_cost.py：单元 / ticket / 阶段 / 后端 + 最近 24h + eval 栏） ----
 # 无状态：每拍从 worker 事件流重读一遍，同一文件重读不重复计数；eval 用 runner 自己的 results.json。
 cost_rows = worker_cost.run_rows(SUP); cost_now = time.time(); worker_cost.attach_provider_usage(cost_rows, units)
 cost_ledger = worker_cost.aggregate(cost_rows, units, cost_now); token_efficiency = worker_cost.token_efficiency_kpis(cost_rows, units, cost_now)
-cost_ledger["eval"] = worker_cost.eval_costs(os.path.join(AGENT_HOME, "eval"), time.time())
+cost_ledger["eval"] = worker_cost.eval_costs(os.path.join(AGENT_HOME, "eval"), time.time()); add_fetch_meta(cost_data, utc_at(cost_now), 900); add_fetch_meta(cost_ledger, utc_at(cost_now), 900)
 
 # ---- GitHub 总量 ----
 # PR 与 run 事实来自 scheduler 每拍发布的快照（pr-run-snapshot.json）：缺失、格式错或分区为 null 都是"不可用"，不当成零。
@@ -808,26 +809,20 @@ def front_run(argv, timeout, **kw):
 
 # 每个 worker 的累计字节：network-traffic.py monitor 每 60 秒写 state/traffic-workers.json（键 wt:<unit> / unit:<scope>）
 worker_traffic = read_json(os.path.join(AGENT_HOME, "state", "traffic-workers.json")) or {}
-try:
-    live_workers_data = live_workers.collect(wl, units, UNIT_PREFIX_TRANSIENT,
-        os.environ.get("ZF_LUNA_DIR", os.path.join(os.environ.get("WORKER_SCRATCH_ROOT", os.path.expanduser("~/.zenoforge/scratch")), "luna")),
-        os.path.join(AGENT_HOME, "web-advisor-provider-jobs"), SUP, worker_traffic, SESSION_ROOT)
-except Exception as e:
-    live_workers_data = {"error": str(e)[:200]}
+try: live_workers_data = live_workers.collect(wl, units, UNIT_PREFIX_TRANSIENT, os.environ.get("ZF_LUNA_DIR", os.path.join(os.environ.get("WORKER_SCRATCH_ROOT", os.path.expanduser("~/.zenoforge/scratch")), "luna")), os.path.join(AGENT_HOME, "web-advisor-provider-jobs"), SUP, worker_traffic, SESSION_ROOT)
+except Exception as e: live_workers_data = {"error": str(e)[:200]}
+add_fetch_meta(live_workers_data, utc_at(live_workers_data.get("generated_epoch")), 300)
 
-try:
-    factory_data = factory_trend.collect(AGENT_HOME, units, {w["unit"] for w in wl if w["alive"]},
-        os.path.join(AGENT_HOME, "engine-versions"), os.path.join(A, "factory-trend.cache.json"), traffic=worker_traffic,
-        max_workers=cfg["max_workers"], runtime=A, worktree_root=wt_root, repo_root=ROOT)
-except Exception as e:
-    factory_data = {"error": str(e)[:200]}
+try: factory_data = factory_trend.collect(AGENT_HOME, units, {w["unit"] for w in wl if w["alive"]}, os.path.join(AGENT_HOME, "engine-versions"), os.path.join(A, "factory-trend.cache.json"), traffic=worker_traffic, max_workers=cfg["max_workers"], runtime=A, worktree_root=wt_root, repo_root=ROOT)
+except Exception as e: factory_data = {"error": str(e)[:200]}
+add_fetch_meta(factory_data, file_fetched_at(os.path.join(A, "factory-trend.cache.json")), 900)
 
 try:
     rulings_file = zf_config_file("state/rulings.json") or os.path.join(_HERE, "..", "state", "rulings.json")
-    founder_data = founder_reqs.collect(units, os.environ.get("ZF_REPO", ""), str(rulings_file), A,
-                                        AGENT_HOME, os.path.join(_HERE, "..", "lib.sh"))
+    founder_data = founder_reqs.collect(units, os.environ.get("ZF_REPO", ""), str(rulings_file), A, AGENT_HOME, os.path.join(_HERE, "..", "lib.sh"))
 except Exception as e:
     founder_data = {"error": str(e)[:200]}
+add_fetch_meta(founder_data, file_fetched_at(os.path.join(A, "founder-reqs.cache.json")), 900)
 
 ISSUE_TITLES_PATH = os.path.join(A, "issue-titles.json")
 try:
@@ -855,7 +850,7 @@ def front_github_stages(now, repo_slug=None):
     repo_slug = repo_slug or os.environ.get("ZF_REPO", "")
     cached, age = dashboard_repos.cache_get(FRONT_CACHE_PATH, repo_slug, os.environ.get("ZF_REPO", ""), now, FRONT_CACHE_SECONDS, read_json)
     if cached and isinstance(cached.get("search_counts"), dict) and front_cache_has_triage_split(cached):
-        return cached["stages"], cached["search_counts"], {"cached": True, "stale": False, "age_s": int(age), "error": None}
+        return cached["stages"], cached["search_counts"], {"cached": True, "stale": False, "age_s": int(age), "error": None, "fetched_at": utc_at(cached["fetched_epoch"]), "freshness_window_s": FRONT_CACHE_SECONDS}
     try:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_slug): raise RuntimeError("ZF_REPO 必须是 owner/repo")
         owner, name = repo_slug.split("/", 1)
@@ -878,11 +873,11 @@ def front_github_stages(now, repo_slug=None):
         search_count_error = "; ".join(str(e.get("message") or "") for e in (payload.get("errors") or []) if isinstance(e, dict))[:200] or "GitHub 搜索未返回计数"
         search_counts["errors"] = {**{key: search_count_error for key, value in search_counts.items() if key != "stages" and not isinstance(value, int)}, **{f"stages.{key}": search_count_error for key, value in search_counts["stages"].items() if not isinstance(value, int)}}
         dashboard_repos.cache_store(FRONT_CACHE_PATH, repo_slug, os.environ.get("ZF_REPO", ""), now, stages, search_counts, read_json)
-        return stages, search_counts, {"cached": False, "stale": False, "age_s": 0, "error": None}
+        return stages, search_counts, {"cached": False, "stale": False, "age_s": 0, "error": None, "fetched_at": utc_at(now), "freshness_window_s": FRONT_CACHE_SECONDS}
     except Exception as ex:
         stale, age = dashboard_repos.cache_get(FRONT_CACHE_PATH, repo_slug, os.environ.get("ZF_REPO", ""), now, FRONT_STALE_SECONDS, read_json)
         if stale and front_cache_has_triage_split(stale):
-            return stale["stages"], stale.get("search_counts"), {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex)}
+            return stale["stages"], stale.get("search_counts"), {"cached": True, "stale": True, "age_s": int(age), "error": front_error(ex), "fetched_at": utc_at(stale["fetched_epoch"]), "freshness_window_s": FRONT_CACHE_SECONDS}
         raise
 
 def front_stage_rows(now, front):
@@ -1087,7 +1082,7 @@ def front_release_panel(now, awaiting):
             "prod_sha": (deployed_sha or "")[:12] or None, "main_sha": main_sha[:12] or None,
             "main_ahead_commits": behind, "awaiting_release": awaiting}
 
-release_train_state = read_json(f"{A}/release-train.json") or {}
+release_train_path = f"{A}/release-train.json"; release_train_state = read_json(release_train_path) or {}; add_fetch_meta(release_train_state, file_fetched_at(release_train_path), 900); add_fetch_meta(release, file_fetched_at(f"{A}/release.json"), 900)
 front = {"errors": {}}
 front_now = front_started = time.time(); intake_laneless_health.add_front_priority_data(front, front_now, A, os.environ.get("ZF_REPO", ""), front_run, ROOT, AGENT_HOME, front_std, front_values)
 try:
@@ -1108,22 +1103,27 @@ for section, build in (
     except Exception as ex:
         front[section] = None
         front["errors"][section] = front_error(ex)
-front["standards"] = front_standards
-front["values"] = front_values
+for panel_name in ("advisor", "triage", "release"): add_fetch_meta(front[panel_name], utc_at(front_now), 900) if isinstance(front.get(panel_name), dict) else None
+front["standards"] = front_standards; front["values"] = front_values
 front["status"] = {k: ("N/A" if k in front_na else front_judge(front_values.get(k), sd)) for k, sd in front_standards.items()}
-front["elapsed_s"] = round(time.time() - front_started, 2); dashboard_now = time.time(); dashboard_pause = current_pause(); source_freshness = dashboard_source_freshness.read_sources(A, dashboard_now, cfg.get("tick_seconds"), (dashboard_pause or {}).get("since")); factory_live = dashboard_factory_live.read_live(AGENT_HOME, units, dashboard_now, today_text, session_date_of); repo_sections = dashboard_repos.sections(os.environ.get("ZF_DASHBOARD_REPOS"), os.environ.get("ZF_REPO", ""),
-    os.environ.get("ZF_ENGINE_REPO") or repo_identity.origin_repo(os.environ.get("ZF_ENGINE_REPO_DIR") or os.environ.get("ZF_ENGINE_DIR") or _HERE),
-    live_workers_data.get("items") or [], front, lambda repo: front_github_stages(front_now, repo), factory_live)
+front["elapsed_s"] = round(time.time() - front_started, 2); dashboard_now = time.time(); line_pause_file = os.environ.get("AUTOPILOT_PAUSE_FILE") or os.path.join(AGENT_HOME, "PAUSE"); factory_home = os.environ.get("ZF_HOME") or AGENT_HOME
+pause_states = dashboard_factory_live.read_pause_states(line_pause_file, os.path.join(factory_home, "PAUSE"), dashboard_now); factory_pause_state = pause_states["zenoforge_factory"]; dashboard_pause = {"since": factory_pause_state["since"], "reason": factory_pause_state["reason"]} if factory_pause_state["paused"] is True else None
+source_freshness = dashboard_source_freshness.read_sources(A, dashboard_now, cfg.get("tick_seconds"), (dashboard_pause or {}).get("since"), factory_pause_state["paused"] is True); advisor_loop = front.get("advisor_loop"); add_fetch_meta(advisor_loop, source_freshness["units"]["fetched_at"], source_freshness["units"]["window_s"]) if isinstance(advisor_loop, dict) else None
+factory_live = dashboard_factory_live.read_live(AGENT_HOME, units, dashboard_now, today_text, session_date_of); engine_live = {"pin": dashboard_factory_live.engine_live_pin(AGENT_HOME), "fetched_at": utc_at(dashboard_now)}; front.update(fetched_at=(front.get("github") or {}).get("fetched_at"), stale=bool((front.get("github") or {}).get("stale")), freshness_window_s=(front.get("github") or {}).get("freshness_window_s", FRONT_CACHE_SECONDS))
+ci_live.update(fetched_at=source_freshness["ci_live"]["fetched_at"], freshness_window_s=source_freshness["ci_live"]["window_s"], stale=source_freshness["ci_live"]["stale"]); station_data = read_json(f"{A}/station-health.json") or {}; station_data.update(fetched_at=source_freshness["stations"]["fetched_at"], freshness_window_s=source_freshness["stations"]["window_s"], stale=source_freshness["stations"]["stale"])
+engine_repo = os.environ.get("ZF_ENGINE_REPO") or repo_identity.origin_repo(os.environ.get("ZF_ENGINE_REPO_DIR") or os.environ.get("ZF_ENGINE_DIR") or _HERE); factory_repo = os.environ.get("ZF_REPO") or engine_repo; repo_sections = dashboard_repos.sections(os.environ.get("ZF_DASHBOARD_REPOS"), os.environ.get("ZF_REPO", ""), engine_repo, live_workers_data.get("items") or [], front, lambda repo: front_github_stages(front_now, repo), factory_live=factory_live, factory_repo=factory_repo)
 
 data = {
     "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "repo": os.environ.get("ZF_REPO", ""),
     "repo_sections": repo_sections,
+    "engine_live": engine_live,
+    "pipeline_pauses": pause_states,
     "live_workers": live_workers_data,
     "factory": factory_data, "founder_reqs": founder_data,
     "units": units, "workers": wl, "release": release, "cost": cost_data, "cost_ledger": cost_ledger,
-    "traffic": traffic, "front": front, "stations": read_json(f"{A}/station-health.json") or {},
-    "release_train": (json.load(open(f"{A}/release-train.json")) if os.path.exists(f"{A}/release-train.json") else {}),
+    "traffic": traffic, "front": front, "stations": station_data,
+    "release_train": release_train_state,
     "config": {
         "models": cfg["models"], "max_workers": cfg["max_workers"],
         "daily_token_budget": cfg["daily_token_budget"],
@@ -1167,7 +1167,7 @@ data = {
     "ci_live": ci_live, "source_freshness": source_freshness,
     "knobs": knobs,
     # One source of standards: node_health.py writes the scorecard, meanings and work-order bounds each tick.
-    "standards": {**dashboard_source_freshness.annotate_standards(read_json(f"{A}/node-health.json") or {}, source_freshness), "paused": dashboard_pause},
+    "standards": {**dashboard_source_freshness.annotate_standards(read_json(f"{A}/node-health.json") or {}, source_freshness), "paused": dashboard_pause, "fetched_at": source_freshness["node_health"]["fetched_at"], "freshness_window_s": source_freshness["node_health"]["window_s"], "stale": source_freshness["node_health"]["stale"]},
 }
 # Write then rename: the page re-reads this file every 30 s, and an in-place write let it catch a half-written file.
 with open(dashboard_output + ".tmp", "w") as out:

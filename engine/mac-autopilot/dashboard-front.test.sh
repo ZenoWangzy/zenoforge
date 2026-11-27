@@ -23,6 +23,12 @@ utc_hour=$((10#$(date -u +%H))); off=$((12 - utc_hour))
 if (( off > 0 )); then tz="Etc/GMT-$off"; elif (( off < 0 )); then tz="Etc/GMT+$((-off))"; else tz="Etc/GMT"; fi
 export SESSION_TZ="$tz" CODEX_SESSIONS_DIR="$f/sessions" MAC_AUTOPILOT_ROOT="$root" \
   MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" MAC_AUTOPILOT_RUNTIME_DIR="$a" ZF_REPO_DIR="$root" ZF_REPO="example/fixture-repo"
+export ZF_HOME="$f/zenoforge-home" AUTOPILOT_PAUSE_FILE="$AGENT_HOME/PAUSE"
+mkdir -p "$AGENT_HOME/engine-versions/6da8c7285e8b/engine" "$ZF_HOME"
+ln -s "$AGENT_HOME/engine-versions/6da8c7285e8b/engine" "$AGENT_HOME/engine-live"
+mkdir -p "$AGENT_HOME/night"
+jq -n --argjson sampled_epoch "$(date -u +%s)" '{status:"OK",sampled_epoch:$sampled_epoch,gb_per_hour:0,daily:{wire_bytes:0,categories:{}}}' \
+  > "$AGENT_HOME/night/network-traffic-last-result.json"
 export MAC_AUTOPILOT_COST_CACHE="$f/cost.json" MAC_AUTOPILOT_DASHBOARD_OUTPUT="$f/out.js" GH_KEY_CACHE_DIR="$f/gh-key-cache"
 export FAKE_DEPLOYMENTS="$f/deployments.json" FAKE_DEPLOYMENT_WRITES="$f/deployment-writes"
 export FAKE_SSH_LOG="$f/ssh.log"
@@ -185,6 +191,19 @@ run
 run
 [[ $(grep -c '^runner$' "$FAKE_GH_LOG") == 1 ]] || fail 'dashboard refetched runners before the shared five-minute TTL'
 out="$(front)"
+sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
+  '.front.fetched_at == .front.github.fetched_at
+   and (.repo_sections | length == 1 and .[0].fetched_at == .front.github.fetched_at and .[0].factory_live != null)
+   and (.source_freshness.units.fetched_at != null)
+   and (.front.advisor.fetched_at | type) == "string"
+   and (.front.advisor_loop.fetched_at == .source_freshness.units.fetched_at)
+   and (.front.triage.fetched_at | type) == "string"
+   and (.front.release.fetched_at | type) == "string"
+   and (.live_workers.fetched_at | type) == "string"
+   and (.traffic.fetched_at | type) == "string"
+   and (.release_train.fetched_at | type) == "string"
+   and (.standards.fetched_at | type) == "string"' >/dev/null \
+  || fail 'panel fetch times were missing or did not match their source reads'
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | \
   jq -e '.founder_reqs.items | any(.[]; .issue == 555 and .text == "config override wording" and .from_ruling == true)' \
   >/dev/null || fail 'dashboard rulings reader did not use target config'
@@ -290,8 +309,12 @@ sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e '.unit
 sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT" | jq -e \
   --arg sampled_at "$scorecard_sampled_at" --arg pause_since "$pause_since" \
   '.standards.generated_at == $sampled_at and .standards.source_commit == "a1b2c3d4e5f6"
-   and .standards.paused == {since:$pause_since,reason:"refactor"}' >/dev/null \
-  || fail 'dashboard did not combine the scorecard sample with the current PAUSE details'
+   and .standards.paused == null
+   and .engine_live.pin == "6da8c7285e8b"
+   and .pipeline_pauses.vecta_line.paused and (.pipeline_pauses.vecta_line.since == $pause_since)
+   and (.pipeline_pauses.zenoforge_factory.paused == false)
+   and (.pipeline_pauses.vecta_line.fetched_at | type) == "string"' >/dev/null \
+  || fail 'dashboard did not report the independent current VectA and Zenoforge pause states'
 
 # 2. 5 分钟缓存：再跑一次不再调 GitHub
 cache="$MAC_AUTOPILOT_DASHBOARD_OUTPUT"; cache="$(dirname "$cache")/front-cache.json"

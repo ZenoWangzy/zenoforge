@@ -32,6 +32,7 @@ with tempfile.TemporaryDirectory() as runtime:
 
 for key in ("units", "workers", "ci_live", "node_health", "stations", "merge_wait", "delivery_rows"):
     assert result[key]["stale"] is True, (key, result[key])
+    assert result[key]["fetched_at"] == old, (key, result[key])
 for key in ("units", "workers", "ci_live", "node_health", "stations"):
     assert result[key]["paused"] is True, (key, result[key])
     assert result[key]["paused_since"] == paused_since, (key, result[key])

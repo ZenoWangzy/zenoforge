@@ -59,14 +59,14 @@ def _tick_gap(doc):
     return float(value) if isinstance(value, (int, float)) and value >= 30 else None
 
 
-def read_sources(runtime_dir, now=None, tick_seconds=120, paused_since=None):
+def read_sources(runtime_dir, now=None, tick_seconds=120, paused_since=None, paused=None):
     now = time.time() if now is None else float(now)
     node_path = os.path.join(runtime_dir, CADENCE_FILES["node_health"])
     node = _read(node_path)
     configured = float(tick_seconds) if isinstance(tick_seconds, (int, float)) and tick_seconds >= 30 else 120.0
     interval = max(configured, _tick_gap(node) or configured)
     scheduler_window = max(900.0, interval * 2)
-    pause = bool(paused_since)
+    pause = bool(paused_since) if paused is None else bool(paused)
     result = {}
     for name, filename in CADENCE_FILES.items():
         path = os.path.join(runtime_dir, filename)
@@ -86,6 +86,7 @@ def read_sources(runtime_dir, now=None, tick_seconds=120, paused_since=None):
         age = None if epoch is None else max(0, int(now - epoch))
         result[name] = {
             "at": at,
+            "fetched_at": at,
             "age_s": age,
             "window_s": int(window),
             "stale": age is None or age >= window,
