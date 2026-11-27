@@ -72,13 +72,31 @@ if [[ "${ZF_GITNEXUS_REFRESH_LOCK_HELD:-0}" != 1 ]]; then
   fi
 fi
 
-meminfo_file="${GITNEXUS_MEMINFO_FILE:-/proc/meminfo}"
-available_kb="$(awk '$1 == "MemAvailable:" { print $2; exit }' "$meminfo_file" 2>/dev/null || true)"
-if [[ ! "$available_kb" =~ ^[0-9]+$ ]]; then
+meminfo_file="${GITNEXUS_MEMINFO_FILE:-}"
+if [[ -n "$meminfo_file" ]]; then
+  available_kib="$(awk '$1 == "MemAvailable:" { print $2; found=1; exit } END { if (!found) exit 1 }' "$meminfo_file" 2>/dev/null || true)"
+  if [[ "$available_kib" =~ ^[0-9]+$ ]]; then
+    available_mb=$((available_kib / 1024))
+  else
+    available_mb=""
+  fi
+else
+  host_engine_dir="${ZF_ENGINE_DIR:-${AGENT_HOME:-${HOME:?HOME is not set}/.zenoforge}/engine-live}"
+  if [[ ! -f "$host_engine_dir/proc.sh" ]]; then
+    host_engine_dir="${AGENT_HOME:-${HOME:?HOME is not set}/.zenoforge}/checkout/engine"
+  fi
+  wrapper_engine_dir="$(dirname -- "${BASH_SOURCE[0]}")"
+  if [[ -f "$host_engine_dir/proc.sh" ]]; then
+    source "$host_engine_dir/proc.sh"
+  elif [[ -f "$wrapper_engine_dir/proc.sh" ]]; then
+    source "$wrapper_engine_dir/proc.sh"
+  fi
+  available_mb="$(host_mem_avail_mb 2>/dev/null || true)"
+fi
+if [[ ! "$available_mb" =~ ^[0-9]+$ ]]; then
   echo "gitnexus analyze refused: MemAvailable unavailable" >&2
   exit 3
 fi
-available_mb=$((available_kb / 1024))
 if (( available_mb < minimum_available_mb )); then
   echo "gitnexus analyze refused: MemAvailable ${available_mb}MB < ${minimum_available_mb}MB" >&2
   exit 3

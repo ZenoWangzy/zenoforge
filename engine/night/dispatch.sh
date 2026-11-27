@@ -11,6 +11,7 @@ case "$RESUME_NOTE" in *$'\t'*|*$'\n'*) echo "resume note cannot contain tabs or
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKTREE_LIFECYCLE="$SCRIPT_DIR/worktree-lifecycle.sh"
 source "$SCRIPT_DIR/config.sh" # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR
+source "$SCRIPT_DIR/proc.sh"
 # Same setting lib.sh resolves (lib.sh is sourced further down); read after config.sh so deploy.env is in effect.
 UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 HAND_UNIT="${UNIT_PREFIX_TRANSIENT}-hand-$NAME-$$"
@@ -154,17 +155,17 @@ case "$REPORT" in "~/"*) REPORT="$HOME/${REPORT:2}" ;; esac
 REPORT="$(realpath -m -- "$REPORT")"
 case "$WT$BRIEF$REPORT" in *$'\t'*|*$'\n'*) echo "hand-agent paths cannot contain tabs or newlines" >&2; exit 2 ;; esac
 if [ "$PROVIDER" = codex ]; then LOG="$NIGHT/codex-$NAME.log"; else LOG="$NIGHT/zcode-$NAME.log"; fi
-MEMINFO_FILE="${AGENT_DISPATCH_MEMINFO_FILE:-/proc/meminfo}"
-LOADAVG_FILE="${AGENT_DISPATCH_LOADAVG_FILE:-/proc/loadavg}"
+MEMINFO_FILE="${AGENT_DISPATCH_MEMINFO_FILE:-}"
+LOADAVG_FILE="${AGENT_DISPATCH_LOADAVG_FILE:-}"
 LOAD_LIMIT_MULTIPLIER="${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}"
-avail="$(awk '$1=="MemAvailable:"{print int($2/1024)}' "$MEMINFO_FILE")"
+avail="$(host_mem_avail_mb "$MEMINFO_FILE")"
 # 2026-10-10: at a 2000 MB floor every dispatcher (queue, program sessions, agents) filled WSL's 12 GB,
 # and post-land verification (needs 4608 MB) timed out after 1800 s again and again. Keep 6 GB free;
 # production fixes keep the old 2000 MB floor so an outage fix is never refused behind ordinary work.
 MIN_MEM_MB="$(hand_dispatch_memory_floor "$TIER")"
 [ "$avail" -lt "$MIN_MEM_MB" ] && { echo "refusing: MemAvailable ${avail}MB below ${MIN_MEM_MB}MB floor" >&2; exit 1; }
-load_1m="$(awk 'NR==1 {print $1}' "$LOADAVG_FILE")"
-processors="$(nproc)"
+load_1m="$(host_load1 "$LOADAVG_FILE")"
+processors="$(host_ncpu)"
 # Production fixes (deploy unblocks) must not queue behind implement load:
 # 2026-09-25 a blocked deploy waited twice behind this gate at load 27-31.
 if [ -n "${AGENT_EXECUTION_CPU_TARGET_PERCENT:-}" ]; then

@@ -968,15 +968,32 @@ reconcile_merged_pr() {
 }
 
 # Landings wait for 3 GB available memory before taking one of the FIFO preflight slots.
+land_host_mem_avail_mb() {
+  local meminfo_file="$1" available_kib engine_dir
+  if ! declare -F host_mem_avail_mb >/dev/null 2>&1; then
+    for engine_dir in "${ZF_ENGINE_DIR:-}" "$land_script_dir" "${AGENT_HOME:-${HOME:-}/.zenoforge}/engine-live" "${AGENT_HOME:-${HOME:-}/.zenoforge}/checkout/engine"; do
+      if [[ -n "$engine_dir" && -f "$engine_dir/proc.sh" ]]; then
+        source "$engine_dir/proc.sh"
+        break
+      fi
+    done
+  fi
+  if declare -F host_mem_avail_mb >/dev/null 2>&1; then
+    host_mem_avail_mb "$meminfo_file"
+    return
+  fi
+  [[ -n "$meminfo_file" ]] || return 1
+  available_kib="$(awk '$1 == "MemAvailable:" { print $2; found=1; exit } END { if (!found) exit 1 }' "$meminfo_file" 2>/dev/null)" || return 1
+  [[ "$available_kib" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$((available_kib / 1024))"
+}
 wait_for_preflight_memory() {
-  local meminfo_file="${AGENT_DISPATCH_MEMINFO_FILE:-/proc/meminfo}" available_kib mem_mb waited=0
+  local meminfo_file="${AGENT_DISPATCH_MEMINFO_FILE:-}" mem_mb waited=0
   while :; do
-    if ! available_kib="$(awk '$1 == "MemAvailable:" { print $2; found=1; exit } END { if (!found) exit 1 }' "$meminfo_file")" || \
-      [[ ! "$available_kib" =~ ^[0-9]+$ ]]; then
-      echo "land-direct-main: cannot read MemAvailable from $meminfo_file" >&2
+    if ! mem_mb="$(land_host_mem_avail_mb "$meminfo_file")" || [[ ! "$mem_mb" =~ ^[0-9]+$ ]]; then
+      echo "land-direct-main: cannot read MemAvailable from ${meminfo_file:-hostinfo}" >&2
       return 1
     fi
-    mem_mb=$((available_kib / 1024))
     if ((mem_mb >= 3072)); then
       if ((waited)); then
         echo "land-direct-main: preflight memory gate passed mem_mb=$mem_mb" >&2

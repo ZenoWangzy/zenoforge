@@ -11,6 +11,7 @@ set -euo pipefail
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/proc.sh"
 REPO_DIR="${ZF_REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-$REPO_DIR}"
 MIN_AVAILABLE_KIB=$((2 * 1024 * 1024))
@@ -24,8 +25,8 @@ PID_WAIT_ATTEMPTS="${AGENT_DISPATCH_PID_WAIT_ATTEMPTS:-300}"
 AGENT_HOME="${AGENT_HOME:-${HOME:-.}/.zenoforge}"
 DISPATCH_DIR="${AGENT_DISPATCH_DIR:-$AGENT_HOME/hand-dispatch}"
 LOG_ROOT="${AGENT_DISPATCH_LOG_DIR:-$AGENT_HOME/logs/hand-dispatch}"
-MEMINFO_FILE="${AGENT_DISPATCH_MEMINFO_FILE:-/proc/meminfo}"
-LOADAVG_FILE="${AGENT_DISPATCH_LOADAVG_FILE:-/proc/loadavg}"
+MEMINFO_FILE="${AGENT_DISPATCH_MEMINFO_FILE:-}"
+LOADAVG_FILE="${AGENT_DISPATCH_LOADAVG_FILE:-}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 WORKTREE_ROOT_PREFIX="${WORKTREE_ROOT%/}/"
 MAX_AGENTS="${MAX_AGENTS:-10}"
@@ -495,12 +496,12 @@ ADMISSION_TIER="$(hand_dispatch_tier "$ADMISSION_ROLE")" || die "cannot resolve 
 if [ "$ADMISSION_TIER" = finishing ]; then
   MIN_AVAILABLE_KIB=$(( $(hand_dispatch_memory_floor "$ADMISSION_TIER") * 1024 ))
 fi
-MEM_AVAILABLE_KIB="$(awk '$1 == "MemAvailable:" { print $2; exit }' "$MEMINFO_FILE" 2>/dev/null || true)"
-case "$MEM_AVAILABLE_KIB" in
-  ''|*[!0-9]*) die "cannot read MemAvailable from $MEMINFO_FILE" ;;
+MEM_AVAILABLE_MB="$(host_mem_avail_mb "$MEMINFO_FILE" 2>/dev/null || true)"
+case "$MEM_AVAILABLE_MB" in
+  ''|*[!0-9]*) die "cannot read MemAvailable from ${MEMINFO_FILE:-hostinfo}" ;;
 esac
-if [ "$MEM_AVAILABLE_KIB" -lt "$MIN_AVAILABLE_KIB" ]; then
-  echo "$SCRIPT_NAME: refusing launch: MemAvailable $((MEM_AVAILABLE_KIB / 1024))MiB is below $((MIN_AVAILABLE_KIB / 1024))MiB (class=$ADMISSION_TIER); largest RSS holders:" >&2
+if [ "$MEM_AVAILABLE_MB" -lt "$((MIN_AVAILABLE_KIB / 1024))" ]; then
+  echo "$SCRIPT_NAME: refusing launch: MemAvailable ${MEM_AVAILABLE_MB}MiB is below $((MIN_AVAILABLE_KIB / 1024))MiB (class=$ADMISSION_TIER); largest RSS holders:" >&2
   ps -eo pid=,ppid=,rss=,comm= | sort -k3,3nr | sed -n '1,8p' >&2 || true
   exit 1
 fi
@@ -517,8 +518,8 @@ else
   if [ -n "${AGENT_EXECUTION_CPU_TARGET_PERCENT:-}" ]; then
     python3 "$(pipeline_execution_guard)" resources >/dev/null || exit $?
   else
-  LOAD_1M="$(awk 'NR == 1 { print $1; exit }' "$LOADAVG_FILE" 2>/dev/null || true)"
-  PROCESSORS="$(nproc 2>/dev/null || true)"
+  LOAD_1M="$(host_load1 "$LOADAVG_FILE" 2>/dev/null || true)"
+  PROCESSORS="$(host_ncpu 2>/dev/null || true)"
   LOAD_LIMIT_MULTIPLIER="${AGENT_DISPATCH_LOAD_LIMIT_MULTIPLIER:-2}"
   if dispatch_load_exceeded "$LOAD_1M" "$PROCESSORS" "$LOAD_LIMIT_MULTIPLIER"; then
     echo "$SCRIPT_NAME: refusing launch: 1-min load $LOAD_1M exceeds ${LOAD_LIMIT_MULTIPLIER}x nproc ($PROCESSORS; limit $((PROCESSORS * LOAD_LIMIT_MULTIPLIER)))" >&2

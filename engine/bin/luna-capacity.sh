@@ -12,6 +12,7 @@ LUNA_GATE_HOME="${LUNA_GATE_HOME:-${HOME:-}/.zenoforge}"
 LUNA_GATE_LAST_SOURCE="${LUNA_GATE_LAST_SOURCE:-$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)}"
 LUNA_CPU_BUSY_FILE="$LUNA_GATE_HOME/locks/luna-host-cpu.sample"
 LUNA_CPU_BUSY_LOCK="$LUNA_GATE_HOME/locks/luna-host-cpu.lock"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/proc.sh"
 
 luna_reload_live_gate() {
   local live_file="$LUNA_GATE_HOME/engine-live/bin/luna-capacity.sh" resolved source_file function_name
@@ -47,9 +48,7 @@ luna_reload_live_gate() {
 }
 
 luna_run_cap() { local cap="${LUNA_MAX:-$LUNA_RUNS_HARD_CAP}"; (( cap < LUNA_RUNS_HARD_CAP )) || cap=$LUNA_RUNS_HARD_CAP; printf '%s\n' "$cap"; }
-cpu_busy() { local a b stat="${LUNA_PROC_STAT:-/proc/stat}"; a=($(head -1 "$stat")); sleep 2; b=($(head -1 "$stat"))
-  local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
-  echo $(( 100 * busy / (busy + idle + 1) )); }
+cpu_busy() { host_cpu_busy_pct "${LUNA_PROC_STAT:-}"; }
 luna_cpu_sample_read() {
   local sampled_at sample now ttl="${LUNA_CPU_SAMPLE_STALE_SECONDS:-45}"
   LUNA_CPU_BUSY_VALUE=""
@@ -234,8 +233,8 @@ box_has_room() { # optional waiter age in seconds, then the asking backend (luna
   cpu_cap=$(slice_cpu_run_cap "$quota_line")
   read -r quota period <<< "$quota_line"
   cap=$(luna_run_cap)
-  avail=$(awk '/^MemAvailable:/{print int($2/1024)}' "${LUNA_PROC_MEMINFO:-/proc/meminfo}")
-  full=$(awk -F'avg10=' '/^full/{print int($2)}' "${LUNA_PROC_PSI_MEMORY:-/proc/pressure/memory}")
+  avail="$(host_mem_avail_mb "${LUNA_PROC_MEMINFO:-}")"
+  full="$(host_mem_pressure_pct "${LUNA_PROC_PSI_MEMORY:-}")"
   slice=$(slice_room_mb)
   if [[ -n "$slice" ]]; then
     read -r peak peak_source <<< "$(worker_peak_mb "$backend")"

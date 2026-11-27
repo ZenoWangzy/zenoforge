@@ -10,6 +10,68 @@
 # process_cwds; lib: the boot id read). They must stay /proc reads and must not become `ps`: one ps per worker per
 # poll drove the origin deployment to load 39 (see pid_running in the unit loop). macOS has no /proc, so those bodies use
 # ps, sysctl and lsof.
+_hostinfo() {
+  local engine_dir
+  engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
+  python3 "$engine_dir/hostinfo.py" "$@"
+}
+
+host_mem_avail_mb() {
+  local meminfo_file="${1:-}" available_kib
+  if [[ -z "$meminfo_file" && ${OSTYPE:-} == darwin* ]]; then
+    _hostinfo mem_avail_mb
+    return
+  fi
+  meminfo_file="${meminfo_file:-/proc/meminfo}"
+  available_kib="$(awk '$1 == "MemAvailable:" { print $2; found=1; exit } END { if (!found) exit 1 }' "$meminfo_file" 2>/dev/null)" || return 1
+  [[ "$available_kib" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$((available_kib / 1024))"
+}
+
+host_load1() {
+  local loadavg_file="${1:-}"
+  if [[ -z "$loadavg_file" && ${OSTYPE:-} == darwin* ]]; then
+    _hostinfo load1
+    return
+  fi
+  loadavg_file="${loadavg_file:-/proc/loadavg}"
+  awk 'NR == 1 { print $1; found=1; exit } END { if (!found) exit 1 }' "$loadavg_file" 2>/dev/null
+}
+
+host_ncpu() {
+  if [[ ${OSTYPE:-} == darwin* ]]; then
+    _hostinfo ncpu
+  else
+    nproc
+  fi
+}
+
+host_cpu_busy_pct() {
+  local stat_file="${1:-}" a b
+  if [[ -z "$stat_file" && ${OSTYPE:-} == darwin* ]]; then
+    _hostinfo cpu_busy_pct
+    return
+  fi
+  stat_file="${stat_file:-/proc/stat}"
+  a=($(head -1 "$stat_file"))
+  sleep 2
+  b=($(head -1 "$stat_file"))
+  local busy=$(( (b[1]+b[2]+b[3]+b[6]+b[7]+b[8]) - (a[1]+a[2]+a[3]+a[6]+a[7]+a[8]) )) idle=$(( (b[4]+b[5]) - (a[4]+a[5]) ))
+  printf '%s\n' "$((100 * busy / (busy + idle + 1)))"
+}
+
+host_mem_pressure_pct() {
+  local pressure_file="${1:-}" pressure
+  if [[ -z "$pressure_file" && ${OSTYPE:-} == darwin* ]]; then
+    pressure="$(_hostinfo mem_pressure_pct)" || return 1
+    [[ "$pressure" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    printf '%s\n' "${pressure%%.*}"
+    return
+  fi
+  pressure_file="${pressure_file:-/proc/pressure/memory}"
+  awk -F'avg10=' '/^full/{print int($2); found=1; exit} END { if (!found) exit 1 }' "$pressure_file" 2>/dev/null
+}
+
 if [[ ${OSTYPE:-} == darwin* ]]; then
   pid_live() {
     local pid="$1" state
