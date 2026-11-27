@@ -454,15 +454,15 @@ process.exitCode = ok ? 0 : 1;
     const rows = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/fresh/results.json'), 'utf8')).results;
     const passing = rows.find((row) => row.caseId === 'pass');
     const failing = rows.find((row) => row.caseId === 'fail');
-    assert.equal(passing.pass, true);
-    assert.equal(passing.class, null);
+    assert.deepEqual([passing.pass, passing.class], [true, null]);
     assert.equal(passing.first_divergence, null);
-    assert.equal(failing.pass, false);
-    assert.equal(failing.class, 'missing-doc');
+    assert.deepEqual([failing.pass, failing.class], [false, 'missing-doc']);
     assert.equal(failing.first_divergence, 'read-doc');
     assert.equal(passing.tokens, 1234);
     assert.equal(failing.calls.length, 1);
     assert.ok(existsSync(join(failing.artifacts, 'hidden-check.log')));
+    const routedIssue = readFileSync(join(f.home, '.zenoforge/eval/fresh/routed-issues/fresh-agent-fail-missing-doc.md'), 'utf8');
+    assert.ok(['First divergence:\n- Run 1: `read-doc`', 'Doc file: `docs/enforced-rules.md`', 'Line to add: `The evaluator reads the routing rule.`'].every((line) => routedIssue.includes(line)));
     const oldGoldCases = join(f.dir, 'old-gold-cases.json');
     writeFileSync(oldGoldCases, JSON.stringify({ stage: 'fresh-agent', cases: [
       { id: 'legacy', base_sha: baseSha, prompt: 'FIXTURE_PASS', hidden_check: 'true', expected_divergence: 'read-doc' },
