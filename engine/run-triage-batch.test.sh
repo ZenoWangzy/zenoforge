@@ -304,8 +304,7 @@ assert_eq "leftover stays untouched" false "$(test -f "$AGENT_HOME/state/910304.
 assert_eq "only one Codex invocation ran" 1 "$(wc -l < "$FAKE_CODEX_ARGS" | tr -d ' ')"
 assert_contains "Codex uses policy work role and effort" "$(cat "$FAKE_CODEX_ARGS")" \
   "-m $MODEL_POLICY_TEST_WORK_MODEL -c model_reasoning_effort=$MODEL_POLICY_TEST_WORK_EFFORT"
-assert_contains "Codex forwards policy work service tier" "$(cat "$FAKE_CODEX_ARGS")" \
-  "service_tier=\"$MODEL_POLICY_TEST_WORK_TIER\""
+assert_not_contains "Codex omits service tier (identity resolves to none since #1599)" "$(cat "$FAKE_CODEX_ARGS")" "service_tier="
 assert_contains "one prompt includes every admitted issue" "$(cat "$FAKE_PROMPT_CAPTURE")" '## Issue #910303'
 assert_contains "batch triage prompt uses the target config override" "$(cat "$FAKE_PROMPT_CAPTURE")" 'CONFIG_TRIAGE_BATCH_PROMPT_OVERRIDE'
 assert_not_contains "skill path is decided from the agent worktree, not the repo checkout" "$(cat "$FAKE_PROMPT_CAPTURE")" 'triage=.agents/skills/triage/SKILL.md'

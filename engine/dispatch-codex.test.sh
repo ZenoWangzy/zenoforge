@@ -499,8 +499,7 @@ assert_eq "hand dispatcher puts guarded gh first in agent PATH" "$SCRIPT_DIR/gh-
   "$(sed -n '3p' "$FAKE_CODEX_REPO_ENV_FILE")"
 assert_contains "work uses policy effort" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<model_reasoning_effort=\"$WORK_EFFORT\">"
 assert_ne "work policy supplies a service tier" "" "$WORK_SERVICE_TIER"
-assert_contains "work forwards policy service tier" "$(cat "$FAKE_CODEX_ARGS_FILE")" \
-  "<service_tier=\"$WORK_SERVICE_TIER\">"
+assert_not_contains "work omits service tier (identity resolves to none since #1599)" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<service_tier="
 assert_contains "work targets recovery worktree" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<--cd>"
 assert_contains "work passes recovery worktree" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<$WORKTREE>"
 assert_contains "investigation selects workspace-write" "$(cat "$FAKE_CODEX_ARGS_FILE")" "<-s>"

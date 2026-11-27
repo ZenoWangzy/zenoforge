@@ -4598,7 +4598,7 @@ assert_contains "run_codex_json: a clean response normalizes to is_error:false +
 assert_contains "run_codex_json: carries codex own structured verdict through" "$RCJ_OUT" '"verdict":"misclassified"'
 assert_contains "run_codex_json: the function exit mirrors codex own exit (0)" "$RCJ_OUT" "status=0"
 assert_contains "run_codex_json: disables GitNexus MCP" "$(cat "$RCJ_ARGS")" "mcp_servers.gitnexus.enabled=false"
-assert_contains "run_codex_json: forwards policy service tier" "$(cat "$RCJ_ARGS")" "service_tier=\"$POLICY_WORK_TIER\""
+assert_not_contains "run_codex_json: omits service tier (identity resolves to none since #1599)" "$(cat "$RCJ_ARGS")" "service_tier="
 
 RCJ_QUOTA_OUT="$(
   PATH="$RCJ_BIN:$PATH" FAKE_CODEX_MODE=quota bash -c '
@@ -4811,7 +4811,7 @@ assert_contains "run_codex_text: ...second line too" "$RCT_OK_OUT" '"issue":1234
 assert_contains "run_codex_text: the function exit mirrors codex's own exit (0)" "$RCT_OK_OUT" "status=0"
 assert_not_contains "run_codex_text: no {is_error, ...} envelope -- raw text only" "$RCT_OK_OUT" "is_error"
 assert_contains "run_codex_text: disables GitNexus MCP" "$(cat "$RCT_ARGS")" "mcp_servers.gitnexus.enabled=false"
-assert_contains "run_codex_text: forwards policy service tier" "$(cat "$RCT_ARGS")" "service_tier=\"$POLICY_WORK_TIER\""
+assert_not_contains "run_codex_text: omits service tier (identity resolves to none since #1599)" "$(cat "$RCT_ARGS")" "service_tier="
 
 RCT_TRUNCATED_OUT="$(
   PATH="$RCT_BIN:$PATH" FAKE_CODEX_MODE=truncated_but_status_zero bash -c '
@@ -4911,7 +4911,7 @@ assert_contains "run_codex_implement: --cd points at the given worktree" "$RCI_A
 assert_contains "run_codex_implement: -m carries the bare model, never a hyphenated model-effort string (V101)" "$RCI_ARGS_CONTENT" "-m
 ${POLICY_WORK_MODEL}"
 assert_contains "run_codex_implement: effort is the SEPARATE model_reasoning_effort setting" "$RCI_ARGS_CONTENT" "model_reasoning_effort=$POLICY_WORK_EFFORT"
-assert_contains "run_codex_implement: forwards policy service tier" "$RCI_ARGS_CONTENT" "service_tier=\"$POLICY_WORK_TIER\""
+assert_not_contains "run_codex_implement: omits service tier (identity resolves to none since #1599)" "$RCI_ARGS_CONTENT" "service_tier="
 assert_contains "run_codex_implement: disables GitNexus MCP" "$RCI_ARGS_CONTENT" "mcp_servers.gitnexus.enabled=false"
 assert_eq "run_codex_implement: the prompt file's content reaches codex on stdin" "implement this issue" "$(cat "$RCI_STDIN")"
 assert_contains "run_codex_implement: codex's combined stdout/stderr lands in the given log file" "$(cat "$RCI_LOG")" "codex implement: wrote the diff"
