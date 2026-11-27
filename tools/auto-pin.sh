@@ -9,6 +9,9 @@ export ZF_GH_NO_CACHE=1
 ZF_AUTO_PIN_HOME=${ZF_AUTO_PIN_HOME:-$HOME/.zenoforge}
 AGENT_HOME=${AGENT_HOME:-$HOME/.vecta-agent}
 C=${ZF_AUTO_PIN_CLONE:-$ZF_AUTO_PIN_HOME/clones/pz-zf-review-verdict-clobber}
+transport_path="$(dirname -- "${BASH_SOURCE[0]}")/../engine/lib.d/transport.sh"
+[[ -f "$transport_path" ]] || transport_path="$C/engine/lib.d/transport.sh"
+source "$transport_path"
 cache_helper="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../engine/lib.d" 2>/dev/null && pwd -P)/gh-key-cache.sh"
 [[ -f "$cache_helper" ]] || cache_helper="$C/engine/lib.d/gh-key-cache.sh"
 source "$cache_helper"
