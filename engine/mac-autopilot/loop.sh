@@ -87,12 +87,30 @@ launch_gh_budget_sampler() {
 # Same pacing as the CI station: the scheduler holds its own lock, so this only spaces the launches, and the tick harvests itself
 # while no pass started recently (this loop is an older one, or the station is stuck).
 launch_harvest_station() {
+  local force="${1:-false}"
   local every="${AUTOPI_HARVEST_STATION_SECONDS:-60}"
   [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 30 )) || every=60
   HARVEST_STATION_NEXT="${HARVEST_STATION_NEXT:-$((SECONDS + every))}"
-  (( SECONDS >= HARVEST_STATION_NEXT )) || return 0
+  [[ "$force" == true ]] || (( SECONDS >= HARVEST_STATION_NEXT )) || return 0
   HARVEST_STATION_NEXT=$((SECONDS + every))
   setsid timeout -k 30 "${AUTOPI_HARVEST_STATION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --harvest-station >> "$A/loop.out" 2>&1 < /dev/null &
+}
+launch_dispatch_station() {
+  local force="${1:-false}"
+  local every="${AUTOPI_DISPATCH_STATION_SECONDS:-30}"
+  [[ "$every" =~ ^[0-9]+$ ]] && (( every >= 5 )) || every=30
+  DISPATCH_STATION_NEXT="${DISPATCH_STATION_NEXT:-$((SECONDS + every))}"
+  [[ "$force" == true ]] || (( SECONDS >= DISPATCH_STATION_NEXT )) || return 0
+  DISPATCH_STATION_NEXT=$((SECONDS + every))
+  setsid timeout -k 30 "${AUTOPI_DISPATCH_STATION_KILL_SECONDS:-600}" bash "$LIVE/scheduler.sh" --dispatch-station >> "$A/loop.out" 2>&1 < /dev/null &
+}
+wake_worker_stations() {
+  local signature="$1"
+  if [[ -z "$signature" ]]; then WORKER_STATION_WAKE_SIGNATURE=""; return 0; fi
+  [[ "$signature" != "${WORKER_STATION_WAKE_SIGNATURE:-}" ]] || return 0
+  WORKER_STATION_WAKE_SIGNATURE="$signature"
+  launch_harvest_station true
+  launch_dispatch_station true
 }
 # The intake existing walk as its own station (scheduler.sh --existing-walk): units already in the ledger must not wait for the tick to be walked
 # through intake's handoff block. Same pacing and fallback as the harvest station; the tick walks itself while no pass started recently.
@@ -151,10 +169,12 @@ refill_window() { # seconds [slow-tick-pid]：慢 tick 存活期间，或下一�
     launch_merge_station
     launch_gh_budget_sampler
     launch_harvest_station
+    launch_dispatch_station
     launch_existing_walk
     launch_intake_judge
     launch_release_deps
     signature="$(exited_worker_signature "$A/workers.json")"
+    wake_worker_stations "$signature"
     [[ -n "$signature" ]] || REFILL_LAST_EXIT=""
     if [[ -n "$REFILL_PID" ]] && ! refill_running; then
       rc=0; wait "$REFILL_PID" || rc=$?

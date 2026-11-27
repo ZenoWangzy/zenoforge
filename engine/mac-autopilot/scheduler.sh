@@ -111,7 +111,7 @@ source "$HERE/scheduler.d/size-admission.sh"
 source "$HERE/scheduler.d/harvest-workers.sh"
 source "$HERE/scheduler.d/harvest-scope.sh"
 source "$HERE/scheduler.d/stop-loss.sh"
-source "$HERE/scheduler.d/dispatch-queue.sh"
+source "$HERE/scheduler.d/dispatch-queue.sh"; source "$HERE/scheduler.d/dispatch-station.sh"
 source "$HERE/scheduler.d/ci-status.sh"
 source "$HERE/scheduler.d/ci-admission.sh"
 source "$HERE/scheduler.d/harvest-station.sh"
@@ -136,7 +136,7 @@ source "$HERE/scheduler.d/health-release.sh"
 source "$HERE/scheduler.d/locks-views.sh"
 RULE_COMMAND=false; [[ "${1:-}" == --rule || "${1:-}" == --rule-check || "${1:-}" == --size-waiver-check ]] && RULE_COMMAND=true; [[ "$RULE_COMMAND" == true ]] || mkdir -p "$A/alerts"
 
-if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --existing-walk && "${1:-}" != --intake-judge && "${1:-}" != --release-deps && "${1:-}" != --tick-step && "${1:-}" != --rule && "${1:-}" != --rule-check && "${1:-}" != --size-waiver-check ]]; then
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${1:-}" != --refill && "${1:-}" != --ci-admission && "${1:-}" != --merge && "${1:-}" != --harvest-station && "${1:-}" != --dispatch-station && "${1:-}" != --existing-walk && "${1:-}" != --intake-judge && "${1:-}" != --release-deps && "${1:-}" != --tick-step && "${1:-}" != --rule && "${1:-}" != --rule-check && "${1:-}" != --size-waiver-check ]]; then
   if ! reconcile_event="$(reconcile_runtime_config "$(sched_config_file mac-autopilot/config.template.json)" "$A/config.json" "${ZF_ENGINE_DIR:-$ROOT/engine}/lib.sh")"; then
     say "config-reconcile failed; tick stopped before reading config"
     exit 1
@@ -609,12 +609,12 @@ run_refill_intake_dispatch_phases() {
   # used to run in front of it, so those refills dispatched nothing. The merge pass and intake run on the time left.
   step_timed dep_snapshot dep_delivered_snapshot # release_dependency_blocks fills this on a full tick; the body gate reads it on both
   step_timed record_run_spend record_run_spend || : # the gate in dispatch_pending reads spend_runs; a refill used to dispatch on whatever the last full tick left
-  phase dispatch_pending true
+  dispatch_station_fresh || phase dispatch_pending true
   paused_midrun "refill merge" || { phase refill_merge_pass; tick_prs_changed; } # a merge changes the PRs intake reads next
   INTAKE_ADDED=0
   phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
   # A pass started this late meets the 300s kill, and the next refill dispatches what intake added.
-  (( INTAKE_ADDED == 0 || SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )) || phase dispatch_pending true
+  (( INTAKE_ADDED == 0 || SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 60 )) || dispatch_station_fresh || phase dispatch_pending true
 }
 refill_tick() {
   local TICK_LOCAL_REFILL=true TICK_REFILL_STARTED=$SECONDS refill_log_offset=0 live metrics rest_used
@@ -633,15 +633,15 @@ refill_tick() {
   tick_gh_calls_begin
   tick_roadmap_cache_begin
   MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
-  phase harvest_workers true
-  step_timed coord_reap coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
-  step_timed coord_systemd coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
-  step_timed coord_scheduler coord_reconcile_scheduler_workers
+  harvest_station_fresh || phase harvest_workers true
+  harvest_station_fresh || step_timed coord_reap coord_reap_expired || say "claim expiry sweep incomplete; unreadable claims remain fail-closed"
+  harvest_station_fresh || step_timed coord_systemd coord_reconcile_systemd_workers || say "issue-pipeline claim reconciliation incomplete; unknown claims remain fail-closed"
+  harvest_station_fresh || step_timed coord_scheduler coord_reconcile_scheduler_workers
   # 与慢拍同序：门收割先于 dispatch_pending，本拍收完本拍就派评审；harvest 类阶段要求补派同跑
   # （scheduler.test.sh refill_harvest_coverage），缺一个就是又一类「空等慢拍」回归。
-  phase self_check_harvest
-  phase precheck_harvest
-  phase recover_orphans
+  harvest_station_fresh || phase self_check_harvest
+  harvest_station_fresh || phase precheck_harvest
+  harvest_station_fresh || phase recover_orphans
   if [[ -e "$PAUSE_FILE" ]]; then
     say "refill paused by $PAUSE_FILE: no dispatch"
   else
@@ -736,7 +736,7 @@ main() {
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
       say "acting phases held: supervisor-owned marking deferred"
     else
-      start_detached_tick_step dispatch_pending
+      dispatch_station_fresh || start_detached_tick_step dispatch_pending
       if ! paused_midrun "acting phases"; then
         phase_yield_lock dispatch_supervisor_arbiters
         phase dispatch_prompt_evals
@@ -790,7 +790,7 @@ case "${1:-}" in
   --harvest-station) SCHED_STATION=true; harvest_station_tick ;;
   --existing-walk) SCHED_STATION=true; existing_walk_tick ;;
   --intake-judge) SCHED_STATION=true; intake_judge_station_tick ;;
-  --release-deps) release_deps_station_tick ;;
+  --release-deps) release_deps_station_tick ;; --dispatch-station) SCHED_STATION=true; dispatch_station_tick ;;
   --tick-step) SCHED_STATION=true; tick_step_run "${2:-}" ;;
   --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --size-waiver-check) size_waiver_range_check "${2:-}" ;; # hold.sh --rule --size-waiver: refuse a bad max_lines before any hold is released

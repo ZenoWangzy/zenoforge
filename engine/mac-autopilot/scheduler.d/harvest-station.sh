@@ -127,6 +127,7 @@ harvest_station_pass() { # snapshot under lock; harvest and process checks outsi
   workers_snapshot="$(jqf -c '[.workers[] | select(.harvested != true)]' "$WORKERS" 2>/dev/null || echo '[]')"
   hs_unlock
   while IFS= read -r key; do
+    if (( HS_WORKERS >= HS_BATCH_SIZE )); then HS_DEFERRED=$((HS_DEFERRED + 1)); break; fi
     HS_WORKERS=$((HS_WORKERS + 1))
     if (( SECONDS >= HARVEST_STATION_DEADLINE )); then HS_DEFERRED=$((HS_DEFERRED + 1)); continue; fi
     hs_lock || { HS_DEFERRED=$((HS_DEFERRED + 1)); continue; }
@@ -167,7 +168,7 @@ harvest_station_pass() { # snapshot under lock; harvest and process checks outsi
   hs_unlock
 }
 harvest_station_tick() {
-  local SCHED_STATION=true old limit gh_calls rest_used name phases="" HARVEST_STATION_DEADLINE=0 GH_ETAG_DIR="$A/.gh-etag-harvest"
+  local SCHED_STATION=true old limit batch_size gh_calls rest_used name phases="" HARVEST_STATION_DEADLINE=0 GH_ETAG_DIR="$A/.gh-etag-harvest" HS_BATCH_SIZE=16
   local HS_LOCK_WAIT=0 HS_LOCK_HOLD=0 HS_HOLD_FROM=0 HS_WORKERS=0 HS_HARVESTED=0 HS_DEFERRED=0
   local HARVEST_STATION_ACTIVE=true HARVEST_CAS_ACTIVE=false HARVEST_CAS_STALE=false HARVEST_CAS_UNIT="" HARVEST_CAS_PID=""
   local HARVEST_CAS_EXPECTED=null HARVEST_CAS_WORKER_EXPECTED=null HARVEST_CAS_UNIT_SNAPSHOT=null
@@ -186,6 +187,9 @@ harvest_station_tick() {
   else
     limit="${AUTOPI_HARVEST_STATION_LIMIT_SECONDS:-240}"
     [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=240
+    batch_size="${AUTOPI_HARVEST_STATION_BATCH_SIZE:-16}"
+    [[ "$batch_size" =~ ^[1-9][0-9]*$ ]] || batch_size=16
+    HS_BATCH_SIZE="$batch_size"
     HARVEST_STATION_DEADLINE=$((SECONDS + limit))
     tick_gh_calls_begin
     MAIN_HEAD="$(git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
@@ -197,7 +201,7 @@ harvest_station_tick() {
       [[ -n "${HS_SECS[$name]:-}" ]] && phases+="${phases:+,}${name}:${HS_SECS[$name]}s/${HS_GH[$name]}gh"
     done
     # A PAUSE does not stop it: the paused tick harvests too, and a harvest dispatches nothing.
-    say "harvest-station done secs=$SECONDS $gh_calls lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none} $rest_used"
+    say "harvest-station done secs=$SECONDS $gh_calls lock_wait=$HS_LOCK_WAIT lock_hold=$HS_LOCK_HOLD workers=$HS_WORKERS harvested=$HS_HARVESTED deferred=$HS_DEFERRED limit=${limit}s ended=$(date -u +%H:%M:%SZ) phases=${phases:-none} buffer=workers.json batch_size=$HS_BATCH_SIZE $rest_used"
     rm -f -- "$GH_TICK_CALLS_FILE" "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   fi
   [[ "$(cat "$HARVEST_STATION_LOCK/pid" 2>/dev/null)" != "$$" ]] || rm -rf -- "$HARVEST_STATION_LOCK"

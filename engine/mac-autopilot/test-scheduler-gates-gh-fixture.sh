@@ -6,6 +6,7 @@ GH_MERGES=(); GH_RERUNS=()
 GH_RUNNERS='{"runners":[{"id":1,"status":"online","busy":false,"labels":[{"name":"cihost-ci"}]},{"id":2,"status":"offline","busy":false,"labels":[{"name":"cihost-ci"}]},{"id":3,"status":"online","busy":false,"labels":[{"name":"cihost-ci-main"}]}]}'
 # per-head check-runs reads land in their own log so GH_PR_CALLS line-shape asserts stay about pr commands
 GH_CHECK_RUNS_CALLS="$fixture/check-runs.calls"; : > "$GH_CHECK_RUNS_CALLS"
+GH_MERGES_FILE="$fixture/gh-merges.calls"; : > "$GH_MERGES_FILE"
 GH_RUN_JOBS='{}'
 GH_CHECKS_PASS='[{"name":"ci","bucket":"pass"}]'
 # open PR 表放在文件里（$(...) 和后台任务里的调用也算数）。用例把 GH_PR_TABLE 指到一个文件才打开；
@@ -82,7 +83,7 @@ gh() {
         mergeCommit) echo "$GH_MERGE_SHA" ;; *) echo "" ;;
       esac ;;
     "pr checks") echo "${GH_CHECKS:-$GH_CHECKS_PASS}" ;;
-    "pr merge") GH_MERGES+=("$*") ;;
+    "pr merge") printf '%s\n' "$*" >> "$GH_MERGES_FILE" ;;
     "run list")
       local jq_expr="" has_jq=false
       while [[ $# -gt 0 ]]; do
@@ -163,4 +164,14 @@ gh() {
       jq -c --arg id "$jobs_id" '.[$id] // {jobs:[]}' <<<"$GH_RUN_JOBS" | jq -r "${jobs_jq:-.}" ;;
     "run view") printf '%s\n' "$*" >> "$fixture/run-view.calls"; echo "$GH_LOG" ;;
   esac
+}
+
+merge_lane_real="$(declare -f run_merge_lane)"
+eval "${merge_lane_real/run_merge_lane ()/run_merge_lane_real ()}"
+run_merge_lane() {
+  local rc=0
+  : > "$GH_MERGES_FILE"
+  run_merge_lane_real "$@" || rc=$?
+  mapfile -t GH_MERGES < "$GH_MERGES_FILE"
+  return "$rc"
 }

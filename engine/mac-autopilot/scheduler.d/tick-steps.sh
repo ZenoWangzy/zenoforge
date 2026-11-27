@@ -70,6 +70,12 @@ tick_step_lock_run() { # step command...; the caller's dynamic lock marker preve
     return 0
   fi
   TICK_STEP_LOCK_RESULT=acquired
+  if [[ "$step" == dispatch_pending ]]; then
+    [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || date +%s > "$A/.dispatch-station-epoch" || :
+    if [[ "${DISPATCH_RESET_SKIPS_ON_LOCK:-false}" == true ]]; then
+      tick_step_dispatch_pending_skips_update reset || say 'tick-step skip counter reset failed step=dispatch_pending'
+    fi
+  fi
   local TICK_STEP_LOCK_HELD="$step" TICK_STEP_LOCK_FD="$lock_fd"
   export TICK_STEP_LOCK_FD
   "$@" || rc=$?

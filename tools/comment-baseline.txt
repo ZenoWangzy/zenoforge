@@ -406,7 +406,7 @@
 9	engine/mac-autopilot/scheduler-gates-priority.test.sh
 28	engine/mac-autopilot/scheduler-gates-required-checks.test.sh
 10	engine/mac-autopilot/scheduler-gates-suites-retired.test.sh
-335	engine/mac-autopilot/scheduler-gates.test.sh
+334	engine/mac-autopilot/scheduler-gates.test.sh
 1	engine/mac-autopilot/scheduler-part-1.test.sh
 1	engine/mac-autopilot/scheduler-part-2.test.sh
 1	engine/mac-autopilot/scheduler-part-3.test.sh
@@ -422,7 +422,7 @@
 9	engine/mac-autopilot/scheduler.d/ci-cancel-stale.test.sh
 2	engine/mac-autopilot/scheduler.d/ci-merge-admission-batch.test.sh
 6	engine/mac-autopilot/scheduler.d/ci-status-relabel.test.sh
-95	engine/mac-autopilot/scheduler.d/ci-status.sh
+92	engine/mac-autopilot/scheduler.d/ci-status.sh
 3	engine/mac-autopilot/scheduler.d/ci-stuck-unqueued.sh
 70	engine/mac-autopilot/scheduler.d/cleanup.sh
 12	engine/mac-autopilot/scheduler.d/clone-recovery.test.sh
@@ -442,7 +442,6 @@
 3	engine/mac-autopilot/scheduler.d/dispatch-ledger-wait.test.sh
 7	engine/mac-autopilot/scheduler.d/dispatch-live-cache.test.sh
 84	engine/mac-autopilot/scheduler.d/dispatch-queue.sh
-16	engine/mac-autopilot/scheduler.d/dispatch-why.test.sh
 3	engine/mac-autopilot/scheduler.d/dispatch-wip-limits.test.sh
 30	engine/mac-autopilot/scheduler.d/dispatch.sh
 11	engine/mac-autopilot/scheduler.d/engine-batch-land.sh
@@ -467,7 +466,7 @@
 23	engine/mac-autopilot/scheduler.d/harvest-station.test.sh
 70	engine/mac-autopilot/scheduler.d/harvest-workers.sh
 66	engine/mac-autopilot/scheduler.d/health-release.sh
-11	engine/mac-autopilot/scheduler.d/implement-route-deferred-review.test.sh
+10	engine/mac-autopilot/scheduler.d/implement-route-deferred-review.test.sh
 6	engine/mac-autopilot/scheduler.d/intake-author.sh
 25	engine/mac-autopilot/scheduler.d/intake-index.sh
 8	engine/mac-autopilot/scheduler.d/intake-judge-station.sh

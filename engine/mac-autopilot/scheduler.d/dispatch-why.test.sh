@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Dispatch why-log: a unit's skip gate is logged once per change of gate, a start clears its entry, and the refill's tick-phases line names the steps phase() did not time.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
-set +e # test-env.sh turns errexit on; the scheduler runs without it, and refill_tick reads a ref that a fixture lacks
+set +e
 trap 'rm -rf -- "$test_env_root"' EXIT
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -32,7 +31,6 @@ SAY_LOG="$fixture/say.log"
 say() { printf '%s\n' "$*" >> "$SAY_LOG"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-# The pass's externals: the gates under test are real, the rest stand still.
 TICK_ACTIVE_FOOTPRINTS_VALID=false
 declare -gA TICK_FOOTPRINT_CACHE=()
 TOKEN_RESULT=fail BUDGET_RESULT=""
@@ -49,10 +47,8 @@ footprint_convoy_alert() { :; }
 pass_refill() { dispatch_pending true >/dev/null; }
 why_count() { grep -c 'dispatch why unit=issue-100 ' "$SAY_LOG" || true; }
 
-# A ledger entry for a unit that left units.json must not survive the pass.
 printf 'ghost-7\ttoken-gate-refill\n' > "$A/.dispatch-why"
 
-# (a) Two refills with the same gate log one why line.
 TOKEN_RESULT=fail
 pass_refill
 pass_refill
@@ -61,13 +57,11 @@ grep -q 'dispatch why unit=issue-100 gate=token-gate-refill$' "$SAY_LOG" || fail
 grep -q 'ghost-7' "$A/.dispatch-why" && fail 'an entry for a unit that left units.json must be pruned'
 grep -qP '^issue-100\ttoken-gate-refill$' "$A/.dispatch-why" || fail 'the last gate per unit must persist in .dispatch-why'
 
-# (b) A changed gate logs a second line.
 TOKEN_RESULT=pass BUDGET_RESULT=stop-loss-budget
 pass_refill
 [[ "$(why_count)" == 2 ]] || fail "a changed gate must log a second line, got $(why_count)"
 grep -q 'dispatch why unit=issue-100 gate=stop-loss-refill$' "$SAY_LOG" || fail 'the changed gate must be named'
 
-# (c) A start clears the unit's entry, so its next skip is logged again.
 size_admission_real="$(declare -f size_admission_write_start)"
 dispatch_if_room_stubs() {
   room_for() { return 0; }
@@ -88,18 +82,16 @@ TOKEN_RESULT=pass BUDGET_RESULT=stop-loss-budget
 pass_refill
 [[ "$(why_count)" == 3 ]] || fail "after a start the same gate must log again, got $(why_count)"
 
-# (e) A pass saves only its own changes: a refill that overlapped a full tick must not put its stale copy of the tick's units back.
-printf '{"units":[%s,{"id":"issue-101","issue":101,"stage":"implement-pending","history":[]}]}\n' "$UNIT" > "$UNITS" # live-only
+printf '{"units":[%s,{"id":"issue-101","issue":101,"stage":"implement-pending","history":[]}]}\n' "$UNIT" > "$UNITS"
 printf 'issue-100\tself-fix-refill\n' > "$A/.dispatch-why"
 dispatch_why_load
-printf 'issue-100\thost-capacity\n' > "$A/.dispatch-why" # the full tick saved while this refill ran
+printf 'issue-100\thost-capacity\n' > "$A/.dispatch-why"
 dispatch_why issue-101 handoff-pending
 dispatch_why_save
 grep -qP '^issue-100\thost-capacity$' "$A/.dispatch-why" || fail "a stale refill overwrote the tick's gate: $(tr '\t\n' '= ' < "$A/.dispatch-why")"
 grep -qP '^issue-101\thandoff-pending$' "$A/.dispatch-why" || fail 'the refill lost its own gate'
-printf '{"units":[%s]}\n' "$UNIT" > "$UNITS" # live-only
+printf '{"units":[%s]}\n' "$UNIT" > "$UNITS"
 
-# (f) A refill takes a self-fix only after repeated lock-held dispatch_pending skips.
 UNIT='{"id":"issue-1133","issue":1133,"pr":503,"stage":"review-pending","self_fix_pending":true,"branch":"agent/issue-1133","lane":"pr","title":"fixture self-fix","history":[]}'
 printf '{"units":[%s]}\n' "$UNIT" > "$UNITS"
 unset AUTOPI_SELFFIX_REFILL_AFTER_SKIPS
@@ -121,7 +113,6 @@ pass_refill
 grep -q 'dispatch why unit=issue-1133 gate=self-fix-refill$' "$SAY_LOG" \
   || fail 'a refill below the skip threshold did not log self-fix-refill'
 
-# A dispatch_pending lock-held skip increments the persisted counter atomically.
 printf '0\n' > "$SKIP_COUNTER"
 exec {held_lock_fd}>>"$A/.tick-step-dispatch_pending.lock"
 flock -x "$held_lock_fd" || fail 'could not hold the dispatch_pending lock for the skip-count check'
@@ -132,7 +123,6 @@ tick_step_lock_run dispatch_pending :
 flock -u "$held_lock_fd" || fail 'could not release the dispatch_pending test lock'
 exec {held_lock_fd}>&-
 
-# (d) The refill's tick-phases line names the steps that phase() does not wrap.
 dispatch_pending() { :; }
 acquire_scheduler_lock() { return 0; }
 release_scheduler_lock() { :; }
@@ -155,6 +145,7 @@ tick_prs_changed() { :; }
 live_workers() { echo 0; }
 refill_dispatch_metrics() { echo 'free_slots=1'; }
 paused_midrun() { return 0; }
+rm -f "$A/.dispatch-station-epoch"
 refill_tick
 phase_line="$(grep 'tick-phases kind=refill' "$SAY_LOG" | tail -1)"
 [[ -n "$phase_line" ]] || fail 'the refill printed no tick-phases line'
@@ -162,7 +153,20 @@ for step in state_schema coord_reap coord_systemd coord_scheduler dep_snapshot r
   grep -Eq "(phases=|,)${step}:[0-9]+s/[0-9]+gh" <<<"$phase_line" || fail "the tick-phases line lacks $step: $phase_line"
 done
 
-# A real detached dispatch_pending tick-step clears the count when it runs its phase.
+printf '1\n' > "$SKIP_COUNTER"
+exec {held_lock_fd}>>"$A/.tick-step-dispatch_pending.lock"
+flock -x "$held_lock_fd" || fail 'could not hold the dispatch_pending lock for the station retry check'
+TICK_STEP_LOCK_RESULT=""
+tick_step_lock_run dispatch_pending :
+[[ "$TICK_STEP_LOCK_RESULT" == skipped && "$(cat "$SKIP_COUNTER")" == 2 ]] \
+  || fail 'a skipped dispatch attempt did not preserve the accumulated count'
+flock -u "$held_lock_fd" || fail 'could not release the dispatch_pending station retry lock'
+exec {held_lock_fd}>&-
+DISPATCH_RESET_SKIPS_ON_LOCK=true tick_step_lock_run dispatch_pending :
+[[ "$TICK_STEP_LOCK_RESULT" == acquired && "$(cat "$SKIP_COUNTER")" == 0 ]] \
+  || fail 'an acquired dispatch pass did not reset accumulated skips'
+rm -f "$A/.dispatch-station-epoch"
+
 printf '2\n' > "$SKIP_COUNTER"
 state_schema_ok() { return 0; }
 existing_walk_fresh() { return 1; }
@@ -173,7 +177,6 @@ tick_step_run dispatch_pending
 [[ "$phase_calls" == 1 ]] || fail "the dispatch_pending tick-step did not run its phase ($phase_calls calls)"
 [[ "$(cat "$SKIP_COUNTER")" == 0 ]] || fail "the dispatch_pending tick-step did not reset the skip counter: $(cat "$SKIP_COUNTER")"
 
-# (g) A local-refill deferral of an oversized estimate is not a rejection: it logs size-admission-deferred, never size-admission-start.
 dispatch_if_room_stubs
 eval "$size_admission_real"
 SIZE_ADMISSION_LINES=800; TICK_DISPATCH_LOCAL_REFILL=true
