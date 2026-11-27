@@ -1,6 +1,7 @@
 import glob, json, os, re, time
 
 STAMP = re.compile(r"^\[?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]?\s+(.*)$")
+MERGED_LANE_LINE = re.compile(r"^#?(\d+)\s+MERGED\b")
 ISSUE = re.compile(r"\bissue\s*#?(\d+)\b|(?<![\w])#(\d+)\b", re.I)
 ACTIONS = (
     ("skipped", re.compile(r"\bskip(?:ped)?\b", re.I)),
@@ -155,28 +156,27 @@ def read_dispatch_decisions(agent_home, limit=8):
     return rows[-max(0, int(limit)):]
 
 
-def merge_lane_merges_today(units, today, date_of):
+def merge_lane_merges_today(factory_home, today, date_of):
     merged = set()
-    for unit in units if isinstance(units, list) else []:
-        if not isinstance(unit, dict):
-            continue
-        pr = unit.get("pr")
-        try:
-            pr = int(pr)
-        except (TypeError, ValueError):
-            continue
-        if pr <= 0:
-            continue
-        for event in unit.get("history") or []:
-            if isinstance(event, dict) and event.get("stage") == "merged" and date_of(event.get("at")) == today:
-                merged.add(pr)
+    path = os.path.join(factory_home, "merge-lane.log")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as source:
+            for line in source:
+                stamp = STAMP.match(line.strip())
+                if not stamp or date_of(stamp.group(1)) != today:
+                    continue
+                match = MERGED_LANE_LINE.match(stamp.group(2))
+                if match and int(match.group(1)) > 0:
+                    merged.add(int(match.group(1)))
+    except OSError:
+        return []
     return sorted(merged)
 
 
-def read_live(agent_home, units, now, today, date_of, pid_alive=None):
+def read_live(factory_home, now, today, date_of, pid_alive=None):
     return {
         "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-        "luna_workers": read_luna_workers(agent_home, now, pid_alive),
-        "dispatch_decisions": read_dispatch_decisions(agent_home),
-        "merge_lane_today": merge_lane_merges_today(units, today, date_of),
+        "luna_workers": read_luna_workers(factory_home, now, pid_alive),
+        "dispatch_decisions": read_dispatch_decisions(factory_home),
+        "merge_lane_today": merge_lane_merges_today(factory_home, today, date_of),
     }

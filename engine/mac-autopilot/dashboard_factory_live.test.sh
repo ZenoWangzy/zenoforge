@@ -45,12 +45,12 @@ with tempfile.TemporaryDirectory() as agent_home:
     with open(log, "w", encoding="utf-8") as target:
         target.write("[2026-11-27T17:30:00Z] issue #2713 skipped: capacity detail\n")
         target.write("[2026-11-27T17:31:00Z] issue #2714 dispatched to worker\n")
-    units = [
-        {"id": "issue-2714", "pr": 321, "history": [{"at": "2026-11-27T17:45:00Z", "stage": "merged"}]},
-        {"id": "issue-2716", "pr": 321, "history": [{"at": "2026-11-27T17:50:00Z", "stage": "merged"}]},
-        {"id": "issue-2717", "pr": 320, "history": [{"at": "2026-11-26T23:50:00Z", "stage": "merged"}]},
-    ]
-    result = live.read_live(agent_home, units, now, today, lambda value: value[:10], lambda pid: int(pid) in {1234, 5678, 1122})
+    with open(os.path.join(agent_home, "merge-lane.log"), "w", encoding="utf-8") as target:
+        target.write("[2026-11-27T17:40:00Z] 400 MERGED direct main\n")
+        target.write("[2026-11-27T17:41:00Z] 401 MERGED direct main\n")
+        target.write("[2026-11-27T17:42:00Z] 402 MERGED direct main\n")
+        target.write("[2026-11-26T23:50:00Z] 403 MERGED direct main\n")
+    result = live.read_live(agent_home, now, today, lambda value: value[:10], lambda pid: int(pid) in {1234, 5678, 1122})
     version_engine = os.path.join(agent_home, "engine-versions", "6da8c7285e8b", "engine")
     os.makedirs(version_engine)
     os.symlink(version_engine, os.path.join(agent_home, "engine-live"))
@@ -89,7 +89,7 @@ assert [row["decision"] for row in result["dispatch_decisions"]] == ["skipped", 
 assert result["dispatch_decisions"][0]["at"] == "2026-11-27T17:30:00Z", result
 assert result["dispatch_decisions"][0]["issue"] == 2713, result
 assert "capacity detail" not in json.dumps(result), result
-assert result["merge_lane_today"] == [321], result
+assert result["merge_lane_today"] == [400, 401, 402], result
 assert engine_pin == "6da8c7285e8b"
 assert composite_engine_pin == "93b119116077"
 assert pause_states["vecta_line"]["paused"] is True, pause_states
