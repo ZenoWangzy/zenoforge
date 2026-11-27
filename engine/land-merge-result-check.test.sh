@@ -19,8 +19,8 @@ command git init -q -b main "$repo"
 command git -C "$repo" config user.name "$GIT_AUTHOR_NAME"
 command git -C "$repo" config user.email "$GIT_AUTHOR_EMAIL"
 mkdir -p "$repo/scripts" "$repo/engine/prompts"
-printf 'review-contract.md\t4\n' > "$repo/engine/prompts/byte-budgets.tsv"
-printf 'okay' > "$repo/engine/prompts/review-contract.md"
+printf 'budget-fixture.md\t4\n' > "$repo/engine/prompts/byte-budgets.tsv"
+printf 'okay' > "$repo/engine/prompts/budget-fixture.md"
 cat > "$repo/scripts/branch-delivery-preflight.mjs" <<'JS'
 export function before() { return 1; }
 // spacer one
@@ -88,14 +88,14 @@ grep -Fq 'Push preflight passed:' "$fixture/valid.log" \
 grep -Fq 'preflight-only passed' "$fixture/valid.log" || fail 'valid merge did not complete the preflight-only landing path'
 
 command git -C "$repo" checkout -q -B agent/issue-773 "$base"
-printf 'x' >> "$repo/engine/prompts/review-contract.md"
-command git -C "$repo" add engine/prompts/review-contract.md
+printf 'x' >> "$repo/engine/prompts/budget-fixture.md"
+command git -C "$repo" add engine/prompts/budget-fixture.md
 command git -C "$repo" commit -qm 'issue #773 fixture over-budget prompt'
 if run_lander > "$fixture/prompt-budget.log" 2>&1; then
   cat "$fixture/prompt-budget.log" >&2
   fail 'land-direct-main accepted an over-budget prompt'
 fi
-grep -Fq 'engine/prompts/review-contract.md is 5 bytes, budget 4 bytes' "$fixture/prompt-budget.log" \
+grep -Fq 'engine/prompts/budget-fixture.md is 5 bytes, budget 4 bytes' "$fixture/prompt-budget.log" \
   || { cat "$fixture/prompt-budget.log" >&2; fail 'direct-main refusal omitted the prompt size and budget'; }
 
 printf 'land-merge-result-check.test.sh: PASS\n'
