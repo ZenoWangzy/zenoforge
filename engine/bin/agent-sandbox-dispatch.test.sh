@@ -28,7 +28,7 @@ printf '%s\n' '{"other":"zcode-test-only"}' > "$HOME/.zcode/v2/credentials.json"
 printf '%s\n' '{"other":"claude-test-only"}' > "$HOME/.claude/.credentials.json"
 printf '%s\n' 'other-worktree-secret' > "$HOME/.zenoforge/clones/other/secret"
 export GH_TOKEN=host-login-secret GITHUB_TOKEN=host-login-secret ZAI_API_KEY=zcode-test-only \
-  ANTHROPIC_API_KEY=claude-test-only PROD_ACCESS_TOKEN=production-token-secret
+  ANTHROPIC_API_KEY=claude-test-only PROD_ACCESS_TOKEN=production-token-secret GIT_ASKPASS=host-askpass-test-only
 
 git init --bare --quiet "$remote"
 git init --quiet -b main "$repo"
@@ -63,8 +63,9 @@ assert pathlib.Path('/tmp/worker/.codex/auth.json').read_text() == '{"selected":
 for relative in ('.config/gh/hosts.yml', '.config/production/token', '.aws/credentials', '.ssh/id_ed25519',
                  '.zcode/v2/credentials.json', '.claude/.credentials.json', '.zenoforge/clones/other/secret', '.git-credentials'):
     assert not (host_home / relative).exists(), relative
-for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'ZAI_API_KEY', 'ANTHROPIC_API_KEY', 'PROD_ACCESS_TOKEN', 'GIT_ASKPASS'):
+for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'ZAI_API_KEY', 'ANTHROPIC_API_KEY', 'PROD_ACCESS_TOKEN'):
     assert name not in os.environ, name
+assert os.environ.get('GIT_ASKPASS') == '/bin/false'
 for path in pathlib.Path('/proc').glob('[0-9]*/environ'):
     try:
         contents = path.read_bytes()
