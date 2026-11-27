@@ -89,7 +89,7 @@ echo 'ok - real stage overrun still gives triage, advisor, recut, explore and ma
 
 
 eval "$(sed -n '/^fastlane_scan_order() {/,/^}/p; /^fastlane_snapshot_candidates() {/,/^}/p; /^fastlane_read_path_contexts() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-held="$(command jq -cn '[range(1;201) | {number:.,labels:[{name:"on-hold"}],subIssues:[],subIssuesSummary:{total:0},blockedBy:{nodes:[]}}]')"
+held="$(command jq -cn '[range(1;201) | {number:.,labels:[{name:"on-hold"}],subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0},blockedBy:{nodes:[]}}]')"
 gh() { echo 'FAIL held fastlane point read' >&2; exit 1; }
 PIPELINE_SYSTEM_LABELS_JSON='["pipeline-system"]'
 [ -z "$(fastlane_read_path_contexts "$held")" ]
@@ -99,12 +99,13 @@ printf 'STATUS: DONE\n' > "$NIGHT/hand-1.report"
 echo 'ok - held fastlane cohort makes zero point reads; completed reports remain consumable'
 
 gh() {
-  case "$*" in
-    *'/comments?'*) printf '[{"body":"engine/lib.sh","created_at":"2026-01-01T00:00:00Z","html_url":"","user":{"login":"maintainer"}}]\n' ;;
-    *) printf '{"number":999,"state":"open","labels":[],"body":"","created_at":"2025-01-01T00:00:00Z","pull_request":null}\n' ;;
-  esac
+  if [[ "$1" == api && "$2" == *'/comments?'* ]]; then
+    printf '[{"node_id":"fixture","body":"engine/lib.sh","created_at":"2026-11-26T00:00:00Z","html_url":"fixture","user":{"login":"fixture"}}]\n'
+  else
+    printf '{"number":999,"state":"open","labels":[],"body":""}\n'
+  fi
 }
 route_nonproduct_path_issue_rows() { printf '%s\n' "$1" >> "$AGENT_HOME/contexts-routed"; }
-fastlane_read_path_contexts '[{"number":999,"labels":[],"blockedBy":{"nodes":[]},"subIssues":[],"subIssuesSummary":{"total":0,"completed":0}}]'
+fastlane_read_path_contexts '[{"number":999,"labels":[],"blockedBy":{"nodes":[]},"subIssues":{"totalCount":0,"nodes":[]},"subIssuesSummary":{"total":0,"completed":0}}]'
 command jq -e '.[0].comments[0].body == "engine/lib.sh"' "$AGENT_HOME/contexts-routed" >/dev/null
 echo 'ok - rich comments reach routing immediately after the leaf read'

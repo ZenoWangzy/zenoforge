@@ -13,6 +13,10 @@ repo="$test_env_root/suppression-ratchet"
 mkdir -p "$repo/tools" "$repo/engine" "$repo/docs/adr"
 cp "$MODEL_POLICY_TEST_REPO/tools/suppression-ratchet.mjs" "$repo/tools/"
 cp "$MODEL_POLICY_TEST_REPO/tools/source-comments.mjs" "$repo/tools/"
+if [[ -d "$MODEL_POLICY_TEST_REPO/node_modules/typescript" ]]; then
+  mkdir -p "$repo/node_modules"
+  ln -s "$MODEL_POLICY_TEST_REPO/node_modules/typescript" "$repo/node_modules/typescript"
+fi
 printf '%s\n' '1	engine/a.py	noqa: F401' '1	engine/a.py	type: ignore[assignment]' '1	engine/a.sh	shellcheck disable=SC2086' '1	engine/a.ts	@ts-expect-error' '1	engine/a.ts	@ts-ignore' '1	engine/a.ts	eslint-disable no-alert' > "$repo/tools/suppression-baseline.txt"
 printf '[]\n' > "$repo/tools/suppression-exceptions.json"
 git init -q -b main "$repo"

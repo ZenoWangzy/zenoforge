@@ -143,6 +143,7 @@ mkdir -p "$A/alerts"
 source "$HERE/scheduler.d/core.sh"
 source "$HERE/scheduler.d/intake-steps.sh"
 source "$HERE/scheduler.d/intake.sh"
+source "$SCRIPT_DIR/lib.d/issue-rest.sh"
 CFG='{"issue_intake":{"labels":["founder-test"],"product_labels":["ready-for-agent"]}}'
 jq -n '{intake_priority:{enabled:true},issue_intake:{labels:["founder-test"],product_labels:["ready-for-agent"]}}' > "$ZF_CONFIG_ROOT/night.json"
 jq -n '[
@@ -154,7 +155,23 @@ jqf() { jq "$@"; }
 say() { printf '%s\n' "$*" >> "$LOG"; }
 hotfix_lane_label() { printf 'hotfix-lane\n'; }
 gh_par_throttle() { :; }
-intake_gh_read() { [[ "$1:$2" == issue:list ]] || return 1; cat "$FALLBACK_ISSUES"; }
+intake_gh_read() {
+  if [[ "$1 $2" == 'api graphql' ]]; then
+    local context='{}' n
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+      context="$(jq -cn --argjson context "$context" --argjson n "$n" '$context + {("i" + ($n | tostring)):{number:$n,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}}')"
+    done < <(grep -oE 'issue\(number: [0-9]+\)' <<<"$*" | grep -oE '[0-9]+')
+    jq -cn --argjson context "$context" '{data:{repository:$context}}'
+  elif [[ "$1" == api && "$2" == repos/*/issues\?* ]]; then
+    local label="${2##*&labels=}"
+    [[ "$label" != "$2" ]] || label=""
+    jq -c --arg label "$label" '[.[] | select($label == "" or any(.labels[]?; .name == $label))
+      | {number,title,body:(.body // ""),state:(.state | ascii_downcase),created_at:"2026-11-16T00:00:00Z",updated_at:"2026-11-16T00:00:00Z",labels,user:{login:"fixture"}}]' "$FALLBACK_ISSUES"
+  else
+    return 1
+  fi
+}
 printf '%s\n' request-failed > "$FALLBACK_JUDGE_MODE"
 printf '%s\n' '{"priority":"high","route":null}' > "$FALLBACK_CLAUDE_REPLY"
 : > "$FALLBACK_JUDGE_LOG"; : > "$FALLBACK_GH_WRITES"; : > "$FALLBACK_CLAUDE_LOG"

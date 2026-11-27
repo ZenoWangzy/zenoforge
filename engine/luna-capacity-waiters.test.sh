@@ -98,6 +98,11 @@ sleep 0.05
 : > "$LUNA_HEAD_COUNT_FILE"
 : > "$LUNA_PROCESS_FORKS"
 sleep 1
+for _ in {1..100}; do
+  read -r head_count < "$LUNA_HEAD_COUNT_FILE"
+  (( head_count % 2 == 0 )) && break
+  sleep 0.01
+done
 mapfile -t sampler_forks < "$LUNA_PROCESS_FORKS"
 read -r head_count < "$LUNA_HEAD_COUNT_FILE"
 (( head_count % 2 == 0 )) || fail "CPU sampler made an incomplete /proc/stat pair with $head_count head calls"

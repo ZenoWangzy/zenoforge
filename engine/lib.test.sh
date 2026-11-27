@@ -2372,6 +2372,10 @@ PR_MERGE_COMMIT_SHA=1234567890abcdef1234567890abcdef12345678
 cat > "$PR_MERGE_BODY_BIN/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -eu
+if [ "${1:-}" = api ] && [[ "$*" == *"pulls/42/files?per_page=100"* ]]; then
+  printf 'README.md\n'
+  exit 0
+fi
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
   if [[ " $* " == *' --json state,headRefOid,mergeCommit '* ]]; then
     if [ -f "$PR_MERGE_STATE_FILE" ]; then

@@ -121,6 +121,7 @@ check 'optional GitHub and Gmail work share the earlier cutoff' \
   "$CAPTURED_OPTIONAL_GMAIL_DEADLINE" "$CAPTURED_OPTIONAL_GH_DEADLINE"
 
 eval "$(sed -n '/^read_needs_info_email_replies() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+source "$SCRIPT_DIR/lib.d/issue-rest.sh"
 GH_LIST_CALLS=0
 gh() { GH_LIST_CALLS=$((GH_LIST_CALLS + 1)); return 1; }
 SECONDS=87
@@ -132,7 +133,11 @@ unset ZF_NEEDS_INFO_EMAIL_STOP_AT_SECONDS
 # No state file records a Gmail thread: nothing to poll, so no GitHub listing.
 REPO=test/repo; STATE_DIR="$test_env_root/needs-info-state"; mkdir -p "$STATE_DIR"
 printf '{"attempts":0}\n' > "$STATE_DIR/1.json"
-gh() { printf x >> "$STATE_DIR/gh-calls"; return 1; }
+gh() {
+  printf x >> "$STATE_DIR/gh-calls"
+  [[ "$1 $2" == 'api repos/test/repo/issues?state=open&per_page=100&page=1' ]] || return 1
+  printf '[]\n'
+}
 read_needs_info_email_replies
 check 'needs-info poll skips the issue listing when no state holds a thread id' "$(wc -c < "$STATE_DIR/gh-calls" 2>/dev/null || echo 0)" 0
 printf '{"needs_info_thread_id":"t1"}\n' > "$STATE_DIR/2.json"

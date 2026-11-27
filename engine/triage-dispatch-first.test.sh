@@ -8,6 +8,7 @@ CALLS="${TRIAGE_EVENT_CALLS:-$TMP/calls}"
 export CALLS
 unset MAC_AUTOPILOT_RUNTIME_DIR
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.d/issue-rest.sh"
 source "$SCRIPT_DIR/lib.d/triage-filter.sh"
 FAILED=0
 if [ "${1:-}" != --event-runner-only ]; then
@@ -33,9 +34,15 @@ state_read() { echo '{}'; }; triage_unmeasured_issue_ids() { :; }; triage_classi
 dispatch_gitnexus_refresh() { :; }
 dispatch_triage_batch() { echo "dispatch $*" >> "$CALLS"; }
 gh() {
-  if [[ "$*" == *needs-triage* ]]; then
-    echo "$TRIAGE_QUEUE"
-  else echo '[]'; fi
+  if [[ "$1" == api && "$2" == repos/*/issues\?* ]]; then
+    if [[ "$2" == *'labels=needs-triage'* ]]; then
+      jq -c '[.[] | {number,title:"fixture",body:"",state:"open",created_at:.createdAt,updated_at:(.updatedAt // .createdAt),labels,user:{login:"fixture"}}]' <<<"$TRIAGE_QUEUE"
+    else
+      echo '[]'
+    fi
+  else
+    echo '[]'
+  fi
 }
 # A slow, failing admit loop and label step: they must run after dispatch and cannot block it.
 intake_admit_unlabeled_issues() { echo admit >> "$CALLS"; sleep 1; return 1; }
