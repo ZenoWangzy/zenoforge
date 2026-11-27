@@ -117,7 +117,18 @@ incident_report_reason() { # unit-json report-path → the first report gate rea
   printf '%s' "$r"
 }
 incident_report_merge_adopted() { # unit-report fix-note fix-note-path → atomically writes the fix note and original unit report section beside the unit report; prints its name
-  local orig="$1" fix="$2" fix_path="$3" orig_base="${1%.md}" original_name="$1" orig_path="$SUP/$1" merged tmp marker
+  local orig="$1" fix="$2" fix_path="$3" orig_base="${1%.md}" original_name="$1" orig_path="$1" orig_path_rel merged tmp marker
+  if [[ "$orig_path" == /* ]]; then
+    if [[ "$orig_path" == "$SUP/"* ]]; then
+      orig_path_rel="${orig_path#"$SUP/"}"
+    else
+      orig_path_rel="${orig_path##*/}"
+    fi
+    orig_base="${orig_path_rel%.md}"
+    original_name="$orig_path_rel"
+  else
+    orig_path="$SUP/$orig_path"
+  fi
   if [[ "$orig_base" == *-adopted-* ]]; then
     orig_base="${orig_base%%-adopted-*}"
     original_name="$orig_base.md"

@@ -16,6 +16,7 @@ RUN_LIST_CALLS="$fixture/run-list-calls" JOB_CALLS="$fixture/job-calls"
 RUNS_CALLS="$fixture/actions-runs-calls"
 declare -A CI_RUN_JOBS_CACHE=()
 TICK_UNFINISHED_LOADED=false TICK_UNFINISHED="" TICK_UNFINISHED_ALL_OK=false
+source "$scheduler_dir/../lib.d/gh-tick-cache.sh"
 source "$scheduler_dir/scheduler.d/core.sh"
 source "$scheduler_dir/scheduler.d/ci-status.sh"
 source "$scheduler_dir/scheduler.d/harvest-station.sh"
@@ -113,6 +114,7 @@ cleanup_probe="$cleanup_fixture/probe.sh"
 cat > "$cleanup_probe" <<'EOF'
 set -euo pipefail
 A="$CACHE_A" LOG="$CACHE_LOG" STAMP=fixture GH_ETAG_DIR="$CACHE_A/.gh-etag"
+source "$SCHEDULER_DIR/../lib.d/gh-tick-cache.sh"
 source "$SCHEDULER_DIR/scheduler.d/core.sh"
 jqf() { command jq "$@"; }
 gh_timeout() { shift; [[ "$1 $2" == 'api rate_limit' ]] && printf '%s\n' '{"remaining":5000,"reset":1790000000}'; }

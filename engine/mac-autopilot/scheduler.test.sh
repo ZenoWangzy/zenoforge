@@ -838,6 +838,7 @@ tick_gh() {
       elif [[ "$*" == *'blockedBy(first: 50)'* ]]; then
         local context_n context_result='{}' context_source="$TF/intake-issues.json"
         [[ -f "$TF/intake-issue.json" ]] && context_source="$TF/intake-issue.json"
+        [[ -f "$TF/intake-issue-context.json" ]] && context_source="$TF/intake-issue-context.json"
         while IFS=' ' read -r context_alias context_n; do
           [[ "$context_n" =~ ^[1-9][0-9]*$ ]] || continue
           context_result="$(command jq -c --argjson result "$context_result" --argjson n "$context_n" '
@@ -2800,7 +2801,7 @@ tick
 command jq -e '
   ([.units[] | select(.pr==57001)][0] | .stage=="repair-pending" and .approved_sha==null
     and any(.history[]; .stage=="merge-conflict")
-    and (.repair_hint | contains("git merge --no-edit origin/main") and contains("main 已删除") and contains("保留其余改动")))
+    and (.repair_hint | contains("Rebase this PR branch onto origin/main")))
   and ([.units[] | select(.pr==57002)][0] | .stage=="ready-to-merge" and .approved_sha!=null)
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2; exit 1; }
@@ -6077,13 +6078,17 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
+command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+  "$TF/issues/4279.json" > "$TF/intake-issues.json"
+command jq '. + {blockedBy:{nodes:[]},subIssues:{totalCount:1,nodes:[{number:4280,state:"OPEN"}]},subIssuesSummary:{total:1,completed:0}}' \
+  "$TF/issues/4279.json" > "$TF/intake-issue-context.json"
 printf '%s\n' '[{"number":4280,"title":"Runtime migration child","state":"open"}]' > "$TF/sub-issues-4279.json"
 seed_roadmap_tree 4279
 tick
 command jq -e 'all(.units[]; .issue != 4279)' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: #4279 was registered as an implement unit' >&2; exit 1; }
-grep -Fq 'gh api repos/example-maintainer/example-repo/issues/4279/sub_issues?per_page=100' "$TF/calls" \
-  || { echo 'scheduler.test.sh: #4279 native sub-issues were not checked' >&2; exit 1; }
+grep -Fq 'issue(number: 4279)' "$TF/calls" && grep -Fq 'subIssues(first: 100)' "$TF/calls" \
+  || { echo "scheduler.test.sh: #4279 native sub-issues were not checked: $(grep -F 'api graphql' "$TF/calls" || true)" >&2; exit 1; }
 grep -Eq '^issue edit 4279 --repo [^ ]+ .*--remove-label ready-for-agent .*--add-label needs-triage$' "$TF/actions" \
   || { echo "scheduler.test.sh: #4279 stage transition did not remove ready-for-agent and apply needs-triage: $(cat "$TF/actions")" >&2; exit 1; }
 grep -Fq 'intake issue #4279 -> needs-triage (parent: has GitHub sub-issues)' "$TF/supervisor/autopi/scheduler.log" \
@@ -6098,6 +6103,10 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
+command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+  "$TF/issues/4279.json" > "$TF/intake-issues.json"
+command jq '. + {blockedBy:{nodes:[]},subIssues:{totalCount:1,nodes:[{number:4280,state:"OPEN"}]},subIssuesSummary:{total:1,completed:0}}' \
+  "$TF/issues/4279.json" > "$TF/intake-issue-context.json"
 printf '%s\n' '[{"number":4280,"title":"Runtime migration child","state":"open"}]' > "$TF/sub-issues-4279.json"
 seed_roadmap_tree 4279
 echo 4279 > "$TF/fail-issue-edit"
@@ -6143,8 +6152,10 @@ command jq '.max_workers=1 | .release_train.enabled=false | .issue_intake={enabl
   "$template" > "$TF/supervisor/autopi/config.json"
 command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-external",blocked_on:4279,history:[]}]}' \
   > "$TF/supervisor/autopi/units.json"
-command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
+command jq -n '{number:4279,title:"Runtime scheduler migration",body:"- [ ] #4280",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
+command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+  "$TF/issues/4279.json" > "$TF/intake-issues.json"
 seed_roadmap_tree 4279
 parent_unverified_lines() { grep -c 'intake issue #4279 deferred: could not verify parent status rc=2 step=' "$TF/supervisor/autopi/scheduler.log" || true; }
 tick
@@ -6174,6 +6185,8 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
+command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+  "$TF/issues/4279.json" > "$TF/intake-issues.json"
 seed_roadmap_tree 4279
 printf '%s\n' '[]' > "$TF/sub-issues-4279.json"
 command jq '.intake_parent_retry = {"4279": {fails: 2, next_at: 0}}' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
@@ -6190,6 +6203,8 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime pilot spec, ADR-1",body:"Prepare the pilot",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
+command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+  "$TF/issues/4279.json" > "$TF/intake-issues.json"
 command jq '.switches["roadmap-order"]=true | .roles.advisor.disabled = false' "$repo_root/engine/model-policy.default.json" > "$TF/model-policy.json"
 mkdir -p "$TF/agent-home"
 export AGENT_HOME="$TF/agent-home" MODEL_POLICY_FILE="$TF/model-policy.json" \

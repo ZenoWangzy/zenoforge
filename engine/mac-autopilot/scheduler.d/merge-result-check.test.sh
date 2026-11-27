@@ -71,6 +71,7 @@ MAIN_HEAD="$main"
 GH_MERGE_SHA="$main"
 GH_HEAD=""
 GH_MERGES_FILE="$fixture/merges.log"
+GH_PR_STATE=OPEN
 : > "$GH_MERGES_FILE"
 SCHED_LOCK_HELD=true
 gate_eval_sha() { printf '%s\n' "$MAIN_HEAD"; }
@@ -81,8 +82,8 @@ retry_blocked_units() { :; }
 tick_prs() { TICK_PRS="$(cat "$fixture/prs.json")"; printf '%s' "$TICK_PRS"; }
 gh() {
   case "$1 $2" in
-    'pr merge') printf '%s\n' "$*" >> "$GH_MERGES_FILE"; return 0 ;;
-    'api --paginate') return 0 ;;
+    'pr merge') printf '%s\n' "$*" >> "$GH_MERGES_FILE"; GH_PR_STATE=MERGED; return 0 ;;
+    'api --paginate') printf '%s\n' 'scripts/branch-delivery-preflight.mjs' ;;
     # checks come per head SHA now: serve the fixture row's rollup as REST check-runs
     'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
       jq -c --arg h "$GH_HEAD" '[.[] | select(.headRefOid == $h)][0].statusCheckRollup // []
@@ -90,17 +91,25 @@ gh() {
             status: ((.status // "completed") | ascii_downcase), conclusion: (if (.conclusion // null) == null then null else (.conclusion | ascii_downcase) end)})}' "$fixture/prs.json" \
         | jq -c '.check_runs // []' ;;
     'pr view')
-      case "${5:-}" in
-        mergeCommit) printf '%s\n' "$GH_MERGE_SHA" ;;
-        mergeable,headRefOid) printf 'UNKNOWN %s\n' "$GH_HEAD" ;;
-        *) printf '\n' ;;
-      esac ;;
+      if [[ "$*" == *'headRefName,headRefOid,files,state,mergeCommit'* ]]; then
+        printf 'agent/issue-%s\t%s\tfalse\t%s\t%s\n' "${GH_PR_NUMBER:-0}" "$GH_HEAD" "$GH_PR_STATE" "$GH_MERGE_SHA"
+      elif [[ "$*" == *'state,headRefOid,mergeCommit'* ]]; then
+        printf '%s\t%s\t%s\n' "$GH_PR_STATE" "$GH_HEAD" "$GH_MERGE_SHA"
+      elif [[ "$*" == *'--json mergeCommit'* ]]; then
+        printf '%s\n' "$GH_MERGE_SHA"
+      elif [[ "$*" == *'--json mergeable,headRefOid'* ]]; then
+        printf 'UNKNOWN %s\n' "$GH_HEAD"
+      else
+        printf '\n'
+      fi ;;
     *) return 1 ;;
   esac
 }
 set_candidate() {
   local number="$1" head="$2" branch="$3" id="$4"
   GH_HEAD="$head"
+  GH_PR_NUMBER="$number"
+  GH_PR_STATE=OPEN
   jq -cn --argjson number "$number" --arg head "$head" --arg branch "$branch" \
     '[{number:$number,headRefOid:$head,headRefName:$branch,baseRefName:"main",isDraft:false,title:"fixture",labels:[],body:"",mergeable:"MERGEABLE",statusCheckRollup:[{__typename:"CheckRun",name:"fixture checks",status:"COMPLETED",conclusion:"SUCCESS",startedAt:"2026-10-30T00:00:00Z"}]}]' \
     > "$fixture/prs.json"
