@@ -52,6 +52,8 @@ case_dir() {
   printf '{"engine":"%s","hook":"build.sh"}\n' "$g" > "$product/.zenoforge/build.json"
   git -C "$product" add -A; git -C "$product" commit -qm product; git -C "$product" push -q -u origin main
   cp "$repo/tools/main-red-revert.sh" "$engine/tools/main-red-revert.sh"
+  mkdir -p "$engine/engine"
+  cp -R "$repo/engine/lib.d" "$engine/engine/lib.d"
   {
     cat <<'PIN'
 #!/usr/bin/env bash
@@ -95,7 +97,7 @@ case_dir single
 h=$(put base bad 'break pin')
 cp "$repo/tools/pin-vecta.sh" "$engine/tools/pin-vecta.sh"
 run_triage
-alert_has PIN-FAIL-AUTO-REVERT || fail 'single candidate was not auto-reverted'
+alert_has PIN-FAIL-AUTO-REVERT || { cat "$tmp/out" >&2; fail 'single candidate was not auto-reverted'; }
 [[ $(git -C "$bare" show main:base) == base ]] || fail 'single candidate remains on main'
 git -C "$bare" log -1 --format=%B main | grep -q "${g:0:7}" || fail 'revert message omitted pinned commit'
 [[ $(git -C "$product" worktree list --porcelain | grep -c '^worktree ') == 1 ]] || fail 'passing control left its worktree behind'
