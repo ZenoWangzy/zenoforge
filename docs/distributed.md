@@ -1,6 +1,6 @@
 # Running Zenoforge on two hosts
 
-> **Status: not yet usable.** The coordination code and `engine/coord/ctl.sh` (ticket K4) are not on `main` yet. The steps below are the plan from [design/DISTRIBUTED.md, section 10](design/DISTRIBUTED.md#10-rollout-single-host-to-two-hosts-with-rollback). Do not run them until that section's tickets have landed. Until then, a single host works as described in [install.md](install.md).
+> **Status: not yet usable.** The coordination rollout is still in progress. The steps below are the plan from [design/DISTRIBUTED.md, section 10](design/DISTRIBUTED.md#10-rollout-single-host-to-two-hosts-with-rollback). Do not run them until that section's tickets have landed. Until then, a single host works as described in [install.md](install.md).
 
 This guide covers three things: turning coordination on for the host you already run, adding a second host, and rolling back. The design, the protocol and the failure modes are in the design doc. This page does not repeat them.
 
