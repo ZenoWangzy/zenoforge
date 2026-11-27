@@ -2801,7 +2801,7 @@ tick
 command jq -e '
   ([.units[] | select(.pr==57001)][0] | .stage=="repair-pending" and .approved_sha==null
     and any(.history[]; .stage=="merge-conflict")
-    and (.repair_hint | contains("git merge --no-edit origin/main") and contains("main 已删除") and contains("保留其余改动")))
+    and (.repair_hint | contains("Rebase this PR branch onto origin/main")))
   and ([.units[] | select(.pr==57002)][0] | .stage=="ready-to-merge" and .approved_sha!=null)
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2; exit 1; }

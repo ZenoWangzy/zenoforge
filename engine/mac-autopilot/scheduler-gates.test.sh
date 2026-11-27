@@ -2775,7 +2775,13 @@ release_dependency_blocks || :
 [[ "$(field issue-77 .stage)" == supervisor-review ]] || fail 'blocked unit without a predecessor stayed parked forever'
 
 # founder-test 是维护者提的 issue：收单且排在最前（issue-pipeline.md 队列顺序）
-gh() { case "$1 $2" in "api "*) jq -cn --arg url "$2" 'if ($url | contains("labels=ready-for-agent")) then [{number:5,title:"top",labels:[{name:"ready-for-agent"},{name:"priority:top"}]},{number:6,title:"mine",labels:[{name:"ready-for-agent"},{name:"founder-test"}]},{number:4,title:"hot",labels:[{name:"ready-for-agent"},{name:"hotfix"}]}] | map(. + {state:"open",created_at:"2026-10-29T00:00:00Z",updated_at:"2026-10-29T00:00:00Z",user:{login:"fixture"}}) else [] end' ;; "issue list") [[ "$*" == *ready-for-agent* ]] && echo '[{"number":5,"title":"top","labels":[{"name":"ready-for-agent"},{"name":"priority:top"}]},{"number":6,"title":"mine","labels":[{"name":"ready-for-agent"},{"name":"founder-test"}]},{"number":4,"title":"hot","labels":[{"name":"ready-for-agent"},{"name":"hotfix"}]}]' || echo '[]' ;; esac; }
+gh() {
+  case "$1 $2" in
+    "api graphql") jq -cn '{data:{repository:{i4:{blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}},i5:{blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}},i6:{blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}}}}' ;;
+    "api "*) jq -cn --arg url "$2" 'if ($url | contains("labels=ready-for-agent")) then [{number:5,title:"top",labels:[{name:"ready-for-agent"},{name:"priority:top"}]},{number:6,title:"mine",labels:[{name:"ready-for-agent"},{name:"founder-test"}]},{number:4,title:"hot",labels:[{name:"ready-for-agent"},{name:"hotfix"}]}] | map(. + {state:"open",created_at:"2026-10-29T00:00:00Z",updated_at:"2026-10-29T00:00:00Z",user:{login:"fixture"}}) else [] end' ;;
+    "issue list") [[ "$*" == *ready-for-agent* ]] && echo '[{"number":5,"title":"top","labels":[{"name":"ready-for-agent"},{"name":"priority:top"}]},{"number":6,"title":"mine","labels":[{"name":"ready-for-agent"},{"name":"founder-test"}]},{"number":4,"title":"hot","labels":[{"name":"ready-for-agent"},{"name":"hotfix"}]}]' || echo '[]' ;;
+  esac
+}
 [[ "$(intake_candidates | cut -f1 | tr '\n' ' ')" == "6 5 " ]] || fail "founder-test not taken first or hotfix taken: $(intake_candidates | cut -f1 | tr '\n' ' ')"
 eval "$gh_issue_stub"
 
@@ -3080,7 +3086,7 @@ gh() {
 GH_MERGEABLE=CONFLICTING; GH_UPDATES=()
 units "{\"units\":[{\"id\":\"pr-15\",\"pr\":15,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
 run_merge_lane || :
-[[ "$(field pr-15 .stage)" == repair-pending && "$(field pr-15 .repair_hint)" == *"merge --no-edit origin/main"* ]] || fail 'conflicting PR not sent to repair'
+[[ "$(field pr-15 .stage)" == repair-pending && "$(field pr-15 .repair_hint)" == *"Rebase this PR branch onto origin/main"* ]] || fail 'conflicting PR not sent to repair'
 pr_behind_main() { return 0; }
 GH_MERGEABLE=MERGEABLE; GH_CHECKS='[{"name":"suites","bucket":"fail"}]'
 units "{\"units\":[{\"id\":\"pr-16\",\"pr\":16,\"stage\":\"ready-to-merge\",\"approved_sha\":\"$H1\",\"history\":[]}]}"
