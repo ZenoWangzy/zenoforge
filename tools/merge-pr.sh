@@ -2,6 +2,7 @@
 # Run the CI-equivalent local suites for this exact HEAD, record their exit
 # codes under .git, then merge only if GitHub still reports the tested SHA.
 set -uo pipefail
+export ZF_GH_NO_CACHE=1
 # Must match the shard matrix in .github/workflows/engine-tests.yml.
 MERGE_PR_ENGINE_SHARDS=8
 MERGE_PR_MAX_PARALLEL=4

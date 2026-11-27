@@ -4,6 +4,7 @@
 # 用法: land-pr.sh <clone-dir> <pr> <approved-sha> <title> <report-path> <reviewed-pr-head> [issue]
 #   pr 为空 = 无 PR 的直落单元：reviewed-pr-head 是本地分支与 main 的分叉点，落地后不碰 PR。 <reviewed-pr-head>
 set -uo pipefail
+export ZF_GH_NO_CACHE=1
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$script_dir/../config.sh"
 : "${ZF_AGENT_GIT_USER_NAME:=zenoforge-agent}" "${ZF_AGENT_GIT_USER_EMAIL:=zenoforge-agent@users.noreply.github.com}"

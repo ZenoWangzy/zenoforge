@@ -2,6 +2,7 @@
 # Prepare a Vecta engine pin in an isolated worktree and run the publish preflight
 # before choosing or entering a delivery lane.
 set -euo pipefail
+export ZF_GH_NO_CACHE=1
 
 usage() {
   echo "usage: $0 <engine-sha> <vecta-checkout> [--land]" >&2
