@@ -16,7 +16,7 @@ Reading the counts: "lines/files" counts non-comment lines in production scripts
 4. **Timers**: systemd timers on Linux and WSL2, launchd LaunchAgents on macOS (generated from the same `engine/systemd/*.service|*.timer` files), and a foreground loop as the universal fallback.
 5. **Fleet**: GitHub stays the source of truth and the coordination protocol is the one in `docs/design/DISTRIBUTED.md` (per-ticket claim refs, leases, no global lock, no database). This document adds only what the portability layer must guarantee to a mixed-OS fleet, and settles the places where the two documents differ (section 8).
 6. **Windows**: WSL2 only. Native Windows would rewrite at least 362 production lines in 55 files (section 9).
-7. **Verification**: CI runs on ubuntu only, as most plugin repos do. macOS and WSL2 have no CI job; `engine/doctor.sh` tells a user what is missing before a tick fails silently, and `tools/quarantine-*.txt` still apply to local runs.
+7. **Verification**: `clean-host-install` packs the CLI, installs it under an empty `HOME` and runs `zenoforge init --yes --dry-run` on `ubuntu-latest` and `macos-latest`. Existing portable engine jobs also run on macOS; WSL2 has no install job. `engine/doctor.sh` tells a user what is missing before a tick fails silently, and `tools/quarantine-*.txt` still apply to local runs.
 
 ## 2. Supported platforms
 
@@ -24,11 +24,11 @@ Tier 1 means the origin deployment already runs there. Tier 2 means supported by
 
 | Platform | Tier | Issue-loop scheduler (`ZF_TIMERS`) | Unit loop host | Stage runner (`ZF_RUNNER`) | Capacity admission | CI leg |
 |---|---|---|---|---|---|---|
-| Linux with a systemd user manager (Ubuntu 24.04, Debian 12+, Fedora) | 1 | systemd timers | systemd service | `systemd-run` | `/proc` and cgroup caps | `ubuntu-latest`, 8 shards |
+| Linux with a systemd user manager (Ubuntu 24.04, Debian 12+, Fedora) | 1 | systemd timers | systemd service | `systemd-run` | `/proc` and cgroup caps | `ubuntu-latest`, 8 shards; `clean-host-install` |
 | WSL2 with `systemd=true` | 1 | systemd timers | systemd service | `systemd-run` | `/proc` and cgroup caps | `windows-latest` + WSL2, systemd on |
 | Linux without systemd (containers, minimal VMs, OpenRC/runit hosts) | 2 | foreground loop | `start.sh` nohup path | pidfile runner | `/proc`, run-ledger count, no cgroup caps | `ubuntu-latest`, `ZF_RUNNER=pidfile` |
 | WSL2 with systemd off | 2 | foreground loop | `start.sh` nohup path | pidfile runner | same as above | `windows-latest` + WSL2, systemd off |
-| macOS 14+ on Apple Silicon | 2 | launchd LaunchAgents | LaunchAgent | pidfile runner | `sysctl`, `memory_pressure`, `top`, run-ledger count | `macos-latest` (macOS 26, arm64) |
+| macOS 14+ on Apple Silicon | 2 | launchd LaunchAgents | LaunchAgent | pidfile runner | `sysctl`, `memory_pressure`, `top`, run-ledger count | `macos-latest` (macOS 26, arm64); `clean-host-install` |
 | macOS on Intel | 2 | launchd LaunchAgents | LaunchAgent | pidfile runner | same | `macos-15-intel`, portable suites only |
 | WSL1 | no | | | | | WSL1 has no systemd (`systemd=true` is "Only supported on WSL 2" in Microsoft's reference) |
 | Native Windows (PowerShell, Git Bash, MSYS) | no | | | | | section 9 |
