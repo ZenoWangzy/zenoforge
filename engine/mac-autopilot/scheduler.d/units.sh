@@ -737,9 +737,17 @@ dead_park_exit() {
   done < <(dead_park_exit_candidates "$prs")
 }
 
+supervisor_needs_info_comment_body() (
+  REPO_DIR="$ROOT"
+  source "$SCHEDULER_AGENT_LIB" || return 1
+  printf '%s\n%s' "$BOT_DISCLAIMER" "工厂 supervisor 需要澄清：$1"
+)
+
 supervisor_needs_info() { # id question evidence —— needs-info：给提需求的人发一个澄清问题并打标签（唯一回到人的出口）
   local id="$1" question="$2" evidence="$3" issue pr decision posted=no
+  local comment_body
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
+  comment_body="$(supervisor_needs_info_comment_body "$question")" || comment_body=""
   if [[ "$issue" =~ ^[0-9]+$ ]]; then
     if ! scheduler_issue_transition_allowed "$issue" needs-info supervisor-needs-info; then
       decision="$(decision_entry 'Needs-info transition unavailable' "issue #$issue cannot transition to needs-info from its current state" "$evidence" '["Post the question without the needs-info label"]' supervisor)"
@@ -747,14 +755,14 @@ supervisor_needs_info() { # id question evidence —— needs-info：给提需�
       say "supervisor needs-info unit=$id not posted=issue #$issue transition unavailable"
       return 0
     fi
-    if gh issue comment "$issue" --body "工厂 supervisor 需要澄清：$question" >/dev/null 2>&1; then
+    if [[ -n "$comment_body" ]] && gh issue comment "$issue" --body "$comment_body" >/dev/null 2>&1; then
       if ! scheduler_issue_transition "$issue" needs-info supervisor-needs-info; then
         posted="issue #$issue (question posted; needs-info transition failed)"
       else
         posted="issue #$issue"
       fi
     fi
-  elif [[ "$pr" =~ ^[0-9]+$ ]] && gh pr comment "$pr" --body "工厂 supervisor 需要澄清：$question" >/dev/null 2>&1; then
+  elif [[ "$pr" =~ ^[0-9]+$ && -n "$comment_body" ]] && gh pr comment "$pr" --body "$comment_body" >/dev/null 2>&1; then
     posted="PR #$pr"
   fi
   [[ "$posted" != no ]] || echo "[$STAMP] NEEDS-INFO-UNDELIVERED unit=$id no reachable issue/PR, question not posted: $question" >> "$A/alerts/state.md"
