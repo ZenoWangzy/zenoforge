@@ -25,8 +25,8 @@ owner_report_anomaly_owners_file() {
   printf '%s\n' "${ZF_ANOMALY_OWNERS_FILE:-$HOME/.zenoforge/state/work/anomaly-owners.json}"
 }
 
-owner_report_station_facts() { # <home> <now> -> JSON rows or null
-  python3 "$OWNER_REPORT_COMPARE_PY" station "$(maintainer_health_mail_runtime_dir "$1")" "$2"
+owner_report_station_facts() {
+  python3 "$OWNER_REPORT_COMPARE_PY" station "$(maintainer_health_mail_runtime_dir "$1")" "$2" "$1"
 }
 
 owner_report_compare() { # <facts> <home> <now> <repo_root> -> {lines,station_lines,causes}
