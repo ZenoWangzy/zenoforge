@@ -148,6 +148,7 @@ jq -n '{units:[{id:"issue-9001779",issue:9001779,stage:"closed",history:[{stage:
 jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
 rm -f "$UNITS.view" "$A/intake-skip-noted.tsv"
 : > "$LOG"
+: > "$merged_conclusion_calls"
 SECONDS=0
 register_new_issues 0
 [[ "$(jq -r '.state' "$AGENT_HOME/state/9001779.json")" == awaiting-release ]] || fail "a merged Refs PR must move the terminal ready issue to awaiting-release"
