@@ -9,7 +9,7 @@ production_status_fetch() {
 
 production_status_terminal() {
   jq -e 'type == "array" and length > 0
-    and ((max_by(.created_at // "") | .state) | IN("success", "failure", "error", "inactive"))' >/dev/null 2>&1
+    and ((max_by(.created_at // "") | .state) | IN("failure", "error", "inactive"))' >/dev/null 2>&1
 }
 
 repo="${1:-${ZF_REPO:?ZF_REPO is not set}}"
@@ -37,7 +37,7 @@ while IFS= read -r deployment; do
     statuses="$(cat "$status_cache_file")"
     jq -e 'type == "object" and .reader_failed == true' <<< "$statuses" >/dev/null && exit 1
   else
-    if ! statuses="$(gh_key_cache_get "deployment-status:$repo:$id" forever production_status_terminal production_status_fetch "$repo" "$id" "$timeout_seconds")"; then
+    if ! statuses="$(gh_key_cache_get "deployment-status-v2:$repo:$id" forever production_status_terminal production_status_fetch "$repo" "$id" "$timeout_seconds")"; then
       if [[ -n "$status_cache_file" ]]; then printf '{"reader_failed":true}\n' > "$status_cache_file.tmp.$BASHPID" && mv -f -- "$status_cache_file.tmp.$BASHPID" "$status_cache_file"; fi
       exit 1
     fi

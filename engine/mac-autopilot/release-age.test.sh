@@ -17,26 +17,31 @@ probe="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR REPO_DIR="$work/repo" MAC_AUT
   || fail 'release reader cache probe failed'
 [[ "$probe" == unset ]] || fail "sourcing lib.sh set a process-lifetime deployment cache: $probe"
 # Regression: one lib.sh process reads a deployment while it is in_progress, then again after success.
-seq_bin="$work/seqbin"; seq_count="$work/seq-count"; mkdir -p "$seq_bin"
+seq_bin="$work/seqbin"; seq_count="$work/seq-count"; status_key_cache="$work/gh-key-cache"; mkdir -p "$seq_bin"
 cat > "$seq_bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$2" in
   repos/*/deployments/*/statuses)
     n=$(( $(cat "$SEQ_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$SEQ_COUNT"
-    if (( n == 1 )); then echo '[{"state":"in_progress","created_at":"2026-11-07T12:00:00Z"}]'; else echo '[{"state":"success","created_at":"2026-11-07T12:01:00Z"}]'; fi ;;
+    if (( n == 1 )); then echo '[{"state":"in_progress","created_at":"2026-11-07T12:00:00Z"}]'
+    elif (( n == 2 )); then echo '[{"state":"success","created_at":"2026-11-07T12:01:00Z"}]'
+    else echo '[{"state":"inactive","created_at":"2026-11-07T12:02:00Z"}]'; fi ;;
   repos/*/deployments\?*) echo '[{"id":501,"sha":"2d75caf3a0000000000000000000000000000000","created_at":"2026-11-07T12:00:00Z","payload":{}}]' ;;
   *) exit 1 ;;
 esac
 SH
 chmod +x "$seq_bin/gh"
-regress="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR SEQ_COUNT="$seq_count" PATH="$seq_bin:$PATH" REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
+regress="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR GH_KEY_CACHE_DIR="$status_key_cache" GH_KEY_CACHE_REPO=REPO SEQ_COUNT="$seq_count" PATH="$seq_bin:$PATH" REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
   bash -ec 'source "$1"; bash "$2" "$3" >/dev/null; bash "$2" "$3"' _ "$script_dir/../lib.d/release-close.sh" "$script_dir/../production-deployment-read.sh" REPO)" \
   || fail 'lib.sh reader second read failed'
 jq -e 'length == 1 and .[0].id == 501' <<< "$regress" >/dev/null || fail "second read kept the in_progress status: $regress"
-env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR SEQ_COUNT="$seq_count" PATH="$seq_bin:$PATH" REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
-  bash -ec 'source "$1"; bash "$2" "$3" >/dev/null' _ "$script_dir/../lib.d/release-close.sh" "$script_dir/../production-deployment-read.sh" REPO \
-  || fail 'terminal deployment status was not reusable'
-[[ "$(cat "$seq_count")" == 2 ]] || fail 'terminal deployment status made another network call'
+legacy_statuses="$(env GH_KEY_CACHE_DIR="$status_key_cache" GH_KEY_CACHE_REPO=REPO bash -ec 'source "$1"; accept_any_status() { cat >/dev/null; return 0; }; fetch_success() { printf "%s\n" "[{\"state\":\"success\",\"created_at\":\"2026-11-07T12:01:00Z\"}]"; }; gh_key_cache_get "deployment-status:REPO:501" forever accept_any_status fetch_success' _ "$script_dir/../lib.d/gh-key-cache.sh")" || fail 'legacy deployment cache seed failed'
+jq -e '.[0].state == "success"' <<< "$legacy_statuses" >/dev/null || fail 'legacy deployment cache seed was not success'
+replaced="$(env -u ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR GH_KEY_CACHE_DIR="$status_key_cache" GH_KEY_CACHE_REPO=REPO SEQ_COUNT="$seq_count" PATH="$seq_bin:$PATH" REPO_DIR="$work/repo" MAC_AUTOPILOT_RUNTIME_DIR="$work/runtime/autopi" \
+  bash -ec 'source "$1"; bash "$2" "$3" >/dev/null; bash "$2" "$3"' _ "$script_dir/../lib.d/release-close.sh" "$script_dir/../production-deployment-read.sh" REPO)" \
+  || fail 'lib.sh reader failed after a deployment became inactive'
+jq -e 'length == 0' <<< "$replaced" >/dev/null || fail "success stayed current after inactive: $replaced"
+[[ "$(cat "$seq_count")" == 3 ]] || fail 'terminal inactive deployment status made another network call'
 cache_dir="$work/deployment-status.tick-one"
 export ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR="$cache_dir"
 # Fake gh: serves the deployment list and each record's statuses from FAKE_GH_DIR; FAKE_GH_FAIL=1 makes it fail.
@@ -130,7 +135,7 @@ done = subprocess.run(["bash", reader, REPO], capture_output=True, text=True,
                       env={**os.environ, "ZF_PRODUCTION_DEPLOYMENT_CACHE_DIR": cache_two})
 check(done.returncode == 0, f"next tick reader failed: {done.stderr}")
 status_calls = [line for line in open(os.environ["FAKE_GH_LOG"]).read().splitlines() if line.endswith("/statuses")]
-check(len(status_calls) == 2, f"terminal deployment statuses were not reused across ticks: {len(status_calls)} calls")
+check(len(status_calls) == 4, f"successful deployment statuses were not fetched again in a fresh tick: {len(status_calls)} calls")
 os.remove(os.environ["FAKE_GH_LOG"])
 
 # Healthy: one hour since the live deployment is under the 2 h bound.
