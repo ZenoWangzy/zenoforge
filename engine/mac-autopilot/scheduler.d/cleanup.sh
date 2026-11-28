@@ -10,6 +10,7 @@ rotate_logs() {
     find "$AGENT_HOME/logs" -maxdepth 1 -type f -name 'triage-triage-batch-*.log' -mtime +7 -delete 2>/dev/null || :
   fi
   rotate_loop_out
+  rotate_gh_measure
   return 0
 }
 # Copy then truncate in place: the loop holds loop.out open with >> and only a restart would reopen it.
@@ -22,6 +23,13 @@ rotate_loop_out() {
   [[ ! -e "$f.1.gz" ]] || mv -f -- "$f.1.gz" "$f.2.gz"
   mv -f -- "$f.tmp.gz" "$f.1.gz"
   : > "$f"
+}
+
+rotate_gh_measure() {
+  local f="${ZF_GH_MEASURE_FILE:-${AGENT_HOME:-${ZF_HOME:-$HOME/.zenoforge}}/measure/gh-calls.tsv}"
+  local limit="${ZF_GH_MEASURE_MAX_BYTES:-67108864}"
+  [[ -f "$f" ]] && (( $(wc -c < "$f") > limit )) || return 0
+  mv -f -- "$f" "$f.1"
 }
 
 worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose recoverable Git work
