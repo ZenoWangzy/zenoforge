@@ -222,11 +222,18 @@ needs_info_default_option() {
 
 
 needs_info_human_reply_after() {
-  local issue_json="$1" sent_at="$2" sent_at_iso comment comment_at comment_body
-  sent_at_iso="$(date -u -d "@$sent_at" +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  local issue_json="$1" sent_at="$2" comparison="${3:-inclusive}" boundary_at="${4:-}" sent_at_iso comment comment_at comment_body
+  sent_at_iso="$boundary_at"
+  if [ -z "$sent_at_iso" ]; then
+    sent_at_iso="$(date -u -d "@$sent_at" +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  fi
   while IFS= read -r comment; do
     comment_at="$(jq -r '.createdAt // empty' <<< "$comment")"
-    [[ -n "$comment_at" && ( "$comment_at" > "$sent_at_iso" || "$comment_at" = "$sent_at_iso" ) ]] || continue
+    if [ "$comparison" = exclusive ]; then
+      [[ -n "$comment_at" && "$comment_at" > "$sent_at_iso" ]] || continue
+    else
+      [[ -n "$comment_at" && ( "$comment_at" > "$sent_at_iso" || "$comment_at" = "$sent_at_iso" ) ]] || continue
+    fi
     comment_body="$(jq -r '.body // empty' <<< "$comment")"
     comment_is_bot "$comment_body" && continue
     return 0
@@ -240,7 +247,7 @@ needs_info_human_reply_after() {
 # date/default into state. This function owns one timeout decision and leaves
 # the same reply transition available to later ticks if a write fails.
 needs_info_timeout_step() {
-  local n="$1" issue_json="$2" now="$3" state thread_id sent_at default_option age days marker latest_comment_at no_comments=0
+  local n="$1" issue_json="$2" now="$3" state thread_id sent_at default_option age days marker latest_comment_at no_comments=0 reply_comparison=inclusive reply_boundary=""
   local applied_thread marker_exists at decision_patch comment_body
   NEEDS_INFO_TIMEOUT_ACTION=unchanged
   jq -e '.labels | any(.name == "needs-info")' <<< "$issue_json" >/dev/null 2>&1 || return 0
@@ -249,6 +256,8 @@ needs_info_timeout_step() {
   thread_id="$(jq -r '.needs_info_thread_id // empty' <<< "$state")"
   if [ -z "$thread_id" ]; then
     latest_comment_at="$(jq -r '[.comments[]?.createdAt // empty] | max // empty' <<< "$issue_json")"
+    reply_comparison=exclusive
+    reply_boundary="$latest_comment_at"
     if [ -z "$latest_comment_at" ]; then
       no_comments=1
     else
@@ -267,7 +276,7 @@ needs_info_timeout_step() {
     [[ "$now" =~ ^[0-9]+$ && "$sent_at" =~ ^[0-9]+$ && "$NEEDS_INFO_QUESTION_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || return 0
     age=$((now - sent_at))
     (( age >= NEEDS_INFO_QUESTION_TIMEOUT_SECONDS )) || return 0
-    needs_info_human_reply_after "$issue_json" "$sent_at" && return 0
+    needs_info_human_reply_after "$issue_json" "$sent_at" "$reply_comparison" "$reply_boundary" && return 0
   fi
 
   default_option=""
