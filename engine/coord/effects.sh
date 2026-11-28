@@ -141,14 +141,16 @@ effect_complete() {
 }
 
 effect_unknown() {
-  local claim="${1:-}" effect_key="${2:-}" reason="${3:-}" owner record intent updated
+  local claim="${1:-}" effect_key="${2:-}" reason="${3:-}" jq_reason owner record intent updated
   [[ $# == 3 && "$claim" =~ ^[A-Za-z0-9._-]+$ && "$effect_key" =~ ^[A-Za-z0-9._:/@+.-]+$ ]] || return 2
+  (( ${#reason} <= 1024 )) || return 2
   owner="${ZF_COORD_OWNER:-${COORD_ENTRY_OWNER:-}}"
   [[ -n "$owner" ]] || return 2
   record="$(_effect_read_owned "$claim" "$owner")" || return $?
   intent="$(jq -c --arg key "$effect_key" '.intents[$key] // empty' <<<"$record")" || return 3
   [[ -n "$intent" && "$(jq -r '.state' <<<"$intent")" == pending ]] || return 1
-  updated="$(jq -cn --argjson intent "$intent" --arg reason "$reason" \
+  jq_reason="$reason"
+  updated="$(jq -cn --argjson intent "$intent" --arg reason "$jq_reason" \
     '$intent | .state="unknown" | .reason=$reason')" || return 3
   _effect_write_intent "$claim" "$owner" "$effect_key" "$updated" pending
 }
