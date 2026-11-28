@@ -1,0 +1,6 @@
+{
+  "engine/mac-autopilot/scheduler.d/tick-steps.sh": ["engine/mac-autopilot/scheduler.d/dispatch-why.test.sh"],
+  "engine/mac-autopilot/scheduler.d/dispatch-queue.sh": ["engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh", "engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh", "engine/mac-autopilot/scheduler.d/dispatch-station.test.sh", "engine/mac-autopilot/scheduler.d/dispatch-live-cache.test.sh", "engine/mac-autopilot/proof-browser-health.test.sh"],
+  "engine/mac-autopilot/scheduler.d/dispatch-station.sh": ["engine/mac-autopilot/scheduler.d/dispatch-station.test.sh"],
+  "engine/mac-autopilot/loop.sh": ["engine/mac-autopilot/scheduler.d/dispatch-station.test.sh"]
+}

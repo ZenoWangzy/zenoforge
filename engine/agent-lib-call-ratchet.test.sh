@@ -46,7 +46,7 @@ agent_lib_call_lines() {
       NR == target { exit !scoped }
     ' "$root/$path"; then continue; fi
     printf '%s\n' "$line"
-  done < <(grep -nE -- "$pattern" "$root/$path" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+  done < <(sed -E 's/[[:space:]]+#.*$//' "$root/$path" | grep -nE -- "$pattern" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
 }
 
 # "<file> <count>" per non-test scheduler.d file.

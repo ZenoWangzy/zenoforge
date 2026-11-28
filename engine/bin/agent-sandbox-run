@@ -4,7 +4,10 @@ provider="$1" access="$2" repo="$3" capture="$4"
 shift 4
 [[ "${1:-}" == -- ]] || exit 64
 shift
-[[ "${ZF_AGENT_TEST_MODE:-0}" != 1 || -z "${ZF_AGENT_TEST_ROOT:-}" ]] || exec "$@"
+if [[ "${ZF_AGENT_TEST_MODE:-0}" == 1 && -n "${ZF_AGENT_TEST_ROOT:-}" ]]; then
+  cd "$repo"
+  exec "$@"
+fi
 engine_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 command=(python3 "$engine_root/bin/agent-sandbox.py" --provider "$provider" --access "$access" --repo "$repo" --engine-root "$engine_root")
 [[ -z "$capture" ]] || command+=(--capture-output "$capture")

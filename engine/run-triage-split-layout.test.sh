@@ -13,6 +13,8 @@ issue_number="$((90044000 + $$))"
 fail() { printf 'not ok - %s\n' "$*" >&2; exit 1; }
 
 copy_agent_library "$split_engine" run-triage.sh
+mkdir -p "$split_engine/bin"
+cp "$SCRIPT_DIR/bin/agent-sandbox-run" "$split_engine/bin/agent-sandbox-run"
 mkdir -p "$config_root/prompts" "$agent_home/state" "$agent_home/night" "$fake_bin"
 cp "$SCRIPT_DIR/prompts/triage.md" "$config_root/prompts/triage.md"
 cp "$SCRIPT_DIR/prompts/triage.schema.json" "$config_root/prompts/triage.schema.json"
@@ -70,6 +72,9 @@ git -C "$split_target" commit -q -m target-seed
 git -C "$split_target" remote add origin "$split_origin"
 git -C "$split_target" push -q -u origin main
 target_head="$(git -C "$split_target" rev-parse HEAD)"
+printf 'product_sha=%s\n' "$target_head" > "$(dirname -- "$split_engine")/BUILD-INFO"
+mkdir -p "$split_target/.gitnexus"
+jq -cn --arg sha "$target_head" --arg indexed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{lastCommit:$sha,indexedAt:$indexed}' > "$split_target/.gitnexus/meta.json"
 
 export PATH="$fake_bin:$PATH" AGENT_HOME="$agent_home" AGENT_MODEL="$MODEL_POLICY_TEST_WORK_IDENTITY"
 export ZF_ENGINE_DIR="$split_engine" ZF_PACK_DIR="$split_engine" ZF_REPO_DIR="$split_target"

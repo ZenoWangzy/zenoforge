@@ -94,16 +94,29 @@ A="$MAC_AUTOPILOT_RUNTIME_DIR"
 # The stub must load after the scheduler: core.sh's own gh() wrapper (call counting
 # around `command gh`) would otherwise shadow it and every census would hit real gh.
 gh() {
-  local n c num t b
+  local n c num t b url arg
   if [[ "${AGED_LOCK_PROBE:-0}" == 1 ]]; then aged_lock_probe "gh: $1 $2"; fi
   case "$1 $2" in
     'label list') cat "$DB/labels" ;;
     'label create')
       grep -qx -- "$3" "$DB/labels" || printf '%s\n' "$3" >> "$DB/labels"
       printf 'label-create\t%s\n' "$3" >> "$ACTIONS" ;;
-    'pr list')
-      # 轻量 census（row 893）：列表不再携带 body，正文一律按需走 pr view。
-      jq -c 'map(select(.state == "OPEN") | del(.body))' "$DB/prs.json" ;;
+    'api -i')
+      url=""
+      for arg in "$@"; do
+        case "$arg" in repos/*/pulls*) url="$arg" ;; esac
+      done
+      if [[ "$url" == *"/pulls?state=open"* ]]; then
+        printf 'HTTP/1.1 200 OK\n\n'
+        jq -c 'map(select(.state == "OPEN") | {number, head:{sha:.headRefOid,ref:.headRefName}, base:{ref:.baseRefName}, draft:(.isDraft // false), title, labels:(.labels // []), created_at:.createdAt, updated_at:.updatedAt, mergeable:true})' "$DB/prs.json"
+      elif [[ "$url" == *"/pulls/"* ]]; then
+        n="$(basename -- "$url")"
+        if grep -qx -- "$n" "$DB/pr-body-unreadable" 2>/dev/null; then return 1; fi
+        printf 'HTTP/1.1 200 OK\n\n'
+        jq -c --argjson n "$n" 'map(select(.number == $n) | {number, body}) | first' "$DB/prs.json"
+      else
+        printf 'unexpected-gh\t%s\n' "$*" >> "$ACTIONS"; return 1
+      fi ;;
     'pr close')
       n="$3"; c=""
       [[ "$4" == --comment ]] && c="$5"

@@ -7,7 +7,7 @@ BATCH_SRC="$SCRIPT_DIR/run-triage-batch.sh"
 # shellcheck source=./lib.d/triage-solo.sh
 source "$SCRIPT_DIR/lib.d/triage-solo.sh"
 TEST_ROOT="$(mktemp -d)"
-ZF_CONFIG_ROOT="$TEST_ROOT/repo/.zenoforge"
+ZF_CONFIG_ROOT="$TEST_ROOT/config"
 mkdir -p "$ZF_CONFIG_ROOT/prompts"
 cp "$SCRIPT_DIR/prompts/triage.md" "$ZF_CONFIG_ROOT/prompts/triage.md"
 printf '\nCONFIG_TRIAGE_BATCH_PROMPT_OVERRIDE\n' >> "$ZF_CONFIG_ROOT/prompts/triage.md"
@@ -237,6 +237,7 @@ cat > "$FAKE_PROMPT_CAPTURE"
 cp "$FAKE_CODEX_OUTPUT" "$out"
 if [ -n "${FAKE_CODEX_TRANSCRIPT:-}" ]; then printf '%s\n' "$FAKE_CODEX_TRANSCRIPT" >&2; fi
 if [ "${FAKE_CODEX_DIRTY_WORKTREE:-0}" = 1 ]; then
+  worktree="$PWD"
   printf 'preserve me\n' > "$worktree/triage-batch-dirty.txt"
 fi
 printf 'tokens used\n12,345\n' >&2

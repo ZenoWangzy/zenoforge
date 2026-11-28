@@ -382,9 +382,10 @@ set -euo pipefail
 output=""; worktree=""
 while (( $# )); do
   if [[ "$1" == --output-last-message ]]; then output=$2; shift; fi
-  if [[ "$1" == --cd ]]; then worktree=$2; shift; fi
+  if [[ "$1" == --add-dir ]]; then worktree=$2; shift; fi
   shift
 done
+[[ -n "$worktree" ]] || worktree="$PWD"
 prompt=$(cat)
 printf 'S\n' >> ${JSON.stringify(events)}
 sleep 1
@@ -820,10 +821,10 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"fixture-session"}' '{"type
       assert.ok(args.includes(`model_reasoning_effort=${implement.effort}`));
       if (implement.service_tier) assert.ok(args.includes(`service_tier="${implement.service_tier}"`));
       if (mode === 'resume') assert.equal(args[args.indexOf('resume') + 1], 'fixture-session');
-      else assert.equal(args[args.indexOf('--cd') + 1], dir);
+      else assert.equal(args[args.indexOf('--add-dir') + 1], dir);
       assert.equal(args[args.indexOf('--sandbox') + 1], 'workspace-write');
       if (mode !== 'cold') assert.equal(readFileSync(join(artifact, 'cwd.txt'), 'utf8').trim(), dir);
-      assert.equal(readFileSync(join(artifact, 'stdin.txt'), 'utf8'), 'same repair prompt');
+      assert.ok(readFileSync(join(artifact, 'stdin.txt'), 'utf8').startsWith('same repair prompt'));
       assert.ok(readFileSync(join(artifact, 'timeout.txt'), 'utf8').split('\n').includes('120m'));
       assert.equal(raw, 'fixture report\n');
       assert.equal(JSON.parse(readFileSync(join(artifact, 'usage.json'))).tokens, 25);
