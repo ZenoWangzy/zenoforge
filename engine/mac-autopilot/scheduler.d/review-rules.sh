@@ -39,8 +39,33 @@ incident_escalation_stated() { # prior-art section on stdin → success when it 
   after="escalat[[:alpha:]]*[:,]?([[:space:]]+reference)?[:,]?([[:space:]]+$aux)*(([[:space:]]+(not|never|unnecessary|unneeded|moot|none|n/a))|[[:space:]]+[[:alpha:]]+n${apos}t)([^[:alpha:]/]|$)"
   tr '[:upper:]' '[:lower:]' | sed -E "s/$before//g; s#$after#  #g" | grep -Eq '(^|[^[:alpha:]])escalat(e|ed|es|ion|ions|ing)([^[:alpha:]]|$)'
 }
+incident_escape_test_registered() {
+  local test_path="$1" repo_root="${dir:-${ROOT:-${MAC_AUTOPILOT_ROOT:-}}}" engine_dir module
+  [[ -n "$repo_root" ]] || return 1
+  if [[ -n "${ZF_ENGINE_DIR:-}" ]]; then
+    engine_dir="$ZF_ENGINE_DIR"
+  elif [[ -n "${HERE:-}" ]]; then
+    engine_dir="${HERE%/mac-autopilot}"
+  elif [[ -n "${MAC_AUTOPILOT_ENV_ROOT:-}" ]]; then
+    engine_dir="$MAC_AUTOPILOT_ENV_ROOT/engine"
+  else
+    engine_dir=""
+  fi
+  if [[ -z "$engine_dir" || ! -f "$engine_dir/mac-autopilot/scheduler.d/escape-suite-runner.mjs" ]]; then
+    engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+  fi
+  module="$engine_dir/mac-autopilot/scheduler.d/escape-suite-runner.mjs"
+  node --input-type=module -e '
+import { pathToFileURL } from "node:url";
+const [repo, test, runner] = process.argv.slice(1);
+const { escapeTestIsRegistered } = await import(pathToFileURL(runner));
+if (!escapeTestIsRegistered(repo, "HEAD", test)) process.exitCode = 1;
+' "$repo_root" "$test_path" "$module" 2>/dev/null
+}
+
 incident_report_gate_reason() { # incident unit [implementation report path] → missing report requirement or empty
-  local unit_json="$1" report="${2:-}" kind_line kind guard_section prior_art_section missing=()
+  local unit_json="$1" report="${2:-}" kind_line kind guard_section prior_art_section missing=() escape_test_line escape_test
+  local -a escape_test_lines=()
   incident_labels_match_json "$unit_json" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
   if [[ -z "$report" ]]; then
     report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
@@ -80,6 +105,16 @@ incident_report_gate_reason() { # incident unit [implementation report path] →
     "") printf 'missing recurrence-guard kind (expected architecture, state, script, lint, or test)'; return 0 ;;
     *) printf 'guard kind %s is not allowed (expected architecture, state, script, lint, or test)' "$kind"; return 0 ;;
   esac
+  mapfile -t escape_test_lines < <(grep -E '^[[:space:]]*([-*][[:space:]]+|[0-9]+[.)][[:space:]]+)?escape-test:[[:space:]]*' <<<"$guard_section" || true)
+  for escape_test_line in "${escape_test_lines[@]}"; do
+    escape_test="${escape_test_line#*:}"
+    escape_test="${escape_test#"${escape_test%%[![:space:]]*}"}"
+    escape_test="${escape_test%"${escape_test##*[![:space:]]}"}"
+    if [[ -z "$escape_test" ]] || ! incident_escape_test_registered "$escape_test"; then
+      printf 'escape-test not registered: %s' "$escape_test"
+      return 0
+    fi
+  done
   return 0
 }
 decision_log_gate_reason() { # unit-json [implementation report] → missing or empty decision-log reason

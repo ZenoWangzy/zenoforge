@@ -628,7 +628,7 @@ merge_agent_pr() {
     return 1
   fi
 
-  if declare -F fruit_migration_order_gate >/dev/null && ! fruit_migration_order_gate "$pr_number" "$match_head_commit"; then
+  if declare -F migration_order_gate >/dev/null && ! migration_order_gate "$pr_number" "$match_head_commit"; then
     return 1
   fi
 
@@ -722,7 +722,7 @@ merge_agent_pr() {
         MERGE_GATE_FAILURE_REASON="#$n is on-hold -- refusing to merge"
         return 1
       fi
-      if declare -F fruit_migration_order_gate >/dev/null && ! fruit_migration_order_gate "$pr_number" "$match_head_commit"; then
+      if declare -F migration_order_gate >/dev/null && ! migration_order_gate "$pr_number" "$match_head_commit"; then
         return 1
       fi
       if [ "$DRY_RUN" != "1" ] \
