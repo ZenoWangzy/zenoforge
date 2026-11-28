@@ -90,6 +90,10 @@ gh() {
       body="$(gh "${rest[@]}")" || return $?
       printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
       return 0 ;;
+    "api repos/{owner}/{repo}/pulls?state=open&per_page=100")
+      local pr_rows
+      pr_rows="$(gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,body,labels,mergeable,createdAt,updatedAt)" || return $?
+      jq -c 'map({number,state:"open",draft:(.isDraft // false),head:{ref:(.headRefName // ""),sha:(.headRefOid // "")},base:{ref:(.baseRefName // "main")},title:(.title // ""),body:(.body // ""),labels:(.labels // []),mergeable:null,created_at:(.createdAt // null),updated_at:(.updatedAt // null)})' <<<"$pr_rows" ;;
     "pr list") gh_pr_list "$@" ;;
     "pr ready") shift 2; gh_pr_ready "$@" ;;
     "pr edit")

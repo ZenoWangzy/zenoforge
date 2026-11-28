@@ -20,7 +20,7 @@ gh_prio_saved="$(declare -f gh)"
 # 关联 issue 分类为 hotfix 的 review PR 不能被 draft defer 取消。
 rm -f "$ph/cancelled"
 units "{\"units\":[{\"id\":\"linked-hotfix\",\"pr\":30,\"stage\":\"review-pending\",\"branch\":\"agent/issue-30\",\"history\":[]}]}"
-GH_PR_TABLE="$fixture/defer-linked-hotfix-prs.json"; printf '[{"number":30,"headRefName":"agent/issue-30","headRefOid":"%s","isDraft":false,"labels":[],"statusCheckRollup":[]} ]\n' "$H2" > "$GH_PR_TABLE"
+GH_PR_TABLE="$fixture/defer-linked-hotfix-prs.json"; printf '[{"number":30,"headRefName":"agent/issue-30","headRefOid":"%s","isDraft":false,"labels":[],"body":"","statusCheckRollup":[]} ]\n' "$H2" > "$GH_PR_TABLE"
 tick_prs_changed; TICK_UNFINISHED="[$(run_json 76 queued agent/issue-30 "$H2" CI)]"
 hotfix_issues_saved="$TICK_HOTFIX_ISSUES"; hotfix_issues_loaded_saved="$TICK_HOTFIX_ISSUES_LOADED"
 TICK_HOTFIX_ISSUES='[30]'; TICK_HOTFIX_ISSUES_LOADED=true
@@ -72,9 +72,15 @@ gh() { case "$1 $2" in
     case "$3" in
       # 一个在线 PR runner → 一个空槽；名额来自 runner 而不是配置（60ba960cf）
       "repos/{owner}/{repo}/actions/runners?per_page=100") printf '%s\n' '{"runners":[{"id":1,"status":"online","busy":false,"labels":[{"name":"cihost-ci"}]}]}' ;;
+      *)
+        eval "${gh_rank_saved/gh ()/gh_rank_f ()}"
+        gh_rank_f "$@" ;;
     esac ;;
   "api "*)
-    if [[ "$*" == *'actions/runners?per_page=100'* ]]; then
+    if [[ "$*" == *'pulls?state=open&per_page=100'* ]]; then
+      eval "${gh_rank_saved/gh ()/gh_rank_f ()}"
+      gh_rank_f "$@"
+    elif [[ "$*" == *'actions/runners?per_page=100'* ]]; then
       local runners_jq="" runners_prev="" arg
       for arg in "$@"; do [[ "$runners_prev" == --jq ]] && runners_jq="$arg"; runners_prev="$arg"; done
       jq -r "${runners_jq:-.runners[].id}" <<<"$GH_RUNNERS"

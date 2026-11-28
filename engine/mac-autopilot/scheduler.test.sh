@@ -741,10 +741,11 @@ tick_gh() {
       ;;
     'pr checks')
       if [[ -f "$TF/pipeline-ci-adoption" ]]; then
-        local started_at
+        local started_at adopt_epoch
+        adopt_epoch="$(command date -u -d "$(command jq -r '.units[0].ci_adopt_at' "$TF/supervisor/autopi/units.json")" +%s)"
         case "$(cat "$TF/pipeline-ci-adoption")" in
-          old) started_at='2026-10-01T00:00:00Z' ;;
-          fresh) started_at='2099-01-01T00:00:00Z' ;;
+          old) started_at="$(command date -u -d "@$((adopt_epoch - 60))" +%Y-%m-%dT%H:%M:%SZ)" ;;
+          fresh) started_at="$(command date -u -d "@$((adopt_epoch + 60))" +%Y-%m-%dT%H:%M:%SZ)" ;;
           *) echo "unexpected adoption phase: $(cat "$TF/pipeline-ci-adoption")" >&2; return 97 ;;
         esac
         command jq -cn --arg started_at "$started_at" '[
@@ -1456,7 +1457,7 @@ adopted_head="$(command git -C "$TF/repo" rev-parse HEAD)"
 command git -C "$TF/repo" push -q origin "$adopted_head:refs/pull/50/head"
 printf '%s\n' "$adopted_head" > "$TF/pr-head-50"
 command git -C "$TF/repo" checkout -q main
-printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"success","createdAt":"2026-10-29T00:00:00Z"}' > "$TF/run.json"
+command jq -n --arg created_at "$(command date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" '{databaseId:701,attempt:1,status:"completed",conclusion:"success",createdAt:$created_at}' > "$TF/run.json"
 printf '%s\n' '{"required":["Enforce branch delivery policy","Required CI gates","Required contract gates"]}' > "$TF/required-pr-checks.json"
 export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
@@ -1483,6 +1484,7 @@ fi
 grep -Fq 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log" \
   || { echo "scheduler.test.sh: stale adopted checks did not hold the merge" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
+AGENT_HOME="$TF/agent-home" gh_commit_check_runs_invalidate "$adopted_head"
 tick
 [[ "$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")" == merged ]] \
   || { echo 'scheduler.test.sh: fresh aggregate passes did not release the adopted PR' >&2; exit 1; }
@@ -3260,11 +3262,14 @@ UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
 WT_ROOT="$TF/clones"; LUNA_SLOTS="$TF/luna-slots"
 mkdir -p "$WT_ROOT/wt-repair" "$TF/clone" "$A/alerts" "$LUNA_SLOTS"
 touch "$LOG"
+printf 'MemAvailable: 16777216 kB\n' > "$TF/meminfo"
+printf 'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$TF/psi"
+export LUNA_PROC_MEMINFO="$TF/meminfo" LUNA_PROC_PSI_MEMORY="$TF/psi" LUNA_CPU_TARGET=100
 SCHED_LOCK_HELD=true
 CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"size_admission_lines":800,"issue_intake":{"enabled":false},"models":{"review":["gpt-6-luna","max","fast"],"review_cross":["GLM-5.3","max"],"review_fallback":["claude-sonnet-4-5","high"]}}'
 MAX=4; IMPLEMENT_CAP=2; SIZE_ADMISSION_LINES=800; FOCUS_MODE=all
 LOOP_TOTAL_ROUNDS=4; LOOP_BREAKER_ROUNDS=4; ADVISOR_ROUNDS=4
-NOW_EPOCH=1793577600; STAMP=refill-pending-stages; TAG=refill-test
+NOW_EPOCH="$(date +%s)"; STAMP=refill-pending-stages; TAG=refill-test
 TICK_DISPATCH_LOCAL_REFILL=true; TICK_FOOTPRINT_CACHE=(); TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_ACTIVE_FOOTPRINTS='[]'
 DISPATCH_PRIORITY_ORDER='["hotfix","opt","normal"]'
 declare -A TICK_FOOTPRINT_CACHE=()
@@ -6166,6 +6171,8 @@ sched_case_jev_f12_rollout() {
 sched_run_case jev_f12_rollout
 
 sched_case_tracker_parent_intake() {
+local intake_issue_at
+intake_issue_at="$(command date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
 # #4279 regression: a no-label predecessor with an open native child is sent
 # to triage during a real tick and never becomes an implement unit.
 new_tick_fixture tracker-parent-intake
@@ -6176,7 +6183,7 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
-command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+command jq --arg at "$intake_issue_at" '. + {createdAt:$at,updatedAt:$at,author:{login:"fixture"}}' \
   "$TF/issues/4279.json" > "$TF/intake-issues.json"
 command jq '. + {blockedBy:{nodes:[]},subIssues:{totalCount:1,nodes:[{number:4280,state:"OPEN"}]},subIssuesSummary:{total:1,completed:0}}' \
   "$TF/issues/4279.json" > "$TF/intake-issue-context.json"
@@ -6201,7 +6208,7 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
-command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+command jq --arg at "$intake_issue_at" '. + {createdAt:$at,updatedAt:$at,author:{login:"fixture"}}' \
   "$TF/issues/4279.json" > "$TF/intake-issues.json"
 command jq '. + {blockedBy:{nodes:[]},subIssues:{totalCount:1,nodes:[{number:4280,state:"OPEN"}]},subIssuesSummary:{total:1,completed:0}}' \
   "$TF/issues/4279.json" > "$TF/intake-issue-context.json"
@@ -6252,7 +6259,7 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"- [ ] #4280",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
-command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+command jq --arg at "$intake_issue_at" '. + {createdAt:$at,updatedAt:$at,author:{login:"fixture"}}' \
   "$TF/issues/4279.json" > "$TF/intake-issues.json"
 seed_roadmap_tree 4279
 parent_unverified_lines() { grep -c 'intake issue #4279 deferred: could not verify parent status rc=2 step=' "$TF/supervisor/autopi/scheduler.log" || true; }
@@ -6283,7 +6290,7 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime scheduler migration",body:"Migrate the background runtime from polling to Runtime.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
-command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+command jq --arg at "$intake_issue_at" '. + {createdAt:$at,updatedAt:$at,author:{login:"fixture"}}' \
   "$TF/issues/4279.json" > "$TF/intake-issues.json"
 seed_roadmap_tree 4279
 printf '%s\n' '[]' > "$TF/sub-issues-4279.json"
@@ -6301,7 +6308,7 @@ command jq -n '{units:[{id:"issue-4278",issue:4278,lane:"pr",stage:"blocked-exte
   > "$TF/supervisor/autopi/units.json"
 command jq -n '{number:4279,title:"Runtime pilot spec, ADR-1",body:"Prepare the pilot",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
   > "$TF/issues/4279.json"
-command jq '. + {createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",author:{login:"fixture"}}' \
+command jq --arg at "$intake_issue_at" '. + {createdAt:$at,updatedAt:$at,author:{login:"fixture"}}' \
   "$TF/issues/4279.json" > "$TF/intake-issues.json"
 command jq '.switches["roadmap-order"]=true | .roles.advisor.disabled = false' "$repo_root/engine/model-policy.default.json" > "$TF/model-policy.json"
 mkdir -p "$TF/agent-home"
