@@ -14,6 +14,23 @@ LUNA_CPU_BUSY_FILE="$LUNA_GATE_HOME/locks/luna-host-cpu.sample"
 LUNA_CPU_BUSY_LOCK="$LUNA_GATE_HOME/locks/luna-host-cpu.lock"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/proc.sh"
 
+_luna_gate_env_mtime="${_luna_gate_env_mtime:-}"
+luna_reload_gate_env() {
+  local env_file="${LUNA_ENV_FILE:-$LUNA_GATE_HOME/engine.env}" file_mtime line name
+  local -a env_lines=()
+  [[ -f "$env_file" && -r "$env_file" ]] || return 0
+  file_mtime=$(stat -c '%y' -- "$env_file" 2>/dev/null) || return 0
+  [[ -n "$file_mtime" && "$file_mtime" != "$_luna_gate_env_mtime" ]] || return 0
+  mapfile -t env_lines < "$env_file" 2>/dev/null || return 0
+  for line in "${env_lines[@]}"; do
+    [[ "$line" =~ ^(LUNA_[A-Z0-9_]+)=([A-Za-z0-9_.%-]*)$ ]] || continue
+    name="${BASH_REMATCH[1]}"
+    printf -v "$name" '%s' "${BASH_REMATCH[2]}"
+    export "$name"
+  done
+  _luna_gate_env_mtime="$file_mtime"
+}
+
 luna_reload_live_gate() {
   local live_file="$LUNA_GATE_HOME/engine-live/bin/luna-capacity.sh" resolved source_file function_name
   local old_cap="${LUNA_RUNS_HARD_CAP:-}" old_why="${BOX_ROOM_WHY:-}" old_ahead="${LUNA_WAIT_AHEAD:-}"
