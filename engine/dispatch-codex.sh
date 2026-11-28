@@ -592,10 +592,12 @@ EOF
 ## Required incremental landing
 
 Finish and publish each independently complete unit before beginning the next.
-For every unit, run focused verification, commit it, push or update its PR, and
-leave the relevant GitHub issue or PR record. Do not batch a long session into
-one final unpublished delivery. If blocked, publish completed work and blocking
-evidence before stopping.
+For every unit, run only static checks (`bash -n`, `node --check`, and static
+lint/typecheck scans), commit it, push or update its PR, and leave the relevant
+GitHub issue or PR record. Do not run test files or suites locally or record a
+local test receipt. PR CI supplies the test receipt for the pushed head. Do not
+batch a long session into one final unpublished delivery. If blocked, publish
+completed work and blocking evidence before stopping.
 
 ## Operator brief
 

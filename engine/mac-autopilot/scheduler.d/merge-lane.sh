@@ -102,7 +102,7 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
       say "merge rebase PR#$2 head=$head already attempted; not queued again"
       return 0
     fi
-    rebase_hint="Rebase this PR branch onto origin/main, resolve conflicts preserving both sides, run the affected tests, and publish the rewritten branch with branch-delivery-preflight."
+    rebase_hint="Rebase this PR branch onto origin/main, resolve conflicts preserving both sides, run only static checks, and publish with git push --force-with-lease origin HEAD:<branch>; PR CI runs the tests and provides the receipt."
     extra=" | .merge_rebase_pending=true | .merge_rebase_head=$(js "$head")"
   else
     extra=' | del(.merge_rebase_pending,.merge_rebase_head)'
@@ -118,7 +118,7 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
 review_conflict_to_repair() { # id pr head
   [[ "$2" =~ ^[0-9]+$ && -n "${TICK_PRS:-}" ]] || return 1
   [[ "$(jqf -r --argjson p "$2" '[.[] | select(.number == $p) | .mergeable][0] // empty' <<<"$TICK_PRS")" == CONFLICTING ]] || return 1
-  merge_conflict_to_repair "$1" "$2" "conflicts with main before review" "PR 与最新 main 冲突，评审前发现，评审只会落在合不进去的 head 上。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$3"
+  merge_conflict_to_repair "$1" "$2" "conflicts with main before review" "PR 与最新 main 冲突，评审前发现，评审只会落在合不进去的 head 上。git merge --no-edit origin/main，按两边意图解决冲突，只运行静态检查并 push，由 PR CI 验证。" "$3"
 }
 
 # 合入即写 awaiting-release（#4515 发布状态单一事实源）：unit 台账的 unit→issue 关系驱动，
@@ -577,7 +577,7 @@ run_merge_lane_pass() {
         state="$(tick_pr_mergeable "$pr")"
       fi
       if [[ "$state" == CONFLICTING ]]; then
-        merge_conflict_to_repair "$id" "$pr" "conflicts with main; CI cannot start" "PR 与最新 main 冲突，GitHub 不会跑 CI 也拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（热修回迁以生产已验证行为为准），跑受影响测试，推送。" "$head"
+        merge_conflict_to_repair "$id" "$pr" "conflicts with main; CI cannot start" "PR 与最新 main 冲突，GitHub 不会跑 CI 也拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（热修回迁以生产已验证行为为准），只运行静态检查并 push，由 PR CI 验证。" "$head"
         pass_step_end conflict-repair "$pr"; continue
       fi
       if ci_stuck_unqueued_pending "$id" "$pr" "$head" "$branch"; then pass_step_end stuck-unqueued "$pr"; continue; fi
@@ -638,7 +638,7 @@ run_merge_lane_pass() {
         fi
         if [[ "$state" == CONFLICTING ]]; then
           set_unit "$id" ".ci_sync_head=$(js "$head")"
-          merge_conflict_to_repair "$id" "$pr" "required checks never ran; branch conflicts with main" "PR 长期拿不到必需检查且与最新 main 冲突。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$head"
+          merge_conflict_to_repair "$id" "$pr" "required checks never ran; branch conflicts with main" "PR 长期拿不到必需检查且与最新 main 冲突。git merge --no-edit origin/main，按两边意图解决冲突，只运行静态检查并 push，由 PR CI 验证。" "$head"
           pass_step_end conflict-repair "$pr"; continue
         fi
       fi
@@ -651,7 +651,7 @@ run_merge_lane_pass() {
       mstate="$(jqf -r '.pr_open_mergeable // empty' <<<"$ready")"
       [[ -n "$mstate" ]] || mstate="$(tick_pr_mergeable "$pr" 2>/dev/null || true)"
       if [[ "$mstate" == CONFLICTING ]]; then
-        merge_conflict_to_repair "$id" "$pr" "conflicts with main; pipeline-path changes include files deleted from main" "PR 与最新 main 冲突，且 main 已删除 PR 涉及的 pipeline 文件。git merge --no-edit origin/main，丢弃 main 已删除文件上的改动，保留其余改动，按两边意图解决剩余冲突，跑受影响测试后推送。" "$head"
+        merge_conflict_to_repair "$id" "$pr" "conflicts with main; pipeline-path changes include files deleted from main" "PR 与最新 main 冲突，且 main 已删除 PR 涉及的 pipeline 文件。git merge --no-edit origin/main，丢弃 main 已删除文件上的改动，保留其余改动，按两边意图解决剩余冲突，只运行静态检查并 push，由 PR CI 验证。" "$head"
         pass_step_end conflict-repair "$pr"; continue
       fi
       if (( hotpatch_pass )) && [[ "$(jqf -r '.hotpatch // false' <<<"$ready")" == true ]]; then
@@ -764,7 +764,7 @@ run_merge_lane_pass() {
       elif mstate="$(pr_view "$pr" mergeable)"; for i in 1 2 3; do [[ "$mstate" == UNKNOWN ]] || break; sleep 2; mstate="$(pr_view "$pr" mergeable)"; done; [[ "$mstate" == CONFLICTING ]]; then
         # GitHub 合并失败后 mergeable 常短暂为 UNKNOWN：以前当成"squash 失败"每拍空试（#3885/#3860 又空转 10+ 小时）
         # 冲突不会自己消失：以前每拍空试 merge（#3885/#3860 空转数小时），现在直接派修复合 main。
-        merge_conflict_to_repair "$id" "$pr" "conflicts with main" "PR 与最新 main 冲突，GitHub 拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（迁移编号顺延到 main 之后），跑受影响测试后 push。" "$head"; pass_step_end conflict-repair "$pr"
+        merge_conflict_to_repair "$id" "$pr" "conflicts with main" "PR 与最新 main 冲突，GitHub 拒绝合并。git merge --no-edit origin/main，按两边意图解决冲突（迁移编号顺延到 main 之后），只运行静态检查并 push，由 PR CI 验证。" "$head"; pass_step_end conflict-repair "$pr"
       else
         [[ "$merge_error" != *'engine/prompts/'* && "$merge_error" != *'prompt byte budget:'* ]] || say "merge skipped PR#$pr ($merge_error)"
         say "merge skipped PR#$pr (synchronous squash merge failed)"; pass_step_end skipped-merge-failed "$pr"

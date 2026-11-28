@@ -86,54 +86,29 @@ run_guard() {
   return "$status"
 }
 
-write_green_test_receipt() {
-  local target="$1" common sha
-  common="$(git -C "$target" rev-parse --git-common-dir)"
-  [[ "$common" == /* ]] || common="$target/$common"
-  sha="$(git -C "$target" rev-parse HEAD)"
-  mkdir -p "$common/zf-test-receipts"
-  printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$sha"
-}
-
 common="$(git -C "$repo" rev-parse --git-common-dir)"
 [[ "$common" == /* ]] || common="$repo/$common"
-receipt="$common/zf-test-receipts/$local_sha"
-mkdir -p "$(dirname -- "$receipt")"
 set_remote_head "$base_sha"
 export PUSH_GUARD_MERGEABLE=CONFLICTING PUSH_GUARD_CHECKS="$pass_checks" PUSH_GUARD_CHECK_EXIT=0
-printf '0\tbash engine/example.test.sh\n1\tbash engine/example.test.sh\n' > "$receipt"
-if run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - failed local receipt is refused' >&2; exit 1; fi
-grep -Fq 'is not green' "$tmp/stderr"
-echo 'ok - failed local receipt is refused'
-rm -f -- "$receipt"
-if run_guard "$base_sha"; then echo 'not ok - missing local receipt is refused' >&2; exit 1; fi
-grep -Fq 'no test receipt' "$tmp/stderr"
-echo 'ok - missing local receipt is refused'
+if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - code push without a local receipt' >&2; exit 1; fi
+echo 'ok - code push does not require a local receipt'
+mkdir -p "$common/zf-test-receipts"
+printf '0\tbash engine/example.test.sh\n1\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$local_sha"
+if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - failed local receipt blocked a code push' >&2; exit 1; fi
+echo 'ok - local receipt contents do not gate a code push'
 printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$base_sha"
-if run_guard "$base_sha"; then echo 'not ok - receipt for another SHA is refused' >&2; exit 1; fi
-grep -Fq 'no test receipt' "$tmp/stderr"
-echo 'ok - receipt for another SHA is refused'
-rm -f -- "$common/zf-test-receipts/$base_sha"
-printf '0\tbash engine/example.test.sh\n' > "$receipt"
-if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - green local receipt' >&2; exit 1; fi
-echo 'ok - green local receipt allows push'
 printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$diverged_sha"
-if run_guard "$base_sha" agent/issue-other "$diverged_sha"; then echo 'not ok - pushed ref must match current HEAD' >&2; exit 1; fi
-grep -Fq 'does not match current HEAD' "$tmp/stderr"
-echo 'ok - receipt for current HEAD cannot authorize a different pushed ref'
-rm -f -- "$common/zf-test-receipts/$diverged_sha"
+if ! run_guard "$base_sha" agent/issue-other "$diverged_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - another branch push without a local receipt' >&2; exit 1; fi
+echo 'ok - local receipts do not gate a push to another branch'
 if ! run_guard "$base_sha" agent/issue-docs "$docs_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - documentation-only push exemption' >&2; exit 1; fi
 echo 'ok - documentation-only push remains exempt'
-rm -f -- "$receipt"
 git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge.git
 if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - Zenoforge engine push exemption' >&2; exit 1; fi
 echo 'ok - Zenoforge engine push remains exempt'
 git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge-vecta-pack.git
-if run_guard "$base_sha"; then echo 'not ok - Vecta pack still requires a receipt' >&2; exit 1; fi
-grep -Fq 'no test receipt' "$tmp/stderr"
-echo 'ok - Zenoforge Vecta pack still requires a receipt'
+if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - non-engine code push without a local receipt' >&2; exit 1; fi
+echo 'ok - non-engine code push does not require a local receipt'
 git -C "$repo" remote set-url origin "$remote"
-write_green_test_receipt "$repo"
 : > "$ZF_PUSH_GUARD_LOG"
 
 set_remote_head "$diverged_sha"
@@ -150,9 +125,9 @@ echo 'ok - Rule A allows and logs conflict sweeper override'
 
 set_remote_head "$base_sha"
 export PUSH_GUARD_MERGEABLE=MERGEABLE PUSH_GUARD_CHECKS="$fail_checks" PUSH_GUARD_CHECK_EXIT=1
-if run_guard "$base_sha"; then echo 'not ok - Rule B refuses missing receipt' >&2; exit 1; fi
+if run_guard "$base_sha"; then echo 'not ok - Rule B refuses failed CI without repair evidence' >&2; exit 1; fi
 grep -Fq -- '--repair-ci-failure-link' "$tmp/stderr"
-echo 'ok - Rule B refuses failed CI without receipt'
+echo 'ok - Rule B refuses failed CI without repair evidence'
 
 write_receipt() {
   local status="$1" command="$2" reason="$3" main_sha="${4:-}" failing_path="${5:-}" common failed_ms

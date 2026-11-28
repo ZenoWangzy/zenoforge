@@ -618,9 +618,9 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture/bin/ssh"
 mv "$fixture/units.saved.json" "$A/units.json"
 grep -Fq '(u.journey||{}).status)).length' "$script_dir/dashboard.html" || { echo 'not ok - scheduler.test.sh: in-flight card counts closed/done units' >&2; exit 1; }
 
-# 集成测试左移：repair 与产品 implement 的 prompt 都带本机测试库规则；测试库不可用时照常 push，不卡交付。
 [[ "$(grep -h '${INTEGRATION_RULE}' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh | wc -l)" -ge 2 ]] || { echo 'not ok - scheduler.test.sh: repair/implement prompts lack the local integration-test rule' >&2; exit 1; }
-grep -E '^INTEGRATION_RULE=.*RUN_INTEGRATION=1.*照常 push' "$script_dir/scheduler.sh" >/dev/null || { echo 'not ok - scheduler.test.sh: integration rule must run tests locally yet never block the push' >&2; exit 1; }
+grep -Fq 'INTEGRATION_RULE="涉及集成测试（*.integration.test.*、tests/integration/ 或迁移）时也不在本机或测试 runner 执行，交给 PR CI 验证。"' "$script_dir/scheduler.sh" \
+  || { echo 'not ok - scheduler.test.sh: integration rule must send tests to PR CI' >&2; exit 1; }
 # 优化类 ticket 先核实前提（#4370）：两条车道的 implement prompt 都带测量规则。
 [[ "$(grep -h 'OPT_PREMISE_RULE}' "$script_dir/scheduler.sh" "$script_dir"/scheduler.d/*.sh | wc -l)" -ge 2 ]] || { echo 'not ok - scheduler.test.sh: implement prompts lack the optimization-premise rule' >&2; exit 1; }
 [[ "$(grep -h 'BLAST_RADIUS_RULE}' "$script_dir"/scheduler.d/*.sh | wc -l)" -ge 2 ]] && grep -A2 '^BLAST_RADIUS_RULE=' "$script_dir/scheduler.sh" | grep -q 'pstack_skill_md blast-radius' || { echo 'not ok - scheduler.test.sh: implement prompts lack the blast-radius rule' >&2; exit 1; }

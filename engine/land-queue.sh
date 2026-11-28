@@ -1254,7 +1254,7 @@ queue_auto_resume_hand_rebase_conflict() (
       printf -- '- Paths unavailable; inspect %s\n' "$log"
     fi
     printf '\nResolve this conflict in the owner worktree. Rebase onto current origin/main and preserve both intents.\n'
-    printf 'Run focused suites for the conflicting files, then node scripts/branch-delivery-preflight.mjs --mode commit.\n'
+    printf 'Run only static checks for the conflicting files; do not run test files or suites. Commit the repair; post-land Pipeline suites verify it.\n'
     printf 'Commit the repair, run bash engine/land-direct-main.sh --enqueue, and continue the owner brief.\n'
   } > "$addendum" || {
     rm -f -- "$addendum" "$helper_output"

@@ -19,12 +19,14 @@ case "$*" in
 esac
 STUB
 chmod +x "$t/git" "$t/lw" "$t/gh"; export PATH="$t:$PATH" WORKER_BIN="$t" HF_ROOT="$t/root" LOG="$t/gitlog" LAUNCH="$t/launch" GH_TOKEN=secret
-{ for i in $(seq 1 12); do echo "context $i"; done; echo "Change engine/hotfix/x.sh"; echo "Run bash engine/hotfix/x.test.sh"; echo "Done when green"; } > "$t/brief"
+{ for i in $(seq 1 12); do echo "context $i"; done; echo "Change engine/hotfix/x.sh"; echo "Add regression-test coverage; PR CI runs it"; echo "Done when green"; } > "$t/brief"
 echo vague > "$t/vague"; ! "$p/hf-start.sh" 123 slug "$t/vague" 2>/dev/null
 "$p/hf-start.sh" nope slug "$t/brief" && exit 1
 "$p/hf-start.sh" 123 slug "$t/brief"
 grep -q 'worktree add --lock -b hotfix/123-slug' "$LOG"
 grep -qx LUNA_PRIORITY=hotfix "$LAUNCH"
+grep -q 'do not run test files or suites' "$HF_ROOT/hf-123-slug-brief.md"
+grep -q 'PR CI supplies the test result' "$HF_ROOT/hf-123-slug-brief.md"
 grep -q 'Do not merge or deploy' "$HF_ROOT/hf-123-slug-brief.md"
 grep -q 'Done checklist' "$HF_ROOT/hf-123-slug-brief.md"
 grep -q 'INCIDENT_RULE' "$HF_ROOT/hf-123-slug-brief.md"

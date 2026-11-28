@@ -195,7 +195,7 @@ MEANING = {**arbiter_health.MEANING, **harvest_health.MEANING, **existing_walk_h
     "flow.main_red_hours": "main 处在红的小时数（#4356 二分会话覆盖）：红一次并自动回滚是设计内；持续红 = 二分卡住或回滚 PR 未合并。",
     "flow.in_out_imbalance": "|窗口内进入的单数 − 完成合入的单数|：进出守恒。持续不等 = 单在系统里堆积或凭空消失（WIP 泄漏 / 孤儿单）。",
     "mechanism.silent": "登记表（engine/state/mechanism-registry.json）里沉默超过上限的机制数：代码落地了但没在跑（#4483 里 f3 落地后停转 18 小时就是这类）。允许长期无事件的机制（expected_idle）只展示最近事件时间，不计入。分组明细在 scorecard 的 mechanisms。",
-    "workers.local_test_db": "AI 员工 push 前能否在本机跑集成测试。0 = 集成测试第一次运行要等到批准后的 CI，红了再返工一轮（10-17 重装丢了测试库，24h 内 146 次返工由批准后 CI 红触发）。",
+    "workers.local_test_db": "历史本地集成测试数据库的可达性指标；implement/repair workers 不在本机运行测试。",
     "delivery.issue_to_accept_p50_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
     "delivery.issue_to_accept_p95_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
     "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
@@ -675,7 +675,6 @@ work_orders = workorder_cost.work_orders
 
 
 def local_test_db():
-    """1 when the worker-side PGTEST_URL server accepts a connection: integration tests run before push."""
     url = urllib.parse.urlsplit(os.environ.get("PGTEST_URL") or "")
     if not url.hostname:
         return 0

@@ -47,7 +47,6 @@ if [[ "$(uname -s)" == Linux && "$(stat -f -c %T /tmp 2>/dev/null)" == tmpfs && 
   mkdir -p "$AP_TMPDIR" 2>/dev/null && export AP_TMPDIR TMPDIR="$AP_TMPDIR"
 fi
 
-# worker push 前在本机跑集成测试：pg-container.ts 见到 PGTEST_URL 就在这台服务器上每个测试文件建临时库
 # （zenoforge-pgtest.service，127.0.0.1:5432，the test-database setup notes）。10-17 重装丢了它，
 # 集成测试首次运行推迟到批准后的 CI：10-22 一天 146 次返工由批准后 CI 红触发。体检 workers.local_test_db 盯可达性。
 export PGTEST_URL="${PGTEST_URL:-postgresql://example@127.0.0.1:5432/postgres}"

@@ -10,7 +10,7 @@ Factory terms, definitions only. Why a term works the way it does lives in the A
 - **Pin**: the engine commit a deployment runs, prepared by `tools/pin-vecta.sh` in an isolated worktree. Used in: `tools/pin-vecta.sh`.
 - **Quick-land**: the one-command path that lands an ordinary change on main with no PR, `tools/quick-land.sh`; code changes need prior art and at least one test. Used in: `AGENTS.md`.
 - **Ratchet**: a count that may fall but never rise, enforced by a check, such as file size above the cap or the number of code comments. Used in: `tools/size-ratchet.sh`, `docs/adr/0007-file-size-only-shrinks-above-cap.md`.
-- **Receipt**: a green test record for one exact PR head SHA, written by `tools/test-receipt.sh`; a merge needs one. Used in: `AGENTS.md`.
+- **Receipt**: proof that tests passed for one exact PR head SHA; PR CI supplies merge receipts, while `tools/test-receipt.sh` records manual runs. Used in: `AGENTS.md`.
 - **Release train**: the scheduled step that builds and ships what has merged since the last release. Used in: `docs/design/DISTRIBUTED.md`.
 - **Station (工位)**: a scheduler pass with its own lock and its own timer, such as CI admission, merge or harvest. Used in: `docs/architecture.md`.
 - **Tick**: one run of a loop: it decides what happens next, starts detached workers and exits. Used in: `docs/adr/0001-orchestrator-is-deterministic-code.md`.

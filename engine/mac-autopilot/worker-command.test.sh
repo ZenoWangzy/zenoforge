@@ -208,6 +208,12 @@ impl_tools="$(impl_value --allowedTools)"
 [[ ",$impl_tools," == *",Read(/$SUP/**),"* ]] || fail 'Claude implement cannot read the supervisor reports'
 [[ ",$impl_tools," == *',Bash(git push origin unit/impl-1),'* ]] || fail "Claude implement cannot push its own branch: $impl_tools"
 [[ ",$impl_tools," == *",Bash(git -C $impl_repo push origin unit/impl-1),"* ]] || fail "Claude implement cannot push its own branch with git -C: $impl_tools"
+[[ "$impl_tools" != *'branch-delivery-preflight'* && "$impl_tools" != *'Bash(pnpm:*)'* && "$impl_tools" != *'Bash(node --test:*)'* ]] || fail "Claude implement can run local suites or preflight: $impl_tools"
+unit_json='{"lane":"pr","merge_rebase_pending":true}'
+build_codex_command implement claude-sonnet-5-5 high impl-1 'p' 'p' "$impl_repo" claude || fail 'Claude rebase repair command was refused'
+impl_tools="$(impl_value --allowedTools)"
+[[ ",$impl_tools," == *',Bash(git push --force-with-lease origin HEAD:unit/impl-1),'* ]] || fail "Claude rebase repair cannot push its own branch with a lease: $impl_tools"
+unit_json='{}'
 for bare in Edit Write Read 'Bash(git push:*)' 'Bash(git:*)' 'Bash(git *)' 'Bash(gh pr merge:*)' 'Bash(curl:*)' 'Bash(node:*)'; do
   [[ ",$impl_tools," != *",$bare,"* ]] || fail "Claude implement allows $bare"
 done

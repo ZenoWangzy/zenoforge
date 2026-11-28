@@ -1,6 +1,3 @@
-# Bounded reviewer fixes stay on the PR branch and become an approval only
-# after the scheduler validates the exact commit and records its test receipt.
-
 reviewer_git_name() { printf 'Zenoforge reviewer (%s/%s)' "$1" "$2"; }
 reviewer_git_email() { printf 'zenoforge-reviewer@users.noreply.github.com'; }
 reviewer_git_identity_configure() { # worktree provider model
@@ -20,20 +17,20 @@ review_fix_refusal_report() { # parsed findings reason unit head → report base
         map(if .status=="fixed-in-review" then
           .status="open"
           | .summary=((.summary // .id) + " Reviewer fix refused: " + $reason)
-          | .rerun_command=("test receipt for " + (.test.path // "review fix"))
+          | .rerun_command="push the fix commit and wait for PR CI"
           | .rerun_output=$reason
           | del(.commit_sha,.test)
         else . end)
       else . + [{id:"RF1",severity:"P1",file:"review-fix",line:1,rule:"Review fix gate",status:"open",
         summary:("Reviewer changed the PR head outside the in-review fix contract: " + $reason),
         introduced_by:"candidate",base_evidence:"The reviewed head did not contain this commit.",
-        rerun_command:"review fix scope and receipt gate",rerun_output:$reason}]
+        rerun_command:"push the fix commit and wait for PR CI",rerun_output:$reason}]
       end) | {findings:.findings,dispositions:[]}' <<<"$parsed")" || return 1
   else
     block="$(jq -cn --rawfile reason <(printf '%s' "$reason") '{findings:[{id:"RF1",severity:"P1",file:"review-fix",line:1,rule:"Review fix gate",status:"open",
       summary:("Reviewer changed the PR head outside the in-review fix contract: " + $reason),
       introduced_by:"candidate",base_evidence:"The reviewed head did not contain this commit.",
-      rerun_command:"review fix scope and receipt gate",rerun_output:$reason}],dispositions:[]}')" || return 1
+      rerun_command:"push the fix commit and wait for PR CI",rerun_output:$reason}],dispositions:[]}')" || return 1
   fi
   {
     printf '# Reviewer fix gate\n\nREQUEST-CHANGES: %s\n\nVERDICT: NOT_READY\n\n' "$reason"
@@ -62,29 +59,6 @@ review_fix_source_path_valid() { # repository-relative source path; reject tests
     *) return 1 ;;
   esac
   case "$1" in *.test.*|*.spec.*) return 1 ;; esac
-}
-
-review_fix_run_receipt() { # repo head test path → test runner rc, recorded at HEAD by tools/test-receipt.sh
-  local repo="$1" head="$2" path="$3" engine_root common log timeout_s
-  local -a command=()
-  review_fix_test_path_valid "$path" || return 1
-  case "$path" in
-    *.test.sh) command=(bash "$path") ;;
-    *.test.mjs) command=(node --test "$path") ;;
-    *.test.py) command=(python3 "$path") ;;
-    *) return 1 ;;
-  esac
-  [[ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" == "$head" ]] || return 1
-  [[ -z "$(git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null)" ]] || return 1
-  engine_root="${ENGINE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)}"
-  [[ -f "$engine_root/tools/test-receipt.sh" ]] || return 1
-  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  [[ "$common" == /* ]] || common="$repo/$common"
-  mkdir -p -- "$common/zf-review-fix-tests" || return 1
-  log="$common/zf-review-fix-tests/$head.log"
-  timeout_s="${REVIEW_FIX_TEST_TIMEOUT:-${SELF_CHECK_STEP_TIMEOUT:-900}}"
-  [[ "$timeout_s" =~ ^[0-9]+$ ]] && (( timeout_s > 0 )) || timeout_s=900
-  (cd -- "$repo" && timeout -k 10 "$timeout_s" bash "$engine_root/tools/test-receipt.sh" "${command[@]}") > "$log" 2>&1
 }
 
 review_fix_gate() { # repo base-sha current-pr-head report provider model branch lane observed-pr-head unit → JSON result
@@ -142,8 +116,7 @@ review_fix_gate() { # repo base-sha current-pr-head report provider model branch
         else
           source_lines=$((adds + dels))
           if (( source_lines > 20 )); then reason="the source-file fix changes $source_lines lines (limit 20)";
-          elif ! review_fix_run_receipt "$repo" "$current" "$test_path"; then reason='the named test receipt did not pass on the fix commit';
-          elif [[ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" != "$current" || -n "$(git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null)" ]]; then reason='the test changed the reviewed commit or left a dirty worktree';
+          elif [[ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" != "$current" || -n "$(git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null)" ]]; then reason='the reviewer changed the fix commit or left a dirty worktree';
           else
             review_fix_result approve READY "$current" "$current" ''
             return 0

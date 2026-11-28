@@ -211,7 +211,7 @@ open_main_red_unit() { # sha run-id attempt (a repeated, classified code failure
   task="你是 the product 流水线的实现 subagent。main 的 ${gate_wf} 在 $1 上失败（run $2 attempt ${attempt}），产品合并门禁因此关闭，这是最高优先级。
 失败 suite：
 ${failed:-（日志里没解析出 FAILED suite= 行，用 gh run view $2 --attempt $attempt --log-failed 自查）}
-用 gh run view $2 --attempt $attempt --log-failed 看完整失败；本地跑失败的 suite 复现。判断是测试/fixture 跟不上新改动、真实回归，还是 CI 负载下的超时（超时看 engine/run-ci-suites.sh 的 suite_weight_seconds：超时 = 3×权重，按实测刷新）。修根因，不弱化断言、不删测试。"
+用 gh run view $2 --attempt $attempt --log-failed 看完整失败。根据 CI 日志判断是测试/fixture 跟不上新改动、真实回归，还是 CI 负载下的超时（超时看 engine/run-ci-suites.sh 的 suite_weight_seconds：超时 = 3×权重，按实测刷新）。不在本机或测试 runner 运行测试；修根因、补回归测试，只做静态检查并推送，由 CI 验证。不弱化断言、不删测试。"
   units_update --arg id "$id" --arg sha "$1" --arg task "$task" --arg run "$2" --argjson attempt "$attempt" --arg wf "$(main_gate_workflow)" \
     '.units += [{id:$id, main_red:true, critical:true, ci_sha:$sha, ci_run_id:$run, ci_run_attempt:$attempt, title:("fix red main "+$wf+" at "+$sha[0:9]), stage:"implement-pending", lane:"direct-main", branch:("agent/"+$id), task:$task, history:[]}]'
   say "main suites red at $1 (run $2) -> opened $id"
@@ -266,7 +266,7 @@ open_landed_red_unit() { # red-head-sha run-id attempt
   task="你是 the product 流水线的实现 subagent。post-land Pipeline suites 红（${url}，attempt ${attempt}），失败的 suite 按 focused-test-paths.mjs 归属到你落地的提交 ${owner}（${owner_subject}），是本次落地的回归，最高优先级直接修根因。
 失败 suite：${suite}
 first_error：${first_error}
-用 gh run view ${run} --attempt ${attempt} --log-failed 看完整失败，本地跑 ${suite} 复现；修根因，不弱化断言、不删测试。若该 suite 覆盖线上运行面（advisor、调度器等），在报告写明 live 组件是否受影响。"
+用 gh run view ${run} --attempt ${attempt} --log-failed 看完整失败，并根据 CI 日志定位根因；不在本机或测试 runner 运行测试，只做静态检查、补回归测试并推送，由 CI 验证。不弱化断言、不删测试。若该 suite 覆盖线上运行面（advisor、调度器等），在报告写明 live 组件是否受影响。"
   units_update --arg id "$id" --arg owner "$owner" --arg suite "$suite" --arg sha "$head" --arg run "$run" \
     --argjson attempt "$attempt" --arg url "$url" --arg task "$task" \
     '.units += [{id:$id, main_red:true, landed_red:true, critical:true, landed_sha:$owner, landed_suite:$suite, ci_sha:$sha, ci_run_id:$run, ci_run_attempt:$attempt, ci_run_url:$url, title:("fix post-land red "+($suite|split("/")|last)+" at "+$owner[0:9]), stage:"implement-pending", lane:"direct-main", branch:("agent/"+$id), task:$task, history:[]}]'

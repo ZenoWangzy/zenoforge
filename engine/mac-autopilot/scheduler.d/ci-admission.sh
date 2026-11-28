@@ -64,7 +64,7 @@ precheck_harvest() {
     case "$first" in
       "PRECHECK: FAIL"*)
         fails="$(sed -n '2,12p' "$out" 2>/dev/null)"
-        set_unit "$id" "$(hist precheck-red "${first#PRECHECK: }") | del(.precheck_pid) | del(.ci_wip_wait) | .approved_sha=null | .repair_hint=$(js "批准后本机预检（未占 CI 名额）：PR 自己改动的测试在本机失败。${fails} 完整输出 ${out}。本机用 PGTEST_URL 复现（RUN_INTEGRATION=1 npx vitest run <文件>），修根因并补回归测试后 push。") | .stage=\"repair-pending\""
+        set_unit "$id" "$(hist precheck-red "${first#PRECHECK: }") | del(.precheck_pid) | del(.ci_wip_wait) | .approved_sha=null | .repair_hint=$(js "批准后本机预检（未占 CI 名额）：PR 自己改动的测试失败。${fails} 完整输出 ${out}。根据预检输出定位根因；不在本机或测试 runner 运行测试，只做静态检查、补回归测试并 push，由 PR CI 验证。") | .stage=\"repair-pending\""
         say "precheck red unit=$id head=${head:0:9} -> repair-pending without spending a CI slot" ;;
       *)
         set_unit "$id" "$(hist precheck "${first:-PRECHECK: SKIP no output}") | del(.precheck_pid) | .precheck_sha=$(js "$head")"
@@ -144,7 +144,7 @@ slot_sync() { # id head gated next
       return 0 ;;
     CONFLICTING)
       set_unit "$1" ".slot_sync_sha=$(js "$2")" || :
-      merge_conflict_to_repair "$1" "$pr" "conflicts with main before its CI slot" "PR 与最新 main 冲突，占 CI 名额前发现。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$2"
+      merge_conflict_to_repair "$1" "$pr" "conflicts with main before its CI slot" "PR 与最新 main 冲突，占 CI 名额前发现。git merge --no-edit origin/main，按两边意图解决冲突，只运行静态检查并 push，由 PR CI 验证。" "$2"
       return 0 ;;
   esac
   return 1

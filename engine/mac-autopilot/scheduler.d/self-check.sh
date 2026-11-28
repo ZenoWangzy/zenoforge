@@ -38,7 +38,7 @@ self_check_run() (
         if [[ -n "$unit_id" && "$pr" =~ ^[1-9][0-9]*$ ]] && declare -F merge_conflict_to_repair >/dev/null; then
           echo "self-check main sync: conflict routed unit=$unit_id pr=$pr head=$sha main=$main_head"
           merge_conflict_to_repair "$unit_id" "$pr" "self-check: conflicts with main before builds" \
-            "PR 与最新 main 冲突，自检开始前发现。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$sha" || return 1
+            "PR 与最新 main 冲突，自检开始前发现。git merge --no-edit origin/main，按两边意图解决冲突，只运行静态检查并 push，由 PR CI 验证。" "$sha" || return 1
           return 76
         fi
         echo "self-check main sync: conflict cannot route unit=$unit_id pr=$pr"
@@ -399,9 +399,9 @@ self_fix_dispatch() { # unit JSON; keep its selected provider/session unless quo
   out="$(jqf -r .self_check_output <<<"$u")"; key="$(jqf -r '.pr // .id' <<<"$u")"
   rep="impl-${key}-selfcheck$(( $(jqf -r '.self_check_fixes // 0' <<<"$u") + 1 ))-fix-${TAG}.md"
   if [[ "$(jqf -r .lane <<<"$u")" == direct-main ]]; then
-    deliver="node scripts/branch-delivery-preflight.mjs --mode commit 通过后在原分支提交，不 push。"
+    deliver="只运行静态检查，然后在原分支提交，不 push。"
   else
-    deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic，通过后交付原分支。"
+    deliver="只运行静态检查，然后 git push -u origin ${branch}；PR CI 验证新 head。"
   fi
   failure="实现后的确定性自检失败。完整输出：$out
 $(cat "$out")"

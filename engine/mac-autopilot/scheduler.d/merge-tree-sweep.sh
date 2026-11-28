@@ -51,7 +51,7 @@ merge_tree_sweep() {
         set_unit "$id" ".merge_sweep_head=$(js "$head")" || continue
         say "merge-tree sweep PR#$pr conflicts with main $MAIN_HEAD"
         merge_conflict_to_repair "$id" "$pr" "merge-tree sweep: text conflict with main after main moved" \
-          "PR 与最新 main 冲突，main 前进后的 merge-tree 预检发现（只证文本冲突）。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$head"
+          "PR 与最新 main 冲突，main 前进后的 merge-tree 预检发现（只证文本冲突）。git merge --no-edit origin/main，按两边意图解决冲突，只运行静态检查并 push，由 PR CI 验证。" "$head"
       fi
     fi
     printf '%s\t%s\n' "$pr" "$head $MAIN_HEAD" >> "$updates"

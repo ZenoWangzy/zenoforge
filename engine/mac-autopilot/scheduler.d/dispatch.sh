@@ -193,12 +193,9 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
   # Start-silent breaker (queue row 935): before any claim, guard-file or other state write. Tests that load only this function's text have no breaker.
   ! declare -F start_silent_breaker >/dev/null || start_silent_breaker "$type" || { say "dispatch held unit=$unit reason=start-silent-breaker"; return 1; }
-  # Same install-guard PATH shim the session workers run behind (bin/zc, bin/luna): every dispatched model
-  # worker gets it (queue row 906), whatever the provider, so an unsafe install or a whole-suite test run is
-  # refused and a configured test goes to the test host instead of this host. Review workers share it: git has
-  # no wrapper, and a read-only node or bash call passes through. Direct-main keeps its harder test blocker first.
   install_guard_path="${ZF_ENGINE_DIR:-$ROOT/engine}/bin/install-guard"
   worker_env=(env "PATH=$install_guard_path:$PATH")
+  if [[ "$type" == implement || "$type" == repair ]]; then worker_env+=(ZF_TESTS_CI_ONLY=1); fi
   if [[ "$(unit_field "$unit" '.lane // empty')" == direct-main ]]; then
     rm -f -- "$SUP/$log.guard-refusals"
     worker_env=(env ZF_NON_PRODUCT_UNIT=1 "ZF_PIPELINE_UNIT=$unit" \

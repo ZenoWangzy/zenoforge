@@ -3,17 +3,6 @@
 # Same scope as run-engine-tests.sh (every engine/**/*.test.sh). A suite without the bootstrap runs nothing in its shard: #972 reached main red that way.
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/engine/lib.d/gh-key-cache.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/merge-pr-view.sh"
-merge_pr_red_receipt_ci_superseded() {
-  local pr="$1" head_sha="$2" bad="$3" line first_red details count url
-  [[ -n "$bad" ]] || return 1
-  while IFS= read -r line; do [[ "$line" =~ ^.+\ \(exit\ [1-9][0-9]*\)$ ]] || return 1; done <<<"$bad"
-  first_red="${bad%%$'\n'*}"
-  details="$(merge_pr_ci_green_check_count "$pr" "$head_sha" false true)" || return 1
-  IFS=$'\t' read -r count url <<<"$details"
-  [[ "$count" =~ ^[1-9][0-9]*$ && "$url" =~ ^https://[^[:space:]]+$ ]] || return 1
-  printf 'merge-pr: receipt: local receipt superseded by CI %s (%s checks green at %.12s; local red: %s)\n' "$url" "$count" "$head_sha" "$first_red" >&2
-}
-
 merge_pr_export_suites() { # pr dir paths...: copy the PR head's version of each path that exists there
   local pr="$1" dir="$2" root ref="refs/zf-merge-pr/$1" path
   shift 2
