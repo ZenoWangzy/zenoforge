@@ -213,8 +213,11 @@ else
 fi
 checkout_engine_paths_added() {
   local root="$1" base_ref="$2" base diff
-  base="$(git -C "$root" merge-base "$base_ref" HEAD)" || return 2
-  diff="$(git -C "$root" diff --unified=0 "$base" -- engine ':!**/*.test.*')" || return 2
+  base="$(git -C "$root" merge-base "$base_ref" HEAD)" || {
+    [[ "$(git -C "$root" rev-parse --is-shallow-repository)" == true ]] || return 2
+    base="$base_ref"
+  }
+  diff="$(git -C "$root" diff --unified=0 "$base" HEAD -- engine ':!**/*.test.*')" || return 2
   grep -nE '^\+[^+].*(\$\{[A-Za-z_][A-Za-z_0-9]*[^}]*\}"?/engine/|\$[A-Za-z_][A-Za-z_0-9]*"?/engine/)' <<<"$diff"
 }
 lint_fixture="$test_env_root/checkout-engine-lint"

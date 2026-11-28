@@ -92,9 +92,9 @@ cat > "$test_env_root/candidates.json" <<'JSON'
   {"category":"automated-checks","severity":"high","session_key":"p1","event_line":1,"evidence":"lint evidence","proposal":"Add a lint check for this case","check":{"type":"failure","message":"same event"},"derived_from":["V1272"]},
   {"category":"automated-checks","severity":"medium","session_key":"p3","event_line":1,"evidence":"missing executable matcher","proposal":"Add a lint check without a matcher","derived_from":["V1272"]},
   {"category":"automated-checks","severity":"medium","session_key":"p4","event_line":1,"evidence":"matcher hits ordinary recovered events","proposal":"Add a broad lint check","check":{"type":"failure"},"derived_from":["V1272"]},
-  {"category":"automated-checks","severity":"high","session_key":"p5","event_line":1,"evidence":"paired evaluation regressed a frozen case","proposal":"Add a lint check for the event","check":{"type":"failure","message":"eval regression"},"derived_from":["V1272"]},
-  {"category":"automated-checks","severity":"high","session_key":"p6","event_line":1,"evidence":"comparison labels must identify this candidate","proposal":"Unrelated comparison labels","check":{"type":"failure","message":"unrelated comparison"},"derived_from":["V1272"]},
-  {"category":"automated-checks","severity":"high","session_key":"p7","event_line":1,"evidence":"all cases must be paired","proposal":"Unpaired case","check":{"type":"failure","message":"unpaired case"},"derived_from":["V1272"]}
+  {"category":"automated-checks","severity":"high","session_key":"p5","event_line":1,"evidence":"paired evaluation regressed a frozen case","proposal":"Add an eval regression lint check","check":{"type":"failure","message":"eval regression"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p6","event_line":1,"evidence":"comparison labels must identify this candidate","proposal":"unrelated comparison labels","check":{"type":"failure","message":"unrelated comparison"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p7","event_line":1,"evidence":"all cases must be paired","proposal":"unpaired case","check":{"type":"failure","message":"unpaired case"},"derived_from":["V1272"]}
 ]}
 JSON
 cat > "$fake_bin/node" <<'SH'
