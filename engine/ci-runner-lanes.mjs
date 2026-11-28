@@ -31,8 +31,8 @@ export function workflowSelectors(source) {
 export function validateRunnerLanes(runners, workflows, priorityPr = '', suitesLane = CI_SUITES_LANE) {
   validateReservedRunners(runners);
   const minimums = { [`${CI_RUNNER_PREFIX}-main`]: 5, [`${CI_RUNNER_PREFIX}-postsubmit`]: 1, [`${CI_RUNNER_PREFIX}-light`]: 4, [`${CI_RUNNER_PREFIX}-priority`]: 1, [suitesLane]: 3 };
-  const escapedSuitesLane = suitesLane.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const laneLabel = new RegExp(`\\b(?:${CI_RUNNER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-[a-z0-9-]+)?|${escapedSuitesLane})\\b`, 'g');
+  const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const laneLabel = new RegExp(`\\b(?:${escapeRegex(CI_RUNNER_PREFIX)}(?:-[a-z0-9-]+)?|${escapeRegex(suitesLane)})\\b`, 'g');
   const counts = [];
   for (const workflow of workflows) {
     for (const [job, config] of Object.entries(workflow.jobs ?? {})) {
