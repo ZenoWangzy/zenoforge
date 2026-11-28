@@ -111,7 +111,10 @@ Write no code comments: record a non-obvious decision in an ADR (docs/adr/) and 
 
 When the incident rule applies, include its exact `## root-cause`,
 `## recurrence-guard`, and `## prior-art` sections too. Under `## recurrence-guard`,
-put `kind: <architecture|state|script|lint|test>` on its own line. Under
+put `kind: <architecture|state|script|lint|test>` on its own line; when
+`kind: test`, also put `escape-test: <package>/<test>` on its own line and
+register it in the candidate head's `.zenoforge/state/escape-suites.json` by
+running `node engine/mac-autopilot/scheduler.d/escape-suite-register.mjs --repo <checkout> --package <pkg> --test <path> -- <argv>`. Under
 `## prior-art`, cite at least one direct `https://` URL; if it reports an
 escalation, add one line exactly `Escalation reference: <https:// URL, #N, PR #N
 or issue #N>`. The gate rejects other forms.
