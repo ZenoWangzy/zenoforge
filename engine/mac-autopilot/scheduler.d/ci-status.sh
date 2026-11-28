@@ -86,7 +86,6 @@ ci_update_branch() { # pr head
 
 ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（多为 runner 抖动），重跑后仍红才派 repair
   local r n=0 runs runs_json infra_rc failed_steps
-  scheduler_scope_lib gh-key-cache || return 1
   if [[ "${5:-}" != dagger-engine-loss ]] && ci_stale_base_hop_available "$1" && [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
     # A stale-base failure reruns on main via update-branch; a clean new head carries approval.
     if ci_update_branch "$2" "$3"; then
@@ -153,7 +152,6 @@ ci_admission_cancelled() { # run-id -> 0 when the audit's latest reason for the 
 }
 ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不动批准与重跑额度；同一 head 第 CI_CANCEL_RERUNS 次后交 supervisor；upstream=1 时 run 结论是聚合 job 的 failure
   local r n=0 k up="${5:-}" decision runs runs_json
-  scheduler_scope_lib gh-key-cache || return 1
   k=0; [[ "$(unit_field "$1" .ci_cancel_head)" == "$3" ]] && k="$(unit_field "$1" .ci_cancel_reruns)"
   [[ "$k" =~ ^[0-9]+$ ]] || k=0
   if (( k >= CI_CANCEL_RERUNS )); then
@@ -768,7 +766,6 @@ ci_jobs_status() { ci_jobs_data "$1" | jqf '[.[] | .status]'; }
 ci_jobs_active_runner_ids() { ci_jobs_data "$1" | jqf -r '.[] | select(.status == "in_progress") | .runner_id // empty'; }
 ci_pr_free_slots() { # → online PR-capable runners minus runners with a job already assigned
   local runner_pages runner_busy_json runner_count active
-  scheduler_scope_lib gh-key-cache || return 1
   local ci_label="${ZF_CI_RUNNER_PREFIX-cihost-ci}" # default mirrors config.sh, which the scheduler does not source
   runner_pages="$(gh_runners_cached)" || return 1
   runner_busy_json="$(jqf -s --arg ci_label "$ci_label" \

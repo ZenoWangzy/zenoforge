@@ -693,7 +693,7 @@
 [2026-11-08T10:47:12Z] park-sweep unit=issue-107 action=label supervisor-park
 == gh
 pr close 900 --comment Autopilot: issue #132 was closed as not planned; this PR is superseded.
-api repos/example-maintainer/example-repo/issues/140/sub_issues?per_page=100 --paginate
+api --paginate repos/{owner}/{repo}/issues/140/sub_issues?per_page=100 --jq .[].number
 api repos/{owner}/{repo}/git/ref/heads/agent/issue-140 --jq .object.sha
 == cache
 {

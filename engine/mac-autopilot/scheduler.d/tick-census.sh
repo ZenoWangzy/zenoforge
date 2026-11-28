@@ -209,7 +209,7 @@ tick_pr_body() { # PR number → body 正文：进程内缓存 → 按 updatedAt
     body="$(cat -- "$file")"; TICK_PR_BODY_LOADED[$n]=1; TICK_PR_BODY[$n]="$body"
     printf '%s' "$body"; return 0
   fi
-  if jqf -e --argjson n "$n" 'any(.[]; .number == $n and (.body | type) == "string")' <<<"${TICK_PRS:-[]}" >/dev/null 2>&1; then
+  if jqf -e --argjson n "$n" 'any(.[]; .number == $n and has("body"))' <<<"${TICK_PRS:-[]}" >/dev/null 2>&1; then
     body="$(jqf -r --argjson n "$n" '[.[] | select(.number == $n) | .body][0] // ""' <<<"$TICK_PRS")" || return 1
     TICK_PR_BODY_LOADED[$n]=1; TICK_PR_BODY[$n]="$body"
     printf '%s' "$body"; return 0

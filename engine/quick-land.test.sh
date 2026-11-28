@@ -19,11 +19,10 @@ git -C "$target" -c user.name=t -c user.email=t@example.invalid commit -qm table
 git -C "$target" update-ref refs/remotes/origin/main HEAD
 
 repo="$test_env_root/quick-land"
-mkdir -p "$repo/engine/prompts" "$repo/engine/eval" "$repo/tools"
+mkdir -p "$repo/engine/prompts" "$repo/tools"
 git init -q -b main "$repo"
 git -C "$repo" config user.name 'Quick Land Test'
 git -C "$repo" config user.email quick-land-test@example.invalid
-cp "$MODEL_POLICY_TEST_REPO/engine/eval/decision-stages.sh" "$repo/engine/eval/"
 printf '' > "$repo/tools/public-text-baseline.txt"
 printf 'fixture\n' > "$repo/doc.md"
 printf 'exit "${STUB_RULE_RC:-0}"\n' > "$repo/engine/rule-lane.sh"

@@ -44,11 +44,9 @@ land_prompt_byte_budget_check() {
   elif [[ -z "$changed" ]]; then
     scan_all=1
   fi
+  land_candidate_eval_admission_check "$map_root" "$changed" || return 1
   land_always_loaded_text_byte_budget_check "$root" "$changed" || return 1
-  if ! grep -q '^engine/prompts/' <<<"$changed" && (( scan_all == 0 )); then
-    land_candidate_eval_admission_check "$map_root" "$changed" || return 1
-    return 0
-  fi
+  grep -q '^engine/prompts/' <<<"$changed" || (( scan_all == 1 )) || return 0
   table="$root/engine/prompts/byte-budgets.tsv"
   [[ -f "$table" ]] || { printf 'prompt byte budget: missing engine/prompts/byte-budgets.tsv\n' >&2; return 1; }
   if (( scan_all == 1 )) || grep -Fxq 'engine/prompts/byte-budgets.tsv' <<<"$changed"; then
@@ -60,10 +58,7 @@ land_prompt_byte_budget_check() {
       [[ "$path" =~ ^engine/prompts/[^/]+\.md$ && -f "$root/$path" ]] && prompt_paths+=("$root/$path")
     done <<<"$changed"
   fi
-  if ((${#prompt_paths[@]} == 0)); then
-    land_candidate_eval_admission_check "$map_root" "$changed"
-    return $?
-  fi
+  ((${#prompt_paths[@]})) || return 0
   for path in "${prompt_paths[@]}"; do
     name="${path##*/}"
     budget="$(awk -F '\t' -v name="$name" '$1 == name { count++; value=$2 } END { if (count == 1 && value ~ /^[0-9]+$/) print value; else exit 1 }' "$table")" \
@@ -74,7 +69,6 @@ land_prompt_byte_budget_check() {
       return 1
     fi
   done
-  land_candidate_eval_admission_check "$map_root" "$changed" || return 1
 }
 
 land_pr_prompt_byte_budget_check() {

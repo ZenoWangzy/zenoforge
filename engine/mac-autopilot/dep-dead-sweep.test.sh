@@ -25,8 +25,7 @@ marked() { printf '{"id":"issue-%s","issue":%s,"stage":"blocked-external","block
 reset() { # the dead case; each fail-closed case below breaks one fact
   printf '{"units":[%s,%s]}\n' "$dead" "$(marked 20)" > "$UNITS"
   printf '%s\n' '{"workers":[]}' > "$A/workers.json"
-  DEP_DELIVERED_CACHE=(); TRACKER_KIDS=(); DEP_NATIVE_KIDS=(); rm -f "$A"/dep-fresh-*
-  gh_issue_subissues_invalidate "$(gh_key_cache_repo)" 10
+  DEP_DELIVERED_CACHE=(); rm -f "$A"/dep-fresh-*
   PRS='[]'; PRS_RC=0; ISSUE='{"state":"tracker"}'; ISSUE_RC=0; SUBS=''; SUBS_RC=0; CHILD='CLOSED'
 }
 tick_prs() { printf '%s' "$PRS"; return "$PRS_RC"; }
@@ -34,7 +33,7 @@ scheduler_issue_state() { printf '%s' "$ISSUE"; return "$ISSUE_RC"; }
 dep_states() { echo >> "$A/dep-states.calls"; [[ -z "$CHILD" ]] || printf '%s\t%s\t\n' "$1" "$CHILD"; }
 gh() {
   case "$*" in
-    *sub_issues*) [[ -z "$SUBS" ]] || jq -cn --arg children "$SUBS" '$children | split("\n") | map(select(length > 0) | tonumber | {number:.,state:"open",closed_at:null,labels:[]})'; return "$SUBS_RC" ;;
+    *sub_issues*) [[ -z "$SUBS" ]] || printf '%s\n' "$SUBS"; return "$SUBS_RC" ;;
     *git/ref/heads/*) printf 'abcdef0123456789\n' ;;
     # 列表不再带 body：正文按 PR 单取，从 PRS 夹具回放
     *'--json body'*) jq -r --argjson n "$3" 'map(select(.number == $n))[0].body // ""' <<<"$PRS" ;;
@@ -84,8 +83,8 @@ reset; ISSUE='{"state":"tracker","recut_children":[30]}'; CHILD=OPEN; alive 'an 
 reset; ISSUE='{"state":"tracker","recut_children":[30]}'; CHILD=''; alive 'an unreadable child'
 reset; PRS='[{"number":600,"headRefName":"other","body":"Refs #100"}]'; dep_dead_sweep
 [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a longer issue number must not read as this predecessor'
-reset; SUBS=20; CHILD=OPEN; dep_dead_sweep; release_dependency_blocks
-[[ "$(field issue-20 .stage)" == implement-pending ]] || fail 'a tracker parent must release its own child without routing it as dead'
+reset; SUBS=20; CHILD=OPEN; dep_dead_sweep
+[[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'the waiter is not its own live child'
 reset; ISSUE='{"state":"tracker","recut_children":[30]}'; CHILD=CLOSED; dep_dead_sweep
 [[ "$(field issue-20 .stage)" == supervisor-review ]] || fail 'a closed child is not live'
 reset; ISSUE='{"state":"tracker","recut_children":[30]}'; CHILD=OPEN; alive 'a live child'

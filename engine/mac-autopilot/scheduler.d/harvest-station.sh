@@ -209,7 +209,6 @@ harvest_station_tick() {
 
 report_only_pr_requeue_harvest() { # unit worker-json report-name report-path type → handle a report-only supervisor requeue or return 1
   local unit="$1" worker="$2" report_name="$3" report_path="$4" type="$5" pr head started unit_json current_head gate_report_name gate_report_path reason runs runs_json run run_count repo sha_re="${SHA_RE:-}"
-  scheduler_scope_lib gh-key-cache || return 1
   [[ -n "$sha_re" ]] || sha_re='^[0-9a-f]{40}$'
   [[ "$type" == implement || "$type" == repair ]] || return 1
   [[ "$(jqf -r '.incident_report_resume // false' <<<"$worker")" != true ]] || return 1

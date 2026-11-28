@@ -25,8 +25,8 @@ runtime="$tmp/runtime"
 mkdir -p "$runtime" "$tmp/bin"
 cat > "$runtime/units.json" <<'JSON'
 {"units":[
-  {"id":"unit-1","stage":"merged","prompt":"engine/mac-autopilot/scheduler.d/dispatch-queue.sh","prompt_stage":"implement","prompt_version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","history":[{"stage":"review-request-changes"},{"stage":"supervisor-approve"}]},
-  {"id":"unit-2","stage":"merged","prompt":"engine/mac-autopilot/scheduler.d/dispatch-queue.sh","prompt_stage":"implement","prompt_version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","history":[{"stage":"review-approve"}]},
+  {"id":"unit-1","stage":"merged","prompt":"engine/prompts/triage.md","history":[{"stage":"review-request-changes"},{"stage":"supervisor-approve"}]},
+  {"id":"unit-2","stage":"merged","prompt":"engine/prompts/triage.md","history":[{"stage":"review-approve"}]},
   {"id":"pending","stage":"review-pending","prompt":"engine/prompts/triage.md","history":[{"stage":"review-approve"}]}
 ]}
 JSON
@@ -56,7 +56,7 @@ run_scheduled_observer() {
 }
 
 run_scheduled_observer
-jq -s -e 'length == 1 and .[0].stage == "merged" and .[0].prompt == "engine/mac-autopilot/scheduler.d/dispatch-queue.sh" and
+jq -s -e 'length == 1 and .[0].stage == "merged" and .[0].prompt == "engine/prompts/triage.md" and
   .[0].sample_size == 2 and (.[0].score > 0.83 and .[0].score < 0.84) and
   .[0].unit_ids == ["unit-1","unit-2"]' "$tmp/report.jsonl" >/dev/null
 [[ "$(wc -l < "$TEST_UPSERT_CALLS")" == 1 ]]

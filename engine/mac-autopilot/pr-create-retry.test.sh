@@ -4,18 +4,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 fail() { echo "pr-create-retry.test.sh: $*" >&2; exit 1; }
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
-tick_prs_fetch() {
-  if [[ "$GH_MODE" == adopt ]] && grep -q "pr create" "$GH_CALLS"; then
-    printf 'rest census\n' >> "$GH_CALLS"
-    printf '%s\n' '[{"number":4401,"headRefName":"agent/pr-create-adopt","isDraft":false}]'
-  elif [[ "$GH_MODE" == backoff ]]; then
-    printf '%s\n' '[{"number":4404,"headRefName":"agent/pr-create-held-adopt","baseRefName":"stack/base","isDraft":false}]'
-  elif [[ "$GH_MODE" == base-edit ]]; then
-    printf '%s\n' '[{"number":4402,"headRefName":"agent/pr-create-base-edit","baseRefName":"stack/base","isDraft":false}]'
-  else
-    printf '%s\n' '[]'
-  fi
-}
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 retry_count() { jq -r --arg id "$1" "[.units[] | select(.id==\$id) | (.history // [])[] | select(.stage==\"pr-create-retry\")] | length" "$UNITS"; }
 
@@ -72,8 +60,8 @@ units '{"units":[{"id":"adopt-1","issue":1001,"title":"adopt after 502","branch"
 harvest_pr_implement adopt-1 "$sup/impl-adopt-1.md" || :
 [[ "$(field adopt-1 .stage)" == review-pending && "$(field adopt-1 .pr)" == 4401 ]] \
   || fail "the PR created during a 502 was not adopted ($(field adopt-1 .stage), pr=$(field adopt-1 .pr))"
-[[ "$(grep -c '^pr create$' "$GH_CALLS")" == 1 && "$(grep -c '^rest census$' "$GH_CALLS")" == 1 ]] \
-  || fail 'the failed create was not followed by exactly one REST open-PR census'
+[[ "$(grep -c '^pr create$' "$GH_CALLS")" == 1 && "$(grep -c '^pr list$' "$GH_CALLS")" == 2 ]] \
+  || fail 'the failed create was not followed by exactly one open-PR lookup'
 [[ "$(retry_count adopt-1)" == 0 ]] || fail 'adopting the PR consumed a retry'
 
 # With no PR to adopt, the configured default allows three transient failures and escalates on the third.
@@ -113,7 +101,6 @@ harvest_pr_implement permanent-1 "$sup/impl-permanent-1.md" || :
 [[ "$(grep -c '^pr create$' "$GH_CALLS")" == 1 ]] || fail 'a non-transient create error was retried'
 
 # A transient base-edit error is not a create failure and must not adopt the PR with the wrong base.
-GH_MODE=base-edit
 prepare_branch base-edit-1 agent/pr-create-base-edit
 printf 'implementation delivered\n' > "$sup/impl-base-edit-1.md"
 units '{"units":[{"id":"base-edit-1","issue":1004,"title":"retain stacked base","branch":"agent/pr-create-base-edit","lane":"pr","stage":"implement","stacked_on_branch":"stack/base","history":[]}]}'
@@ -329,8 +316,8 @@ echo '{"workers":[]}' > "$WORKERS"
 tick
 [[ "$(ev r2-d1 pr-create-held)" == 1 && "$(field r2-d1 .stage)" == implement && "$(field r2-d1 .pr_open_held.since)" == "$since_1h" ]] \
   || fail "the first held unit was not retried and held again with its first since ($(field r2-d1 '.pr_open_held | tojson'))"
-[[ "$(calls 'pr create')" == 1 && "$(calls 'pr list')" == 0 && "$(calls 'rest pulls')" == 1 ]] \
-  || fail "the held-unit retry made an unexpected call (list=$(calls 'pr list') create=$(calls 'pr create') rest=$(calls 'rest pulls'))"
+[[ "$(calls 'pr create')" == 1 && "$(calls 'pr list')" == 1 && "$(calls 'rest pulls')" == 1 ]] \
+  || fail "the second held unit made a GitHub call in the tick of a refusal (list=$(calls 'pr list') create=$(calls 'pr create') rest=$(calls 'rest pulls'))"
 [[ "$(ev r2-d2 pr-create-held)" == 0 && "$(field r2-d2 .stage)" == implement && "$(field r2-d2 .pr_open_held.since)" == "$since_1h" ]] || fail 'the skipped held unit changed'
 no_orphan_redo r2-d2
 

@@ -311,9 +311,7 @@ context_status=0; context_out="$(scheduler_issue_intake_parent_reason 5564 '{"nu
 SCHEDULER_AGENT_LIB="$saved_parent_lib"; SCHEDULER_LIB_CONTEXT_FOR="$saved_parent_context"
 parent_case() { # issue json
   : > "$parent_log"; local old_rc=0 new_rc=0 old_out new_out old_gh new_gh
-  gh_issue_subissues_invalidate "$(gh_key_cache_repo)" 55
   old_out="$(legacy_parent_reason 55 "$1" 2>/dev/null)" || old_rc=$?; old_gh="$(cat "$parent_log")"; : > "$parent_log"
-  gh_issue_subissues_invalidate "$(gh_key_cache_repo)" 55
   new_out="$(scheduler_issue_intake_parent_reason 55 "$1" 2>/dev/null)" || new_rc=$?; new_gh="$(cat "$parent_log")"
   if [[ "$new_rc" == 2 ]]; then
     [[ "$old_rc" == "$new_rc" && "$new_out" == parent-check-failure\ step=* && "$old_gh" == "$new_gh" ]] \
@@ -366,7 +364,6 @@ done
 # End to end: refill intake over N cached candidates that all overlap one running owner.
 intake_footprint_snapshot() { printf '[{"id":"issue-9001","stage":"implement-pending","footprint":["packages/hot"]}]\n'; }
 live_workers() { printf '0\n'; }
-tick_prs_fetch() { printf '[]\n'; }
 gh() { [[ "$1 $2" == 'pr list' ]] && { echo '[]'; return 0; }; return 97; }
 register() { # n -> lib loads and wall seconds for one refill intake over n candidates
   local rows='' i start loads_before

@@ -215,16 +215,11 @@ gh_commit_check_runs_invalidate() {
 }
 
 gh_key_cache_invalidate() {
-  local cache="$1" file lock_file generation lock_fd
+  local cache="$1" file lock_fd
   file="$(gh_key_cache_file "$cache")" || return 0
   mkdir -p -- "${file%/*}" 2>/dev/null || return 0
-  lock_file="$file.lock"
-  exec {lock_fd}>>"$lock_file" || return 0
+  exec {lock_fd}>>"$file.lock" || return 0
   flock -x "$lock_fd" || { exec {lock_fd}>&-; return 0; }
-  generation="$(cat "$file.generation" 2>/dev/null || true)"
-  [[ "$generation" =~ ^[0-9]+$ ]] || generation=0
-  generation=$((generation + 1))
-  printf '%s\n' "$generation" >"$file.generation" || :
   rm -f -- "$file"
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
@@ -241,23 +236,17 @@ gh_issue_blocked_by_invalidate() {
   fi
 }
 
-gh_key_cache_epoch() {
-  if [[ "${NOW_EPOCH:-}" =~ ^[0-9]+$ ]]; then printf '%s\n' "$NOW_EPOCH"; else date +%s; fi
-}
-
 gh_key_cache_get() {
-  local key="$1" ttl="$2" predicate="$3" fetch="$4" file lock_file generation_file lock_fd now fetched generation current_generation data cached_data cached=0 rc=0 tmp
+  local key="$1" ttl="$2" predicate="$3" fetch="$4" file lock_fd now fetched data rc=0 tmp
   shift 4
   [[ "$ttl" == forever || "$ttl" =~ ^[0-9]+$ ]] || return 64
   file="$(gh_key_cache_file "$key")" || { "$fetch" "$@"; return $?; }
   mkdir -p -- "${file%/*}" 2>/dev/null || { "$fetch" "$@"; return $?; }
-  lock_file="$file.lock"
-  generation_file="$file.generation"
-  exec {lock_fd}>>"$lock_file" || { "$fetch" "$@"; return $?; }
+  exec {lock_fd}>>"$file.lock" || { "$fetch" "$@"; return $?; }
   flock -x "$lock_fd" || { exec {lock_fd}>&-; return 1; }
   if [[ -s "$file" ]]; then
     fetched="$(head -n1 "$file")"
-    now="$(gh_key_cache_epoch)"
+    now="$(date +%s)"
     if [[ "$fetched" =~ ^[0-9]+$ ]] && [[ "$ttl" == forever || ( "$now" =~ ^[0-9]+$ && "$now" -ge "$fetched" && $((now - fetched)) -lt "$ttl" ) ]]; then
       data="$(tail -n +2 "$file")"
       if printf '%s' "$data" | "$predicate"; then
@@ -268,33 +257,15 @@ gh_key_cache_get() {
       fi
     fi
   fi
-  generation="$(cat "$generation_file" 2>/dev/null || true)"
-  [[ "$generation" =~ ^[0-9]+$ ]] || generation=0
+  data="$("$fetch" "$@")" || rc=$?
+  if (( rc == 0 )) && printf '%s' "$data" | "$predicate"; then
+    tmp="$(mktemp "$file.XXXXXX" 2>/dev/null)" || tmp=""
+    if [[ -n "$tmp" ]]; then
+      if { date +%s && printf '%s' "$data"; } >"$tmp" && mv -f -- "$tmp" "$file"; then :; else rm -f -- "$tmp"; fi
+    fi
+  fi
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
-  data="$("$fetch" "$@")" || rc=$?
   (( rc == 0 )) || return "$rc"
-  if printf '%s' "$data" | "$predicate"; then
-    exec {lock_fd}>>"$lock_file" || { printf '%s' "$data"; return 0; }
-    flock -x "$lock_fd" || { exec {lock_fd}>&-; printf '%s' "$data"; return 0; }
-    current_generation="$(cat "$generation_file" 2>/dev/null || true)"
-    [[ "$current_generation" =~ ^[0-9]+$ ]] || current_generation=0
-    if [[ "$current_generation" == "$generation" && -s "$file" ]]; then
-      fetched="$(head -n1 "$file")"
-      now="$(gh_key_cache_epoch)"
-      if [[ "$fetched" =~ ^[0-9]+$ ]] && [[ "$ttl" == forever || ( "$now" =~ ^[0-9]+$ && "$now" -ge "$fetched" && $((now - fetched)) -lt "$ttl" ) ]]; then
-        cached_data="$(tail -n +2 "$file")"
-        if printf '%s' "$cached_data" | "$predicate"; then data="$cached_data"; cached=1; fi
-      fi
-    fi
-    if [[ "$current_generation" == "$generation" ]] && (( cached == 0 )); then
-      tmp="$(mktemp "$file.XXXXXX" 2>/dev/null)" || tmp=""
-      if [[ -n "$tmp" ]]; then
-        if { gh_key_cache_epoch && printf '%s' "$data"; } >"$tmp" && mv -f -- "$tmp" "$file"; then :; else rm -f -- "$tmp"; fi
-      fi
-    fi
-    flock -u "$lock_fd" || :
-    exec {lock_fd}>&-
-  fi
   printf '%s' "$data"
 }

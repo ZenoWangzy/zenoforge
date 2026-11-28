@@ -30,7 +30,6 @@ GH_BODY=''
 gh() {
   case "$1 $2" in
     'pr list') ;;
-    'api -i') printf 'HTTP/2 200 OK\n\n[]' ;;
     'pr view') printf '%s' "$GH_BODY" ;;
     'pr create') printf 'pr create\n' >> "$GH_CALLS"; echo 'https://github.com/example/repo/pull/4500' ;;
     'pr edit')

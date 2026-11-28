@@ -38,10 +38,10 @@ ws 1001 '"size_waiver":{"max_lines":1000}'; [[ "$rejects" == 1 && "$rejected_lim
 # Two rechecks of one unit at one head in one pass: one gh read, at most one fetch, one footprint write (units.json is the stub's state).
 calls="$fixture/recheck.calls"; : > "$calls"
 echo '{"units":[{"id":"issue-7","pr":77,"stage":"implement-pending"}]}' > "$UNITS"
-gh() { echo gh >> "$calls"; printf '[{"filename":"a/src/x.ts"}]\n'; }
+gh() { echo gh >> "$calls"; printf 'a/src/x.ts\n'; }
 git() { if [[ "$3" == fetch ]]; then echo fetch >> "$calls"; return 0; fi; case "$3" in merge-base) echo abc ;; diff) printf '100\t0\ta/src/x.ts\n' ;; esac; }
 set_unit() { echo "set $1" >> "$calls"; jq --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"; }
-pass_recheck() { local -A TICK_SIZE_RECHECK_MEMO=(); local TICK_SIZE_RECHECK_PASS=true; size_admission_recheck issue-7 "$fixture/repo" feat ctx 0123456789012345678901234567890123456789 false; size_admission_recheck issue-7 "$fixture/repo" feat ctx 0123456789012345678901234567890123456789 false; }
+pass_recheck() { local -A TICK_SIZE_RECHECK_MEMO=(); local TICK_SIZE_RECHECK_PASS=true; size_admission_recheck issue-7 "$fixture/repo" feat ctx abc1234 false; size_admission_recheck issue-7 "$fixture/repo" feat ctx abc1234 false; }
 pass_recheck || fail 'a recheck in a pass failed'
 [[ "$(grep -c '^gh$' "$calls")" == 1 ]] || fail "a repeated recheck of one unit and head read gh $(grep -c '^gh$' "$calls") times"
 [[ "$(grep -c '^fetch$' "$calls")" -le 1 ]] || fail 'a repeated recheck of one unit and head fetched more than once'
