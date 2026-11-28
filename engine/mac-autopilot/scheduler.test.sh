@@ -423,6 +423,7 @@ tick_gh_pr_rest_payload() {
     pr_row="$(command jq -c --argjson n "$pr_number" '[.[] | select(.number==$n)][0] // empty' "$fixture")" || return 1
     [[ -n "$pr_row" ]] && break
   done
+  [[ ! -f "$TF/handoff-lookup-fail" || -n "$pr_row" ]] || return 1
   if [[ -z "$pr_row" ]]; then
     pr_sha="$(cat "$TF/pr-head-$pr_number" 2>/dev/null || printf '%040x' "$pr_number")"
     pr_branch="$(command jq -r --argjson n "$pr_number" '[.units[] | select(.pr==$n) | .branch // empty][0] // "fix/token-fixture"' "$TF/supervisor/autopi/units.json" 2>/dev/null || echo fix/token-fixture)"
