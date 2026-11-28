@@ -18,6 +18,18 @@ cat > "$fixture/bin/gh" <<'GH'
 #!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
 if [[ "$1 $2" == "pr list" ]]; then printf '%s\n' "${PRS:-[]}"; exit 0; fi # the handoff's body-carrying list (open_pr_case feeds it via PRS)
+if [[ "$1 $2" == "api search/issues" ]]; then
+  if [[ -n "${MERGED_REF_ISSUE:-}" && "$*" == *"Refs #$MERGED_REF_ISSUE"* ]]; then
+    printf '%s\n' "{\"items\":[{\"number\":19001,\"body\":\"Refs #$MERGED_REF_ISSUE\"}]}"
+  else
+    printf '%s\n' '{"items":[]}'
+  fi
+  exit 0
+fi
+if [[ "$1 $2" == "api repos/test/repo/pulls/19001" ]]; then
+  printf '%s\n' "{\"number\":19001,\"merged\":true,\"base\":{\"ref\":\"main\"},\"merged_at\":\"2026-01-02T00:00:00Z\",\"merge_commit_sha\":\"abc123\",\"body\":\"Refs #$MERGED_REF_ISSUE\"}"
+  exit 0
+fi
 [[ "$1 $2" == "pr view" ]] && printf '{"number":%s,"headRefName":"agent/issue-x","title":"t","body":"","state":"MERGED","labels":[]}\n' "$3"
 exit 0
 GH
@@ -108,6 +120,59 @@ register_new_issues 1
 [[ ! -s "$handoff_reads" ]] || fail "second pass performed handoff lookup: $(cat "$handoff_reads")"
 ! grep -Fq 'intake hold handoff issue #4932:' "$LOG" || fail "second pass repeated the hold line: $(cat "$LOG")"
 [[ "$first_notes" == 1 ]] || fail "the first pass did not log one throttled note: $first_notes"
+
+REPO=test/repo
+MERGED_REF_ISSUE=9001779
+export MERGED_REF_ISSUE
+intake_candidates() { row 9001779; }
+intake_reopen_episodes() { :; }
+intake_ruling_episodes() { :; }
+merged_conclusion_calls="$fixture/merged-conclusions"
+: > "$merged_conclusion_calls"
+scheduler_conclude_merged_pr() {
+  printf '%s %s\n' "$1" "$2" >> "$merged_conclusion_calls"
+  jq --arg pr "$2" '.state = "awaiting-release" | .run = {outcome:"merged",evidence:{pr_number:($pr|tonumber)}}' \
+    "$AGENT_HOME/state/$1.json" > "$AGENT_HOME/state/$1.json.tmp" \
+    && mv -f -- "$AGENT_HOME/state/$1.json.tmp" "$AGENT_HOME/state/$1.json"
+}
+jq -n '{units:[{id:"issue-9001779",issue:9001779,stage:"implement-pending",task:"retry",history:[]}]}' > "$UNITS"
+jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
+: > "$merged_conclusion_calls"
+dispatch_close_merged_pending_unit issue-9001779 9001779 || fail "dispatch must hold a pending unit for a merged Refs PR"
+[[ "$(jq -r '.state' "$AGENT_HOME/state/9001779.json")" == awaiting-release ]] || fail "dispatch must move the merged Refs issue out of ready-for-agent"
+[[ "$(cat "$merged_conclusion_calls")" == '9001779 19001' ]] || fail "dispatch must use the shared merged conclusion path"
+jq -e 'any(.units[]; .issue == 9001779 and .stage == "closed" and any(.history[]; .stage == "merged-refs-delivered"))' "$UNITS" >/dev/null \
+  || fail "dispatch must retire the pending unit for the merged Refs PR"
+
+jq -n '{units:[{id:"issue-9001779",issue:9001779,stage:"closed",history:[{stage:"supervisor-close",at:"2026-01-01T00:00:00Z"}]}]}' > "$UNITS"
+jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
+rm -f "$UNITS.view" "$A/intake-skip-noted.tsv"
+: > "$LOG"
+SECONDS=0
+register_new_issues 0
+[[ "$(jq -r '.state' "$AGENT_HOME/state/9001779.json")" == awaiting-release ]] || fail "a merged Refs PR must move the terminal ready issue to awaiting-release"
+[[ "$(cat "$merged_conclusion_calls")" == '9001779 19001' ]] || fail "the merged Refs PR must use the shared conclusion path"
+jq -e 'all(.units[] | select(.issue == 9001779); .stage != "implement-pending")' "$UNITS" >/dev/null \
+  || fail "the merged Refs issue must not create another implement unit"
+
+jq -n '{units:[{id:"issue-9001779",issue:9001779,branch:"agent/issue-9001779",stage:"implement-pending",task:"retry",history:[{stage:"intake",at:"2026-01-03T00:00:00Z"}]}]}' > "$UNITS"
+jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
+rm -f "$UNITS.view"
+: > "$merged_conclusion_calls"
+register_new_issues 0
+[[ "$(jq -r '.state' "$AGENT_HOME/state/9001779.json")" == awaiting-release ]] || fail "a pending implement unit must not prevent merged Refs conclusion"
+[[ "$(cat "$merged_conclusion_calls")" == '9001779 19001' ]] || fail "the pending-unit path must use the shared conclusion path"
+jq -e 'any(.units[]; .issue == 9001779 and .stage == "closed" and any(.history[]; .stage == "merged-refs-delivered"))' "$UNITS" >/dev/null \
+  || fail "a pending implement unit must be retired when its Refs PR is merged"
+
+jq -n '{units:[]}' > "$UNITS"
+jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
+rm -f "$UNITS.view"
+: > "$merged_conclusion_calls"
+register_new_issues 0
+[[ "$(jq -r '.state' "$AGENT_HOME/state/9001779.json")" == awaiting-release ]] || fail "intake must skip dispatch when the merged Refs issue has no unit"
+[[ "$(cat "$merged_conclusion_calls")" == '9001779 19001' ]] || fail "the no-unit dispatcher gate must use the shared conclusion path"
+jq -e '.units | length == 0' "$UNITS" >/dev/null || fail "the no-unit dispatcher gate must not create an implement unit"
 
 # The cheaper status mode still treats a nested untracked file as preserved work.
 unsafe_wt="$fixture/wt-unsafe"; mkdir -p "$unsafe_wt"

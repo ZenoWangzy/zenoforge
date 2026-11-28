@@ -74,8 +74,6 @@ intake_reopen_episode() { # issue reopened-at [ruling]
 # worker. The state change is fixed, so a unit that closes again is newer than it: one restore per ruling. A later ruling
 # after a size failure would loop advisor, restore, size failure, so it stays closed and closed_units_open_issues names it.
 # Work outside this repository has no worker: external_deliverable routes it to the supervisor.
-# A triage verdict after the last unit ended is the same kind of ruling: intake_closed_unit_rows asks triage about a delivered
-# issue, and triage answers awaiting-release only for a PR verified merged into main (triage_merged_pr_for_issue, run-triage.sh).
 # A held issue (.hold) and an issue at CONCLUDE_RUN_ATTEMPT_CAP are not restored: the hold mechanism is the exclusion, there is no list.
 intake_attempt_cap() { # → CONCLUDE_RUN_ATTEMPT_CAP read from lib.sh; empty when unreadable, so callers leave the row alone
   ( REPO_DIR="$ROOT"; source "$SCHEDULER_AGENT_LIB" >/dev/null 2>&1 && printf '%s' "${CONCLUDE_RUN_ATTEMPT_CAP:-}" )
@@ -92,8 +90,7 @@ intake_ruling_episodes() { # issue...
 }
 # An open issue whose units all ended and were closed by a stop-loss recut, with no ruling after them, is a stopped ticket:
 # restore it once per unit; a unit that closes again stays closed and counted. A unit closed on purpose (obsolete, pr-closed)
-# is not restored. A delivered unit (merged) is not routed anywhere here: no signal says whether its PR did the whole work,
-# and triage would conclude it as awaiting-release (triage_merged_pr_for_issue); only a ruling after the delivery restores it.
+# is not restored.
 # The no-path note for a delivered or handled unit set is written once per state episode: closed_units_noted_at holds the
 # state_changed_at it was written under, so a state change makes the row live again and no reset code is needed.
 intake_closed_unit_noted() { # issue → 0 while the note covers the issue's current state episode
@@ -108,8 +105,78 @@ intake_closed_units_note() { # issue state_changed_at stages: the marker first, 
     say "intake closed-units issue=#$n: could not record the note; retry next tick"
   fi
 }
+intake_merged_refs_pr_for_issue() {
+  local n="$1" query search candidates pr pr_json merged_at
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 1
+  query="repo:$REPO is:pr is:merged \"Refs #$n\" in:body"
+  search="$(intake_gh_read api search/issues -X GET -f "q=$query" -f per_page=100 2>/dev/null)" || return 2
+  candidates="$(jqf -c --arg n "$n" '
+    if (.items | type) != "array" then error("search response has no items") else
+      [.items[] | select((.body // "") | test("(?im)^[[:space:]]*[-*]?[[:space:]]*refs[[:space:]:]+#" + $n + "([^0-9A-Za-z_]|$)"))
+        | .number | select(type == "number")] | sort | reverse
+    end' <<<"$search")" || return 2
+  [[ "$candidates" != "[]" ]] || return 1
+  while IFS= read -r pr; do
+    [[ "$pr" =~ ^[1-9][0-9]*$ ]] || continue
+    pr_json="$(intake_gh_read api "repos/$REPO/pulls/$pr" 2>/dev/null)" || return 2
+    jqf -e 'type == "object"' <<<"$pr_json" >/dev/null 2>&1 || return 2
+    jqf -e --arg n "$n" '
+      .merged == true and .base.ref == "main" and (.merge_commit_sha // "") != ""
+      and ((.merged_at // "") | type == "string" and length > 0)
+      and ((.body // "") | test("(?im)^[[:space:]]*[-*]?[[:space:]]*refs[[:space:]:]+#" + $n + "([^0-9A-Za-z_]|$)"))' \
+      <<<"$pr_json" >/dev/null 2>&1 || continue
+    merged_at="$(jqf -r '.merged_at' <<<"$pr_json")" || return 2
+    printf '%s\t%s\n' "$pr" "$merged_at"
+    return 0
+  done < <(jqf -r '.[]' <<<"$candidates")
+  return 1
+}
+intake_issue_ruling_after_merge() {
+  local n="$1" merged_at="$2" state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$1.json" state
+  state="$(jqf_optional_file "$state_file" -c 'select(type == "object")' 2>/dev/null)" || return 2
+  [[ -n "$state" ]] || return 2
+  jqf -e '.state == "ready-for-agent" and .hold == null' <<<"$state" >/dev/null 2>&1 || return 2
+  jqf -e --arg merged_at "$merged_at" '
+    ((.state_changed_from // "") | IN("needs-advisor", "needs-triage", "tracker"))
+    and (.state_changed_at // "") > $merged_at' <<<"$state" >/dev/null 2>&1
+}
+intake_close_merged_refs_pending_units() {
+  local n="$1" pr="$2" ids id
+  ids="$(jqf -r --argjson n "$n" '[.units[] | select((.issue == $n or .branch == ("agent/issue-" + ($n | tostring))) and .stage == "implement-pending") | .id] | .[]' "$UNITS")" || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    set_unit "$id" "if .stage == \"implement-pending\" then $(hist merged-refs-delivered "merged Refs PR #$pr superseded this implementation") | .stage=\"closed\" | .note=$(js "superseded by merged Refs PR #$pr") else . end" || return 1
+  done <<<"$ids"
+}
+intake_skip_merged_refs_issue() {
+  local n="$1" refs_pr refs_status=0 pr_number merged_at ruling_status=0
+  refs_pr="$(intake_merged_refs_pr_for_issue "$n")" || refs_status=$?
+  if (( refs_status == 2 )); then
+    intake_skip merged_refs_pr_unknown
+  elif (( refs_status == 0 )); then
+    IFS=$'\t' read -r pr_number merged_at <<<"$refs_pr"
+    intake_issue_ruling_after_merge "$n" "$merged_at" || ruling_status=$?
+    if (( ruling_status == 1 )); then
+      if scheduler_conclude_merged_pr "$n" "$pr_number"; then
+        say "intake issue #$n: merged Refs PR #$pr_number; awaiting release"
+      else
+        say "intake issue #$n: could not conclude merged Refs PR #$pr_number; retry next tick"
+      fi
+      intake_close_merged_refs_pending_units "$n" "$pr_number" \
+        || say "intake issue #$n: pending implement unit could not be closed after merged Refs PR #$pr_number"
+      intake_skip merged_refs_pr
+    elif (( ruling_status != 0 )); then
+      intake_skip merged_refs_state
+    else
+      return 1
+    fi
+  else
+    return 1
+  fi
+  return 0
+}
 intake_closed_unit_rows() { # issue...
-  local n row units cap id
+  local n row units cap id refs_pr refs_status pr_number merged_at ruling_status
   cap="$(intake_attempt_cap)"; [[ "$cap" =~ ^[0-9]+$ ]] || return 0
   for n; do
     row="$(jqf_optional_file "${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json" -c --argjson cap "$cap" 'select(.state == "ready-for-agent" and .hold == null
@@ -120,6 +187,7 @@ intake_closed_unit_rows() { # issue...
     units="$(jqf -c --argjson n "$n" --argjson row "$row" '[.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
       | (($us | map((.history // [])[-1].at // "") | max) // "") as $at
       | {ids: [$us[].id], stages: ($us | map(.stage) | unique | join(",")),
+         terminal: (($us | length) > 0 and all($us[]; (.stage | IN("merged", "landed", "closed", "done", "wontfix", "duplicate")))),
          closed_by_recut: (($us | length) == 1 and $us[0].stage == "closed" and (($us[0].history // []) as $h
            | ([$h | to_entries[] | select(.value.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut", "supervisor-recut")) | .key] | max // -1) as $recut
            | $recut >= 0 and all($h[($recut + 1):][]; .stage | IN("supervisor-requeue", "pr-closed", "supervisor-cap-default")))),
@@ -129,6 +197,27 @@ intake_closed_unit_rows() { # issue...
          merged: any($us[]; .stage == "merged" or any((.history // [])[]; .stage == "merged")),
          skip: (($row.episode != "" and any($us[]; (.hold_handoff_episode // "") != $row.episode))
            or (($row.from | IN("needs-advisor", "needs-triage")) and $row.at > $at))}' <(units_history_doc))" || continue
+    jqf -e '.terminal' <<<"$units" >/dev/null || continue
+    refs_status=0
+    refs_pr="$(intake_merged_refs_pr_for_issue "$n")" || refs_status=$?
+    if (( refs_status == 2 )); then
+      say "intake closed-units issue #$n: merged Refs PR lookup failed; retry next tick"
+      continue
+    elif (( refs_status == 0 )); then
+      IFS=$'\t' read -r pr_number merged_at <<<"$refs_pr"
+      ruling_status=0
+      intake_issue_ruling_after_merge "$n" "$merged_at" || ruling_status=$?
+      if (( ruling_status == 1 )); then
+        if scheduler_conclude_merged_pr "$n" "$pr_number"; then
+          say "intake closed-units issue #$n: merged Refs PR #$pr_number; awaiting release"
+        else
+          say "intake closed-units issue #$n: could not conclude merged Refs PR #$pr_number; retry next tick"
+        fi
+      elif (( ruling_status != 0 )); then
+        say "intake closed-units issue #$n: merged Refs PR state unavailable; retry next tick"
+      fi
+      continue
+    fi
     jqf -e '.skip | not' <<<"$units" >/dev/null || continue # a newer ruling or a pending episode already owns this row
     if jqf -e '.closed_by_recut' <<<"$units" >/dev/null; then
       id="$(jqf -r '.ids[0]' <<<"$units")"
