@@ -92,9 +92,24 @@ jq -n --arg at "$(iso $((now - 300)))" '{at:$at, stations:{release:{status:"STAL
 rows="$(owner_report_station_facts "$home" "$now")"
 [[ "$(jq -r '[.[].key] | join(",")' <<< "$rows")" == 'implement,release' ]] || fail 'a station without a figure is dropped, not shown as zero'
 [[ "$(jq -r '.[] | select(.key == "release") | .stall_hours == 10' <<< "$rows")" == true ]] || fail 'a stalled station carries its stall hours'
-jq -n --arg at "$(iso $((now - 30 * 3600)))" '{generated:$at, metrics:[{id:"implement.out_per_day",value:60,healthy:51,status:"OK"}]}' > "$runtime/node-health.json"
-[[ "$(owner_report_station_facts "$home" "$now")" == null ]] || fail 'a stale scorecard gives no station rows'
-ok 'station rows come from fresh scorecards only'
+stale_at="$(iso $((now - 30 * 3600)))"
+jq -n --arg at "$stale_at" '{generated:$at, metrics:[
+  {id:"implement.out_per_day",value:60,healthy:51,status:"OK"},
+  {id:"ci.red_after_approve_pct",value:33,healthy:0,unhealthy:10,desc:"CI red after approve",status:"UNHEALTHY"}]}' \
+  > "$runtime/node-health.json"
+stale_stations="$(ZF_HOME="$home" ZF_FACTORY_HOME="$home" AUTOPILOT_PAUSE_FILE="$home/PAUSE" owner_report_station_facts "$home" "$now")"
+[[ "$(jq -r '.[0].stale' <<< "$stale_stations")" == true ]] || fail 'an uncomputed stale station is marked stale'
+stale_compare="$(owner_report_compare "$(jq -cn --argjson stations "$stale_stations" '{stations:$stations}')" "$home" "$now" "")"
+stale_mail_facts="$(jq -cn --argjson compare "$stale_compare" \
+  '{conclusion:{reason:""},decisions:{total:0,items:[],incomplete:0},output:{},spend:{},quality:{},compare:$compare}')"
+stale_mail="$(maintainer_health_mail_build_body "$stale_mail_facts")"
+[[ "$stale_mail" == *"写代码：样本已过期，采样于 $stale_at，未列为今日值。"* \
+  && "$stale_mail" != *'过去一天完成 60 次'* ]] || fail 'the owner mail marks stale station data and omits its old value'
+stale_anomalies="$(ZF_HOME="$home" ZF_FACTORY_HOME="$home" AUTOPILOT_PAUSE_FILE="$home/PAUSE" \
+  maintainer_health_mail_current_anomalies "$home" "$now")"
+[[ "$stale_anomalies" == *"批准后持续集成又失败的比例（已过期样本，采样于 $stale_at）"* ]] \
+  || fail 'the anomaly mail marks each stale scorecard metric with its sample time'
+ok 'stale scorecard metrics are labeled with their sample time and old values are omitted'
 
 # --- Comparison ---------------------------------------------------------------------
 snaps="$tmp/snaps"

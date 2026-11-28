@@ -40,6 +40,39 @@ STATIONS = [
     ("ci", "自动检查", "ci.out_per_day", "次", "过去一天放行 "),
     ("release", "发布", "release.hours_waiting", "小时", "当前这批已等 "),
 ]
+ANOMALY_LABELS = {
+    "merge.green_to_merge_max_min": "最后一项必需检查通过到合入的最长等待（分钟，近24小时）",
+    "delivery.merged_not_live": "已合入但未上线的产品提交数",
+    "merge.conflict_repairs_per_day": "近24小时合并冲突后由修复接手的次数",
+    "ci.red_after_approve_pct": "批准后持续集成又失败的比例",
+    "ci.shared_append_rebase_conflict_pct": "共享追加后变基冲突率",
+    "scheduler.tick_gap_p50": "调度两拍间隔中位数（秒）",
+    "scheduler.harvest_gap_p50": "收割站两次运行间隔中位数（秒）",
+    "scheduler.merge_pass_gap_min": "合并车道距上次运行的分钟数（有待合并单时）",
+    "release.hours_waiting": "当前发布批次已等待小时数",
+    "workorders.over_standard": "超出花费上限的未结工单数",
+    "workorders.ticket_tokens_p90": "工单令牌消耗第90百分位",
+    "delivery.issue_to_accept_p50_7d_hours": "近7天从提出到验收的中位时长（小时）",
+    "delivery.issue_to_accept_p95_7d_hours": "近7天从提出到验收的第95百分位时长（小时）",
+    "delivery.issue_to_accept_p50_30d_hours": "近30天从提出到验收的中位时长（小时）",
+    "delivery.issue_to_accept_p95_30d_hours": "近30天从提出到验收的第95百分位时长（小时）",
+    "delivery.unlinked_units_30d": "近30天已验收单元缺少关联记录的数量",
+    "delivery.unlinked_incidents_30d": "近30天生产事故和告警未关联已验收单元的数量",
+    "flow.merge_rate_per_hour": "近24小时每小时合入数（目标6.5）",
+    "flow.wip_age_stage_p90_hours": "各环节未完成单元的第90百分位等待时长（小时）",
+    "flow.wait_stage_p90_hours": "等待前置单元或搁置的第90百分位时长（小时）",
+    "flow.slot_idle_hours": "修复或复审工人空闲而队列有任务的小时数",
+    "flow.main_red_hours": "窗口内主线变红的小时数",
+    "flow.in_out_imbalance": "窗口内进入与合入落地单元数的差额",
+    "efficiency.fresh_tokens_per_merged_7d": "每个合入事项的新令牌数（近7天）",
+    "efficiency.unmerged_waste_pct_7d": "未合入投入占比（近7天）",
+    "efficiency.first_pass_yield_pct_7d": "首评通过率（近7天）",
+    "efficiency.repair_phase_pct_7d": "返工阶段耗时占比（近7天）",
+    "review.first_pass_pct": "首评通过率",
+    "loop.rework_token_pct": "返工令牌占比",
+    "repair.unchanged_head_token_pct": "未改变提交头的返工令牌占比",
+    "release.hours_since_release": "距上次生产变更的小时数",
+}
 # The one table that ties a report line to rows of anomaly-owners.json (the head's plain-Chinese note per scorecard metric).
 # A row is {"cause": plain-Chinese note, "owner": who, "since": ISO 8601 UTC}; its cause prints only while since is at most 24 h before
 # the report time (and at most 5 min after it, for clock skew). An older row, a since more than 5 min ahead, a row with no parseable
@@ -85,6 +118,55 @@ def parse_utc(stamp):
         return None
 
 
+def node_health_source_state(runtime, now, agent_home, max_age=20 * 3600):
+    mac = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mac-autopilot"))
+    if mac not in sys.path:
+        sys.path.insert(0, mac)
+    import dashboard_factory_live
+    import dashboard_source_freshness
+
+    line_pause = os.environ.get("AUTOPILOT_PAUSE_FILE") or os.path.join(agent_home, "PAUSE")
+    factory_home = os.environ.get("ZF_FACTORY_HOME") or os.environ.get("ZF_HOME") or agent_home
+    pause = dashboard_factory_live.read_pause_states(line_pause, os.path.join(factory_home, "PAUSE"), now).get("zenoforge_factory", {})
+    paused = pause.get("paused") is True
+    source = dashboard_source_freshness.read_sources(
+        runtime, now=now, paused_since=pause.get("since"), paused=paused
+    ).get("node_health", {})
+    health = load(os.path.join(runtime, "node-health.json"))
+    sample = next((health.get(key) for key in ("generated_at", "generated")
+                   if isinstance(health, dict) and parse_utc(health.get(key)) is not None), None)
+    sample_epoch = parse_utc(sample)
+    age = source.get("age_s") if sample_epoch is not None else None
+    return {"sample_at": source.get("at") if sample_epoch is not None else None,
+            "age_s": age, "paused": paused,
+            "stale": paused or age is None or age > max_age or sample_epoch > now}
+
+
+def anomaly_label(metric):
+    description = metric.get("desc") or ""
+    metric_id = metric.get("id")
+    if not isinstance(description, str) or not description or re.search(r"[A-Za-z]", description):
+        return ANOMALY_LABELS.get(metric_id if isinstance(metric_id, str) else None, "调度指标异常")
+    return description
+
+
+def current_anomalies(runtime, now, agent_home):
+    health = load(os.path.join(runtime, "node-health.json"))
+    if not isinstance(health, dict) or not isinstance(health.get("metrics"), list):
+        return "调度评分样本待补"
+    source = node_health_source_state(runtime, now, agent_home, 12 * 3600)
+    metrics = [row for row in health["metrics"] if isinstance(row, dict) and row.get("status") == "UNHEALTHY"]
+    if source["stale"]:
+        reason = "已暂停" if source["paused"] else "已过期"
+        sampled = source["sample_at"] or "时间待核实"
+        if not metrics:
+            return f"调度评分样本{reason}（采样于 {sampled}），当前指标待刷新"
+        rows = [f"{anomaly_label(row)}（{reason}样本，采样于 {sampled}）" for row in metrics]
+        return "调度评分旧样本指标：" + "；".join(rows)
+    labels = [anomaly_label(row) for row in metrics[:5]]
+    return "未发现超出健康线的调度指标" if not labels else "超出健康线的调度指标：" + "；".join(labels)
+
+
 def beijing_day(epoch):
     return datetime.fromtimestamp(epoch, BEIJING).strftime("%Y-%m-%d")
 
@@ -111,14 +193,34 @@ def moved(kind, unit, now, base):
     return ("多 " if d > 0 else "少 ") + shown
 
 
-def station_facts(runtime, now):
+def station_facts(runtime, now, agent_home=None):
     health = load(os.path.join(runtime, "node-health.json"))
     if not isinstance(health, dict) or not isinstance(health.get("metrics"), list):
         return None
-    made = parse_utc(health.get("generated"))
+    agent_home = agent_home or os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
+    metrics = {m.get("id"): m for m in health["metrics"] if isinstance(m, dict)}
+    source = node_health_source_state(runtime, now, agent_home)
+    if source["stale"]:
+        try:
+            live_values = station_counts_at(agent_home, runtime, now)
+        except Exception:
+            live_values = {}
+        rows = []
+        for key, name, metric_id, unit, phrase in STATIONS:
+            metric = metrics.get(metric_id)
+            if not isinstance(metric, dict):
+                continue
+            value = live_values.get("station:" + key)
+            common = {"key": key, "name": name, "metric": metric_id, "unit": unit, "phrase": phrase}
+            if is_number(value) and is_number(metric.get("healthy")):
+                rows.append({**common, "value": value, "healthy": metric["healthy"],
+                             "higher": metric.get("higher_is_better") is True, "status": None, "stall_hours": None})
+            else:
+                rows.append({**common, "stale": True, "paused": source["paused"], "sample_at": source["sample_at"]})
+        return rows or None
+    made = parse_utc(source["sample_at"])
     if made is None or not 0 <= now - made <= STATION_FRESH_SECONDS:
         return None
-    metrics = {m.get("id"): m for m in health["metrics"] if isinstance(m, dict)}
     live = load(os.path.join(runtime, "station-health.json"))
     live_at = parse_utc(live.get("at")) if isinstance(live, dict) else None
     live = live.get("stations") if live_at is not None and 0 <= now - live_at <= STATION_FRESH_SECONDS and isinstance(live.get("stations"), dict) else {}
@@ -416,6 +518,12 @@ def compare(facts, directory, now, repo, owners_path):
         meta["station:" + key] = (name, "count", unit)
 
     inline, station_lines, material = {}, [], []
+    for key, name, _, _, _ in STATIONS:
+        row = stations.get(key)
+        if row and row.get("stale"):
+            reason = "已暂停" if row.get("paused") else "已过期"
+            sampled = row.get("sample_at") or "时间待核实"
+            station_lines.append(f"- {name}：样本{reason}，采样于 {sampled}，未列为今日值。")
     for key in meta:
         if key not in current or (key == "money" and current[key] == 0):
             continue
@@ -519,7 +627,9 @@ def station_counts_at(agent_home, runtime, at):
 def main(argv):
     cmd = argv[1]
     if cmd == "station":
-        print(json.dumps(station_facts(argv[2], int(argv[3])), ensure_ascii=False, separators=(",", ":")))
+        print(json.dumps(station_facts(argv[2], int(argv[3]), argv[4] if len(argv) > 4 else None), ensure_ascii=False, separators=(",", ":")))
+    elif cmd == "anomalies":
+        print(current_anomalies(argv[2], int(argv[3]), argv[4]), end="")
     elif cmd == "compare":
         print(json.dumps(compare(json.load(sys.stdin), argv[2], int(argv[3]), argv[4], argv[5]), ensure_ascii=False, separators=(",", ":")))
     elif cmd == "spend":
