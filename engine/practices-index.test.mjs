@@ -9,6 +9,30 @@ import { lessonLints } from './lesson-lints.mjs';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const indexPath = path.join(repo, 'docs/agents/practices.md');
 
+const ruleRows = (source) => source.split(/\r?\n/)
+  .filter((line) => line.startsWith('| ') && !/^\|\s*(Rule|---)/.test(line));
+const ruleKeys = (source) => ruleRows(source)
+  .map((line) => line.match(/<a name="(rule-[a-z0-9-]+)"><\/a>/)?.[1]);
+const indexRuleKeys = (index) => [...index.matchAll(/\]\(\.\.\/enforced-rules\.md#([^)]+)\)/g)]
+  .map((match) => match[1]);
+const assertRuleLinks = (source, index, requiredKeys = ruleKeys(source)) => {
+  const keys = ruleKeys(source);
+  const links = indexRuleKeys(index);
+  assert.equal(keys.filter(Boolean).length, keys.length);
+  assert.equal(new Set(keys).size, keys.length);
+  for (const key of requiredKeys) {
+    assert.equal(links.filter((link) => link === key).length, 1, key);
+  }
+  assert.ok(links.every((key) => keys.includes(key)));
+};
+const insertBeforeRule = (source, key, row) => {
+  const lines = source.split(/\r?\n/);
+  const position = lines.findIndex((line) => line.includes(`<a name="${key}"></a>`));
+  assert.notEqual(position, -1, key);
+  lines.splice(position, 0, row);
+  return lines.join('\n');
+};
+
 test('the practices index covers its source rules, lints, and links', () => {
   const index = readFileSync(indexPath, 'utf8');
   const indexDir = path.dirname(indexPath);
@@ -20,26 +44,20 @@ test('the practices index covers its source rules, lints, and links', () => {
     .filter((line) => line.startsWith('|') && !/^\|\s*(Practice|---)/.test(line))
     .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()));
   const links = [...index.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1]);
-  const sourceCounts = (target) => new Map(links
+  const sourceAnchors = links
     .map((href) => {
       const [file, anchor] = href.split('#');
-      if (!file || !anchor?.startsWith('L')) return null;
-      return [path.resolve(indexDir, file), Number(anchor.slice(1))];
+      if (!file || !anchor) return null;
+      return [path.resolve(indexDir, file), anchor];
     })
-    .filter((entry) => entry && entry[0] === target)
-    .map(([, line]) => [line, links.filter((href) => {
-      const [file, anchor] = href.split('#');
-      return file && path.resolve(indexDir, file) === target && anchor === `L${line}`;
-    }).length]));
+    .filter(Boolean);
+  const sourceCounts = (target) => new Map(sourceAnchors
+    .filter(([file]) => file === target)
+    .map(([, anchor]) => [anchor, sourceAnchors.filter(([file, sourceAnchor]) => file === target && sourceAnchor === anchor).length]));
   const agentLines = agents.split(/\r?\n/)
     .map((line, index) => [line, index + 1])
     .filter(([line]) => line.startsWith('- ') || /^(?:Goal:|Factory terms are|Work here follows|The skill files|This repository is public|Use `bash tools\/merge-pr\.sh|A merge requires|GitHub issues,|The five canonical role names|Single-context\.|Code and tests enforce)/.test(line))
     .map(([, line]) => line);
-  const enforcedLines = enforced.split(/\r?\n/)
-    .map((line, index) => [line, index + 1])
-    .filter(([line]) => line.startsWith('| ') && !/^\|\s*(Rule|---)/.test(line))
-    .map(([, line]) => line);
-
   assert.equal((agents.match(/docs\/agents\/practices\.md/g) ?? []).length, 1);
   assert.ok(rows.length > 0);
   assert.ok(rows.every((row) => row.length === 3 && row.every(Boolean)));
@@ -55,8 +73,8 @@ test('the practices index covers its source rules, lints, and links', () => {
   }
   assert.ok(rows.every(([, , source]) => source.includes('](')));
 
-  for (const line of agentLines) assert.equal(sourceCounts(agentsPath).get(line), 1, `AGENTS.md line ${line}`);
-  for (const line of enforcedLines) assert.equal(sourceCounts(enforcedPath).get(line), 1, `docs/enforced-rules.md line ${line}`);
+  for (const line of agentLines) assert.equal(sourceCounts(agentsPath).get(`L${line}`), 1, `AGENTS.md line ${line}`);
+  assertRuleLinks(enforced, index);
 
   for (const adr of readdirSync(path.join(repo, 'docs/adr')).filter((file) => /^\d{4}-.*\.md$/.test(file))) {
     assert.equal(links.filter((href) => path.resolve(indexDir, href.split('#')[0]) === path.join(repo, 'docs/adr', adr)).length, 1, adr);
@@ -90,4 +108,23 @@ test('the practices index covers its source rules, lints, and links', () => {
   for (const [practice, enforcement, source] of rows.filter(([, enforcement]) => /\bgap\b/i.test(enforcement))) {
     assert.match(`${enforcement} ${source}`, /https:\/\/github\.com\/ZenoWangzy\/zenoforge\/issues\/\d+/i, practice);
   }
+});
+
+test('two independent rule row insertions keep every practices index link valid', () => {
+  const index = readFileSync(indexPath, 'utf8');
+  const enforcedPath = path.join(repo, 'docs/enforced-rules.md');
+  const enforced = readFileSync(enforcedPath, 'utf8');
+  const keys = ruleKeys(enforced);
+  const fixture = insertBeforeRule(
+    insertBeforeRule(
+      enforced,
+      keys[10],
+      '| <a name="rule-fixture-alpha"></a> Fixture rule alpha | fixture alpha |',
+    ),
+    keys[50],
+    '| <a name="rule-fixture-beta"></a> Fixture rule beta | fixture beta |',
+  );
+
+  assert.equal(ruleKeys(fixture).length, keys.length + 2);
+  assertRuleLinks(fixture, index, keys);
 });
