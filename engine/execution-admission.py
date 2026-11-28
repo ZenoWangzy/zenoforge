@@ -743,9 +743,9 @@ def admission_inner(mode, command, attempt=None, platform=None):
         if paused(home):
             raise Deferred("operator PAUSE")
         worker_cgroup = ""
-        if mode == "run-unit" and platform.system == "Linux":
+        if mode == "run-unit":
             try:
-                worker_cgroup = platform.identity(os.getpid())["cgroup"]
+                worker_cgroup = identity(os.getpid(), proc)["cgroup"]
             except (OSError, ValueError, KeyError, StopIteration, IndexError):
                 pass
         if mode == "run-unit" and Path(command[0]).name == "setsid" and not any(arg in ("-w", "--wait") for arg in command[1:]):
