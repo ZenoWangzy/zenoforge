@@ -27,6 +27,8 @@ check "engine inside the target: both default to the file's location, home to ~/
   "$(resolve "$target/engine" "${unset_all[@]}")" "$target/engine|$target|$HOME/.zenoforge"
 check "ZF_ENGINE_DIR defaults to the config file's directory" \
   "$(resolve "$SCRIPT_DIR" "${unset_all[@]}" | cut -d'|' -f1)" "$SCRIPT_DIR"
+check "config works without optional off-mode coordination helpers" \
+  "$(env -i HOME="$HOME" PATH="$PATH" bash -e -c 'source "$1/config.sh"; printf loaded' _ "$other/engine")" "loaded"
 check "same repo directory lib.sh derived before config.sh" \
   "$(resolve "$SCRIPT_DIR" "${unset_all[@]}" | cut -d'|' -f2)" "$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 check "an exported ZF_REPO_DIR wins" \
