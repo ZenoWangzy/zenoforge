@@ -43,6 +43,27 @@ assert_eq() {
   fi
 }
 
+needs_info_supervisor_question_case() (
+  NEEDS_INFO_LOG="$(mktemp)"
+  REPO=test/repo
+  gh() {
+    case "$2" in
+      repos/test/repo/issues\?*) printf '%s\n' '[{"number":991304,"title":"supervisor question","body":"q","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"needs-info"}],"user":{"login":"fixture"}}]' ;;
+      */comments\?*) jq -cn --arg body "$BOT_DISCLAIMER"$'\n'"工厂 supervisor 需要澄清：q" '[{node_id:"c991304",body:$body,created_at:"2026-11-02T00:00:00Z",html_url:"u",user:{login:"fixture"}}]' ;;
+      repos/test/repo/issues/991304) printf '%s\n' '{"number":991304,"title":"supervisor question","body":"q","state":"open","created_at":"2026-11-01T00:00:00Z","labels":[{"name":"needs-info"}]}' ;;
+      *) return 1 ;;
+    esac
+  }
+  is_on_hold() { return 1; }
+  pipeline_system_issue_matches() { return 1; }
+  needs_info_timeout_step() { NEEDS_INFO_TIMEOUT_ACTION=none; }
+  needs_info_resume_answered_issue() { printf 'resume:%s\n' "$1" >> "$NEEDS_INFO_LOG"; }
+  reconcile_needs_info_issues
+  grep '^resume:' "$NEEDS_INFO_LOG" || true
+)
+assert_eq 'needs-info reconciliation does not resume an issue whose only post-label comment is the supervisor question' '' \
+  "$(needs_info_supervisor_question_case)"
+
 assert_eq 'fastlane admits a ticket whose only sub-issues are closed' '991100' \
   "$(fastlane_snapshot_candidates '[{"number":991100,"subIssuesSummary":{"total":1,"completed":1}}]' | jq -r '.[0].number')"
 assert_eq 'fastlane blocks a ticket with an open sub-issue' '0' \

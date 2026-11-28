@@ -79,7 +79,28 @@ def main(path, top=25):
     return 0
 
 
+def bytes_by_endpoint(path, day):
+    endpoints = defaultdict(lambda: [0, 0, 0])
+    for line in open(path, encoding="utf-8", errors="replace"):
+        f = line.rstrip("\n").split("\t")
+        if len(f) < 10 or f[0][:10] != day or not f[9].isdigit() or not f[4]:
+            continue
+        totals = endpoints[f[4]]
+        totals[0] += 1
+        totals[2 if f[8] == "hit" else 1] += int(f[9])
+    print("endpoint\tcalls\tmiss_bytes\thit_bytes")
+    for endpoint, (calls, miss_bytes, hit_bytes) in sorted(
+        endpoints.items(), key=lambda item: (-item[1][1], item[0])
+    ):
+        print(f"{endpoint}\t{calls}\t{miss_bytes}\t{hit_bytes}")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--bytes-by-endpoint" in sys.argv:
+        if len(sys.argv) != 5 or sys.argv[2:4] != ["--bytes-by-endpoint", "--day"]:
+            raise SystemExit("usage: summary.py <calls.tsv> --bytes-by-endpoint --day YYYY-MM-DD")
+        sys.exit(bytes_by_endpoint(sys.argv[1], sys.argv[4]))
     if sys.argv[1] == "spikes":
         sys.exit(spikes(sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else None))
     sys.exit(main(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 25))

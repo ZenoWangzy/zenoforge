@@ -1,0 +1,5 @@
+{
+  "engine/mac-autopilot/dispatch_steps_report.py": [
+    "engine/mac-autopilot/dispatch-steps-report.test.sh"
+  ]
+}
