@@ -601,10 +601,10 @@ def inner_main(options):
     for path in ("/etc", "/home", "/root", "/tmp", "/mnt", "/media", "/srv", "/opt", "/sys", "/dev", "/var"):
         tmpfs(path)
     for path in ("/var/tmp", "/var/cache", "/var/lib"): pathlib.Path(path).mkdir(parents=True, exist_ok=True)
-    for name in ("hosts", "resolv.conf", "nsswitch.conf", "passwd", "group", "ld.so.cache"):
+    for name in ("hosts", "resolv.conf", "nsswitch.conf", "passwd", "group", "ld.so.cache", "alternatives"):
         source = pathlib.Path("/run/zf-agent/etc") / name
-        if source.exists():
-            bind_file(source, pathlib.Path("/etc") / name, True)
+        if source.is_dir(): bind_directory(source, pathlib.Path("/etc") / name, True)
+        elif source.exists(): bind_file(source, pathlib.Path("/etc") / name, True)
     pathlib.Path("/etc/ssl/certs").mkdir(parents=True, exist_ok=True)
     bind_directory("/run/zf-agent/host-certs", "/etc/ssl/certs", True)
     pathlib.Path("/etc/os-release").symlink_to("/usr/lib/os-release")
@@ -697,8 +697,8 @@ def main(argv=None):
     (etc / "passwd").write_text("root:x:0:0:worker:/tmp/worker:/bin/sh\n")
     (etc / "group").write_text("root:x:0:\n")
     cache = pathlib.Path("/etc/ld.so.cache")
-    if cache.is_file():
-        shutil.copyfile(cache, etc / "ld.so.cache")
+    if cache.is_file(): shutil.copyfile(cache, etc / "ld.so.cache")
+    if pathlib.Path("/etc/alternatives").is_dir(): shutil.copytree("/etc/alternatives", etc / "alternatives", symlinks=True)
     (stage / "host-certs").mkdir()
     auth_source, auth_target, auth_fd, _ = provider_auth(options.provider)
     session_state = prepare_session_state(options.provider, options.command, os.environ, repo, host_temp); prepare_codex_profile(options.command, os.environ, stage)

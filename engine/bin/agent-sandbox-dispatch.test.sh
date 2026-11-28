@@ -59,6 +59,7 @@ host_home = pathlib.Path((workspace / 'host-home').read_text().strip())
 host_namespaces = json.loads((workspace / 'host-namespaces.json').read_text())
 for name, identity in host_namespaces.items():
     assert os.readlink(f'/proc/self/ns/{name}') != identity, (name, identity)
+assert subprocess.run(["awk", "BEGIN{print 1}"], check=True, capture_output=True, text=True).stdout == "1\n"
 assert pathlib.Path('/tmp/worker/.codex/auth.json').read_text() == '{"selected":"codex-test-only"}\n'
 for relative in ('.config/gh/hosts.yml', '.config/production/token', '.aws/credentials', '.ssh/id_ed25519',
                  '.zcode/v2/credentials.json', '.claude/.credentials.json', '.zenoforge/clones/other/secret', '.git-credentials'):
