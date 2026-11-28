@@ -90,12 +90,12 @@ test('a failed or held feature is invalid and named', () => {
 
 test('every matched feature passing is ok, extra results ignored', () => {
   const out = checkProof(plan, proof({ features: [row('login'), row('chat'), row('other', 'FAIL')] }), HEAD);
-  assert.deepEqual(out, { status: 'ok', features: { login: 'ok', chat: 'ok' }, reasons: [] });
+  assert.deepEqual(out, { status: 'ok', features: { login: 'ok', chat: 'ok' }, reasons: [], performance: 'unconfigured' });
 });
 
-test('performance inside each feature budget keeps the proof ok', () => {
+test('passing performance budgets report performance as ok', () => {
   const out = checkProof(plan, performanceProof(), HEAD, performanceBudgets());
-  assert.deepEqual(out, { status: 'ok', features: { login: 'ok', chat: 'ok' }, reasons: [] });
+  assert.deepEqual(out, { status: 'ok', features: { login: 'ok', chat: 'ok' }, reasons: [], performance: 'ok' });
 });
 
 test('a performance metric over budget names its feature, measurement and limit', () => {
@@ -119,9 +119,9 @@ test('a budget entry without a basis is rejected', () => {
   assert.match(out.reasons.join(' '), /login.*basis/);
 });
 
-test('without a budget file the functional result ignores performance fields', () => {
+test('without a budget the result reports performance as unconfigured', () => {
   const out = checkProof(plan, proof(), HEAD);
-  assert.deepEqual(out, { status: 'ok', features: { login: 'ok', chat: 'ok' }, reasons: [] });
+  assert.deepEqual(out, { status: 'ok', features: { login: 'ok', chat: 'ok' }, reasons: [], performance: 'unconfigured' });
 });
 
 test('plan without matched_features array is rejected', () => {
