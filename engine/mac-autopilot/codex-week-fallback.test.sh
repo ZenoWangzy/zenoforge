@@ -12,6 +12,7 @@ NOW_EPOCH=1793836800
 export CODEX_QUOTA_SNAPSHOT_FILE="$A/codex-quota.json" CODEX_EXHAUSTED_MARKER_FILE="$A/codex-exhausted-until" CODEX_PROVIDER_PROBE_REQUIRED_FILE="$A/probe-required"
 export CODEX_WEEK_STOP_PCT=100 CODEX_IMPLEMENT_STOP_PCT=95
 source "$script_dir/scheduler.d/core.sh"
+source "$script_dir/../matt-skills.sh"
 source "$script_dir/../lib.d/codex-budget.sh" && source "$script_dir/../lib.d/model-policy.sh" && source "$script_dir/../lib.d/locks.sh"
 source "$script_dir/scheduler.d/models.sh"
 SCHEDULER_AGENT_LIB="$script_dir/../lib.sh"

@@ -181,6 +181,11 @@ dispatch_why_save() { # merges this pass's changes into the file as it is now; p
 }
 
 dispatch_pending_pass() {
+  if declare -F scheduler_scope_lib >/dev/null 2>&1; then
+    scheduler_scope_lib gh-key-cache || return 1
+  elif ! declare -F gh_key_cache_repo >/dev/null 2>&1; then
+    source "${SCHEDULER_SCOPE_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)}/gh-key-cache.sh" || return 1
+  fi
   TICK_DISPATCH_SKIPS=()
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
@@ -785,7 +790,6 @@ $deliver"
   dispatch_why_save
   dispatch_steps_say
 }
-
 dispatch_pending() {
   local TICK_STEP_LOCK_RESULT=""
   if declare -F tick_step_lock_run >/dev/null 2>&1; then

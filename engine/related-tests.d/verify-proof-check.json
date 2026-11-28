@@ -1,0 +1,4 @@
+{
+  "engine/verify-proof-check.mjs": ["engine/verify-proof-check.test.mjs"],
+  "engine/verify-proof-check.test.mjs": ["engine/verify-proof-check.test.mjs"]
+}
