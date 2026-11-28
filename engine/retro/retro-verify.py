@@ -218,6 +218,7 @@ def verify_change(root, out_dir, repo, engine, state, change):
         change["after_count"] = count
         retro.write_verify_state(out_dir, state)
 
+    inconclusive = change["before_count"] == 0 and change["after_count"] == 0
     if not change.get("reported_at"):
         body = (
             "## Retro verification\n\n"
@@ -226,10 +227,16 @@ def verify_change(root, out_dir, repo, engine, state, change):
             f"Before: {change['before_count']} candidate events in {len(change['before_sessions'])} sessions.\n\n"
             f"After: {change['after_count']} candidate events in {len(change['after_sessions'])} sessions.\n"
         )
+        if inconclusive:
+            body += "\nVerdict: inconclusive (no events in either window)\n"
         issue_comment(repo, change["issue"], body)
         change["reported_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         retro.write_verify_state(out_dir, state)
-    if change["after_count"] >= change["before_count"] and not change.get("retraction_filed_at"):
+    if inconclusive and not change.get("inconclusive_at"):
+        change["inconclusive_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        retro.write_verify_state(out_dir, state)
+    if (change["after_count"] >= change["before_count"] and change["after_count"] > 0
+            and not change.get("retraction_filed_at")):
         file_retract_issue(engine, change, descendants(state, change))
         change["retraction_filed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         retro.write_verify_state(out_dir, state)
