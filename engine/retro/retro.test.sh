@@ -14,12 +14,15 @@ jq -e '
     and $candidate.properties.derived_from.type == "array"
     and $candidate.properties.derived_from.items.type == "string"
     and $candidate.properties.derived_from.uniqueItems == true
+    and $candidate.properties.paired_eval.properties.baseline.type == "string"
+    and $candidate.properties.paired_eval.properties.candidate.type == "string"
 ' "$dir/../prompts/retro.schema.json" >/dev/null \
   || { echo 'retro.test.sh: retro schema omits matcher or lineage fields' >&2; exit 1; }
 grep -Fq 'none of the latest ten successful recorded sessions' "$dir/../prompts/retro.md"
 grep -Fq 'For automated-checks, include a non-empty matcher object' "$dir/../prompts/retro.md"
 grep -Fq 'Use an empty derived_from array when none apply' "$dir/../prompts/retro.md"
 grep -Fq 'A prompt or skill change remains a proposal until the existing paired evaluation' "$dir/../prompts/retro.md"
+grep -Fq 'For automated-checks, provide paired_eval labels only when the existing eval has compared the frozen cases' "$dir/../prompts/retro.md"
 
 # Fixture: twelve finished luna workers (rc written, older for smaller numbers), one unfinished, one retro run.
 mk() {
@@ -63,8 +66,10 @@ echo "drop-count rc=0"
 publish_root="$test_env_root/publish-scratch"
 publish_repo="$test_env_root/publish-repo"
 fake_bin="$test_env_root/publish-bin"
+eval_home="$test_env_root/eval-home"
 engine="$(cd -- "$dir/.." && pwd -P)"
-mkdir -p "$publish_root/luna/p1" "$publish_root/luna/p2" "$publish_root/luna/p3" "$publish_root/luna/p4" "$publish_repo/.zenoforge/state" "$fake_bin"
+mkdir -p "$publish_root/luna/p1" "$publish_root/luna/p2" "$publish_root/luna/p3" "$publish_root/luna/p4" "$publish_root/luna/p5" "$publish_repo/.zenoforge/state" "$fake_bin" \
+  "$eval_home/eval/retro-before" "$eval_home/eval/retro-pass" "$eval_home/eval/retro-regression"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T10:00:00Z"}' > "$publish_root/luna/p1/events.jsonl"
 printf 'engine-a\n' > "$publish_root/luna/p1/engine-version"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T11:00:00Z"}' > "$publish_root/luna/p2/events.jsonl"
@@ -72,6 +77,16 @@ printf '%s\n' '{"type":"failure","message":"unmeasurable"}' > "$publish_root/lun
 printf 'engine-a\n' > "$publish_root/luna/p3/engine-version"
 printf '%s\n' '{"type":"failure","message":"false positive"}' > "$publish_root/luna/p4/events.jsonl"
 printf 'engine-a\n' > "$publish_root/luna/p4/engine-version"
+printf '%s\n' '{"type":"failure","message":"eval regression"}' > "$publish_root/luna/p5/events.jsonl"
+cat > "$eval_home/eval/retro-before/results.json" <<'JSON'
+{"label":"retro-before","results":[{"stage":"triage","caseId":"sample-retry-delay","run":1,"pass":true}]}
+JSON
+cat > "$eval_home/eval/retro-pass/results.json" <<'JSON'
+{"label":"retro-pass","results":[{"stage":"triage","caseId":"sample-retry-delay","run":1,"pass":true}]}
+JSON
+cat > "$eval_home/eval/retro-regression/results.json" <<'JSON'
+{"label":"retro-regression","results":[{"stage":"triage","caseId":"sample-retry-delay","run":1,"pass":false}]}
+JSON
 for i in $(seq -w 1 10); do
   mkdir -p "$publish_root/luna/normal-$i"
   printf '0\n' > "$publish_root/luna/normal-$i/rc"
@@ -84,9 +99,10 @@ cat > "$test_env_root/candidates.json" <<'JSON'
 {"candidates":[
   {"category":"navigation","severity":"medium","session_key":"p1","event_line":1,"evidence":"first event evidence","proposal":"Add a pointer to the schema","derived_from":["V1272"]},
   {"category":"navigation","severity":"high","session_key":"p2","event_line":1,"evidence":"second event evidence","proposal":"Add a pointer to the schema","derived_from":["V1272"]},
-  {"category":"automated-checks","severity":"high","session_key":"p1","event_line":1,"evidence":"lint evidence","proposal":"Add a lint check for this case","check":{"type":"failure","message":"same event"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p1","event_line":1,"evidence":"lint evidence","proposal":"Add a lint check for this case","check":{"type":"failure","message":"same event"},"paired_eval":{"baseline":"retro-before","candidate":"retro-pass"},"derived_from":["V1272"]},
   {"category":"automated-checks","severity":"medium","session_key":"p3","event_line":1,"evidence":"missing executable matcher","proposal":"Add a lint check without a matcher","derived_from":["V1272"]},
-  {"category":"automated-checks","severity":"medium","session_key":"p4","event_line":1,"evidence":"matcher hits ordinary recovered events","proposal":"Add a broad lint check","check":{"type":"failure"},"derived_from":["V1272"]}
+  {"category":"automated-checks","severity":"medium","session_key":"p4","event_line":1,"evidence":"matcher hits ordinary recovered events","proposal":"Add a broad lint check","check":{"type":"failure"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p5","event_line":1,"evidence":"paired evaluation regressed a frozen case","proposal":"Add a lint check for the event","check":{"type":"failure","message":"eval regression"},"paired_eval":{"baseline":"retro-before","candidate":"retro-regression"},"derived_from":["V1272"]}
 ]}
 JSON
 cat > "$fake_bin/gh" <<'SH'
@@ -149,6 +165,7 @@ printf '7001\n' > "$test_env_root/next-number"
 printf '[]\n' > "$test_env_root/merged-prs.json"
 ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
   ZF_ISSUE_LOCK_DIR="$test_env_root/locks" RETRO_OUT_DIR="$test_env_root/publish-out" \
+  AGENT_HOME="$eval_home" \
   PATH="$fake_bin:$PATH" FAKE_ISSUES="$test_env_root/issues.json" FAKE_COMMENTS="$test_env_root/comments.jsonl" \
   FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
   python3 -B "$retro" publish "$publish_root" "$publish_repo" "$test_env_root/candidates.json"
@@ -169,17 +186,19 @@ jq -e '.changes | length == 2
   and any(.[]; .category == "automated-checks" and .verifiable == true and (.lesson | type == "string")
     and .sources == [{session_key:"p1",event_line:1}] and .derived_from == ["V1272"]
     and .engine_version == "engine-a" and .check == {type:"failure",message:"same event"}
-    and (.admission.normal_sessions | length == 10))' \
+    and (.admission.normal_sessions | length == 10) and .admission.paired_eval.status == "passed")' \
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
   || { echo "retro.test.sh: candidate issue was not recorded for verification:" >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 fragment="$(printf '%s\n' "$publish_repo"/lessons/pending/*.json)"
 [[ -f "$fragment" ]] || { echo 'retro.test.sh: mechanical candidate created no lesson fragment' >&2; exit 1; }
 jq -e '.check == {type:"failure",message:"same event"} and .engine_version == "engine-a" and .derived_from == ["V1272"]
-  and .source_event == {session_key:"p1",event_line:1} and .admission.matched_normal_events == 0' "$fragment" >/dev/null \
+  and .source_event == {session_key:"p1",event_line:1} and .admission.matched_normal_events == 0
+  and .admission.paired_eval.regressions == 0' "$fragment" >/dev/null \
   || { echo 'retro.test.sh: admitted fragment omitted its matcher, lineage or measurement' >&2; cat "$fragment" >&2; exit 1; }
-jq -e '.observations | length == 2
+jq -e '.observations | length == 3
   and any(.[]; .source_event.session_key == "p3" and (.reason | contains("no check matcher")))
-  and any(.[]; .source_event.session_key == "p4" and (.reason | contains("normal session")))' \
+  and any(.[]; .source_event.session_key == "p4" and (.reason | contains("normal session")))
+  and any(.[]; .source_event.session_key == "p5" and (.reason | contains("pass-to-fail regression")))' \
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
   || { echo 'retro.test.sh: an unmeasurable candidate was not retained as an observation' >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 lesson_id="$(jq -r '.changes[] | select(.category == "automated-checks") | .lesson' "$test_env_root/publish-out/retro-verify.json")"

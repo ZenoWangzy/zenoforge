@@ -210,6 +210,49 @@ def measure_check(root, candidate):
     }, None
 
 
+def measure_paired_eval(engine, candidate):
+    pair = candidate.get("paired_eval")
+    if not isinstance(pair, dict):
+        return None, "paired eval labels are missing"
+    baseline = pair.get("baseline")
+    after = pair.get("candidate")
+    pattern = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+    if (not isinstance(baseline, str) or re.fullmatch(pattern, baseline) is None
+            or not isinstance(after, str) or re.fullmatch(pattern, after) is None or baseline == after):
+        return None, "paired eval labels are invalid or identical"
+    runner = os.path.join(engine, "eval", "run-eval.mjs")
+    try:
+        result = subprocess.run(
+            ["node", runner, "--compare", baseline, after],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError as exc:
+        return None, f"run-eval --compare could not start: {exc}"
+    output = (result.stdout or "").strip()
+    if result.returncode != 0:
+        detail = (result.stderr or output).strip()
+        return None, f"run-eval --compare failed: {detail[-600:]}"
+    regressions = [line for line in output.splitlines() if line.startswith("REGRESSION pass→fail ")]
+    if regressions:
+        return None, f"paired eval {baseline} → {after} found pass-to-fail regression: " + "; ".join(regressions)
+    unpaired = [line for line in output.splitlines() if line.startswith("UNPAIRED ")]
+    if unpaired:
+        return None, f"paired eval {baseline} → {after} did not cover the same frozen cases: " + "; ".join(unpaired)
+    paired_line = next((line for line in output.splitlines() if line.startswith("compared in both labels: ")), None)
+    if paired_line is None or paired_line.endswith(": none"):
+        return None, "paired eval compared no frozen cases"
+    if "pass→fail: none" not in output.splitlines():
+        return None, "paired eval did not report a zero-regression comparison"
+    paired_text = paired_line.split(": ", 1)[1]
+    return {
+        "status": "passed",
+        "baseline": baseline,
+        "candidate": after,
+        "paired_cases": [case.strip() for case in paired_text.split(",")],
+        "regressions": 0,
+    }, None
+
+
 def candidate_class(engine, category, event):
     helper = os.path.join(engine, "mac-autopilot", "incident-fingerprint.sh")
     script = 'source "$1"; fingerprint="$(incident_fingerprint "$3")"; incident_class "$2 $fingerprint"'
@@ -406,6 +449,7 @@ def write_lesson_fragment(repo, candidate, key, admission):
         f"- Derived from: {', '.join(candidate['derived_from']) or 'none recorded'}\n"
         f"- Matcher: `{json.dumps(candidate['check'], sort_keys=True)}`\n"
         f"- Admission: matched the source event and stayed silent in {len(admission['normal_sessions'])} normal sessions\n"
+        f"- Paired evaluation: zero regressions across {len(admission['paired_eval']['paired_cases'])} frozen cases\n"
         f"- Observation: {evidence}\n\n"
         "The pending rule is [V-NEXT](../RULES.md#v-next).\n"
     )
@@ -503,6 +547,12 @@ def publish_candidates(root, repo, candidates_path):
                 record_observation(out_dir, candidate, key, parents, measurement_error)
                 print(f"retro.py: candidate {key} kept as an observation: {measurement_error}")
                 continue
+            paired_eval, eval_error = measure_paired_eval(engine, candidate)
+            if eval_error:
+                record_observation(out_dir, candidate, key, parents, eval_error)
+                print(f"retro.py: candidate {key} kept as an observation: {eval_error}")
+                continue
+            admission["paired_eval"] = paired_eval
             write_lesson_fragment(repo, candidate, key, admission)
             record_lesson_change(out_dir, candidate["category"], key, candidate, admission)
         else:

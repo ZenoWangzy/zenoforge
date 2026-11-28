@@ -17,7 +17,7 @@ cat > "$tmp/valid-fragment.json" <<'JSON'
   "source_event":{"session_key":"fixture","event_line":1},
   "derived_from":["V1272"],
   "check":{"type":"failure"},
-  "admission":{"status":"passed","source_match":true,"normal_sessions":["n1","n2","n3","n4","n5","n6","n7","n8","n9","n10"],"matched_normal_events":0},
+  "admission":{"status":"passed","source_match":true,"normal_sessions":["n1","n2","n3","n4","n5","n6","n7","n8","n9","n10"],"matched_normal_events":0,"paired_eval":{"status":"passed","baseline":"retro-before","candidate":"retro-after","paired_cases":["triage/sample-retry-delay/1"],"regressions":0}},
   "enforcement":{"level":"architecture","enforced_by":["engine/lesson-fragments.sh"]},
   "guard":{
     "id":"registry-parity","date":"2026-10-12","class":"fixture",
@@ -58,7 +58,7 @@ if bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registr
   echo 'lesson-fragments.test.sh: unmeasured candidate check was accepted' >&2
   exit 1
 fi
-grep -Fq 'candidate check has no passing event measurement' "$tmp/stderr" || {
+grep -Fq 'candidate check has no passing event and paired-eval measurement' "$tmp/stderr" || {
   echo "lesson-fragments.test.sh: refusal omitted its reason: $(cat "$tmp/stderr")" >&2
   exit 1
 }
