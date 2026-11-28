@@ -6,7 +6,6 @@ issue=$1; slug=$2; brief=$3
 "$(dirname "$0")/hf-brief-lint.sh" "$brief"
 engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$engine_dir/config.sh"
-source "$engine_dir/lib.d/transport.sh"
 source "$engine_dir/incident-rule.sh"
 incident_config_file="$(zf_config_file mac-autopilot/config.template.json)" || { echo 'hf-start: incident config is unavailable' >&2; exit 2; }
 incident_config="$(cat "$incident_config_file")" || { echo 'hf-start: incident config is unreadable' >&2; exit 2; }
