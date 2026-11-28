@@ -32,7 +32,13 @@ Then label an issue `needs-triage` to hand it to the factory. You need Node 20+,
 <details>
 <summary>Platforms, what <code>init</code> does, operator commands</summary>
 
-Linux, WSL2 and macOS work (on macOS the CLI installs the unit loop only, see [docs/install.md](docs/install.md)); Windows needs WSL2.
+| Host | Tier | How it runs |
+|---|---|---|
+| Linux with a systemd user manager | today's behavior | timers and transient units |
+| Linux without systemd (containers, minimal VMs, WSL2 without systemd) | supported | the portable runner shims and a scheduler renderer other than systemd |
+| macOS (Apple silicon and Intel) | supported | launchd or the foreground loop; Homebrew bash 5 and GNU tools |
+| Windows 11 | supported through WSL2 only | the engine runs in the Linux guest, so this is one of the Linux rows |
+| Native Windows (cmd, PowerShell, Git-Bash, MSYS2) | not supported | the engine's locks are inherited file descriptors (`exec {fd}>file` plus `flock`, 160 named-fd sites), its process model is `setsid` groups and `kill -0`, its tests assume POSIX modes and symlinks; porting that is a rewrite |
 
 `doctor` prints one line per requirement, and the exact fix command for anything missing.
 
