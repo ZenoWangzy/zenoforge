@@ -3221,6 +3221,21 @@ eval "$(sed -n '/^file_bytes()/,/^}/p;/^read_after_offset()/,/^}/p' "$script_dir
 [[ "$(read_after_offset "$lo" 2343905611)" == new ]] || fail 'canary lost lines after the loop.out truncate'
 rm -f -- "$lo" "$lo.1.gz" "$lo.2.gz"
 
+gh_measure_file="$fixture/gh-calls.tsv"
+ZF_GH_MEASURE_FILE="$gh_measure_file" ZF_GH_MEASURE_MAX_BYTES=3 rotate_logs
+[[ ! -e "$gh_measure_file" && ! -e "$gh_measure_file.1" ]] || fail 'gh-measure rotation changed a missing file'
+printf 'old-row-1\n' > "$gh_measure_file"
+ZF_GH_MEASURE_FILE="$gh_measure_file" ZF_GH_MEASURE_MAX_BYTES=3 rotate_logs
+[[ ! -e "$gh_measure_file" && "$(cat "$gh_measure_file.1")" == old-row-1 ]] || fail 'gh-measure rotation did not move the oversize file'
+printf 'x\n' > "$gh_measure_file"
+ZF_GH_MEASURE_FILE="$gh_measure_file" ZF_GH_MEASURE_MAX_BYTES=3 rotate_logs
+[[ -f "$gh_measure_file" && "$(cat "$gh_measure_file")" == x && "$(cat "$gh_measure_file.1")" == old-row-1 ]] \
+  || fail 'gh-measure rotation changed a file under the limit'
+printf 'new-row-2\n' > "$gh_measure_file"
+ZF_GH_MEASURE_FILE="$gh_measure_file" ZF_GH_MEASURE_MAX_BYTES=3 rotate_logs
+[[ ! -e "$gh_measure_file" && "$(cat "$gh_measure_file.1")" == new-row-2 ]] || fail 'gh-measure rotation did not replace the older generation'
+rm -f -- "$gh_measure_file.1"
+
 # A terminal unit may still own work that cleanup_tick must preserve, in either
 # supported worktree location. A pushed, clean worktree remains reclaimable.
 cleanup_fixture="$fixture/cleanup-preservation"

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Summarize gh-measure rows: where the pipeline's GitHub calls come from, how often they fail, how long they take."""
+"""Summarize gh-measure rows: where the pipeline's GitHub calls come from, how often they fail, how long they take.
+Usage: summary.py <calls.tsv> [top]; combine <calls.tsv>.1 with <calls.tsv> first for a day that spans a rotation.
+"""
 import sys
 from collections import defaultdict
 from datetime import datetime
