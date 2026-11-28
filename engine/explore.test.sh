@@ -14,10 +14,14 @@ SYSTEMD_RUN_LOG="$test_env_root/systemd-run.log"
 UPSERT_LOG="$test_env_root/upsert.log"
 UPSERT_BODY="$test_env_root/upsert-body.md"
 DRIVER_CALLS="$test_env_root/driver-calls.log"
+DRIVER_PARENT_CALLS="$test_env_root/driver-parent-calls.log"
+LEASE_CALLS="$test_env_root/lease-calls.log"
+LEASE_PID_FILE="$test_env_root/lease.pid"
 CODEX_HOME="$test_env_root/codex"
 mkdir -p "$REPO_DIR/.zenoforge/state" "$MAC_AUTOPILOT_RUNTIME_DIR" "$test_env_root/bin"
+unset ZF_CDP_BROWSER_LEASE_SCRIPT
 export ZF_REPO_DIR ZF_CONFIG_ROOT ZF_ENGINE_DIR ZF_REPO ZF_UNIT_PREFIX MAC_AUTOPILOT_RUNTIME_DIR
-export SYSTEMD_RUN_LOG UPSERT_LOG UPSERT_BODY DRIVER_CALLS CODEX_HOME
+export SYSTEMD_RUN_LOG UPSERT_LOG UPSERT_BODY DRIVER_CALLS DRIVER_PARENT_CALLS LEASE_CALLS LEASE_PID_FILE CODEX_HOME
 export PATH="$test_env_root/bin:$PATH"
 
 cat > "$test_env_root/bin/systemd-run" <<'SH'
@@ -38,10 +42,10 @@ write_live() {
   jq -cn --arg sha "$1" --arg at "$(date -u +%FT%TZ)" '{sha:$sha,at:$at,source:"test"}' > "$AGENT_HOME/state/live-sha.json"
 }
 write_config() {
-  local wall="$1" tokens="$2"
+  local wall="$1" tokens="$2" timeout="${3:-30}"
   mkdir -p "$ZF_CONFIG_ROOT/state"
-  jq -cn --arg driver "$REPO_DIR/driver.sh" --argjson wall "$wall" --argjson tokens "$tokens" \
-    '{enabled:true,driver:{argv:[$driver],timeout_s:5,evidence_dir:"run-evidence"},feature_map:"state/feature-map.json",budget:{wall_seconds:$wall,max_tokens:$tokens,max_features:1},max_filed_per_run:3,allowed_effects:["read"]}' \
+  jq -cn --arg driver "$REPO_DIR/driver.sh" --argjson wall "$wall" --argjson tokens "$tokens" --argjson timeout "$timeout" \
+    '{enabled:true,driver:{argv:[$driver],timeout_s:$timeout,evidence_dir:"run-evidence"},feature_map:"state/feature-map.json",budget:{wall_seconds:$wall,max_tokens:$tokens,max_features:1},max_filed_per_run:3,allowed_effects:["read"]}' \
     > "$ZF_CONFIG_ROOT/state/exploration.json"
   jq -cn '{version:1,features:[{id:"search",title:"Search",path_prefixes:[],entrypoints:[],surfaces:[],invariants:[],proofs:{}}]}' \
     > "$ZF_CONFIG_ROOT/state/feature-map.json"
@@ -75,6 +79,7 @@ cat > "$REPO_DIR/driver.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s:%s\n' "$ZF_EXPLORATION_FEATURE_ID" "$ZF_EXPLORATION_ATTEMPT" >> "$DRIVER_CALLS"
+printf '%s\n' "$PPID" >> "$DRIVER_PARENT_CALLS"
 mkdir -p "$ZF_EXPLORATION_EVIDENCE_DIR"
 printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/R0cAAAAASUVORK5CYII=' | base64 -d > "$ZF_EXPLORATION_EVIDENCE_DIR/screen.png"
 if [[ "$DRIVER_MODE" == slow ]]; then sleep 3; fi
@@ -92,16 +97,43 @@ fi
 SH
 chmod +x "$REPO_DIR/driver.sh"
 
+cat > "$REPO_DIR/browser-lease.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >> "$LEASE_CALLS"
+printf '%s\n' "$$" > "$LEASE_PID_FILE"
+[[ "${LEASE_DELAY:-}" == "" ]] || sleep "$LEASE_DELAY"
+[[ "${1:-}" == -- ]] || exit 64
+shift
+"$@"
+SH
+chmod +x "$REPO_DIR/browser-lease.sh"
+
+leased_sha=ffffffffffffffffffffffffffffffffffffffff
+write_config 3600 100
+write_live "$leased_sha"
+export ZF_CDP_BROWSER_LEASE_SCRIPT="$REPO_DIR/browser-lease.sh"
+bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
+contains "$SYSTEMD_RUN_LOG" "ZF_CDP_BROWSER_LEASE_SCRIPT=$REPO_DIR/browser-lease.sh" 'detached exploration did not receive the browser lease path'
+export DRIVER_MODE=pass
+bash "$SCRIPT_DIR/run-explore.sh" run "$leased_sha" >/dev/null
+check 'browser lease receives -- and the driver argv' "$(cat "$LEASE_CALLS" 2>/dev/null || :)" "$(printf '%s\n%s' -- "$REPO_DIR/driver.sh")"
+check 'driver runs as a child of the browser lease' "$(tail -n 1 "$DRIVER_PARENT_CALLS")" "$(cat "$LEASE_PID_FILE")"
+unset ZF_CDP_BROWSER_LEASE_SCRIPT
+lease_calls_before="$(wc -l < "$LEASE_CALLS" | tr -d ' ')"
+driver_calls_before="$(wc -l < "$DRIVER_CALLS" | tr -d ' ')"
+
 repro_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-write_config 20 100
+write_config 3600 100
 write_live "$repro_sha"
 bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
-check 'live release starts one exploration unit' "$(wc -l < "$SYSTEMD_RUN_LOG" | tr -d ' ')" 1
+check 'live release starts one exploration unit' "$(wc -l < "$SYSTEMD_RUN_LOG" | tr -d ' ')" 2
 contains "$SYSTEMD_RUN_LOG" 'zf-explore-bbbbbbbbbbbb' 'unit name did not include the live release'
 export DRIVER_MODE=repeat
 export UPSERT_FAIL=1
 if bash "$SCRIPT_DIR/run-explore.sh" run "$repro_sha" >/dev/null 2>&1; then fail 'issue-upsert failure should leave the confirmed defect pending'; fi
-check 'a reproduced defect uses two fresh driver runs' "$(wc -l < "$DRIVER_CALLS" | tr -d ' ')" 2
+check 'a reproduced defect uses two fresh driver runs' "$(wc -l < "$DRIVER_CALLS" | tr -d ' ')" "$((driver_calls_before + 2))"
+check 'unset lease variable runs the driver directly' "$(wc -l < "$LEASE_CALLS" | tr -d ' ')" "$lease_calls_before"
 check 'same signature creates one pending intake finding' "$(wc -l < "$UPSERT_LOG" | tr -d ' ')" 1
 contains "$UPSERT_LOG" '--attach' 'issue upsert did not attach the reproduction evidence'
 check 'failed filing remains retryable' "$(jq -r .state "$AGENT_HOME/state/explore/$repro_sha/state.json")" needs-filing
@@ -123,16 +155,29 @@ check 'different failure signatures are not filed' "$(wc -l < "$UPSERT_LOG" | tr
 contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'explore: unconfirmed release=cccccccccccc feature=search' 'unconfirmed finding was not logged'
 
 slow_sha=dddddddddddddddddddddddddddddddddddddddd
-write_config 1 100
+write_config 20 100 30
 write_live "$slow_sha"
 bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
-export DRIVER_MODE=slow
+export ZF_CDP_BROWSER_LEASE_SCRIPT="$REPO_DIR/browser-lease.sh"
+export LEASE_DELAY=25
+lease_calls_before_wall="$(wc -l < "$LEASE_CALLS" | tr -d ' ')"
 bash "$SCRIPT_DIR/run-explore.sh" run "$slow_sha" >/dev/null
+check 'wall-limited wait runs through the browser lease' "$(wc -l < "$LEASE_CALLS" | tr -d ' ')" "$((lease_calls_before_wall + 2))"
 contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'release=dddddddddddd features=0/1 findings=0 filed=0 tokens=0 wall=' 'wall budget summary was not logged'
 contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'stop=budget-time' 'wall budget did not stop the run'
 
+call_timeout_sha=abababababababababababababababababababab
+write_config 3600 100 1
+write_live "$call_timeout_sha"
+bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
+export LEASE_DELAY=3
+bash "$SCRIPT_DIR/run-explore.sh" run "$call_timeout_sha" >/dev/null
+contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'explore: driver error release=abababababab feature=search attempt=1' 'per-call lease timeout did not use the driver error path'
+check 'per-call lease timeout keeps the existing run status' "$(jq -r .stop "$AGENT_HOME/state/explore/$call_timeout_sha/state.json")" done
+unset ZF_CDP_BROWSER_LEASE_SCRIPT LEASE_DELAY
+
 token_sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-write_config 20 4
+write_config 3600 4
 write_live "$token_sha"
 bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
 DRIVER_SESSION_ID=11111111-2222-3333-4444-555555555555

@@ -192,6 +192,7 @@ explore_start_unit() {
   local -a runtime_env=(-E PATH -E HOME -E http_proxy -E https_proxy -E HTTP_PROXY -E HTTPS_PROXY -E no_proxy -E NO_PROXY \
     -E ALL_PROXY -E NODE_USE_ENV_PROXY -E AGENT_HOME="$AGENT_HOME" -E ZF_ENGINE_DIR="$ZF_ENGINE_DIR" \
     -E ZF_REPO_DIR="$ZF_REPO_DIR" -E ZF_CONFIG_ROOT="$ZF_CONFIG_ROOT" -E MAC_AUTOPILOT_RUNTIME_DIR="${MAC_AUTOPILOT_RUNTIME_DIR:-}")
+  [[ -z "${ZF_CDP_BROWSER_LEASE_SCRIPT:-}" ]] || runtime_env+=(-E ZF_CDP_BROWSER_LEASE_SCRIPT="$ZF_CDP_BROWSER_LEASE_SCRIPT")
   [[ -z "${ZF_REPO:-}" ]] || runtime_env+=(-E ZF_REPO="$ZF_REPO")
   [[ -z "${ZF_PACK_DIR:-}" ]] || runtime_env+=(-E ZF_PACK_DIR="$ZF_PACK_DIR")
   [[ -z "${ZF_UNIT_PREFIX:-}" ]] || runtime_env+=(-E ZF_UNIT_PREFIX="$ZF_UNIT_PREFIX")
@@ -435,6 +436,9 @@ explore_driver_attempt() {
   if (( remaining <= timeout_seconds )); then timeout_seconds="$remaining"; wall_limited=1; fi
   if (( timeout_seconds <= 0 )); then EXPLORE_ATTEMPT_STATUS=budget-time; return 0; fi
   local -a command=("${EXPLORE_DRIVER_ARGV[@]}")
+  if [[ -n "${ZF_CDP_BROWSER_LEASE_SCRIPT:-}" && -x "$ZF_CDP_BROWSER_LEASE_SCRIPT" ]]; then
+    command=("$ZF_CDP_BROWSER_LEASE_SCRIPT" -- "${EXPLORE_DRIVER_ARGV[@]}")
+  fi
   if (cd -- "$ZF_REPO_DIR" && \
       ZF_EXPLORATION_RELEASE_SHA="$sha" ZF_EXPLORATION_FEATURE_ID="$feature_id" \
       ZF_EXPLORATION_FEATURE_TITLE="$title" ZF_EXPLORATION_ATTEMPT="$attempt" \
