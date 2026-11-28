@@ -3,6 +3,7 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 scheduler_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+export -f copy_agent_library test_issue_rest_payload
 SCHED_TEST_PART=4 bash "$scheduler_dir/scheduler.test.sh"
 
 # Cache helpers must share data across command-substitution subshells and ticks.

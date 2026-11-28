@@ -601,7 +601,7 @@ conclude_merged_run() {
     state="$(state_read "$n")" || { echo "conclude_merged_run: could not read state for #$n" >&2; return 1; }
     jq -e --argjson expected "$expected_hold" '.state == "on-hold" and (.hold | del(.aging_window)) == ($expected | del(.aging_window))' <<< "$state" >/dev/null || { echo "conclude_merged_run: hold for #$n changed before the merge was recorded" >&2; return 1; }
   fi
-  if ! merged_row="$(merged_pr_main_row "$pr_number" "$n")"; then
+  if ! merged_row="$(merged_pr_main_row "$pr_number" "$n" 1)"; then
     echo "conclude_merged_run: refusing PR #$pr_number for #$n -- only merged PRs targeting main can enter awaiting-release" >&2
     return 1
   fi

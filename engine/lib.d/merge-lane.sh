@@ -162,13 +162,13 @@ merge_pr_and_reconcile() {
 # another feature branch is not proof its code reached production.
 declare -gA RELEASE_PR_CACHE=()  # filled by release_walk_begin (release-walk.sh); empty elsewhere
 merged_pr_main_row() {
-  local pr_number="$1" n="${2:-}" pr_json row merge_evidence
+  local pr_number="$1" n="${2:-}" allow_missing_sha="${3:-0}" pr_json row merge_evidence
   [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
   pr_json="${RELEASE_PR_CACHE[$pr_number]:-}"
   [ -n "$pr_json" ] || pr_json="$(gh api "repos/$REPO/pulls/$pr_number")" || return 1
-  row="$(jq -er --arg p "$pr_number" '
-    select((.number | tostring) == $p and .merged == true and .base.ref == "main" and (.merge_commit_sha // "") != "")
-    | "\(.number)\t\(.merge_commit_sha)"
+  row="$(jq -er --arg p "$pr_number" --argjson allow_missing_sha "$allow_missing_sha" '
+    select((.number | tostring) == $p and .merged == true and .base.ref == "main" and ($allow_missing_sha or (.merge_commit_sha // "") != ""))
+    | "\(.number)\t\(.merge_commit_sha // "")"
   ' <<< "$pr_json")" || return 1
   if [ -n "$n" ]; then
     merge_evidence="$(jq -c '{number,merge_sha:.merge_commit_sha,merged_at:.merged_at}' <<< "$pr_json")" || return 1

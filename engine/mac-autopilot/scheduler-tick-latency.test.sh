@@ -170,7 +170,7 @@ set -euo pipefail
 source "$TICK_STEP_LIBRARY"
 tick_step_execute() {
   printf 'start %s\n' "$1" >> "$TICK_STEP_CALLS"
-  [[ "$1" != dispatch_pending ]] || sleep 2
+  [[ "$1" != dispatch_pending ]] || while [[ ! -e "$TICK_STEP_RELEASE" ]]; do sleep 0.02; done
   printf 'finish %s\n' "$1" >> "$TICK_STEP_CALLS"
 }
 say() { printf '%s\n' "$*" >> "$LOG"; }
@@ -180,6 +180,10 @@ SH
   HERE="$detached/worker"
   export TICK_STEP_LIBRARY="$script_dir/scheduler.d/tick-steps.sh"
   export TICK_STEP_CALLS="$detached/worker-calls" LOG
+  TICK_STEP_RELEASE="$detached/release-dispatch"
+  export TICK_STEP_RELEASE
+  rm -f -- "$TICK_STEP_RELEASE"
+  trap 'touch "$TICK_STEP_RELEASE"; [[ -d "$test_env_root" ]]' EXIT
   : > "$TICK_STEP_CALLS"
 
   state_schema_ok() { return 0; }
@@ -210,6 +214,7 @@ SH
   done
   grep -Fxq 'start dispatch_pending' "$TICK_STEP_CALLS" || fail 'the detached dispatch worker did not start'
 
+  rm -f -- "$A/.dispatch-station-epoch"
   SCHED_LOCK_HELD=false
   SECONDS=0; main; second_elapsed=$SECONDS
   (( second_elapsed < 2 )) || fail "second tick waited for its detached dispatch step (${second_elapsed}s)"
@@ -217,7 +222,8 @@ SH
     grep -Fq 'tick-step skipped step=dispatch_pending' "$LOG" && break
     read -t 0.02 <> <(:) || :
   done
-  grep -Fq 'tick-step skipped step=dispatch_pending' "$LOG" || fail 'the second tick did not skip the locked dispatch step'
+  grep -Fq 'tick-step skipped step=dispatch_pending' "$LOG" || fail "the second tick did not skip the locked dispatch step; log=$(tail -n 16 "$LOG"); calls=$(cat "$TICK_STEP_CALLS")"
+  touch "$TICK_STEP_RELEASE"
   for _ in $(seq 150); do
     grep -Fxq 'finish dispatch_pending' "$TICK_STEP_CALLS" && break
     read -t 0.02 <> <(:) || :

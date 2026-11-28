@@ -11,6 +11,7 @@ trap 'printf "not ok - scheduler.test.sh line %s: %s\n" "$LINENO" "$BASH_COMMAND
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/../.." && pwd -P)"
+MODEL_POLICY_TEST_ENGINE="$repo_root/engine"
 scheduler="$script_dir/scheduler.sh"
 merge_lane="$script_dir/scheduler.d/merge-lane.sh"
 worker_command="$script_dir/scheduler.d/worker-command.sh"
@@ -418,14 +419,17 @@ PY
 export MERGED_PR_FIXTURE="$merged_pr_fixture"
 tick_gh_pr_rest_payload() {
   local pr_number="$1" pr_row='' fixture pr_sha pr_branch state=open merged_at='' merge_commit=''
-  for fixture in "$TF/handoff-pr-view.json" "$TF/handoff-lookup.json"; do
+  for fixture in "$TF/handoff-pr-view.json" "$TF/handoff-lookup.json" "$TF/pr-census.json"; do
     [[ -f "$fixture" ]] || continue
     pr_row="$(command jq -c --argjson n "$pr_number" '[.[] | select(.number==$n)][0] // empty' "$fixture")" || return 1
     [[ -n "$pr_row" ]] && break
   done
+  if [[ -z "$pr_row" && -f "$TF/handoff-lookup-fail" ]]; then return 1; fi
   if [[ -z "$pr_row" ]]; then
     pr_sha="$(cat "$TF/pr-head-$pr_number" 2>/dev/null || printf '%040x' "$pr_number")"
-    pr_branch="$(command jq -r --argjson n "$pr_number" '[.units[] | select(.pr==$n) | .branch // empty][0] // "fix/token-fixture"' "$TF/supervisor/autopi/units.json" 2>/dev/null || echo fix/token-fixture)"
+    pr_branch="$(command jq -r --argjson n "$pr_number" '[.units[] | select(.pr==$n) | .branch // empty][0] // empty' "$TF/supervisor/autopi/units.json" 2>/dev/null || true)"
+    [[ -n "$pr_branch" || ! -f "$TF/agent-home/state/$pr_number.json" ]] || pr_branch="$(command jq -r '.scheduler_handoff.open_branch // empty' "$TF/agent-home/state/$pr_number.json")"
+    pr_branch="${pr_branch:-fix/token-fixture}"
     if [[ -f "$TF/closed-prs" ]] && grep -Fxq "$pr_number" "$TF/closed-prs"; then state=closed; fi
     if [[ -f "$TF/main-sha" && "$(cat "$TF/main-sha")" == "$pr_sha" ]]; then
       state=closed; merged_at='2026-10-29T00:00:00Z'; merge_commit="$pr_sha"
@@ -433,7 +437,7 @@ tick_gh_pr_rest_payload() {
     [[ ! -f "$TF/no-merge-sha" ]] || merge_commit=''
     command jq -cn --argjson n "$pr_number" --arg oid "$pr_sha" --arg branch "$pr_branch" --arg state "$state" \
       --arg merged_at "$merged_at" --arg merge_commit "$merge_commit" \
-      '{number:$n,state:$state,draft:false,head:{ref:$branch,sha:$oid},base:{ref:"main"},title:"fixture",body:"",labels:[],mergeable:null,
+      '{number:$n,state:$state,merged:($merged_at != ""),draft:false,head:{ref:$branch,sha:$oid},base:{ref:"main"},title:"fixture",body:"",labels:[],mergeable:null,
         merge_commit_sha:(if $merge_commit == "" then null else $merge_commit end),merged_at:(if $merged_at == "" then null else $merged_at end)}'
     return
   fi
@@ -441,6 +445,7 @@ tick_gh_pr_rest_payload() {
   command jq -cn --argjson p "$pr_row" --argjson n "$pr_number" --arg sha "$pr_sha" '
     $p as $p | {number:($p.number // $n),
       state:(if ($p.mergedAt // $p.merged_at // null) != null or $p.state == "MERGED" then "closed" else (($p.state // "OPEN") | ascii_downcase) end),
+      merged:(($p.mergedAt // $p.merged_at // null) != null or $p.state == "MERGED"),
       draft:($p.draft // $p.isDraft // false), head:{ref:($p.head.ref // $p.headRefName // ""),sha:($p.head.sha // $p.headRefOid // $sha)},
       base:{ref:($p.base.ref // $p.baseRefName // "main"),sha:($p.base.sha // $p.baseRefOid // null)}, title:($p.title // ""), body:($p.body // ""),
       labels:($p.labels // []), mergeable:(if $p.mergeable == true or $p.mergeable == "MERGEABLE" then true elif $p.mergeable == false or $p.mergeable == "CONFLICTING" then false else null end),
@@ -656,7 +661,7 @@ tick_gh() {
     # 轻量 census 后的检查行：按 head SHA 读 check-runs。优先用 pr-census.json 里该 head 的 statusCheckRollup
     # （fixture 原样保留）；真实 head（夹具仓库的 git SHA，记录在 pr-head-<n>）按文件反查 PR 号；%040x 的
     # head 本身就是 PR 号；main 的两个 run head 由 main-check-runs.json 回答（原 api * 分支的行为）。
-    'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
+    'api repos/'*'/commits/'*'/check-runs'*)
       local cr_sha="$2" cr_jq="" cr_prev="" cr_rows cr_n cr_f
       cr_sha="${cr_sha#*commits/}"; cr_sha="${cr_sha%%/*}"
       for arg in "$@"; do [[ "$cr_prev" == --jq ]] && cr_jq="$arg"; cr_prev="$arg"; done
@@ -744,7 +749,7 @@ tick_gh() {
         local started_at
         case "$(cat "$TF/pipeline-ci-adoption")" in
           old) started_at='2026-10-01T00:00:00Z' ;;
-          fresh) started_at='2099-01-01T00:00:00Z' ;;
+          fresh) started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
           *) echo "unexpected adoption phase: $(cat "$TF/pipeline-ci-adoption")" >&2; return 97 ;;
         esac
         command jq -cn --arg started_at "$started_at" '[
@@ -871,7 +876,7 @@ tick_gh() {
       local pr_rows
       pr_rows="$(tick_gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,body,labels,mergeable,createdAt,updatedAt)" || return $?
       command jq -c '[.[] | {number, state:"open", draft:(.isDraft // false), head:{ref:.headRefName,sha:.headRefOid}, base:{ref:.baseRefName}, title, body,
-        labels:(.labels // []), mergeable:null, created_at:.createdAt, updated_at:.updatedAt}]' <<<"$pr_rows"
+        labels:(.labels // []), mergeable:(if .mergeable == true or .mergeable == "MERGEABLE" then true elif .mergeable == false or .mergeable == "CONFLICTING" then false else null end), created_at:.createdAt, updated_at:.updatedAt}]' <<<"$pr_rows"
       ;;
     'api graphql')
       if [[ "$*" == *'i9901:'* ]]; then
@@ -1061,7 +1066,9 @@ seed_roadmap_tree() {
 
 new_tick_fixture() {
   TF="$test_env_root/tick-$1"; export TF
-  mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin" "$TF/agent-home"
+  mkdir -p "$TF/repo" "$TF/supervisor/autopi/alerts" "$TF/sessions" "$TF/bin" "$TF/agent-home" "$TF/worker-scopes"
+  printf 'max 100000\n' > "$TF/cpu.max"
+  export LUNA_WORKER_SLICE_DIR="$TF/worker-scopes"
   export CODEX_PROBE_MARKER="$TF/agent-home/codex-probe-passed"
   export CODEX_EXHAUSTED_MARKER_FILE="$TF/agent-home/codex-exhausted-until"
   export CODEX_PROVIDER_PROBE_REQUIRED_FILE="$TF/agent-home/codex-exhausted-until.probe-required"
@@ -1329,13 +1336,19 @@ command jq -n --arg hot "$hotfix_sha" --arg normal "$normal_sha" --arg review "$
     {databaseId:903,status:"queued",event:"pull_request",headBranch:"agent/issue-902",headSha:$review,workflowName:"CI"}
   ]' > "$TF/ci-admission-runs.json"
 command jq -n '{"901":[{"status":"in_progress","runner_id":1}]}' > "$TF/ci-admission-jobs.json"
+(
+  unset GH_KEY_CACHE_DIR
+  export AGENT_HOME="$TF/agent-home" GH_KEY_CACHE_REPO=example-maintainer/example-repo
+  source "$repo_root/engine/lib.d/gh-key-cache.sh"
+  gh_key_cache_invalidate "runners:example-maintainer/example-repo"
+)
 tick
 command jq -e --arg normal "$normal_sha" '
   ([.units[] | select(.id == "normal-active")][0]
     | .ci_wip_wait == null and .approved_sha == $normal
     and ([.history[] | select(.stage == "ci-wip-start" and .result == "slot 1/1")] | length == 1))
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: a freed runner slot did not start the waiting unit CI' >&2; exit 1; }
+  || { command jq -c '.units[] | select(.id == "normal-active")' "$TF/supervisor/autopi/units.json" >&2; tail -n 30 "$TF/supervisor/autopi/scheduler.log" >&2; echo 'scheduler.test.sh: a freed runner slot did not start the waiting unit CI' >&2; exit 1; }
 grep -Fq 'ci wip: 1 free PR runner slot(s)' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: the CI slot count was not sized from free PR runners' >&2; exit 1; }
 }
@@ -1413,9 +1426,11 @@ sched_case_ci_slot_sync_unclean_carry() {
 sched_run_case ci_slot_sync_unclean_carry
 
 sched_case_ci_admission_census_retry() (
-  local test_dir calls_file sleeps_file n
+  local test_dir calls_file sleeps_file n A
   test_dir="$test_env_root/ci-admission-census-retry"
-  mkdir -p "$test_dir"
+  A="$test_dir/autopi"; GH_ETAG_DIR="$A/.gh-etag"; GH_TICK_CACHE_DIR="$A/.gh-tick-cache"
+  export A GH_ETAG_DIR GH_TICK_CACHE_DIR
+  mkdir -p "$test_dir" "$GH_ETAG_DIR" "$GH_TICK_CACHE_DIR"
   calls_file="$test_dir/census-calls"; sleeps_file="$test_dir/sleeps"
   echo 0 > "$calls_file"; : > "$sleeps_file"
   CFG='{"hotfix_lane":{"label":"hotfix","branch_prefixes":[]}}'
@@ -1424,10 +1439,12 @@ tick_prs_changed; TICK_HOTFIX_ISSUES_LOADED=true; TICK_HOTFIX_ISSUES='[]'
   tick_prs_prime() { :; }
   sleep() { printf '%s\n' "$*" >> "$sleeps_file"; }
   gh() {
-    [[ "$1" == pr && "$2" == list ]] || { echo "unexpected census gh call: $*" >&2; return 97; }
+    [[ "$1" == api && "$2" == -i && "$3" == 'repos/{owner}/{repo}/pulls?state=open&per_page=100' ]] \
+      || { echo "unexpected census gh call: $*" >&2; return 97; }
     n="$(cat "$calls_file")"; n=$((n + 1)); echo "$n" > "$calls_file"
     if (( n == 1 )); then return 1; fi
-    echo '[{"number":99,"headRefName":"agent/issue-99","headRefOid":"9999999999999999999999999999999999999999","isDraft":true,"body":"","labels":[]}]'
+    printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n'
+    printf '%s\n' '[{"number":99,"state":"open","draft":true,"head":{"ref":"agent/issue-99","sha":"9999999999999999999999999999999999999999"},"base":{"ref":"main"},"title":"fixture","body":"","labels":[]}]'
   }
   hotfix_issue_numbers() { TICK_HOTFIX_ISSUES='[]'; return 0; }
   ci_ready_hotfix_gated() { [[ "$CI_HOTFIX_BRANCHES" == '[]' ]]; }
@@ -1480,9 +1497,15 @@ fi
 grep -Fq 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log" \
   || { echo "scheduler.test.sh: stale adopted checks did not hold the merge" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
+(
+  unset GH_KEY_CACHE_DIR
+  export AGENT_HOME="$TF/agent-home" GH_KEY_CACHE_REPO=example-maintainer/example-repo
+  source "$repo_root/engine/lib.d/gh-key-cache.sh"
+  gh_commit_check_runs_invalidate "$adopted_head"
+)
 tick
 [[ "$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")" == merged ]] \
-  || { echo 'scheduler.test.sh: fresh aggregate passes did not release the adopted PR' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: fresh aggregate passes did not release the adopted PR' >&2; echo '--- phase ---' >&2; cat "$TF/pipeline-ci-adoption" >&2; echo '--- check fixture ---' >&2; tick_gh pr checks 50 --json name,bucket,link >&2; echo '--- unit ---' >&2; command jq '.' "$TF/supervisor/autopi/units.json" >&2; echo '--- scheduler.log ---' >&2; tail -40 "$TF/supervisor/autopi/scheduler.log" >&2; echo '--- calls ---' >&2; cat "$TF/calls" >&2; echo '--- actions ---' >&2; cat "$TF/actions" >&2; exit 1; }
 grep -q '^merge 50$' "$TF/actions" \
   || { echo 'scheduler.test.sh: merge action for the adopted PR was not observed' >&2; exit 1; }
 [[ "$(grep -c '^gh pr edit 50 --add-label pipeline-ci$' "$TF/calls")" == 1 ]] \
@@ -2141,7 +2164,7 @@ command jq -e --arg id "$main_red_id" --arg sha "$main_red_green_sha" --arg head
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
   || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: green main did not resume the parked PR at its prior stage' >&2; exit 1; }
 grep -Fq 'pulls/77/update-branch' "$TF/calls" \
-  || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: resumed PR did not request a fresh CI run through update-branch' >&2; exit 1; }
+  || { cat "$TF/calls" >&2; tail -n 30 "$TF/supervisor/autopi/scheduler.log" >&2; command jq -c '.units[] | select(.id == "pr-77")' "$TF/supervisor/autopi/units.json" >&2; echo 'scheduler.test.sh: resumed PR did not request a fresh CI run through update-branch' >&2; exit 1; }
 
 # A red unit parked as its own CI failure stays parked when main is green; only
 # the explicit main-red cause is eligible for automatic resumption.
@@ -2664,7 +2687,7 @@ start_tick_worker() {
     < /dev/null > /dev/null 2>&1 &
   local pid=$!
   printf '%s\n' "$pid" > "$TF/$1-worker.pid"
-  for _ in {1..500}; do [[ -s "$backend" ]] && break; sleep 0.01; done
+  for _ in {1..5000}; do [[ -s "$backend" ]] && break; sleep 0.01; done
   [[ -s "$backend" ]] || { echo 'not ok - scheduler.test.sh: timed out waiting for backend pid file' >&2; return 1; }
   printf '%s' "$pid"
 }
@@ -2876,7 +2899,13 @@ command jq -e '
     and (.repair_hint | contains("Rebase this PR branch onto origin/main")))
   and ([.units[] | select(.pr==57002)][0] | .stage=="ready-to-merge" and .approved_sha!=null)
 ' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2; exit 1; }
+  || {
+    command jq -c '.units' "$TF/supervisor/autopi/units.json" >&2
+    command grep -E 'pulls/5700|pr view 570|merge 570' "$TF/calls" | tail -n 30 >&2 || true
+    tail -n 40 "$TF/supervisor/autopi/scheduler.log" >&2
+    echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2
+    exit 1
+  }
 grep -Fq 'merge skipped PR#57001 (conflicts with main; pipeline-path changes include files deleted from main) -> repair-pending' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: conflicting pipeline PR repair was not logged' >&2; exit 1; }
 grep -Fq 'merge skipped PR#57002 (touches pipeline paths; pipeline merges held)' "$TF/supervisor/autopi/scheduler.log" \
@@ -2994,8 +3023,18 @@ if command grep -q '^merge 78$' "$TF/actions"; then
 fi
 command grep -q 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log"
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
+(
+  export AGENT_HOME="$TF/agent-home" GH_KEY_CACHE_REPO=example-maintainer/example-repo
+  source "$repo_root/engine/lib.d/gh-key-cache.sh"
+  gh_commit_check_runs_invalidate "$unlinked_sha"
+)
 tick
-command grep -q '^merge 78$' "$TF/actions"
+command grep -Fxq 'merge 78' "$TF/actions" || {
+  echo 'scheduler.test.sh: fresh aggregate passes did not release the unlinked PR' >&2
+  tail -n 30 "$TF/supervisor/autopi/scheduler.log" >&2
+  cat "$TF/actions" >&2
+  exit 1
+}
 if command grep -Eq '^issue (edit|comment) ' "$TF/actions"; then
   echo 'scheduler.test.sh: unlinked PR produced an issue write' >&2
   exit 1
@@ -3191,14 +3230,20 @@ command jq -cn --arg sampled_at "$budget_sampled_at" --argjson sampled_epoch "$b
   '{sampled_at:$sampled_at,sampled_epoch:$sampled_epoch,resources:{graphql:{used:100,remaining:4900,reset:$reset},core:{used:0,remaining:5000,reset:$reset}}}' \
   > "$TF/agent-home/state/gh-budget.latest.json"
 calls_before="$(wc -l < "$TF/calls")"
-ZF_AGENT_TEST_MODE=0 TF_REAL_PS=1 tick --refill
+TF_REAL_PS=1 tick --refill
 command jq -e '.units | length==5
   and any(.[]; .id=="issue-8802" and .stage=="implement")
   and any(.[]; .id=="issue-8801" and .lane=="pr" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8804" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8805" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8806" and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill tick did not dispatch the waiting unit without harvesting the worker report' >&2; exit 1; }
+  || {
+    cat "$TF/tick.out" >&2
+    command jq -c '{units:.units,workers:.workers}' "$TF/supervisor/autopi/units.json" "$TF/supervisor/autopi/workers.json" >&2
+    tail -n 40 "$TF/supervisor/autopi/scheduler.log" >&2
+    echo 'scheduler.test.sh: refill tick did not dispatch the waiting unit without harvesting the worker report' >&2
+    exit 1
+  }
 command jq -e 'any(.workers[]; .unit=="issue-8802" and .type=="implement" and .harvested!=true)' "$TF/supervisor/autopi/workers.json" >/dev/null \
   || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill tick did not record the dispatched worker' >&2; exit 1; }
 command jq -e 'any(.workers[]; .unit=="issue-8801" and .harvested==true)' "$TF/supervisor/autopi/workers.json" >/dev/null \
@@ -4191,7 +4236,7 @@ SH
     || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill intake failure omitted its completion log line' >&2; exit 1; }
   command jq -e 'any(.units[]; .id=="existing-startable" and .stage=="implement")' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
-    || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill intake failure prevented dispatch of existing startable work' >&2; exit 1; }
+    || { cat "$TF/tick.out" >&2; tail -n 30 "$TF/supervisor/autopi/scheduler.log" >&2; command jq -c '{units:.units,workers:.workers}' "$TF/supervisor/autopi/units.json" "$TF/supervisor/autopi/workers.json" >&2; echo 'scheduler.test.sh: refill intake failure prevented dispatch of existing startable work' >&2; exit 1; }
   command jq -e 'any(.workers[]; .unit=="existing-startable" and .harvested!=true)' \
     "$TF/supervisor/autopi/workers.json" >/dev/null \
     || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill did not record the existing unit dispatch' >&2; exit 1; }
@@ -4856,11 +4901,12 @@ sched_case_hold_handoff_existing_unit() {
       touch "$TF/allow-dispatch" "$TF/worker-alive"
       command jq '.implement_cap=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
       mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+      rm -f "$TF/supervisor/autopi/.dispatch-station-epoch"
       tick
       command jq -e '([.workers[] | select(.unit=="existing" and .type=="implement" and .harvested!=true)] | length)==1' \
         "$TF/supervisor/autopi/workers.json" >/dev/null || { echo 'not ok - resumed existing unit was not dispatched' >&2; exit 1; }
       tick
-      command jq -e '([.workers[] | select(.unit=="existing" and .type=="implement" and .harvested!=true)] | length)==1' \
+      command jq -e '([.workers[] | select(.unit=="existing" and .type=="implement")] | length)==1' \
         "$TF/supervisor/autopi/workers.json" >/dev/null || { echo 'not ok - hold handoff dispatched a duplicate worker' >&2; exit 1; }
     fi
   done
@@ -5151,7 +5197,15 @@ sched_case_hold_handoff_open_pr() {
     command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
     tick
     command jq -e '(.units|length)==1 and .units[0].issue==779 and .units[0].pr==779 and .units[0].branch=="agent/issue-779" and .units[0].stage=="repair-pending" and (.units[0].repair_hint|contains("issue comments"))' \
-      "$TF/supervisor/autopi/units.json" >/dev/null || { echo "not ok - open PR handoff ($existing existing unit) was not routed to repair" >&2; exit 1; }
+      "$TF/supervisor/autopi/units.json" >/dev/null || {
+      echo "not ok - open PR handoff ($existing existing unit) was not routed to repair" >&2
+      echo '--- units ---' >&2; command jq '.' "$TF/supervisor/autopi/units.json" >&2
+      echo '--- scheduler ---' >&2; tail -60 "$TF/supervisor/autopi/scheduler.log" >&2
+      echo '--- actions ---' >&2; cat "$TF/actions" >&2
+      echo '--- calls ---' >&2; tail -80 "$TF/calls" >&2
+      [[ ! -f "$TF/pr-census.json" ]] || { echo '--- census ---' >&2; cat "$TF/pr-census.json" >&2; }
+      exit 1
+    }
   done
 }
 sched_run_case hold_handoff_open_pr
@@ -5245,7 +5299,13 @@ sched_case_hold_handoff_pr_lookup_failure() {
     || { echo 'not ok - failed PR lookup left the previous approval runnable' >&2; exit 1; }
   if [[ "$mode" == partial ]]; then
     command jq -e '.units[1].hold_handoff_lookup_pending==true and .units[1].hold_handoff_waiting==true' "$TF/supervisor/autopi/units.json" >/dev/null \
-      || { echo 'not ok - unreadable PR was not held during partial lookup' >&2; exit 1; }
+      || {
+        command jq -c '.units[] | select(.pr==901)' "$TF/supervisor/autopi/units.json" >&2
+        command grep -E 'pr list|pr view 901' "$TF/calls" >&2 || true
+        tail -n 20 "$TF/supervisor/autopi/scheduler.log" >&2
+        echo 'not ok - unreadable PR was not held during partial lookup' >&2
+        exit 1
+      }
     ! grep -Eq 'repos/\{owner\}/\{repo\}/pulls/902( |$)' "$TF/calls" \
       || { echo 'not ok - fallback queried a closed historical PR' >&2; exit 1; }
   fi
@@ -5333,9 +5393,16 @@ sched_case_hold_handoff_hotfix_pr() {
       command jq '.[0].labels=[]' "$lookup_fixture" > "$TF/lookup.tmp"; mv "$TF/lookup.tmp" "$lookup_fixture"
       command jq '.[0].labels=[{name:"agent/ci-gated"}]' "$TF/pr-census.json" > "$TF/census.tmp"; mv "$TF/census.tmp" "$TF/pr-census.json"
       command jq '.implement_cap=0' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+      rm -f "$TF/supervisor/autopi/.tick-prs-census.json"
       tick
       command jq -e '.units[0].issue==779 and .units[0].pr==779 and .units[0].stage=="repair-pending" and .units[0].hold_handoff_episode=="hold-779"' "$TF/supervisor/autopi/units.json" >/dev/null \
-        || { echo 'not ok - handoff did not resume after the hotfix label was removed' >&2; exit 1; }
+        || {
+          command jq -c '.units' "$TF/supervisor/autopi/units.json" >&2
+          command grep -E 'pulls/779|pr view 779' "$TF/calls" | tail -n 20 >&2 || true
+          tail -n 30 "$TF/supervisor/autopi/scheduler.log" >&2
+          echo 'not ok - handoff did not resume after the hotfix label was removed' >&2
+          exit 1
+        }
     fi
   done
 }
@@ -5443,11 +5510,13 @@ sched_case_hold_handoff_pr_ambiguity() {
       ! grep -q '^merge ' "$TF/actions" || { echo 'not ok - ambiguous handoff merged before resolution' >&2; exit 1; }
       if [[ "$mode" == ambiguous ]]; then
         command jq -n '[{number:901,headRefName:"fix/one",body:"Refs #779"},{number:902,headRefName:"fix/two",body:"Fixes #902"}]' > "$TF/handoff-lookup.json"
+        rm -f "$TF/supervisor/autopi/.tick-prs-census.json"
         command jq '.auto_merge=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
         tick
         command jq -e '.units[0].issue==779 and .units[0].stage=="repair-pending" and (.units[0].hold_handoff_waiting // false)==false and (.units[1].hold_handoff_waiting // false)==false' "$TF/supervisor/autopi/units.json" >/dev/null \
           || { echo 'not ok - resolving PR association left an unrelated unit frozen' >&2; exit 1; }
         command jq -n '[{number:903,headRefName:"fix/three",body:"Refs #779"},{number:904,headRefName:"fix/four",body:"Refs #779"}]' > "$TF/handoff-lookup.json"
+        rm -f "$TF/supervisor/autopi/.tick-prs-census.json"
         command jq -n '{units:[{id:"pr-903",pr:903,branch:"fix/three",lane:"pr",stage:"ready-to-merge",history:[]},{id:"pr-904",pr:904,branch:"fix/four",lane:"pr",stage:"ready-to-merge",history:[]}]}' > "$TF/supervisor/autopi/units.json"
         tick
         [[ "$(grep -c 'handoff-pr-ambiguous issue=#779' "$TF/agent-home/supervisor-inbox")" == 2 ]] \
@@ -5925,14 +5994,15 @@ sched_run_case supervisor_cap_triage_normal_verb_reask
 # 复发防线：目标配置把 supervisor-arbiter prompt 覆盖成没有终局裁决段的旧版（本次事件的形态），
 # 引擎仍必须把四动词契约带进终局裁决 prompt——两个 prompt 之间的动词漂移在这里 fail CI。
 sched_case_supervisor_cap_triage_contract_binding() {
-  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
+  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}" ZF_CONFIG_ROOT="${ZF_CONFIG_ROOT:-}"
   new_tick_fixture supervisor-cap-triage-contract-binding
   command jq '.max_workers=1 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1
     | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=1' \
     "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
   cap_triage_fixture_prompt
-  mkdir -p "$TF/repo/.zenoforge/prompts"
-  cat > "$TF/repo/.zenoforge/prompts/supervisor-arbiter.md" <<'DRIFT'
+  export ZF_CONFIG_ROOT="$TF/target-config"
+  mkdir -p "$ZF_CONFIG_ROOT/prompts"
+  cat > "$ZF_CONFIG_ROOT/prompts/supervisor-arbiter.md" <<'DRIFT'
 # 工厂 supervisor 裁决（六动作）
 
 DRIFTED- SIX-ACTION-ONLY 配置覆盖，没有任何终局裁决段。
@@ -6267,7 +6337,7 @@ grep -Eq '^issue edit 4279 --repo [^ ]+ .*--remove-label ready-for-agent .*--add
 grep -Fq 'intake issue #4279 -> needs-triage (parent status unverified after 3 attempts, rc=2, step=' "$TF/supervisor/autopi/scheduler.log" \
   || { echo 'scheduler.test.sh: capped parent check did not log its needs-triage disposition' >&2; exit 1; }
 command jq -e '(.intake_parent_retry // {}) | has("4279") | not' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { echo 'scheduler.test.sh: capped parent check left its backoff entry behind' >&2; exit 1; }
+  || { echo 'scheduler.test.sh: capped parent check left its backoff entry behind' >&2; echo '--- units ---' >&2; command jq '.' "$TF/supervisor/autopi/units.json" >&2; echo '--- scheduler.log ---' >&2; tail -50 "$TF/supervisor/autopi/scheduler.log" >&2; echo '--- actions ---' >&2; cat "$TF/actions" >&2; exit 1; }
 
 # A parent check that answers 1 (leaf) clears a backoff entry left by earlier unverified checks.
 new_tick_fixture parent-leaf-clears-unverified

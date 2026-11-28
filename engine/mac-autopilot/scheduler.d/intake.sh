@@ -355,10 +355,13 @@ register_new_issues_pass() {
     (( intake_budget <= intake_left )) || intake_budget=$(( intake_left > 0 ? intake_left : 0 ))
   fi
   (( existing_only )) || intake_skip_cache_load; intake_walk_started=$SECONDS # the existing walk never reads the skip cache
+  local -A intake_seen_candidates=()
   while IFS=$'\t' read -r n lane title labels issue64 issue_updated_at; do
     intake_step_at=$SECONDS; [[ "$n" =~ ^[0-9]+$ ]] || { intake_skip badrow; continue; }
     (( added < want )) || break
     refill_stopped && break # a refused ledger lock wait ended the refill
+    [[ "${intake_seen_candidates[$n]:-}" != 1 ]] || { intake_skip duplicate_candidate; continue; }
+    intake_seen_candidates["$n"]=1
     # The existing walk always takes its first row, so a census longer than the budget still moves the cursor.
     (( SECONDS - intake_started < intake_budget || (existing_only && walk_rows == 0) )) || { say "intake budget spent after ${intake_budget}s: rows from #$n wait for the next tick"; walk_broke="$n"; intake_skip budget; break; }
     walk_rows=$((walk_rows+1))
