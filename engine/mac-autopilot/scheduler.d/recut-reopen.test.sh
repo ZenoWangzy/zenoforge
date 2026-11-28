@@ -29,6 +29,16 @@ fail() { echo "recut-reopen.test.sh: $*" >&2; exit 1; }
 SUP_LOG="$fixture/sup-calls"; : > "$SUP_LOG"
 printf 'source %q\nsupervisor_inbox_append() { printf " %%s" "$1" >> %q; }\n' "$SCHEDULER_AGENT_LIB" "$SUP_LOG" > "$fixture/agent-lib-stub.sh"
 SCHEDULER_AGENT_LIB="$fixture/agent-lib-stub.sh"
+REPO=test/repo
+intake_gh_read() {
+  if [[ "$1 $2" == 'api search/issues' && "$*" == *'is:pr is:merged'* && "$*" == *'Refs #'* ]]; then
+    printf '%s\n' '{"items":[]}'
+  elif [[ "$1 $2" == 'api graphql' ]]; then
+    printf '%s\n' '{"data":{"repository":{}}}'
+  else
+    return 97
+  fi
+}
 unit_json() { jq -c --arg id "$1" '.units[] | select(.id == $id)' "$UNITS"; }
 starts() { jq -n --argjson n "$TICKET_ROUND_BUDGET" '[range($n) | {stage:"write-start",at:"2026-01-01T00:00:00Z",work_type:"implement"}]'; }
 # unit id, issue, last history stage, close time; state file: issue, label state, refused time ("" = none)
