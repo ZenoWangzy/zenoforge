@@ -254,7 +254,7 @@ def figures(facts):
     put("tokens", spend.get("tokens"))
     put("money", spend.get("money_usd"))
     for row in facts.get("stations") or []:
-        put("station:" + row["key"], row["value"])
+        put("station:" + row["key"], row.get("value"))
     return out
 
 
