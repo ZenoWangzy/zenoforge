@@ -1,3 +1,4 @@
+import ctypes
 import os
 import platform
 import re
@@ -5,6 +6,51 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+class ProcBsdInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+def darwin_process_info(pid):
+    info = ProcBsdInfo()
+    reader = ctypes.CDLL("libproc.dylib").proc_pidinfo
+    reader.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
+    ]
+    reader.restype = ctypes.c_int
+    size = ctypes.sizeof(info)
+    if reader(pid, 3, 0, ctypes.byref(info), size) != size:
+        raise ProcessLookupError(pid)
+    return {
+        "pid": info.pbi_pid,
+        "ppid": info.pbi_ppid,
+        "pgid": info.pbi_pgid,
+        "start_id": info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+    }
 
 
 def cpu_totals(stat_text):
@@ -107,6 +153,11 @@ class HostInfo:
                 ["sysctl", "-n", "kern.bootsessionuuid"],
             ).strip()
         raise ValueError(f"unsupported platform: {self.system}")
+
+    def process_info(self, pid):
+        if self.system != "Darwin":
+            raise ValueError(f"unsupported platform: {self.system}")
+        return darwin_process_info(pid)
 
 
 def main(argv=None, proc_root=None, system=None, command_runner=None, reader=None, sleeper=None):

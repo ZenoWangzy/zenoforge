@@ -4,6 +4,7 @@ import datetime
 from contextlib import ExitStack
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -14,7 +15,10 @@ import subprocess
 import sys
 import time
 import uuid
-
+platform_spec = importlib.util.spec_from_file_location("execution_admission_platform", Path(__file__).with_name("execution-admission-platform.py"))
+platform_module = importlib.util.module_from_spec(platform_spec)
+platform_spec.loader.exec_module(platform_module)
+hostinfo = platform_module.hostinfo
 # Maintainer 10-30 CPU band: load above 16 on 12 cores is "too high". opt at 2x the
 # maximum (24) kept WSL at load5 ~20, PSI 37%, 5 GB swap; cap opt at 4/3 of it.
 OPT_LOAD_FACTOR = 4 / 3
@@ -86,7 +90,7 @@ class Deferred(Exception):
 
 class AttemptMetrics:
     """One admission decision; check mode is recorded only when deferred."""
-    def __init__(self, mode, home):
+    def __init__(self, mode, home, platform=None):
         self.home = home
         self.attempt_id = uuid.uuid4().hex
         self.decided = False
@@ -107,8 +111,10 @@ class AttemptMetrics:
             if re.fullmatch(pattern, value):
                 self.fields[key] = value
         try:
-            self.fields["start_ticks"] = identity(os.getpid(), Path("/proc"))["start_ticks"]
-            self.fields["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            platform = platform or Platform()
+            process = platform.identity(os.getpid())
+            self.fields["start_ticks"] = process.get("start_ticks", process.get("start_id"))
+            self.fields["boot_id"] = platform.boot_id()
             # Same kernel hostname identity as existing testcontainers-local leases;
             # never trust an inherited HOSTNAME environment value for attribution.
             host = os.uname().nodename
@@ -180,18 +186,25 @@ def identity(pid, proc):
     return {"pid": int(pid), "start_ticks": fields[19], "ppid": int(fields[1]), "cgroup": unified}
 
 
-def descendant(pid, owner, proc):
+class Platform(platform_module.Platform):
+    def __init__(self, proc=None, system=None, host=None):
+        super().__init__(proc, system, host, identity, occupied, cpu_sample,
+                         resources, WORKER_UNIT, Deferred)
+
+
+def descendant(pid, owner, proc, platform=None):
     while pid > 1:
-        caller = identity(pid, proc)
+        caller = platform.identity(pid) if platform else identity(pid, proc)
         if caller["pid"] == owner["pid"]:
-            return caller["start_ticks"] == owner["start_ticks"]
+            key = "start_ticks" if platform is None or platform.system == "Linux" else "start_id"
+            return caller[key] == owner[key]
         if caller["ppid"] == pid:
             break
         pid = caller["ppid"]
     return False
 
 
-def configuration(home):
+def configuration(home, platform=None):
     values = dict(os.environ)
     keys = {"AGENT_GLOBAL_EXECUTION_CAP", "AGENT_EXECUTION_MIN_MEM_MB", "AGENT_EXECUTION_MAX_LOAD",
             "AGENT_EXECUTION_CPU_TARGET_PERCENT", "AGENT_EXECUTION_MEM_PER_WORKER_MB", "AGENT_EXECUTION_LOAD_PER_WORKER"}
@@ -204,7 +217,7 @@ def configuration(home):
     try:
         cap = int(values.get("AGENT_GLOBAL_EXECUTION_CAP", "10"))
         memory = int(values.get("AGENT_EXECUTION_MIN_MEM_MB", "6144"))
-        processors = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+        processors = platform.ncpu() if platform is not None else (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1))
         load = float(values.get("AGENT_EXECUTION_MAX_LOAD", str(processors)))
         target_text = values.get("AGENT_EXECUTION_CPU_TARGET_PERCENT", "")
         target = float(target_text) if target_text else None
@@ -411,14 +424,15 @@ def paused(home):
         return False
 
 
-def inherited(home, proc):
+def inherited(home, proc, platform=None):
     slot = os.environ.get("ZF_EXECUTION_SLOT", "")
     if not slot.isdecimal():
         return False
     try:
         owner = json.loads((home / "locks" / f"execution-{slot}.json").read_text())
-        current = identity(owner["pid"], proc)
-        if current["start_ticks"] != owner["start_ticks"]:
+        current = platform.identity(owner["pid"]) if platform else identity(owner["pid"], proc)
+        key = "start_ticks" if platform is None or platform.system == "Linux" else "start_id"
+        if current[key] != owner[key]:
             return False
         with (home / "locks" / f"execution-{slot}.lock").open("r") as handle:
             try:
@@ -426,10 +440,12 @@ def inherited(home, proc):
                 return False  # A stale JSON receipt is not a held execution lease.
             except BlockingIOError:
                 pass
-        if identity(os.getpid(), proc)["cgroup"] != current["cgroup"]:
-            return False
+        if platform is None or platform.system == "Linux":
+            process = platform.identity(os.getpid()) if platform else identity(os.getpid(), proc)
+            if process["cgroup"] != current["cgroup"]:
+                return False
         # An unrelated supervisor in /non-systemd must not borrow another lease.
-        return descendant(os.getpid(), current, proc)
+        return descendant(os.getpid(), current, proc, platform)
     except (OSError, ValueError, KeyError, StopIteration, IndexError):
         pass
     return False
@@ -494,48 +510,14 @@ def priority_class():
     return value if value in ("hotfix", "opt", "release") else ""
 
 
-def memory_full_avg60(proc):
-    """Share of the last minute all tasks stalled on memory. MemAvailable counts page cache, so it stayed high while the host thrashed."""
-    try:
-        line = next(row for row in (proc / "pressure/memory").read_text().splitlines() if row.startswith("full "))
-        return float(line.split("avg60=")[1].split()[0])
-    except (OSError, StopIteration, IndexError, ValueError):
-        return None
+def memory_full_avg60(proc, platform=None):
+    return platform_module.memory_full_avg60(proc, platform)
 
 
-def resources(proc, memory, load, cpu=None, target=None, priority="", admitted=False):
-    fields = dict(line.split(":", 1) for line in (proc / "meminfo").read_text().splitlines() if ":" in line)
-    available = int(fields["MemAvailable"].split()[0]) // 1024
-    # Inherited CPU-mode leases can skip load sampling; priority work still
-    # samples load for telemetry while ignoring its admission veto.
-    priority_bypass = priority in ("hotfix", "release")
-    current_load = float((proc / "loadavg").read_text().split()[0]) if load is not None else None
-    sampled_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    result = {"available_mb": available, "load1": current_load if current_load is not None and math.isfinite(current_load) else None,
-              "resource_sampled_at": sampled_at}
-    pressure = memory_full_avg60(proc)
-    if pressure is not None:
-        result["memory_full_avg60"] = pressure
-    fresh = (target is not None and cpu and cpu.get("cpu_state") == "FRESH"
-             and 0 <= time.monotonic() - cpu["cpu_sampled_monotonic"] <= 15)
-    if target is not None:
-        result.update(cpu or {"cpu_state": "UNKNOWN", "cpu_percent": None})
-        if not fresh:
-            result.update(cpu_state="UNKNOWN", cpu_percent=None)
-        result["cpu_decision"] = ("overload" if fresh and cpu["cpu_percent"] > 95 else
-                                  "hold" if fresh and cpu["cpu_percent"] >= target else
-                                  "below-target" if fresh else "load-fallback")
-    # hotfix/release keep only the memory floor; opt yields once pipeline is
-    # already deferred and load still exceeds twice the configured maximum.
-    load_limit = None if priority_bypass else (load * OPT_LOAD_FACTOR if priority == "opt" and load is not None else load)
-    if available < memory or (load_limit is not None and not fresh and (not math.isfinite(current_load) or current_load >= load_limit)):
-        raise Deferred(f"resource floor: available_mb={available} load={current_load}", **result)
-    # Only a new admission yields: a worker's own model calls must not fail on the pressure that worker adds.
-    if not priority_bypass and not admitted and pressure is not None and pressure >= MEMORY_FULL_AVG60_LIMIT:
-        raise Deferred(f"resource floor: memory_full_avg60={pressure}", **result)
-    if priority not in ("hotfix", "release") and fresh and cpu["cpu_percent"] >= target:
-        raise Deferred(f"CPU admission: percent={cpu['cpu_percent']:.2f} target={target:g}", **result)
-    return result
+def resources(proc, memory, load, cpu=None, target=None, priority="", admitted=False, platform=None):
+    return platform_module.resources(
+        proc, memory, load, cpu, target, priority, admitted, platform,
+        memory_full_avg60, MEMORY_FULL_AVG60_LIMIT, OPT_LOAD_FACTOR, Deferred)
 
 
 def lifecycle_wait_command(command):
@@ -583,20 +565,21 @@ def bound_children():
 
 def admission(mode, command):
     home = Path(os.environ.get("AGENT_HOME", str(Path.home() / ".zenoforge")))
+    platform = Platform()
     attempt = None
     if mode in ("run", "run-unit"):
         try:
-            attempt = AttemptMetrics(mode, home)
+            attempt = AttemptMetrics(mode, home, platform)
         except Exception:
             print("execution metrics: initialization failed", file=sys.stderr)
     try:
-        status = admission_inner(mode, command, attempt)
+        status = admission_inner(mode, command, attempt, platform)
         if attempt:
             attempt.status = status
         return status
-    except (Deferred, OSError, ValueError, KeyError, StopIteration, IndexError) as error:
+    except (Deferred, OSError, RuntimeError, ValueError, KeyError, StopIteration, IndexError) as error:
         if attempt is None and mode == "check" and isinstance(error, Deferred):
-            try: attempt = AttemptMetrics(mode, home)
+            try: attempt = AttemptMetrics(mode, home, platform)
             except Exception: print("execution metrics: initialization failed", file=sys.stderr)
         if attempt:
             attempt.status = 75
@@ -607,21 +590,23 @@ def admission(mode, command):
             attempt.append("execution-release", "released", attempt.status, "guardian-lease-closed")
 
 
-def admission_inner(mode, command, attempt=None):
+def admission_inner(mode, command, attempt=None, platform=None):
     home = Path(os.environ.get("AGENT_HOME", str(Path.home() / ".zenoforge")))
-    proc = Path(os.environ.get("ZF_EXECUTION_PROC_ROOT", "/proc"))
+    if platform is None or os.environ.get("ZF_EXECUTION_PROC_ROOT"):
+        platform = Platform()
+    proc = platform.proc
     priority = priority_class()
     if mode == "waiting":
         return 0 if lifecycle_wait_command(command) else 1
     if mode == "paused":
         return 0 if paused(home) else 1
-    cap, memory, load, target, per_worker, load_per_worker = configuration(home)
+    cap, memory, load, target, per_worker, load_per_worker = configuration(home, platform)
     ceiling = cap
     if attempt:
         attempt.fields["ceiling"] = ceiling
         attempt.fields["cap"] = cap
     if mode == "status":
-        print(json.dumps({"source": str(Path(__file__).resolve()), "cap_ceiling": cap, "paused": paused(home), "worker_cgroups": sorted(occupied(proc))}))
+        print(json.dumps({"source": str(Path(__file__).resolve()), "cap_ceiling": cap, "paused": paused(home), "worker_cgroups": sorted(platform.occupied(home))}))
         return 0
     if paused(home):
         raise Deferred("operator PAUSE")
@@ -629,10 +614,10 @@ def admission_inner(mode, command, attempt=None):
     memory_settings = memory_admission_settings(home, per_worker)
     per_worker = worker_memory_estimate(home, worker_class, per_worker, memory_settings)
     cpu_target = None if priority in ("hotfix", "release") else target
-    if mode not in ("check", "resources") and inherited(home, proc):
+    if mode not in ("check", "resources") and inherited(home, proc, platform):
         # This is the same admitted worker, not a new start. Keep live memory and
         # PAUSE/identity checks; CPU opt-in must not reintroduce the old load veto.
-        sample = resources(proc, memory, None if target is not None else load, None, None, priority, True)
+        sample = platform.resources(memory, None if target is not None else load, None, None, priority, True)
         if attempt:
             attempt.fields.update(sample or {}, lease_kind="inherited")
         if mode in ("run", "run-unit"):
@@ -649,8 +634,8 @@ def admission_inner(mode, command, attempt=None):
         fcntl.flock(gate, fcntl.LOCK_EX)
         if paused(home):
             raise Deferred("operator PAUSE")
-        cpu = cpu_sample(home, proc) if cpu_target is not None else None
-        sample = resources(proc, memory, load, cpu, cpu_target, priority)
+        cpu = platform.cpu_sample(home) if cpu_target is not None else None
+        sample = platform.resources(memory, load, cpu, cpu_target, priority)
         if mode == "resources":
             print(json.dumps(sample))
             return 0
@@ -661,8 +646,8 @@ def admission_inner(mode, command, attempt=None):
             # CPU counters can be unreadable independently of the boot identity.
             # UNKNOWN sampling must never cancel a previously consumed interval.
             try:
-                boot_id = str(uuid.UUID((proc / "sys/kernel/random/boot_id").read_text().strip()))
-            except (OSError, ValueError, AttributeError) as exc:
+                boot_id = str(uuid.UUID(platform.boot_id()))
+            except (OSError, RuntimeError, ValueError, AttributeError) as exc:
                 raise Deferred("CPU admission: boot identity unreadable") from exc
             try:
                 started = json.loads(start_path.read_text())
@@ -684,7 +669,7 @@ def admission_inner(mode, command, attempt=None):
                 if previous_boot == boot_id and age < 5:
                     raise Deferred("CPU admission: waiting for post-start observation", **(sample or {}))
         # Isolated test runs must not consume or be blocked by unrelated host workers.
-        groups = set() if isolated_test_home(home, proc) else occupied(proc)
+        groups = set() if platform.system == "Linux" and isolated_test_home(home, proc) else platform.occupied(home)
         held = []
         candidates = []
         # Scan old slots too when an operator lowers the cap; never lose occupancy.
@@ -703,11 +688,15 @@ def admission_inner(mode, command, attempt=None):
                 held.append(int(slot))
                 try:
                     owner = json.loads(path.with_suffix(".json").read_text())
-                    live = identity(owner["pid"], proc)
-                    if live["start_ticks"] != owner["start_ticks"]:
+                    live = platform.identity(owner["pid"])
+                    identity_key = "start_ticks" if platform.system == "Linux" else "start_id"
+                    if live[identity_key] != owner[identity_key]:
                         raise Deferred("execution lease PID identity changed")
-                    groups.discard(live["cgroup"])
-                except (OSError, ValueError, KeyError, StopIteration, IndexError) as exc:
+                    if platform.system == "Linux":
+                        groups.discard(live["cgroup"])
+                    else:
+                        groups = {name: pgid for name, pgid in groups.items() if pgid != live["pgid"]}
+                except (OSError, RuntimeError, ValueError, KeyError, StopIteration, IndexError) as exc:
                     raise Deferred("execution lease identity unreadable") from exc
         total = len(held) + len(groups)
         decision_cap = admission_cap(ceiling, memory, load, per_worker, load_per_worker, sample, total, priority)
@@ -727,7 +716,7 @@ def admission_inner(mode, command, attempt=None):
         if mode == "check":
             return 0
         slot, handle = next((i, h) for i, h in candidates if i < decision_cap)
-        record = identity(os.getpid(), proc)
+        record = platform.identity(os.getpid())
         destination = locks / f"execution-{slot}.json"
         temporary = destination.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps(record) + "\n")
@@ -742,7 +731,7 @@ def admission_inner(mode, command, attempt=None):
         if cpu_target is not None:
             # Only a newly acquired lease consumes the interval. Prime counters at
             # that grant so the next launch cannot reuse a pre-start CPU window.
-            baseline = cpu_sample(home, proc, reset=True)
+            baseline = platform.cpu_sample(home, reset=True)
             temporary = start_path.with_suffix(f".{os.getpid()}.tmp")
             temporary.write_text(json.dumps({"boot_id": boot_id,
                                              "monotonic": baseline["cpu_sampled_monotonic"]}) + "\n")
@@ -754,9 +743,9 @@ def admission_inner(mode, command, attempt=None):
         if paused(home):
             raise Deferred("operator PAUSE")
         worker_cgroup = ""
-        if mode == "run-unit":
+        if mode == "run-unit" and platform.system == "Linux":
             try:
-                worker_cgroup = identity(os.getpid(), proc)["cgroup"]
+                worker_cgroup = platform.identity(os.getpid())["cgroup"]
             except (OSError, ValueError, KeyError, StopIteration, IndexError):
                 pass
         if mode == "run-unit" and Path(command[0]).name == "setsid" and not any(arg in ("-w", "--wait") for arg in command[1:]):
@@ -812,7 +801,7 @@ if __name__ == "__main__":
         sys.exit(64)
     try:
         sys.exit(admission(mode, command))
-    except (Deferred, OSError, ValueError, KeyError, StopIteration, IndexError) as error:
+    except (Deferred, OSError, RuntimeError, ValueError, KeyError, StopIteration, IndexError) as error:
         # Never log command argv, environment contents, or credential-bearing files.
         detail = str(error) if isinstance(error, Deferred) else type(error).__name__
         print(f"execution admission deferred: {detail}", file=sys.stderr)

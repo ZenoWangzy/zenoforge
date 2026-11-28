@@ -942,5 +942,135 @@ try:sys.exit"""))
         self.assertEqual(receipt.read_text(), '1:1')
 
 
+    def test_fake_non_linux_platform_keeps_the_admission_decision(self):
+        cpu = {"cpu_state": "FRESH", "cpu_percent": 50.0, "cpu_sampled_monotonic": 100.0}
+
+        class FakePlatform:
+            proc = Path("/proc")
+
+            def __init__(self, system, available):
+                self.system = system
+                self.available = available
+
+            def ncpu(self):
+                return 12
+
+            def identity(self, pid):
+                key = "start_ticks" if self.system == "Linux" else "start_id"
+                return {"pid": pid, key: "start", "ppid": 1}
+
+            def occupied(self, home):
+                return set()
+
+            def cpu_sample(self, home, reset=False):
+                return cpu
+
+            def resources(self, memory, load, sample, target, priority, admitted=False):
+                return {"available_mb": self.available, "load1": 0.0,
+                        "cpu_state": sample["cpu_state"], "cpu_percent": sample["cpu_percent"],
+                        "cpu_sampled_monotonic": sample["cpu_sampled_monotonic"],
+                        "cpu_decision": "below-target"}
+
+            def boot_id(self):
+                return "00000000-0000-0000-0000-000000000001"
+
+        with patch.dict(os.environ, {"AGENT_HOME": str(self.home),
+                                    "AGENT_EXECUTION_MIN_MEM_MB": "6144",
+                                    "AGENT_EXECUTION_MAX_LOAD": "12",
+                                    "AGENT_EXECUTION_CPU_TARGET_PERCENT": "90",
+                                    "ZF_EXECUTION_PROC_ROOT": "",
+                                    "AGENT_DISPATCH_MEMINFO_FILE": ""}), \
+             patch.object(guard.time, "monotonic", return_value=100.0):
+            for available, expected in ((10000, 0), (1024, 75)):
+                decisions = []
+                for system in ("Linux", "Darwin"):
+                    with self.subTest(system=system, available=available):
+                        platform = FakePlatform(system, available)
+                        try:
+                            status = guard.admission_inner("check", [], platform=platform)
+                        except guard.Deferred:
+                            status = 75
+                        decisions.append(status)
+                self.assertEqual(decisions, [expected, expected])
+
+
+    def test_existing_memory_fixtures_precede_platform_host_reads(self):
+        proc = self.home / "fixture-proc"
+        (proc / "sys/kernel/random").mkdir(parents=True)
+        (proc / "sys/kernel/random/boot_id").write_text("00000000-0000-0000-0000-000000000001")
+        (proc / "meminfo").write_text("MemAvailable: 1024 kB\n")
+        (proc / "loadavg").write_text("0 0 0 1/2 3\n")
+        (proc / "stat").write_text("cpu 100 0 0 100 0 0 0 0\ncpu0 1\n")
+        meminfo = self.home / "dispatch-meminfo"
+        meminfo.write_text("MemAvailable: 10240000 kB\n")
+
+        class HostInfo:
+            system = "Darwin"
+
+            def mem_avail_mb(self):
+                raise AssertionError("the memory fixture should be used")
+
+            def load1(self):
+                return 0.0
+
+            def mem_pressure_pct(self):
+                return 0.0
+
+        with patch.dict(os.environ, {"ZF_EXECUTION_PROC_ROOT": str(proc),
+                                    "AGENT_DISPATCH_MEMINFO_FILE": str(meminfo)}):
+            platform = guard.Platform(system="Darwin", host=HostInfo())
+            self.assertEqual(platform.system, "Linux")
+            self.assertEqual(platform.resources(1, 12)["available_mb"], 10000)
+            self.assertEqual(platform.boot_id(), "00000000-0000-0000-0000-000000000001")
+
+        with patch.dict(os.environ, {"ZF_EXECUTION_PROC_ROOT": "",
+                                    "AGENT_DISPATCH_MEMINFO_FILE": str(meminfo)}):
+            platform = guard.Platform(system="Darwin", host=HostInfo())
+            sample = platform.resources(1, None)
+            self.assertEqual(sample["available_mb"], 10000)
+            self.assertEqual(sample["load1"], None)
+
+
+    def test_darwin_platform_uses_hostinfo_and_counts_locked_units(self):
+        class HostInfo:
+            system = "Darwin"
+
+            def process_info(self, pid):
+                return {"pid": pid, "ppid": 1, "pgid": 42, "start_id": 1}
+
+            def mem_avail_mb(self):
+                return 10000
+
+            def load1(self):
+                return 0.0
+
+            def mem_pressure_pct(self):
+                return 5.0
+
+            def cpu_busy_pct(self):
+                return 50
+
+            def boot_id(self):
+                return "00000000-0000-0000-0000-000000000001"
+
+        with patch.dict(os.environ, {"ZF_EXECUTION_PROC_ROOT": "",
+                                    "AGENT_DISPATCH_MEMINFO_FILE": "",
+                                    "ZF_PIPELINE_UNIT": ""}):
+            platform = guard.Platform(system="Darwin", host=HostInfo())
+            self.assertEqual(platform.identity(42)["pgid"], 42)
+            self.assertEqual(platform.cpu_sample(self.home)["cpu_percent"], 50)
+            cpu = {"cpu_state": "FRESH", "cpu_percent": 50,
+                   "cpu_sampled_monotonic": time.monotonic()}
+            sample = platform.resources(1, 12, cpu, 90)
+            self.assertEqual(sample["cpu_decision"], "below-target")
+            self.assertEqual(platform.boot_id(), "00000000-0000-0000-0000-000000000001")
+            unit = self.home / "run" / "units" / "zf-implement-fixture"
+            unit.mkdir(parents=True)
+            (unit / "meta.json").write_text(json.dumps({"pgid": 42}))
+            with (unit / "lock").open("w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(platform.occupied(self.home), {"zf-implement-fixture": 42})
+
+
 if __name__ == "__main__":
     unittest.main()
