@@ -915,6 +915,9 @@ tick_gh() {
       else
         echo '{}'
       fi ;;
+    'api search/issues')
+      [[ "$*" == *'is:merged'* && "$*" == *'Refs #'* ]] || { echo "unexpected gh search: $*" >&2; return 97; }
+      printf '%s\n' '{"items":[]}' ;;
     'api '*)
       if [[ "$1 $2" == 'api search/issues' && "$*" == *'is:pr is:merged'* && "$*" == *'Refs #'* ]]; then
         if [[ -n "${MERGED_REFS_PR_FIXTURE:-}" ]]; then cat "$MERGED_REFS_PR_FIXTURE"; else printf '%s\n' '{"items":[]}'; fi
@@ -1214,13 +1217,37 @@ tick() (
       command node "$@"
     fi
   }
-  export PATH="$repo_root/engine/gh-shim:$TF/bin:$PATH" AUTOPI_VIEWS_INLINE=true
+  mkdir -p "$TF/tick-bin"
+  cat > "$TF/tick-bin/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+tick_gh "$@"
+SH
+  chmod +x "$TF/tick-bin/gh"
+  export PATH="$TF/tick-bin:$repo_root/engine/gh-shim:$TF/bin:$PATH" AUTOPI_VIEWS_INLINE=true
   export -f git jq node ps test_issue_rest_payload tick_gh tick_gh_pr_rest_payload tick_git tick_jq
   # 额外参数原样传给 scheduler.sh（如 --refill）；不带参数就是一整拍慢 tick。
   local rc=0
   # Fixture ticks assert step effects before exit; keep the production step lock but run them inline here.
-  AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
-  if (( rc != 0 && rc != 75 )); then cat "$TF/tick.out" >&2; return 1; fi
+  if [[ "${SCHED_TEST_TRACE_REFILL:-}" == 1 ]]; then
+    cat > "$TF/refill-trace-env" <<'SH'
+exec 9>>"$TF/refill.trace"
+BASH_XTRACEFD=9
+PS4='+${BASH_SOURCE##*/}:${LINENO}: '
+set -o xtrace
+SH
+    BASH_ENV="$TF/refill-trace-env" AUTOPI_TEST_INLINE_TICK_STEPS=true \
+      bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
+  else
+    AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
+  fi
+  if (( rc != 0 && rc != 75 )); then
+    cat "$TF/tick.out" >&2
+    if [[ -s "$TF/refill.trace" ]]; then
+      awk '/[[:space:]]gh / { command=$0; sub(/^.*[[:space:]]gh /,"gh ",command); split(command, words, /[[:space:]]+/); if (words[1] == "gh") print words[1], words[2], words[3] }' "$TF/refill.trace" | tail -n 30 >&2
+    fi
+    return 1
+  fi
   [[ ! -e "$TF/unexpected-host" ]] || { cat "$TF/unexpected-host" >&2; return 1; }
   return "$rc"
 )
@@ -3177,6 +3204,7 @@ command jq -n '{units:[
   {id:"issue-8805",lane:"direct-main",branch:"agent/issue-8805",task:"handoff refill fixture",handoff_start_ref:"rescue",handoff_start_sha:"0123456789abcdef0123456789abcdef01234567",stage:"implement-pending",history:[]},
   {id:"issue-8806",lane:"direct-main",branch:"agent/issue-8806",task:"budget refill fixture",stage:"implement-pending",history:[
     {stage:"write-start",at:"2026-10-29T00:00:00Z"},{stage:"write-start",at:"2026-10-29T00:00:00Z"},{stage:"write-start",at:"2026-10-29T00:00:00Z"}]}]}' > "$TF/supervisor/autopi/units.json"
+command jq -n '{epoch:0,states:{"4321":{state:"OPEN",labels:""}}}' > "$TF/supervisor/autopi/dep-check.cache.json"
 command jq -n --argjson pid "$refill_dead_pid" \
   '{workers:[{pid:$pid,unit:"issue-8801",type:"implement",log:"impl-8801.log",report:"impl-8801.md",started:"2026-10-29T00:00:00Z",harvested:false}]}' > "$TF/supervisor/autopi/workers.json"
 printf 'NEEDS-PR: fixture touches a product path\n' > "$TF/supervisor/impl-8801.md"
@@ -3204,19 +3232,22 @@ command jq -cn --arg sampled_at "$budget_sampled_at" --argjson sampled_epoch "$b
   '{sampled_at:$sampled_at,sampled_epoch:$sampled_epoch,resources:{graphql:{used:100,remaining:4900,reset:$reset},core:{used:0,remaining:5000,reset:$reset}}}' \
   > "$TF/agent-home/state/gh-budget.latest.json"
 calls_before="$(wc -l < "$TF/calls")"
-ZF_AGENT_TEST_MODE=0 TF_REAL_PS=1 tick --refill
+SCHED_TEST_TRACE_REFILL=1 ZF_AGENT_TEST_MODE=0 TF_REAL_PS=1 tick --refill
 command jq -e '.units | length==5
   and any(.[]; .id=="issue-8802" and .stage=="implement")
   and any(.[]; .id=="issue-8801" and .lane=="pr" and .stage=="implement-pending")
-  and any(.[]; .id=="issue-8804" and .stage=="implement-pending")
+  and any(.[]; .id=="issue-8804" and .stage=="blocked-external" and .blocked_on==4321)
   and any(.[]; .id=="issue-8805" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8806" and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
   || {
     cat "$TF/tick.out" >&2
     printf '%s\n' 'scheduler.test.sh: refill fixture GitHub calls:' >&2
-    command grep '^gh ' "$TF/calls" | tail -n 30 >&2 || :
-    command jq -c '{units:[.units[]|{id,lane,stage,issue,pr}]}' "$TF/supervisor/autopi/units.json" >&2 || :
-    command jq -c '{workers:[.workers[]|{unit,type,harvested}]}' "$TF/supervisor/autopi/workers.json" >&2 || :
+    command grep -E '^gh |^fixture graphql ' "$TF/calls" | tail -n 30 >&2 || :
+    if [[ -s "$TF/refill.trace" ]]; then
+      awk '/[[:space:]]gh / { command=$0; sub(/^.*[[:space:]]gh /,"gh ",command); split(command, words, /[[:space:]]+/); if (words[1] == "gh") print words[1], words[2], words[3] }' "$TF/refill.trace" | tail -n 30 >&2
+    fi
+    command jq -c '.units[] | {id,lane,stage,issue,pr}' "$TF/supervisor/autopi/units.json" >&2 || :
+    command jq -c '.workers[] | {unit,type,harvested}' "$TF/supervisor/autopi/workers.json" >&2 || :
     echo 'scheduler.test.sh: refill tick did not dispatch the waiting unit without harvesting the worker report' >&2
     exit 1
   }
