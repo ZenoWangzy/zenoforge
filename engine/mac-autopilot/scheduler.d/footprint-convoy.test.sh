@@ -457,4 +457,19 @@ if _footprint_room room-cand "$room_cand_unit" true; then fail 'a live overlap w
 [[ "$(room_expands)" == 1 ]] || fail "the refusal pass expanded again ($(room_expands) calls)"
 unset -f hotspot_expand_batch
 
+printf '%s\n' '{"units":[{"id":"remote-candidate","stage":"implement-pending","footprint":["src/hot"]}]}' > "$UNITS"
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+coord_remote_enabled() { return 0; }
+coord_remote_scheduler_footprints() {
+  printf '%s\n' '[{"id":"remote-owner","stage":"implement","footprint":["src/hot"],"remote_claim":true}]'
+}
+TICK_ACTIVE_FOOTPRINTS_VALID=false
+remote_active="$(active_footprint_snapshot)" || fail 'remote footprint snapshot failed'
+remote_conflict="$(active_footprint_conflict '["src/hot"]' "$remote_active" remote-candidate '["src/hot"]')" \
+  || fail 'remote footprint comparison failed'
+[[ "$remote_conflict" == remote-owner ]] || fail 'remote writer scope did not block an overlapping unit'
+coord_remote_scheduler_footprints() { return 3; }
+if footprint_active_rows >/dev/null; then fail 'unknown remote claim snapshot was admitted'; fi
+if active_footprint_snapshot remote-candidate >/dev/null; then fail 'unknown remote claim snapshot reached footprint admission'; fi
+
 echo 'footprint-convoy.test.sh: pass (stale-owner release, live-owner lock, convoy dedupe, refill metrics, expansion cache, refill expansion reuse)'

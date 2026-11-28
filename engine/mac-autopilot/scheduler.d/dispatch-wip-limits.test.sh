@@ -88,16 +88,38 @@ TICK_STARTED_WIP_COUNT="${TICK_STARTED_WIP_COUNT#WIP_COUNT=}"
 printf '%s\n' '{"workers":[]}' > "$WORKERS"
 DISPATCH_WHY_LAST=(); DISPATCH_WHY_TOUCHED=(); DISPATCH_WHY_DIRTY=false
 TICK_ACTIVE_FOOTPRINTS_VALID=false
-size_admission_write_start() { return 0; }
+dispatch_order=()
+start_silent_breaker() { dispatch_order+=(breaker); return 0; }
+coord_remote_enabled() { return 0; }
+coord_new_owner() { printf 'owner-fixture\n'; }
+coord_acquire() { dispatch_order+=(acquire); COORD_REMOTE_RESTORE_REQUIRED=0; return 0; }
+coord_assert_owned() { dispatch_order+=(assert); return 0; }
+size_admission_write_start() { dispatch_order+=(size-write); return 0; }
 footprint_recurrence_brief() { :; }
 incident_worker_prompt() { printf '%s' "$3"; }
 dispatch_why_clear() { :; }
 dispatch_calls=0
-dispatch() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
+dispatch() {
+  dispatch_calls=$((dispatch_calls + 1))
+  dispatch_order+=(dispatch)
+  [[ "$SCHEDULER_DISPATCH_CLAIM_KEY" == unit-not-started && "$SCHEDULER_DISPATCH_CLAIM_OWNER" == owner-fixture ]] \
+    || fail 'dispatch did not receive the pre-acquired unit claim'
+  dispatch_claim_clear
+  return 0
+}
 new_unit="$(jqf -c '.units[] | select(.id == "not-started")' "$UNITS")"
 if dispatch_if_room not-started implement implement impl.log impl.md model high prompt "" "" "" "" "$new_unit" false codex false configured codex; then :; else fail 'implement at WIP 10 did not dispatch'; fi
 [[ "$dispatch_calls" == 1 ]] || fail "expected one implement start at WIP 10, got $dispatch_calls"
+[[ "${dispatch_order[*]}" == 'breaker acquire assert size-write dispatch' ]] || fail "claim order was ${dispatch_order[*]}"
 [[ "$TICK_STARTED_WIP_COUNT" == 11 ]] || fail "successful implement start did not advance WIP to 11 (got $TICK_STARTED_WIP_COUNT)"
+units_before="$(sha256sum "$UNITS" | cut -d' ' -f1)"
+log_before="$(sha256sum "$LOG" | cut -d' ' -f1)"
+coord_remote_enabled() { return 1; }
+coord_new_owner() { fail 'coordination-off dispatch generated a claim owner'; return 1; }
+coord_acquire() { fail 'coordination-off dispatch acquired a claim'; return 1; }
+dispatch_claim_prepare not-started "$new_unit" implement || fail 'coordination-off claim gate refused'
+[[ "$(sha256sum "$UNITS" | cut -d' ' -f1)" == "$units_before" ]] || fail 'coordination-off claim gate changed units.json'
+[[ "$(sha256sum "$LOG" | cut -d' ' -f1)" == "$log_before" ]] || fail 'coordination-off claim gate changed scheduler.log'
 room_attempt second-implement implement '{"id":"second-implement","stage":"implement-pending"}'
 expect_rc 'implement at WIP limit' 1 "$ROOM_RC"
 grep -Fqx 'dispatch why unit=second-implement gate=wip-limit' "$LOG" || fail 'implement at WIP limit did not record reason wip-limit'

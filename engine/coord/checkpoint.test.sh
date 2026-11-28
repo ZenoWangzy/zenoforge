@@ -104,6 +104,31 @@ fi
 jq -e --arg id "$unit" '(.units[] | select(.id == $id)) | .stage == "repair-pending" and .pr == 42' "$UNITS" >/dev/null \
   || fail 'standalone coordinator did not restore the unit row'
 
+claims_repo="$fixture/claims.git"
+git init --bare -q "$claims_repo"
+COORD_REMOTE_REPO="$claims_repo"
+coord_remote_refresh() { return 0; }
+remote_claim="$(jq -cn --arg key "issue-$issue" --arg unit "$unit" --argjson scope '["engine/coord"]' \
+  '{version:1,key:$key,owner:"owner-remote",owner_kind:"scheduler-worker",subject:"1510",unit:$unit,stage:"implement",expires_at:0,checkpoint:{state:{},unit:{stage:"implement",footprint:$scope}}}')"
+remote_blob="$(printf '%s\n' "$remote_claim" | git -C "$claims_repo" hash-object -w --stdin)"
+remote_tree="$(printf '100644 blob %s\tclaim.json\n' "$remote_blob" | git -C "$claims_repo" mktree)"
+remote_commit="$(GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid \
+  git -C "$claims_repo" commit-tree "$remote_tree" -m claim)"
+git -C "$claims_repo" update-ref refs/seen/claims/issue-1510 "$remote_commit"
+remote_rows="$(coord_remote_scheduler_footprints '[{"id":"local-live","stage":"implement"}]')" \
+  || fail 'remote scheduler claim projection failed with a local row missing its cached footprint'
+jq -e --arg unit "$unit" 'any(.[]; .id==$unit and .stage=="implement" and .footprint==["engine/coord"] and .remote_claim==true)' \
+  <<<"$remote_rows" >/dev/null || fail 'remote scheduler claim footprint was missing'
+
+truncated_claim="$(jq -cn --arg unit "$unit" \
+  '{version:1,key:"issue-1511",owner:"owner-remote",owner_kind:"scheduler-worker",subject:"1511",unit:$unit,stage:"repair",expires_at:0,checkpoint_truncated:true,checkpoint:{state:{},unit:{}}}')"
+truncated_blob="$(printf '%s\n' "$truncated_claim" | git -C "$claims_repo" hash-object -w --stdin)"
+truncated_tree="$(printf '100644 blob %s\tclaim.json\n' "$truncated_blob" | git -C "$claims_repo" mktree)"
+truncated_commit="$(GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid \
+  git -C "$claims_repo" commit-tree "$truncated_tree" -m claim)"
+git -C "$claims_repo" update-ref refs/seen/claims/issue-1511 "$truncated_commit"
+if coord_remote_scheduler_footprints '[]' >/dev/null; then fail 'truncated remote writer checkpoint was admitted'; fi
+
 old_claim='{"key":"issue-1510","checkpoint":{"state":{"attempts":3},"unit":{}}}'
 large_checkpoint="$(jq -cn --arg value "$large_value" '{state:{last_failure_reason:$value},unit:{}}')"
 fitted_claim="$(coord_checkpoint_fit_claim "$old_claim" "$large_checkpoint")" || fail 'oversize projection was rejected instead of retaining the prior checkpoint'

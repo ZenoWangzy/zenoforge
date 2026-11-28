@@ -1,0 +1,7 @@
+{
+  "engine/mac-autopilot/scheduler.d/self-check.sh": ["engine/mac-autopilot/scheduler.d/dispatch-wip-limits.test.sh"],
+  "engine/mac-autopilot/scheduler.d/dispatch.sh": ["engine/mac-autopilot/scheduler.d/dispatch-wip-limits.test.sh"],
+  "engine/mac-autopilot/scheduler.d/footprint-memo.sh": ["engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh"],
+  "engine/coord-remote.sh": ["engine/coord/checkpoint.test.sh"],
+  "docs/agents/practices.md": ["engine/practices-index.test.mjs"]
+}

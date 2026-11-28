@@ -125,6 +125,61 @@ coord_remote_refresh() {
   return "$status"
 }
 
+coord_remote_scheduler_footprints() {
+  local local_rows="${1:-[]}" refs ref key record owner kind unit stage held local_claim represented scope row output='[]' output_file
+  jq -e 'type == "array" and all(.[]; type == "object" and (.id | type == "string"))' \
+    <<<"$local_rows" >/dev/null 2>&1 || return 3
+  coord_remote_refresh || return 3
+  refs="$(git -C "$COORD_REMOTE_REPO" for-each-ref --format='%(refname)' refs/seen/claims 2>/dev/null)" || return 3
+  while IFS= read -r ref; do
+    [[ "$ref" == refs/seen/claims/* ]] || continue
+    key="${ref#refs/seen/claims/}"
+    [[ -n "$key" ]] || return 3
+    record="$(git -C "$COORD_REMOTE_REPO" cat-file blob "$ref:claim.json" 2>/dev/null)" || return 3
+    _coord_remote_record_valid "$key" "$record" || return 3
+    owner="$(jq -r '.owner // empty' <<<"$record")" || return 3
+    [[ -n "$owner" ]] || continue
+    kind="$(jq -r '.owner_kind' <<<"$record")" || return 3
+    stage="$(jq -r '.stage' <<<"$record")" || return 3
+    [[ "$kind" == scheduler-worker && ( "$stage" == implement || "$stage" == repair ) ]] || continue
+    unit="$(jq -r '.unit' <<<"$record")" || return 3
+    represented=false
+    jq -e --arg id "$unit" 'any(.[]; .id == $id)' <<<"$local_rows" >/dev/null 2>&1 && represented=true
+    held="$AGENT_HOME/coord/held/$key"
+    local_claim=false
+    if [[ -r "$held" ]] && jq -e --arg owner "$owner" --arg unit "$unit" '.owner == $owner and .unit == $unit' "$held" >/dev/null 2>&1; then
+      local_claim=true
+    fi
+    if [[ "$local_claim" == true && "$represented" == true ]]; then continue; fi
+    if jq -e '
+      type == "object"
+      and ((has("checkpoint_truncated") | not) or (.checkpoint_truncated | type == "boolean"))
+      and (.checkpoint_truncated // false) != true
+      and (.checkpoint | type == "object")
+      and (.checkpoint.unit | type == "object")
+      and (.checkpoint.unit.footprint | type == "array" and all(.[];
+        type == "string" and length > 0 and (startswith("/") | not)
+        and ((split("/") | index("..")) == null) and ((split("/") | index(".")) == null)))
+    ' <<<"$record" >/dev/null 2>&1; then
+      scope="$(jq -c '.checkpoint.unit.footprint' <<<"$record")" || return 3
+    elif [[ "$local_claim" == true && "$represented" == true ]]; then
+      continue
+    else
+      echo "coord_footprints: writer checkpoint unavailable key=$key" >&2
+      return 3
+    fi
+    row="$(jq -cn --arg id "$unit" --arg stage "$stage" --argjson footprint "$scope" \
+      '{id:$id,stage:$stage,footprint:$footprint,remote_claim:true}')" || return 3
+    output_file="$(jq_arg_file "$output")" || return 3
+    if ! output="$(jq -cn --rawfile rows "$output_file" --argjson row "$row" '($rows | fromjson) + [$row]')"; then
+      rm -f -- "$output_file"
+      return 3
+    fi
+    rm -f -- "$output_file"
+  done <<<"$refs"
+  printf '%s\n' "$output"
+}
+
 
 _coord_remote_cached_read() {
   local key="$1" ref="refs/seen/claims/$1" record status
