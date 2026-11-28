@@ -6,6 +6,7 @@ incident_fingerprint() {
     -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z//g' \
     -e 's/[0-9a-f]{40}//g' \
     -e 's/(^| )(count|secs|elapsed|duration|took|age|sha)=[^ ]*/\1/g' \
+    -e 's/(^|[[:space:]])[^[:space:]=:]+[=:][0-9]+s?/\1/g' \
     | tr -s ' ' | sed -E 's/^ //; s/ $//'
 }
 
