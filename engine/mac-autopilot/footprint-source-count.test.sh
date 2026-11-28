@@ -366,6 +366,7 @@ done
 # End to end: refill intake over N cached candidates that all overlap one running owner.
 intake_footprint_snapshot() { printf '[{"id":"issue-9001","stage":"implement-pending","footprint":["packages/hot"]}]\n'; }
 live_workers() { printf '0\n'; }
+tick_prs_fetch() { printf '[]\n'; }
 gh() { [[ "$1 $2" == 'pr list' ]] && { echo '[]'; return 0; }; return 97; }
 register() { # n -> lib loads and wall seconds for one refill intake over n candidates
   local rows='' i start loads_before

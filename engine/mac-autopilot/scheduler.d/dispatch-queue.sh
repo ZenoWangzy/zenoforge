@@ -786,7 +786,6 @@ $deliver"
   dispatch_why_save
   dispatch_steps_say
 }
-
 dispatch_pending() {
   local TICK_STEP_LOCK_RESULT=""
   if declare -F tick_step_lock_run >/dev/null 2>&1; then
