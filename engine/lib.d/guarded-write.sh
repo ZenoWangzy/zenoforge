@@ -61,6 +61,7 @@ _guarded_write_caller() {
 }
 
 guarded_write() {
+  coord_assert_write_scope guarded_write || return $?
   reject_native_auto_merge "$@" || return $?
   local issue_number lane caller create_repo="${REPO:-}" has_lane_add=0 has_hold_remove=0 has_ready_add=0 has_edit=0 child_status i
   local transition_rest_fallback=0 transition_only=1 transition_remove_hold=0 transition_remove_evidence=0

@@ -47,7 +47,7 @@ merge_green_revert_pr() { # <pr-row-json> <culprit> <subject-reason> [main-red-s
         and .revert_head == $head' \
       <<< "$session" >/dev/null 2>&1 || return 0
   fi
-  guarded_pr_merge "$pr_number" "revert: fix(#$issue) $reason" \
+  coord_with_ticket "issue-$issue" -- guarded_pr_merge "$pr_number" "revert: fix(#$issue) $reason" \
     "This reverts commit $culprit." "$head" || true
 }
 

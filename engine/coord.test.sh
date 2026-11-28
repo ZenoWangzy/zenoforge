@@ -103,6 +103,10 @@ coord_remote_run() {
       }
       action="$1"
       shift
+      coord_ticket_probe() {
+        coord_assert_owned "$ZF_COORD_SCOPE" >/dev/null || return $?
+        printf '%s|%s\n' "$ZF_COORD_SCOPE" "$ZF_COORD_OWNER"
+      }
       if [[ "$action" == acquire && "${1:-}" == "${ZF_COORD_TEST_RACE_KEY:-}" && -n "${ZF_COORD_TEST_RACE_DIR:-}" ]]; then
         : > "$ZF_COORD_TEST_RACE_DIR/$ZF_HOST_ID.ready"
         for ((attempt = 0; attempt < 1000; attempt++)); do
@@ -120,6 +124,8 @@ coord_remote_run() {
         renew) coord_renew "$@" ;;
         release) coord_release "$@" ;;
         assert) coord_assert_owned "$@" ;;
+        with-ticket) coord_with_ticket "$1" -- coord_ticket_probe ;;
+        manual-enter) coord_enter "$1" "$2" && coord_ticket_probe ;;
         init) coord_init ;;
         refresh) coord_refresh ;;
       esac
@@ -314,5 +320,38 @@ for race_pid in "${race_pids[@]}"; do
 done
 [[ $race_winners == 1 ]] || fail "20-way race produced $race_winners winners instead of one"
 unset ZF_COORD_TEST_RACE_DIR ZF_COORD_TEST_RACE_KEY
+
+ticket_scope_output="$(coord_remote_run A with-ticket issue-81015)" \
+  || fail 'ticket-scoped write did not acquire and assert its claim'
+[[ "$ticket_scope_output" == ticket:issue-81015\|* ]] \
+  || fail "ticket-scoped write received the wrong scope: $ticket_scope_output"
+if coord_remote_run A read issue-81015 >/dev/null 2>&1; then
+  fail 'ticket-scoped write left its temporary claim owned'
+else
+  rc=$?
+  (( rc == 1 )) || fail "ticket-scoped write release returned claim status $rc instead of absent (1)"
+fi
+
+coord_remote_run A acquire issue-81016 owner-held sweep issue-81016 sweep triage \
+  || fail 'could not create the held claim for the ticket-scope refusal case'
+if coord_remote_run B with-ticket issue-81016 >/dev/null 2>&1; then
+  fail 'ticket-scoped write ran while another host owned the ticket'
+else
+  rc=$?
+  (( rc == 1 )) || fail "ticket-scope refusal returned $rc instead of held (1)"
+fi
+
+manual_entry_output="$(coord_remote_run A manual-enter 81017 triage)" \
+  || fail 'manual ticket entry did not acquire and assert its claim'
+[[ "$manual_entry_output" == ticket:issue-81017\|* ]] \
+  || fail "manual entry received the wrong scope: $manual_entry_output"
+coord_remote_run A acquire issue-81018 owner-held manual-worker 81018 manual-triage-81018 triage \
+  || fail 'could not create the held claim for the manual-entry refusal case'
+if coord_remote_run B manual-enter 81018 triage >/dev/null 2>&1; then
+  fail 'manual entry proceeded while another host owned the ticket'
+else
+  rc=$?
+  (( rc == 1 )) || fail "manual-entry refusal returned $rc instead of held (1)"
+fi
 
 printf 'coord.test.sh: PASS\n'

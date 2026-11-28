@@ -16,10 +16,12 @@ coord_release() { return 0; }
 coord_release_many() { return 0; }
 coord_renew() { return 0; }
 coord_assert_owned() { return 0; }
+coord_assert_write_scope() { return 0; }
 coord_remote_active() { return 1; }
 coord_reap_expired() { return 0; }
 coord_reconcile_systemd_workers() { return 0; }
 coord_with_scheduler_lock() { "$@"; }
+coord_with_ticket() { [[ $# -ge 3 && "${2:-}" == -- ]] || return 64; shift 2; "$@"; }
 coord_enter() { return 0; }
 coord_exit() { return 0; }
 coord_issue_live_worker() { return 1; }

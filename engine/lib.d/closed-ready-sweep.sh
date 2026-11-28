@@ -16,7 +16,7 @@ sweep_closed_ready_states() {
       break
     }
     n="$(jq -r '.number' <<< "$row")" || return 1
-    if issue_reconcile_closed_state "$n" "$(jq -c '. + {state:"CLOSED"}' <<< "$row")"; then
+    if coord_with_ticket "issue-$n" -- issue_reconcile_closed_state "$n" "$(jq -c '. + {state:"CLOSED"}' <<< "$row")"; then
       echo "sweep_closed_ready_states: reconciled closed ready-for-agent state for #$n" >&2
     else
       echo "sweep_closed_ready_states: could not reconcile closed #$n" >&2

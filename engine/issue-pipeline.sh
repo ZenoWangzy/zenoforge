@@ -720,7 +720,7 @@ dispatch() {
     fi
   fi
   if [[ "${ZF_COORD:-off}" == on && -n "$PIPELINE_CLAIM_KEY" && -n "$PIPELINE_CLAIM_OWNER" ]]; then coord_env=(-E ZF_COORD=on -E ZF_COORD_RUN=1 -E "ZF_COORD_KEY=$PIPELINE_CLAIM_KEY" -E "ZF_COORD_OWNER=$PIPELINE_CLAIM_OWNER" -E "ZF_COORD_STAGE=$stage"); fi
-  if guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
+  if ZF_COORD_SCOPE="ticket:${PIPELINE_CLAIM_KEY:-}" ZF_COORD_OWNER="${PIPELINE_CLAIM_OWNER:-}" guarded_write systemd-run --user --unit "${UNIT_PREFIX_TRANSIENT}-$stage-$n" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
     "${advisor_env[@]}" "${coord_env[@]}" \
     -p "RuntimeMaxSec=$runtime_max" \
@@ -849,7 +849,7 @@ dispatch_advisor_batch() {
       return 75
     fi
   fi
-  if pipeline_batch_launch advisor "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
+  if ZF_COORD_SCOPE="ticket:issue-${issue_ids[0]:-}" ZF_COORD_OWNER="${claim_owner:-}" pipeline_batch_launch advisor "${issue_ids[*]}" guarded_write systemd-run --user --unit ${UNIT_PREFIX_TRANSIENT}-advisor-batch --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     "${ZF_ADVISOR_BATCH_UNIT_ENV[@]}" -E "ZF_ENGINE_DIR=$ZF_ENGINE_DIR" -E "ZF_REPO_DIR=$ZF_REPO_DIR" -E "ZF_CONFIG_ROOT=$ZF_CONFIG_ROOT" -E "ZF_QUARANTINE_CANARY_SCOPES=$canary_scopes" \
     -p "RuntimeMaxSec=$ADVISOR_RUNTIME_MAX_SEC" \
     "$script" $([ "$poll_only" = 1 ] && echo --poll-only) --scheduled "${issue_ids[@]}"; then
@@ -935,7 +935,7 @@ dispatch_triage_batch() {
       return 1
     fi
   fi
-  if pipeline_batch_launch triage "${issue_ids[*]}" guarded_write systemd-run --user --unit "$claim_unit" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
+  if ZF_COORD_SCOPE="ticket:issue-${issue_ids[0]}" ZF_COORD_OWNER="$claim_owner" pipeline_batch_launch triage "${issue_ids[*]}" guarded_write systemd-run --user --unit "$claim_unit" --collect --slice="${ZF_BATCH_SLICE:-zf-batch.slice}" \
     -E PATH -E https_proxy -E HTTPS_PROXY -E http_proxy -E HTTP_PROXY -E no_proxy -E NO_PROXY -E NODE_USE_ENV_PROXY -E ZF_ROADMAP_TREE_CACHE_FILE -E TYPESAFE_ENV_FILE \
     -E "ZF_TRIAGE_BATCH_ID=$claim_owner" -E "ZF_TRIAGE_TICK_ID=triage-batch-$(date -u +%Y%m%dT%H%M%SZ)-$claim_owner" \
     -p "RuntimeMaxSec=$TRIAGE_RUNTIME_MAX_SEC" \

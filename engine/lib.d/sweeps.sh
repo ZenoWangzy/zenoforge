@@ -132,7 +132,7 @@ outcomes_reconcile_closed_states() {
       continue
     fi
     issue_json="$(jq -c '. + {state:"CLOSED"}' <<< "$row")" || return 1
-    if ! issue_reconcile_closed_state "$issue" "$issue_json"; then
+    if ! coord_with_ticket "issue-$issue" -- issue_reconcile_closed_state "$issue" "$issue_json"; then
       echo "outcomes_reconcile_closed_states: could not reconcile closed issue #$issue" >&2
       failure=1
     fi
