@@ -512,7 +512,6 @@ tick_pr_mergeable() { # Missing mergeability and PRs outside the census use the 
 }
 classify_lane() { # pr → direct-main|pr（取不到文件列表返回 1）
   local files json verdict head raw
-  scheduler_scope_lib gh-key-cache || return 1
   # The REST file list includes previous_filename for renames; both sides must be classified.
   # gh refuses --slurp together with --jq (exit 1 before any request): from 10-20 every call failed, 506 a hour on
   # 10-22, and no unit got a lane, so non-product PRs never took the direct-main lane. --jq runs per page instead.
@@ -580,7 +579,6 @@ unit_head() { # id pr lane branch → candidate SHA (compatibility helper)
 # A READY from a reviewer of the author's own family is never applied (queue row 942): the unit goes back for an other-family review.
 review_family_verdict() { # unit JSON, reviewer identity, verdict -> 1 when a same-family READY is discarded, else 0
   local unit="$1" reviewer="$2" verdict="$3" id author author_family reviewer_family
-  scheduler_scope_lib model-policy || return 1
   [[ "$verdict" == READY ]] || return 0
   id="$(jqf -r '.id // empty' <<<"$unit")"
   author="$(unit_review_author_identity "$unit" 2>/dev/null || true)"

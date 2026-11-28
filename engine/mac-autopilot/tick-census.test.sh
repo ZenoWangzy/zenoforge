@@ -38,7 +38,7 @@ case "${1:-} ${2:-}" in
     [[ "${TEST_GH_OPEN_FAIL:-false}" != true || "$*" != *'pulls?state=open&per_page=100'* ]] || { printf 'gh stub: REST PR census refused\n' >&2; exit 1; }
     case "$*" in
       *'pulls?state=open&per_page=100'*)
-        payload="$(jq -c --arg fallback "$(cat "$TEST_PR_BODY")" --arg include_mergeable "${TEST_GH_OPEN_INCLUDE_MERGEABLE:-false}" 'map(. as $p | {number, state:(.state // "open"), draft:(.isDraft // false), head:{sha:(.headRefOid // ""),ref:(.headRefName // "")}, base:{ref:(.baseRefName // "")}, title:(.title // ""), body:(.body // $fallback), labels:(.labels // []), created_at:.createdAt, updated_at:.updatedAt} + (if $include_mergeable == "true" then {mergeable:(if $p.mergeable == "MERGEABLE" then true elif $p.mergeable == "CONFLICTING" then false else null end)} else {} end))' "$TEST_PRS")" ;;
+        payload="$(jq -c --arg fallback "$(cat "$TEST_PR_BODY")" 'map(. as $p | {number, state:(.state // "open"), draft:(.isDraft // false), head:{sha:(.headRefOid // ""),ref:(.headRefName // "")}, base:{ref:(.baseRefName // "")}, title:(.title // ""), body:(.body // $fallback), labels:(.labels // []), created_at:.createdAt, updated_at:.updatedAt})' "$TEST_PRS")" ;;
       *'pulls/7/reviews?per_page=100'*) payload='[{"state":"CHANGES_REQUESTED","submitted_at":"2026-11-11T00:00:00Z","user":{"login":"human-reviewer","type":"User"}}]' ;;
       *'pulls/7/files?per_page=100'*) payload='[{"filename":"src/a.ts","status":"added","additions":2,"deletions":0}]' ;;
       *'pulls/7/commits?per_page=100'*) payload='[{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","commit":{"message":"subject\n\nbody","author":{"email":"dev@example.invalid"}},"author":{"login":"dev"}}]' ;;
@@ -84,8 +84,7 @@ detail_calls() { awk '$0 ~ /^api repos\/\{owner\}\/\{repo\}\/pulls\/[0-9]+([? ]|
 
 test_census() {
   local sha=0123456789012345678901234567890123456789
-  export TEST_GH_OPEN_INCLUDE_MERGEABLE=true
-  jq -n --arg sha "$sha" '[range(1;5) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"MERGEABLE"}]' > "$TEST_PRS"
+  jq -n --arg sha "$sha" '[range(1;5) | {number:.,headRefOid:$sha,headRefName:("branch-" + tostring),baseRefName:"main",isDraft:false,title:"fixture",labels:[],mergeable:"UNKNOWN"}]' > "$TEST_PRS"
   jq -n --arg sha "$sha" '{units:([range(1;5) | {id:("parent-" + tostring),issue:.,lane:"pr",pr:.,branch:("branch-" + tostring),stage:"ready-to-merge",approved_sha:$sha,reviewed_pr_head:$sha,history:[]}]
     + [range(1;5) | {id:("child-" + tostring),issue:(. + 10),lane:"pr",branch:("child-" + tostring),stage:"blocked-external",blocked_on:.,labels:["stack-pilot"],history:[]}])}' > "$UNITS"
   dep_states() { local dep; for dep in "$@"; do printf '%s\tOPEN\t\tOPEN\n' "$dep"; done; }
@@ -105,7 +104,7 @@ test_census() {
   TICK_UNFINISHED_LOADED=true
   TICK_UNFINISHED='[]'
   ci_pr_free_slots() { echo 4; }
-  pr_behind_main() { return 1; }
+  pr_behind_main() { return 0; }
   phase ci_admission
   jq -e '[.units[] | .history[-1].stage] == ["ci-wip-start","ci-wip-start","ci-wip-start","ci-wip-start"]' "$UNITS" >/dev/null || fail 'CI phase did not check all four PRs for a slot'
   local lists views
@@ -188,7 +187,6 @@ test_census() {
   lists="$(open_calls)"
   views="$(detail_calls)"
   [[ "$DISPATCH_HOOK_N" == 4 && "$lists" == 1 && "$views" == 0 ]] || fail "dispatch expected one fresh census for four PRs, got $lists list(s), $views view(s)"
-  unset TEST_GH_OPEN_INCLUDE_MERGEABLE
 }
 
 test_adopt() { # #1038: the per-head PR lookup is answered from the loaded census
@@ -271,7 +269,7 @@ test_light_census() { # 轻量列表：字段不带 body/statusCheckRollup；60s
     || fail 'the PR view adapter failed'
   jq -e '.number == 7 and .state == "OPEN" and .headRefName == "branch-7" and .mergeable == "MERGEABLE"' <<<"$view" >/dev/null \
     || fail "the PR view adapter changed the selected fields: $view"
-  [[ ! -s "$TEST_GH_ARGS" ]] || fail 'the PR view adapter missed the cached REST detail read'
+  grep -Fq 'api -i repos/{owner}/{repo}/pulls/7' "$TEST_GH_ARGS" || fail 'the PR view adapter did not read pulls/N through REST'
   files_commits="$(gh pr view 7 --json files,commits -q '.files[0].path + " " + .commits[0].messageBody')" \
     || fail 'the PR view adapter failed to map REST files and commits'
   [[ "$files_commits" == 'src/a.ts body' ]] || fail "REST files and commits changed shape: $files_commits"

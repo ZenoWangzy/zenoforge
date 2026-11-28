@@ -15,7 +15,6 @@ source "$script_dir/test-scheduler-gates-gh-fixture.sh"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 ensure_clone() { printf '%s' "$WT_ROOT/wt-$1"; }
 checkout_pr_head() { :; }
-tick_prs_fetch() { printf '[]'; }
 
 # 远端没有 agent/issue-* 分支时，harvest_pr_implement 先诊断 worktree 再决定路由（#5180/#5071/#5246）：
 # 1) 已提交未推送 → 引擎代推 topic 分支并照常开 PR（推不动才带 push 错误转 supervisor）；

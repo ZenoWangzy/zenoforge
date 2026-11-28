@@ -12,7 +12,6 @@ engine/mac-autopilot/scheduler.d/dependencies-fresh.sh 0
 engine/mac-autopilot/scheduler.d/dependencies-history.sh 0
 engine/mac-autopilot/scheduler.d/dependencies.sh 0
 engine/mac-autopilot/scheduler.d/dispatch-queue.sh 0
-engine/mac-autopilot/scheduler.d/dispatch-station.sh 0
 engine/mac-autopilot/scheduler.d/dispatch.sh 1
 engine/mac-autopilot/scheduler.d/engine-batch-land.sh 0
 engine/mac-autopilot/scheduler.d/evals-arbiter.sh 0

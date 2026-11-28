@@ -106,14 +106,12 @@ supervisor_hold_cached_open_blocker() {
         tmp="$cache_file.tmp.$BASHPID"
         if ! { printf '%s\n' "$updated" > "$tmp" && mv -f -- "$tmp" "$cache_file"; }; then
           rm -f -- "$tmp"
-          cache_ready=0
         fi
       fi
       flock -u "$cache_lock_fd" || true
       exec {cache_lock_fd}>&-
     fi
   fi
-  if (( ! cache_ready )); then gh_issue_blocked_by_invalidate "$REPO" "$n"; fi
   [[ "$failed" == true ]] && return 0
   [ -n "$OPEN_BLOCKER_IDS" ]
 }

@@ -1646,7 +1646,6 @@ test_routed_ops_dispatch_respects_blockers_and_live_owner() {
   assert_eq "native blocker preserves hold" on-hold "$(state_read 4140 | jq -r '.state')"
   assert_eq "native blocker cache is keyed by the held issue" 4149 "$(jq -r '.blocked_by["4140"].ids | join(",")' "$A/dep-check.cache.json" 2>/dev/null || true)"
   export FAKE_OPS_BLOCKER_IDS=''
-  gh_issue_blocked_by_invalidate "$(gh_key_cache_repo)" 4140
   rm -f -- "$A/dep-check.cache.json"
   supervisor_hold_sweep 4140
   supervisor_hold_sweep 4140

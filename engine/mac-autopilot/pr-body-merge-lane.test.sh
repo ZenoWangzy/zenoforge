@@ -37,7 +37,6 @@ GH_CHECKS='[{"name":"Pipeline suites","bucket":"pass"}]'
 : > "$A/alerts/gate.md"
 
 GH_LOG="$fixture/body-lane-gh.log"
-tick_prs_fetch() { jq -cn --arg sha "$GH_HEAD" --arg body 'a body rendered from the report as it was when the PR opened' '[{number:87,headRefOid:$sha,headRefName:"fix/branch",baseRefName:"main",isDraft:false,title:"body lane",body:$body,labels:[],mergeable:"MERGEABLE"}]'; }
 lane_gh_saved="$(declare -f gh)"
 gh() {
   case "$1 $2" in

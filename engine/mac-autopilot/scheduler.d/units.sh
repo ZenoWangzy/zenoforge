@@ -717,7 +717,6 @@ dead_park_exit() {
       dead_park_cap_issue_create "$id" "$pr" || say "dead park cap issue unit=$id pr=#$pr: create failed; retry next tick"
       continue
     fi
-    if [[ "$class" == repair-breaker ]]; then supervisor_decision_park "$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")" && continue; fi
     n=$((n + 1))
     if [[ "$class" == budget-park-repair || "$class" == reopened-cap-review ]]; then
       u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"

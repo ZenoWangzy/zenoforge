@@ -153,7 +153,7 @@ quick_land_run_tests() { # test commands...; stops at the first red, the receipt
 }
 
 quick_land_main() {
-  local subject trailer reason branch prior='' attempt=0
+  local subject trailer reason branch prior=''
   local -a tests=() rest=()
   while (($#)); do
     case "$1" in
@@ -176,10 +176,6 @@ quick_land_main() {
     return 1
   fi
   branch="quick/$(git rev-parse --short HEAD)-$(date +%s)"
-  while git show-ref --verify --quiet "refs/heads/$branch"; do
-    attempt=$((attempt + 1))
-    branch="quick/$(git rev-parse --short HEAD)-$(date +%s)-$attempt"
-  done
   git switch -q -c "$branch"
   git commit -qm "$subject" ${prior:+-m $'## prior-art\n'"$prior"} ${trailer:+-m "$trailer"}
   # From here a refusal keeps the committed branch for inspection or a PR; only a landed change returns to origin/main.
