@@ -292,7 +292,11 @@ run_merge_lane_pass() {
   local merge_worker
   local -A merge_head_ref=()
   local -a merge_head_refspecs=() merge_head_refs=()
-  scheduler_scope_lib gh-key-cache || return 1
+  if declare -F scheduler_scope_lib >/dev/null 2>&1; then
+    scheduler_scope_lib gh-key-cache || return 1
+  elif ! declare -F gh_key_cache_repo >/dev/null 2>&1; then
+    source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/../../lib.d/gh-key-cache.sh" || return 1
+  fi
   # 所有 PR（含流水线 PR）都只由自己 head 上的必需检查把关，合并后由 main CI 验证；没有待验证批、没有合并后等裁决的 merging 态。
   # main 已完成的红裁决仍拦流水线 PR（pipe_open）；产品 PR 照旧不被脚本红拦（2026-10-20：15 个产品 PR 排队 3–22 小时）。
   local pipe_open=1 pipe_dep merged_count=0 mstate i
