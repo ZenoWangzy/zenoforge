@@ -5,33 +5,30 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TMP_DIR"' EXIT
 
-EFFECT_LOG="$TMP_DIR/effect-call"
-CLAIM_LOG="$TMP_DIR/effect-claim"
 CURL_ARGS_LOG="$TMP_DIR/curl-args"
 CURL_AUTH_LOG="$TMP_DIR/curl-auth"
 EXPECTED_EFFECT_KEY='mail:unclassified:8effd3366908397e762055325b278962bd77c68b'
+EXPECTED_EFFECT_CLAIM='effect-mail-unclassified-8effd3366908397e762055325b278962bd77c68b'
 
 ZF_CONFIG_ROOT="$TMP_DIR/.zenoforge"
-mkdir -p "$ZF_CONFIG_ROOT/prompts" "$TMP_DIR/bin"
+mkdir -p "$ZF_CONFIG_ROOT/prompts" "$TMP_DIR/bin" "$TMP_DIR/repo"
 cp "$SCRIPT_DIR/prompts/founder-outcome.schema.json" "$ZF_CONFIG_ROOT/prompts/founder-outcome.schema.json"
 cp "$SCRIPT_DIR/prompts/agent-settings.json" "$ZF_CONFIG_ROOT/prompts/agent-settings.json"
 ZF_COORD=on
-REPO_DIR="$MODEL_POLICY_TEST_REPO"
-export ZF_CONFIG_ROOT ZF_COORD
+REPO_DIR="$TMP_DIR/repo"
+ZF_REPO_DIR="$REPO_DIR"
+git init -q --bare "$TMP_DIR/remote.git"
+git -C "$REPO_DIR" init -q -b main
+git -C "$REPO_DIR" config user.name fixture
+git -C "$REPO_DIR" config user.email fixture@example.invalid
+git -C "$REPO_DIR" commit --allow-empty -qm fixture
+git -C "$REPO_DIR" remote add origin "$TMP_DIR/remote.git"
+git -C "$REPO_DIR" push -q -u origin main
+export ZF_CONFIG_ROOT ZF_COORD ZF_REPO_DIR
 source "$SCRIPT_DIR/notify.sh"
 source "$SCRIPT_DIR/notify-effects.sh"
-
-effect_claim_for() {
-  printf '%s\0' "$1" > "$CLAIM_LOG"
-  printf 'claim-123'
-}
-
-effect_run() {
-  printf '%s\0' "$@" > "$EFFECT_LOG"
-  [[ "$3" == mail && "$4" == -- ]] || return 94
-  [[ -f "$7" ]] || return 95
-  "$5" "$6" "$7"
-}
+source "$SCRIPT_DIR/lib.d/transport.sh"
+GIT_FETCH_TIMEOUT_SEC=60
 
 DRY_RUN=0
 NOTIFY_LOG_FILE="$TMP_DIR/notify.log"
@@ -70,20 +67,18 @@ fi
 
 assert_eq message-id message-123 "$send_output"
 
-readarray -d '' -t actual_claim < "$CLAIM_LOG"
-assert_eq effect-claim "$EXPECTED_EFFECT_KEY" "${actual_claim[0]}"
-
-readarray -d '' -t actual_effect < "$EFFECT_LOG"
-assert_eq effect-claim-id claim-123 "${actual_effect[0]}"
-assert_eq effect-key "$EXPECTED_EFFECT_KEY" "${actual_effect[1]}"
-assert_eq effect-kind mail "${actual_effect[2]}"
-assert_eq effect-command-separator -- "${actual_effect[3]}"
-assert_eq effect-request-helper _notify_gmail_send_request "${actual_effect[4]}"
-assert_eq access-token fake-token "${actual_effect[5]}"
-[[ ${#actual_effect[@]} == 7 && -n "${actual_effect[6]}" ]]
+claim_record="$(git --git-dir="$TMP_DIR/remote.git" cat-file blob "refs/claims/$EXPECTED_EFFECT_CLAIM:claim.json")"
+jq -e --arg key "$EXPECTED_EFFECT_KEY" '
+  .intents[$key].kind == "mail" and .intents[$key].state == "done"
+  and (.intents[$key].result.stdout | contains("message-123"))
+' <<<"$claim_record" >/dev/null || {
+  printf 'mail intent was not completed in the coordinator record: %s\n' "$claim_record" >&2
+  exit 1
+}
 
 readarray -d '' -t actual_request < "$CURL_ARGS_LOG"
-expected_request=(--config - -sS --max-time 15 -X POST "$GMAIL_SEND_URL" -H 'Content-Type: application/json' --data-binary "@${actual_effect[6]}" -w '\n%{http_code}')
+[[ ${#actual_request[@]} == 14 && "${actual_request[11]}" == @* ]]
+expected_request=(--config - -sS --max-time 15 -X POST "$GMAIL_SEND_URL" -H 'Content-Type: application/json' --data-binary "${actual_request[11]}" -w '\n%{http_code}')
 assert_eq gmail-request "${expected_request[*]}" "${actual_request[*]}"
 assert_eq gmail-auth-header 'header = "Authorization: Bearer fake-token"' "$(cat "$CURL_AUTH_LOG")"
 
