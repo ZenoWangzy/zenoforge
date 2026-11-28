@@ -29,10 +29,32 @@ fail() { echo "split-followup.test.sh: $*" >&2; exit 1; }
 printf '%s\n' '{"units":[{"id":"issue-40","issue":40,"title":"t","stage":"review","history":[]}]}' > "$UNITS"
 printf 'slice report\n' > "$fixture/report"
 created="$fixture/created"
+issue_rows="$fixture/issues.jsonl"
+: > "$issue_rows"
+CREATE_URL_MODE=url
 gh() {
+  local issue_number parent_var title number
   case "$1 $2" in
-    "api repos/{owner}/{repo}/issues/40/parent") printf '%s' "${PARENT_OF_40:-}"; [[ -n "${PARENT_OF_40:-}" ]] ;;
-    "issue create") printf '%s\n' "$*" > "$created"; echo "https://github.com/o/r/issues/41" ;;
+    "api repos/{owner}/{repo}/issues/"*"/parent")
+      issue_number="${2##*/issues/}"
+      issue_number="${issue_number%/parent}"
+      parent_var="PARENT_OF_$issue_number"
+      printf '%s' "${!parent_var:-}"
+      [[ -n "${!parent_var:-}" ]]
+      ;;
+    "issue list") jq -sc '.' "$issue_rows" ;;
+    "issue create")
+      printf '%s\n' "$*" > "$created"
+      title=""
+      while (($#)); do
+        if [[ "$1" == --title && $# -gt 1 ]]; then title="$2"; break; fi
+        shift
+      done
+      number=$((41 + $(wc -l < "$issue_rows")))
+      jq -cn --argjson number "$number" --arg title "$title" '{number:$number,title:$title}' >> "$issue_rows"
+      [[ "$CREATE_URL_MODE" == url ]] || return 0
+      printf '%s\n' "https://github.com/o/r/issues/$number"
+      ;;
     *) return 1 ;;
   esac
 }
@@ -40,8 +62,19 @@ PARENT_OF_40=7 split_followup_issue issue-40 40 50 'SPLIT: the rest' "$fixture/r
 grep -q -- '--parent 7' "$created" || fail "the follow-up must be the parent's sibling ($(cat "$created"))"
 ! grep -q -- '--parent 40' "$created" || fail "an open child would make the parent a container"
 [[ "$(jqf -r '.units[0].split_followup' "$UNITS")" == 41 ]] || fail "the follow-up number was not recorded"
-PARENT_OF_40= split_followup_issue issue-40 40 50 'SPLIT: the rest' "$fixture/report"
+printf '%s\n' '{"units":[{"id":"issue-41","issue":41,"title":"top-level","stage":"review","history":[]}]}' > "$UNITS"
+PARENT_OF_41= split_followup_issue issue-41 41 51 'SPLIT: top-level remainder' "$fixture/report"
 ! grep -q -- '--parent' "$created" || fail "a top-level parent has no parent to share"
+[[ "$(jqf -r '.units[0].split_followup' "$UNITS")" == 42 ]] || fail "the top-level follow-up number was not recorded"
+printf '%s\n' '{"units":[{"id":"issue-42","issue":42,"title":"lost-url","stage":"review","history":[]}]}' > "$UNITS"
+CREATE_URL_MODE=empty
+before_create_count="$(wc -l < "$issue_rows")"
+split_followup_issue issue-42 42 52 'SPLIT: retry after lost response' "$fixture/report"
+[[ -z "$(jqf -r '.units[0].split_followup // empty' "$UNITS")" ]] || fail "an empty create URL must leave the unit eligible for a retry"
+split_followup_issue issue-42 42 52 'SPLIT: retry after lost response' "$fixture/report"
+[[ "$(wc -l < "$issue_rows")" == "$((before_create_count + 1))" ]] || fail "a retry after a lost create response must not create a second open issue"
+[[ "$(jqf -r '.units[0].split_followup' "$UNITS")" == 43 ]] || fail "the retry did not adopt the existing follow-up number"
+CREATE_URL_MODE=url
 # A refused recut sent back to implement escalated again and again at the same scope; after one ruling the worker runs once on the SPLIT contract.
 sa="$fixture/size-admit"; mkdir -p "$sa"; command git init -q -b main "$sa/wt"
 command git -C "$sa/wt" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m base
