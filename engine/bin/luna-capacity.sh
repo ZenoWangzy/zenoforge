@@ -1,5 +1,4 @@
 # Shared worker-scope capacity used by both backend gates and the scheduler.
-# 2026-11-28 founder: no fixed worker count cap; the host checks below (CPU, memory PSI, MemAvailable) are the limit. 99 is only a runaway backstop.
 LUNA_RUNS_HARD_CAP="${LUNA_RUNS_HARD_CAP:-99}"
 LUNA_GATE_HOME="${AGENT_HOME:-${ZF_HOME:-}}"
 if [[ -z "$LUNA_GATE_HOME" ]]; then
