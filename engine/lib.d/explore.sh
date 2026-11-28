@@ -21,6 +21,69 @@ explore_state_file() {
   printf '%s/state.json\n' "$(explore_run_dir "$1")"
 }
 
+explore_order_features() {
+  local features="$1" max_features="$2"
+  printf '%s\n' "$features" | python3 -c '
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+max_features = int(sys.argv[2])
+features = json.load(sys.stdin)
+if len(features) <= max_features:
+    print(json.dumps(features, separators=(",", ":"), ensure_ascii=False))
+    raise SystemExit
+
+positions = {feature["id"]: index for index, feature in enumerate(features)}
+last_explored = {}
+try:
+    run_dirs = list(root.iterdir())
+except OSError:
+    run_dirs = []
+for run_dir in run_dirs:
+    if run_dir.is_symlink() or not run_dir.is_dir():
+        continue
+    state_file = run_dir / "state.json"
+    if state_file.is_file():
+        try:
+            with state_file.open(encoding="utf-8") as file:
+                state = json.load(file)
+        except (OSError, ValueError):
+            state = {}
+        if isinstance(state, dict) and state.get("state") == "started":
+            continue
+    results_dir = run_dir / "results"
+    if results_dir.is_symlink() or not results_dir.is_dir():
+        continue
+    try:
+        result_files = list(results_dir.iterdir())
+    except OSError:
+        continue
+    for result_file in result_files:
+        if result_file.is_symlink() or not result_file.is_file() or not result_file.name.endswith(".json"):
+            continue
+        feature_id, separator, attempt = result_file.name.rpartition("-attempt-")
+        if not separator or not attempt[:-5].isdigit() or feature_id not in positions:
+            continue
+        try:
+            modified = result_file.stat().st_mtime_ns
+        except OSError:
+            continue
+        last_explored[feature_id] = max(last_explored.get(feature_id, modified), modified)
+
+ordered = sorted(
+    features,
+    key=lambda feature: (
+        feature["id"] in last_explored,
+        last_explored.get(feature["id"], 0),
+        positions[feature["id"]],
+    ),
+)
+print(json.dumps(ordered, separators=(",", ":"), ensure_ascii=False))
+' "$AGENT_HOME/state/explore" "$max_features"
+}
+
 explore_state_update() {
   local sha="$1" filter="$2" path tmp
   path="$(explore_state_file "$sha")"
@@ -86,6 +149,7 @@ explore_config_load() {
   EXPLORE_WALL_SECONDS="$(jq -r '.budget.wall_seconds // 3600' "$config")"
   EXPLORE_MAX_TOKENS="$(jq -r '.budget.max_tokens // 1500000' "$config")"
   EXPLORE_MAX_FEATURES="$(jq -r '.budget.max_features // 70' "$config")"
+  EXPLORE_FEATURES_JSON="$(explore_order_features "$EXPLORE_FEATURES_JSON" "$EXPLORE_MAX_FEATURES")"
   EXPLORE_MAX_FILED="$(jq -r '.max_filed_per_run // 3' "$config")"
   EXPLORE_DRIVER_TIMEOUT="$(jq -r '.driver.timeout_s' "$config")"
   EXPLORE_EVIDENCE_REL="$(jq -r '.driver.evidence_dir' "$config")"

@@ -41,14 +41,19 @@ write_live() {
   mkdir -p "$AGENT_HOME/state"
   jq -cn --arg sha "$1" --arg at "$(date -u +%FT%TZ)" '{sha:$sha,at:$at,source:"test"}' > "$AGENT_HOME/state/live-sha.json"
 }
+write_exploration_config() {
+  local wall="$1" tokens="$2" max_features="$3" features="$4" timeout="${5:-5}"
+  mkdir -p "$ZF_CONFIG_ROOT/state"
+  jq -cn --arg driver "$REPO_DIR/driver.sh" --argjson wall "$wall" --argjson tokens "$tokens" --argjson max "$max_features" --argjson timeout "$timeout" \
+    '{enabled:true,driver:{argv:[$driver],timeout_s:$timeout,evidence_dir:"run-evidence"},feature_map:"state/feature-map.json",budget:{wall_seconds:$wall,max_tokens:$tokens,max_features:$max},max_filed_per_run:3,allowed_effects:["read"]}' \
+    > "$ZF_CONFIG_ROOT/state/exploration.json"
+  printf '%s\n' "$features" | jq -c '{version:1,features:.}' \
+    > "$ZF_CONFIG_ROOT/state/feature-map.json"
+}
 write_config() {
   local wall="$1" tokens="$2" timeout="${3:-30}"
-  mkdir -p "$ZF_CONFIG_ROOT/state"
-  jq -cn --arg driver "$REPO_DIR/driver.sh" --argjson wall "$wall" --argjson tokens "$tokens" --argjson timeout "$timeout" \
-    '{enabled:true,driver:{argv:[$driver],timeout_s:$timeout,evidence_dir:"run-evidence"},feature_map:"state/feature-map.json",budget:{wall_seconds:$wall,max_tokens:$tokens,max_features:1},max_filed_per_run:3,allowed_effects:["read"]}' \
-    > "$ZF_CONFIG_ROOT/state/exploration.json"
-  jq -cn '{version:1,features:[{id:"search",title:"Search",path_prefixes:[],entrypoints:[],surfaces:[],invariants:[],proofs:{}}]}' \
-    > "$ZF_CONFIG_ROOT/state/feature-map.json"
+  local features='[{"id":"search","title":"Search","path_prefixes":[],"entrypoints":[],"surfaces":[],"invariants":[],"proofs":{}}]'
+  write_exploration_config "$wall" "$tokens" 1 "$features" "$timeout"
 }
 
 cat > "$REPO_DIR/upsert.sh" <<'SH'
@@ -66,6 +71,71 @@ SH
 chmod +x "$REPO_DIR/upsert.sh"
 export ZF_EXPLORE_ISSUE_UPSERT="$REPO_DIR/upsert.sh"
 
+write_rotation_config() {
+  local max_features="$1" features="$2"
+  write_exploration_config 20 100 "$max_features" "$features"
+}
+write_rotation_history() {
+  python3 - "$AGENT_HOME/state/explore" <<'PY'
+import json
+import os
+import sys
+import time
+
+root = sys.argv[1]
+base = time.time()
+history = [
+    ("1111111111111111111111111111111111111111", "done", "feature-a", 1, 500),
+    ("1111111111111111111111111111111111111111", "done", "feature-b", 1, 400),
+    ("2222222222222222222222222222222222222222", "started", "feature-c", 1, 1),
+    ("2222222222222222222222222222222222222222", "started", "feature-d", 1, 2),
+    ("3333333333333333333333333333333333333333", "done", "recent-a", 1, 900),
+    ("3333333333333333333333333333333333333333", "done", "recent-a", 2, 100),
+    ("3333333333333333333333333333333333333333", "done", "recent-b", 1, 200),
+    ("3333333333333333333333333333333333333333", "done", "recent-c", 1, 300),
+    ("3333333333333333333333333333333333333333", "done", "recent-d", 1, 400),
+    ("4444444444444444444444444444444444444444", "done", "tie-a", 1, 100),
+    ("4444444444444444444444444444444444444444", "done", "tie-b", 1, 100),
+    ("4444444444444444444444444444444444444444", "done", "tie-c", 1, 100),
+    ("4444444444444444444444444444444444444444", "done", "tie-d", 1, 100),
+    ("5555555555555555555555555555555555555555", "done", "map-second", 1, 10),
+    ("5555555555555555555555555555555555555555", "done", "map-first", 1, 1000),
+]
+states = {}
+for sha, state, feature, attempt, age in history:
+    states[sha] = state
+    results = os.path.join(root, sha, "results")
+    os.makedirs(results, exist_ok=True)
+    result = os.path.join(results, f"{feature}-attempt-{attempt}.json")
+    with open(result, "w", encoding="utf-8") as file:
+        file.write("{}\n")
+    timestamp = base - age
+    os.utime(result, (timestamp, timestamp))
+for sha, state in states.items():
+    run = os.path.join(root, sha)
+    with open(os.path.join(run, "state.json"), "w", encoding="utf-8") as file:
+        json.dump({"state": state}, file)
+PY
+}
+run_rotation_case() {
+  local sha="$1" max_features="$2" features="$3" name="$4" expected="$5" before actual
+  write_rotation_config "$max_features" "$features"
+  write_live "$sha"
+  bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
+  before=0
+  if [[ -f "$DRIVER_CALLS" ]]; then before="$(wc -l < "$DRIVER_CALLS" | tr -d ' ')"; fi
+  export DRIVER_MODE=pass
+  bash "$SCRIPT_DIR/run-explore.sh" run "$sha" >/dev/null
+  actual="$(python3 - "$DRIVER_CALLS" "$before" <<'PY'
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as file:
+    features = [line.partition(":")[0] for index, line in enumerate(file) if index >= int(sys.argv[2])]
+print(",".join(features))
+PY
+  )"
+  check "$name" "$actual" "$expected"
+}
 missing_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 write_live "$missing_sha"
 if ! output="$(bash "$SCRIPT_DIR/run-explore.sh" dispatch 2>&1)"; then fail "unconfigured dispatch failed: $output"; fi
@@ -96,6 +166,24 @@ else
 fi
 SH
 chmod +x "$REPO_DIR/driver.sh"
+write_rotation_history
+run_rotation_case ffffffffffffffffffffffffffffffffffffffff 2 \
+  '[{"id":"feature-a","title":"A"},{"id":"feature-b","title":"B"},{"id":"feature-c","title":"C"},{"id":"feature-d","title":"D"}]' \
+  'unexplored features precede results and started runs are ignored' 'feature-c,feature-d'
+run_rotation_case 0123456789abcdef0123456789abcdef01234567 2 \
+  '[{"id":"fresh-a","title":"A"},{"id":"fresh-b","title":"B"},{"id":"fresh-c","title":"C"},{"id":"fresh-d","title":"D"}]' \
+  'features without earlier results keep map order' 'fresh-a,fresh-b'
+run_rotation_case 6666666666666666666666666666666666666666 2 \
+  '[{"id":"recent-a","title":"A"},{"id":"recent-b","title":"B"},{"id":"recent-c","title":"C"},{"id":"recent-d","title":"D"}]' \
+  'newest attempt determines the last-explored time' 'recent-d,recent-c'
+run_rotation_case 7777777777777777777777777777777777777777 2 \
+  '[{"id":"tie-a","title":"A"},{"id":"tie-b","title":"B"},{"id":"tie-c","title":"C"},{"id":"tie-d","title":"D"}]' \
+  'equal result times keep map order' 'tie-a,tie-b'
+run_rotation_case 8888888888888888888888888888888888888888 5 \
+  '[{"id":"map-second","title":"Second"},{"id":"map-first","title":"First"}]' \
+  'a map that fits the limit keeps map order' 'map-second,map-first'
+: > "$SYSTEMD_RUN_LOG"
+: > "$DRIVER_CALLS"
 
 cat > "$REPO_DIR/browser-lease.sh" <<'SH'
 #!/usr/bin/env bash
