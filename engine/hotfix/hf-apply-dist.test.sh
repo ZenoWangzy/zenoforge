@@ -2,9 +2,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
 p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d -p "$p/../../.git")
-mkdir -p "$t/engine/hotfix" "$t/engine/lib.d" "$t/bin" "$t/config" "$t/pack/hotfix" "$t/repo" "$t/work"
+mkdir -p "$t/engine/hotfix" "$t/bin" "$t/config" "$t/pack/hotfix" "$t/repo" "$t/work"
 cp "$p/hf-apply-dist.sh" "$t/engine/hotfix/"; cp "$p/../config.sh" "$t/engine/"
-cp "$p/../lib.d/transport.sh" "$p/../lib.d/issue-rest.sh" "$p/../lib.d/gh-budget.sh" "$p/../lib.d/gh-tick-cache.sh" "$t/engine/lib.d/"
 printf '#!/usr/bin/env bash\nprintf "accept:%%s\\n" "$HF_SHA" >> "$CALLS"\n' > "$t/engine/hotfix/hf-accept.sh"
 for c in git systemctl scp ssh tar build install restart; do
   cat > "$t/bin/$c" <<'STUB'
