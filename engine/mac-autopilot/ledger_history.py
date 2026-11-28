@@ -220,6 +220,78 @@ ID = "review.open_to_first_review_p90_min"
 CRITERIA = {ID: ("review", "PR opened -> first review verdict minutes p90, 7 d (incl. waiting)", 60, 180, False)}
 MEANING = {ID: "PR 开出到第一个评审结论的 p90 分钟，滚动 7 天，还在等第一次评审的 PR 按已等时间计：founder 合并前的真实等待，含评审员不可用、评审进程崩溃、停在 supervisor 路径的时间。"}
 SOURCE = {ID: "units.json 每个 pr-opened → 之后第一个 review-approve / review-request-changes / review-block；停在 review-pending 的最新 PR 按 now 计"}
+ROUND_ID = "review.rounds_per_merged"
+REJECTION_ID = "review.first_round_rejections"
+REJECTION_CAUSES = ("evidence", "format", "scope", "defect", "unknown")
+CRITERIA.update({
+    ROUND_ID: ("review", "review rounds per merged unit, 7 d", 1.32, 2.28, False),
+    REJECTION_ID: ("review", "first-round rejections over 7 d", 0, -1, True),
+})
+MEANING.update({
+    ROUND_ID: "过去 7 天合并单元的评审结论轮数总和 ÷ 合并单元数，含没有评审轮的合并单元。",
+    REJECTION_ID: "过去 7 天首次评审被打回或阻塞的数量；detail 按 evidence、format、scope、defect、unknown 拆分，无法识别的原因保留为 unknown。",
+})
+SOURCE.update({
+    ROUND_ID: "units.json 与 units-archive.json 去重后的 merged / landed 单元和合并前 review-approve / review-request-changes / review-block 事件；滚动 7 天。",
+    REJECTION_ID: "units.json 与 units-archive.json 去重后的首条 review-approve / review-request-changes / review-block 事件时间与其 history.reason；滚动 7 天。",
+})
+
+
+def _review_events(unit, parse):
+    events = []
+    for index, event in enumerate(unit.get("history") or []):
+        at = parse(event.get("at"))
+        stage = event.get("stage") or event.get("ev") or ""
+        if at and stage in REVIEW_VERDICTS:
+            events.append((at, index, stage, event))
+    return sorted(events)
+
+
+def _rejection_cause(reason):
+    value = str(reason or "").strip().casefold()
+    if re.search(r"\b(?:scope|spec)\b", value):
+        return "scope"
+    for cause in REJECTION_CAUSES[:-1]:
+        if re.search(rf"\b{cause}\b", value):
+            return cause
+    return "unknown"
+
+
+def delivery_review_metrics(units, merged_units_30d, now, parse, include_rolling=False):
+    cycles, approvals = [], []
+    for unit, merged_at in merged_units_30d:
+        reviews = sorted((at, event.get("stage")) for event in unit.get("history") or []
+                         if event.get("stage") in REVIEW_VERDICTS and (at := parse(event.get("at"))) and at <= merged_at)
+        approvals.append(sum(stage == "review-approve" for _, stage in reviews))
+        first_approval = next((index for index, (_, stage) in enumerate(reviews) if stage == "review-approve"), None)
+        if first_approval is not None:
+            cycles.append(first_approval + 1)
+
+    result = {"values": {
+        "delivery.cycles_to_pass_30d": sum(cycles) / len(cycles) if cycles else None,
+        "delivery.approvals_per_merge_30d": sum(approvals) / len(approvals) if approvals else None,
+    }, "details": {}}
+    if not include_rolling:
+        return result
+
+    since = now - timedelta(days=7)
+    merged_units = [(unit, merged_at) for unit, merged_at in merged_units_30d if since <= merged_at <= now]
+    round_count = sum(sum(at <= merged_at for at, _, _, _ in _review_events(unit, parse))
+                      for unit, merged_at in merged_units)
+    rejections = dict.fromkeys(REJECTION_CAUSES, 0)
+    first_reviews = [events[0] for unit in units if (events := _review_events(unit, parse)) and since <= events[0][0] <= now]
+    for _, _, stage, event in first_reviews:
+        if stage != "review-approve":
+            rejections[_rejection_cause(event.get("reason"))] += 1
+    result["values"].update({ROUND_ID: round_count / len(merged_units) if merged_units else None,
+                             REJECTION_ID: sum(rejections.values())})
+    result["details"].update({
+        "merged_units_7d": len(merged_units),
+        "review_rounds_7d": round_count,
+        "first_round_review_units_7d": len(first_reviews),
+        "first_round_rejections": rejections,
+    })
+    return result
 
 
 def first_review_waits(units, now, ts, window_hours=None):

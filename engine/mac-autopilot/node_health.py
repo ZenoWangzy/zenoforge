@@ -1188,18 +1188,8 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
         if merged_at and since_30d <= merged_at <= now:
             merged_units.append((unit, merged_at))
     details["merged_units_30d"] = len(merged_units); stamped_merged = [(u, _merge_time(u, True)) for u in units if "verified_by" in u]; stamped_merged = [(u, t) for u, t in stamped_merged if t and since_30d <= t <= now]; unverified_merged = sum(u.get("verified_by") == "none" for u, _ in stamped_merged); details["stamped_merged_units_30d"] = len(stamped_merged); details["unverified_merged_units_30d"] = unverified_merged; values["delivery.unverified_merge_30d_pct"] = 100 * unverified_merged / len(stamped_merged) if stamped_merged else None
-    review_rounds, approval_counts = [], []
-    review_stages = {"review-approve", "review-request-changes", "review-block"}
-    for unit, merged_at in merged_units:
-        reviews = sorted((at, event.get("stage")) for event in unit.get("history") or []
-                         if event.get("stage") in review_stages and (at := ts(event.get("at"))) and at <= merged_at)
-        approvals = sum(1 for _, stage in reviews if stage == "review-approve")
-        approval_counts.append(approvals)
-        first_approval = next((index for index, (_, stage) in enumerate(reviews) if stage == "review-approve"), None)
-        if first_approval is not None:
-            review_rounds.append(first_approval + 1)
-    values["delivery.cycles_to_pass_30d"] = sum(review_rounds) / len(review_rounds) if review_rounds else None
-    values["delivery.approvals_per_merge_30d"] = sum(approval_counts) / len(approval_counts) if approval_counts else None
+    review_metrics = ledger_history.delivery_review_metrics(units, merged_units, now, ts, include_rolling=window_hours is None)
+    values.update(review_metrics["values"]); details.update(review_metrics["details"])
 
     return {"values": values, "details": details}
 
@@ -1386,7 +1376,10 @@ def main():
     repo_root = revert_root(a, here)
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main", delivery_unavailable)
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times,
-                                delivery_unavailable=delivery_unavailable, rows_from=delivery_served.get("rows_from")); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")}); sample_counts["delivery.unverified_merge_30d_pct"] = delivery["details"].get("stamped_merged_units_30d")
+                                delivery_unavailable=delivery_unavailable, rows_from=delivery_served.get("rows_from")); sample_counts.update({f"delivery.issue_to_accept_{p}_{target}_hours": delivery["details"].get(f"lead_time_samples_{target}") for target in ("7d", "30d") for p in ("p50", "p95")})
+    sample_counts.update({"delivery.unverified_merge_30d_pct": delivery["details"].get("stamped_merged_units_30d"),
+                          ledger_history.ROUND_ID: delivery["details"].get("merged_units_7d"),
+                          ledger_history.REJECTION_ID: delivery["details"].get("first_round_review_units_7d")})
     delivery_windows = metric_windows.delivery(delivery_metrics, (units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)); short_windows = {**station_windows, **ledger_windows, **delivery_windows}
     metrics.update(gh_budget_health.collect(agent_home, now)); metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now)); SOURCE.update(live_delivery.SOURCE); merge_metrics, merge_details = merge_wait.collect(repo, now, here, merge_wait.gh_graphql, os.path.join(a, merge_wait.LAST_GOOD)); metrics.update(merge_metrics)
     metrics["merge.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
@@ -1501,6 +1494,8 @@ def main():
         shown = "-" if v is None else f"{v:.0f}"
         op = ">=" if higher else "<="
         print(f"  {node:<12} {desc:<48} {shown:>7}  {op}{healthy:<6} {'<=' if higher else '>='}{unhealthy:<8} {status}" + (f"  {fork_detail}" if mid == "host.fork_rate_root_max" and fork_detail else "") + (f"\n  delivery    {ledger_history.uncovered_closes_line(delivery['details']['uncovered_closes_7d'])}" if mid == "delivery.issue_to_accept_p50_7d_hours" else ""))
+        if mid == ledger_history.REJECTION_ID:
+            print("    causes: " + ", ".join(f"{cause}={count}" for cause, count in delivery["details"]["first_round_rejections"].items()))
     bad = [r for r in rows if r[7] == "UNHEALTHY"]
     print("unhealthy nodes: " + (", ".join(sorted({r[0] for r in bad})) or "none"))
     if host_missing:
@@ -1519,7 +1514,7 @@ def main():
     if args.json:
         sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"; scorecard_metrics = [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
             "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status, "source": SOURCE.get(mid, ""),
-            "sample_n": sample_counts.get(mid), "standard_basis": standard_bases.get(mid), **short_windows[mid], **({"detail": fork_detail} if mid == "host.fork_rate_root_max" else delivery_diagnostics.data_at(mid, delivery["details"]["rows_from"]))}
+            "sample_n": sample_counts.get(mid), "standard_basis": standard_bases.get(mid), **short_windows[mid], **({"detail": fork_detail} if mid == "host.fork_rate_root_max" else {"detail": delivery["details"]["first_round_rejections"]} if mid == ledger_history.REJECTION_ID else delivery_diagnostics.data_at(mid, delivery["details"]["rows_from"]))}
             for node, mid, desc, v, healthy, unhealthy, higher, status in rows]
         doc = {"generated": sampled_at, "generated_at": sampled_at,
                "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
