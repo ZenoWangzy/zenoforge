@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "state": [
+    "attempts",
+    "attempts_reset",
+    "advisor_decision",
+    "advisor_episode_seq",
+    "recut_children",
+    "model_policy",
+    "same_failure_streak",
+    "last_failure_reason",
+    "hold",
+    "delivery_state",
+    "deploy_state",
+    "pr_number",
+    "implement_started_sha",
+    "escalated_head_sha",
+    "conclusion"
+  ],
+  "unit": [
+    "stage",
+    "pr",
+    "branch",
+    "lane",
+    "footprint",
+    "approved_sha",
+    "review_sha",
+    "blocked_on",
+    "blocked_resume_stage",
+    "repair_hint",
+    "loop_total_allowed"
+  ]
+}
