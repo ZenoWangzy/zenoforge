@@ -196,3 +196,29 @@ supervisor_parked_unpark_sweeps() {
   return 0
 }
 
+supervisor_needs_human_sweep() {
+  local id issue state labels at now="${NOW_EPOCH:-$(date +%s)}" at_epoch reason cache
+  cache="$(jqf_optional_file "$A/dep-check.cache.json" -c 'if (.states|type)=="object" then .states else {} end' 2>/dev/null || true)"
+  [[ -n "$cache" ]] || cache='{}'
+  while IFS=$'\t' read -r id issue state labels at; do
+    [[ -n "$id" ]] || continue
+    if [[ "$issue" =~ ^[0-9]+$ ]]; then
+      [[ "$state" == OPEN && ",$labels," != *",needs-info,"* ]] || continue
+      reason="issue #$issue is OPEN without needs-info"
+    else
+      [[ -n "$at" ]] || continue
+      at_epoch="$(date -d "$at" +%s 2>/dev/null || true)"
+      [[ "$at_epoch" =~ ^[0-9]+$ ]] || continue
+      (( now - at_epoch >= 86400 )) || continue
+      reason="24 h since the last supervisor-needs-info event"
+    fi
+    jqf -e --arg id "$id" --arg at "$at" 'any(.units[]; .id==$id and .stage=="needs-human" and (([(.history // [])[] | select(.stage=="supervisor-needs-info") | .at] | last // "") == $at))' "$UNITS" >/dev/null || continue
+    set_unit "$id" "$(hist supervisor-needs-info-answered "re-arbitrate once: $reason") | .history[-1].attempt = ((.history // []) | map(select(.stage == \"write-start\")) | last | .attempt // null) | .stage=\"supervisor-review\" | del(.note)" \
+      && say "supervisor needs-human unit=$id re-arbitrate once: $reason"
+  done < <(jqf -r --argjson c "$cache" '.units[] | select(.stage=="needs-human")
+    | (.issue | if type=="number" then tostring else "" end) as $issue
+    | ($c[$issue] // {}) as $snapshot
+    | [.id,$issue,($snapshot.state // ""),($snapshot.labels // ""),([.history[]? | select(.stage=="supervisor-needs-info") | .at] | last // "")] | @tsv' "$UNITS")
+  return 0
+}
+

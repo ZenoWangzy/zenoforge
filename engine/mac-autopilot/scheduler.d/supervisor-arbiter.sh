@@ -71,6 +71,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   dead_park_exit || : # runs before the arbiter gate: these parks never reach the arbiter
   [[ "$SUPERVISOR_ARBITER" == true ]] || return 0
   supervisor_parked_unpark_sweeps
+  supervisor_needs_human_sweep
   supervisor_cap_exhausted_sweep
   local prompt_file cap_contract_file
   prompt_file="$(sched_config_file prompts/supervisor-arbiter.md)"

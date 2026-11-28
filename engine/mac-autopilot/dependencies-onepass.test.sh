@@ -520,4 +520,13 @@ assert_blocker_cache_write_failure_refetches 9000106 ids-json
 assert_blocker_cache_write_failure_refetches 9000107 entry-json
 assert_blocker_cache_write_failure_refetches 9000108 update-json
 
+A="$MAC_AUTOPILOT_RUNTIME_DIR"; UNITS="$A/units.json"; LOG="$A/scheduler.log"
+NOW_EPOCH="$(date +%s)"; STAMP="$(date -u -d "@$NOW_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+CACHE_ROWS=([93817]=$'OPEN\tneeds-info\tOPEN')
+printf '%s\n' "$(unit issue-93817 93817 needs-human)" | jq -cs '{units:.}' > "$UNITS"
+printf '{"workers":[]}\n' > "$A/workers.json"
+reset_run; PRS='[]'; run_counted
+jqf -e '.states["93817"].state == "OPEN" and .states["93817"].labels == "needs-info"' "$A/dep-check.cache.json" >/dev/null \
+  || fail 'a needs-human issue must be included in the dependency batch snapshot'
+
 echo 'dependencies-onepass.test.sh: ok'

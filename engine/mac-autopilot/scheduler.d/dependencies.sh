@@ -374,7 +374,7 @@ release_dependency_blocks_pass() {
     done < <(jqf -r '[.units[] | select((.stage=="blocked-external" or (.stage=="parked" and (.parked_reason == null or .parked_reason == "waiting-predecessor"))) and .blocked_on != null) | .blocked_on | numbers] | unique | .[]' "$UNITS")
     while IFS= read -r dep; do # 自己的 issue 已关的单元要能被收掉（带 PR 的也查，not_planned 时关 PR）：并入同一次批量查询
       [[ "$dep" =~ ^[0-9]+$ ]] && deps+=("$dep")
-    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review" or .stage=="implement-pending") and (.issue | type)=="number") | .issue' "$UNITS")
+    done < <(jqf -r '.units[] | select((.stage=="blocked-external" or .stage=="parked" or .stage=="supervisor-review" or .stage=="implement-pending" or .stage=="needs-human") and (.issue | type)=="number") | .issue' "$UNITS")
     # A blocked unit goes pending only after the other predecessors are cached; older task bodies use the same batch pass.
     while IFS= read -r dep; do
       [[ "$dep" =~ ^[0-9]+$ ]] || continue

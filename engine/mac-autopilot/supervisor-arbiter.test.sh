@@ -435,7 +435,7 @@ REJECTED: park'
 [[ "$(field pr-617 .stage)" == closed ]] || fail "close must land in closed"
 grep -q '^gh pr close 617 ' "$GH_CALLS" || fail "close must close the unit PR"
 
-units "$(jq -cn '{units:[{id:"issue-618",issue:618,stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"needs a maintainer business fact",at:"2026-10-27T00:00:00Z"}]}]}')"
+units "$(jq -cn '{units:[{id:"issue-618",issue:618,stage:"supervisor-review",history:[{stage:"write-start",attempt:3,at:"2026-10-26T23:00:00Z"},{stage:"supervisor-escalated",result:"needs a maintainer business fact",at:"2026-10-27T00:00:00Z"}]}]}')"
 harvest_with_reply issue-618 'ACTION: needs-info
 REASON: 缺一个只有人知道的事实
 REJECTED: requeue
@@ -445,6 +445,34 @@ grep -q '^gh issue comment 618 ' "$GH_CALLS" || fail "needs-info must comment on
 grep -Eq '^gh issue edit 618 .*--add-label needs-info$' "$GH_CALLS" || {
   fail "needs-info must label the issue; calls for #618: $(grep ' 618 ' "$GH_CALLS" || true); scheduler log: $(tail -n 4 "$LOG" 2>/dev/null || true)"
 }
+unit_transition_mode="${UNIT_TRANSITION_MODE:-log}"
+UNIT_TRANSITION_MODE=enforce
+printf '%s\n' '{"states":{}}' > "$A/dep-check.cache.json"
+dispatch_supervisor_arbiters
+[[ "$(field issue-618 .stage)" == needs-human ]] || fail "a missing dependency snapshot entry must leave the unit in needs-human"
+printf '%s\n' '{"states":{"618":{"state":"OPEN","labels":"needs-info"}}}' > "$A/dep-check.cache.json"
+dispatch_supervisor_arbiters
+[[ "$(field issue-618 .stage)" == needs-human ]] || fail "an open issue still labelled needs-info must leave the unit in needs-human"
+printf '%s\n' '{"states":{"618":{"state":"CLOSED","labels":""}}}' > "$A/dep-check.cache.json"
+dispatch_supervisor_arbiters
+[[ "$(field issue-618 .stage)" == needs-human ]] || fail "a closed issue must leave the unit in needs-human"
+printf '%s\n' '{"states":{"618":{"state":"OPEN","labels":""}}}' > "$A/dep-check.cache.json"
+dispatch_supervisor_arbiters
+jq -e '.units[] | select(.id=="issue-618") | .stage=="supervisor-review" and (has("note") | not) and any(.history[]; .stage=="supervisor-needs-info-answered" and .attempt==3)' "$UNITS" >/dev/null \
+  || fail "an open issue without needs-info must return once to supervisor-review and clear its note"
+
+NOW_EPOCH="$(date +%s)"
+no_issue_old="$(date -u -d "@$((NOW_EPOCH - 25 * 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+no_issue_recent="$(date -u -d "@$((NOW_EPOCH - 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+units "$(jq -cn --arg at "$no_issue_old" '{units:[{id:"unit-no-issue-old",stage:"needs-human",history:[{stage:"supervisor-needs-info",at:$at}]}]}')"
+printf '%s\n' '{"states":{}}' > "$A/dep-check.cache.json"
+dispatch_supervisor_arbiters
+jq -e '.units[] | select(.id=="unit-no-issue-old") | .stage=="supervisor-review" and any(.history[]; .stage=="supervisor-needs-info-answered")' "$UNITS" >/dev/null \
+  || fail "a no-issue unit with a 25 h old needs-info event must return to supervisor-review"
+units "$(jq -cn --arg at "$no_issue_recent" '{units:[{id:"unit-no-issue-recent",stage:"needs-human",history:[{stage:"supervisor-needs-info",at:$at}]}]}')"
+dispatch_supervisor_arbiters
+[[ "$(field unit-no-issue-recent .stage)" == needs-human ]] || fail "a no-issue unit with a 1 h old needs-info event must stay in needs-human"
+UNIT_TRANSITION_MODE="$unit_transition_mode"
 
 # 无 PR 无 issue 的单元：问题发不出去，要留告警而不是静默。
 units "$(jq -cn '{units:[{id:"main-red-abc123456",main_red:true,stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')"
