@@ -13,10 +13,15 @@ key="$1" cwd="$2" prompt="$3" schema="${4:-}"
 root=${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}
 out="$root/luna/$key"
 mkdir -p "$out" "$root/tmp/$key"
-rm -f "$out/rc" "$out/codex.pid"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
+rm -f "$out/rc" "$out/codex.pid" "$out/engine-version"; echo $$ >"$out/wrapper.pid"   # health-watch reads these
 run_cwd="$cwd"; [[ "$run_cwd" == /* ]] || run_cwd="$PWD/$run_cwd"; printf '%s\n' "$run_cwd" >"$out/cwd"
 engine_dir="${ZF_ENGINE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 agent_sandbox="$engine_dir/bin/agent-sandbox-run"
+engine_live="${ZF_ENGINE_LIVE:-$engine_dir}"
+engine_live_path="$(cd -- "$engine_live" 2>/dev/null && pwd -P)"
+if [[ -n "$engine_live_path" ]]; then
+  printf '%s\n' "$(basename -- "$(dirname -- "$engine_live_path")")" >"$out/engine-version"
+fi
 task_state_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$root}/.zenoforge}}"
 task_resume="$root/tmp/$key/task-resume.md"
 resumed_prompt="$root/tmp/$key/prompt-with-task-resume.md"

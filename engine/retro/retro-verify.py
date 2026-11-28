@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify merged retro changes against equal session windows."""
+"""Verify merged retro changes and admitted lessons against recorded sessions."""
 import datetime
 import glob
 import json
@@ -17,21 +17,23 @@ WINDOW = 10
 STALE_BOUND = datetime.timedelta(days=14)
 
 
-def finished_sessions(root):
+def finished_sessions(root, engine_version=None):
     sessions = []
     for directory in glob.glob(os.path.join(root, "luna", "*")):
         key = os.path.basename(directory)
         rc = os.path.join(directory, "rc")
         if key.startswith("retro-") or not os.path.isfile(rc):
             continue
+        if engine_version is not None and retro.session_engine_version(root, key) != engine_version:
+            continue
         sessions.append((os.path.getmtime(rc), key))
     sessions.sort()
     return sessions
 
 
-def session_windows(root, merged_at):
+def session_windows(root, merged_at, engine_version=None):
     timestamp = datetime.datetime.fromisoformat(merged_at.replace("Z", "+00:00")).timestamp()
-    sessions = finished_sessions(root)
+    sessions = finished_sessions(root, engine_version)
     before = [key for ended, key in sessions if ended < timestamp][-WINDOW:]
     after = [key for ended, key in sessions if ended > timestamp][:WINDOW]
     if len(before) != WINDOW or len(after) != WINDOW:
@@ -68,6 +70,38 @@ def count_category(root, out_dir, category, session_keys, merged_at, before):
             for candidate in kept
             if candidate["category"] == category and candidate["session_key"] in wanted
         )
+    return len(events) if covered == wanted else None
+
+
+def count_lesson(root, out_dir, category, matcher, session_keys, admitted_at, before):
+    timestamp = datetime.datetime.fromisoformat(admitted_at.replace("Z", "+00:00")).timestamp()
+    wanted = set(session_keys)
+    covered = set()
+    events = set()
+    for keys_path in glob.glob(os.path.join(out_dir, "*.keys")):
+        candidates_path = os.path.splitext(keys_path)[0] + ".candidates.json"
+        if not os.path.isfile(candidates_path):
+            continue
+        run_at = os.path.getmtime(keys_path)
+        if (before and run_at >= timestamp) or (not before and run_at <= timestamp):
+            continue
+        with open(keys_path, encoding="utf-8") as keys_file:
+            keys = {line.strip() for line in keys_file if line.strip()}
+        covered.update(keys & wanted)
+        if not keys & wanted:
+            continue
+        with open(candidates_path, encoding="utf-8") as candidates_file:
+            document = json.load(candidates_file)
+        kept = retro.filter_candidates(root, keys, document)["candidates"]
+        for candidate in kept:
+            if candidate.get("category") != category or candidate.get("check") != matcher:
+                continue
+            try:
+                event = json.loads(retro.event_at(root, candidate))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if retro.event_matches(event, matcher) and candidate["session_key"] in wanted:
+                events.add((candidate["session_key"], candidate["event_line"]))
     return len(events) if covered == wanted else None
 
 
@@ -242,12 +276,83 @@ def verify_change(root, out_dir, repo, engine, state, change):
         retro.write_verify_state(out_dir, state)
 
 
-def verify(root, out_dir, repo):
+def verify_lesson(root, out_dir, repo_dir, state, change):
+    lesson = change["lesson"]
+    if change.get("verdict") == "withdrawn":
+        retro.withdraw_lesson_fragment(repo_dir, lesson)
+        return
+    if change.get("verified_at"):
+        return
+    admitted_at = change.get("filed_at")
+    engine_version = change.get("engine_version")
+    matcher = change.get("check")
+    if not isinstance(admitted_at, str) or not isinstance(engine_version, str) or not isinstance(matcher, dict):
+        return
+    windows = session_windows(root, admitted_at, engine_version)
+    if windows is None:
+        print(f"retro-verify: waiting for {WINDOW} retained sessions on engine {engine_version} around lesson {lesson}")
+        return
+    before_sessions, after_sessions = windows
+    if "before_count" not in change:
+        count = count_lesson(root, out_dir, change["category"], matcher, before_sessions,
+                             admitted_at, before=True)
+        if count is None:
+            print(f"retro-verify: waiting for before-window candidates for lesson {lesson}")
+            return
+        change["before_sessions"] = before_sessions
+        change["before_count"] = count
+        retro.write_verify_state(out_dir, state)
+    if "after_count" not in change:
+        count = count_lesson(root, out_dir, change["category"], matcher, after_sessions,
+                             admitted_at, before=False)
+        if count is None:
+            print(f"retro-verify: waiting for after-window candidates for lesson {lesson}")
+            return
+        change["after_sessions"] = after_sessions
+        change["after_count"] = count
+        retro.write_verify_state(out_dir, state)
+
+    verified_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if change["after_count"] >= change["before_count"] and change["after_count"] > 0:
+        paths = retro.withdraw_lesson_fragment(repo_dir, lesson)
+        event = {
+            "type": "lesson-withdrawn",
+            "lesson": lesson,
+            "category": change["category"],
+            "engine_version": engine_version,
+            "check": matcher,
+            "before_count": change["before_count"],
+            "after_count": change["after_count"],
+            "before_sessions": change["before_sessions"],
+            "after_sessions": change["after_sessions"],
+            "removed_paths": paths,
+            "recorded_at": verified_at,
+        }
+        state.setdefault("events", []).append(event)
+        change["verdict"] = "withdrawn"
+        change["withdrawn_at"] = verified_at
+    else:
+        change["verdict"] = "retained"
+    change["verified_at"] = verified_at
+    retro.write_verify_state(out_dir, state)
+    if change["verdict"] == "withdrawn":
+        print(f"retro-verify: lesson {lesson} withdrawn before={change['before_count']} after={change['after_count']}")
+
+
+def verify(root, out_dir, repo, repo_dir=None):
     engine = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    repo_dir = os.path.abspath(repo_dir or os.environ.get("ZF_REPO_DIR") or os.path.join(engine, ".."))
     # A bad state file fails the run loudly (main returns 1); past this point a gh or
     # read error only ends this follow-up, so the run's other results stand.
     state = retro.read_verify_state(out_dir)
     for change in state["changes"]:
+        admission = change.get("admission")
+        if change.get("lesson") and isinstance(admission, dict) and admission.get("status") == "passed":
+            try:
+                verify_lesson(root, out_dir, repo_dir, state, change)
+            except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+                print(f"retro-verify: lesson {change.get('lesson')}: {exc}; retrying next run")
+            continue
         if change.get("verifiable") is False:
             continue
         try:
@@ -266,7 +371,7 @@ def main(argv):
         print("retro-verify.py: ZF_GH_REPO or ZF_REPO is required", file=sys.stderr)
         return 2
     try:
-        verify(argv[1], argv[2], repo)
+        verify(argv[1], argv[2], repo, os.environ.get("ZF_REPO_DIR"))
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"retro-verify.py: verification failed: {exc}", file=sys.stderr)
         return 1
