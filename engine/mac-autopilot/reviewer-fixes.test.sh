@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/matt-skills.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/reports.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/review-fixes.sh"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/scheduler.d/clones.sh"
@@ -187,7 +188,7 @@ cat > "$small_no_fix_report" <<'REPORT'
 VERDICT: READY
 
 ```review-findings
-{"findings":[{"id":"F1","severity":"P1","file":"src/example.sh","line":1,"rule":"Defect","status":"open","summary":"The empty value is not handled.","introduced_by":"candidate","base_evidence":"The base prints an empty value without the required behavior."}],"dispositions":[]}
+{"findings":[{"id":"F1","severity":"P1","file":"src/example.sh","line":1,"rule":"Defect","status":"open","summary":"The empty value is not handled.","introduced_by":"candidate","base_evidence":"The base prints an empty value without the required behavior.","rerun_command":"bash engine/example.test.sh","rerun_output":"the empty-value assertion failed"}],"dispositions":[]}
 ```
 REPORT
 TEST_BRANCH=agent/small; TEST_REMOTE_HEAD="$small_head"
