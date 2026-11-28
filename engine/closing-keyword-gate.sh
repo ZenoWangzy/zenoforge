@@ -2,6 +2,7 @@
 # Refuse GitHub closing keywords that would close an issue before its recorded
 # real-user-path acceptance. `--sweep-closed` is deliberately report-only.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 
 REPO="${REPO:-${GITHUB_REPOSITORY:-${ZF_REPO:?ZF_REPO is not set}}}"
 EXCLUDED_SWEEP_ISSUES=(1443 1449)

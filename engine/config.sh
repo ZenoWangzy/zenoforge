@@ -190,6 +190,22 @@ if [[ -z "${ZF_HOST_ID-}" ]]; then
   unset _zf_host_file
 fi
 [[ -n "${ZF_COORD+x}" ]] || ZF_COORD=off
+coord_source_if_enabled() {
+  [[ "$ZF_COORD" == on ]] || return 0
+  source "$ZF_ENGINE_DIR/coord.sh"
+  source "$ZF_ENGINE_DIR/coord-remote.sh"
+}
+if [[ "$ZF_COORD" != on ]]; then
+  if [[ -r "$ZF_ENGINE_DIR/coord-off.sh" ]]; then
+    source "$ZF_ENGINE_DIR/coord-off.sh"
+  else
+    coord_off_file="$(dirname -- "${BASH_SOURCE[0]}")/coord-off.sh"
+    if [[ -r "$coord_off_file" ]]; then
+      source "$coord_off_file"
+    fi
+    unset coord_off_file
+  fi
+fi
 
 # Deployment identity (Line B seam G9): names of hosts, runners, repositories, CI checks and people that engine code used to
 # spell as literals. Each default is the literal it replaced, so nothing changes until a variable is set. A caller that sets a

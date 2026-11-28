@@ -97,6 +97,10 @@ if [[ $mode == models_manager_401 ]]; then
   sleep 0.3
   mode=success
 fi
+if [[ $mode == gate_reload_sha ]]; then
+  printf '%s\n' 'luna: gate reloaded from /engine-versions/fa403a916061-9b307288bc7a-88271635b3c4-0c80b782d594/engine/bin/luna-capacity.sh' >> "$d/stderr.log"
+  mode=success
+fi
 if [[ $mode == router_noise ]]; then  # 11-13: a tool error echoing the worker's own patch text is not a quota error
   printf '%s\n' '2026-11-13T23:06:51.939982Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines' \
     "        if grep -Fq 'API rate limit already exceeded' \"\$log\"; then" '          : > "$rate_limit_signal"  # 429 unauthorized quota exceeded' >> "$d/stderr.log"
@@ -171,6 +175,11 @@ case "$mode" in
     ;;
   fatal_quota)
     printf 'AI request failed: insufficient_quota, rate limit exceeded\n' >> "$d/stderr.log"
+    read -r -t 5 _ || true
+    exit 1
+    ;;
+  http_403)
+    printf 'HTTP 403 Forbidden\n' >> "$d/stderr.log"
     read -r -t 5 _ || true
     exit 1
     ;;
@@ -749,6 +758,17 @@ run_case auth-turn-failed 0 success auth_turn_failed 8 4 luna
 assert_file_contains "$CASE_DIR/failover" 'reason=fatal event pattern: turn.failed'
 [[ $(cat "$CASE_DIR/backend") == zc ]] || fail 'authentication turn.failed did not trigger backend failover'
 printf 'PASS authentication turn.failed remains fatal after filtering models_manager stderr\n'
+
+run_case gate-reloaded-sha 0 success gate_reload_sha 8 4 luna
+[[ $(cat "$CASE_DIR/stderr.log") == 'luna: gate reloaded from /engine-versions/fa403a916061-9b307288bc7a-88271635b3c4-0c80b782d594/engine/bin/luna-capacity.sh' ]] || fail 'the gate-reloaded engine path was not the only stderr line'
+[[ ! -e "$CASE_DIR/failover" && $(cat "$CASE_DIR/backend") == luna ]] || fail 'the gate-reloaded engine sha was treated as fatal'
+printf 'PASS gate-reloaded engine sha is not fatal\n'
+
+run_case http-403 0 success http_403 8 4 luna
+assert_file_contains "$CASE_DIR/failover" 'reason=fatal stderr pattern: authentication or quota error'
+assert_file_contains "$CASE_DIR/failover" 'evidence=stderr.log: HTTP 403 Forbidden'
+[[ $(cat "$CASE_DIR/backend") == zc ]] || fail 'HTTP 403 did not trigger backend failover'
+printf 'PASS HTTP 403 remains fatal\n'
 
 history=$'2026-11-09T00:00:00Z go1-9169 gpt-6-luna rc=1\n2026-11-09T01:00:00Z go2-9169 gpt-6-luna rc=75'
 run_case terra-cache 1 success model_not_found 8 4 luna gpt-6-luna go3-9169 "$history"

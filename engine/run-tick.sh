@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 # Launcher for one issue-pipeline.sh tick. systemd/zenoforge-agent.service runs
 # THIS script (not issue-pipeline.sh directly); systemd/zenoforge-agent.timer
 # fires it every 5 minutes.
@@ -483,7 +484,7 @@ run_tick() {
       continue
     fi
     if [ "$timer_off_variable" != "-" ]; then
-      timer_mode="$(timeout "${timer_gh_timeout_sec}s" gh variable get "$timer_off_variable" \
+      timer_mode="$(gh_timeout "${timer_gh_timeout_sec}s" variable get "$timer_off_variable" \
         --repo "$timer_repo" 2>/dev/null || echo observe)"
       timer_mode="$(echo "$timer_mode" | tr -d '[:space:]')"
       if [ "$timer_mode" = "off" ]; then

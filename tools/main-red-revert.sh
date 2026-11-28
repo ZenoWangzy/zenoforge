@@ -5,6 +5,7 @@
 # Hold: a line "<sha-prefix> <who> <epoch-seconds>" in "${ZF_MAIN_RED_REVERT_HOME:-$HOME/.zenoforge}/main-red-revert.hold" makes it only alert for ZF_MAIN_RED_REVERT_HOLD_SECS (default 7200); malformed or expired lines are ignored.
 set -euo pipefail
 export ZF_GH_NO_CACHE=1
+source "$(dirname -- "${BASH_SOURCE[0]}")/../engine/lib.d/transport.sh"
 
 home=${ZF_MAIN_RED_REVERT_HOME:-$HOME/.zenoforge}
 [[ -e $home/main-red-revert.stop ]] && { echo "main-red-revert: stop file present, nothing done"; exit 0; }

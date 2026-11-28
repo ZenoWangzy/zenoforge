@@ -44,6 +44,7 @@ systemctl() {
   esac
 }
 timeout() { shift; "$@"; }
+gh_timeout() { local timeout_value="$1"; shift; timeout "$timeout_value" gh "$@"; }
 gh() { printf '%s' "$OFF_MODE"; }
 refuse() { exit 99; }
 append_supervisor_event() { printf 'alert\\n' >> "$CALLS"; }

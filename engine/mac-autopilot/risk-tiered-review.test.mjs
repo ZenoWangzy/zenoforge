@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assessReviewSkip, countChangedLines, mergeUnitSnapshots, recordEscapeInvalidations, riskTieredReviewStats } from './risk-tiered-review.mjs';
+import { assessReviewSkip, countChangedLines, escapeBrake, mergeUnitSnapshots, recordEscapeInvalidations, riskTieredReviewStats } from './risk-tiered-review.mjs';
 
 const head = 'a'.repeat(40);
 const path = 'packages/fruit/src/config.js';
@@ -161,6 +161,53 @@ test('a later LLM approval means the merged unit did not skip review', () => {
     skippedUnits: 0,
     escapedSkippedUnits: 0,
     skipShare: 0,
+    escapeShare: null,
+  });
+});
+
+test('a mature escape rate stops review skips', () => {
+  assert.deepEqual(escapeBrake({ eligible: true }, { skippedUnits: 5, escapeShare: 0.4 }), {
+    eligible: false,
+    reason: 'escape-rate',
+  });
+});
+
+test('the escape brake preserves an existing ineligible decision', () => {
+  const decision = { eligible: false, reason: 'protected-path' };
+
+  assert.equal(escapeBrake(decision, { skippedUnits: 5, escapeShare: 0.4 }), decision);
+});
+
+test('a high escape rate below the minimum sample stays eligible', () => {
+  const decision = { eligible: true };
+
+  assert.equal(escapeBrake(decision, { skippedUnits: 3, escapeShare: 1 }), decision);
+});
+
+test('a low escape rate keeps review skips eligible', () => {
+  const decision = { eligible: true };
+
+  assert.equal(escapeBrake(decision, { skippedUnits: 8, escapeShare: 0.1 }), decision);
+});
+
+test('missing escape stats keep review skips eligible', () => {
+  const decision = { eligible: true };
+
+  assert.equal(escapeBrake(decision, null), decision);
+});
+
+test('a bounded lookback ignores matured units merged before its window', () => {
+  const unit = { stage: 'merged', approved_sha: head, history: [
+    { stage: 'review-skip', result: head, at: '2026-09-28T00:00:00Z', paths: [path] },
+    { stage: 'merged', at: '2026-09-29T00:00:00Z' },
+    { stage: 'review-skip-escape', at: '2026-10-01T00:00:00Z', paths: [path] },
+  ] };
+
+  assert.deepEqual(riskTieredReviewStats([unit], Date.parse('2026-11-28T00:00:00Z'), { lookbackDays: 30 }), {
+    maturedMergedUnits: 0,
+    skippedUnits: 0,
+    escapedSkippedUnits: 0,
+    skipShare: null,
     escapeShare: null,
   });
 });

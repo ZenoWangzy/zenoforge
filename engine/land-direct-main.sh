@@ -1116,7 +1116,7 @@ preflight() {
 # Shared with branch-delivery-preflight.mjs commit mode (engine/check-commit-messages.sh):
 # hand agents hear the landing's commit-message refusals at commit time (landing 251, 2026-10-07).
 check_commit_message_range() {
-  bash "$(dirname -- "$self")/check-commit-messages.sh" "$1"
+  bash "$(dirname -- "$self")/check-commit-messages.sh" "$1" && refuse_skip_ci_test_references "$1"
 }
 
 # Main push and manual runs share a non-preemptive workflow group. Never
@@ -1535,7 +1535,7 @@ land_main_rebase_after_advance() {
   land_retry_count=$((land_retry_count + 1))
   prepare_lesson_metadata_for_landing
   assign_plan_package_trailer || return 1
-  land_append_owner_issue_references "$new_main" || return 1
+  land_append_owner_issue_references "$new_main" && check_commit_message_range "$tested_base..HEAD" || return 1
   printf 'land-direct-main: rebased onto main=%s retry=%s; focused verification runs post-land\n' \
     "${new_main:0:12}" "$land_retry_count" >&2
 }

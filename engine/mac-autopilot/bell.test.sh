@@ -134,6 +134,8 @@ export BELL_SUPERVISOR_DIR="$supervisor"
 export BELL_TEST_NETWORK=green
 export BELL_STALE_CI_DISABLE=1
 export PATH="$bin:$PATH"
+gh() { command gh "$@"; }
+export -f gh
 
 # A stalled scheduler must not restart the systemd loop during an operator pause.
 pause_autopi="$tmp/pause-autopi"

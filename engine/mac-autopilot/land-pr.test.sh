@@ -48,6 +48,8 @@ SH
 chmod +x "$f/lander.sh" "$f/bin/gh"
 export LAND_PR_POLICY="$f/policy.mjs" LAND_PR_LANDER="$f/lander.sh" FAKE_LAND_SUBJECT="$f/subject"
 export FAKE_REMOTE="$f/remote.git" FAKE_GH_CALLS="$f/gh.calls" FAKE_LAND_CALLS="$f/land.calls" PATH="$f/bin:$PATH"
+gh() { command gh "$@"; }
+export -f gh
 : > "$f/land.calls"
 run() { local approved="$1" reviewed="${2:-$1}"; bash "$script_dir/land-pr.sh" "$f/clone" 7 "$approved" 'tool tweak' "$f/report.md" "$reviewed"; head -1 "$f/report.md"; }
 

@@ -142,9 +142,10 @@ fi
   || fail 'budget-table change did not report the over-budget untouched template'
 
 source_fixture="$test_env_root/source-fixture"
-mkdir -p "$source_fixture/tools" "$source_fixture/engine"
-cp "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh" "$MODEL_POLICY_TEST_REPO/tools/merge-pr-bootstrap.sh" "$source_fixture/tools/"
+mkdir -p "$source_fixture/tools" "$source_fixture/engine/lib.d"
+cp "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh" "$MODEL_POLICY_TEST_REPO/tools/merge-pr-bootstrap.sh" "$MODEL_POLICY_TEST_REPO/tools/merge-pr-view.sh" "$source_fixture/tools/"
 cp "$MODEL_POLICY_TEST_REPO/engine/land-admit.sh" "$source_fixture/engine/"
+cp "$MODEL_POLICY_TEST_REPO/engine/lib.d/gh-key-cache.sh" "$source_fixture/engine/lib.d/"
 (cd "$test_env_root" && source "$source_fixture/tools/merge-pr.sh" && declare -F land_receipt_green >/dev/null) \
   || fail 'merge helper could not load admission from its own checkout'
 if (cd "$test_env_root" && source "$source_fixture/tools/merge-pr.sh" && merge_pr_squash invalid 0123456789abcdef0123456789abcdef01234567) 2>/dev/null; then

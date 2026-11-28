@@ -176,3 +176,35 @@ test('config override wins over pack and missing config fails closed or delegate
   assert.equal(missing.status, 2);
   assert.match(missing.stdout, /migration.path must be a nonempty relative path/);
 });
+
+test('CI reports migration order as not applicable when migration.path is absent', () => {
+  const script = join(process.cwd(), 'engine/check-fruit-migration-order.mjs');
+  const configRoot = join(root, 'no-migration');
+  const packRoot = join(root, 'legacy-pack');
+  mkdirSync(configRoot);
+  mkdirSync(packRoot);
+  writeFileSync(join(configRoot, 'release.json'), JSON.stringify({}));
+  writeFileSync(join(packRoot, 'check-fruit-migration-order.mjs'), "console.log('legacy');");
+  const env = { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: packRoot };
+  const missingMode = spawnSync(process.execPath, [script], { encoding: 'utf8', env });
+  assert.equal(missingMode.status, 2);
+  assert.match(missingMode.stdout, /usage:/);
+  const missingPr = spawnSync(process.execPath, [script, '--merge-gate', '--repo', 'o/r'], { encoding: 'utf8', env });
+  assert.equal(missingPr.status, 2);
+  assert.match(missingPr.stdout, /--merge-gate needs --pr N/);
+  const missingRepo = spawnSync(process.execPath, [script, '--merge-gate', '--pr', '7'], {
+    encoding: 'utf8',
+    env: { ...env, REPO: '', GITHUB_REPOSITORY: '' },
+  });
+  assert.equal(missingRepo.status, 2);
+  assert.match(missingRepo.stdout, /--merge-gate needs --repo or REPO/);
+  const mergeGate = spawnSync(process.execPath, [script, '--merge-gate', '--pr', '7', '--repo', 'o/r'], {
+    encoding: 'utf8',
+    env,
+  });
+  assert.equal(mergeGate.status, 0, mergeGate.stderr || mergeGate.stdout);
+  assert.match(mergeGate.stdout, /migration order not applicable/);
+  const result = spawnSync(process.execPath, [script, '--ci'], { encoding: 'utf8', env });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /migration order not applicable/);
+});

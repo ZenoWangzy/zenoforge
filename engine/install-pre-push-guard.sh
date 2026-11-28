@@ -11,6 +11,9 @@ if [[ -n "$common_dir" && "$common_dir" != /* ]]; then common_dir="$repo/$common
 common_dir="$(cd -- "$common_dir" 2>/dev/null && pwd -P)" || exit 0
 hook="$common_dir/hooks/pre-push"
 log_file="${ZF_PUSH_GUARD_LOG:-${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}/night/night.log}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -L)"
+engine_dir="${ZF_ENGINE_DIR:-$script_dir}"
+[[ -f "$engine_dir/lib.d/transport.sh" ]] || engine_dir="$script_dir"
 script="$(realpath -m -- "${BASH_SOURCE[0]}")"
 worker_install="${2:-}"
 tmp="$(mktemp -d 2>/dev/null || true)"
@@ -52,6 +55,9 @@ if ! git -C "$repo" show "origin/main:$pack_rel/pre-push-guard.sh" > "$main_guar
   || { [[ "$worker_install" != --worker ]] && ! cmp -s -- "$repo/$pack_rel/pre-push-guard.sh" "$main_guard"; }; then
   disable_drifted_hook guard-not-on-origin-main
   exit 0
+fi
+if [[ -f "$engine_dir/lib.d/transport.sh" ]]; then
+  git -C "$repo" config --local zenoforge.engine-dir "$engine_dir" || exit 0
 fi
 
 mkdir -p -- "$common_dir/hooks" 2>/dev/null || {

@@ -31,7 +31,7 @@ function readRegistry(cwd, commit) {
   return JSON.parse(git(cwd, ['show', `${commit}:${ESCAPE_SUITE_REGISTRY}`]));
 }
 
-function validateRegistry(registry, label) {
+export function validateRegistry(registry, label) {
   if (!registry || typeof registry !== 'object' || Array.isArray(registry) || registry.version !== 1
       || !registry.packages || typeof registry.packages !== 'object' || Array.isArray(registry.packages)) {
     fail(`${label} must have version 1 and a packages object`);
@@ -54,6 +54,16 @@ function validateRegistry(registry, label) {
     packages.set(packagePath, tests);
   }
   return packages;
+}
+
+export function escapeTestIsRegistered(cwd, commit, testPath) {
+  const registry = readRegistry(cwd, commit);
+  if (!registry) return false;
+  const normalizedTestPath = relativeRepoPath(testPath, 'test path');
+  for (const [packagePath, tests] of validateRegistry(registry, 'head registry')) {
+    if (normalizedTestPath.startsWith(packagePath + '/') && tests.has(normalizedTestPath)) return true;
+  }
+  return false;
 }
 
 function mergedRegistry(cwd, base, head) {

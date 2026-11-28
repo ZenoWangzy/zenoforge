@@ -13,6 +13,7 @@ printf '%s\n' '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
 printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$script_dir/scheduler.sh"
+source "$script_dir/../coord.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
 
 fail() { printf 'clone-pool-cleanup.test.sh: %s\n' "$*" >&2; exit 1; }

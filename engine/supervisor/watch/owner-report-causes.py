@@ -16,7 +16,7 @@ fail over to zc on a provider health failure, as for every worker.
 
 Env (defaults in parentheses, overridden by the test):
   OC_STATE (~/.zenoforge/state/owner-report-causes)  OC_OUT_DIR (~/.zenoforge/state/work)
-  OC_WORKER ($ZF_ENGINE_LIVE/bin/worker, else ~/.vecta-agent/engine-live)  OC_MAIL (night/maintainer-health-mail.sh beside this engine)
+  OC_WORKER ($ZF_ENGINE_LIVE/bin/worker when configured)  OC_MAIL (night/maintainer-health-mail.sh beside this engine)
   OC_TIMEOUT (1500, queue at the worker's capacity gate included: the mail goes out at 01:00 UTC, so a later answer is no use today)
   OC_SYSTEMCTL (systemctl)  OC_REPOS (the engine checkout)
 """
@@ -26,7 +26,8 @@ HOME = os.path.expanduser('~')
 HERE = os.path.dirname(os.path.realpath(__file__))
 STATE = os.environ.get('OC_STATE', f'{HOME}/.zenoforge/state/owner-report-causes')
 OUT_DIR = os.environ.get('OC_OUT_DIR', f'{HOME}/.zenoforge/state/work')
-WORKER = os.environ.get('OC_WORKER', os.environ.get('ZF_ENGINE_LIVE', f'{HOME}/.vecta-agent/engine-live') + '/bin/worker')
+ENGINE_LIVE = os.environ.get('ZF_ENGINE_LIVE')
+WORKER = os.environ.get('OC_WORKER', os.path.join(ENGINE_LIVE, 'bin', 'worker') if ENGINE_LIVE else '')
 MAIL = os.environ.get('OC_MAIL', os.path.join(HERE, '..', '..', 'night', 'maintainer-health-mail.sh'))
 COMPARE = os.path.join(HERE, '..', '..', 'night', 'owner-report-compare.py')
 TIMEOUT = int(os.environ.get('OC_TIMEOUT', '1500'))
@@ -136,6 +137,9 @@ def accept(rows, wanted, valid):
 
 
 def main():
+    if not WORKER:
+        print('owner-report-causes: missing required environment variable: OC_WORKER', file=sys.stderr)
+        return 1
     os.nice(19)
     os.makedirs(STATE, exist_ok=True)
     lock = open(f'{STATE}/lock', 'w')

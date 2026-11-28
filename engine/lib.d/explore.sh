@@ -9,12 +9,79 @@ explore_sha_valid() {
   [[ "$1" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
 }
 
+explore_realpath() {
+  python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
 explore_run_dir() {
   printf '%s/state/explore/%s\n' "$AGENT_HOME" "$1"
 }
 
 explore_state_file() {
   printf '%s/state.json\n' "$(explore_run_dir "$1")"
+}
+
+explore_order_features() {
+  local features="$1" max_features="$2"
+  printf '%s\n' "$features" | python3 -c '
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+max_features = int(sys.argv[2])
+features = json.load(sys.stdin)
+if len(features) <= max_features:
+    print(json.dumps(features, separators=(",", ":"), ensure_ascii=False))
+    raise SystemExit
+
+positions = {feature["id"]: index for index, feature in enumerate(features)}
+last_explored = {}
+try:
+    run_dirs = list(root.iterdir())
+except OSError:
+    run_dirs = []
+for run_dir in run_dirs:
+    if run_dir.is_symlink() or not run_dir.is_dir():
+        continue
+    state_file = run_dir / "state.json"
+    if state_file.is_file():
+        try:
+            with state_file.open(encoding="utf-8") as file:
+                state = json.load(file)
+        except (OSError, ValueError):
+            state = {}
+        if isinstance(state, dict) and state.get("state") == "started":
+            continue
+    results_dir = run_dir / "results"
+    if results_dir.is_symlink() or not results_dir.is_dir():
+        continue
+    try:
+        result_files = list(results_dir.iterdir())
+    except OSError:
+        continue
+    for result_file in result_files:
+        if result_file.is_symlink() or not result_file.is_file() or not result_file.name.endswith(".json"):
+            continue
+        feature_id, separator, attempt = result_file.name.rpartition("-attempt-")
+        if not separator or not attempt[:-5].isdigit() or feature_id not in positions:
+            continue
+        try:
+            modified = result_file.stat().st_mtime_ns
+        except OSError:
+            continue
+        last_explored[feature_id] = max(last_explored.get(feature_id, modified), modified)
+
+ordered = sorted(
+    features,
+    key=lambda feature: (
+        feature["id"] in last_explored,
+        last_explored.get(feature["id"], 0),
+        positions[feature["id"]],
+    ),
+)
+print(json.dumps(ordered, separators=(",", ":"), ensure_ascii=False))
+' "$AGENT_HOME/state/explore" "$max_features"
 }
 
 explore_state_update() {
@@ -82,6 +149,7 @@ explore_config_load() {
   EXPLORE_WALL_SECONDS="$(jq -r '.budget.wall_seconds // 3600' "$config")"
   EXPLORE_MAX_TOKENS="$(jq -r '.budget.max_tokens // 1500000' "$config")"
   EXPLORE_MAX_FEATURES="$(jq -r '.budget.max_features // 70' "$config")"
+  EXPLORE_FEATURES_JSON="$(explore_order_features "$EXPLORE_FEATURES_JSON" "$EXPLORE_MAX_FEATURES")"
   EXPLORE_MAX_FILED="$(jq -r '.max_filed_per_run // 3' "$config")"
   EXPLORE_DRIVER_TIMEOUT="$(jq -r '.driver.timeout_s' "$config")"
   EXPLORE_EVIDENCE_REL="$(jq -r '.driver.evidence_dir' "$config")"
@@ -90,6 +158,58 @@ explore_config_load() {
   EXPLORE_SELECTED_COUNT="$(jq 'length' <<< "$EXPLORE_SELECTED_FEATURES")"
   valid_ids="$(jq '[.[]|.id]|unique|length' <<< "$EXPLORE_SELECTED_FEATURES")"
   [[ "$valid_ids" == "$EXPLORE_SELECTED_COUNT" ]]
+}
+
+explore_reclaim_old_runs() {
+  local root="$AGENT_HOME/state/explore" retention_days="${ZF_EXPLORE_RETAIN_DAYS:-14}" retention_seconds now run_dir sha state_file state age_seconds lock_file
+  local repo_real evidence_root evidence_real evidence_run reclaimed=0 removed_run status=0
+  [[ "$retention_days" =~ ^[0-9]{1,5}$ ]] || return 64
+  retention_days=$((10#$retention_days))
+  retention_seconds=$((retention_days * 86400))
+  [[ -d "$root" ]] || return 0
+  now="$(date +%s)" || return 1
+  evidence_root=
+  if explore_config_load; then
+    repo_real="$(explore_realpath "$ZF_REPO_DIR" 2>/dev/null || true)"
+    evidence_root="$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL"
+    evidence_real="$(explore_realpath "$evidence_root" 2>/dev/null || true)"
+    if [[ -z "$repo_real" || -z "$evidence_real" || ( "$evidence_real" != "$repo_real" && "$evidence_real" != "$repo_real/"* ) ]]; then
+      evidence_root=
+      status=1
+    else
+      evidence_root="$evidence_real"
+    fi
+  fi
+  for run_dir in "$root"/*; do
+    [[ -d "$run_dir" && ! -L "$run_dir" ]] || continue
+    sha="${run_dir##*/}"
+    explore_sha_valid "$sha" || continue
+    state_file="$run_dir/state.json"
+    [[ -f "$state_file" && ! -L "$state_file" ]] || continue
+    state="$(jq -r '.state // empty' "$state_file" 2>/dev/null || true)"
+    case "$state" in
+      done|skipped|killed) ;;
+      *) continue ;;
+    esac
+    age_seconds="$(python3 -c 'import os,sys; print(max(0,int(float(sys.argv[1])-os.stat(sys.argv[2]).st_mtime)))' "$now" "$state_file" 2>/dev/null || true)"
+    [[ "$age_seconds" =~ ^[0-9]+$ ]] || { status=1; continue; }
+    (( age_seconds >= retention_seconds )) || continue
+    removed_run=0
+    if rm -rf -- "$run_dir"; then removed_run=1; else status=1; fi
+    lock_file="$root/$sha.lock"
+    if [[ -e "$lock_file" || -L "$lock_file" ]]; then
+      if rm -f -- "$lock_file"; then removed_run=1; else status=1; fi
+    fi
+    if [[ -n "$evidence_root" ]]; then
+      evidence_run="$evidence_root/explore-$sha"
+      if [[ -e "$evidence_run" || -L "$evidence_run" ]]; then
+        if rm -rf -- "$evidence_run"; then removed_run=1; else status=1; fi
+      fi
+    fi
+    if (( removed_run == 1 )); then reclaimed=$((reclaimed + 1)); fi
+  done
+  if (( reclaimed > 0 )); then explore_log "explore: reclaimed runs=$reclaimed"; fi
+  return "$status"
 }
 
 explore_age_seconds() {
@@ -136,6 +256,7 @@ explore_start_unit() {
   local -a runtime_env=(-E PATH -E HOME -E http_proxy -E https_proxy -E HTTP_PROXY -E HTTPS_PROXY -E no_proxy -E NO_PROXY \
     -E ALL_PROXY -E NODE_USE_ENV_PROXY -E AGENT_HOME="$AGENT_HOME" -E ZF_ENGINE_DIR="$ZF_ENGINE_DIR" \
     -E ZF_REPO_DIR="$ZF_REPO_DIR" -E ZF_CONFIG_ROOT="$ZF_CONFIG_ROOT" -E MAC_AUTOPILOT_RUNTIME_DIR="${MAC_AUTOPILOT_RUNTIME_DIR:-}")
+  [[ -z "${ZF_CDP_BROWSER_LEASE_SCRIPT:-}" ]] || runtime_env+=(-E ZF_CDP_BROWSER_LEASE_SCRIPT="$ZF_CDP_BROWSER_LEASE_SCRIPT")
   [[ -z "${ZF_REPO:-}" ]] || runtime_env+=(-E ZF_REPO="$ZF_REPO")
   [[ -z "${ZF_PACK_DIR:-}" ]] || runtime_env+=(-E ZF_PACK_DIR="$ZF_PACK_DIR")
   [[ -z "${ZF_UNIT_PREFIX:-}" ]] || runtime_env+=(-E ZF_UNIT_PREFIX="$ZF_UNIT_PREFIX")
@@ -257,8 +378,8 @@ explore_evidence_copy() {
     case "/$relative/" in */../*) return 1 ;; esac
     source="$evidence_dir/$relative"
     [[ -f "$source" && ! -L "$source" ]] || return 1
-    resolved_root="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$evidence_dir")" || return 1
-    resolved_file="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$source")" || return 1
+    resolved_root="$(explore_realpath "$evidence_dir")" || return 1
+    resolved_file="$(explore_realpath "$source")" || return 1
     [[ "$resolved_file" == "$resolved_root/"* ]] || return 1
     size="$(wc -c < "$resolved_file" | tr -d ' ')" || return 1
     [[ "$size" =~ ^[0-9]+$ ]] && (( size > 0 && size <= 10485760 )) || return 1
@@ -281,7 +402,7 @@ explore_evidence_attachment_paths() {
 
 explore_remove_attempt_evidence() {
   local path repo_real
-  repo_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ZF_REPO_DIR" 2>/dev/null || true)"
+  repo_real="$(explore_realpath "$ZF_REPO_DIR" 2>/dev/null || true)"
   for path in "${EXPLORE_FIRST_EVIDENCE_DIR:-}" "${EXPLORE_ATTEMPT_EVIDENCE_DIR:-}"; do
     [[ -n "$path" && -n "$repo_real" && "$path" == "$repo_real/"* ]] || continue
     rm -rf -- "$path"
@@ -368,8 +489,8 @@ explore_driver_attempt() {
   result="$(explore_run_dir "$sha")/results/$feature_id-attempt-$attempt.json"
   log_file="$(explore_run_dir "$sha")/results/$feature_id-attempt-$attempt.log"
   mkdir -p -- "$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
-  repo_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ZF_REPO_DIR")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
-  evidence_base_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
+  repo_real="$(explore_realpath "$ZF_REPO_DIR")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
+  evidence_base_real="$(explore_realpath "$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
   if [[ "$evidence_base_real" != "$repo_real" && "$evidence_base_real" != "$repo_real/"* ]]; then EXPLORE_ATTEMPT_STATUS=error; return 0; fi
   evidence_dir="$evidence_base_real/explore-$sha/$feature_id/attempt-$attempt"
   EXPLORE_ATTEMPT_EVIDENCE_DIR="$evidence_dir"
@@ -379,6 +500,9 @@ explore_driver_attempt() {
   if (( remaining <= timeout_seconds )); then timeout_seconds="$remaining"; wall_limited=1; fi
   if (( timeout_seconds <= 0 )); then EXPLORE_ATTEMPT_STATUS=budget-time; return 0; fi
   local -a command=("${EXPLORE_DRIVER_ARGV[@]}")
+  if [[ -n "${ZF_CDP_BROWSER_LEASE_SCRIPT:-}" && -x "$ZF_CDP_BROWSER_LEASE_SCRIPT" ]]; then
+    command=("$ZF_CDP_BROWSER_LEASE_SCRIPT" -- "${EXPLORE_DRIVER_ARGV[@]}")
+  fi
   if (cd -- "$ZF_REPO_DIR" && \
       ZF_EXPLORATION_RELEASE_SHA="$sha" ZF_EXPLORATION_FEATURE_ID="$feature_id" \
       ZF_EXPLORATION_FEATURE_TITLE="$title" ZF_EXPLORATION_ATTEMPT="$attempt" \

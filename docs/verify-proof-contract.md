@@ -2,7 +2,7 @@
 
 `engine/verify-proof-check.mjs` validates the JSON that `scripts/e2e/yangfeng-regression/verify-feature.mjs --json` writes against the plan from `engine/verification-plan.mjs`.
 
-Invocation: `node engine/verify-proof-check.mjs --plan <plan.json> --proof <proof.json> --head <sha>`. It prints one JSON line, `{"status","features","reasons"}`, and exits 0 for every proof status. Exit 2 means a bad invocation (missing or unknown argument, unreadable or malformed plan). Callers read `status`, never the exit code.
+Invocation: `node engine/verify-proof-check.mjs --plan <plan.json> --proof <proof.json> --head <sha>`. It prints one JSON line with `status`, `features` and `reasons`, and may include a `performance` field. It exits 0 for every proof status. Exit 2 means a bad invocation (missing or unknown argument, unreadable or malformed plan). Callers read `status`, never the exit code.
 
 Fields read from the plan: `matched_features`, an array of feature ids.
 
@@ -25,7 +25,7 @@ The producer handoff is `features[].performance` with exactly the field names ab
 
 Budgets are resolved through `zf_config_file("state/perf-budget.json")`, which selects the target repository's `.zenoforge/state/perf-budget.json` when present. The JSON object has a required `default` entry and optional feature-id entries. Each entry has a `basis` string with at least 20 characters after trimming whitespace. The default entry supplies non-negative numeric limits for all four measurements; a feature entry may override any limits and inherits the rest from default. Entries with invalid or missing basis or invalid limits are rejected.
 
-With no resolved budget file, performance data is ignored, the functional status is unchanged, and the checker logs once that performance checks were skipped.
+With no resolved budget file, performance data is ignored, the functional status is unchanged, the result includes `performance: "unconfigured"`, and the checker logs once that performance checks were skipped.
 
 Statuses:
 
@@ -37,5 +37,7 @@ Statuses:
 | `stale` | `source_sha` differs from the head. |
 | `over-budget` | One or more measured values exceed their feature-specific or default limit. Each reason names the feature, metric, measured value and budget. |
 | `ok` | Every matched feature passes and, when a budget file exists, its performance data is valid and within budget. |
+
+Successful results include `performance: "ok"` when a configured performance budget passes. Invalid and over-budget paths retain their existing status and reasons.
 
 `features` maps each matched feature id to `ok`, `missing`, `failed` or `over-budget`. It is empty when status is decided before per-feature results are read. `reasons` names the feature or field behind each non-ok result.

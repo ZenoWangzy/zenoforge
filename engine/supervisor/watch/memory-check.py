@@ -8,8 +8,8 @@ mtime is unchanged since the copy, so a peer session's newer write always wins.
 
 Env (defaults in parentheses, overridden by the test):
   MC_STATE (~/.zenoforge/state/memory-check)  MC_MEMORY_GLOB (~/.claude/projects/*/memory)
-  MC_WORKER ($ZF_ENGINE_LIVE/bin/worker, else ~/.vecta-agent/engine-live)  MC_NEW_DIR (zenoforge project memory dir)
-  MC_REPOS (~/project/zenoforge-pub ~/project/vecta)  MC_BATCH (10)  MC_TIMEOUT (7200, queue at the worker's capacity gate included)  MC_KEEP (14)  MC_SYSTEMCTL (systemctl)
+  MC_WORKER ($ZF_ENGINE_LIVE/bin/worker, else ~/.zenoforge/engine-live/bin/worker)  MC_NEW_DIR (required)
+  MC_REPOS (required)  MC_BATCH (10)  MC_TIMEOUT (7200, queue at the worker's capacity gate included)  MC_KEEP (14)  MC_SYSTEMCTL (systemctl)
 """
 import datetime, difflib, fcntl, glob, json, os, re, shlex, shutil, signal, subprocess, sys, tarfile, tempfile, time
 
@@ -17,9 +17,9 @@ HOME = os.path.expanduser('~')
 HERE = os.path.dirname(os.path.realpath(__file__))
 STATE = os.environ.get('MC_STATE', f'{HOME}/.zenoforge/state/memory-check')
 MEM_GLOB = os.environ.get('MC_MEMORY_GLOB', f'{HOME}/.claude/projects/*/memory')
-WORKER = os.environ.get('MC_WORKER', os.environ.get('ZF_ENGINE_LIVE', f'{HOME}/.vecta-agent/engine-live') + '/bin/worker')
-NEW_DIR = os.environ.get('MC_NEW_DIR', f'{HOME}/.claude/projects/-home-gerald-project-zenoforge/memory')
-REPOS = shlex.split(os.environ.get('MC_REPOS', f'{HOME}/project/zenoforge-pub {HOME}/project/vecta'))
+WORKER = os.environ.get('MC_WORKER', os.environ.get('ZF_ENGINE_LIVE', f'{HOME}/.zenoforge/engine-live') + '/bin/worker')
+NEW_DIR = os.environ.get('MC_NEW_DIR', '')
+REPOS = shlex.split(os.environ.get('MC_REPOS', ''))
 BATCH = int(os.environ.get('MC_BATCH', '10'))
 TIMEOUT = int(os.environ.get('MC_TIMEOUT', '7200'))
 KEEP = int(os.environ.get('MC_KEEP', '14'))
@@ -307,6 +307,10 @@ def worker_times(key):
 
 
 def main():
+    missing = [name for name, present in (('MC_NEW_DIR', bool(NEW_DIR)), ('MC_REPOS', bool(REPOS))) if not present]
+    if missing:
+        print(f"memory-check: missing required environment variable(s): {', '.join(missing)}", file=sys.stderr)
+        return 1
     os.nice(19)
     os.makedirs(STATE, exist_ok=True)
     lock = open(f'{STATE}/lock', 'w')

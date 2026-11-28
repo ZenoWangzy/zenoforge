@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Small local fixtures: real flock/PID identity; no model, systemd, or network."""
+import datetime
 import fcntl
 import importlib.util
 import json
@@ -19,6 +20,18 @@ guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
 
+def test_process_identity(pid):
+    if sys.platform != "darwin":
+        return guard.identity(pid, Path("/proc"))
+    env = dict(os.environ, LC_ALL="C")
+    result = subprocess.run(["ps", "-o", "ppid=", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=env)
+    if result.returncode or not result.stdout.strip():
+        raise OSError("process identity unavailable")
+    parent, started = result.stdout.strip().split(maxsplit=1)
+    start_ticks = str(int(datetime.datetime.strptime(started, "%a %b %d %H:%M:%S %Y").timestamp()))
+    return {"pid": int(pid), "start_ticks": start_ticks, "ppid": int(parent), "cgroup": "/fixture"}
+
+
 class ExecutionAdmission(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -28,18 +41,40 @@ class ExecutionAdmission(unittest.TestCase):
         self.env.pop("ZF_EXECUTION_PROC_ROOT", None)
         self.env.pop("LUNA_PRIORITY", None)
         self.env.pop("AGENT_EXECUTION_CPU_TARGET_PERCENT", None)
+        self.proc = self.home / "host-proc-fixture"
+        (self.proc / "sys/kernel/random").mkdir(parents=True)
+        (self.proc / "sys/kernel/random/boot_id").write_text("00000000-0000-0000-0000-000000000001\n")
+        (self.proc / "stat").write_text("cpu 100 0 0 100 0 0 0 0\ncpu0 1\n")
+        (self.proc / "meminfo").write_text("MemAvailable: 9999999 kB\n")
+        (self.proc / "loadavg").write_text("0 0 0 1/2 3\n")
+        if sys.platform == "darwin":
+            self.env["ZF_EXECUTION_PROC_ROOT"] = str(self.proc)
         self.children = []
         self.driver = self.home / "driver.py"
         self.driver.write_text(
-            "import importlib.util,sys\n"
+            "import datetime,importlib.util,os,subprocess,sys\n"
             f"s=importlib.util.spec_from_file_location('guard',{str(ROOT / 'execution-admission.py')!r})\n"
             "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
             "g.occupied=lambda proc:set()\n"
             "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\n"
+            "if sys.platform == 'darwin':\n"
+            " def fixture_identity(pid, proc):\n"
+            "  pid=int(pid)\n"
+            "  env=dict(os.environ,LC_ALL='C')\n"
+            "  result=subprocess.run(['ps','-o','ppid=','-o','lstart=','-p',str(pid)],capture_output=True,text=True,env=env)\n"
+            "  if result.returncode or not result.stdout.strip(): raise OSError('fixture process missing')\n"
+            "  parent,started=result.stdout.strip().split(maxsplit=1)\n"
+            "  ticks=str(int(datetime.datetime.strptime(started,'%a %b %d %H:%M:%S %Y').timestamp()))\n"
+            "  return {'pid':pid,'start_ticks':ticks,'ppid':int(parent),'cgroup':'/fixture'}\n"
+            " g.identity=fixture_identity\n"
             "try:sys.exit(g.admission(sys.argv[1],sys.argv[3:] if sys.argv[2:3]==['--'] else sys.argv[2:]))\n"
             "except (g.Deferred,OSError,ValueError,KeyError,StopIteration):sys.exit(75)\n"
         )
         self.capacity(8)
+
+    def boot_id(self):
+        proc = Path(self.env.get("ZF_EXECUTION_PROC_ROOT", "/proc"))
+        return (proc / "sys/kernel/random/boot_id").read_text().strip()
 
     def tearDown(self):
         for child in self.children:
@@ -219,12 +254,12 @@ class ExecutionAdmission(unittest.TestCase):
         source = self.driver.read_text()
         self.driver.write_text(source.replace("try:sys.exit", """from types import SimpleNamespace
 g.time=SimpleNamespace(monotonic=lambda:float(g.os.environ['FIXTURE_MONOTONIC']))
-original_cpu_sample = g.Platform.cpu_sample
-def fixture_cpu_sample(self, home, reset=False):
+original_cpu_sample = g.cpu_sample
+def fixture_cpu_sample(home, proc, reset=False):
  if g.os.environ.get('FIXTURE_STAT_FAILURE') == '1':
   return {'cpu_state':'UNKNOWN','cpu_percent':None,'cpu_sampled_monotonic':g.time.monotonic()}
- return original_cpu_sample(self, home, reset)
-g.Platform.cpu_sample = fixture_cpu_sample
+ return original_cpu_sample(home, proc, reset)
+g.cpu_sample = fixture_cpu_sample
 try:sys.exit"""))
         start = self.home / "locks/execution-cpu-start.json"
         for initially_unknown in (False, True):
@@ -234,7 +269,7 @@ try:sys.exit"""))
                 self.env["FIXTURE_STAT_FAILURE"] = "1" if initially_unknown else "0"
                 self.assertEqual(self.run_guard("run", "true").returncode, 0)
                 record = json.loads(start.read_text())
-                self.assertEqual(record["boot_id"], guard.hostinfo.HostInfo().boot_id())
+                self.assertEqual(record["boot_id"], self.boot_id())
                 self.env["FIXTURE_STAT_FAILURE"] = "1"
                 self.assertEqual(self.run_guard("run", "true").returncode, 75)
                 self.env["FIXTURE_STAT_FAILURE"] = "0"
@@ -248,7 +283,7 @@ try:sys.exit"""))
         self.assertEqual(self.run_guard("check").returncode, 0, "first missing token is allowed")
         start = self.home / "locks/execution-cpu-start.json"
         self.assertFalse(start.exists())
-        boot = guard.hostinfo.HostInfo().boot_id()
+        boot = self.boot_id()
         for invalid in ('{', 'null', '[]', '{}', json.dumps(dict(boot_id=None, monotonic=0)),
                         json.dumps(dict(boot_id=boot, monotonic=float('nan'))),
                         json.dumps(dict(boot_id=boot, monotonic=-1))):
@@ -257,7 +292,7 @@ try:sys.exit"""))
                 self.assertEqual(self.run_guard("run", "true").returncode, 75)
         start.write_text(json.dumps(dict(boot_id=boot, monotonic=time.monotonic()+10)))
         self.assertEqual(self.run_guard("check").returncode, 75, "future same-boot timestamp fails closed")
-        start.write_text(json.dumps(dict(boot_id='00000000-0000-0000-0000-000000000001', monotonic=time.monotonic()+10)))
+        start.write_text(json.dumps(dict(boot_id='00000000-0000-0000-0000-000000000002', monotonic=time.monotonic()+10)))
         self.assertEqual(self.run_guard("run", "true").returncode, 0, "confirmed different boot resets interval")
         self.assertEqual(json.loads(start.read_text())["boot_id"], boot)
         source = self.driver.read_text()
@@ -269,7 +304,9 @@ def fixture_read(path,*args,**kwargs):
 Path.read_text=fixture_read
 try:sys.exit"""))
         self.assertEqual(self.run_guard("run", "true").returncode, 75)
-        self.driver.write_text(source.replace("g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}", "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\ndef fixture_boot_id(self):\n raise FileNotFoundError('fixture boot')\ng.Platform.boot_id=fixture_boot_id"))
+        boot_path = Path(self.env.get("ZF_EXECUTION_PROC_ROOT", "/proc")) / "sys/kernel/random/boot_id"
+        missing_boot = f"g.resources=lambda *args:{{'available_mb':9999999,'load1':0.0}}\noriginal_read=g.Path.read_text\ndef fixture_read(path,*args,**kwargs):\n if path==g.Path({str(boot_path)!r}):raise FileNotFoundError('fixture boot')\n return original_read(path,*args,**kwargs)\ng.Path.read_text=fixture_read"
+        self.driver.write_text(source.replace("g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}", missing_boot))
         start.unlink()
         self.assertEqual(self.run_guard("run", "true").returncode, 75, "unknown boot cannot waive the interval")
 
@@ -352,7 +389,7 @@ try:sys.exit"""))
             shell = (f'pipeline_execution_guard() {{ printf "%s" "{fake}"; }}\n'
                      'dispatch_load_exceeded() { return 0; }\n'
                      'load_1m=999; processors=1; LOAD_LIMIT_MULTIPLIER=1; TIER=general\n'
-                     'LOADAVG_FILE=/proc/loadavg\n' + block)
+                     f'LOADAVG_FILE={self.proc / "loadavg"}\n' + block)
             for status in (0, 75):
                 result = subprocess.run(['bash', '-c', shell],
                     env=dict(self.env, AGENT_EXECUTION_CPU_TARGET_PERCENT='90', FIXTURE_CPU_STATUS=str(status)),
@@ -751,12 +788,22 @@ try:sys.exit"""))
                   f"Path({str(ready)!r}).touch();signal.pause()")
         driver = self.home / "startup-driver.py"
         driver.write_text(
-            "import importlib.util,os,signal,subprocess,sys,time\n"
+            "import datetime,importlib.util,os,signal,subprocess,sys,time\n"
             "from pathlib import Path\n"
             f"s=importlib.util.spec_from_file_location('guard',{str(ROOT / 'execution-admission.py')!r})\n"
             "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
             "g.occupied=lambda proc:set()\n"
             "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\n"
+            "if sys.platform == 'darwin':\n"
+            " def fixture_identity(pid, proc):\n"
+            "  pid=int(pid)\n"
+            "  env=dict(os.environ,LC_ALL='C')\n"
+            "  result=subprocess.run(['ps','-o','ppid=','-o','lstart=','-p',str(pid)],capture_output=True,text=True,env=env)\n"
+            "  if result.returncode or not result.stdout.strip(): raise OSError('fixture process missing')\n"
+            "  parent,started=result.stdout.strip().split(maxsplit=1)\n"
+            "  ticks=str(int(datetime.datetime.strptime(started,'%a %b %d %H:%M:%S %Y').timestamp()))\n"
+            "  return {'pid':pid,'start_ticks':ticks,'ppid':int(parent),'cgroup':'/fixture'}\n"
+            " g.identity=fixture_identity\n"
             "original=subprocess.Popen\n"
             f"command=[sys.executable,'-c',{worker!r}]\n"
             "def start(args,*a,**kw):\n"
@@ -918,9 +965,7 @@ try:sys.exit"""))
         self.capacity(1)
         with (self.home / 'capacity.env').open('a') as handle:
             handle.write('AGENT_EXECUTION_MIN_MEM_MB=6144\nAGENT_EXECUTION_MAX_LOAD=12\n')
-        platform = guard.Platform()
-        process_identity = platform.identity(os.getpid())
-        start_key = "start_ticks" if platform.system == "Linux" else "start_id"
+        process_identity = test_process_identity(os.getpid())
         locks = self.home / 'locks'
         locks.mkdir(exist_ok=True)
         with (locks / 'execution-0.lock').open('a+') as handle:
@@ -928,7 +973,7 @@ try:sys.exit"""))
             (locks / 'execution-0.json').write_text(json.dumps(process_identity))
             self.assertEqual(invoke('watch-cleanup').returncode, 75)
             self.assertFalse(receipt.exists())
-        self.assertEqual(invoke('watch-cleanup', str(os.getpid()), str(process_identity[start_key])).returncode, 75)
+        self.assertEqual(invoke('watch-cleanup', str(os.getpid()), str(process_identity["start_ticks"])).returncode, 75)
         self.assertFalse(receipt.exists())
         (resource_proc / 'meminfo').write_text('MemAvailable: 6290432 kB\n')  # 6143 MB.
         self.assertEqual(invoke('watch').returncode, 75)

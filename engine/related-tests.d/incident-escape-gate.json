@@ -1,0 +1,14 @@
+{
+  "engine/mac-autopilot/scheduler.d/review-rules.sh": [
+    "engine/mac-autopilot/incident-escape-gate.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/escape-suite-runner.mjs": [
+    "engine/mac-autopilot/incident-escape-gate.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/self-check.sh": [
+    "engine/mac-autopilot/incident-escape-gate.test.sh"
+  ],
+  "engine/mac-autopilot/incident-escape-gate.test.sh": [
+    "engine/mac-autopilot/incident-escape-gate.test.sh"
+  ]
+}

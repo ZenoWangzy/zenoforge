@@ -39,8 +39,33 @@ incident_escalation_stated() { # prior-art section on stdin → success when it 
   after="escalat[[:alpha:]]*[:,]?([[:space:]]+reference)?[:,]?([[:space:]]+$aux)*(([[:space:]]+(not|never|unnecessary|unneeded|moot|none|n/a))|[[:space:]]+[[:alpha:]]+n${apos}t)([^[:alpha:]/]|$)"
   tr '[:upper:]' '[:lower:]' | sed -E "s/$before//g; s#$after#  #g" | grep -Eq '(^|[^[:alpha:]])escalat(e|ed|es|ion|ions|ing)([^[:alpha:]]|$)'
 }
+incident_escape_test_registered() {
+  local test_path="$1" repo_root="${dir:-${ROOT:-${MAC_AUTOPILOT_ROOT:-}}}" engine_dir module
+  [[ -n "$repo_root" ]] || return 1
+  if [[ -n "${ZF_ENGINE_DIR:-}" ]]; then
+    engine_dir="$ZF_ENGINE_DIR"
+  elif [[ -n "${HERE:-}" ]]; then
+    engine_dir="${HERE%/mac-autopilot}"
+  elif [[ -n "${MAC_AUTOPILOT_ENV_ROOT:-}" ]]; then
+    engine_dir="$MAC_AUTOPILOT_ENV_ROOT/engine"
+  else
+    engine_dir=""
+  fi
+  if [[ -z "$engine_dir" || ! -f "$engine_dir/mac-autopilot/scheduler.d/escape-suite-runner.mjs" ]]; then
+    engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+  fi
+  module="$engine_dir/mac-autopilot/scheduler.d/escape-suite-runner.mjs"
+  node --input-type=module -e '
+import { pathToFileURL } from "node:url";
+const [repo, test, runner] = process.argv.slice(1);
+const { escapeTestIsRegistered } = await import(pathToFileURL(runner));
+if (!escapeTestIsRegistered(repo, "HEAD", test)) process.exitCode = 1;
+' "$repo_root" "$test_path" "$module" 2>/dev/null
+}
+
 incident_report_gate_reason() { # incident unit [implementation report path] → missing report requirement or empty
-  local unit_json="$1" report="${2:-}" kind_line kind guard_section prior_art_section missing=()
+  local unit_json="$1" report="${2:-}" kind_line kind guard_section prior_art_section missing=() escape_test_line escape_test
+  local -a escape_test_lines=()
   incident_labels_match_json "$unit_json" "${INCIDENT_LABELS:-$INCIDENT_DEFAULT_LABELS_JSON}" || return 0
   if [[ -z "$report" ]]; then
     report="$(jqf -r '.implementation_report // .report // empty' <<<"$unit_json")"
@@ -80,6 +105,16 @@ incident_report_gate_reason() { # incident unit [implementation report path] →
     "") printf 'missing recurrence-guard kind (expected architecture, state, script, lint, or test)'; return 0 ;;
     *) printf 'guard kind %s is not allowed (expected architecture, state, script, lint, or test)' "$kind"; return 0 ;;
   esac
+  mapfile -t escape_test_lines < <(grep -E '^[[:space:]]*([-*][[:space:]]+|[0-9]+[.)][[:space:]]+)?escape-test:[[:space:]]*' <<<"$guard_section" || true)
+  for escape_test_line in "${escape_test_lines[@]}"; do
+    escape_test="${escape_test_line#*:}"
+    escape_test="${escape_test#"${escape_test%%[![:space:]]*}"}"
+    escape_test="${escape_test%"${escape_test##*[![:space:]]}"}"
+    if [[ -z "$escape_test" ]] || ! incident_escape_test_registered "$escape_test"; then
+      printf 'escape-test not registered: %s' "$escape_test"
+      return 0
+    fi
+  done
   return 0
 }
 decision_log_gate_reason() { # unit-json [implementation report] → missing or empty decision-log reason
@@ -512,6 +547,11 @@ tick_pr_mergeable() { # Missing mergeability and PRs outside the census use the 
 }
 classify_lane() { # pr → direct-main|pr（取不到文件列表返回 1）
   local files json verdict head raw
+  if declare -F scheduler_scope_lib >/dev/null 2>&1; then
+    scheduler_scope_lib gh-key-cache || return 1
+  elif ! declare -F gh_pr_files_cached >/dev/null 2>&1; then
+    source "${SCHEDULER_SCOPE_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)}/gh-key-cache.sh" || return 1
+  fi
   # The REST file list includes previous_filename for renames; both sides must be classified.
   # gh refuses --slurp together with --jq (exit 1 before any request): from 10-20 every call failed, 506 a hour on
   # 10-22, and no unit got a lane, so non-product PRs never took the direct-main lane. --jq runs per page instead.
@@ -579,6 +619,11 @@ unit_head() { # id pr lane branch → candidate SHA (compatibility helper)
 # A READY from a reviewer of the author's own family is never applied (queue row 942): the unit goes back for an other-family review.
 review_family_verdict() { # unit JSON, reviewer identity, verdict -> 1 when a same-family READY is discarded, else 0
   local unit="$1" reviewer="$2" verdict="$3" id author author_family reviewer_family
+  if declare -F scheduler_scope_lib >/dev/null 2>&1; then
+    scheduler_scope_lib model-policy || return 1
+  elif ! declare -F unit_review_author_identity >/dev/null 2>&1 || ! declare -F review_identity_family >/dev/null 2>&1; then
+    source "${SCHEDULER_SCOPE_LIB_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d" && pwd -P)}/model-policy.sh" || return 1
+  fi
   [[ "$verdict" == READY ]] || return 0
   id="$(jqf -r '.id // empty' <<<"$unit")"
   author="$(unit_review_author_identity "$unit" 2>/dev/null || true)"

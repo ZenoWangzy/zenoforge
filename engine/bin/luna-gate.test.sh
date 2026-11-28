@@ -278,12 +278,59 @@ EOF
   [[ ! -e "$case_root/started" ]] || fail 'broken B admitted the run'
   kill "$reload_pid" 2>/dev/null || :; wait "$reload_pid" 2>/dev/null || :; reload_pid=""
 }
+env_file_reload_case() {
+  local case_root="$root/reload-env" waiter_pid recorded_pid
+  mkdir -p "$case_root/agent/locks"
+  printf 'LUNA_ADMIT_AVAIL_MB=4096\nLUNA_CPU_TARGET=$(touch "$LUNA_RELOAD_EXECUTED")\nNOT_LUNA=from-file\n' > "$case_root/agent/engine.env"
+  printf 'MemAvailable: 3670016 kB\n' > "$case_root/meminfo"
+  printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$case_root/psi"
+  printf '%s 0\n' "$(date +%s)" > "$case_root/agent/locks/luna-host-cpu.sample"
+  cat > "$case_root/waiter.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+unset LUNA_ENV_FILE NOT_LUNA
+source "$LUNA_CAPACITY_FILE"
+codex_runs() { echo 0; }
+cpu_busy() { echo 0; }
+for _ in {1..300}; do
+  luna_reload_live_gate
+  if declare -F luna_reload_gate_env >/dev/null 2>&1; then luna_reload_gate_env; fi
+  [[ "$LUNA_CPU_TARGET" == 101 && -z "${NOT_LUNA:-}" && ! -e "$LUNA_RELOAD_EXECUTED" ]] || exit 2
+  if box_has_room; then
+    printf '%s\n' "$BASHPID" > "$LUNA_RELOAD_ADMITTED"
+    exit 0
+  fi
+  : > "$LUNA_RELOAD_BLOCKED"
+  sleep 0.01
+done
+exit 1
+EOF
+  chmod +x "$case_root/waiter.sh"
+  env AGENT_HOME="$case_root/agent" LUNA_CAPACITY_FILE="$bin/luna-capacity.sh" \
+    LUNA_PROC_MEMINFO="$case_root/meminfo" LUNA_PROC_PSI_MEMORY="$case_root/psi" \
+    LUNA_RELOAD_BLOCKED="$case_root/blocked" LUNA_RELOAD_ADMITTED="$case_root/admitted" \
+    LUNA_RELOAD_EXECUTED="$case_root/executed" \
+    LUNA_ADMIT_AVAIL_MB=4096 LUNA_CPU_TARGET=101 LUNA_MIN=0 LUNA_MAX=10 \
+    "$case_root/waiter.sh" > "$case_root/waiter.log" 2>&1 &
+  reload_pid=$!
+  waiter_pid=$reload_pid
+  wait_for_file "$case_root/blocked" || fail 'env waiter did not block below the initial LUNA_ADMIT_AVAIL_MB'
+  [[ ! -e "$case_root/admitted" ]] || fail 'env waiter passed its initial memory threshold'
+  printf 'LUNA_ADMIT_AVAIL_MB=3328\nLUNA_CPU_TARGET=$(touch "$LUNA_RELOAD_EXECUTED")\nNOT_LUNA=from-file\n' > "$case_root/agent/engine.env"
+  wait_for_file "$case_root/admitted" || fail 'env waiter did not admit after the threshold was lowered'
+  wait "$reload_pid" || fail 'env waiter failed after admission'; reload_pid=""
+  recorded_pid=$(<"$case_root/admitted")
+  [[ "$recorded_pid" == "$waiter_pid" ]] || fail 'env waiter was restarted instead of admitting in place'
+  [[ ! -e "$case_root/executed" ]] || fail 'env waiter executed command substitution from engine.env'
+}
 live_gate_reload_case
 broken_live_gate_case
+env_file_reload_case
 for f in "$bin/luna" "$bin/zc"; do
   case "${f##*/}" in luna) gate_backend=luna ;; *) gate_backend=zc ;; esac
   grep -Fq "if luna_waiter_has_room \"\$slots\" \"\$wait_f\" \"\$prio\" \"\$SECONDS\" $gate_backend; then" "$f" || fail "$(basename "$f") does not use ticket-ordered admission naming its backend"
   grep -Fq 'luna_reload_live_gate' "$f" || fail "$(basename "$f") does not reload the live gate"
+  grep -Fq 'luna_reload_gate_env' "$f" || fail "$(basename "$f") does not reload host LUNA settings while waiting"
   grep -Fq 'luna_wait_backoff "$wait_attempt"' "$f" || fail "$(basename "$f") does not use shared waiter backoff"
   grep -Fq 'luna_waiter_sleep "$slots" "$LUNA_WAIT_DELAY"' "$f" || fail "$(basename "$f") does not use the in-shell waiter sleep"
 done

@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh"
-# Same setting lib.sh resolves; this script runs without sourcing it.
+set -euo pipefail; transport_dir="$(dirname -- "${BASH_SOURCE[0]}")"
+for candidate in "$transport_dir" "${ZF_ENGINE_DIR:-}" "${ZF_EXECUTION_MODULE_DIR:-}"; do
+  [[ -f "$candidate/lib.d/transport.sh" ]] && { transport_dir="$candidate"; break; }
+done; [[ -f "$transport_dir/lib.d/transport.sh" ]] || transport_dir="$(git rev-parse --show-toplevel)/engine"
+source "$transport_dir/lib.d/transport.sh"; source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh" # Same setting lib.sh resolves; this script runs without sourcing it.
 UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 MANIFEST="${ZF_WORKTREE_CLEANUP_MANIFEST:-$NIGHT/worktree-cleanup-manifest.txt}"
 AGENTS_FILE="${ZF_HAND_AGENTS_FILE:-$NIGHT/agents.txt}"
-REPO=""
-REPO_ROOT=""
+REPO=""; REPO_ROOT=""
 REAP_REMOTE_HEADS=""
-_WORKTREE_LIFECYCLE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-source "$_WORKTREE_LIFECYCLE_DIR/proc.sh"
+_WORKTREE_LIFECYCLE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"; source "$_WORKTREE_LIFECYCLE_DIR/proc.sh"
 [[ -r "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh" ]] && source "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh"
 REPO_NAME=""
 ACTIVE_UNITS=""
@@ -1155,7 +1154,7 @@ load_pr_rows() {
     else
       url="repos/$REPO_NAME/pulls?state=all&per_page=100&page=$page"
     fi
-    if query_output="$(timeout "$timeout_seconds" gh api "$url" --jq "$PR_ROW_FIELDS" 2>&1)"; then
+    if query_output="$(gh_timeout "$timeout_seconds" api "$url" --jq "$PR_ROW_FIELDS" 2>&1)"; then
       rows="$query_output"
     else
       query_status=$?
@@ -1201,7 +1200,7 @@ pr_load_point_rows() {
   fi
   if [ -n "$branch" ]; then
     owner="${REPO_NAME%%/*}"
-    if output="$(timeout "$timeout_seconds" gh api "repos/$REPO_NAME/pulls" \
+    if output="$(gh_timeout "$timeout_seconds" api "repos/$REPO_NAME/pulls" \
       -f state=all -f "head=$owner:$branch" -F per_page=100 --jq "$PR_ROW_FIELDS" 2>&1)"; then
       PR_BRANCH_READABLE[$branch]=1
     else
@@ -1213,7 +1212,7 @@ pr_load_point_rows() {
     fi
   else
     url="repos/$REPO_NAME/commits/$head/pulls?per_page=100"
-    if output="$(timeout "$timeout_seconds" gh api "$url" --jq "$PR_ROW_FIELDS" 2>&1)"; then
+    if output="$(gh_timeout "$timeout_seconds" api "$url" --jq "$PR_ROW_FIELDS" 2>&1)"; then
       PR_HEAD_READABLE[$head]=1
     else
       status=$?
@@ -1255,7 +1254,7 @@ load_rescue_issue_states() {
     raw=""
     while :; do
       url="repos/$REPO_NAME/issues?state=all&sort=updated&direction=desc&per_page=100&page=$page"
-      if page_output="$(timeout "${LIFECYCLE_GH_TIMEOUT_SECONDS:-90}" gh api "$url" --jq "$fields" 2>&1)"; then
+      if page_output="$(gh_timeout "${LIFECYCLE_GH_TIMEOUT_SECONDS:-90}" api "$url" --jq "$fields" 2>&1)"; then
         :
       else
         query_status=$?
@@ -1283,7 +1282,7 @@ load_rescue_issue_states() {
     raw=""
     while :; do
       url="repos/$REPO_NAME/issues?state=all&per_page=100&page=$page"
-      if page_output="$(timeout "${LIFECYCLE_GH_TIMEOUT_SECONDS:-90}" gh api "$url" --jq "$fields" 2>&1)"; then
+      if page_output="$(gh_timeout "${LIFECYCLE_GH_TIMEOUT_SECONDS:-90}" api "$url" --jq "$fields" 2>&1)"; then
         :
       else
         query_status=$?
@@ -1337,7 +1336,7 @@ rescue_issue_is_closed() {
     if (( remaining <= reserve + issue_timeout )); then
       state=unknown
       say "GitHub issue state lookup deferred for #$number; remaining=${remaining}s reserve=${reserve}s query=${issue_timeout}s"
-    elif issue_output="$(timeout "$issue_timeout" gh api "repos/$REPO_NAME/issues/$number" --jq '.state | ascii_downcase' 2>&1)"; then
+    elif issue_output="$(gh_timeout "$issue_timeout" api "repos/$REPO_NAME/issues/$number" --jq '.state | ascii_downcase' 2>&1)"; then
       case "$issue_output" in open|closed) state="$issue_output" ;; *) state=unknown ;; esac
     else
       state=unknown
@@ -2861,10 +2860,10 @@ watch_cleanup() {
   local target="$1" pid="$2" start_ticks="$3" current_ticks owner owner_target canonical_target handoff_status=0
   # This internal entry also rejects direct calls before the original target is terminal.
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$start_ticks" =~ ^[0-9]+$ ]] || return 75
-  if [[ -d "/proc/$pid" ]]; then
+  if pid_live "$pid"; then
     current_ticks="$(pid_start_ticks "$pid" 2>/dev/null || true)"
     [[ -n "$current_ticks" ]] || return 75
-    if [[ "$current_ticks" == "$start_ticks" ]] && pid_live "$pid"; then return 75; fi
+    [[ "$current_ticks" != "$start_ticks" ]] || return 75
   fi
   # A child the agent backgrounded (an ssh tunnel) keeps the transient scope
   # active after the agent exits, and an active scope reads as a live hold

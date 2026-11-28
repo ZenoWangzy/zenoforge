@@ -1,5 +1,21 @@
 #!/usr/bin/env bash
 set -uo pipefail
+transport_path="$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
+if [[ ! -f "$transport_path" && -n "${ZF_ENGINE_DIR:-}" ]]; then transport_path="$ZF_ENGINE_DIR/lib.d/transport.sh"; fi
+if [[ ! -f "$transport_path" && -n "${ZF_EXECUTION_MODULE_DIR:-}" ]]; then transport_path="$ZF_EXECUTION_MODULE_DIR/lib.d/transport.sh"; fi
+if [[ ! -f "$transport_path" ]]; then
+  engine_dir="$(git config --get zenoforge.engine-dir 2>/dev/null || true)"
+  [[ -z "$engine_dir" ]] || transport_path="$engine_dir/lib.d/transport.sh"
+fi
+if [[ ! -f "$transport_path" ]]; then
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -z "$repo_root" ]] || transport_path="$repo_root/engine/lib.d/transport.sh"
+fi
+[[ -f "$transport_path" ]] || { printf 'pre-push guard: transport wrapper unavailable; refusing push.\n' >&2; exit 1; }
+source "$transport_path" || {
+  printf 'pre-push guard: transport wrapper failed to load; refusing push.\n' >&2
+  exit 1
+}
 
 repo="${ZF_REPO:-$(git config --get zenoforge.repo 2>/dev/null || true)}"
 agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}"

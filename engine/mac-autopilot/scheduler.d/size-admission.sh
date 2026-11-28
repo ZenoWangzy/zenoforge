@@ -120,6 +120,7 @@ size_admission_reject() { # unit lines branch context head estimate actual check
 }
 size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-current]
   local lines base_branch head="${5:-}" files pr raw unit_json limit memo
+  scheduler_scope_lib gh-key-cache || return 1
   unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   size_admission_exempt_unit "$unit_json" && return 0
   [[ -n "${head}" ]] || say "size recheck without head: $1 $4"

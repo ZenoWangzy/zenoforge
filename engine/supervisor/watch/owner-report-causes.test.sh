@@ -43,6 +43,11 @@ for d in 2026-10-30 2026-10-31 2026-11-01 2026-11-02 2026-11-03 2026-11-04 2026-
 done
 printf 'not a snapshot\n' > "$fx/snaps/notes.txt"
 
+missing_rc=0
+env -u OC_WORKER -u ZF_ENGINE_LIVE OC_STATE="$fx/missing-state" OC_OUT_DIR="$fx/missing-out" OC_MAIL="$fx/bin/mail.sh" OC_TEST_MATERIAL='[]' AGENT_HOME="$fx/home" ZF_OWNER_REPORT_SNAPSHOT_DIR="$fx/snaps" python3 -I "$job" > "$fx/missing.out" 2> "$fx/missing.err" || missing_rc=$?
+missing_error="$(cat "$fx/missing.err")"
+[[ "$missing_rc" != 0 && "$missing_error" == *OC_WORKER* ]] || fail "missing worker must fail closed and name OC_WORKER: rc=$missing_rc stderr=$missing_error"
+
 run() { # <mode> <rows> <material> -> rc; fresh state and out dirs per case
   rm -rf "$fx/state" "$fx/out" "$fx"/calls*
   OC_TEST_MODE="$1" OC_TEST_ROWS="$2" OC_TEST_MATERIAL="$3" OC_TEST_CALLS="$fx/calls" OC_TEST_SYSTEMCTL_LOG="$fx/systemctl.log" \

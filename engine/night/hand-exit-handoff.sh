@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 # Hand-agent exit handoff (ruling unowned-node-is-a-bug).
 #
 # When a hand agent exits, its roster row leaves agents.txt within seconds
@@ -469,7 +470,7 @@ blocked_hand_agent_dependency_landed() {
     issue\ *)
       issue="${dependency#issue }"
       [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
-      state="$(timeout 15 gh issue view "$issue" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
+      state="$(gh_timeout 15 issue view "$issue" -R "$REPO" --json state --jq .state 2>/dev/null || true)"
       [ "$state" = CLOSED ]
       ;;
     agent\ *)

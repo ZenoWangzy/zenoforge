@@ -1705,6 +1705,7 @@ assert_eq "has_open_blocker exposes concrete open blocker IDs for the tick ledge
 
 MIXED_BLOCKER_METADATA="$(REPO=test/repo bash -c '
   source "$1/lib.sh"
+  gh_issue_blocked_by_invalidate "$(gh_key_cache_repo)" 1137
   gh() {
     printf "%s\n" "[{\"number\":1132,\"state\":\"open\",\"labels\":[{\"name\":\"awaiting-release\"}]},{\"number\":1133,\"state\":\"open\",\"labels\":[{\"name\":\"released\"}]},{\"number\":1134,\"state\":\"open\",\"labels\":[{\"name\":\"ready-for-agent\"}]},{\"number\":1135,\"state\":\"open\",\"labels\":[]},{\"number\":1136,\"state\":\"closed\",\"labels\":[{\"name\":\"released\"}]}]"
   }
@@ -2373,7 +2374,6 @@ cat > "$PR_MERGE_BODY_BIN/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -eu
 if [ "${1:-}" = api ] && [[ "$*" == *"pulls/42/files?per_page=100"* ]]; then
-  printf 'README.md\n'
   exit 0
 fi
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
@@ -2784,9 +2784,22 @@ write_needs_info_timeout_state() {
     > "$STATE_DIR/$n.json"
 }
 
+write_threadless_needs_info_timeout_state() {
+  local n="$1"
+  jq -n '{state:"needs-info",needs_info_origin:"triage"}' > "$STATE_DIR/$n.json"
+}
+
 needs_info_timeout_issue_json() {
-  jq -cn --argjson n "$1" --arg want_label "${2:-needs-info}" \
-    '{number:$n,labels:[{name:$want_label}],comments:[]}'
+  local n="$1" want_label="${2:-needs-info}" comments="${3:-[]}"
+  jq -cn --argjson n "$n" --arg want_label "$want_label" --argjson comments "$comments" \
+    '{number:$n,labels:[{name:$want_label}],comments:$comments}'
+}
+
+needs_info_timeout_issue_json_with_comment() {
+  local n="$1" created_at="$2" prior_created_at="${3:-}" body="${4:-$BOT_DISCLAIMER}" comments
+  comments="$(jq -cn --arg created_at "$created_at" --arg prior_created_at "$prior_created_at" --arg body "$body" \
+    '[{createdAt:$created_at,body:$body}] + (if $prior_created_at == "" then [] else [{createdAt:$prior_created_at,body:$body}] end)')"
+  needs_info_timeout_issue_json "$n" needs-info "$comments"
 }
 
 write_needs_info_timeout_state 950001 "$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" '建议：A'
@@ -2830,7 +2843,41 @@ assert_eq 'fresh question state stays needs-info' needs-info "$(jq -r '.state' "
 assert_eq 'fresh question causes no writes' 0 \
   "$(wc -l < "$NEEDS_INFO_TIMEOUT_TEST_WRITES" | tr -d '[:space:]')"
 
-unset -f route_to_advisor guarded_write gh needs_info_timeout_issue_json write_needs_info_timeout_state
+write_threadless_needs_info_timeout_state 950004
+NEEDS_INFO_TIMEOUT_THREADLESS_OLD_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" +%Y-%m-%dT%H:%M:%SZ)"
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950004 "$(needs_info_timeout_issue_json_with_comment 950004 "$NEEDS_INFO_TIMEOUT_THREADLESS_OLD_AT")" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'an old threadless question routes to the advisor' advisor-routed "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'threadless timeout routing updates stage state' needs-advisor "$(jq -r '.state' "$STATE_DIR/950004.json")"
+
+write_threadless_needs_info_timeout_state 950005
+NEEDS_INFO_TIMEOUT_THREADLESS_YOUNG_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+NEEDS_INFO_TIMEOUT_THREADLESS_OLDER_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" +%Y-%m-%dT%H:%M:%SZ)"
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950005 "$(needs_info_timeout_issue_json_with_comment 950005 "$NEEDS_INFO_TIMEOUT_THREADLESS_YOUNG_AT" "$NEEDS_INFO_TIMEOUT_THREADLESS_OLDER_AT")" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'a young threadless question is left alone' unchanged "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'young threadless question state stays needs-info' needs-info "$(jq -r '.state' "$STATE_DIR/950005.json")"
+assert_eq 'young threadless question causes no writes' 0 \
+  "$(wc -l < "$NEEDS_INFO_TIMEOUT_TEST_WRITES" | tr -d '[:space:]')"
+
+write_threadless_needs_info_timeout_state 950006
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950006 "$(needs_info_timeout_issue_json 950006)" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'a threadless question with no comments routes immediately' advisor-routed "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'threadless no-comment routing updates stage state' needs-advisor "$(jq -r '.state' "$STATE_DIR/950006.json")"
+
+write_threadless_needs_info_timeout_state 950007
+NEEDS_INFO_TIMEOUT_THREADLESS_HUMAN_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" +%Y-%m-%dT%H:%M:%SZ)"
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950007 "$(needs_info_timeout_issue_json_with_comment 950007 "$NEEDS_INFO_TIMEOUT_THREADLESS_HUMAN_AT" '' 'Reporter reply')" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'a threadless human comment starts rather than cancels the timeout' advisor-routed "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'threadless human-comment timeout routes state to advisor' needs-advisor "$(jq -r '.state' "$STATE_DIR/950007.json")"
+
+unset -f route_to_advisor guarded_write gh needs_info_timeout_issue_json needs_info_timeout_issue_json_with_comment write_threadless_needs_info_timeout_state write_needs_info_timeout_state
 eval "$NEEDS_INFO_TIMEOUT_ORIGINAL_ROUTE"
 eval "$NEEDS_INFO_TIMEOUT_ORIGINAL_WRITE"
 AGENT_HOME="$LIB_TEST_AGENT_HOME"
@@ -3460,7 +3507,7 @@ echo '{"attempts":1,"state":"awaiting-release","deploy_state":"pending","run":{"
 echo '{"pipeline_system":{"enabled":true}}' > "$ROUTE_TEST_HOME/state/700006.json"
 echo '{"attempts":1,"state":"needs-advisor","tracker_parent":true,"advisor_episode_seq":2,"advisor_ruled_at":"2026-09-28T00:00:00Z"}' \
   > "$ROUTE_TEST_HOME/state/700007.json"
-echo '{"attempts":1,"state":"needs-advisor","tracker_parent":true,"advisor_episode_seq":2}' \
+echo '{"attempts":1,"state":"needs-advisor","tracker_parent":true,"recut_children":[700009],"advisor_episode_seq":2}' \
   > "$ROUTE_TEST_HOME/state/700008.json"
 ROUTE_BIN="$(mktemp -d)"
 ROUTE_GH_LOG="$ROUTE_TEST_HOME/gh.log"
@@ -4906,20 +4953,21 @@ RCI_STATUS="$(
   FAKE_CODEX_IMPLEMENT_ARGS="$RCI_ARGS" FAKE_CODEX_IMPLEMENT_STDIN="$RCI_STDIN" \
   bash -c '
     source "$0/lib.sh"
-    run_codex_implement /tmp/some-worktree "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI_PROMPT"' '"$RCI_LOG"'
+    pipeline_execution_run() { "$@"; }
+    run_codex_implement "$0" "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI_PROMPT"' '"$RCI_LOG"'
     echo $?
   ' "$SCRIPT_DIR"
 )"
 RCI_ARGS_CONTENT="$(cat "$RCI_ARGS")"
 assert_eq "run_codex_implement: mirrors codex's own successful exit status" "0" "$RCI_STATUS"
 assert_contains "run_codex_implement: no sandbox (maintainer 2026-10-06: speed over sandbox)" "$RCI_ARGS_CONTENT" "danger-full-access"
-assert_contains "run_codex_implement: --cd points at the given worktree" "$RCI_ARGS_CONTENT" "/tmp/some-worktree"
+assert_contains "run_codex_implement: --cd points at the given worktree" "$RCI_ARGS_CONTENT" "$SCRIPT_DIR"
 assert_contains "run_codex_implement: -m carries the bare model, never a hyphenated model-effort string (V101)" "$RCI_ARGS_CONTENT" "-m
 ${POLICY_WORK_MODEL}"
 assert_contains "run_codex_implement: effort is the SEPARATE model_reasoning_effort setting" "$RCI_ARGS_CONTENT" "model_reasoning_effort=$POLICY_WORK_EFFORT"
 assert_not_contains "run_codex_implement: omits service tier (identity resolves to none since #1599)" "$RCI_ARGS_CONTENT" "service_tier="
 assert_contains "run_codex_implement: disables GitNexus MCP" "$RCI_ARGS_CONTENT" "mcp_servers.gitnexus.enabled=false"
-assert_eq "run_codex_implement: the prompt file's content reaches codex on stdin" "implement this issue" "$(cat "$RCI_STDIN")"
+assert_contains "run_codex_implement: the prompt file's content reaches codex on stdin" "$(cat "$RCI_STDIN")" "implement this issue"
 assert_contains "run_codex_implement: codex's combined stdout/stderr lands in the given log file" "$(cat "$RCI_LOG")" "codex implement: wrote the diff"
 
 RCI_FINAL_OUTPUT="$(mktemp)"
@@ -4930,7 +4978,7 @@ PATH="$RCI_BIN:$PATH" FAKE_CODEX_IMPLEMENT_MODE=success \
   FAKE_CODEX_IMPLEMENT_FINAL_OUTPUT_FILE="$RCI_FINAL_OUTPUT" \
   bash -c '
     source "$0/lib.sh"
-    run_codex_implement /tmp/some-worktree "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI_PROMPT"' '"$RCI_LONG_LOG"'
+    run_codex_implement "$0" "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI_PROMPT"' '"$RCI_LONG_LOG"'
   ' "$SCRIPT_DIR"
 assert_contains "run_codex_implement: blocked-check marker survives 4,000-character final-output truncation" \
   "$(cat "$RCI_LONG_LOG")" 'BLOCKED-CHECKS: pnpm --filter @agent-runtime/shared test — connect EPERM 127.0.0.1:5432'
@@ -4938,7 +4986,7 @@ assert_contains "run_codex_implement: blocked-check marker survives 4,000-charac
 RCI_QUOTA_STATUS="$(
   PATH="$RCI_BIN:$PATH" FAKE_CODEX_IMPLEMENT_MODE=quota bash -c '
     source "$0/lib.sh"
-    run_codex_implement /tmp/some-worktree "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI_PROMPT"' '"$RCI_LOG"'
+    run_codex_implement "$0" "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI_PROMPT"' '"$RCI_LOG"'
     echo $?
   ' "$SCRIPT_DIR"
 )"
@@ -4993,7 +5041,7 @@ run_rci_failure_case() {
       mkdir -p "$STATE_DIR"
       printf "{\"attempts\":1}\n" > "$STATE_DIR/$N.json"
       notify_maintainer() { :; }
-      run_codex_implement /tmp/some-worktree "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" "$prompt" "$log" 120 run-implement:implement
+      run_codex_implement "$0" "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" "$prompt" "$log" 120 run-implement:implement
       status=$?
       pause_for_backoff "$N" "$(tail -c 4000 "$log")" "$status" 1 codex "$POLICY_WORK_IDENTITY" run-implement:implement \
         "${MODEL_CALL_LOG_PATH:-$log}" "${MODEL_CALL_EXIT_CLASS:-}" "${MODEL_CALL_TERMINATION_SOURCE:-}" \
@@ -5112,7 +5160,7 @@ RCI2_OUT="$(
   FAKE_CODEX_IMPLEMENT_ARGS2="$RCI2_ARGS" FAKE_CODEX_IMPLEMENT_ENV2="$RCI2_ENV" \
   bash -c '
     source "$0/lib.sh"
-    run_codex_implement /tmp/some-worktree "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI2_PROMPT"' '"$RCI2_LOG"'
+    run_codex_implement "$0" "$POLICY_WORK_MODEL" "$POLICY_WORK_EFFORT" '"$RCI2_PROMPT"' '"$RCI2_LOG"'
     echo "status=$?"
     echo "caller_gh_token_still_set=${GH_TOKEN:+yes}"
     echo "caller_github_token_still_set=${GITHUB_TOKEN:+yes}"

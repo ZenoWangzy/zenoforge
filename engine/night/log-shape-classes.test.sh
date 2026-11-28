@@ -38,6 +38,8 @@ esac
 GH
 chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
+gh() { command gh "$@"; }
+export -f gh
 class_of() { printf 'cls-%s' "$(printf '%s' "$1" | shasum -a 256 | cut -c1-12)"; }
 
 # Explicit config: the signature names what files; the allowlist names routine shapes.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
 
 # Post-land breakage MTTR for the six-hour maintainer digest: for every culprit
 # commit named by a later fix commit, measure culprit landing -> first red
@@ -85,7 +86,7 @@ post_land_mttr_fix_candidates() {
 # gh call per digest; bisect train refs are excluded by branch=main.
 post_land_mttr_red_runs() {
   local created_since_iso="$1" runs
-  runs="$(timeout 30 gh api \
+  runs="$(gh_timeout 30 api \
     "repos/${REPO:-${ZF_REPO:?ZF_REPO is not set}}/actions/runs?branch=main&status=completed&per_page=100&page=1&created=%3E%3D${created_since_iso}" \
     2>/dev/null)" || return 1
   jq -c '[.workflow_runs[]?

@@ -31,7 +31,7 @@ const CI_TREE_TESTS = Object.freeze([
 ].map(packPath));
 
 export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() => ({ addRelatedTestFragments: (map) => map }))).addRelatedTestFragments(new Map([ // new rows: related-tests.d/*.json; a lone copy of this file has none
-  ['engine/bin/agent-sandbox.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent-sandbox-run', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent_sandbox_state.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent_sandbox_workspace.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/agent_sandbox_network.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/luna', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/zc', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/worker', ['engine/bin/agent-sandbox.test.sh']], ['engine/bin/worker-remote.py', ['engine/bin/agent-sandbox.test.sh']], ['engine/dispatch-codex.sh', ['engine/bin/agent-sandbox.test.sh', 'engine/dispatch-codex.test.sh']], ['engine/lib.d/codex-budget.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/lib.d/model-calls.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/lib.d/triage-claude.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/mac-autopilot/scheduler.d/dispatch.sh', ['engine/bin/agent-sandbox.test.sh']], ['engine/mac-autopilot/scheduler.d/worker-scope.sh', ['engine/bin/agent-sandbox.test.sh']],
+
   ['tools/main-red-revert.sh', ['tools/main-red-revert.test.sh', 'tools/pin-fail-triage.test.sh']], ['tools/pin-fail-triage.sh', ['tools/pin-fail-triage.test.sh']],
   ['engine/supervisor/**', ['engine/supervisor.test.sh']],
   ['engine/eval/graders.mjs', ['engine/eval/graders.test.mjs', 'engine/eval/compare.test.mjs', 'engine/eval/runner.test.mjs', 'engine/eval/cases.test.mjs']],
@@ -77,12 +77,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ['engine/mac-autopilot/scheduler.d/ci-admission.sh', ['engine/mac-autopilot/scheduler-gates-ci-slots.test.sh', 'engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh']],
   ['engine/mac-autopilot/scheduler.d/ci-status.sh', ['engine/mac-autopilot/no-finding-repair-route.test.sh']],
   ['engine/mac-autopilot/scheduler.d/ci-stuck-unqueued.sh', ['engine/mac-autopilot/scheduler.d/ci-merge-admission-batch.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/dispatch-queue.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-live-cache.test.sh', 'engine/mac-autopilot/proof-browser-health.test.sh']],
   ['engine/mac-autopilot/scheduler.d/harvest-station.sh', ['engine/mac-autopilot/scheduler.d/harvest-station.test.sh', 'engine/mac-autopilot/claude-implement-harvest.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/tick-steps.sh', ['engine/mac-autopilot/scheduler.d/dispatch-why.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/dispatch-queue.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-census-capacity.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-station.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-live-cache.test.sh', 'engine/mac-autopilot/proof-browser-health.test.sh']],
-  ['engine/mac-autopilot/scheduler.d/dispatch-station.sh', ['engine/mac-autopilot/scheduler.d/dispatch-station.test.sh']],
-  ['engine/mac-autopilot/loop.sh', ['engine/mac-autopilot/scheduler-gates.test.sh', 'engine/mac-autopilot/scheduler.d/dispatch-station.test.sh', 'engine/mac-autopilot/scheduler.d/harvest-station.test.sh']],
   ['engine/mac-autopilot/scheduler.d/merge-lane.sh', ['engine/mac-autopilot/scheduler-gates-merge-entry.test.sh', 'engine/mac-autopilot/scheduler-gates-merge-station.test.sh', 'engine/mac-autopilot/scheduler.d/ci-merge-admission-batch.test.sh', 'engine/mac-autopilot/scheduler.d/merge-tree-sweep.test.sh', 'engine/mac-autopilot/scheduler.d/merge-result-check.test.sh']],
   ['engine/mac-autopilot/scheduler.d/footprint.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh', 'engine/mac-autopilot/scheduler.d/footprint-scope-memo.test.sh']],
   ['engine/mac-autopilot/scheduler.d/intake.sh', ['engine/mac-autopilot/intake-existing-walk.test.sh', 'engine/mac-autopilot/intake-handoff-skip.test.sh', 'engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh', 'engine/mac-autopilot/scheduler.d/recut-reopen.test.sh']], ['engine/mac-autopilot/scheduler.d/recut-reopen.sh', ['engine/mac-autopilot/scheduler.d/recut-reopen.test.sh']],
@@ -346,7 +341,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ['engine/post-deploy-migrations.mjs', ['engine/post-deploy-migrations.test.mjs', 'scripts/release/run-release.test.sh']],
   ['engine/post-deploy-migrations.test.mjs', ['engine/post-deploy-migrations.test.mjs']],
   // git-fetch-bounded.test.sh greps these scripts for network git calls that escalate after 10s.
-  ['engine/worktree-lifecycle.sh', ['engine/worktree-lifecycle.test.sh', 'engine/git-fetch-bounded.test.sh', 'engine/execution-admission.test.sh']],
+  ['engine/worktree-lifecycle.sh', ['engine/worktree-lifecycle.test.sh', 'engine/worktree-lifecycle-transport.test.sh', 'engine/git-fetch-bounded.test.sh', 'engine/execution-admission.test.sh']],
   ['engine/worktree-backlog-sweep.sh', ['engine/worktree-lifecycle.test.sh']],
   ['engine/supervise-pipeline.sh', ['engine/supervise-pipeline.test.sh', 'engine/git-fetch-bounded.test.sh']],
   ['engine/run-tick.sh', ['engine/run-tick.test.sh', 'engine/git-fetch-bounded.test.sh', 'engine/run-tick-timer-repair.test.sh']],
@@ -388,8 +383,6 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
     'scripts/branch-delivery-preflight.test.mjs',
   ]],
   ['engine/verification-plan.mjs', ['engine/verification-plan.test.mjs']],
-  ['engine/verify-proof-check.mjs', ['engine/verify-proof-check.test.mjs']],
-  ['engine/verify-proof-check.test.mjs', ['engine/verify-proof-check.test.mjs']],
   ['engine/verification-plan-runtime.sh', [
     'engine/verification-plan-runtime.test.sh',
   ]],

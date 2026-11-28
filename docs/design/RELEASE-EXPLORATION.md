@@ -4,6 +4,8 @@
 
 The `explore` pipeline stage reads the latest verified live SHA and starts one detached exploration run for that SHA. It can inspect only a release recorded within the previous 24 hours. State is kept under `$AGENT_HOME/state/explore/<sha>/`; a state directory is the per-release claim. Dispatch deferrals remove the claim so a later tick can retry.
 
+Finished `done`, `skipped`, and `killed` runs and their configured checkout evidence are reclaimed after `ZF_EXPLORE_RETAIN_DAYS` days (default 14); `started` and `needs-filing` runs are retained.
+
 The target opts in with `.zenoforge/state/exploration.json`. Missing configuration, `enabled: false`, a missing driver, or an absent or empty feature map records one skip for the live SHA. The default remains disabled.
 
 ```json
@@ -26,6 +28,8 @@ The target opts in with `.zenoforge/state/exploration.json`. Missing configurati
 ```
 
 `driver.argv` is executed as an argv array from the target checkout. The engine supplies `ZF_EXPLORATION_RELEASE_SHA`, `ZF_EXPLORATION_FEATURE_ID`, `ZF_EXPLORATION_FEATURE_TITLE`, `ZF_EXPLORATION_ATTEMPT`, `ZF_EXPLORATION_RUN_ID`, `ZF_EXPLORATION_FRESH_SESSION`, `ZF_EXPLORATION_EVIDENCE_DIR`, `ZF_EXPLORATION_RESULT_FILE`, `ZF_EXPLORATION_MAX_TOKENS`, and `ZF_EXPLORATION_ALLOWED_EFFECTS`. Each feature entry in the map has an `id` and `title`; entries run in map order up to `max_features`.
+
+When the host provides an executable `ZF_CDP_BROWSER_LEASE_SCRIPT`, the driver runs under the shared-browser lease.
 
 The configured driver must keep its run isolated and emit evidence suitable for publication with a product issue.
 

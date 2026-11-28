@@ -12,8 +12,10 @@ function sameSha(a, b) {
   return short.length >= MIN_SHA_PREFIX && long.startsWith(short);
 }
 
-function result(status, features, reasons) {
-  return { status, features, reasons };
+function result(status, features, reasons, performanceStatus = undefined) {
+  const output = { status, features, reasons };
+  if (performanceStatus !== undefined) output.performance = performanceStatus;
+  return output;
 }
 
 const PERFORMANCE_METRICS = ['first_paint_ms', 'largest_contentful_paint_ms', 'js_heap_used_mb', 'long_task_count'];
@@ -123,7 +125,7 @@ export function checkProof(plan, proofText, head, budgetText = null) {
   if (!values.every((value) => value === 'ok')) {
     return result(values.includes('missing') ? 'missing' : 'invalid', features, reasons);
   }
-  if (budgetText === null || budgetText === undefined) return result('ok', features, []);
+  if (budgetText === null || budgetText === undefined) return result('ok', features, [], 'unconfigured');
 
   let budgets;
   try {
@@ -162,7 +164,7 @@ export function checkProof(plan, proofText, head, budgetText = null) {
   }
   if (invalidReasons.length > 0) return result('invalid', performanceFeatures, invalidReasons);
   if (overBudgetReasons.length > 0) return result('over-budget', performanceFeatures, overBudgetReasons);
-  return result('ok', performanceFeatures, []);
+  return result('ok', performanceFeatures, [], 'ok');
 }
 
 function parseArgs(argv) {

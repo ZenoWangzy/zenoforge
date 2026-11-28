@@ -44,6 +44,7 @@ git -C "$repo" checkout -q agent/issue-123
 cat > "$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${PUSH_GUARD_CALLER_LOG:-}" ]]; then printf '%s\n' "${ZF_GH_CALLER:-unwrapped}" >> "$PUSH_GUARD_CALLER_LOG"; fi
 if [[ "${PUSH_GUARD_API_DOWN:-0}" == 1 ]]; then
   echo 'fixture API offline' >&2
   exit 1
@@ -65,7 +66,7 @@ case "${1:-} ${2:-}" in
 esac
 EOF
 chmod +x "$tmp/bin/gh"
-export HOME="$tmp/home" PATH="$tmp/bin:$PATH" ZF_PUSH_GUARD_LOG="$tmp/push-guard.log"
+export HOME="$tmp/home" PATH="$tmp/bin:$PATH" ZF_PUSH_GUARD_LOG="$tmp/push-guard.log" ZF_ENGINE_DIR="$root/engine"
 
 link='https://github.com/example-maintainer/example-repo/actions/runs/999/job/1000'
 failed_at='2026-10-10T00:00:00Z'
@@ -254,8 +255,48 @@ install_common="$(git -C "$install_repo" rev-parse --git-common-dir)"
 if [[ "$install_common" != /* ]]; then install_common="$install_repo/$install_common"; fi
 install_hook="$install_common/hooks/pre-push"
 install_log="$install_home/night/night.log"
+installed_caller_log="$tmp/installed-gh-callers"
+run_installed_hook() (
+  cd "$install_repo"
+  export AGENT_HOME="$install_home" ZF_PUSH_GUARD_LOG="$install_log"
+  export ZF_REPO=example-maintainer/example-repo ZF_GH_CALLER=
+  unset ZF_ENGINE_DIR ZF_EXECUTION_MODULE_DIR
+  export PUSH_GUARD_CALLER_LOG="$installed_caller_log" PUSH_GUARD_REMOTE_SHA="$install_sha"
+  export ZF_PUSH_GUARD_OVERRIDE_REASON=main-red-stale-shared-failure
+  bash "$install_hook" --record-override 123 999 "$link"
+)
 AGENT_HOME="$install_home" ZF_PUSH_GUARD_LOG="$install_log" bash "$installer" "$install_repo" 2> "$tmp/install.stderr"
 cmp -s "$install_hook" "$install_repo/engine/pre-push-guard.sh"
+[[ "$(git -C "$install_repo" config --local --get zenoforge.engine-dir)" == "$root/engine" ]] || { echo 'not ok - installer did not record transport module path' >&2; exit 1; }
+echo 'ok - installer records the transport module path for installed hooks'
+git -C "$install_repo" checkout -qb agent/issue-123
+install_sha="$(git -C "$install_repo" rev-parse HEAD)"
+: > "$installed_caller_log"
+run_installed_hook > "$tmp/installed-hook.stdout" 2> "$tmp/installed-hook.stderr" || { cat "$tmp/installed-hook.stderr" >&2; exit 1; }
+[[ -s "$installed_caller_log" ]] || { cat "$tmp/installed-hook.stderr" >&2; echo 'not ok - installed hook did not call gh' >&2; exit 1; }
+! grep -Fxq unwrapped "$installed_caller_log" || { cat "$tmp/installed-hook.stderr" >&2; echo 'not ok - installed hook skipped the transport wrapper' >&2; exit 1; }
+echo 'ok - installed hook loads transport from the engine module path'
+git -C "$install_repo" config --local --unset zenoforge.engine-dir
+: > "$installed_caller_log"
+if run_installed_hook > "$tmp/unavailable-hook.stdout" 2> "$tmp/unavailable-hook.stderr"; then
+  echo 'not ok - installed hook allowed push without transport' >&2
+  exit 1
+fi
+[[ ! -s "$installed_caller_log" ]] || { echo 'not ok - installed hook called gh without transport' >&2; exit 1; }
+grep -Fq 'transport wrapper unavailable' "$tmp/unavailable-hook.stderr" || { cat "$tmp/unavailable-hook.stderr" >&2; echo 'not ok - missing transport refusal was not reported' >&2; exit 1; }
+echo 'ok - installed hook refuses to run without the transport wrapper'
+bad_engine="$tmp/bad-engine"
+mkdir -p "$bad_engine/lib.d"
+printf 'false\n' > "$bad_engine/lib.d/transport.sh"
+git -C "$install_repo" config --local zenoforge.engine-dir "$bad_engine"
+: > "$installed_caller_log"
+if run_installed_hook > "$tmp/failed-source-hook.stdout" 2> "$tmp/failed-source-hook.stderr"; then
+  echo 'not ok - installed hook allowed push after transport source failed' >&2
+  exit 1
+fi
+[[ ! -s "$installed_caller_log" ]] || { echo 'not ok - installed hook called gh after transport source failed' >&2; exit 1; }
+grep -Fq 'transport wrapper failed to load' "$tmp/failed-source-hook.stderr" || { cat "$tmp/failed-source-hook.stderr" >&2; echo 'not ok - transport source failure was not reported' >&2; exit 1; }
+echo 'ok - installed hook refuses when loading the transport wrapper fails'
 echo 'ok - dispatcher installer installs exact guard version present on origin/main'
 
 printf '# drift\n' >> "$install_hook"

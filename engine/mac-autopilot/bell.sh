@@ -11,8 +11,15 @@ source "$HERE/runtime-env.sh"
 ROOT="$MAC_AUTOPILOT_ROOT"
 ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}"
 source "$HERE/incident-fingerprint.sh"
-source "$ENGINE_DIR/lib.d/transport.sh"
-source "$ENGINE_DIR/lib.d/ci-checks.sh"; source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"; source "$HERE/bell-history.sh"; source "$HERE/live-evidence.sh"
+bell_transport_path="$ENGINE_DIR/lib.d/transport.sh"
+[[ -f "$bell_transport_path" ]] || bell_transport_path="$HERE/../lib.d/transport.sh"
+source "$bell_transport_path"
+if [[ -f "$ENGINE_DIR/lib.d/ci-checks.sh" ]]; then
+  source "$ENGINE_DIR/lib.d/ci-checks.sh"
+else
+  source "$HERE/../lib.d/ci-checks.sh"
+fi
+source "$HERE/pin-lag.sh"; source "$HERE/zf-main-ci.sh"; source "$HERE/bell-guards.sh"; source "$HERE/bell-history.sh"; source "$HERE/live-evidence.sh"
 A="${BELL_AUTOPI_DIR:-$MAC_AUTOPILOT_RUNTIME_DIR}"
 CHECK_ONLY=0
 for arg in "$@"; do
