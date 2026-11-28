@@ -198,6 +198,19 @@ land_receipt_file() {
   printf '%s/zf-test-receipts/%s\n' "${git_common_dir%/}" "$head_sha"
 }
 
+land_merge_lane_assert() {
+  local status
+  [[ "${ZF_COORD:-off}" == on ]] || return 0
+  if [[ "${ZF_COORD_LANE:-}" != merge || -z "${ZF_COORD_LANE_OWNER:-}" ]] \
+      || ! declare -F coord_assert_owned >/dev/null; then
+    printf 'refuse:merge:lane-ownership\n' >&2
+    return 3
+  fi
+  if coord_assert_owned lane-merge "$ZF_COORD_LANE_OWNER"; then return 0; else status=$?; fi
+  printf 'refuse:merge:lane-ownership\n' >&2
+  return "$status"
+}
+
 land_merge_pr() {
   local pr="${1-}" head_sha="${2-}" repo="" gh_rc head_json head_ref out
   local -a merge_args=() repo_args=() view_args=() api_args=()
@@ -237,12 +250,14 @@ land_merge_pr() {
   done
   merge_args+=(--match-head-commit "$head_sha")
   land_pr_prompt_byte_budget_check "$pr" "$head_sha" "$repo" || return 1
+  land_merge_lane_assert || return $?
   if gh "${merge_args[@]}"; then
     return 0
   else
     gh_rc=$?
   fi
   [[ "${LAND_MERGE_REST_FALLBACK:-}" == 1 ]] || return "$gh_rc"
+  land_merge_lane_assert || return $?
   view_args=(pr view "$pr")
   view_args+=("${repo_args[@]}" --json headRefName)
   if ! head_json="$(gh "${view_args[@]}" 2>/dev/null)" || [[ -z "$head_json" ]]; then
@@ -254,9 +269,11 @@ land_merge_pr() {
   head_ref="$(jq -er '.headRefName | select(type == "string" and length > 0)' <<<"$head_json")" || return 1
   api_args=(api)
   api_args+=("${repo_args[@]}" -X PUT "repos/{owner}/{repo}/pulls/$pr/merge" -f merge_method=squash -f "sha=$head_sha")
+  land_merge_lane_assert || return $?
   if out="$(gh "${api_args[@]}" 2>&1)"; then
     api_args=(api)
     api_args+=("${repo_args[@]}" -X DELETE "repos/{owner}/{repo}/git/refs/heads/$head_ref")
+    land_merge_lane_assert || return $?
     if gh "${api_args[@]}" >/dev/null 2>&1; then
       :
     fi

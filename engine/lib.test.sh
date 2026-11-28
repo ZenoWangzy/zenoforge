@@ -2032,6 +2032,25 @@ release_merge_lock
 assert_true "release_merge_lock actually frees it for the next acquirer" \
   bash -c 'exec 9>"$1" && flock -n 9' _ "$MERGE_LOCK_TEST_FILE"
 
+MERGE_LANE_INHERIT_TEST_FILE="$(mktemp -u)"
+if (
+  MERGE_LANE_OWNER=""
+  MERGE_LANE_OWNED=0
+  ZF_COORD_LANE=merge
+  ZF_COORD_LANE_OWNER=inherited-lane-owner
+  coord_lane_acquire() { return 9; }
+  coord_assert_owned() { [[ "$1" == lane-merge && "$2" == inherited-lane-owner ]]; }
+  coord_lane_release() { return 9; }
+  acquire_merge_lock "$MERGE_LANE_INHERIT_TEST_FILE" 0
+  [[ "$MERGE_LANE_OWNER" == inherited-lane-owner && "$MERGE_LANE_OWNED" == 0 ]] || exit 1
+  release_merge_lock
+); then
+  :
+else
+  fail 'merge helper did not adopt the scheduler merge lane owner'
+fi
+rm -f "$MERGE_LANE_INHERIT_TEST_FILE"
+
 rm -f "$MERGE_LOCK_TEST_FILE"
 
 # --- acquire_merge_lock's -w bound: 2026-09-12 review, item 2 --------------

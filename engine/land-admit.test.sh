@@ -318,6 +318,42 @@ assert_merge_rc 1 'engine/prompts/review-contract.md is 8193 bytes, budget 8192 
 [[ "$(gh_call_count)" == 0 ]] || fail 'land_merge_pr reached GitHub merge after prompt admission refused'
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/land-admit.sh"
 
+coord_assert_owned() {
+  local assert_count
+  [[ "${1:-}" == lane-merge && "${2:-}" == zf-test-owner ]] || return 2
+  printf '%s %s\n' "$1" "$2" >> "$test_env_root/lane-assert.log"
+  assert_count="$(awk 'END { print NR }' "$test_env_root/lane-assert.log")"
+  [[ "$assert_count" != "${ZF_COORD_TEST_ASSERT_FAIL_AT:-}" ]] || return 1
+  return "${ZF_COORD_TEST_ASSERT_RC:-0}"
+}
+ZF_COORD=on ZF_COORD_LANE=merge ZF_COORD_LANE_OWNER=zf-test-owner ZF_COORD_TEST_ASSERT_RC=1
+export ZF_COORD ZF_COORD_LANE ZF_COORD_LANE_OWNER ZF_COORD_TEST_ASSERT_RC
+reset_gh_calls
+assert_merge_rc 1 'refuse:merge:lane-ownership' 17 "$valid_sha"
+[[ "$(gh_call_count)" == 1 ]] || fail 'land_merge_pr reached its merge mutation after lane ownership was refused'
+read_gh_call 1
+[[ "${GH_ARGS[0]}" == api ]] || fail 'land_merge_pr reached GitHub merge before lane ownership was refused'
+ZF_COORD_TEST_ASSERT_RC=0
+reset_gh_calls
+assert_merge_rc 0 '' 17 "$valid_sha"
+[[ "$(gh_call_count)" == 2 ]] || fail 'owned lane merge did not reach GitHub'
+[[ "$(cat "$test_env_root/lane-assert.log")" == $'lane-merge zf-test-owner\nlane-merge zf-test-owner' ]] \
+  || fail 'land_merge_pr did not verify the merge lane before its GitHub call'
+: > "$test_env_root/lane-assert.log"
+ZF_COORD_TEST_ASSERT_FAIL_AT=3
+LAND_MERGE_REST_FALLBACK=1
+GH_RC=1
+reset_gh_calls
+assert_merge_rc 1 'refuse:merge:lane-ownership' 17 "$valid_sha" --repo owner/project
+[[ "$(gh_call_count)" == 3 ]] || fail 'land_merge_pr reached REST merge after lane ownership expired'
+read_gh_call 3
+[[ "${GH_ARGS[0]}" == pr && "${GH_ARGS[1]}" == view ]] \
+  || fail 'land_merge_pr reached REST merge before the lane recheck'
+GH_RC=0
+unset LAND_MERGE_REST_FALLBACK ZF_COORD_TEST_ASSERT_FAIL_AT
+unset ZF_COORD ZF_COORD_LANE ZF_COORD_LANE_OWNER ZF_COORD_TEST_ASSERT_RC
+unset -f coord_assert_owned
+
 reset_gh_calls
 GH_RC=0
 assert_merge_rc 0 '' 17 "$valid_sha"

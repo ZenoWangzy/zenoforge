@@ -932,21 +932,7 @@ queue_main_unavailable() {
   queue_retry_transient_lander_failure "$1" "origin/main unavailable after $2 attempts: ${QUEUE_MAIN_FETCH_LAST_ERROR:-no stderr}" ""
 }
 
-queue_run_lander() {
-  local repo="$1" package="$2" output_file="$3" owner_issues
-  owner_issues="$(jq -r '.owned_issues // ""' "$request")"
-  shift 3
-  if (cd -- "$repo" && AGENT_HOME="$AGENT_HOME" ZF_REPO_DIR="$repo" REPO_DIR="$repo" \
-      ZF_LAND_RESULT_DIR="${result_dir:-}" \
-      ZF_LAND_QUEUE_DIRECT=1 PLAN_PACKAGE="$package" ZF_AGENT_NAME="${ZF_AGENT_NAME:-${owner:-land-queue}}" \
-      ZF_AGENT_ISSUES="$owner_issues" \
-      ZF_AGENT_REPORT="${ZF_AGENT_REPORT:-${report:-}}" \
-      bash "${ZF_ENGINE_LIVE:-$QUEUE_ENGINE_DIR}/land-direct-main.sh" "$@") >> "$output_file" 2>&1; then
-    return 0
-  else
-    return $?
-  fi
-}
+source "$QUEUE_ENGINE_DIR/land-queue-lane.sh"
 
 queue_log_reason() {
   awk 'NF {
@@ -1727,6 +1713,11 @@ queue_run() {
     return 0
   else
     status=$?
+  fi
+  if (( status == 75 )) && [[ "${COORD_LANE_BUSY:-0}" == 1 ]]; then
+    queue_update_request "$request" queued || return 1
+    queue_report_status "$report" "STATUS: LANDING-QUEUED $ticket" || return 1
+    return 0
   fi
 
   # Classify the lander's result before a verification fetch can add unrelated transport errors.

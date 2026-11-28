@@ -251,7 +251,7 @@ land_register_post_push_range() {
 # 2026-10-11 and refused every landing with "could not resolve owner issues".
 source "$land_script_dir/merge-result-check.sh"
 export ZF_REPO_DIR="${ZF_REPO_DIR:-$repo_root}"
-source "$land_script_dir/lib.sh"
+source "$land_script_dir/lib.sh"; source "$land_script_dir/land-direct-main-lane.sh"
 source "$land_script_dir/land-shared-append.sh"
 source "$land_script_dir/model-policy-fast-forward.sh"
 incident_guards_file="$(zf_config_file state/incident-guards.json 2>/dev/null || true)"
@@ -1383,7 +1383,7 @@ fi
   fi
   echo "land-direct-main: engine pin preflight passed pin=$engine product=$head duration_ms=$elapsed_ms" >&2
 }
-trap 'land_cleanup_preflight_private_refs' EXIT
+trap 'land_cleanup_preflight_private_refs; land_coord_lane_cleanup' EXIT
 
 # Paths whose landing runs engine/systemd/sync-cihost-*.sh on cihost after the push.
 cihost_sync_path() {
@@ -1617,7 +1617,7 @@ if ! merge_result_node_check "$repo_root" "$tested_base" "$(git rev-parse HEAD)"
   echo 'land-direct-main: refusing push because merge result Node syntax check failed' >&2
   exit 1
 fi
-land_phase preflight-start
+land_coord_lane_begin "${ZF_COORD_LAND_LANE_WAIT_SECONDS:-${MERGE_LOCK_WAIT_SECONDS:-4200}}" || exit $?; land_phase preflight-start
 preflight
 land_phase preflight-passed
 # The engine pin preflight refuses the push before it happens, so a pin that cannot build or
@@ -1652,7 +1652,7 @@ while :; do
   candidate_head="$(git rev-parse HEAD)"
   # Re-verify after any rebase (the memo inside skips an unchanged base+head).
   land_prompt_byte_budget_check "$repo_root" "$tested_base" "$candidate_head" '' "${self%/*}" && land_engine_pin_preflight "$tested_base" "$candidate_head" || exit $?
-  land_register_post_push_range "$base_before_push" "$candidate_head"
+  land_register_post_push_range "$base_before_push" "$candidate_head" && land_coord_lane_assert || exit $?
   if land_git_transport_retry land_git_network push origin HEAD:main; then
     echo "land-direct-main: pushed $branch to main"
     land_phase pushed
@@ -1707,6 +1707,7 @@ done
 DRY_RUN=0 supervisor_inbox_append landing \
   "ticket=${direct_landing_ticket:-unknown} branch=$branch lane=direct-main subject=\"$(git log -1 --format=%s)\"" \
   || echo "land-direct-main: failed to record landing event in supervisor inbox" >&2
+land_coord_lane_release || exit 3
 
 # Pipeline suites on the landed head verify the push; the lander only records the range.
 echo "land-direct-main: landed range recorded ${base_before_push:0:12}..${candidate_head:0:12}"

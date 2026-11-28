@@ -3665,7 +3665,7 @@ sched_case_release_train_proxy() {
 # 发布列车单元转发与 triage 批次相同的整套代理变量（含小写与 NODE_USE_ENV_PROXY）
 train_dir="$(mktemp -d)"
 (
-  A="$train_dir" HERE="$train_dir/code" ROOT=/fixture/root HOME=/fixture/home CFG='{}'
+  A="$train_dir" HERE="$train_dir/code" ROOT=/fixture/root HOME=/fixture/home CFG='{}' ZF_COORD=on
   mkdir -p "$HERE"
   unset http_proxy https_proxy no_proxy
   export HTTPS_PROXY=http://bridge:1 HTTP_PROXY=http://bridge:1 NO_PROXY=localhost
@@ -3687,6 +3687,7 @@ done
 command grep -qxF "ZF_ENGINE_DIR=$train_dir/code/.." "$train_dir/args"
 command grep -qxF 'ZF_REPO_DIR=/fixture/root' "$train_dir/args"
 command grep -qxF 'ZF_CONFIG_ROOT=/fixture/root/.zenoforge' "$train_dir/args"
+command grep -qxF 'ZF_COORD=on' "$train_dir/args"
 command grep -qxF "ZF_CDP_BROWSER_LEASE_SCRIPT=$train_dir/code/../cdp-browser-lease.sh" "$train_dir/args"
 # 已启用但脚本缺失：不启动，并向 inbox 报警（静默 return 曾把丢失的列车藏了几天）
 (

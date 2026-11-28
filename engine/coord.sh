@@ -495,6 +495,52 @@ coord_release() { # key owner; release is conditional on current ownership
   return "$rc"
 }
 
+coord_lane_acquire() {
+  local lane="${1:-}" owner="${2:-}" wait="${3:-0}" key pid pid_start started delay=1 status remaining
+  [[ "$lane" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && -n "$owner" && "$wait" =~ ^[0-9]+$ ]] || return 2
+  key="lane-$lane"
+  pid="${BASHPID:-$$}"
+  pid_start="$(coord_process_start_ticks "$pid" 2>/dev/null)" || return 3
+  started=$SECONDS
+  while :; do
+    if coord_acquire "$key" "$owner" lane "$lane" "$key" "$lane" "$pid" "$pid_start"; then return 0; else status=$?; fi
+    (( status == 1 || status == 3 )) || return "$status"
+    remaining=$((wait - (SECONDS - started)))
+    (( remaining > 0 )) || return "$status"
+    (( delay <= remaining )) || delay=$remaining
+    sleep "$delay"
+    (( delay < 15 )) && delay=$((delay * 2))
+    (( delay <= 15 )) || delay=15
+  done
+}
+
+coord_lane_release() {
+  local lane="${1:-}" owner="${2:-}"
+  [[ "$lane" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && -n "$owner" ]] || return 2
+  coord_release "lane-$lane" "$owner"
+}
+
+coord_lane_run() {
+  local lane="${1:-}" wait="${2:-0}" owner status
+  [[ $# -ge 3 ]] || return 2
+  shift 2
+  COORD_LANE_BUSY=0
+  owner="$(coord_new_owner)" || return $?
+  if coord_lane_acquire "$lane" "$owner" "$wait"; then :; else
+    status=$?
+    if (( status == 1 )); then COORD_LANE_BUSY=1; return 75; fi
+    return "$status"
+  fi
+  if coord_assert_owned "lane-$lane" "$owner"; then :; else
+    status=$?
+    coord_lane_release "$lane" "$owner" >/dev/null 2>&1 || :
+    return "$status"
+  fi
+  if ZF_COORD_LANE="$lane" ZF_COORD_LANE_OWNER="$owner" "$@"; then status=0; else status=$?; fi
+  if ! coord_lane_release "$lane" "$owner" && (( status == 0 )); then status=3; fi
+  return "$status"
+}
+
 coord_assert_owned() { # key owner; only a fresh, current owner passes
   local scope="${1:-}" key owner="${2:-}" lock_fd rc now expires
   if (( $# == 1 )); then

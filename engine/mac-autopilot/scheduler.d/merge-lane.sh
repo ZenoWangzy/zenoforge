@@ -185,15 +185,27 @@ merge_census_watch() { # missed=1/0：本拍 merge lane 是否出现 check censu
 # without this a refill pass could merge the same PR concurrently. MERGE_LANE_WAIT is the seconds to wait for the
 # pass in progress (the tick waits; the refill passes 0 and skips).
 run_merge_lane() {
-  local fd rc=0
+  local fd rc=0 owner status wait="${MERGE_LANE_WAIT:-120}"
   exec {fd}>"${A:-${TMPDIR:-/tmp}}/.merge-lane.lock" || return 1 # the build gate sources this file without the runtime dir
-  if ! flock -w "${MERGE_LANE_WAIT:-120}" "$fd"; then
+  if ! flock -w "$wait" "$fd"; then
     exec {fd}>&-
     say "merge lane busy: pass skipped"
     return 0
   fi
+  owner="$(coord_new_owner)" || { exec {fd}>&-; return 3; }
+  if coord_lane_acquire merge "$owner" "$wait"; then :; else
+    status=$?
+    exec {fd}>&-
+    if (( status == 1 )); then say "merge lane busy: pass skipped"; return 0; fi
+    say "merge lane unavailable: pass skipped status=$status"
+    return "$status"
+  fi
   [[ -z "${A:-}" ]] || date +%s > "$A/.merge-pass-epoch" # node_health merge_pass_gap_min: the last pass that held the lane, whoever ran it
-  run_merge_lane_pass || rc=$?
+  ZF_COORD_LANE=merge ZF_COORD_LANE_OWNER="$owner" run_merge_lane_pass || rc=$?
+  if coord_lane_release merge "$owner"; then :; else
+    status=$?
+    (( rc != 0 )) || rc=$status
+  fi
   exec {fd}>&-
   return "$rc"
 }

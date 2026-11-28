@@ -138,14 +138,15 @@ merge_pr_and_reconcile() {
     return 1
   fi
   effect_key="merge:pr-$pr"
-  effect_claim="$(effect_claim_for "$effect_key")" || return 2
-  if effect_run "$effect_claim" "$effect_key" merge -- guarded_write land_merge_pr "$pr" "$match_head_commit" --repo "$REPO" \
+  effect_claim="$(effect_claim_for "$effect_key")" || { release_merge_lock >/dev/null 2>&1 || :; return 2; }
+  if ZF_COORD_LANE=merge ZF_COORD_LANE_OWNER="$MERGE_LANE_OWNER" \
+      effect_run "$effect_claim" "$effect_key" merge -- guarded_write land_merge_pr "$pr" "$match_head_commit" --repo "$REPO" \
     --delete-branch --subject "$subject" --body "$(cat -- "$body_file")"; then
     rc=0
   else
     rc=$?
   fi
-  release_merge_lock
+  if ! release_merge_lock && (( rc == 0 )); then rc=3; fi
   [ "$rc" -eq 0 ] || return "$rc"
   PR_MERGE_LANDED=1
   row="$(pr_merge_delivery_row "$pr")" || {
@@ -290,9 +291,29 @@ pr_untouched_for_grace() {
 
 
 acquire_merge_lock() {
-  local lock_file="${1:-$MERGE_LOCK_FILE}" wait_seconds="${2:-$MERGE_LOCK_WAIT_SECONDS}"
+  local lock_file="${1:-$MERGE_LOCK_FILE}" wait_seconds="${2:-$MERGE_LOCK_WAIT_SECONDS}" status
   exec 8>"$lock_file"
-  flock -w "$wait_seconds" 8
+  flock -w "$wait_seconds" 8 || return $?
+  MERGE_LANE_OWNED=0
+  if [[ "${ZF_COORD_LANE:-}" == merge && -n "${ZF_COORD_LANE_OWNER:-}" ]]; then
+    MERGE_LANE_OWNER="$ZF_COORD_LANE_OWNER"
+    if coord_assert_owned lane-merge "$MERGE_LANE_OWNER"; then return 0; else status=$?; fi
+    MERGE_LANE_OWNER=""
+    flock -u 8 || true
+    exec 8>&-
+    return "$status"
+  fi
+  MERGE_LANE_OWNER="$(coord_new_owner)" || { flock -u 8 || true; return 3; }
+  if coord_lane_acquire merge "$MERGE_LANE_OWNER" "$wait_seconds"; then
+    MERGE_LANE_OWNED=1
+    return 0
+  else
+    status=$?
+  fi
+  MERGE_LANE_OWNER=""
+  flock -u 8 || true
+  exec 8>&-
+  return "$status"
 }
 
 
@@ -302,7 +323,14 @@ product_hands_paused() { [ "${AGENT_IMPLEMENT_CAP:-8}" = 0 ]; }
 
 
 release_merge_lock() {
+  local status=0
+  if [[ "${MERGE_LANE_OWNED:-0}" == 1 && -n "${MERGE_LANE_OWNER:-}" ]]; then
+    coord_lane_release merge "$MERGE_LANE_OWNER" || status=$?
+  fi
+  MERGE_LANE_OWNER=""
+  MERGE_LANE_OWNED=0
   flock -u 8 2>/dev/null || true
+  return "$status"
 }
 
 
