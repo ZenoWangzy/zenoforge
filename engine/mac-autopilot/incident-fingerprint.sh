@@ -6,7 +6,13 @@ incident_fingerprint() {
     -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z//g' \
     -e 's/[0-9a-f]{40}//g' \
     -e 's/(^| )(count|secs|elapsed|duration|took|age|sha)=[^ ]*/\1/g' \
-    -e 's/(^|[[:space:]])[^[:space:]=:]+[=:][0-9]+s?/\1/g' \
+    -e 's/~/~~/g' \
+    -e 's/(^|[[:space:]])(issue|unit)([=:])([0-9]+s?)/\1\2\3~\4/g' \
+    -e ':counter' \
+    -e 's/(^|[[:space:]])[^[:space:]=:]+[=:][0-9]+s?([[:space:]]|$)/\1\2/g' \
+    -e 't counter' \
+    -e 's/(^|[[:space:]])(issue|unit)([=:])~([0-9]+s?)/\1\2\3\4/g' \
+    -e 's/~~/~/g' \
     | tr -s ' ' | sed -E 's/^ //; s/ $//'
 }
 
