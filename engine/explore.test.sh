@@ -112,8 +112,9 @@ chmod +x "$REPO_DIR/browser-lease.sh"
 leased_sha=ffffffffffffffffffffffffffffffffffffffff
 write_config 3600 100
 write_live "$leased_sha"
-bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
 export ZF_CDP_BROWSER_LEASE_SCRIPT="$REPO_DIR/browser-lease.sh"
+bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
+contains "$SYSTEMD_RUN_LOG" "ZF_CDP_BROWSER_LEASE_SCRIPT=$REPO_DIR/browser-lease.sh" 'detached exploration did not receive the browser lease path'
 export DRIVER_MODE=pass
 bash "$SCRIPT_DIR/run-explore.sh" run "$leased_sha" >/dev/null
 check 'browser lease receives -- and the driver argv' "$(cat "$LEASE_CALLS" 2>/dev/null || :)" "$(printf '%s\n%s' -- "$REPO_DIR/driver.sh")"
