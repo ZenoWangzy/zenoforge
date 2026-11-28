@@ -132,7 +132,7 @@ assert_eq 'pipeline-system label selects pipeline roadmap theme' true \
   "$(grep -Fq 'repos/example-maintainer/example-repo/issues/912/sub_issues' "$FAKE_GH_LOG" && echo true || echo false)"
 
 cat > "$test_tmp/topic-tree.json" <<'JSON'
-{"roots":[{"number":900,"title":"the product Roadmap","state":"OPEN","labels":["roadmap"],"children":[{"number":901,"title":"Enterprise capability","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":8291,"title":"Wayfinder map 大企业平台能力","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":1938,"title":"模型名称与实际能力一致","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":3311,"title":"账号会话恢复流程","state":"OPEN","labels":["roadmap-epic"],"children":[]}]},{"number":910,"title":"Authorization features","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":6709,"title":"确认卡加以后都批准","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":3293,"title":"渠道对话记录和账号状态可回查","state":"OPEN","labels":["roadmap-epic"],"children":[]}]},{"number":920,"title":"Other requests","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":9990,"title":"待归类","state":"OPEN","labels":["roadmap-epic"],"children":[]}]}]}]}
+{"roots":[{"number":900,"title":"the product Roadmap","state":"OPEN","labels":["roadmap"],"children":[{"number":901,"title":"Enterprise capability","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":8291,"title":"Enterprise capability map 大企业平台能力","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":1938,"title":"模型名称与实际能力一致","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":3311,"title":"账号会话恢复流程","state":"OPEN","labels":["roadmap-epic"],"children":[]}]},{"number":910,"title":"Authorization features","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":6709,"title":"确认卡加以后都批准","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":3293,"title":"渠道对话记录和账号状态可回查","state":"OPEN","labels":["roadmap-epic"],"children":[]}]},{"number":920,"title":"Other requests","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":9990,"title":"待归类","state":"OPEN","labels":["roadmap-epic"],"children":[]}]}]}]}
 JSON
 
 assert_topic_route() {
@@ -151,7 +151,7 @@ assert_topic_route() {
 
 assert_topic_route 'enterprise platform ticket ignores unrelated model text' 99101 '大企业平台能力的先后' '模型名称与实际能力一致' 8291
 assert_topic_route 'approval ticket ignores unrelated channel text' 99102 '确认卡加「以后都批准」' '渠道对话记录和账号状态可回查' 6709
-assert_topic_route 'map child follows its topic despite account text in the body' 99103 'Wayfinder map child: 大企业平台能力的先后' '账号会话恢复流程' 8291
+assert_topic_route 'map child follows its topic despite account text in the body' 99103 'Map child: 大企业平台能力的先后' '账号会话恢复流程' 8291
 assert_topic_route 'model text in the body does not parent a generic ticket' 99104 'Fresh cleanup request' '模型名称与实际能力一致' ''
 assert_topic_route 'channel text in the body does not parent a generic ticket' 99105 'New follow-up request' '渠道对话记录和账号状态可回查' ''
 
