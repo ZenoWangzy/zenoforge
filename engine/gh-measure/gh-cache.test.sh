@@ -24,6 +24,7 @@ expect_calls() { [ "$(calls)" = "$1" ] || fail "$2: expected $1 network calls, g
 [ "$(state)" = miss ] || fail 'first read not logged as miss'
 [ "$(g pr view 7 -R o/r)" = out-1 ] || fail 'second read not served from the cache'
 [ "$(state)" = hit ] || fail 'second read not logged as hit'
+[ "$(tail -1 "$t/calls.tsv" | cut -f9,10)" = $'hit\t6' ] || fail "hit row did not record cached body bytes: $(tail -1 "$t/calls.tsv")"
 expect_calls 1 'repeat inside the TTL'
 [ "$(tail -1 "$t/calls.tsv" | cut -f4,6)" = $'pr view\t0' ] || fail 'hit row lost its subcommand or exit code'
 echo 'ok - repeat read inside the TTL makes no network call and logs hit'

@@ -97,6 +97,7 @@ elif grep -qi 'secondary rate limit' "$stderr_file"; then
 elif grep -Eqi 'API rate limit exceeded|primary rate limit' "$stderr_file"; then
   error_class=rate
 fi
+response_bytes="$(wc -c < "$stdout_file" | tr -d '[:space:]')"
 
 {
   sub="${1:-}"; endpoint=""
@@ -123,7 +124,7 @@ fi
     done
     caller="${caller##*/}"
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "$caller" "$sub" "$endpoint" "$rc" \
-    "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" "$error_class" "$cache_state" >> "$log"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${unit:-?}" "$caller" "$sub" "$endpoint" "$rc" \
+    "$(( (${EPOCHREALTIME/./} - start) / 1000 ))" "$error_class" "$cache_state" "$response_bytes" >> "$log"
 } 2>/dev/null
 exit "$rc"
