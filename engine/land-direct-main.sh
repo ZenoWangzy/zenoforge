@@ -1617,8 +1617,7 @@ if ! merge_result_node_check "$repo_root" "$tested_base" "$(git rev-parse HEAD)"
   echo 'land-direct-main: refusing push because merge result Node syntax check failed' >&2
   exit 1
 fi
-land_coord_lane_begin "${ZF_COORD_LAND_LANE_WAIT_SECONDS:-${MERGE_LOCK_WAIT_SECONDS:-4200}}" || exit $?
-trap 'land_cleanup_preflight_private_refs; land_coord_lane_cleanup' EXIT
+land_coord_lane_begin "${ZF_COORD_LAND_LANE_WAIT_SECONDS:-${MERGE_LOCK_WAIT_SECONDS:-4200}}" || exit $?; trap 'land_cleanup_preflight_private_refs; land_coord_lane_cleanup' EXIT
 land_phase preflight-start
 preflight
 land_phase preflight-passed
@@ -1710,7 +1709,6 @@ DRY_RUN=0 supervisor_inbox_append landing \
   "ticket=${direct_landing_ticket:-unknown} branch=$branch lane=direct-main subject=\"$(git log -1 --format=%s)\"" \
   || echo "land-direct-main: failed to record landing event in supervisor inbox" >&2
 land_coord_lane_release || exit 3
-
 # Pipeline suites on the landed head verify the push; the lander only records the range.
 echo "land-direct-main: landed range recorded ${base_before_push:0:12}..${candidate_head:0:12}"
 install_landed_host_artifacts "$base_before_push" \
