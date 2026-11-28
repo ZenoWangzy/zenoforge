@@ -66,9 +66,12 @@ fake_bin="$test_env_root/publish-bin"
 engine="$(cd -- "$dir/.." && pwd -P)"
 mkdir -p "$publish_root/luna/p1" "$publish_root/luna/p2" "$publish_root/luna/p3" "$publish_root/luna/p4" "$publish_repo/.zenoforge/state" "$fake_bin"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T10:00:00Z"}' > "$publish_root/luna/p1/events.jsonl"
+printf 'engine-a\n' > "$publish_root/luna/p1/engine-version"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T11:00:00Z"}' > "$publish_root/luna/p2/events.jsonl"
 printf '%s\n' '{"type":"failure","message":"unmeasurable"}' > "$publish_root/luna/p3/events.jsonl"
+printf 'engine-a\n' > "$publish_root/luna/p3/engine-version"
 printf '%s\n' '{"type":"failure","message":"false positive"}' > "$publish_root/luna/p4/events.jsonl"
+printf 'engine-a\n' > "$publish_root/luna/p4/engine-version"
 for i in $(seq -w 1 10); do
   mkdir -p "$publish_root/luna/normal-$i"
   printf '0\n' > "$publish_root/luna/normal-$i/rc"
@@ -165,12 +168,13 @@ jq -e '.changes | length == 2
     and .sources == [{session_key:"p1",event_line:1},{session_key:"p2",event_line:1}])
   and any(.[]; .category == "automated-checks" and .verifiable == true and (.lesson | type == "string")
     and .sources == [{session_key:"p1",event_line:1}] and .derived_from == ["V1272"]
+    and .engine_version == "engine-a" and .check == {type:"failure",message:"same event"}
     and (.admission.normal_sessions | length == 10))' \
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
   || { echo "retro.test.sh: candidate issue was not recorded for verification:" >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 fragment="$(printf '%s\n' "$publish_repo"/lessons/pending/*.json)"
 [[ -f "$fragment" ]] || { echo 'retro.test.sh: mechanical candidate created no lesson fragment' >&2; exit 1; }
-jq -e '.check == {type:"failure",message:"same event"} and .derived_from == ["V1272"]
+jq -e '.check == {type:"failure",message:"same event"} and .engine_version == "engine-a" and .derived_from == ["V1272"]
   and .source_event == {session_key:"p1",event_line:1} and .admission.matched_normal_events == 0' "$fragment" >/dev/null \
   || { echo 'retro.test.sh: admitted fragment omitted its matcher, lineage or measurement' >&2; cat "$fragment" >&2; exit 1; }
 jq -e '.observations | length == 2
@@ -179,6 +183,21 @@ jq -e '.observations | length == 2
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
   || { echo 'retro.test.sh: an unmeasurable candidate was not retained as an observation' >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 lesson_id="$(jq -r '.changes[] | select(.category == "automated-checks") | .lesson' "$test_env_root/publish-out/retro-verify.json")"
+filed_at="$(jq -r --arg lesson "$lesson_id" '.changes[] | select(.lesson == $lesson) | .filed_at' "$test_env_root/publish-out/retro-verify.json")"
+printf 'engine-b\n' > "$publish_root/luna/p1/engine-version"
+jq '{candidates:[.candidates[] | select(.category == "automated-checks") | .check={message:"same event"}]}' \
+  "$test_env_root/candidates.json" > "$test_env_root/changed-lesson-candidate.json"
+ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
+  ZF_ISSUE_LOCK_DIR="$test_env_root/locks" RETRO_OUT_DIR="$test_env_root/publish-out" \
+  PATH="$fake_bin:$PATH" FAKE_ISSUES="$test_env_root/issues.json" FAKE_COMMENTS="$test_env_root/comments.jsonl" \
+  FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
+  python3 -B "$retro" publish "$publish_root" "$publish_repo" "$test_env_root/changed-lesson-candidate.json"
+jq -e --arg lesson "$lesson_id" --arg filed "$filed_at" \
+  '.changes[] | select(.lesson == $lesson) | .engine_version == "engine-a"
+    and .check == {type:"failure",message:"same event"} and .filed_at == $filed' \
+  "$test_env_root/publish-out/retro-verify.json" >/dev/null \
+  || { echo 'retro.test.sh: an existing lesson admission was rewritten' >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
+printf 'engine-a\n' > "$publish_root/luna/p1/engine-version"
 python3 -B "$retro" lineage "$publish_repo" "$test_env_root/publish-out" > "$test_env_root/lineage.txt"
 grep -Fq 'V1272' "$test_env_root/lineage.txt" || { echo 'retro.test.sh: lineage context omitted the existing lesson id' >&2; cat "$test_env_root/lineage.txt" >&2; exit 1; }
 grep -Fq "$lesson_id" "$test_env_root/lineage.txt" || { echo 'retro.test.sh: lineage context omitted the admitted candidate id' >&2; cat "$test_env_root/lineage.txt" >&2; exit 1; }
@@ -186,11 +205,26 @@ printf '%s\n' '{"incidents":[]}' > "$publish_repo/registry.json"
 ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" ZF_CONFIG_ROOT="$publish_repo/.zenoforge" \
   bash "$engine/lesson-fragments.sh" --check "$publish_repo" "$publish_repo/registry.json" --files "$fragment"
 echo "publish fragment accepted rc=0"
+jq --arg lesson "$lesson_id" '(.changes[] | select(.lesson == $lesson)).verdict = "withdrawn"' \
+  "$test_env_root/publish-out/retro-verify.json" > "$test_env_root/publish-out/retro-verify.next.json"
+mv "$test_env_root/publish-out/retro-verify.next.json" "$test_env_root/publish-out/retro-verify.json"
+jq '{candidates:[.candidates[] | select(.category == "automated-checks")]}' \
+  "$test_env_root/candidates.json" > "$test_env_root/withdrawn-candidate.json"
+rm -f -- "$publish_repo/lessons/pending/$lesson_id.json" "$publish_repo/lessons/full/$lesson_id.md"
+ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
+  ZF_ISSUE_LOCK_DIR="$test_env_root/locks" RETRO_OUT_DIR="$test_env_root/publish-out" \
+  PATH="$fake_bin:$PATH" FAKE_ISSUES="$test_env_root/issues.json" FAKE_COMMENTS="$test_env_root/comments.jsonl" \
+  FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
+  python3 -B "$retro" publish "$publish_root" "$publish_repo" "$test_env_root/withdrawn-candidate.json"
+test ! -e "$publish_repo/lessons/pending/$lesson_id.json"
+test ! -e "$publish_repo/lessons/full/$lesson_id.md"
+echo "publish withdrawn lesson stays removed rc=0"
 
 short_root="$test_env_root/short-scratch"
 short_repo="$test_env_root/short-repo"
 mkdir -p "$short_root/luna/source" "$short_root/luna/normal" "$short_repo/lessons"
 printf '%s\n' '{"type":"failure","message":"short sample"}' > "$short_root/luna/source/events.jsonl"
+printf 'engine-a\n' > "$short_root/luna/source/engine-version"
 printf '0\n' > "$short_root/luna/normal/rc"
 printf '%s\n' '{"type":"item.completed"}' > "$short_root/luna/normal/events.jsonl"
 printf '%s\n' '**V1272** Existing lesson.' > "$short_repo/lessons/RULES.md"
@@ -214,16 +248,18 @@ for i in $(seq 0 9); do
   id="$(printf '%02d' "$i")"
   d="$verify_root/luna/b$id"
   mkdir -p "$d"
+  printf 'engine-a\n' > "$d/engine-version"
   printf '0\n' > "$d/rc"
-  seq 1 4 | sed 's/.*/{"type":"item.completed"}/' > "$d/events.jsonl"
+  printf '%s\n' '{"type":"item.completed"}' '{"type":"tool.event"}' '{"type":"unrelated"}' '{"type":"item.completed"}' > "$d/events.jsonl"
   touch -d "@$((merge_epoch - 10 + i))" "$d/rc"
 done
 for i in $(seq 0 9); do
   id="$(printf '%02d' "$i")"
   d="$verify_root/luna/a$id"
   mkdir -p "$d"
+  printf 'engine-a\n' > "$d/engine-version"
   printf '0\n' > "$d/rc"
-  seq 1 4 | sed 's/.*/{"type":"item.completed"}/' > "$d/events.jsonl"
+  printf '%s\n' '{"type":"item.completed"}' '{"type":"tool.event"}' '{"type":"unrelated"}' '{"type":"item.completed"}' > "$d/events.jsonl"
   touch -d "@$((merge_epoch + 1 + i))" "$d/rc"
 done
 for i in $(seq 0 9); do printf 'b%02d\n' "$i"; done > "$verify_out/before.keys"
@@ -444,41 +480,55 @@ printf '{"id":"automated-regress"}\n' > "$lesson_repo/lessons/pending/automated-
 printf '{"id":"tool-keep"}\n' > "$lesson_repo/lessons/pending/tool-keep.json"
 cat > "$verify_out/before.candidates.json" <<'JSON'
 {"candidates":[
- {"category":"automated-checks","severity":"high","session_key":"b00","event_line":1,"evidence":"e","proposal":"p"},
- {"category":"automated-checks","severity":"high","session_key":"b01","event_line":1,"evidence":"e","proposal":"p"},
- {"category":"automated-checks","severity":"high","session_key":"b02","event_line":1,"evidence":"e","proposal":"p"},
- {"category":"tool-economy","severity":"high","session_key":"b00","event_line":2,"evidence":"e","proposal":"p"},
- {"category":"tool-economy","severity":"high","session_key":"b01","event_line":2,"evidence":"e","proposal":"p"},
- {"category":"tool-economy","severity":"high","session_key":"b02","event_line":2,"evidence":"e","proposal":"p"}
+ {"category":"automated-checks","severity":"high","session_key":"b00","event_line":1,"evidence":"e","proposal":"p","check":{"type":"item.completed"}},
+ {"category":"automated-checks","severity":"high","session_key":"b00","event_line":3,"evidence":"e","proposal":"p","check":{"type":"unrelated"}},
+ {"category":"automated-checks","severity":"high","session_key":"b01","event_line":1,"evidence":"e","proposal":"p","check":{"type":"item.completed"}},
+ {"category":"automated-checks","severity":"high","session_key":"b01","event_line":3,"evidence":"e","proposal":"p","check":{"type":"unrelated"}},
+ {"category":"automated-checks","severity":"high","session_key":"b02","event_line":1,"evidence":"e","proposal":"p","check":{"type":"item.completed"}},
+ {"category":"automated-checks","severity":"high","session_key":"b02","event_line":3,"evidence":"e","proposal":"p","check":{"type":"unrelated"}},
+ {"category":"tool-economy","severity":"high","session_key":"b00","event_line":2,"evidence":"e","proposal":"p","check":{"type":"tool.event"}},
+ {"category":"tool-economy","severity":"high","session_key":"b01","event_line":2,"evidence":"e","proposal":"p","check":{"type":"tool.event"}},
+ {"category":"tool-economy","severity":"high","session_key":"b02","event_line":2,"evidence":"e","proposal":"p","check":{"type":"tool.event"}}
 ]}
 JSON
 cat > "$verify_out/after.candidates.json" <<'JSON'
 {"candidates":[
- {"category":"automated-checks","severity":"high","session_key":"a00","event_line":1,"evidence":"e","proposal":"p"},
- {"category":"automated-checks","severity":"high","session_key":"a01","event_line":1,"evidence":"e","proposal":"p"},
- {"category":"automated-checks","severity":"high","session_key":"a02","event_line":1,"evidence":"e","proposal":"p"},
- {"category":"automated-checks","severity":"high","session_key":"a03","event_line":1,"evidence":"e","proposal":"p"},
- {"category":"tool-economy","severity":"high","session_key":"a00","event_line":2,"evidence":"e","proposal":"p"}
+ {"category":"automated-checks","severity":"high","session_key":"a00","event_line":1,"evidence":"e","proposal":"p","check":{"type":"item.completed"}},
+ {"category":"automated-checks","severity":"high","session_key":"a01","event_line":1,"evidence":"e","proposal":"p","check":{"type":"item.completed"}},
+ {"category":"automated-checks","severity":"high","session_key":"a02","event_line":1,"evidence":"e","proposal":"p","check":{"type":"item.completed"}},
+ {"category":"automated-checks","severity":"high","session_key":"a03","event_line":1,"evidence":"e","proposal":"p","check":{"type":"item.completed"}},
+ {"category":"tool-economy","severity":"high","session_key":"a00","event_line":2,"evidence":"e","proposal":"p","check":{"type":"tool.event"}}
 ]}
 JSON
 touch -d "@$((merge_epoch - 20))" "$verify_out/before.keys" "$verify_out/before.candidates.json"
 touch -d "@$((merge_epoch + 20))" "$verify_out/after.keys" "$verify_out/after.candidates.json"
 jq -n --arg filed "$merge_at" '{changes:[
   {lesson:"automated-regress",category:"automated-checks",class:"automated-regress",filed_at:$filed,
-    verifiable:false,admission:{status:"passed"}},
+    engine_version:"engine-a",check:{type:"item.completed"},verifiable:false,admission:{status:"passed"}},
   {lesson:"tool-keep",category:"tool-economy",class:"tool-keep",filed_at:$filed,
-    verifiable:false,admission:{status:"passed"}}
+    engine_version:"engine-a",check:{type:"tool.event"},verifiable:false,admission:{status:"passed"}}
 ]}' > "$verify_out/retro-verify.json"
 VERIFY_REPO="$lesson_repo" run_verify "$verify_root" "$verify_out"
+printf 'regressing lesson restored by checkout\n' > "$lesson_repo/lessons/full/automated-regress.md"
+printf '{"id":"automated-regress"}\n' > "$lesson_repo/lessons/pending/automated-regress.json"
+cat >> "$lesson_repo/lessons/RULES.md" <<'DOC'
+
+<a id="v-next-automated-regress"></a>
+**V-NEXT-automated-regress** Withdraw this lesson.
+DOC
+cat >> "$lesson_repo/lessons/CATALOG.md" <<'DOC'
+Applies: [V-NEXT-automated-regress](RULES.md#v-next-automated-regress)
+DOC
 VERIFY_REPO="$lesson_repo" run_verify "$verify_root" "$verify_out"
 jq -e '.changes | any(.[]; .lesson == "automated-regress" and .before_count == 3 and .after_count == 4
     and .verdict == "withdrawn" and (.withdrawn_at | type == "string"))
   and any(.[]; .lesson == "tool-keep" and .before_count == 3 and .after_count == 1
     and .verdict == "retained" and (has("withdrawn_at") | not))' \
   "$verify_out/retro-verify.json" >/dev/null \
-  || { echo 'retro.test.sh: paired lesson verification recorded the wrong verdicts' >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+  || { echo 'retro.test.sh: engine-version lesson verification recorded the wrong verdicts' >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
 jq -e '.events | length == 1 and .[0].type == "lesson-withdrawn"
-  and .[0].lesson == "automated-regress" and .[0].before_count == 3 and .[0].after_count == 4' \
+  and .[0].lesson == "automated-regress" and .[0].engine_version == "engine-a"
+  and .[0].before_count == 3 and .[0].after_count == 4' \
   "$verify_out/retro-verify.json" >/dev/null \
   || { echo 'retro.test.sh: lesson withdrawal event was not recorded' >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
 test ! -e "$lesson_repo/lessons/pending/automated-regress.json"
@@ -489,5 +539,5 @@ test -e "$lesson_repo/lessons/pending/tool-keep.json"
 test -e "$lesson_repo/lessons/full/tool-keep.md"
 grep -Fq 'V-NEXT-tool-keep' "$lesson_repo/lessons/RULES.md"
 grep -Fq 'V-NEXT-tool-keep' "$lesson_repo/lessons/CATALOG.md"
-echo "verification lesson-withdrawal rc=0"
+echo "verification engine-version lesson-withdrawal rc=0"
 echo 'retro.test.sh: all assertions passed'

@@ -319,18 +319,36 @@ def record_lesson_change(out_dir, category, key, candidate, admission):
             "lineage_id": key,
             "derived_from": candidate["derived_from"],
             "sources": [source_event(candidate)],
+            "check": candidate["check"],
+            "engine_version": candidate["engine_version"],
             "admission": admission,
             "verifiable": True,
-            "reason": "measured event check is admitted as a lesson fragment and verified around its admission window",
+            "reason": "measured event check is admitted as a lesson fragment and verified in its engine version around its admission window",
             "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         state["changes"].append(change)
     else:
         merge_record_values(change, "sources", [source_event(candidate)])
         merge_record_values(change, "derived_from", candidate["derived_from"])
-        change["admission"] = admission
-        change["verifiable"] = True
     write_verify_state(out_dir, state)
+
+
+def session_engine_version(root, key):
+    path = os.path.join(root, "luna", key, "engine-version")
+    try:
+        with open(path, encoding="utf-8") as version_file:
+            version = version_file.read().strip()
+    except OSError:
+        return None
+    return version if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", version) else None
+
+
+def withdrawn_lessons(out_dir):
+    return {
+        change["lesson"]
+        for change in read_verify_state(out_dir)["changes"]
+        if change.get("verdict") == "withdrawn" and isinstance(change.get("lesson"), str)
+    }
 
 
 def withdraw_lesson_fragment(repo, lesson_id):
@@ -384,6 +402,7 @@ def write_lesson_fragment(repo, candidate, key, admission):
         f"- Severity: {candidate['severity']}\n"
         f"- Session: {candidate['session_key']}\n"
         f"- Event line: {candidate['event_line']} in events.jsonl\n"
+        f"- Engine version: {candidate['engine_version']}\n"
         f"- Derived from: {', '.join(candidate['derived_from']) or 'none recorded'}\n"
         f"- Matcher: `{json.dumps(candidate['check'], sort_keys=True)}`\n"
         f"- Admission: matched the source event and stayed silent in {len(admission['normal_sessions'])} normal sessions\n"
@@ -396,6 +415,7 @@ def write_lesson_fragment(repo, candidate, key, admission):
         "rule": '<a id="v-next"></a>\n**V-NEXT** Add the deterministic check described in the full lesson.',
         "catalog_entry": f"Applies: [V-NEXT](RULES.md#v-next); full: ./full/{lesson_id}.md",
         "full_lesson_path": f"lessons/full/{lesson_id}.md",
+        "engine_version": candidate["engine_version"],
         "source_event": source_event(candidate),
         "derived_from": candidate["derived_from"],
         "check": candidate["check"],
@@ -452,6 +472,7 @@ def publish_candidates(root, repo, candidates_path):
     candidates = document.get("candidates") if isinstance(document, dict) else None
     if not isinstance(candidates, list):
         raise ValueError("candidate file has no candidates array")
+    withdrawn = withdrawn_lessons(out_dir)
     for candidate in candidates:
         if (not isinstance(candidate, dict) or candidate.get("category") not in CATEGORIES
                 or candidate.get("severity") not in SEVERITIES):
@@ -462,6 +483,9 @@ def publish_candidates(root, repo, candidates_path):
         event = event_at(root, candidate)
         key = candidate_class(engine, candidate["category"], event)
         candidate = dict(candidate)
+        if candidate["category"] == "automated-checks" and key in withdrawn:
+            print(f"retro.py: candidate {key} remains withdrawn")
+            continue
         parents, lineage_error = candidate_lineage(repo, out_dir, candidate)
         candidate["derived_from"] = parents
         if lineage_error:
@@ -469,6 +493,11 @@ def publish_candidates(root, repo, candidates_path):
             print(f"retro.py: candidate {key} kept as an observation: {lineage_error}")
             continue
         if candidate["category"] == "automated-checks":
+            candidate["engine_version"] = session_engine_version(root, candidate["session_key"])
+            if candidate["engine_version"] is None:
+                record_observation(out_dir, candidate, key, parents, "source session has no recorded engine version")
+                print(f"retro.py: candidate {key} kept as an observation: source session has no recorded engine version")
+                continue
             admission, measurement_error = measure_check(root, candidate)
             if measurement_error:
                 record_observation(out_dir, candidate, key, parents, measurement_error)

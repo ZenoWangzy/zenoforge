@@ -3,7 +3,18 @@
 set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 engine="$(cd -- "$here/.." && pwd -P)"
-repo="$(cd -- "$engine/.." && pwd -P)"
+repo="${ZF_REPO_DIR:-}"
+if [[ -z "$repo" ]] && git -C "$PWD" rev-parse --show-toplevel >/dev/null 2>&1; then
+  repo="$(git -C "$PWD" rev-parse --show-toplevel)"
+fi
+if [[ -z "$repo" ]]; then
+  checkout="${AGENT_HOME:-${ZF_HOME:-${HOME:-/tmp}/.zenoforge}}/checkout"
+  if git -C "$checkout" rev-parse --show-toplevel >/dev/null 2>&1; then
+    repo="$(git -C "$checkout" rev-parse --show-toplevel)"
+  fi
+fi
+repo="${repo:-$(cd -- "$engine/.." && pwd -P)}"
+repo="$(cd -- "$repo" && pwd -P)"
 root="${WORKER_SCRATCH_ROOT:-${HOME:-/tmp}/.zenoforge/scratch}"
 out_dir="${RETRO_OUT_DIR:-${HOME:-/tmp}/.zenoforge/retro}"
 stamp="$(date -u +%Y%m%dT%H%MZ)"
