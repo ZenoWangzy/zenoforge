@@ -184,7 +184,7 @@ dispatch_pending_pass() {
   if declare -F scheduler_scope_lib >/dev/null 2>&1; then
     scheduler_scope_lib gh-key-cache || return 1
   elif ! declare -F gh_key_cache_repo >/dev/null 2>&1; then
-    source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/../../lib.d/gh-key-cache.sh" || return 1
+    source "$SCHEDULER_SCOPE_LIB_DIR/gh-key-cache.sh" || return 1
   fi
   TICK_DISPATCH_SKIPS=()
   TICK_PRIORITY_HOLD_EXPIRED=()

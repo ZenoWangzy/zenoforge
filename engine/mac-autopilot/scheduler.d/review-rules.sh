@@ -515,7 +515,7 @@ classify_lane() { # pr → direct-main|pr（取不到文件列表返回 1）
   if declare -F scheduler_scope_lib >/dev/null 2>&1; then
     scheduler_scope_lib gh-key-cache || return 1
   elif ! declare -F gh_pr_files_cached >/dev/null 2>&1; then
-    source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/../../lib.d/gh-key-cache.sh" || return 1
+    source "$SCHEDULER_SCOPE_LIB_DIR/gh-key-cache.sh" || return 1
   fi
   # The REST file list includes previous_filename for renames; both sides must be classified.
   # gh refuses --slurp together with --jq (exit 1 before any request): from 10-20 every call failed, 506 a hour on
@@ -587,7 +587,7 @@ review_family_verdict() { # unit JSON, reviewer identity, verdict -> 1 when a sa
   if declare -F scheduler_scope_lib >/dev/null 2>&1; then
     scheduler_scope_lib model-policy || return 1
   elif ! declare -F unit_review_author_identity >/dev/null 2>&1 || ! declare -F review_identity_family >/dev/null 2>&1; then
-    source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/../../lib.d/model-policy.sh" || return 1
+    source "$SCHEDULER_SCOPE_LIB_DIR/model-policy.sh" || return 1
   fi
   [[ "$verdict" == READY ]] || return 0
   id="$(jqf -r '.id // empty' <<<"$unit")"
