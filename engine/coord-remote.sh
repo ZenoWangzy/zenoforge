@@ -87,6 +87,16 @@ _coord_remote_record_valid() {
     and (.stage | type == "string" and length > 0)
     and (.expires_at | type == "number" and floor == .)
     and ((has("generation")|not) or (.generation|type == "number" and floor == . and . >= 1))
+    and (if has("intents") then .intents | type == "object" and all(to_entries[];
+      (.key | type == "string" and test("^[A-Za-z0-9._:/@+.-]+$"))
+      and (.value | type == "object" and (.kind | IN("merge","push","revert","deploy","mail","comment"))
+        and (.class | IN("idempotent","once")) and (.state | IN("pending","done","unknown","cleared"))
+        and (.gen | type == "number" and floor == . and . >= 1) and (.run | type == "string" and length > 0)
+        and ((has("started_at") | not) or (.started_at | type == "number" and floor == . and . >= 0))
+        and ((has("completed_seq") | not) or (.completed_seq | type == "number" and floor == . and . >= 1))
+        and ((has("completed_at") | not) or (.completed_at | type == "number" and floor == . and . >= 0))
+        and ((has("reason") | not) or (.reason | type == "string")))
+    ) else true end)
   ' <<<"$2" >/dev/null 2>&1
 }
 
@@ -266,13 +276,14 @@ _coord_remote_held_remove_if_owner() {
 
 _coord_remote_acquire() {
   local key="$1" owner="$2" kind="$3" subject="$4" unit="$5" stage="$6"
-  local status now record expected old_owner="" old_generation=0 generation old_checkpoint="" projection
+  local status now record expected old_owner="" old_generation=0 generation old_checkpoint="" old_intents="" projection
   COORD_REMOTE_RESTORE_REQUIRED=0
   [[ -n "$owner" && -n "$kind" ]] || return 2
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || return 3
   _coord_paths "$key" || return 2
   if _coord_remote_read "$key"; then
     old_checkpoint="$(jq -c '.checkpoint // empty' <<<"$COORD_RECORD")" || return 3
+    old_intents="$(jq -ce '(.intents // {}) | if type == "object" then . else error end' <<<"$COORD_RECORD")" || return 3
     old_owner="$(jq -r '.owner' <<<"$COORD_RECORD")"
     if [[ "$old_owner" == "$owner" ]]; then
       _coord_remote_observation_clear "$key" || return 3
@@ -293,6 +304,7 @@ _coord_remote_acquire() {
     (( status == 1 )) || return "$status"
     if [[ -n "$COORD_RECORD" ]]; then
       old_checkpoint="$(jq -c '.checkpoint // empty' <<<"$COORD_RECORD")" || return 3
+      old_intents="$(jq -ce '(.intents // {}) | if type == "object" then . else error end' <<<"$COORD_RECORD")" || return 3
     fi
     expected="$COORD_REMOTE_OID"
     if [[ -n "$COORD_RECORD" ]]; then
@@ -309,10 +321,15 @@ _coord_remote_acquire() {
     '{proto:1,version:1,key:$key,owner:$owner,owner_kind:$kind,subject:$subject,unit:$unit,stage:$stage,
       generation:$generation,acquired_at:$now,renewed_at:$now,expires_at:($now+$lease)}
       + (if $old_owner == "" then {} else {taken_from:{owner:$old_owner,generation:$old_generation}} end)')" || return 3
+  if [[ -n "$old_intents" ]]; then
+    record="$(jq -cn --argjson record "$record" --argjson intents "$old_intents" '$record + {intents:$intents}')" || return 3
+  fi
   if [[ -n "$old_checkpoint" ]]; then
     record="$(jq -cn --argjson record "$record" --argjson checkpoint "$old_checkpoint" \
       '$record + {checkpoint:$checkpoint}')" || return 3
     COORD_REMOTE_RESTORE_REQUIRED=1
+  elif [[ "$kind" == effect ]]; then
+    :
   else
     projection="$(coord_checkpoint_project "$subject" "$unit")" || return 3
     record="$(coord_checkpoint_fit_claim "$record" "$projection")" || return 3

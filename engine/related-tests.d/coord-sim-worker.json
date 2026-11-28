@@ -1,0 +1,5 @@
+{
+  "engine/coord/sim/worker.sh": [
+    "engine/coord/coordination.test.sh"
+  ]
+}

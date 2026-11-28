@@ -1,0 +1,20 @@
+{
+  "engine/coord/reconcile.d/comment.sh": [
+    "engine/coord/effects.test.sh"
+  ],
+  "engine/coord/reconcile.d/deploy.sh": [
+    "engine/coord/effects.test.sh"
+  ],
+  "engine/coord/reconcile.d/mail.sh": [
+    "engine/coord/effects.test.sh"
+  ],
+  "engine/coord/reconcile.d/merge.sh": [
+    "engine/coord/effects.test.sh"
+  ],
+  "engine/coord/reconcile.d/push.sh": [
+    "engine/coord/effects.test.sh"
+  ],
+  "engine/coord/reconcile.d/revert.sh": [
+    "engine/coord/effects.test.sh"
+  ]
+}

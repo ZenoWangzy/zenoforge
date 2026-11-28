@@ -899,30 +899,33 @@ send_calls = [
 ]
 notify = root / "notify.sh"
 source = notify.read_text()
+effects_module = root / "notify-effects.sh"
+effects_source = effects_module.read_text()
 send_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
-def function(name):
-    match = re.search(rf"(?m)^{re.escape(name)}\(\) \{{", source)
+def function(name, contents=source):
+    match = re.search(rf"(?m)^{re.escape(name)}\(\) \{{", contents)
     if not match:
         raise AssertionError(f"missing function {name}()")
     start = match.start()
-    close = re.search(r"(?m)^\}", source[match.end():])
+    close = re.search(r"(?m)^\}", contents[match.end():])
     if not close:
         raise AssertionError(f"unterminated function {name}()")
     end = match.end() + close.start()
-    return source[start:end]
+    return contents[start:end]
 
 try:
     transport = function("_send_email_logged")
-    curl_at = transport.index("curl ")
+    send_at = transport.index("_notify_strict_effect_send_request")
+    sender = function("_notify_gmail_send_request", effects_source)
     log_at = transport.index("notify_log_send")
-    curl_lines = [line for line in transport.splitlines() if "curl " in line and "GMAIL_SEND_URL" in line]
-    assert api_refs == [notify], f"Gmail API send references outside notify.sh: {api_refs}"
-    assert len(send_calls) == 1 and send_calls[0][0] == notify, f"unshared Gmail sender found: {send_calls}"
+    curl_lines = [line for line in sender.splitlines() if "curl " in line and "GMAIL_SEND_URL" in line]
+    assert set(api_refs) == {notify, effects_module}, f"Gmail API references outside the sender and endpoint definition: {api_refs}"
+    assert len(send_calls) == 1 and send_calls[0][0] == effects_module, f"unshared Gmail sender found: {send_calls}"
     assert sum(p.read_text().count(send_url) for p in sources) == 1, "new Gmail send URL was added"
-    assert source.count("GMAIL_SEND_URL") == 2, "Gmail send URL is used outside its definition and shared sender"
+    assert source.count("GMAIL_SEND_URL") + effects_source.count("GMAIL_SEND_URL") == 2, "Gmail send URL is used outside its definition and shared sender"
     assert len(curl_lines) == 1, f"expected one Gmail HTTP sender, got {len(curl_lines)}"
-    assert log_at < curl_at, "Gmail send happens before notify.log attempt"
+    assert log_at < send_at, "Gmail send happens before notify.log attempt"
     for name in ("send_email", "send_email_strict"):
         wrapper = function(name)
         assert "_send_email_logged" in wrapper, f"{name} bypasses the shared logged transport"

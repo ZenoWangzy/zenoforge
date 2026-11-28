@@ -3,6 +3,8 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/config.sh"
+coord_source_if_enabled
 source "$SCRIPT_DIR/roadmap.sh" # gh_bound_query_run: the label reads are GraphQL and stay under the per-query limit
 repo="${ZF_GH_REPO:-${ZF_REPO:?ZF_REPO is not set}}"
 class=""
@@ -90,14 +92,19 @@ matches="$(jq -c --arg marker "$marker" \
 existing="$(jq -r '.[0].number // empty' <<< "$matches")"
 if [[ -n "$existing" ]]; then
   repeated_body="$(mktemp)"
+  comment_key="comment:$existing:$class"
   trap 'rm -f -- "${repeated_body:-}" "${new_body:-}"' EXIT
   {
     printf 'Repeated occurrence for %s class `%s`.\n\n' "$lane" "$class"
     cat -- "$body_file"
   } > "$repeated_body"
+  if [[ "${ZF_COORD:-off}" == on ]]; then
+    printf '\n\n<!-- zf-intent:%s -->\n' "$comment_key" >> "$repeated_body"
+  fi
   comment_args=(gh issue comment "$existing" --repo "$repo" --body-file "$repeated_body")
   for attachment in "${attachments[@]}"; do comment_args+=(--attach "$attachment"); done
-  "${comment_args[@]}"
+  comment_claim="$(effect_claim_for "$comment_key")" || exit 1
+  effect_run "$comment_claim" "$comment_key" comment -- "${comment_args[@]}"
   printf 'commented issue #%s for class %s (open matches=%s)\n' \
     "$existing" "$class" "$(jq 'length' <<< "$matches")"
   exit 0

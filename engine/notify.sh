@@ -12,6 +12,8 @@
 # outcomes, active customer incidents, and the scheduled owner report.
 # Per-ticket run conclusions go only to a rostered non-founder reporter; the
 # shared pre-send check rejects unclassified maintainer mail.
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/notify-effects.sh"
 #
 # Roster lives outside the repo (same "outside VCS, mode 600" pattern as
 # GH_TOKEN in ~/.zenoforge/env -- see systemd/zenoforge-agent.service and this
@@ -614,11 +616,18 @@ $body" >&2
   # After request start, a timeout or lost response can hide a successful send.
   NOTIFY_LAST_SEND_RETRY_SAFE=0
   NOTIFY_LOG_STAGE=gmail-api-send
-  raw="$(gmail_curl "$token" -sS --max-time "$GMAIL_TIMEOUT_SECONDS" -X POST "$GMAIL_SEND_URL" \
-    -H "Content-Type: application/json" \
-    --data-binary @"$payload_file" \
-    -w '\n%{http_code}' 2>&1)"
-  curl_status=$?
+  if [[ "$mode" == strict ]]; then
+    _notify_strict_effect_send_request "$subject" "$body" "$to_header" \
+      "$issue_marker" "$maintainer_kind" "$token" "$payload_file" || curl_status=$?
+    if [[ "${NOTIFY_EFFECT_SETUP_FAILED:-0}" == 1 ]]; then
+      rm -f -- "$payload_file"
+      return 3
+    fi
+    raw="$NOTIFY_EFFECT_RAW"
+  else
+    raw="$(_notify_gmail_send_request "$token" "$payload_file")"
+    curl_status=$?
+  fi
   rm -f -- "$payload_file"
   http_code="$(echo "$raw" | tail -n1)"
   resp_body="$(echo "$raw" | sed '$d')"

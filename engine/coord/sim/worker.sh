@@ -125,10 +125,56 @@ sim_publish_status() {
   sim_write_ref "$ref" "$old_oid" "$payload"
 }
 
+sim_effect_setup() {
+  export AGENT_HOME="$SIM_HOST_DIR" REPO_DIR="$SIM_HOST_REPO" ZF_REPO_DIR="$SIM_HOST_REPO"
+  export ZF_ENGINE_DIR="$SIM_ENGINE_DIR" ZF_COORD=on ZF_COORD_LEASE_SECONDS="$SIM_LEASE_S"
+  export ZF_COORD_CLOCK_FILE="$SIM_HOST_DIR/coord-clock" REPO=simulation/repo
+  printf '%s\n' "$(sim_now)" >"$ZF_COORD_CLOCK_FILE"
+  source "$SIM_ENGINE_DIR/coord.sh"
+  source "$SIM_ENGINE_DIR/coord-remote.sh"
+  source "$SIM_ENGINE_DIR/coord/effects.sh"
+  git_fetch_bounded() {
+    local repo="$1"
+    shift
+    git -C "$repo" fetch --quiet origin "$@"
+  }
+}
+
+sim_run_effect() {
+  local claim="$1" effect_key="$2" kind="$3" owner subject
+  sim_effect_setup
+  subject="${claim#issue-}"
+  owner="$(coord_new_owner)"
+  coord_acquire "$claim" "$owner" effect "$subject" "effect-$kind" "$kind" || return $?
+  export ZF_COORD_KEY="$claim" ZF_COORD_OWNER="$owner" ZF_COORD_RUN=1
+  case "$kind" in
+    merge) effect_run "$claim" "$effect_key" merge -- gh pr merge 31 --repo "$REPO" ;;
+    deploy) effect_run "$claim" "$effect_key" deploy -- gh deploy 7 --repo "$REPO" ;;
+    mail) effect_run "$claim" "$effect_key" mail -- gh mail "$effect_key" --repo "$REPO" ;;
+    *) return 2 ;;
+  esac
+}
+
+sim_take_over_effect() {
+  local claim="$1" owner subject rc
+  sim_effect_setup
+  subject="${claim#issue-}"
+  owner="$(coord_new_owner)"
+  if coord_acquire "$claim" "$owner" effect "$subject" "effect-reconcile-$subject" effect; then
+    return 0
+  else
+    rc=$?
+    printf 'effect takeover returned %s\n' "$rc" >&2
+    return "$rc"
+  fi
+}
+
 case "${1:-}" in
   dispatch) shift; sim_dispatch "${1:?ticket required}" "${2:?stage required}" ;;
   hold) shift; sim_hold_claim "${1:?ticket required}" "${2:?stage required}" ;;
   takeover) shift; sim_takeover "${1:?ticket required}" "${2:?stage required}" ;;
+  effect) shift; sim_run_effect "$@" ;;
+  effect-takeover) shift; sim_take_over_effect "$@" ;;
   status) sim_publish_status ;;
-  *) echo 'usage: worker.sh {dispatch|hold|takeover|status} [ticket stage]' >&2; exit 2 ;;
+  *) echo 'usage: worker.sh {dispatch|hold|takeover|effect|effect-takeover|status}' >&2; exit 2 ;;
 esac

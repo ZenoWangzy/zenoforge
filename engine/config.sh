@@ -194,6 +194,7 @@ coord_source_if_enabled() {
   [[ "$ZF_COORD" == on ]] || return 0
   source "$ZF_ENGINE_DIR/coord.sh"
   source "$ZF_ENGINE_DIR/coord-remote.sh"
+  source "$ZF_ENGINE_DIR/coord/effects.sh"
 }
 if [[ "$ZF_COORD" != on ]]; then
   if [[ -r "$ZF_ENGINE_DIR/coord-off.sh" ]]; then

@@ -47,13 +47,27 @@ ensure_auto_filed_label() {
   AUTO_FILED_LABEL_REPOS+=" $repo"
 }
 
+_guarded_write_caller() {
+  local index frame
+  for ((index = 2; index < ${#FUNCNAME[@]}; index++)); do
+    frame="${FUNCNAME[index]}"
+    case "$frame" in
+      effect_run|_effect_run_owned) continue ;;
+    esac
+    printf '%s\n' "$frame"
+    return 0
+  done
+  printf 'main\n'
+}
+
 guarded_write() {
   reject_native_auto_merge "$@" || return $?
-  local issue_number lane caller="${FUNCNAME[1]:-main}" create_repo="${REPO:-}" has_lane_add=0 has_hold_remove=0 has_ready_add=0 has_edit=0 child_status i
+  local issue_number lane caller create_repo="${REPO:-}" has_lane_add=0 has_hold_remove=0 has_ready_add=0 has_edit=0 child_status i
   local transition_rest_fallback=0 transition_only=1 transition_remove_hold=0 transition_remove_evidence=0
   local transition_stderr transition_stderr_file
   local status profile_source="" profile_function="" profile_line=0
   local -a command_args=("$@") filtered_args=() transition_add_labels=()
+  caller="$(_guarded_write_caller)"
   if [ "${command_args[0]:-}" = gh ] && [ "${command_args[1]:-}" = issue ] \
     && [ "${command_args[2]:-}" = create ]; then
     local issue_create_has_auto_filed=0 label_value
@@ -127,7 +141,7 @@ guarded_write() {
       # An explicit same-write removal is the hold expiry/release transition.
       if [ "$has_lane_add" = 1 ] && [ "$has_hold_remove" = 0 ] && is_on_hold "$issue_number" \
         && [ "${ISSUE_LABEL_VIEW_STATE[$issue_number]:-}" != failed ]; then
-        caller="${FUNCNAME[1]:-main}"
+        caller="$(_guarded_write_caller)"
         if [ "$caller" = issue_transition ]; then
           echo "guarded_write: refusing partial stage transition for held #$issue_number" >&2
           return 1
@@ -161,7 +175,7 @@ guarded_write() {
         child_status=1
         if recut_parent_has_open_child "$issue_number" "${OPEN_ISSUE_BLOCKER_GRAPH_JSON:-[]}" "" 0; then child_status=0; else child_status=$?; fi
         if [ "$child_status" -eq 0 ] || [ "$child_status" -eq 2 ]; then
-          caller="${FUNCNAME[1]:-main}"
+          caller="$(_guarded_write_caller)"
           if [ "$child_status" -eq 0 ]; then
             printf 'guarded_write: suppressed ready-for-agent on parent #%s with open children by %s\n' \
               "$issue_number" "$caller" >&2
@@ -235,7 +249,7 @@ guarded_write() {
   elif [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ] \
     && [ "${command_args[0]:-}" = systemd-run ]; then
     profile_source="${BASH_SOURCE[1]:-}"
-    profile_function="${FUNCNAME[1]:-main}"
+    profile_function="$(_guarded_write_caller)"
     profile_line="${BASH_LINENO[0]:-0}"
     profile_source="${profile_source##*/}"
     if _call_profile_external systemd-run "$profile_source" "$profile_function" "$profile_line" "${command_args[@]:1}"; then
