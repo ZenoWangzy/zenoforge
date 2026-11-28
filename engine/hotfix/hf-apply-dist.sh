@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+transport_path="$here/../lib.d/transport.sh"
+if [[ ! -f "$transport_path" ]]; then transport_path="$(git rev-parse --show-toplevel)/engine/lib.d/transport.sh"; fi
+source "$transport_path"
 source "$here/../config.sh"
 config=$(zf_config_file hotfix.json) || config=
 # The engine's shipped default hotfix.json carries other seams' keys: without an apply_dist key it is no
