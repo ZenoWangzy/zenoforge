@@ -103,6 +103,25 @@ class HostInfo(unittest.TestCase):
             ("sysctl", "-n", "kern.bootsessionuuid"),
         ])
 
+    def test_macos_process_info_uses_the_process_info_api(self):
+        calls = []
+
+        def read_process(pid, flavor, arg, buffer, size):
+            info = HOSTINFO.ctypes.cast(buffer, HOSTINFO.ctypes.POINTER(HOSTINFO.ProcBsdInfo)).contents
+            info.pbi_pid = pid
+            info.pbi_ppid = 7
+            info.pbi_pgid = 42
+            info.pbi_start_tvsec = 123
+            info.pbi_start_tvusec = 456
+            calls.append((pid, flavor, arg, size))
+            return size
+
+        with patch.object(HOSTINFO.ctypes, "CDLL", return_value=SimpleNamespace(proc_pidinfo=read_process)):
+            result = HOSTINFO.HostInfo(system="Darwin").process_info(42)
+
+        self.assertEqual(result, {"pid": 42, "ppid": 7, "pgid": 42, "start_id": 123000456})
+        self.assertEqual(HOSTINFO.ctypes.sizeof(HOSTINFO.ProcBsdInfo), 136)
+        self.assertEqual(calls, [(42, 3, 0, HOSTINFO.ctypes.sizeof(HOSTINFO.ProcBsdInfo))])
 
 if __name__ == "__main__":
     unittest.main()
