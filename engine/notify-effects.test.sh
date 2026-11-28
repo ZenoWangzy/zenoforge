@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf -- "$TMP_DIR"' EXIT
+trap 'rm -rf -- "$TMP_DIR" "$test_env_root"' EXIT
 
 CURL_ARGS_LOG="$TMP_DIR/curl-args"
 CURL_AUTH_LOG="$TMP_DIR/curl-auth"
