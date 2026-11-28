@@ -2,7 +2,6 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh"
-source "$here/../lib.d/transport.sh"
 config=$(zf_config_file hotfix.json) || config=
 # The engine's shipped default hotfix.json carries other seams' keys: without an apply_dist key it is no
 # distribution config and the legacy fallback stays reachable. A config-root or pack file still selects the
@@ -29,6 +28,7 @@ mapfile -t build < <(jq -r '.apply_dist.build[]' "$config")
 mapfile -t restart < <(jq -r '.apply_dist.restart[]' "$config")
 sha=$1 tag=$2 coord=$3
 ! systemctl --user is-active --quiet "$unit" || { echo 'hf-apply-dist: release is active; hold' >&2; exit 1; }
+source "$here/../lib.d/transport.sh"
 git -C "$repo" fetch -q origin main
 if git -C "$repo" merge-base --is-ancestor "$sha" origin/main 2>/dev/null; then
   main_sha=$(git -C "$repo" rev-parse --verify "$sha^{commit}")
