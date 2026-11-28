@@ -104,7 +104,7 @@ case "$1:$2" in
     grep -qx -- "$3" "$FAKE_LABELS" || printf '%s\n' "$3" >> "$FAKE_LABELS"
     ;;
   issue:view)
-    [[ "${FAKE_ISSUE_VIEW_FAILURE:-0}" == 1 ]] && exit 1
+    [[ "${FAKE_ISSUE_VIEW_FAILURE:-0}" == 1 || "${FAKE_ISSUE_VIEW_FAILURE_ISSUE:-}" == "$3" ]] && exit 1
     cat "$FAKE_ISSUE_VIEW"
     ;;
   pr:list|api:search/issues) cat "$FAKE_MERGED_PRS" ;;
@@ -321,6 +321,22 @@ cmp "$test_env_root/retro-verify.before.json" "$verify_out/retro-verify.json" \
   || { echo "retro.test.sh: a gh failure still rewrote the state file:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
 echo "verification gh-failure rc=0"
 
+jq -n '{changes:[
+  {issue:9105,category:"navigation",class:"navigation-gh-failure-first"},
+  {issue:9106,category:"navigation",class:"navigation-after-gh-failure"}
+]}' > "$verify_out/retro-verify.json"
+jq -c '.changes[0]' "$verify_out/retro-verify.json" > "$test_env_root/first-change.before.json"
+later_out="$(FAKE_ISSUE_VIEW_FAILURE_ISSUE=9105 run_verify "$verify_root" "$verify_out")"
+[[ "$later_out" == *"issue #9105"*"retrying next run"* ]] \
+  || { echo "retro.test.sh: a failing first issue did not print its retry line:" >&2; printf '%s\n' "$later_out" >&2; exit 1; }
+jq -c '.changes[0]' "$verify_out/retro-verify.json" > "$test_env_root/first-change.after.json"
+cmp "$test_env_root/first-change.before.json" "$test_env_root/first-change.after.json" \
+  || { echo "retro.test.sh: a failing first change was rewritten:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+jq -e --arg merged "$merge_at" '.changes[1] | .merged_at == $merged and .before_count == 3 and .after_count == 4
+  and (.reported_at | type == "string")' "$verify_out/retro-verify.json" >/dev/null \
+  || { echo "retro.test.sh: a later change was not verified after the first failed:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+echo "verification continues after gh-failure rc=0"
+
 # (d) The count went down: the change is reported but no retract-or-rewrite issue is opened.
 cat > "$verify_out/after.candidates.json" <<'JSON'
 {"candidates":[
@@ -340,6 +356,45 @@ jq -e '[.[] | select(.body | contains("navigation-drop-fixture"))] | length == 0
 jq -es 'any(.[]; .number == 9104 and (.body | contains("After: 2 candidate events")))' "$test_env_root/comments.jsonl" >/dev/null \
   || { echo "retro.test.sh: a dropped count was not reported:" >&2; cat "$test_env_root/comments.jsonl" >&2; exit 1; }
 echo "verification count-dropped rc=0"
+printf '{"candidates":[]}\n' > "$verify_out/before.candidates.json"
+printf '{"candidates":[]}\n' > "$verify_out/after.candidates.json"
+issues_before="$(jq 'length' "$test_env_root/issues.json")"
+jq -n '{changes:[{issue:9106,category:"navigation",class:"navigation-empty-fixture",merged_at:"2026-01-01T00:00:00Z"}]}' \
+  > "$verify_out/retro-verify.json"
+run_verify "$verify_root" "$verify_out"
+jq -e '.changes[0] | .before_count == 0 and .after_count == 0
+  and (.reported_at | type == "string") and (.inconclusive_at | type == "string")
+  and (has("retraction_filed_at") | not)' "$verify_out/retro-verify.json" >/dev/null \
+  || { echo "retro.test.sh: a zero count was not recorded as inconclusive:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+jq -s 'any(.[]; .number == 9106 and ((.body | split("\\n") | map(select(length > 0)) | last) == "Verdict: inconclusive (no events in either window)"))' \
+  "$test_env_root/comments.jsonl" >/dev/null \
+  || { echo "retro.test.sh: the zero-count verdict was missing from the issue comment:" >&2; cat "$test_env_root/comments.jsonl" >&2; exit 1; }
+inconclusive_at="$(jq -r '.changes[0].inconclusive_at' "$verify_out/retro-verify.json")"
+run_verify "$verify_root" "$verify_out"
+jq -e --arg timestamp "$inconclusive_at" '.changes[0] | .inconclusive_at == $timestamp' \
+  "$verify_out/retro-verify.json" >/dev/null \
+  || { echo "retro.test.sh: the inconclusive timestamp was rewritten:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+jq -e --argjson expected "$issues_before" 'length == $expected' "$test_env_root/issues.json" >/dev/null \
+  || { echo "retro.test.sh: an inconclusive change opened a retraction issue:" >&2; cat "$test_env_root/issues.json" >&2; exit 1; }
+jq -s 'map(select(.number == 9106)) | length == 1' "$test_env_root/comments.jsonl" >/dev/null \
+  || { echo "retro.test.sh: the inconclusive issue comment was duplicated:" >&2; cat "$test_env_root/comments.jsonl" >&2; exit 1; }
+echo "verification zero-count-inconclusive rc=0"
+cat > "$verify_out/after.candidates.json" <<'JSON'
+{"candidates":[
+ {"category":"navigation","severity":"high","session_key":"a00","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"navigation","severity":"high","session_key":"a01","event_line":1,"evidence":"e","proposal":"p"}
+]}
+JSON
+jq -n '{changes:[{issue:9107,category:"navigation",class:"navigation-rise-fixture",merged_at:"2026-01-01T00:00:00Z"}]}' \
+  > "$verify_out/retro-verify.json"
+run_verify "$verify_root" "$verify_out"
+jq -e '.changes[0] | .before_count == 0 and .after_count == 2
+  and (.reported_at | type == "string") and (.retraction_filed_at | type == "string")
+  and (has("inconclusive_at") | not)' "$verify_out/retro-verify.json" >/dev/null \
+  || { echo "retro.test.sh: a count rising from zero was not retracted:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+jq -e --argjson expected "$((issues_before + 1))" 'length == $expected' "$test_env_root/issues.json" >/dev/null \
+  || { echo "retro.test.sh: a zero-to-two change did not open a retraction issue:" >&2; cat "$test_env_root/issues.json" >&2; exit 1; }
+echo "verification zero-to-two-retracted rc=0"
 # The window is incomplete: verify waits for ten retained sessions on both sides.
 wait_root="$test_env_root/verify-wait-scratch"
 mkdir -p "$wait_root/luna"
