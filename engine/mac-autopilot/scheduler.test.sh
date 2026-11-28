@@ -1213,7 +1213,14 @@ tick() (
       command node "$@"
     fi
   }
-  export PATH="$repo_root/engine/gh-shim:$TF/bin:$PATH" AUTOPI_VIEWS_INLINE=true
+  mkdir -p "$TF/tick-bin"
+  cat > "$TF/tick-bin/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+tick_gh "$@"
+SH
+  chmod +x "$TF/tick-bin/gh"
+  export PATH="$TF/tick-bin:$repo_root/engine/gh-shim:$TF/bin:$PATH" AUTOPI_VIEWS_INLINE=true
   export -f git jq node ps test_issue_rest_payload tick_gh tick_gh_pr_rest_payload tick_git tick_jq
   # 额外参数原样传给 scheduler.sh（如 --refill）；不带参数就是一整拍慢 tick。
   local rc=0
