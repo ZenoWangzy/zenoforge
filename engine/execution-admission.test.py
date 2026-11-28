@@ -65,7 +65,7 @@ class ExecutionAdmission(unittest.TestCase):
             "  if result.returncode or not result.stdout.strip(): raise OSError('fixture process missing')\n"
             "  parent,started=result.stdout.strip().split(maxsplit=1)\n"
             "  ticks=str(int(datetime.datetime.strptime(started,'%a %b %d %H:%M:%S %Y').timestamp()))\n"
-            "  return {'pid':pid,'start_ticks':ticks,'ppid':parent,'cgroup':'/fixture'}\n"
+            "  return {'pid':pid,'start_ticks':ticks,'ppid':int(parent),'cgroup':'/fixture'}\n"
             " g.identity=fixture_identity\n"
             "try:sys.exit(g.admission(sys.argv[1],sys.argv[3:] if sys.argv[2:3]==['--'] else sys.argv[2:]))\n"
             "except (g.Deferred,OSError,ValueError,KeyError,StopIteration):sys.exit(75)\n"
