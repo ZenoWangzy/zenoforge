@@ -16,6 +16,11 @@ at2="worker-died unit=issue-A at 2026-11-12T11:30:00Z count=9 secs=77 sha=$sha2"
 [[ "$(key 'worker-died unit=issue-A')" != "$(key 'worker-died unit=issue-B')" ]] || fail "units A and B must give two keys"
 [[ "$(key "$at1")" == "$(key "$at2")" ]] || fail "same unit at two times must give one key"
 [[ "$(key "$at1")" != "$(key 'worker-died unit=issue-B at 2026-11-12T10:00:00Z')" ]] || fail "unit id must stay in the key"
+[[ "$(key 'worker-died unit=issue-A live=2 gh_calls=7')" == "$(key 'worker-died unit=issue-A live=5 gh_calls=1')" ]] || fail "numeric key-value counters must not split incidents"
+[[ "$(key 'STUCK-DECISION named=13 no-live-worker:13 action=no-kill')" == "$(key 'STUCK-DECISION named=14 no-live-worker:14 action=no-kill')" ]] || fail "counter values with colons must not split incidents"
+[[ "$(key 'unit issue-2612 blocked on predecessor #2610')" != "$(key 'unit issue-2612 blocked on predecessor #2611')" ]] || fail "issue ids must stay in the key"
+[[ "$(key 'worker-died issue=2610')" != "$(key 'worker-died issue=2611')" ]] || fail "issue fields must stay in the key"
+[[ "$(key 'worker-died unit:2610')" != "$(key 'worker-died unit:2611')" ]] || fail "unit fields must stay in the key"
 
 # Same fingerprint reaches the open incident: upsert comments on the matching issue, creates nothing.
 cat > "$tmp/gh" <<'SH'

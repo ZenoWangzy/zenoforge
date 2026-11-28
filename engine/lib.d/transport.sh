@@ -371,7 +371,7 @@ declare -F gh >/dev/null 2>&1 || gh() {
       fi
       cat "$stderr_file" >&2
       rm -f -- "$stderr_file"
-      if ! ticket_stage_record_gh_write "$@"; then
+      if declare -F ticket_stage_record_gh_write >/dev/null && ! ticket_stage_record_gh_write "$@"; then
         echo "gh: issue #${3:-?} changed stage but transition could not be recorded" >&2
         return 1
       fi

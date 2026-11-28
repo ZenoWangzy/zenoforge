@@ -6,10 +6,10 @@ source "$engine_dir/config.sh"
 REPO_DIR="$ZF_REPO_DIR"
 GIT_FETCH_TIMEOUT_SEC="${GIT_FETCH_TIMEOUT_SEC:-60}"
 source "$engine_dir/lib.d/transport.sh"
-source "$engine_dir/coord.sh"
 CTL_PRIOR_COORD="${ZF_COORD:-off}"
 CTL_PRIOR_HOST_ID="${ZF_HOST_ID:-}"
 ZF_COORD=on
+coord_source_if_enabled
 
 ctl_error() {
   echo "ctl.sh: $*" >&2

@@ -385,7 +385,7 @@ fi
 # Definition-only lib modules that per-item subshells source instead of lib.sh (see lib-bridge.sh).
 SCHEDULER_SCOPE_LIB_DIR="${SCHEDULER_AGENT_LIB%/lib.sh}/lib.d"
 AGENT_HOME="${AGENT_HOME:-${ZF_HOME:-${HOME:?HOME is not set}/.zenoforge}}"
-source "${SCHEDULER_AGENT_LIB%/lib.sh}/coord.sh"
+if [[ "${ZF_COORD:-off}" == on ]]; then source "${SCHEDULER_AGENT_LIB%/lib.sh}/coord.sh"; source "${SCHEDULER_AGENT_LIB%/lib.sh}/coord-remote.sh"; else source "${SCHEDULER_AGENT_LIB%/lib.sh}/coord-off.sh"; fi
 declare -A TICK_FOOTPRINT_CACHE=() TICK_CHECK_SCOPE_SOURCE=() TICK_CHECK_SCOPE=() TICK_OLD_SCOPE=() TICK_HOTSPOT_COUNTS=()
 TICK_ACTIVE_FOOTPRINTS='[]'
 TICK_ACTIVE_FOOTPRINTS_VALID=false

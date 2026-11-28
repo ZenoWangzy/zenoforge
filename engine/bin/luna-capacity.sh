@@ -1,5 +1,5 @@
 # Shared worker-scope capacity used by both backend gates and the scheduler.
-LUNA_RUNS_HARD_CAP=10
+LUNA_RUNS_HARD_CAP="${LUNA_RUNS_HARD_CAP:-10}"
 LUNA_GATE_HOME="${AGENT_HOME:-${ZF_HOME:-}}"
 if [[ -z "$LUNA_GATE_HOME" ]]; then
   LUNA_GATE_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
