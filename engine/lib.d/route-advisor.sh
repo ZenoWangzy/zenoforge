@@ -240,14 +240,29 @@ needs_info_human_reply_after() {
 # date/default into state. This function owns one timeout decision and leaves
 # the same reply transition available to later ticks if a write fails.
 needs_info_timeout_step() {
-  local n="$1" issue_json="$2" now="$3" state thread_id sent_at default_option age days marker
+  local n="$1" issue_json="$2" now="$3" state thread_id sent_at default_option age days marker latest_comment_at
   local applied_thread marker_exists at decision_patch comment_body
   NEEDS_INFO_TIMEOUT_ACTION=unchanged
   jq -e '.labels | any(.name == "needs-info")' <<< "$issue_json" >/dev/null 2>&1 || return 0
 
   state="$(state_read "$n")" || return 1
   thread_id="$(jq -r '.needs_info_thread_id // empty' <<< "$state")"
-  [ -n "$thread_id" ] || return 0
+  if [ -z "$thread_id" ]; then
+    latest_comment_at="$(jq -r '[.comments[]?.createdAt // empty] | max // empty' <<< "$issue_json")"
+    if [ -z "$latest_comment_at" ]; then
+      route_to_advisor "$n" needs-info false "$issue_json" || return 1
+      NEEDS_INFO_TIMEOUT_ACTION=advisor-routed
+      return 0
+    fi
+    sent_at="$(date -u -d "$latest_comment_at" +%s)" || return 0
+    [[ "$now" =~ ^[0-9]+$ && "$sent_at" =~ ^[0-9]+$ && "$NEEDS_INFO_QUESTION_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || return 0
+    age=$((now - sent_at))
+    (( age >= NEEDS_INFO_QUESTION_TIMEOUT_SECONDS )) || return 0
+    needs_info_human_reply_after "$issue_json" "$sent_at" && return 0
+    route_to_advisor "$n" needs-info false "$issue_json" || return 1
+    NEEDS_INFO_TIMEOUT_ACTION=advisor-routed
+    return 0
+  fi
   applied_thread="$(jq -r '.needs_info_default_applied.thread_id // empty' <<< "$state")"
   if [ "$applied_thread" = "$thread_id" ]; then
     needs_info_resume_answered_issue "$n" "$issue_json" || return 1
