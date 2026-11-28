@@ -126,14 +126,18 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
     memo_keys+=("$TICK_FOOTPRINT_MAIN|$other")
     {
       local other_scope other_workdir
-      if [[ -n "$TICK_FOOTPRINT_MAIN" && -n "${TICK_FOOTPRINT_SCOPE_MEMO[$TICK_FOOTPRINT_MAIN|$other]+set}" ]]; then
+      if [[ "$(jq -r '.remote_claim // false' <<<"$other")" == true ]]; then
+        other_scope="$(jq -c '.footprint' <<<"$other")" || exit 1
+      elif [[ -n "$TICK_FOOTPRINT_MAIN" && -n "${TICK_FOOTPRINT_SCOPE_MEMO[$TICK_FOOTPRINT_MAIN|$other]+set}" ]]; then
         other_scope="${TICK_FOOTPRINT_SCOPE_MEMO[$TICK_FOOTPRINT_MAIN|$other]}"
       else
         other_scope="$(scheduler_footprint "$other")" || exit 1
         printf '%s' "$other_scope" > "$file.scope" # the background job cannot fill the memo itself
       fi
-      other_workdir="$(jq -r '.live_workdir // empty' <<<"$other")"
-      other_scope="$(live_writes_union "$other_workdir" "$other_scope")" || exit 1
+      if [[ "$(jq -r '.remote_claim // false' <<<"$other")" != true ]]; then
+        other_workdir="$(jq -r '.live_workdir // empty' <<<"$other")"
+        other_scope="$(live_writes_union "$other_workdir" "$other_scope")" || exit 1
+      fi
       jq -c --slurpfile resolved <(printf '%s' "$other_scope") \
         '{id,stage,footprint,resolved_footprint:$resolved[0]}' <<<"$other" > "$file"
     } &

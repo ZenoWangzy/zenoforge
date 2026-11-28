@@ -697,12 +697,13 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]] && jqf -e '.pr == null' <<<"$unit_json" >/dev/null && pre_dispatch_skip "$unit_json"; then return 1; fi
   room_for "$1" "$3" "$unit_json" true "$check_footprint" "$report_only" || { dmark dispatch_room_for; return 1; }
   dmark dispatch_room_for
+  dispatch_claim_prepare "$1" "$unit_json" "$3" || return 1; unit_json="$SCHEDULER_DISPATCH_UNIT_JSON"
   if [[ "$report_only" != true && ( "$3" == implement || "$3" == repair ) ]]; then
     local sa_rc=0
     size_admission_write_start "$1" "${10:-}" "$unit_json" || sa_rc=$?
     dmark dispatch_size_admission
-    if (( sa_rc == 2 )); then dispatch_why "$1" size-admission-deferred; return 1; fi # local refill: the slow tick records the rejection
-    (( sa_rc == 0 )) || { dispatch_why "$1" size-admission-start; return 1; }
+    if (( sa_rc == 2 )); then dispatch_claim_release; dispatch_why "$1" size-admission-deferred; return 1; fi # local refill: the slow tick records the rejection
+    (( sa_rc == 0 )) || { dispatch_claim_release; dispatch_why "$1" size-admission-start; return 1; }
   fi
   if [[ "$3" == implement ]]; then
     lesson_brief="$(footprint_recurrence_brief "$unit_json")"
@@ -710,7 +711,7 @@ dispatch_if_room() { # unit stage type log report model effort prompt [sha] [wor
   fi
   [[ "$3" != review && "$3" != rereview ]] || pr_body_refresh "$unit_json"
   if [[ "$3" == review || "$3" == rereview ]] && [[ "${9:-}" =~ $SHA_RE ]]; then
-    self_check_before_review "$1" "$9" "${10:-$ROOT}" "$unit_json" || return 1
+    self_check_before_review "$1" "$9" "${10:-$ROOT}" "$unit_json" || { dispatch_claim_release; return 1; }
     check_output="$(jqf -r '.self_check_output // empty' <<<"$unit_json")"
     check_status="$(jqf -r '.self_check_status // empty' <<<"$unit_json")"
     prompt+="
@@ -719,9 +720,9 @@ $(tail -80 "$check_output" 2>/dev/null)"
   fi
   if [[ ( "$3" == review || "$3" == rereview ) && -n "${10:-}" ]] \
     && git -C "${10}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    reviewer_git_identity_configure "${10}" "$provider" "$6" || return 1
+    reviewer_git_identity_configure "${10}" "$provider" "$6" || { dispatch_claim_release; return 1; }
   fi
-  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || { dmark dispatch_call; return 1; }
+  dispatch "$3" "$6" "$7" "$1" "$4" "$5" "$prompt" "${9:-}" "${10:-}" "${11:-}" "$failure_prompt" "$provider" "$hard_escalation" "$route_reason" "$worker_context" || { dispatch_claim_release; dmark dispatch_call; return 1; }
   dmark dispatch_call
   if [[ "$3" == implement && "$report_only" != true && "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true && "${TICK_STARTED_WIP_COUNT:-}" =~ ^[0-9]+$ ]]; then
     TICK_STARTED_WIP_COUNT=$((TICK_STARTED_WIP_COUNT + 1))

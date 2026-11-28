@@ -64,11 +64,17 @@ footprint_drop_check_scope_cache() {
   TICK_HOTSPOT_COUNTS=()
 }
 footprint_active_rows() { # ledger rows that hold a live implement/repair worker, with the worker's workdir
-  jqf -c --slurpfile w "$WORKERS" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" '
+  local local_rows remote_rows
+  local_rows="$(jqf -c --slurpfile w "$WORKERS" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" '
     [.units[] | . as $u
       | select(.stage as $s | $live | index($s) != null)
       | select(any($w[0].workers[]; .unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))))
-      | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS"
+      | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS")" || return 1
+  if coord_remote_enabled; then
+    remote_rows="$(coord_remote_scheduler_footprints "$local_rows")" || return $?
+    local_rows="$(jqf -cn --argjson local "$local_rows" --argjson remote "$remote_rows" '$local + $remote')" || return 1
+  fi
+  printf '%s\n' "$local_rows"
 }
 # Every snapshot is taken in $( ), where the memo cannot be filled: compute the owners' scopes here, in the caller's shell, first. A repeat
 # snapshot of unchanged owners then finds them all in the memo.
@@ -77,7 +83,7 @@ footprint_prime_owner_scopes() {
   [[ -n "$TICK_FOOTPRINT_MAIN" ]] || return 0
   while IFS= read -r other; do
     footprint_scope_for "$other" discard || return 0
-  done < <(footprint_active_rows | jqf -c '.[]')
+  done < <(footprint_active_rows | jqf -c '.[] | select(.remote_claim != true)')
 }
 footprint_cache_prune() { # main sha: keep only entries of the current main, then the newest FOOTPRINT_CACHE_KEEP
   local dir="$A/footprint-cache" f n=0
