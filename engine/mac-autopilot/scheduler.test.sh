@@ -458,6 +458,8 @@ elif [[ "$*" == 'api --paginate '*'/actions/runners?per_page=100'* ]]; then
   printf '%s\n' '{"runners":[{"name":"cihost-ci-1","status":"online","busy":true,"labels":[{"name":"cihost-ci"}]},{"name":"zf-mac-2","status":"offline","busy":false,"labels":[{"name":"other"}]}]}'
 elif [[ "$1 $2" == 'api search/issues' && "$*" == *'merged:>='* ]]; then
   cat "$MERGED_PR_FIXTURE"
+elif [[ "$1 $2" == 'api search/issues' && "$*" == *'is:pr is:merged'* && "$*" == *'Refs #'* ]]; then
+  if [[ -n "${MERGED_REFS_PR_FIXTURE:-}" ]]; then cat "$MERGED_REFS_PR_FIXTURE"; else printf '%s\n' '{"items":[]}'; fi
 else
   echo '[]'
 fi
@@ -914,7 +916,9 @@ tick_gh() {
         echo '{}'
       fi ;;
     'api '*)
-      if [[ "${2:-}" == repos/example-maintainer/example-repo/issues\?* ]]; then
+      if [[ "$1 $2" == 'api search/issues' && "$*" == *'is:pr is:merged'* && "$*" == *'Refs #'* ]]; then
+        if [[ -n "${MERGED_REFS_PR_FIXTURE:-}" ]]; then cat "$MERGED_REFS_PR_FIXTURE"; else printf '%s\n' '{"items":[]}'; fi
+      elif [[ "${2:-}" == repos/example-maintainer/example-repo/issues\?* ]]; then
         local issues_file="$TF/intake-issues.json" issues_label='' issues_page=1 issues_url="$2"
         [[ -f "$TF/intake-issue.json" ]] && issues_file="$TF/intake-issue.json"
         [[ "$issues_url" == *'labels='* ]] && issues_label="${issues_url#*labels=}" && issues_label="${issues_label%%&*}"

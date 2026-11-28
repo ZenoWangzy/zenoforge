@@ -100,11 +100,14 @@ TERMINAL_ROW_ONLY=true register_new_issues 0 false
 # Reuse an issue-derived skip while updated_at is stable, and revisit the issue after it changes.
 issue_reads="$fixture/issue-views"; : > "$issue_reads"
 candidate_updated_at=2026-11-12T00:00:00Z
+REPO=test/repo
 intake_candidates() { printf '99\tpr\tfixture\t[]\t-\t%s\n' "$candidate_updated_at"; }
 intake_gh_read() {
   if [[ "$1 $2" == 'issue view' ]]; then
     printf '%s\n' "$*" >> "$issue_reads"
     printf '%s\n' '{"number":99,"title":"fixture","body":"","state":"OPEN","labels":[{"name":"ready-for-agent"}]}'
+  elif [[ "$1 $2" == 'api search/issues' && "$*" == *'is:pr is:merged'* && "$*" == *'Refs #'* ]]; then
+    printf '%s\n' '{"items":[]}'
   else
     printf '[]\n'
   fi

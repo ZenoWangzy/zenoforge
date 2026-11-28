@@ -106,9 +106,10 @@ intake_closed_units_note() { # issue state_changed_at stages: the marker first, 
   fi
 }
 intake_merged_refs_pr_for_issue() {
-  local n="$1" query search candidates pr pr_json merged_at
+  local n="$1" repo="${REPO:-${ZF_REPO:-}}" query search candidates pr pr_json merged_at
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 1
-  query="repo:$REPO is:pr is:merged \"Refs #$n\" in:body"
+  [[ -n "$repo" ]] || return 2
+  query="repo:$repo is:pr is:merged \"Refs #$n\" in:body"
   search="$(intake_gh_read api search/issues -X GET -f "q=$query" -f per_page=100 2>/dev/null)" || return 2
   candidates="$(jqf -c --arg n "$n" '
     if (.items | type) != "array" then error("search response has no items") else
@@ -118,7 +119,7 @@ intake_merged_refs_pr_for_issue() {
   [[ "$candidates" != "[]" ]] || return 1
   while IFS= read -r pr; do
     [[ "$pr" =~ ^[1-9][0-9]*$ ]] || continue
-    pr_json="$(intake_gh_read api "repos/$REPO/pulls/$pr" 2>/dev/null)" || return 2
+    pr_json="$(intake_gh_read api "repos/$repo/pulls/$pr" 2>/dev/null)" || return 2
     jqf -e 'type == "object"' <<<"$pr_json" >/dev/null 2>&1 || return 2
     jqf -e --arg n "$n" '
       .merged == true and .base.ref == "main" and (.merge_commit_sha // "") != ""
