@@ -20,6 +20,7 @@ hotfix_issue_numbers() { :; }
 intake_footprint_snapshot() { echo '[]'; }
 scheduler_footprint() { echo '[]'; }
 active_footprint_conflict() { :; }
+intake_merged_refs_pr_for_issue() { return 1; }
 predecessor_candidates() { :; }
 intake_candidates() { printf '900\tpr\tfixture\t[]\t%s\n' "$(printf '%s' '{"number":900,"state":"OPEN","subIssuesSummary":{"total":0},"labels":[{"name":"ready-for-agent"}]}' | base64 -w0)"; }
 issue_unit_task() { echo '{"task":"fixture","body_blocked_by":[],"labels":[]}'; }

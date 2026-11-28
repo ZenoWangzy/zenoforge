@@ -368,6 +368,7 @@ intake_footprint_snapshot() { printf '[{"id":"issue-9001","stage":"implement-pen
 live_workers() { printf '0\n'; }
 tick_prs_fetch() { printf '[]\n'; }
 gh() { [[ "$1 $2" == 'pr list' ]] && { echo '[]'; return 0; }; return 97; }
+intake_merged_refs_pr_for_issue() { return 1; }
 register() { # n -> lib loads and wall seconds for one refill intake over n candidates
   local rows='' i start loads_before
   for ((i = 1; i <= $1; i++)); do
