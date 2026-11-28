@@ -1238,7 +1238,13 @@ SH
   else
     AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
   fi
-  if (( rc != 0 && rc != 75 )); then cat "$TF/tick.out" >&2; return 1; fi
+  if (( rc != 0 && rc != 75 )); then
+    cat "$TF/tick.out" >&2
+    if [[ -s "$TF/refill.trace" ]]; then
+      awk '/[[:space:]]gh / { command=$0; sub(/^.*[[:space:]]gh /,"gh ",command); split(command, words, /[[:space:]]+/); if (words[1] == "gh") print words[1], words[2], words[3] }' "$TF/refill.trace" | tail -n 30 >&2
+    fi
+    return 1
+  fi
   [[ ! -e "$TF/unexpected-host" ]] || { cat "$TF/unexpected-host" >&2; return 1; }
   return "$rc"
 )
