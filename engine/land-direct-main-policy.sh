@@ -1,9 +1,37 @@
 source "$land_script_dir/rule-file-paths.sh"
 
+skip_ci_test_reference_exemption() {
+  local subject="$1" changed_file kind pack_rel="${ZF_PACK_REL:-engine}"
+  shift
+  if [[ "$subject" == '[skip ci] chore(engine): pin zenoforge '* ]]; then
+    (($# == 1)) && [[ "$1" == .zenoforge/build.json ]]
+    return
+  fi
+  case "$subject" in
+    '[skip ci] fold merged lesson fragments'|'[skip ci] fold lesson documentation') kind=fold ;;
+    '[skip ci] assign merged lesson IDs') kind=assign ;;
+    *) return 1 ;;
+  esac
+  (($# > 0)) || return 1
+  for changed_file in "$@"; do
+    case "$changed_file" in
+      lessons/RULES.md|lessons/CATALOG.md|lessons/full/*.md) ;;
+      lessons/pending/*.json)
+        [[ "$kind" == fold ]] || return 1
+        ;;
+      "$pack_rel"/state/incident-guards.json|"$pack_rel"/state/incident-guards.d/*.json|\
+        .zenoforge/state/incident-guards.json|.zenoforge/state/incident-guards.d/*.json)
+        [[ "$kind" == assign ]] || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
 refuse_skip_ci_test_references() {
   local range="$1" commit subject changed_file basename grep_status test_file
   local matches_file
-  local -a test_files=()
+  local -a test_files=() changed_files=()
   local commits
   commits="$(git rev-list --reverse "$range")" || return 1
   [[ -n "$commits" ]] || return 0
@@ -11,7 +39,13 @@ refuse_skip_ci_test_references() {
   while IFS= read -r commit; do
     subject="$(git show -s --format=%s "$commit")" || { rm -f -- "$matches_file"; return 1; }
     [[ "${subject,,}" == '[skip ci]'* ]] || continue
-    while IFS= read -r -d '' changed_file; do
+    changed_files=()
+    while IFS= read -r -d '' changed_file; do changed_files+=("$changed_file"); done \
+      < <(git diff-tree --root --no-commit-id --name-only --no-renames -r -z "$commit")
+    if skip_ci_test_reference_exemption "$subject" "${changed_files[@]}"; then
+      continue
+    fi
+    for changed_file in "${changed_files[@]}"; do
       basename="${changed_file##*/}"
       if git grep -z -I -l -F -e "$changed_file" -e "$basename" "$commit" -- \
         ':(glob)**/*.test.*' ':(glob)**/tests/**' > "$matches_file"; then
@@ -33,7 +67,7 @@ refuse_skip_ci_test_references() {
           return "$grep_status"
         fi
       fi
-    done < <(git diff-tree --root --no-commit-id --name-only --no-renames -r -z "$commit")
+    done
   done <<< "$commits"
   rm -f -- "$matches_file"
 }
