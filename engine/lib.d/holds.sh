@@ -499,7 +499,7 @@ hold_sweep() {
       fi
       github_state="$(jq -r '.state | ascii_downcase' <<< "$issue_json")"
       if [ "$github_state" = closed ]; then
-        if ! issue_reconcile_closed_state "$n" "$issue_json"; then
+        if ! coord_with_ticket "issue-$n" -- issue_reconcile_closed_state "$n" "$issue_json"; then
           echo "hold_sweep: could not reconcile closed hold for #$n" >&2
           failure=1
           continue

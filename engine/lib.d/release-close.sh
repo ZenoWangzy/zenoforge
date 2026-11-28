@@ -357,7 +357,7 @@ checks_blocked_sweep() {
     repeat_head="$(jq -r '.checks_blocked.repeat_head_sha // empty' <<< "$state")" || { failure=1; continue; }
     escalated_head="$(jq -r '.checks_blocked.escalated_head_sha // empty' <<< "$state")" || { failure=1; continue; }
     if [ "$repeat_head" = "$head_sha" ] && [ "$escalated_head" != "$head_sha" ]; then
-      checks_blocked_escalate_repeat "$n" "$head_sha" "$summary" || failure=1
+      coord_with_ticket "issue-$n" -- checks_blocked_escalate_repeat "$n" "$head_sha" "$summary" || failure=1
       continue
     fi
     [ "$auto_head" != "$head_sha" ] || continue
@@ -375,14 +375,14 @@ checks_blocked_sweep() {
     fi
     [ "$should_requeue" -eq 1 ] || continue
     is_on_hold "$n" && continue
-    if ! state_requeue "$n"; then
+    if ! coord_with_ticket "issue-$n" -- state_requeue "$n"; then
       echo "checks_blocked_sweep: could not requeue #$n" >&2
       failure=1
       continue
     fi
     head_json="$(jq -Rn --arg value "$head_sha" '$value')" || { failure=1; continue; }
     summary_json="$(jq -Rn --arg value "$summary" '$value')" || { failure=1; continue; }
-    if ! state_merge "$n" ".checks_blocked = ((.checks_blocked // {}) + {auto_requeued_head_sha:$head_json,auto_requeued_summary:$summary_json,auto_requeued_at:(now|todate)})"; then
+    if ! coord_with_ticket "issue-$n" -- state_merge "$n" ".checks_blocked = ((.checks_blocked // {}) + {auto_requeued_head_sha:$head_json,auto_requeued_summary:$summary_json,auto_requeued_at:(now|todate)})"; then
       echo "checks_blocked_sweep: #$n requeued but could not record head guard" >&2
       failure=1
     fi

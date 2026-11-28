@@ -61,9 +61,9 @@ for n in $(gh issue list --repo "$REPO" --limit 1000 --label ready-for-human --s
     continue
   fi
   echo "sweep: #$n -- attempts=$attempts, was in flight; routing to needs-advisor" >&2
-  route_to_advisor "$n" ready-for-human
+  coord_with_ticket "issue-$n" -- route_to_advisor "$n" ready-for-human
   [ "$ISSUE_VERDICT_GUARD_SKIPPED" != "1" ] || continue
-  guarded_write gh issue comment "$n" --repo "$REPO" --body "$BOT_DISCLAIMER
+  coord_with_ticket "issue-$n" -- guarded_write gh issue comment "$n" --repo "$REPO" --body "$BOT_DISCLAIMER
 这张票在「进了 pipeline 就要走到结果，不接受中间断开等人」这条裁决落地之前就已经停在 ready-for-human——它的状态文件显示已经被实际派发过（attempts=${attempts}），说明它曾经进过流水线，不是在入口就被判给人的。按新规则回收：转给顾问重新判一次去向，而不是继续停在这里。"
   routed=$((routed + 1))
 done

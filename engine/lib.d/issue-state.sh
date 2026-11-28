@@ -696,7 +696,7 @@ issue_transition() (
   local n="${1:-}" to="${2:-}" reason="${3:-}" patch="${4:-.}" skip_label_write="${5:-0}" intake_json="${6:-}" source_issue="${7:-}" open_issue="${8:-0}" expected_hold="${9:-}" lock_mode="${10:-}" f before from live_from add_label label restore_status=0 transition_lock_fd release_hold_overlay=0
   local had_state=0 requeue_epoch started_epoch merged_epoch merged_at reason_file requeue_transition=0 hold_json write_kind="label write" task_state_snapshot=""
   local -a add_labels=() edit_args=() api_args=() issue_labels=()
-  [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "issue_transition: valid issue number required" >&2; return 64; }
+  coord_assert_write_scope issue_transition || return $?; [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "issue_transition: valid issue number required" >&2; return 64; }
   [ -n "$reason" ] || { echo "issue_transition: reason required for #$n -> $to" >&2; return 64; }
   [[ "$skip_label_write" == 0 || "$skip_label_write" == 1 ]] || { echo "issue_transition: skip-label-write must be 0 or 1 for #$n" >&2; return 64; }
   [[ "$open_issue" == 0 || "$open_issue" == open ]] || { echo "issue_transition: open-issue must be 0 or open for #$n" >&2; return 64; }

@@ -496,7 +496,18 @@ coord_release() { # key owner; release is conditional on current ownership
 }
 
 coord_assert_owned() { # key owner; only a fresh, current owner passes
-  local key="${1:-}" owner="${2:-}" lock_fd rc now expires
+  local scope="${1:-}" key owner="${2:-}" lock_fd rc now expires
+  if (( $# == 1 )); then
+    case "$scope" in
+      ticket:*) key="${scope#ticket:}" ;;
+      lane:*) key="lane-${scope#lane:}" ;;
+      *) return 2 ;;
+    esac
+    owner="${ZF_COORD_OWNER:-${COORD_ENTRY_OWNER:-}}"
+    [[ -n "$owner" ]] || return 3
+  else
+    key="$scope"
+  fi
   if coord_remote_enabled; then _coord_remote_assert_owned "$key" "$owner"; return $?; fi
   _coord_paths "$key" || return 2
   mkdir -p -- "$COORD_DIR" || return 3
@@ -516,6 +527,46 @@ coord_assert_owned() { # key owner; only a fresh, current owner passes
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
   return "$rc"
+}
+
+coord_assert_write_scope() {
+  local actor="${1:-write}" status
+  coord_remote_enabled || return 0
+  if coord_assert_owned "${ZF_COORD_SCOPE:-}" >/dev/null; then
+    return 0
+  else
+    status=$?
+  fi
+  printf '%s: refusing write without an owned coordination scope (scope=%s, status=%s)\n' \
+    "$actor" "${ZF_COORD_SCOPE:-unscoped}" "$status" >&2
+  return "$status"
+}
+
+coord_with_ticket() {
+  local ticket="${1:-}" subject owner status
+  [[ $# -ge 3 && "${2:-}" == -- && "$ticket" =~ ^issue-[1-9][0-9]*$ ]] || return 64
+  subject="${ticket#issue-}"
+  if [[ "${ZF_COORD_SCOPE:-}" == "ticket:$ticket" ]] \
+    && [[ -n "${ZF_COORD_OWNER:-${COORD_ENTRY_OWNER:-}}" ]] \
+    && coord_assert_owned "$ZF_COORD_SCOPE" >/dev/null; then
+    shift 2
+    if "$@"; then return 0; else return $?; fi
+  fi
+  owner="$(coord_new_owner)" || return 3
+  if coord_acquire "$ticket" "$owner" manual-worker "$subject" "mutation-$subject" mutation; then
+    :
+  else
+    return $?
+  fi
+  shift 2
+  local ZF_COORD_SCOPE="ticket:$ticket" ZF_COORD_OWNER="$owner"
+  if "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+  coord_release "$ticket" "$owner" >/dev/null 2>&1 || :
+  return "$status"
 }
 
 coord_reap_expired() { # sweep expired claims; per-ticket locks keep reads and reaps atomic
@@ -580,6 +631,7 @@ coord_enter() { # issue stage; dispatched owners must prove the feeder's claim
     fi
   fi
   COORD_ENTRY_KEY="$key" COORD_ENTRY_OWNER="$owner"
+  ZF_COORD_SCOPE="ticket:$key" ZF_COORD_OWNER="$owner"
   trap 'coord_exit "$?"' EXIT
 }
 
