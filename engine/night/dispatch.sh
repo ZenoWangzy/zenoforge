@@ -308,11 +308,12 @@ export no_proxy=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8 \
   NO_PROXY=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8
 attempt_started_at="$(date +%s%N)"
 PROVIDER_EPISODE="${PROVIDER_EPISODE:-$attempt_started_at}"
-worker_env=()
+install_guard_path="$SCRIPT_DIR/bin/install-guard"
+worker_env=("ZF_TESTS_CI_ONLY=1" "PATH=$install_guard_path:$PATH")
 if [[ "$HAND_NON_PRODUCT_UNIT" == 1 ]]; then
-  PATH="$SCRIPT_DIR/non-product-test-shim:$PATH"
+  PATH="$SCRIPT_DIR/non-product-test-shim:$install_guard_path:$PATH"
   export PATH
-  worker_env=("ZF_NON_PRODUCT_UNIT=1" "ZF_PIPELINE_UNIT=$HAND_UNIT" "PATH=$PATH")
+  worker_env+=("ZF_NON_PRODUCT_UNIT=1" "ZF_PIPELINE_UNIT=$HAND_UNIT" "PATH=$PATH")
 fi
 codex_home_args=()
 [ "$PROVIDER" != codex ] || [ -z "${CODEX_HOME:-}" ] || codex_home_args=(-E "CODEX_HOME=$CODEX_HOME")

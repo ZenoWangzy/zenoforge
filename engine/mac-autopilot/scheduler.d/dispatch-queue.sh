@@ -513,7 +513,7 @@ dispatch_pending_pass() {
           verify_rule='2. 补/改回归测试。'
           deliver="只运行静态检查，然后在本地分支 ${branch} 提交即可，【不要 push】：这是非产品快车道，复审通过后流水线会把它压成一个提交经 land-direct-main.sh 直落 main。提交信息不要带 [skip ci]。"
         else
-          verify_rule="2. 补/改回归测试${VERIFY_RUN_RULE}${INTEGRATION_RULE}"
+          verify_rule="2. 补/改回归测试${VERIFY_LEAD_RULE}${INTEGRATION_RULE}"
           deliver="只运行静态检查，然后 $(if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then printf 'git push --force-with-lease origin HEAD:%s 发布重写后的 PR 分支。' "$branch"; else printf 'git push -u origin %s 发布 PR 分支（不推 main、不 force）。' "$branch"; fi)"
         fi
         prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：${wt}（分支 ${branch}，已同步 origin）。

@@ -278,7 +278,7 @@ PR_REST_ACTIONS='{"workflow_runs":[]}'
 PR_GRAPHQL_DOWN=1
 PR_MERGE_409=1
 PR_REST_RUNS='{"check_runs":[{"name":"unit","check_suite":{"id":11},"status":"completed","conclusion":"success","started_at":"2026-11-12T10:00:00Z"}]}'
-PR_REST_ACTIONS='{"workflow_runs":[]}'
+PR_REST_ACTIONS='{"workflow_runs":[{"check_suite_id":11,"name":"checks"}]}'
 : > "$fixture/gh-calls"
 if merge_pr_gate 17 "$sha" "$repo" >"$fixture/moved-output" 2>&1; then fail 'a PR whose head moved after the gate merged'; fi
 [[ "$(cat "$fixture/moved-output")" == *'refusing to merge PR #17: head moved after the gate'* ]] || fail "moved head did not refuse with its reason: $(cat "$fixture/moved-output")"

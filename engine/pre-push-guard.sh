@@ -62,6 +62,48 @@ refuse() {
   exit 1
 }
 
+pre_push_non_code_only() {
+  local sha="$1" changed
+  changed="$(git diff --name-only "origin/main...$sha" 2>/dev/null)" || return 1
+  [[ -n "$changed" ]] || return 1
+  if grep -qEv '^(\.agents/|\.claude/skills/)|\.(md|txt)$' <<<"$changed"; then return 1; fi
+  return 0
+}
+
+pre_push_receipt_check() {
+  local branch="$1" local_sha="$2" remote_sha="$3" head_sha receipt receipt_status=0 detail verifier
+  head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [[ -z "$head_sha" || "$local_sha" != "$head_sha" ]]; then
+    printf 'Push refused: pushed SHA %s does not match current HEAD %s. Check out and test the pushed head before retrying.\n' \
+      "${local_sha:0:12}" "${head_sha:0:12}" >&2
+    refuse test-receipt-head-mismatch "$branch" "$local_sha" "$remote_sha" ""
+  fi
+  [[ -n "$common_dir" ]] || {
+    printf 'Push refused: cannot locate the test receipt directory for HEAD %s.\n' "$head_sha" >&2
+    refuse test-receipt-directory-unavailable "$branch" "$local_sha" "$remote_sha" ""
+  }
+  receipt="$common_dir/zf-test-receipts/$head_sha"
+  if [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
+    printf 'Push refused: no test receipt at pushed SHA %s. Run tests at that SHA through tools/test-receipt.sh <command...>.\n' \
+      "${local_sha:0:12}" >&2
+    refuse test-receipt-missing "$branch" "$local_sha" "$remote_sha" ""
+  fi
+  verifier="$(git show "origin/main:${ZF_PACK_REL:-engine}/land-admit.sh" 2>/dev/null)" || {
+    printf 'Push refused: the trusted test receipt verifier is unavailable.\n' >&2
+    refuse test-receipt-verifier-unavailable "$branch" "$local_sha" "$remote_sha" ""
+  }
+  if [[ -z "$verifier" ]]; then
+    printf 'Push refused: the trusted test receipt verifier is unavailable.\n' >&2
+    refuse test-receipt-verifier-unavailable "$branch" "$local_sha" "$remote_sha" ""
+  fi
+  detail="$(source <(printf '%s\n' "$verifier") && LAND_RECEIPT_STRICT=1 land_receipt_green "$receipt" 2>&1)" || receipt_status=$?
+  if ((receipt_status != 0)); then
+    printf 'Push refused: test receipt at pushed SHA %s is not green: %s\n' \
+      "${local_sha:0:12}" "$detail" >&2
+    refuse test-receipt-failed "$branch" "$local_sha" "$remote_sha" ""
+  fi
+}
+
 main_red_override_matches() {
   local branch="$1" remote_sha="$2" pr_number="$3" link="$4" run_id context_file result
   run_id="$(grep -oE '/runs/[0-9]+' <<< "$link" | head -1 | grep -oE '[0-9]+' || true)"
@@ -160,6 +202,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
   [[ "$branch" == agent/issue-* || "$branch" == hand/* || "$branch" == hand-* ]] || continue
   [[ "$local_sha" =~ ^0+$ ]] && continue
+  if [[ "${ZF_TESTS_CI_ONLY:-0}" != 1 && "$origin_repo" != zenowangzy/zenoforge ]] \
+    && ! pre_push_non_code_only "$local_sha"; then
+    pre_push_receipt_check "$branch" "$local_sha" "$remote_sha"
+  fi
   size_limit="$(git config --get zenoforge.size-admission.limit 2>/dev/null || true)"
   size_exempt="$(git config --get zenoforge.size-admission.exempt 2>/dev/null || true)"
   if [[ -n "$size_limit" && "$size_exempt" != true ]]; then

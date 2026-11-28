@@ -78,9 +78,9 @@ set_remote_head() {
 }
 
 run_guard() {
-  local remote_sha="$1" branch="${2:-agent/issue-123}" pushed_sha="${3:-$local_sha}" status=0
+  local remote_sha="$1" branch="${2:-agent/issue-123}" pushed_sha="${3:-$local_sha}" ci_only="${4:-1}" status=0
   (cd "$repo" && printf 'refs/heads/%s %s refs/heads/%s %s\n' "$branch" "$pushed_sha" "$branch" "$remote_sha" \
-    | "$guard" origin "$remote" > "$tmp/stdout" 2> "$tmp/stderr") || status=$?
+    | ZF_TESTS_CI_ONLY="$ci_only" "$guard" origin "$remote" > "$tmp/stdout" 2> "$tmp/stderr") || status=$?
   return "$status"
 }
 
@@ -88,6 +88,18 @@ common="$(git -C "$repo" rev-parse --git-common-dir)"
 [[ "$common" == /* ]] || common="$repo/$common"
 set_remote_head "$base_sha"
 export PUSH_GUARD_MERGEABLE=CONFLICTING PUSH_GUARD_CHECKS="$pass_checks" PUSH_GUARD_CHECK_EXIT=0
+if run_guard "$base_sha" agent/issue-123 "$local_sha" 0; then echo 'not ok - manual code push without a local receipt' >&2; exit 1; fi
+grep -Fq 'no test receipt' "$tmp/stderr"
+echo 'ok - manual code push requires a local receipt'
+mkdir -p "$common/zf-test-receipts"
+printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$local_sha"
+if ! run_guard "$base_sha" agent/issue-123 "$local_sha" 0; then cat "$tmp/stderr" >&2; echo 'not ok - green manual receipt' >&2; exit 1; fi
+echo 'ok - green manual receipt allows a code push'
+printf '0\tbash engine/example.test.sh\n1\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$local_sha"
+if run_guard "$base_sha" agent/issue-123 "$local_sha" 0; then echo 'not ok - failed manual receipt allows a code push' >&2; exit 1; fi
+grep -Fq 'is not green' "$tmp/stderr"
+echo 'ok - failed manual receipt refuses a code push'
+rm -f -- "$common/zf-test-receipts/$local_sha"
 if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - code push without a local receipt' >&2; exit 1; fi
 echo 'ok - code push does not require a local receipt'
 mkdir -p "$common/zf-test-receipts"
@@ -98,14 +110,15 @@ printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$base_sha"
 printf '0\tbash engine/example.test.sh\n' > "$common/zf-test-receipts/$diverged_sha"
 if ! run_guard "$base_sha" agent/issue-other "$diverged_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - another branch push without a local receipt' >&2; exit 1; fi
 echo 'ok - local receipts do not gate a push to another branch'
-if ! run_guard "$base_sha" agent/issue-docs "$docs_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - documentation-only push exemption' >&2; exit 1; fi
+if ! run_guard "$base_sha" agent/issue-docs "$docs_sha" 0; then cat "$tmp/stderr" >&2; echo 'not ok - documentation-only push exemption' >&2; exit 1; fi
 echo 'ok - documentation-only push remains exempt'
 git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge.git
-if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - Zenoforge engine push exemption' >&2; exit 1; fi
+if ! run_guard "$base_sha" agent/issue-123 "$local_sha" 0; then cat "$tmp/stderr" >&2; echo 'not ok - Zenoforge engine push exemption' >&2; exit 1; fi
 echo 'ok - Zenoforge engine push remains exempt'
 git -C "$repo" remote set-url origin https://github.com/ZenoWangzy/zenoforge-vecta-pack.git
-if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - non-engine code push without a local receipt' >&2; exit 1; fi
-echo 'ok - non-engine code push does not require a local receipt'
+if run_guard "$base_sha" agent/issue-123 "$local_sha" 0; then echo 'not ok - non-engine code push without a local receipt' >&2; exit 1; fi
+grep -Fq 'no test receipt' "$tmp/stderr"
+echo 'ok - non-engine code push requires a local receipt'
 git -C "$repo" remote set-url origin "$remote"
 : > "$ZF_PUSH_GUARD_LOG"
 
