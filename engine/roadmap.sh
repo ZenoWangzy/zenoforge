@@ -361,7 +361,7 @@ roadmap_choose_epic() {
   local tree="$1" issue_json="$2" source_issue="${3:-}" flat
   flat="$(roadmap_flatten "$tree")" || return 1
   jq -ce --slurpfile flat_s <(printf '%s' "$flat") --arg source "$source_issue" '($flat_s[0]) as $flat |
-    def names($s):
+    def topic_words($s):
       [$s | ascii_downcase | scan("[a-z0-9]{2,}")
        | select(. as $word | (["a","an","and","are","as","at","be","by","for","from","in","into","is","it","of","on","or","the","to","via","with","new","issue","ticket","request","task","follow","up","roadmap","map"] | index($word)) == null)];
     def chinese_bigrams($s):
@@ -372,7 +372,7 @@ roadmap_choose_epic() {
          | [$chars[$i], $chars[$i + 1]] | implode];
     def issue_labels: [(.labels // [])[] | if type == "string" then . else .name // "" end];
     def score($text_words; $text_bigrams; $title):
-      ([names($title)[] as $word | select($text_words | index($word)) | $word] | unique | length) * 3
+      ([topic_words($title)[] as $word | select($text_words | index($word)) | $word] | unique | length) * 3
       + ([chinese_bigrams($title)[] as $pair | select($text_bigrams | index($pair)) | $pair] | unique | length);
     . as $issue
     | ($flat | map({key:(.number|tostring),value:.}) | from_entries) as $nodes
@@ -388,10 +388,12 @@ roadmap_choose_epic() {
     | (if ($source | test("^[1-9][0-9]*$")) then $nodes[$source] else null end) as $source_node
     | (if $source_node != null then $nodes[($source_node.parent|tostring)] else null end) as $inherited
     | (($issue.title // "") as $text
-       | names($text) as $text_words
+       | topic_words($text) as $text_words
        | chinese_bigrams($text) as $text_bigrams
        | (if $pipeline_health_epic != null then $pipeline_health_epic
           elif $inherited != null and ($inherited.labels | index("roadmap-epic") != null)
+            and (($labels | index("pipeline-system")) != null
+              or score($text_words;$text_bigrams;$inherited.title) >= 2)
             and (($labels | index("pipeline-system")) == null
               or $inherited.theme_milestone == "开发流水线与运行稳定") then $inherited
           else
