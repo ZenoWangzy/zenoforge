@@ -82,8 +82,8 @@ export PATH
 unset ZF_AGENT_TEST_MODE
 SERVICE_RESULT=success EXIT_CODE=exited EXIT_STATUS=0 \
   "$SCRIPT_DIR/record-unit-result.sh" triage-batch "$OWNER" "$ISSUE"
-claim_after="$(jq -r '.owner // empty' "$AGENT_HOME/coord/claims/issue-$ISSUE.json")"
-assert_eq "batch stop hook releases its issue claim" '' "$claim_after"
+claim_file="$AGENT_HOME/coord/claims/issue-$ISSUE.json"
+assert_eq "disabled coordination leaves no issue claim" 0 "$( [[ -e "$claim_file" ]] && echo 1 || echo 0 )"
 assert_eq "batch stop hook starts one delayed triage event" 1 "$(grep -cF -- '--on-active=1s' "$SYSTEMD_RUN_LOG" || true)"
 assert_eq "batch stop hook launches the triage event stage" 1 "$(grep -cF -- '--stage triage-event' "$SYSTEMD_RUN_LOG" || true)"
 assert_eq "batch stop hook retries only a lock-busy event" 1 "$(grep -cF -- '-p RestartForceExitStatus=75' "$SYSTEMD_RUN_LOG" || true)"

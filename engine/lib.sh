@@ -19,7 +19,7 @@ source "$_AGENT_LIB_DIR/closing-keywords.sh"
 source "${ZF_EXECUTION_MODULE_DIR:-$_AGENT_LIB_DIR}/execution-admission.sh"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh" # AGENT_HOME, ZF_ENGINE_DIR, ZF_REPO_DIR
-source "$(dirname -- "${BASH_SOURCE[0]}")/coord.sh"
+coord_source_if_enabled
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/write-guard.sh"
 agent_pipeline_write_guard 'lib.sh initialization' "$AGENT_HOME" || return 1
 # Host capacity tuning (non-secret) beats the credentials env file. On 2026-10-06 that file pinned

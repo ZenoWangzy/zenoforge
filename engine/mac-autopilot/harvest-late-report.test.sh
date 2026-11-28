@@ -10,6 +10,7 @@ printf '{"workers":[]}' > "$sup/autopi/workers.json"
 export MAC_AUTOPILOT_ROOT="$test_env_root/root" MAC_AUTOPILOT_SUPERVISOR_DIR="$sup" AUTOPI_TEST_LIBRARY_ONLY=true
 unset GH_TOKEN GITHUB_TOKEN
 source "$script_dir/scheduler.sh"
+source "$script_dir/../coord.sh"
 tick_prs_prime() { :; }
 session_usage_for_id() { echo null; }
 blocked_on_of() { :; }
