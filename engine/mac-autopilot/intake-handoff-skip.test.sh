@@ -75,13 +75,12 @@ read -r b_p1w b_p1v b_p2w b_p2v <<<"$(measure 30 2)"
 # the new issues read their own PRs in pass 2; no existing unit's PR is read again
 (( a_p2v == 0 && b_p2v == 0 )) || fail "pass 2 repeated the handoff reads of existing units: $a_p2v, $b_p2v"
 
-# The body list failing must not drop the census to partial (one PR read per unit, then every handoff PR again): the light tick census
-# still names the open PRs, so only their two bodies are read.
+# The handoff census keeps the lightweight open-PR snapshot and leaves body reads to consumers that need an association.
 tick_prs() { echo '[{"number":5001,"headRefName":"b1","title":"t","labels":[]},{"number":5002,"headRefName":"b2","title":"t","labels":[]}]'; }
 setup 6 2; : > "$gh_log"
 PATH="$fixture/bin:$PATH" intake_census_prime # tick_pr_body calls plain gh
-[[ "${HANDOFF_CENSUS_PARTIAL:-1}" == 0 && "$(jq length <<<"$HANDOFF_PR_CENSUS")" == 2 && "$(pr_views 5001 5002)" == 2 && "$(pr_views 1 4999)" == 0 ]] \
-  || fail "a failed body list should read only the open PRs' bodies: partial=${HANDOFF_CENSUS_PARTIAL:-?} views=$(pr_views 1 9999)"
+[[ "${HANDOFF_CENSUS_PARTIAL:-1}" == 0 && "$(jq length <<<"$HANDOFF_PR_CENSUS")" == 2 && "$(pr_views 5001 5002)" == 0 && "$(pr_views 1 4999)" == 0 ]] \
+  || fail "the lightweight census should defer body reads: partial=${HANDOFF_CENSUS_PARTIAL:-?} views=$(pr_views 1 9999)"
 tick_prs() { echo '[]'; }
 
 # Same result as the full block: from the state pass 1 leaves, pass 2 with and without the skip writes the same ledger and counts the same skips.

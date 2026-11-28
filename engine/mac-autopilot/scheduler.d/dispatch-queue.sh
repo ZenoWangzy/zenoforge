@@ -181,6 +181,7 @@ dispatch_why_save() { # merges this pass's changes into the file as it is now; p
 }
 
 dispatch_pending_pass() {
+  scheduler_scope_lib gh-key-cache || return 1
   TICK_DISPATCH_SKIPS=()
   TICK_PRIORITY_HOLD_EXPIRED=()
   TICK_PRIORITY_ADMISSION_CACHE=()
@@ -785,7 +786,6 @@ $deliver"
   dispatch_why_save
   dispatch_steps_say
 }
-
 dispatch_pending() {
   local TICK_STEP_LOCK_RESULT=""
   if declare -F tick_step_lock_run >/dev/null 2>&1; then

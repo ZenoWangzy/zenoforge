@@ -285,8 +285,17 @@ test('backtested dependency, CI-tree, contract-workflow and CLAUDE.md paths merg
   assert.equal(pipelineSuiteScope(['scripts/ci/dagger-run.mjs'], all).full, false);
   assert.ok(pipelineSuiteScope(['.github/workflows/agent-workflow-contract.yml'], all)
     .testPaths.includes('scripts/deploy-regression-contract.test.mjs'));
-  assert.deepEqual(pipelineSuiteScope(['CLAUDE.md'], all),
-    { full: false, testPaths: ['engine/mac-autopilot/worker-rules-lanes.test.sh'] });
+  assert.deepEqual(pipelineSuiteScope(['CLAUDE.md'], all), {
+    full: false,
+    testPaths: [
+      'engine/land-admit.test.sh',
+      'engine/mac-autopilot/eval-regression-revert.test.sh',
+      'engine/mac-autopilot/worker-command.test.sh',
+      'engine/mac-autopilot/worker-rules-lanes.test.sh',
+      'engine/matt-skills.test.sh',
+      'engine/triage-claude-fallback.test.sh',
+    ],
+  });
   for (const path of ['.github/workflows/ci.yml', 'engine/lib.sh', 'engine/run-ci-suites.sh']) {
     assert.equal(pipelineSuiteScope([path], allTracked).full, true, path);
   }

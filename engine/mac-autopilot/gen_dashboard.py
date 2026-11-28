@@ -292,7 +292,8 @@ def gh(args):
 def gh_lines(args):
     try:
         out = gh_caller.run_gh(["gh", *args], capture_output=True, text=True, timeout=60).stdout or ""
-        return [json.loads(line) for line in out.splitlines() if line.strip()]
+        values = [json.loads(line) for line in out.splitlines() if line.strip()]
+        return [value for value in values if isinstance(value, dict)]
     except Exception:
         return []
 
