@@ -1,17 +1,13 @@
 {
-  "engine/bin/agent-sandbox.py": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/agent-sandbox-run": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/agent_sandbox_state.py": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/agent_sandbox_workspace.py": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/agent_sandbox_network.py": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/luna": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/zc": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/worker": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/bin/worker-remote.py": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/dispatch-codex.sh": ["engine/bin/agent-sandbox.test.sh", "engine/dispatch-codex.test.sh"],
-  "engine/lib.d/codex-budget.sh": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/lib.d/model-calls.sh": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/lib.d/triage-claude.sh": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/mac-autopilot/scheduler.d/dispatch.sh": ["engine/bin/agent-sandbox.test.sh"],
-  "engine/mac-autopilot/scheduler.d/worker-scope.sh": ["engine/bin/agent-sandbox.test.sh"]
+  "engine/bin/agent-sandbox-run": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/bin/luna": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/bin/zc": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/bin/worker": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/bin/worker-remote.py": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/dispatch-codex.sh": ["engine/bin/agent-sandbox-dispatch.test.sh", "engine/dispatch-codex.test.sh"],
+  "engine/lib.d/codex-budget.sh": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/lib.d/model-calls.sh": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/lib.d/triage-claude.sh": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/mac-autopilot/scheduler.d/dispatch.sh": ["engine/bin/agent-sandbox-dispatch.test.sh"],
+  "engine/mac-autopilot/scheduler.d/worker-scope.sh": ["engine/bin/agent-sandbox-dispatch.test.sh"]
 }

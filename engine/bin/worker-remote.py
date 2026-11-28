@@ -21,7 +21,7 @@ import uuid
 RUNTIME_FILES = (
     "bin/luna",
     "bin/luna-capacity.sh",
-    "bin/zc", "bin/agent-sandbox.py", "bin/agent-sandbox-run", "bin/agent_sandbox_state.py", "bin/agent_sandbox_workspace.py", "bin/agent_sandbox_network.py",
+    "bin/zc", "bin/agent-sandbox-run",
     "config.sh",
     "lib.d/codex-mcp.sh",
     "lib.d/worker-remote-handoff.sh",
