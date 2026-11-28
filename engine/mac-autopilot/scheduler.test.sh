@@ -1226,15 +1226,14 @@ SH
   local rc=0
   # Fixture ticks assert step effects before exit; keep the production step lock but run them inline here.
   if [[ "${SCHED_TEST_TRACE_REFILL:-}" == 1 ]]; then
-    exec 9>"$TF/refill.trace"
-    BASH_XTRACEFD=9 PS4='+${BASH_SOURCE##*/}:${LINENO}: '
-    export BASH_XTRACEFD PS4
-    set -o xtrace
-    export SHELLOPTS
-    AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
-    set +o xtrace
-    unset BASH_XTRACEFD
-    exec 9>&-
+    cat > "$TF/refill-trace-env" <<'SH'
+exec 9>>"$TF/refill.trace"
+BASH_XTRACEFD=9
+PS4='+${BASH_SOURCE##*/}:${LINENO}: '
+set -o xtrace
+SH
+    BASH_ENV="$TF/refill-trace-env" AUTOPI_TEST_INLINE_TICK_STEPS=true \
+      bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
   else
     AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
   fi
