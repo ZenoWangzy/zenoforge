@@ -489,7 +489,7 @@
 34	engine/mac-autopilot/scheduler.d/orphan-prs.sh
 15	engine/mac-autopilot/scheduler.d/park-label-sweep.sh
 12	engine/mac-autopilot/scheduler.d/pr-body.sh
-45	engine/mac-autopilot/scheduler.d/recut-reopen.sh
+42	engine/mac-autopilot/scheduler.d/recut-reopen.sh
 43	engine/mac-autopilot/scheduler.d/recut-reopen.test.sh
 22	engine/mac-autopilot/scheduler.d/refill-room.test.sh
 9	engine/mac-autopilot/scheduler.d/release-deps-station.sh

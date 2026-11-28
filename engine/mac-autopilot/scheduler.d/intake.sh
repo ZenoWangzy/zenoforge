@@ -508,6 +508,7 @@ register_new_issues_pass() {
     if (( existing_only )) && [[ -n "$episode" ]]; then INTAKE_EXISTING_WALKED["$n"]=ok; fi
     [[ -n "$handoff" ]] || handoff='{}'
     intake_unit_for_row "$n" "$handoff_pr"; intake_mark unit_lookup
+    if [[ -z "$existing_id" ]] && (( ! existing_only )) && intake_skip_merged_refs_issue "$n"; then continue; fi
     if [[ -n "$existing_id" ]]; then
       (( existing_only )) || { intake_skip existing; continue; }
       [[ -n "$episode" ]] || { intake_skip no_episode; continue; }
