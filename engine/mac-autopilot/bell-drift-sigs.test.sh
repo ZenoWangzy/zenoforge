@@ -92,7 +92,18 @@ if [[ "$1 $2" == "run view" ]]; then
 fi
 exit 2
 SH
-chmod +x "$s12/bin/gh"
+cat > "$s12/bin/timeout" <<'SH'
+#!/usr/bin/env bash
+[[ "$1" == --foreground ]] && exit 0
+while [[ "${1:-}" == --kill-after=* || "${1:-}" == -k || "${1:-}" == --kill-after ]]; do
+  [[ "${1:-}" == -k || "${1:-}" == --kill-after ]] && shift
+  shift
+done
+[[ "${1:-}" =~ ^[0-9]+s?$ ]] || exit 2
+shift
+exec "$@"
+SH
+chmod +x "$s12/bin/gh" "$s12/bin/timeout"
 # bell reads run lists only from the scheduler snapshot
 ( source "$(dirname "$bell")/runtime-env.sh"; pr_run_snapshot_publish "$s12/autopi" "[]" "[]" "$(cat "$s12/ci.json")" "$(cat "$s12/suites.json")" "[]" "" )
 export S12_CI_RUNS="$s12/ci.json" S12_SUITES_RUNS="$s12/suites.json"

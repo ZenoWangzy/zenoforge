@@ -346,7 +346,7 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ['engine/post-deploy-migrations.mjs', ['engine/post-deploy-migrations.test.mjs', 'scripts/release/run-release.test.sh']],
   ['engine/post-deploy-migrations.test.mjs', ['engine/post-deploy-migrations.test.mjs']],
   // git-fetch-bounded.test.sh greps these scripts for network git calls that escalate after 10s.
-  ['engine/worktree-lifecycle.sh', ['engine/worktree-lifecycle.test.sh', 'engine/git-fetch-bounded.test.sh', 'engine/execution-admission.test.sh']],
+  ['engine/worktree-lifecycle.sh', ['engine/worktree-lifecycle.test.sh', 'engine/worktree-lifecycle-transport.test.sh', 'engine/git-fetch-bounded.test.sh', 'engine/execution-admission.test.sh']],
   ['engine/worktree-backlog-sweep.sh', ['engine/worktree-lifecycle.test.sh']],
   ['engine/supervise-pipeline.sh', ['engine/supervise-pipeline.test.sh', 'engine/git-fetch-bounded.test.sh']],
   ['engine/run-tick.sh', ['engine/run-tick.test.sh', 'engine/git-fetch-bounded.test.sh', 'engine/run-tick-timer-repair.test.sh']],

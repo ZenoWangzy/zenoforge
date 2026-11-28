@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"
 # Migration gate settings come from the target release configuration.
 migration_gate_setting() {
   local file value

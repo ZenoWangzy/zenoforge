@@ -51,6 +51,7 @@ for t in "${suites[@]}"; do
   fi
   case $t in
     *.test.mjs) cmd=(node --test --test-concurrency=1 "$t") ;;
+    *.test.py) cmd=(python3 "$t") ;;
     *) cmd=(bash "$t") ;;
   esac
   log="test-logs/${t//\//__}.log"; mkdir -p test-logs

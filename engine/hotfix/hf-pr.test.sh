@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
-p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d "$test_env_root/hf-pr.XXXXXX"); trap 'rm -rf -- "$test_env_root"' EXIT
 cat > "$t/git" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -18,7 +18,9 @@ case "$1 $2" in
   'pr create') printf '%s\n' "$@" > "$LOG" ;;
 esac
 STUB
-chmod +x "$t/git" "$t/gh"; export PATH="$t:$PATH" LOG="$t/log" GH_TOKEN=secret
+chmod +x "$t/git" "$t/gh"; export PATH="$t:$PATH" LOG="$t/log" GH_TOKEN=secret FAKE_GH="$t/gh"
+gh() { "$FAKE_GH" "$@"; }
+export -f gh
 BRANCH=topic THEIRS=z.md "$p/hf-pr.sh" && exit 1
 BRANCH=hotfix/test THEIRS=b.ts "$p/hf-pr.sh" --title hello && exit 1
 [[ ! -e $LOG ]]

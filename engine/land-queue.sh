@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export ZF_GH_NO_CACHE=1
+if [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh" ]]; then source "$(dirname -- "${BASH_SOURCE[0]}")/lib.d/transport.sh"; else source "$(git rev-parse --show-toplevel)/engine/lib.d/transport.sh"; fi; export ZF_GH_NO_CACHE=1
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # The engine this script belongs to, as the caller named it (logical path, like config.sh): the default for ZF_ENGINE_LIVE.
 QUEUE_ENGINE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

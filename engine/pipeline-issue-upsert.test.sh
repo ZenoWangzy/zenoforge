@@ -71,6 +71,8 @@ chmod +x "$tmp/bin/gh"
 
 export ZF_GH_REAL_CLI="$tmp/bin/gh"
 export PATH="$SCRIPT_DIR/gh-shim:$tmp/bin:$PATH"
+gh() { command gh "$@"; }
+export -f gh
 export FAKE_GH_LOG="$tmp/gh.log"
 export FAKE_ISSUES="$tmp/issues.json"
 export FAKE_COMMENTS="$tmp/comments.jsonl"

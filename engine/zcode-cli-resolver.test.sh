@@ -185,6 +185,8 @@ printf '%s\n' pipeline-system ready-for-agent > "$FAKE_LABELS"
 : > "$FAKE_COMMENTS"
 printf '5001\n' > "$FAKE_NEXT_NUMBER"
 
+gh() { command gh "$@"; }
+export -f gh
 # Five fallback decisions with threshold 3: one filing at the third, streak back to 2.
 BELL_OUT="$(env HOME="$bell_home" AGENT_HOME="$bell_agent" ZF_CONFIG_ROOT="$bell_cfg" \
   ZCODE_QUOTA_SNAPSHOT_FILE="$bell_quota" \

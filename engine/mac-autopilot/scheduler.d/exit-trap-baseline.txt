@@ -9,7 +9,6 @@ engine/gitnexus-refresh-window.test.sh
 engine/gitnexus-wrapper.test.sh
 engine/hotfix/hf-brief-lint.test.sh
 engine/hotfix/hf-install-gate.test.sh
-engine/hotfix/hf-pr.test.sh
 engine/hotfix/hf-source-check.test.sh
 engine/hotfix/hf-stale.test.sh
 engine/hotfix/hf-start.test.sh
@@ -25,7 +24,6 @@ engine/land-pipeline-suites-absent.test.sh
 engine/land-pipeline-suites-present.test.sh
 engine/land-shared-append.test.sh
 engine/mac-autopilot/advisor-incident.test.sh
-engine/mac-autopilot/bell-incident-routing.test.sh
 engine/mac-autopilot/daemon-self-check.test.sh
 engine/mac-autopilot/pin-lag.test.sh
 engine/mac-autopilot/scheduler.d/locks-views-trap.test.sh
@@ -45,7 +43,6 @@ engine/night/owner-report-daily.test.sh
 engine/night/prod-errors-readonly.test.sh
 engine/night/production-tenant-marker-readonly.test.sh
 engine/owner-stop-request.test.sh
-engine/pipeline-issue-upsert-label-limit.test.sh
 engine/pipeline-system-close-evidence.test.sh
 engine/run-advisor.test.sh
 engine/scheduler-gh-timeout-safety.test.sh

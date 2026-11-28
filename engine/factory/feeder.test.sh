@@ -30,6 +30,7 @@ esac
 EOF
 chmod +x "$FAKE_BIN/gh"
 export PATH="$FAKE_BIN:$PATH"
+gh() { "$FAKE_BIN/gh" "$@"; }
 source <(sed '/^tick=0/,$d' "$FEEDER_SRC")
 intake
 grep -qx '991021 open PR' "$F/.intake-excluded"
