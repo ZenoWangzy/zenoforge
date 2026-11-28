@@ -17,6 +17,36 @@ SESSION_RE='^[0-9a-f-]{36}$'
 contains_arg() { [[ " $1 " == *" $2 "* ]]; }
 arg_value() { local i; for ((i = 0; i < ${#CODEX_COMMAND[@]}; i++)); do [[ "${CODEX_COMMAND[i]}" == "$1" ]] && { printf '%s' "${CODEX_COMMAND[i + 1]:-}"; return 0; }; done; return 1; }
 
+check_worker_test_policy() {
+  local source matches
+  local -a sources=(
+    "$script_dir/../../AGENTS.md"
+    "$script_dir/../prompts/implement-contract.md"
+    "$script_dir/../prompts/guarded-recut-hand.md"
+    "$script_dir/../dispatch-codex.sh"
+    "$script_dir/../night/dispatch.sh"
+    "$script_dir/scheduler.sh"
+    "$script_dir/scheduler.d/dispatch-queue.sh"
+    "$script_dir/scheduler.d/worker-command.sh"
+    "$script_dir/scheduler.d/ci-status.sh"
+    "$script_dir/scheduler.d/merge-lane.sh"
+  )
+  [[ "$VERIFY_RUN_RULE" == *'不要运行本地测试文件或套件'* && "$VERIFY_RUN_RULE" == *'PR CI 验证'* ]] \
+    || fail 'implement and repair prompts must leave suite execution to PR CI'
+  [[ "$CI_REPRO_RULE" == *'不在本机或测试 runner 运行测试'* ]] \
+    || fail 'CI repair prompts must not ask for local test reproduction'
+  for source in "${sources[@]}"; do
+    matches="$(grep -niE '(run|rerun|execute|reproduce).{0,160}(test|suite).{0,160}(locally|local|before push|before pushing|at that head|at the repaired head)' "$source" | grep -Eiv 'do not|never|must not|should not' || true)"
+    [[ -z "$matches" ]] || fail "worker source asks for a local suite before push: $source: $matches"
+  done
+  if grep -niE 'Name the full verification command before coding|see each test fail before its fix' \
+    "$script_dir/../prompts/implement-contract.md"; then
+    fail 'implement contract must use PR CI as the test receipt'
+  fi
+}
+
+check_worker_test_policy
+
 CFG='{"models":[["gpt-6-luna","max","fast"]]}'
 CODEX_ENV_ARGS=(-c shell_environment_policy.inherit=all)
 UNITS="$test_env_root/units.json"
