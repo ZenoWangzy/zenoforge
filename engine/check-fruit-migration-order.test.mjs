@@ -176,3 +176,19 @@ test('config override wins over pack and missing config fails closed or delegate
   assert.equal(missing.status, 2);
   assert.match(missing.stdout, /migration.path must be a nonempty relative path/);
 });
+
+test('CI reports migration order as not applicable when migration.path is absent', () => {
+  const script = join(process.cwd(), 'engine/check-fruit-migration-order.mjs');
+  const configRoot = join(root, 'no-migration');
+  const packRoot = join(root, 'legacy-pack');
+  mkdirSync(configRoot);
+  mkdirSync(packRoot);
+  writeFileSync(join(configRoot, 'release.json'), JSON.stringify({}));
+  writeFileSync(join(packRoot, 'check-fruit-migration-order.mjs'), "console.log('legacy');");
+  const result = spawnSync(process.execPath, [script, '--ci'], {
+    encoding: 'utf8',
+    env: { ...process.env, ZF_CONFIG_ROOT: configRoot, ZF_PACK_DIR: packRoot },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /migration order not applicable/);
+});

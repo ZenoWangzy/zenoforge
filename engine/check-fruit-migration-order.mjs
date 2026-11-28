@@ -1,8 +1,8 @@
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync, existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { packDelegate, zfConfigFile } from './pack-dir.mjs';
+import { packDelegate, zfConfigFile, zfEnv } from './pack-dir.mjs';
 
 function migrationDirectory() {
   const file = zfConfigFile('release.json');
@@ -113,30 +113,44 @@ function option(name) {
 
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
-    const configFile = zfConfigFile('release.json');
+    const engineDir = process.env.ZF_ENGINE_DIR || dirname(fileURLToPath(import.meta.url));
+    const repoRoot = zfEnv('REPO_DIR') || dirname(engineDir);
+    const configFile = zfConfigFile('release.json', repoRoot);
     const config = configFile ? JSON.parse(readFileSync(configFile, 'utf8')) : {};
-    const legacy = config.migration?.path ? '' : packDelegate('check-fruit-migration-order.mjs');
-    if (legacy) {
-      const result = spawnSync(process.execPath, [legacy, ...process.argv.slice(2)], { stdio: 'inherit' });
-      if (result.error) throw result.error;
-      process.exit(result.status ?? 2);
-    }
-    migrationDirectory();
-    let reasons;
-    if (process.argv.includes('--merge-gate')) {
-      const prNumber = Number(option('--pr'));
-      if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error('--merge-gate needs --pr N');
-      const repo = option('--repo') || process.env.REPO || process.env.GITHUB_REPOSITORY;
-      if (!repo) throw new Error('--merge-gate needs --repo or REPO');
-      reasons = mergeGate({ repo, prNumber, head: option('--head') });
-    } else if (process.argv.includes('--ci')) {
-      reasons = ciCheck({ baseRef: option('--base') ?? 'origin/main' });
+    const targetConfigRoot = process.env.ZF_CONFIG_ROOT ?? join(repoRoot, '.zenoforge');
+    const targetReleaseFile = targetConfigRoot ? join(targetConfigRoot, 'release.json') : '';
+    const migrationPathMissing = configFile === targetReleaseFile
+      && config !== null && typeof config === 'object' && !Array.isArray(config)
+      && (!Object.prototype.hasOwnProperty.call(config, 'migration')
+        || (config.migration !== null && typeof config.migration === 'object'
+          && !Array.isArray(config.migration)
+          && !Object.prototype.hasOwnProperty.call(config.migration, 'path')));
+    if (migrationPathMissing) {
+      console.log('migration order not applicable');
     } else {
-      throw new Error('usage: check-fruit-migration-order.mjs --ci [--base REF] | --merge-gate --pr N [--head SHA] [--repo R]');
+      const legacy = config.migration?.path ? '' : packDelegate('check-fruit-migration-order.mjs');
+      if (legacy) {
+        const result = spawnSync(process.execPath, [legacy, ...process.argv.slice(2)], { stdio: 'inherit' });
+        if (result.error) throw result.error;
+        process.exit(result.status ?? 2);
+      }
+      migrationDirectory();
+      let reasons;
+      if (process.argv.includes('--merge-gate')) {
+        const prNumber = Number(option('--pr'));
+        if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error('--merge-gate needs --pr N');
+        const repo = option('--repo') || process.env.REPO || process.env.GITHUB_REPOSITORY;
+        if (!repo) throw new Error('--merge-gate needs --repo or REPO');
+        reasons = mergeGate({ repo, prNumber, head: option('--head') });
+      } else if (process.argv.includes('--ci')) {
+        reasons = ciCheck({ baseRef: option('--base') ?? 'origin/main' });
+      } else {
+        throw new Error('usage: check-fruit-migration-order.mjs --ci [--base REF] | --merge-gate --pr N [--head SHA] [--repo R]');
+      }
+      for (const reason of reasons) console.log(`migration-order: ${reason}`);
+      if (reasons.length > 0) process.exitCode = 1;
+      else console.log(message('passed', 'migration order passed.'));
     }
-    for (const reason of reasons) console.log(`migration-order: ${reason}`);
-    if (reasons.length > 0) process.exitCode = 1;
-    else console.log(message('passed', 'migration order passed.'));
   } catch (error) {
     console.log(`migration-order: ${message('unverified', 'could not verify migration order')}: ${error.message}`);
     process.exitCode = 2;
