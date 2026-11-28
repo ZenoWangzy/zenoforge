@@ -12,3 +12,4 @@ ADRs record surprising, hard-to-reverse decisions; read the Do not lines before 
 | [0006](0006-review-uses-different-provider.md) | Review runs on a different provider from the implementer when one is available. | accepted | cross-provider review, review role, implementer, `review_provider_fallback`, availability |
 | [0007](0007-file-size-only-shrinks-above-cap.md) | File size only shrinks above the cap. | accepted | enforced rules, size ratchet, cap, shrink, `tools/size-ratchet.sh` |
 | [0008](0008-suppression-directives-need-adr-backed-exceptions.md) | Suppression directives need ADR-backed exceptions. | accepted | suppression directive, suppression ratchet, ADR-backed exception |
+| [0009](0009-skip-ci-must-not-hide-tested-files.md) | Skip-CI commits must not hide tested files. | accepted | skip-CI commit, test reference, direct-main admission |
