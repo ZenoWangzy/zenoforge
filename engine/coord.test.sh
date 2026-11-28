@@ -10,6 +10,65 @@ new_owner="$(coord_new_owner)" || fail 'coord_new_owner failed'
 [[ "$new_owner" =~ ^owner-[0-9]+-[0-9]+-[0-9]+-[0-9]+$ ]] || fail 'coord_new_owner returned an invalid owner id'
 trial() { printf 'coord.test.sh: trial %s: %s\n' "$1" "$2"; }
 
+lane_clock="$test_env_root/lane-clock"
+lane_saved_lease_seconds="$COORD_LEASE_SECONDS"
+printf '100\n' > "$lane_clock"
+ZF_COORD_CLOCK_FILE="$lane_clock"
+COORD_LEASE_SECONDS=10
+lane_owner_a="$(coord_new_owner)"
+lane_owner_b="$(coord_new_owner)"
+coord_lane_acquire merge "$lane_owner_a" 0 || fail 'first merge lane owner could not acquire'
+lane_local_record="$(coord_read lane-merge)" || fail 'first merge lane claim could not be read'
+jq -e '.key == "lane-merge" and .owner_kind == "lane" and .subject == "merge"
+  and .unit == "lane-merge" and .stage == "merge"' <<<"$lane_local_record" >/dev/null \
+  || fail "merge lane claim fields are invalid: $lane_local_record"
+if coord_lane_acquire merge "$lane_owner_b" 0; then
+  fail 'second merge lane owner acquired an occupied lane'
+else
+  rc=$?
+  (( rc == 1 )) || fail "occupied merge lane returned $rc instead of held (1)"
+fi
+coord_lane_release merge "$lane_owner_a" || fail 'merge lane owner could not release'
+coord_lane_acquire merge "$lane_owner_b" 0 || fail 'released merge lane could not be acquired'
+coord_lane_release merge "$lane_owner_b" || fail 'second merge lane owner could not release'
+coord_lane_acquire merge "$lane_owner_a" 0 || fail 'merge lane could not be reacquired for busy-run check'
+if coord_lane_run merge 0 coord_lane_test_environment; then
+  fail 'coord_lane_run invoked a callback while the merge lane was held'
+else
+  rc=$?
+  (( rc == 75 && COORD_LANE_BUSY == 1 )) || fail "occupied lane run returned rc=$rc busy=$COORD_LANE_BUSY"
+fi
+coord_lane_release merge "$lane_owner_a" || fail 'busy-run check could not release merge lane'
+
+coord_lane_acquire main-red "$lane_owner_a" 0 || fail 'main-red lane owner could not acquire'
+printf '111\n' > "$lane_clock"
+coord_lane_acquire main-red "$lane_owner_b" 0 || fail 'expired main-red lane was not taken over'
+coord_lane_release main-red "$lane_owner_b" || fail 'takeover owner could not release main-red lane'
+unset ZF_COORD_CLOCK_FILE
+COORD_LEASE_SECONDS="$lane_saved_lease_seconds"
+
+coord_lane_test_failure() { return 17; }
+if coord_lane_run release 0 coord_lane_test_failure; then
+  fail 'lane callback failure was hidden'
+else
+  rc=$?
+  (( rc == 17 )) || fail "lane callback returned $rc instead of 17"
+fi
+coord_lane_test_temporary_failure() { return 75; }
+if coord_lane_run release 0 coord_lane_test_temporary_failure; then
+  fail 'lane callback temporary failure was hidden'
+else
+  rc=$?
+  (( rc == 75 && COORD_LANE_BUSY == 0 )) || fail "lane callback temporary failure was reported as lane busy (rc=$rc)"
+fi
+coord_lane_acquire release "$lane_owner_a" 0 || fail 'lane callback failure leaked its lease'
+coord_lane_release release "$lane_owner_a" || fail 'release lane owner could not release'
+
+coord_lane_test_environment() {
+  [[ "$ZF_COORD_LANE" == release && -n "$ZF_COORD_LANE_OWNER" ]]
+}
+coord_lane_run release 0 coord_lane_test_environment || fail 'lane callback did not receive its ownership context'
+
 now="$(date +%s)"
 retain_seconds=3600
 older="issue-81001"
@@ -107,7 +166,13 @@ coord_remote_run() {
         coord_assert_owned "$ZF_COORD_SCOPE" >/dev/null || return $?
         printf "%s|%s\n" "$ZF_COORD_SCOPE" "$ZF_COORD_OWNER"
       }
+      race_action=0
       if [[ "$action" == acquire && "${1:-}" == "${ZF_COORD_TEST_RACE_KEY:-}" && -n "${ZF_COORD_TEST_RACE_DIR:-}" ]]; then
+        race_action=1
+      elif [[ "$action" == lane-acquire && "lane-${1:-}" == "${ZF_COORD_TEST_RACE_KEY:-}" && -n "${ZF_COORD_TEST_RACE_DIR:-}" ]]; then
+        race_action=1
+      fi
+      if (( race_action )); then
         : > "$ZF_COORD_TEST_RACE_DIR/$ZF_HOST_ID.ready"
         for ((attempt = 0; attempt < 1000; attempt++)); do
           [[ -e "$ZF_COORD_TEST_RACE_DIR/go" ]] && break
@@ -123,6 +188,8 @@ coord_remote_run() {
         lost-ack) ZF_COORD_TEST_DROP_ACK=1; coord_acquire "$@" ;;
         renew) coord_renew "$@" ;;
         release) coord_release "$@" ;;
+        lane-acquire) coord_lane_acquire "$@" ;;
+        lane-release) coord_lane_release "$@" ;;
         assert) coord_assert_owned "$@" ;;
         with-ticket) coord_with_ticket "$1" -- coord_ticket_probe ;;
         manual-enter) coord_enter "$1" "$2" && coord_ticket_probe ;;
@@ -353,5 +420,61 @@ else
   rc=$?
   (( rc == 1 )) || fail "manual-entry refusal returned $rc instead of held (1)"
 fi
+trial 13 'an expired lane claim is taken over with a new generation'
+coord_remote_run A lane-acquire main-red lane-dead-owner 0 || fail 'host A could not acquire the main-red lane'
+printf '111\n' > "$SIM_WORLD/B.clock"
+if coord_remote_run B lane-acquire main-red lane-live-owner 0; then
+  fail 'host B took over the main-red lane before its observation lease'
+else
+  rc=$?
+  (( rc == 1 )) || fail "first lane takeover observation returned $rc instead of held (1)"
+fi
+printf '116\n' > "$SIM_WORLD/B.clock"
+if coord_remote_run B lane-acquire main-red lane-live-owner 0; then
+  fail 'host B took over the main-red lane before a full observation lease'
+else
+  rc=$?
+  (( rc == 1 )) || fail "half-lease lane observation returned $rc instead of held (1)"
+fi
+printf '121\n' > "$SIM_WORLD/B.clock"
+coord_remote_run B lane-acquire main-red lane-live-owner 0 || fail 'host B could not take over the expired main-red lane'
+lane_takeover_record="$(coord_remote_run B read lane-main-red)" || fail 'taken-over main-red lane claim could not be read'
+jq -e '.owner == "lane-live-owner" and .owner_kind == "lane" and .generation == 2
+  and .taken_from.owner == "lane-dead-owner"' <<<"$lane_takeover_record" >/dev/null \
+  || fail "main-red lane takeover record is invalid: $lane_takeover_record"
+coord_remote_run B lane-release main-red lane-live-owner || fail 'host B could not release the recovered main-red lane'
+
+trial 14 'one hundred two-host lane races have one owner each'
+lane_race_dir="$SIM_WORLD/lane-race"
+mkdir -p "$lane_race_dir"
+for ((lane_trial = 1; lane_trial <= 100; lane_trial++)); do
+  rm -f -- "$lane_race_dir/A.ready" "$lane_race_dir/B.ready" "$lane_race_dir/go"
+  export ZF_COORD_TEST_RACE_DIR="$lane_race_dir" ZF_COORD_TEST_RACE_KEY=lane-merge
+  coord_remote_run A lane-acquire merge "owner-A-$lane_trial" 0 >"$lane_race_dir/A.out" 2>&1 &
+  lane_pid_a=$!
+  coord_remote_run B lane-acquire merge "owner-B-$lane_trial" 0 >"$lane_race_dir/B.out" 2>&1 &
+  lane_pid_b=$!
+  sim_wait_for "$lane_race_dir/A.ready" || fail "lane race $lane_trial host A did not reach the barrier"
+  sim_wait_for "$lane_race_dir/B.ready" || fail "lane race $lane_trial host B did not reach the barrier"
+  : > "$lane_race_dir/go"
+  lane_rc_a=0
+  lane_rc_b=0
+  wait "$lane_pid_a" || lane_rc_a=$?
+  wait "$lane_pid_b" || lane_rc_b=$?
+  [[ ( "$lane_rc_a" == 0 && "$lane_rc_b" == 1 ) || ( "$lane_rc_a" == 1 && "$lane_rc_b" == 0 ) ]] \
+    || fail "lane race $lane_trial returned A=$lane_rc_a B=$lane_rc_b instead of one winner"
+  lane_record="$(coord_remote_run A read lane-merge)" || fail "lane race $lane_trial claim could not be read"
+  lane_owner="$(jq -r '.owner // empty' <<<"$lane_record")"
+  jq -e '.owner_kind == "lane" and .key == "lane-merge" and .subject == "merge" and .unit == "lane-merge"' \
+    <<<"$lane_record" >/dev/null || fail "lane race $lane_trial did not publish a lane claim: $lane_record"
+  if [[ "$lane_owner" == "owner-A-$lane_trial" ]]; then
+    coord_remote_run A lane-release merge "$lane_owner" || fail "lane race $lane_trial host A could not release"
+  elif [[ "$lane_owner" == "owner-B-$lane_trial" ]]; then
+    coord_remote_run B lane-release merge "$lane_owner" || fail "lane race $lane_trial host B could not release"
+  else
+    fail "lane race $lane_trial published unexpected owner $lane_owner"
+  fi
+done
+unset ZF_COORD_TEST_RACE_DIR ZF_COORD_TEST_RACE_KEY
 
 printf 'coord.test.sh: PASS\n'

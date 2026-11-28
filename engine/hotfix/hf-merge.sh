@@ -18,6 +18,7 @@ else
 fi
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh" # deploy.env: a clean environment still sees the deployment's unit prefix
+coord_source_if_enabled
 source "$here/../land-admit.sh"
 # Same setting lib.sh resolves; this script runs without sourcing it.
 UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
@@ -52,7 +53,14 @@ while IFS= read -r check; do
 done < <(jq -r '.required[]' "$required_checks_file")
 
 title=$(jq -r '.title' <<<"$info")
-land_merge_pr "$pr" "$head_sha" --subject "$title [hotfix] (#$pr)"
+if coord_lane_run merge "${ZF_COORD_MERGE_LANE_WAIT_SECONDS:-${MERGE_LOCK_WAIT_SECONDS:-4200}}" \
+    land_merge_pr "$pr" "$head_sha" --subject "$title [hotfix] (#$pr)"; then
+  :
+else
+  merge_lane_status=$?
+  echo "hf-merge: merge lane operation failed status=$merge_lane_status" >&2
+  exit "$merge_lane_status"
+fi
 
 if [[ "$image_lane" == 1 ]]; then
   gate_wait="${HF_RELEASE_GATE_WAIT_SECONDS:-7200}"

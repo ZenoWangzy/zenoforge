@@ -171,8 +171,19 @@ run_release_train() {
       -E http_proxy -E https_proxy -E no_proxy -E NODE_USE_ENV_PROXY \
       -E MAC_AUTOPILOT_RUNTIME_DIR="$A" -E MAC_AUTOPILOT_ROOT="$ROOT" \
       -E ZF_ENGINE_DIR="$engine_dir" -E ZF_REPO_DIR="$repo_dir" -E ZF_CONFIG_ROOT="$config_root" \
+      -E "ZF_COORD=${ZF_COORD:-off}" -E ZF_COORD_LEASE_SECONDS -E ZF_COORD_RELEASE_LANE_WAIT_SECONDS \
       -E ZF_CDP_BROWSER_LEASE_SCRIPT="$lease_script" \
-      /bin/bash -c "exec /bin/bash '$train_script' >> '$A/release-train.log' 2>&1" >/dev/null 2>&1; then
+      -E ZF_RELEASE_TRAIN_SCRIPT="$train_script" -E ZF_RELEASE_TRAIN_LOG="$A/release-train.log" \
+      /bin/bash -c 'source "$ZF_ENGINE_DIR/config.sh" || exit 1
+source "$ZF_ENGINE_DIR/lib.d/transport.sh" || exit 1
+REPO_DIR="$ZF_REPO_DIR"
+coord_source_if_enabled
+owner="$(coord_new_owner)" || exit $?
+if coord_lane_acquire release "$owner" "${ZF_COORD_RELEASE_LANE_WAIT_SECONDS:-0}"; then :; else exit $?; fi
+coord_assert_owned lane-release "$owner" || exit $?
+if /bin/bash "$ZF_RELEASE_TRAIN_SCRIPT" >> "$ZF_RELEASE_TRAIN_LOG" 2>&1; then status=0; else status=$?; fi
+if coord_lane_release release "$owner"; then :; elif (( status == 0 )); then status=3; fi
+exit "$status"' >/dev/null 2>&1; then
     say "release train started"
   else
     say "release train launch failed"
@@ -193,7 +204,14 @@ main_red_lane_ready() { # unit-id new-red-sha；rc 0 = 可以开新单元
 }
 
 # main 的门禁工作流红（默认 Pipeline suites；配置了 merge_gate.main_workflow 的仓库是它）：立即开一个修 main 的直落单元（不等 supervisor 5 小时一查；2026-10-19 门禁因此关了 6 小时）。
-open_main_red_unit() { # sha run-id attempt (a repeated, classified code failure)
+open_main_red_unit() {
+  local status
+  if coord_lane_run main-red "${ZF_COORD_MAIN_RED_LANE_WAIT_SECONDS:-120}" open_main_red_unit_owned "$@"; then return 0; else status=$?; fi
+  if (( status == 75 )) && [[ "${COORD_LANE_BUSY:-0}" == 1 ]]; then say "main-red lane busy: unit creation deferred"; return 0; fi
+  return "$status"
+}
+
+open_main_red_unit_owned() {
   local id="main-red-${1:0:9}" failed task attempt="${3:-}" gate_wf
   gate_wf="$(main_gate_workflow)"
   local recovery_session="${AGENT_HOME:-${HOME:-}/.zenoforge}/main-red/$1.json"

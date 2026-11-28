@@ -10,6 +10,9 @@ coord_unit_key() { [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || return 2; printf 'unit
 coord_new_owner() { printf 'owner-off-%s-%s\n' "$BASHPID" "$RANDOM"; }
 coord_read() { return 1; }
 coord_acquire() { return 0; }
+coord_lane_acquire() { return 0; }
+coord_lane_release() { return 0; }
+coord_lane_run() { [[ $# -ge 3 ]] || return 2; shift 2; COORD_LANE_BUSY=0; "$@"; }
 coord_acquire_feeder() { coord_acquire "$1" "$2" feeder "$3" "$4" "$5"; }
 coord_acquire_many() { return 0; }
 coord_release() { return 0; }

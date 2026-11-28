@@ -1,4 +1,37 @@
 {
+  "engine/coord.sh": [
+    "engine/coord.test.sh",
+    "engine/coord/coordination.test.sh",
+    "engine/coord/ctl.test.sh"
+  ],
+  "engine/coord-off.sh": [
+    "engine/coord.test.sh",
+    "engine/coord-source.test.sh"
+  ],
+  "engine/coord-remote.sh": [
+    "engine/coord.test.sh",
+    "engine/coord/coordination.test.sh"
+  ],
+  "engine/lib.d/merge-lane.sh": [
+    "engine/lib.test.sh",
+    "engine/optimistic-merge.test.sh"
+  ],
+  "engine/mac-autopilot/scheduler.d/land-lane.sh": [
+    "engine/mac-autopilot/scheduler.test.sh"
+  ],
+  "engine/land-direct-main-lane.sh": [
+    "engine/land-direct-main.test.sh",
+    "engine/land-agent-home.test.sh"
+  ],
+  "engine/land-queue-lane.sh": [
+    "engine/land-queue-lane.test.sh"
+  ],
+  "engine/land-queue.sh": [
+    "engine/land-queue-lane.test.sh"
+  ],
+  "engine/related-tests.d/coord-sim-worker.json": [
+    "engine/focused-test-paths.test.mjs"
+  ],
   "engine/coord/sim/worker.sh": [
     "engine/coord/coordination.test.sh"
   ]

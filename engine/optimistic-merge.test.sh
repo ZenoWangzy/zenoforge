@@ -224,6 +224,18 @@ assert_eq "only the merge API observes the mutex held" 'merge API observed lock'
 if flock -n "$MERGE_LOCK_FILE" -c true; then LOCK_RELEASED=yes; else LOCK_RELEASED=no; fi
 assert_eq "merge mutex is released after the API call" yes "$LOCK_RELEASED"
 
+rm -f "$FAKE_MERGE_STATE_FILE"
+effect_claim_for() { return 2; }
+if merge_pr_and_reconcile 710008 'fixture merge' "$body_file" "$LOCK_HEAD"; then
+  EFFECT_CLAIM_RC=0
+else
+  EFFECT_CLAIM_RC=$?
+fi
+unset -f effect_claim_for
+assert_eq "failed effect admission is preserved" 2 "$EFFECT_CLAIM_RC"
+if flock -n "$MERGE_LOCK_FILE" -c true; then LOCK_RELEASED=yes; else LOCK_RELEASED=no; fi
+assert_eq "merge mutex is released after effect admission fails" yes "$LOCK_RELEASED"
+
 # A PR head can pass its own suite while the same suite fails when the PR is
 # combined with a newer main. The merge gate must test that combined tree.
 merge_case_failures=0

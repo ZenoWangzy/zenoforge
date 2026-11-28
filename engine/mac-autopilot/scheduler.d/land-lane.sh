@@ -18,7 +18,13 @@ launch_land() { # id pr sha title report log workdir reviewed-pr-head [issue]
 }
 declare -F slow_call_yield >/dev/null 2>&1 || source "$(dirname -- "${BASH_SOURCE[0]}")/lock-free-calls.sh"
 fast_land_clone_collect() { FAST_LAND_WT="$(ensure_clone "$1")"; return 0; } # row 898: the land clone runs with the ledger lock released
-fast_land_lane() { # 一次只落一个；与产品合并门禁无关（land-direct-main 自带 focused 检查与锁）
+fast_land_lane() {
+  local status
+  if coord_lane_run land "${MERGE_LANE_WAIT:-120}" fast_land_lane_owned "$@"; then return 0; else status=$?; fi
+  if (( status == 75 )) && [[ "${COORD_LANE_BUSY:-0}" == 1 ]]; then say "fast-land lane busy: pass skipped"; return 0; fi
+  return "$status"
+}
+fast_land_lane_owned() {
   local u id pr approved target head candidate reviewed_pr_head title wt rep
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
   jqf -e 'any(.units[]; .stage=="landing")' "$UNITS" >/dev/null && return 0
