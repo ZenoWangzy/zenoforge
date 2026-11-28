@@ -72,7 +72,7 @@
 1	engine/config-root.test.sh
 111	engine/config.sh
 11	engine/config.test.sh
-27	engine/coord.sh
+20	engine/coord.sh
 3	engine/coord/caps.sh
 1	engine/coord/caps.test.sh
 6	engine/coord/coordination.test.sh
@@ -103,10 +103,10 @@
 7	engine/eval/fresh-agent.mjs
 6	engine/eval/graders.mjs
 1	engine/eval/graders.test.mjs
-34	engine/eval/run-eval.mjs
-9	engine/eval/runner.test.mjs
+32	engine/eval/run-eval.mjs
+6	engine/eval/runner.test.mjs
 14	engine/eval/stage-call.sh
-51	engine/execution-admission.py
+46	engine/execution-admission.py
 2	engine/execution-admission.sh
 35	engine/execution-admission.test.py
 2	engine/factory/check-rebase.sh
@@ -189,7 +189,7 @@
 2	engine/land-admit.sh
 2	engine/land-agent-home.test.sh
 22	engine/land-direct-main-bootstrap.sh
-107	engine/land-direct-main.sh
+106	engine/land-direct-main.sh
 3	engine/land-gate.test.sh
 22	engine/land-pin-preflight.test.sh
 1	engine/land-pipeline-suites-absent.test.sh
@@ -269,7 +269,7 @@
 4	engine/luna-plugins-off.test.sh
 6	engine/mac-autopilot/advisor-incident.test.sh
 2	engine/mac-autopilot/advisor-provider-missing.test.sh
-33	engine/mac-autopilot/aged-pr-lifecycle.test.sh
+32	engine/mac-autopilot/aged-pr-lifecycle.test.sh
 10	engine/mac-autopilot/arbiter_health.py
 13	engine/mac-autopilot/bell-drift-sigs.test.sh
 4	engine/mac-autopilot/bell-guards.sh
@@ -292,7 +292,7 @@
 8	engine/mac-autopilot/daemon-self-check.sh
 3	engine/mac-autopilot/daemon-self-check.test.sh
 2	engine/mac-autopilot/dashboard-attention.test.sh
-33	engine/mac-autopilot/dashboard-front.test.sh
+32	engine/mac-autopilot/dashboard-front.test.sh
 6	engine/mac-autopilot/dashboard-modules.test.sh
 1	engine/mac-autopilot/dashboard_titles.py
 1	engine/mac-autopilot/delivery_diagnostics.py
@@ -306,7 +306,7 @@
 9	engine/mac-autopilot/engine-canary.test.sh
 14	engine/mac-autopilot/engine-override-review-gate.test.sh
 5	engine/mac-autopilot/escape-suite-self-check.test.sh
-14	engine/mac-autopilot/eval-regression-revert.test.sh
+13	engine/mac-autopilot/eval-regression-revert.test.sh
 1	engine/mac-autopilot/existing_walk_health.py
 4	engine/mac-autopilot/factory_trend.py
 2	engine/mac-autopilot/factory_trend.test.sh
@@ -314,7 +314,7 @@
 32	engine/mac-autopilot/footprint-source-count.test.sh
 6	engine/mac-autopilot/founder_reqs.py
 3	engine/mac-autopilot/founder_reqs.test.sh
-53	engine/mac-autopilot/gen_dashboard.py
+52	engine/mac-autopilot/gen_dashboard.py
 3	engine/mac-autopilot/handoff-scan.test.sh
 22	engine/mac-autopilot/harvest-late-report.test.sh
 8	engine/mac-autopilot/harvest-scope-stop.test.sh
@@ -331,8 +331,8 @@
 5	engine/mac-autopilot/incident-rule-label.test.sh
 10	engine/mac-autopilot/intake-author.test.sh
 4	engine/mac-autopilot/intake-auto-filed.test.sh
-17	engine/mac-autopilot/intake-existing-walk.test.sh
-12	engine/mac-autopilot/intake-handoff-skip.test.sh
+16	engine/mac-autopilot/intake-existing-walk.test.sh
+11	engine/mac-autopilot/intake-handoff-skip.test.sh
 13	engine/mac-autopilot/intake-judge-station.test.sh
 11	engine/mac-autopilot/intake-refill-flush.test.sh
 2	engine/mac-autopilot/intake-task-untrusted.test.sh
@@ -420,7 +420,7 @@
 9	engine/mac-autopilot/scheduler.d/ci-cancel-stale.test.sh
 2	engine/mac-autopilot/scheduler.d/ci-merge-admission-batch.test.sh
 6	engine/mac-autopilot/scheduler.d/ci-status-relabel.test.sh
-92	engine/mac-autopilot/scheduler.d/ci-status.sh
+91	engine/mac-autopilot/scheduler.d/ci-status.sh
 3	engine/mac-autopilot/scheduler.d/ci-stuck-unqueued.sh
 69	engine/mac-autopilot/scheduler.d/cleanup.sh
 12	engine/mac-autopilot/scheduler.d/clone-recovery.test.sh
@@ -469,7 +469,7 @@
 25	engine/mac-autopilot/scheduler.d/intake-index.sh
 8	engine/mac-autopilot/scheduler.d/intake-judge-station.sh
 16	engine/mac-autopilot/scheduler.d/intake-steps.sh
-80	engine/mac-autopilot/scheduler.d/intake.sh
+76	engine/mac-autopilot/scheduler.d/intake.sh
 20	engine/mac-autopilot/scheduler.d/land-lane.sh
 24	engine/mac-autopilot/scheduler.d/lib-bridge.sh
 12	engine/mac-autopilot/scheduler.d/lock-free-calls.sh
@@ -495,7 +495,7 @@
 9	engine/mac-autopilot/scheduler.d/release-deps-station.sh
 12	engine/mac-autopilot/scheduler.d/release-deps-station.test.sh
 1	engine/mac-autopilot/scheduler.d/repair-check-rows.test.sh
-56	engine/mac-autopilot/scheduler.d/reports.sh
+55	engine/mac-autopilot/scheduler.d/reports.sh
 10	engine/mac-autopilot/scheduler.d/review-fixes.sh
 75	engine/mac-autopilot/scheduler.d/review-rules.sh
 67	engine/mac-autopilot/scheduler.d/self-check.sh
@@ -518,7 +518,7 @@
 1	engine/mac-autopilot/scheduler.d/worker-rc75.test.sh
 34	engine/mac-autopilot/scheduler.d/worker-scope.sh
 216	engine/mac-autopilot/scheduler.sh
-310	engine/mac-autopilot/scheduler.test.sh
+309	engine/mac-autopilot/scheduler.test.sh
 2	engine/mac-autopilot/self-check-main-sync.test.sh
 3	engine/mac-autopilot/set-unit-compact-ledger.test.sh
 5	engine/mac-autopilot/size-admission-estimate.test.sh
@@ -677,8 +677,8 @@
 17	engine/release-same-failure-hold.test.sh
 2	engine/release/runner.sh
 16	engine/repair-resume.test.sh
-7	engine/retro/retro-verify.py
-8	engine/retro/retro.py
+6	engine/retro/retro-verify.py
+6	engine/retro/retro.py
 14	engine/retro/retro.test.sh
 1	engine/retro/run-retro.sh
 46	engine/risk-class.mjs
@@ -689,7 +689,7 @@
 18	engine/roadmap-query-limit.test.sh
 2	engine/roadmap-snapshot.test.sh
 51	engine/roadmap.sh
-8	engine/rule-lane.sh
+5	engine/rule-lane.sh
 7	engine/rule-lane.test.sh
 4	engine/run-advisor-batch-result.test.sh
 47	engine/run-advisor-batch.sh
@@ -787,7 +787,7 @@
 11	tools/main-red-revert.sh
 24	tools/main-red-revert.test.sh
 3	tools/merge-pr-bootstrap.sh
-51	tools/merge-pr.sh
+49	tools/merge-pr.sh
 2	tools/pin-fail-triage.sh
 28	tools/pin-vecta.sh
 35	tools/pin-vecta.test.sh
