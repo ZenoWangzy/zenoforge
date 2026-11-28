@@ -29,6 +29,9 @@ source "$SCRIPT_DIR/notify.sh"
 source "$SCRIPT_DIR/notify-effects.sh"
 source "$SCRIPT_DIR/lib.d/transport.sh"
 GIT_FETCH_TIMEOUT_SEC=60
+effect_owner="$(coord_new_owner)"
+coord_acquire "$EXPECTED_EFFECT_CLAIM" "$effect_owner" effect "$EXPECTED_EFFECT_KEY" effect-mail effect
+ZF_COORD_OWNER="$effect_owner"
 
 DRY_RUN=0
 NOTIFY_LOG_FILE="$TMP_DIR/notify.log"
@@ -67,7 +70,7 @@ fi
 
 assert_eq message-id message-123 "$send_output"
 
-claim_record="$(git --git-dir="$TMP_DIR/remote.git" cat-file blob "refs/claims/$EXPECTED_EFFECT_CLAIM:claim.json")"
+claim_record="$(coord_read "$EXPECTED_EFFECT_CLAIM")"
 jq -e --arg key "$EXPECTED_EFFECT_KEY" '
   .intents[$key].kind == "mail" and .intents[$key].state == "done"
   and (.intents[$key].result.stdout | contains("message-123"))
@@ -75,6 +78,7 @@ jq -e --arg key "$EXPECTED_EFFECT_KEY" '
   printf 'mail intent was not completed in the coordinator record: %s\n' "$claim_record" >&2
   exit 1
 }
+coord_release "$EXPECTED_EFFECT_CLAIM" "$effect_owner"
 
 readarray -d '' -t actual_request < "$CURL_ARGS_LOG"
 [[ ${#actual_request[@]} == 14 && "${actual_request[11]}" == @* ]]
