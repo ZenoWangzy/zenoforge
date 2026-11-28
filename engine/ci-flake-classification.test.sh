@@ -125,6 +125,7 @@ printf '[]\n' > "$tmp/issues.json"
 printf '9001\n' > "$tmp/next-issue"
 : > "$tmp/mutations"
 : > "$tmp/comments"
+: > "$tmp/roadmap-links"
 
 assert_eq() {
   [[ "$2" == "$3" ]] || { echo "not ok - $1 (expected $2, got $3)" >&2; exit 1; }
@@ -170,12 +171,11 @@ assert_eq 'new all-passed signature remains a check failure' 1 "$status"
 assert_eq 'new signature files exactly one issue' 1 "$(jq 'length' "$tmp/issues.json")"
 jq -e '([.[0].labels[].name] | sort) == ["needs-triage","pipeline-system"] and (.[0].body | contains("38029158407") and contains("PR #3128"))' \
   "$tmp/issues.json" >/dev/null
-assert_contains 'new issue is linked to the fallback roadmap epic' "$(cat "$tmp/roadmap-links")" \
-  'api repos/test/repo/issues/914/sub_issues --method POST -F sub_issue_id=109001 -F replace_parent=true'
+assert_eq 'unmatched issue stays unparented for intake triage' 0 "$(wc -l < "$tmp/roadmap-links")"
 if run_flake 38029158408 "$one_failed" "$new_log" 1 3129; then status=0; else status=$?; fi
 assert_eq 'second occurrence uses new open signature instead of filing another issue' 0 "$status"
 assert_eq 'one issue remains for repeated signature' 1 "$(jq 'length' "$tmp/issues.json")"
-assert_eq 'repeated occurrence does not route a duplicate issue' 1 "$(wc -l < "$tmp/roadmap-links")"
+assert_eq 'repeated unmatched occurrence stays unparented' 0 "$(wc -l < "$tmp/roadmap-links")"
 
 # Existing known test-name signature can retry its one failed test.
 test_log=$'Tests 2 passed, 1 failed (3)\nFAIL tests/order-correction.test.ts > order-correction\norder-correction exceeded 2000 ms'
