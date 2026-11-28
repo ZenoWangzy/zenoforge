@@ -315,12 +315,11 @@ intake_priority_judge() {
 }
 
 intake_priority_place_route() {
-  local REPO="$1" issue_file="$2" issue_number="$3" route="$4" cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}" tree='' temp_dir='' rc parent_url
+  local REPO="$1" issue_file="$2" issue_number="$3" route="$4" cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}" tree='' temp_dir='' rc
   if [[ "$route" == none-fits ]]; then
     # Creation-time placement can fail under a REST backoff (row 580); a parented issue keeps the no-op.
-    parent_url="$(gh api "repos/$REPO/issues/$issue_number" --jq '.parent_issue_url // empty')" || return 1
-    [[ -z "$parent_url" ]] || return 0
-    route=''
+    gh api "repos/$REPO/issues/$issue_number" --jq '.parent_issue_url // empty' >/dev/null || return 1
+    return 0
   fi
   if [[ -n "$cache_file" && -r "$cache_file" ]]; then
     tree="$(cat -- "$cache_file")" || tree=''

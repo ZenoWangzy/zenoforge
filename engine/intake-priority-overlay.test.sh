@@ -188,20 +188,21 @@ expect_eq 'parent-full warning keeps the GitHub rejection reason' true \
 orphan_issue_file="$test_root/orphan.issue.json"
 orphan_result_file="$test_root/orphan.result.json"
 orphan_log="$test_root/orphan-gh.log"
-jq -cn '{number:9031,title:"Orphan none-fits fixture",body:"",labels:[]}' > "$orphan_issue_file"
+jq -cn '{number:9031,title:"Domain pack intake",body:"",labels:[{name:"needs-triage"}]}' > "$orphan_issue_file"
 jq -cn '{status:"answered",adopted:true,confidence:0.99,
   decision:({priority:"priority:normal",route:"none-fits",duplicate:false,duplicateCandidates:[],stale:false} | tojson),
   intake_context:{roadmap_containers:[]}}' > "$orphan_result_file"
 jq -cn '{roots:[{number:90,title:"Roadmap",state:"OPEN",labels:["roadmap"],children:[
   {number:91,title:"Theme",state:"OPEN",labels:["roadmap-theme"],children:[
+    {number:103,title:"Domain pack",state:"OPEN",labels:["roadmap-epic"],children:[]},
     {number:102,title:"待归类",state:"OPEN",labels:["roadmap-epic"],children:[]}
   ]}
 ]}]}' > "$test_root/orphan-roadmap.json"
 INTAKE_OVERLAY_LOG="$orphan_log" ZF_ROADMAP_TREE_CACHE_FILE="$test_root/orphan-roadmap.json" \
   bash "$SCRIPT_DIR/intake-priority.sh" apply --repo fixture/repo --issue-file "$orphan_issue_file" --result-file "$orphan_result_file" \
   > "$test_root/orphan.out" 2>&1 || true
-expect_eq 'orphan none-fits issue is placed under the 待归类 epic' true \
-  "$(grep -qF 'repos/fixture/repo/issues/102/sub_issues' "$orphan_log" && echo true || echo false)"
+expect_eq 'orphan none-fits issue stays unparented for triage' false \
+  "$(grep -qF 'repos/fixture/repo/issues/103/sub_issues' "$orphan_log" && echo true || echo false)"
 
 founder_issue_file="$test_root/founder.issue.json"
 founder_result_file="$test_root/founder.result.json"

@@ -108,7 +108,7 @@ jq -n --argjson read_at "$(date +%s)" \
 jq '.allow_roles = {sonnet: ["review_fallback"]} | .switches["roadmap-order"] = false' \
   "$MODEL_POLICY_TEST_DEFAULT_FILE" > "$bell_agent/model-policy.json"
 cat > "$bell/roadmap-tree.json" <<'JSON'
-{"roots":[{"number":900,"title":"the product roadmap","state":"open","labels":["roadmap"],"children":[{"number":910,"title":"开发流水线与运行稳定","state":"open","milestone":"开发流水线与运行稳定","labels":["roadmap-theme"],"children":[{"number":912,"title":"Automation issue tracking","state":"open","labels":["roadmap-epic"],"children":[]}]},{"number":911,"title":"产品研发","state":"open","milestone":"产品研发","labels":["roadmap-theme"],"children":[{"number":913,"title":"待归类","state":"open","labels":["roadmap-epic"],"children":[]}]}]}]}
+{"roots":[{"number":900,"title":"the product roadmap","state":"open","labels":["roadmap"],"children":[{"number":910,"title":"开发流水线与运行稳定","state":"open","milestone":"开发流水线与运行稳定","labels":["roadmap-theme"],"children":[{"number":912,"title":"GLM runtime fallback incidents","state":"open","labels":["roadmap-epic"],"children":[]}]},{"number":911,"title":"产品研发","state":"open","milestone":"产品研发","labels":["roadmap-theme"],"children":[{"number":913,"title":"待归类","state":"open","labels":["roadmap-epic"],"children":[]}]}]}]}
 JSON
 printf '%s\n' '{"engine":{"glm_fallback_incident_threshold":3}}' > "$bell_cfg/config.json"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$bell_claude/claude"

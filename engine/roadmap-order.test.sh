@@ -131,30 +131,33 @@ TRUNCATED_DEPENDENTS="$(jq '.[0].data.repository.issues.nodes[0].blocking.pageIn
 assert_eq 'nested blocking pagination truncation fails closed' false \
   "$(roadmap_tree_is_valid "$(roadmap_tree_normalize_pages "$TRUNCATED_DEPENDENTS")" && echo true || echo false)"
 
-inherited="$(roadmap_choose_epic "$TREE" '{"title":"New child"}' 106)"
+inherited="$(roadmap_choose_epic "$TREE" '{"title":"Domain pack child"}' 106)"
 assert_eq 'split/follow-up inherits source roadmap epic' 902 "$(jq -r '.epic' <<< "$inherited")"
 assert_eq 'inheritance mirrors theme milestone' 'UX 2026' "$(jq -r '.milestone' <<< "$inherited")"
 
 classified="$(roadmap_choose_epic "$TREE" '{"title":"Domain pack intake labels"}' '')"
 assert_eq 'title classifier selects best epic' 902 "$(jq -r '.epic' <<< "$classified")"
 fallback="$(roadmap_choose_epic "$TREE" '{"title":"Unrelated invoice export"}' '')"
-assert_eq 'unmatched issue falls under 待归类' 904 "$(jq -r '.epic' <<< "$fallback")"
+assert_eq 'unmatched issue has no generic parent' null "$(jq -r '.epic' <<< "$fallback")"
 # One shared Chinese bigram (支付) is not enough to link; it must fall to 待归类.
 CN_TREE="$(jq '.roots[0].children[0].children[0].title = "支付对账流程"' <<< "$TREE")"
 weak_bigram="$(roadmap_choose_epic "$CN_TREE" '{"title":"支付宝退款"}' '')"
-assert_eq 'one shared bigram does not link; falls under 待归类' 904 "$(jq -r '.epic' <<< "$weak_bigram")"
+assert_eq 'one shared bigram does not create a parent' null "$(jq -r '.epic' <<< "$weak_bigram")"
 
 CATEGORY_TREE="$(jq '.roots[0].children += [{number:910,title:"开发流水线与运行稳定",state:"OPEN",milestone:"开发流水线与运行稳定",labels:["roadmap-theme"],children:[{number:912,title:"自动派发与规则校验持续可靠",state:"OPEN",labels:["roadmap-epic"],children:[]}]}]' <<< "$TREE")"
 CATEGORY_TREE="$(jq '.roots[0].children[1].children[0].children += [{number:913,title:"Product source issue",state:"OPEN",labels:["needs-triage"],children:[]}]' <<< "$CATEGORY_TREE")"
-pipeline_classified="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"Domain pack pipeline dispatch","body":"Issue from pipeline automation.","labels":[{"name":"pipeline-system"}]}' '913')"
-assert_eq 'pipeline-system label scopes inherited source to pipeline theme' 912 \
+pipeline_classified="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"自动派发 pipeline dispatch","body":"Issue from pipeline automation.","labels":[{"name":"pipeline-system"}]}' '913')"
+assert_eq 'pipeline-system source inherits only when title matches the parent' 912 \
   "$(jq -r '.epic' <<< "$pipeline_classified")"
+pipeline_unmatched="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"External follow-up","labels":[{"name":"pipeline-system"}]}' '913')"
+assert_eq 'pipeline-system source does not inherit an unrelated parent' null \
+  "$(jq -r '.epic' <<< "$pipeline_unmatched")"
 pipeline_health_classified="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"pipeline health: release.hotpatch_blockers unhealthy","body":"Node health metric stayed unhealthy.","labels":[{"name":"pipeline-system"}]}' '')"
 assert_eq 'pipeline health issues map to the pipeline-system epic without a 待归类 epic' 912 \
   "$(jq -r '.epic' <<< "$pipeline_health_classified")"
 
 PF_TREE="$(jq '.roots[0].children[1].children += [{number:915,title:"待归类",state:"OPEN",milestone:"开发流水线与运行稳定",labels:["roadmap-epic"],children:[]}]' <<< "$CATEGORY_TREE")"
-assert_eq 'product fallback ignores pipeline-theme 待归类' 904 \
+assert_eq 'unmatched product issue has no generic parent' null \
   "$(roadmap_choose_epic "$PF_TREE" '{"title":"Unrelated invoice export"}' '' | jq -r '.epic')"
 assert_eq 'theme without 待归类 epic is reported' fallback-epic-missing:#910 \
   "$(roadmap_health_assess "$CATEGORY_TREE" '[]' 0 | jq -r '.item_keys[] | select(startswith("fallback-epic-missing"))')"
@@ -177,7 +180,7 @@ gh() {
   printf '%s\n' "$((10000 + BASH_REMATCH[1]))"
 }
 guarded_write() { printf '%s\n' "$*" >> "$ROADMAP_COMMANDS"; }
-roadmap_place_issue "$test_tmp/tree.json" 120 '{"title":"Follow-up"}' 106
+roadmap_place_issue "$test_tmp/tree.json" 120 '{"title":"Domain pack follow-up"}' 106
 assert_eq 'inherited ticket attaches to source epic before milestone write' \
   $'gh api repos/fixture/repo/issues/902/sub_issues --method POST -F sub_issue_id=10120 -F replace_parent=true\ngh issue edit 120 --repo fixture/repo --milestone UX 2026' \
   "$(cat "$ROADMAP_COMMANDS")"
@@ -204,11 +207,11 @@ guarded_write() {
     return 1
   fi
 }
-if roadmap_place_issue "$test_tmp/tree.json" 122 '{"title":"Retry follow-up"}' 106; then
+if roadmap_place_issue "$test_tmp/tree.json" 122 '{"title":"Domain pack retry follow-up"}' 106; then
   echo 'not ok - failed milestone write must keep intake incomplete' >&2
   exit 1
 fi
-roadmap_place_issue "$test_tmp/tree.json" 122 '{"title":"Retry follow-up"}' 106
+roadmap_place_issue "$test_tmp/tree.json" 122 '{"title":"Domain pack retry follow-up"}' 106
 assert_eq 'intake retry does not POST a duplicate parent link' 1 "$(grep -c '^gh api ' "$ROADMAP_RETRY_COMMANDS")"
 assert_eq 'intake retry retries milestone after parent link succeeds' 2 \
   "$(grep -c '^gh issue edit ' "$ROADMAP_RETRY_COMMANDS")"
@@ -230,7 +233,7 @@ roadmap_ensure_issue_parent 119 ready-for-agent '{"title":"Depth-2 leaf"}'
 assert_eq 'depth-2 leaf can enter active stage without reparenting' \
   'gh issue edit 119 --repo fixture/repo --milestone UX 2026' "$(cat "$ROADMAP_COMMANDS")"
 : > "$ROADMAP_COMMANDS"
-roadmap_ensure_issue_parent 123 on-hold '{"title":"Follow-up"}' 106
+roadmap_ensure_issue_parent 123 on-hold '{"title":"Domain pack follow-up"}' 106
 assert_eq 'held ticket is placed before entering on-hold' \
   $'gh api repos/fixture/repo/issues/902/sub_issues --method POST -F sub_issue_id=10123 -F replace_parent=true\ngh issue edit 123 --repo fixture/repo --milestone UX 2026' \
   "$(cat "$ROADMAP_COMMANDS")"
@@ -261,11 +264,10 @@ roadmap_ensure_issue_parent 902 needs-triage '{"number":902,"title":"Domain pack
 assert_eq 'roadmap container reports the tracker-only intake outcome' 3 "$container_intake_status"
 intake_issue_json='{"number":121,"title":"Follow-up","body":"","state":"OPEN","labels":[]}'
 issue_transition 121 needs-triage roadmap-intake . 0 "$intake_issue_json" 106
-assert_eq 'intake parent and milestone precede first stage label' \
-  $'gh api repos/fixture/repo/issues/902/sub_issues --method POST -F sub_issue_id=10121 -F replace_parent=true\ngh issue edit 121 --repo fixture/repo --milestone UX 2026' \
-  "$(head -n 2 "$ROADMAP_COMMANDS")"
-assert_eq 'first stage label follows parent and milestone writes' true \
-  "$(sed -n '3p' "$ROADMAP_COMMANDS" | grep -Fq -- '--add-label needs-triage' && echo true || echo false)"
+assert_eq 'unmatched intake issue does not inherit an unrelated roadmap epic' false \
+  "$(grep -Fq 'repos/fixture/repo/issues/902/sub_issues' "$ROADMAP_COMMANDS" && echo true || echo false)"
+assert_eq 'unmatched intake issue receives the triage label' true \
+  "$(grep -Fq -- '--add-label needs-triage' "$ROADMAP_COMMANDS" && echo true || echo false)"
 assert_eq 'a roadmap root cannot receive an active stage label' false \
   "$(roadmap_ensure_issue_parent 900 ready-for-agent '{}' && echo true || echo false)"
 

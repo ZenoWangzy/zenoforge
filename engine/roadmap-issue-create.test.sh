@@ -103,14 +103,47 @@ assert_eq 'whitespace-only --body-file is refused with rc 64' 64 "$whitespace_bo
 assert_eq 'whitespace-only --body-file does not call gh issue create' false \
   "$(grep -Eq '^issue create ' "$FAKE_GH_LOG" && echo true || echo false)"
 
+cat > "$test_tmp/topic-tree.json" <<'JSON'
+{"roots":[{"number":900,"title":"the product Roadmap","state":"OPEN","labels":["roadmap"],"children":[{"number":901,"title":"Enterprise capability","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":8291,"title":"Enterprise capability map 大企业平台能力","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":1938,"title":"模型名称与实际能力一致","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":3311,"title":"账号会话恢复流程","state":"OPEN","labels":["roadmap-epic"],"children":[]}]},{"number":910,"title":"Authorization features","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":6709,"title":"确认卡加以后都批准","state":"OPEN","labels":["roadmap-epic"],"children":[]},{"number":3293,"title":"渠道对话记录和账号状态可回查","state":"OPEN","labels":["roadmap-epic"],"children":[]}]},{"number":920,"title":"Other requests","state":"OPEN","labels":["roadmap-theme"],"children":[{"number":9990,"title":"待归类","state":"OPEN","labels":["roadmap-epic"],"children":[]}]}]}]}
+JSON
+jq '.roots[0].children[0].children[0].children += [{number:99888,title:"Enterprise capability source",state:"OPEN",labels:["needs-triage"],children:[]}]' \
+  "$test_tmp/topic-tree.json" > "$test_tmp/topic-tree.next.json"
+mv "$test_tmp/topic-tree.next.json" "$test_tmp/topic-tree.json"
+
+assert_topic_route() {
+  local name="$1" number="$2" title="$3" body="$4" expected_parent="$5" issue_url actual_parent
+  ZF_ROADMAP_TREE_CACHE_FILE="$test_tmp/topic-tree.json"
+  FAKE_NEXT_ISSUE="$number" FAKE_ISSUE_TITLE="$title" FAKE_ISSUE_BODY="$body"
+  FAKE_ISSUE_LABELS=needs-triage FAKE_LINK_FAIL=0
+  export ZF_ROADMAP_TREE_CACHE_FILE FAKE_NEXT_ISSUE FAKE_ISSUE_TITLE FAKE_ISSUE_BODY FAKE_ISSUE_LABELS FAKE_LINK_FAIL
+  : > "$FAKE_GH_LOG"
+  issue_url="$(guarded_write gh issue create --repo "$REPO" --title "$title" --body "$body")"
+  assert_eq "$name is created" "https://github.com/example-maintainer/example-repo/issues/$number" "$issue_url"
+  assert_eq "$name keeps the triage label" true "$(grep -Eq '^issue create .*--label needs-triage' "$FAKE_GH_LOG" && echo true || echo false)"
+  actual_parent="$(sed -nE 's#^api repos/example-maintainer/example-repo/issues/([0-9]+)/sub_issues .*#\1#p' "$FAKE_GH_LOG")"
+  assert_eq "$name parent route" "$expected_parent" "$actual_parent"
+}
+
+assert_topic_route 'enterprise platform ticket ignores unrelated model text' 99101 '大企业平台能力的先后' '模型名称与实际能力一致' 8291
+assert_topic_route 'approval ticket ignores unrelated channel text' 99102 '确认卡加「以后都批准」' '渠道对话记录和账号状态可回查' 6709
+assert_topic_route 'map child follows its topic despite account text in the body' 99103 'Map child: 大企业平台能力的先后' '账号会话恢复流程' 8291
+assert_topic_route 'model text in the body does not parent a generic ticket' 99104 'Fresh cleanup request' '模型名称与实际能力一致' ''
+assert_topic_route 'channel text in the body does not parent a generic ticket' 99105 'New follow-up request' '渠道对话记录和账号状态可回查' ''
+assert_topic_route 'source reference cannot override a missing title-topic match' 99106 'Fresh cleanup request' '父票 #99888' ''
+
+ZF_ROADMAP_TREE_CACHE_FILE="$test_tmp/tree.json"
+FAKE_NEXT_ISSUE=99000 FAKE_ISSUE_TITLE='Unrelated follow-up'
+FAKE_ISSUE_BODY='Observed evidence with no category keyword.' FAKE_ISSUE_LABELS=needs-triage
+export ZF_ROADMAP_TREE_CACHE_FILE FAKE_NEXT_ISSUE FAKE_ISSUE_TITLE FAKE_ISSUE_BODY FAKE_ISSUE_LABELS
+
 FAKE_ISSUE_TITLE='Unrelated follow-up'
 : > "$FAKE_GH_LOG"
 created_url="$(guarded_write gh issue create --repo "$REPO" --title "$FAKE_ISSUE_TITLE" \
   --body "$FAKE_ISSUE_BODY" --label needs-triage)"
 assert_eq 'guarded issue creation returns URL after linking' \
   'https://github.com/example-maintainer/example-repo/issues/99000' "$created_url"
-assert_eq 'unmatched issue uses existing 待归类 epic' true \
-  "$(grep -Fq 'repos/example-maintainer/example-repo/issues/904/sub_issues' "$FAKE_GH_LOG" && echo true || echo false)"
+assert_eq 'unmatched issue stays unparented for intake triage' '' \
+  "$(sed -nE 's#^api repos/example-maintainer/example-repo/issues/([0-9]+)/sub_issues .*#\1#p' "$FAKE_GH_LOG")"
 assert_eq 'stage label stays on original create request' true \
   "$(grep -Eq '^issue create .*--label needs-triage' "$FAKE_GH_LOG" && echo true || echo false)"
 assert_eq 'automatic issue creation adds the auto-filed label' true \
@@ -132,7 +165,7 @@ assert_eq 'pipeline-system label selects pipeline roadmap theme' true \
   "$(grep -Fq 'repos/example-maintainer/example-repo/issues/912/sub_issues' "$FAKE_GH_LOG" && echo true || echo false)"
 
 cat > "$test_tmp/capacity-tree.json" <<'JSON'
-{"roots":[{"number":900,"title":"the product Roadmap","state":"OPEN","labels":["roadmap"],"children":[{"number":3279,"title":"开发流水线与运行稳定","state":"OPEN","milestone":"开发流水线与运行稳定","labels":["roadmap-theme"],"children":[{"number":3304,"title":"生产异常被发现并有人修复","state":"OPEN","labels":["roadmap-epic"],"children_total":100,"children":[]},{"number":3309,"title":"自动派发与规则校验持续可靠","state":"OPEN","labels":["roadmap-epic"],"children_total":15,"children":[]}]}]}]}
+{"roots":[{"number":900,"title":"the product Roadmap","state":"OPEN","labels":["roadmap"],"children":[{"number":3279,"title":"开发流水线与运行稳定","state":"OPEN","milestone":"开发流水线与运行稳定","labels":["roadmap-theme"],"children":[{"number":3304,"title":"生产异常被发现并有人修复","state":"OPEN","labels":["roadmap-epic"],"children_total":100,"children":[]},{"number":3309,"title":"生产日志异常自动诊断","state":"OPEN","labels":["roadmap-epic"],"children_total":15,"children":[]}]}]}]}
 JSON
 ZF_ROADMAP_TREE_CACHE_FILE="$test_tmp/capacity-tree.json"
 FAKE_NEXT_ISSUE=99006 FAKE_ISSUE_TITLE='生产日志异常 new metric' \
@@ -150,9 +183,9 @@ assert_eq 'creation without an existing stage label starts in triage' true \
   "$(grep -Eq '^issue create .*--label needs-triage' "$FAKE_GH_LOG" && echo true || echo false)"
 
 ZF_ROADMAP_TREE_CACHE_FILE="$test_tmp/tree.json"
-FAKE_NEXT_ISSUE=99007 FAKE_ISSUE_TITLE='Unrelated invoice export after 422' \
+FAKE_NEXT_ISSUE=99007 FAKE_ISSUE_TITLE='Domain pack invoice export after 422' \
   FAKE_ISSUE_BODY='Placement will be rejected by the fake sub-issues API.' \
-  FAKE_ISSUE_LABELS=needs-triage FAKE_FULL_EPIC=904
+  FAKE_ISSUE_LABELS=needs-triage FAKE_FULL_EPIC=902
 export ZF_ROADMAP_TREE_CACHE_FILE FAKE_NEXT_ISSUE FAKE_ISSUE_TITLE FAKE_ISSUE_BODY FAKE_ISSUE_LABELS FAKE_FULL_EPIC
 : > "$FAKE_GH_LOG"
 if guarded_write gh issue create --repo "$REPO" --title "$FAKE_ISSUE_TITLE" --body "$FAKE_ISSUE_BODY" \
@@ -161,7 +194,7 @@ if guarded_write gh issue create --repo "$REPO" --title "$FAKE_ISSUE_TITLE" --bo
   exit 1
 fi
 assert_eq 'fake sub-issues API returned a 422 after creating the issue' true \
-  "$(grep -Fq 'simulated 422 for full epic #904' "$FAKE_GH_LOG" && echo true || echo false)"
+  "$(grep -Fq 'simulated 422 for full epic #902' "$FAKE_GH_LOG" && echo true || echo false)"
 assert_eq 'placement failure leaves a created issue with needs-triage' true \
   "$(grep -Eq '^issue create .*--label needs-triage' "$FAKE_GH_LOG" && echo true || echo false)"
 
@@ -173,12 +206,14 @@ export FAKE_ISSUE_LABELS
 FAKE_NEXT_ISSUE=99005 FAKE_ISSUE_TITLE='Demo wrapper-created follow-up' \
   FAKE_ISSUE_BODY='Body routed before demo-account lookup.'
 export FAKE_NEXT_ISSUE FAKE_ISSUE_TITLE FAKE_ISSUE_BODY
+FAKE_ISSUE_TITLE='Domain pack' FAKE_ISSUE_BODY='Evidence' FAKE_ISSUE_LABELS=needs-triage
+export FAKE_ISSUE_TITLE FAKE_ISSUE_BODY FAKE_ISSUE_LABELS
 : > "$FAKE_GH_LOG"
 
 FAKE_NEXT_ISSUE=99003 FAKE_LINK_FAIL=1
 export FAKE_NEXT_ISSUE FAKE_LINK_FAIL
 : > "$FAKE_GH_LOG"
-if guarded_write gh issue create --repo "$REPO" --title 'Link failure' --body 'Evidence' 2> "$test_tmp/link-failure.log"; then
+if guarded_write gh issue create --repo "$REPO" --title 'Domain pack' --body 'Evidence' 2> "$test_tmp/link-failure.log"; then
   echo 'not ok - parent-link failure must fail issue creation' >&2
   exit 1
 fi
@@ -187,9 +222,9 @@ assert_eq 'link failure names the already-created issue' true \
 printf '%s\n' '{"switches":{"roadmap-order":true}}' > "$MODEL_POLICY_FILE"
 FAKE_LINK_FAIL=0
 roadmap_ensure_issue_parent 99003 needs-triage \
-  '{"number":99003,"title":"Link failure","body":"Evidence","state":"OPEN","labels":[{"name":"needs-triage"}]}'
+  '{"number":99003,"title":"Domain pack","body":"Evidence","state":"OPEN","labels":[{"name":"needs-triage"}]}'
 assert_eq 'failed attach recovers through existing issue-parent helper' true \
-  "$(grep -Fq 'api repos/example-maintainer/example-repo/issues/904/sub_issues --method POST' "$FAKE_GH_LOG" && echo true || echo false)"
+  "$(grep -Fq 'api repos/example-maintainer/example-repo/issues/902/sub_issues --method POST' "$FAKE_GH_LOG" && echo true || echo false)"
 assert_eq 'attach recovery does not create duplicate issue' 1 \
   "$(grep -c '^issue create ' "$FAKE_GH_LOG")"
 
@@ -241,14 +276,14 @@ assert_eq 'check ran on the body file' true \
 
 : > "$body_check_log"; : > "$FAKE_GH_LOG"
 FAKE_NEXT_ISSUE=99020 export FAKE_NEXT_ISSUE
-body_ok_url="$(ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Agent feature' \
+body_ok_url="$(ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Domain pack Agent feature' \
   --body-file "$test_tmp/feature-good.md" --label ready-for-agent,enhancement)"
 assert_eq 'ready-for-agent feature whose check exits 0 is created' \
   'https://github.com/example-maintainer/example-repo/issues/99020' "$body_ok_url"
 
 : > "$body_check_log"; : > "$FAKE_GH_LOG"
 FAKE_NEXT_ISSUE=99021 export FAKE_NEXT_ISSUE
-bug_url="$(ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Agent bug' \
+bug_url="$(ZF_CONFIG_ROOT="$body_cfg" guarded_write gh issue create --repo "$REPO" --title 'Domain pack Agent bug' \
   --body-file "$test_tmp/feature-bad.md" --label ready-for-agent,bug)"
 assert_eq 'bug-labelled ticket skips the body check and is created' \
   'https://github.com/example-maintainer/example-repo/issues/99021' "$bug_url"
@@ -256,7 +291,7 @@ assert_eq 'bug-labelled ticket does not run the check' 0 "$(wc -l < "$body_check
 
 : > "$body_check_log"; : > "$FAKE_GH_LOG"
 FAKE_NEXT_ISSUE=99022 export FAKE_NEXT_ISSUE
-none_url="$(ZF_CONFIG_ROOT="$body_none" guarded_write gh issue create --repo "$REPO" --title 'Agent feature' \
+none_url="$(ZF_CONFIG_ROOT="$body_none" guarded_write gh issue create --repo "$REPO" --title 'Domain pack Agent feature' \
   --body-file "$test_tmp/feature-bad.md" --label ready-for-agent,enhancement)"
 assert_eq 'without roadmap.body_check_command nothing runs and the ticket is created' \
   'https://github.com/example-maintainer/example-repo/issues/99022' "$none_url"
