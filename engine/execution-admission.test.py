@@ -919,14 +919,17 @@ try:sys.exit"""))
         self.capacity(1)
         with (self.home / 'capacity.env').open('a') as handle:
             handle.write('AGENT_EXECUTION_MIN_MEM_MB=6144\nAGENT_EXECUTION_MAX_LOAD=12\n')
+        platform = guard.Platform()
+        process_identity = platform.identity(os.getpid())
+        start_key = "start_ticks" if platform.system == "Linux" else "start_id"
         locks = self.home / 'locks'
         locks.mkdir(exist_ok=True)
         with (locks / 'execution-0.lock').open('a+') as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
-            (locks / 'execution-0.json').write_text(json.dumps(guard.identity(os.getpid(), Path('/proc'))))
+            (locks / 'execution-0.json').write_text(json.dumps(process_identity))
             self.assertEqual(invoke('watch-cleanup').returncode, 75)
             self.assertFalse(receipt.exists())
-        self.assertEqual(invoke('watch-cleanup', str(os.getpid()), guard.identity(os.getpid(), Path('/proc'))['start_ticks']).returncode, 75)
+        self.assertEqual(invoke('watch-cleanup', str(os.getpid()), str(process_identity[start_key])).returncode, 75)
         self.assertFalse(receipt.exists())
         (resource_proc / 'meminfo').write_text('MemAvailable: 6290432 kB\n')  # 6143 MB.
         self.assertEqual(invoke('watch').returncode, 75)

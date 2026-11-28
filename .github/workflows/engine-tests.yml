@@ -209,3 +209,7 @@ jobs:
         env:
           ZF_RUNNER: pidfile
         run: bash engine/portable-shim/zf_units.test.sh
+      - name: Run hostinfo tests
+        run: bash engine/hostinfo.test.sh
+      - name: Run execution admission tests
+        run: bash engine/execution-admission.test.sh
