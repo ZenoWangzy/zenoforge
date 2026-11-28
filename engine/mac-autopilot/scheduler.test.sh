@@ -743,10 +743,11 @@ tick_gh() {
       ;;
     'pr checks')
       if [[ -f "$TF/pipeline-ci-adoption" ]]; then
-        local started_at
+        local started_at adopt_epoch
+        adopt_epoch="$(command date -u -d "$(command jq -r '.units[0].ci_adopt_at' "$TF/supervisor/autopi/units.json")" +%s)"
         case "$(cat "$TF/pipeline-ci-adoption")" in
-          old) started_at='2026-10-01T00:00:00Z' ;;
-          fresh) started_at='2099-01-01T00:00:00Z' ;;
+          old) started_at="$(command date -u -d "@$((adopt_epoch - 60))" +%Y-%m-%dT%H:%M:%SZ)" ;;
+          fresh) started_at="$(command date -u -d "@$((adopt_epoch + 60))" +%Y-%m-%dT%H:%M:%SZ)" ;;
           *) echo "unexpected adoption phase: $(cat "$TF/pipeline-ci-adoption")" >&2; return 97 ;;
         esac
         command jq -cn --arg started_at "$started_at" '[
@@ -1505,7 +1506,7 @@ adopted_head="$(command git -C "$TF/repo" rev-parse HEAD)"
 command git -C "$TF/repo" push -q origin "$adopted_head:refs/pull/50/head"
 printf '%s\n' "$adopted_head" > "$TF/pr-head-50"
 command git -C "$TF/repo" checkout -q main
-printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"success","createdAt":"2026-10-29T00:00:00Z"}' > "$TF/run.json"
+command jq -n --arg created_at "$(command date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" '{databaseId:701,attempt:1,status:"completed",conclusion:"success",createdAt:$created_at}' > "$TF/run.json"
 printf '%s\n' '{"required":["Enforce branch delivery policy","Required CI gates","Required contract gates"]}' > "$TF/required-pr-checks.json"
 export REQUIRED_PR_CHECKS_FILE="$TF/required-pr-checks.json"
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
@@ -1532,6 +1533,7 @@ fi
 grep -Fq 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log" \
   || { echo "scheduler.test.sh: stale adopted checks did not hold the merge" >&2; echo "--- scheduler.log ---" >&2; tail -20 "$TF/supervisor/autopi/scheduler.log" >&2; echo "--- actions ---" >&2; cat "$TF/actions" >&2; exit 1; }
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
+AGENT_HOME="$TF/agent-home" gh_commit_check_runs_invalidate "$adopted_head"
 tick
 [[ "$(command jq -r '.units[0].stage' "$TF/supervisor/autopi/units.json")" == merged ]] \
   || { echo 'scheduler.test.sh: fresh aggregate passes did not release the adopted PR' >&2; exit 1; }
@@ -3217,7 +3219,9 @@ command jq -n '{units:[
   {id:"issue-8805",lane:"direct-main",branch:"agent/issue-8805",task:"handoff refill fixture",handoff_start_ref:"rescue",handoff_start_sha:"0123456789abcdef0123456789abcdef01234567",stage:"implement-pending",history:[]},
   {id:"issue-8806",lane:"direct-main",branch:"agent/issue-8806",task:"budget refill fixture",stage:"implement-pending",history:[
     {stage:"write-start",at:"2026-10-29T00:00:00Z"},{stage:"write-start",at:"2026-10-29T00:00:00Z"},{stage:"write-start",at:"2026-10-29T00:00:00Z"}]}]}' > "$TF/supervisor/autopi/units.json"
-command jq -n '{epoch:0,states:{"4321":{state:"OPEN",labels:""}}}' > "$TF/supervisor/autopi/dep-check.cache.json"
+dep_cache_epoch="$(command date +%s)"
+command jq -n --argjson epoch "$dep_cache_epoch" '{epoch:$epoch,states:{"4321":{state:"OPEN",labels:""}}}' > "$TF/supervisor/autopi/dep-check.cache.json"
+printf '%s\n' "$dep_cache_epoch" > "$TF/supervisor/autopi/dep-check.epoch"
 command jq -n --argjson pid "$refill_dead_pid" \
   '{workers:[{pid:$pid,unit:"issue-8801",type:"implement",log:"impl-8801.log",report:"impl-8801.md",started:"2026-10-29T00:00:00Z",harvested:false}]}' > "$TF/supervisor/autopi/workers.json"
 printf 'NEEDS-PR: fixture touches a product path\n' > "$TF/supervisor/impl-8801.md"
