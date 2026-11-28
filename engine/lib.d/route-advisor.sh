@@ -222,11 +222,18 @@ needs_info_default_option() {
 
 
 needs_info_human_reply_after() {
-  local issue_json="$1" sent_at="$2" sent_at_iso comment comment_at comment_body
-  sent_at_iso="$(date -u -d "@$sent_at" +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  local issue_json="$1" sent_at="$2" comparison="${3:-inclusive}" boundary_at="${4:-}" sent_at_iso comment comment_at comment_body
+  sent_at_iso="$boundary_at"
+  if [ -z "$sent_at_iso" ]; then
+    sent_at_iso="$(date -u -d "@$sent_at" +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  fi
   while IFS= read -r comment; do
     comment_at="$(jq -r '.createdAt // empty' <<< "$comment")"
-    [[ -n "$comment_at" && ( "$comment_at" > "$sent_at_iso" || "$comment_at" = "$sent_at_iso" ) ]] || continue
+    if [ "$comparison" = exclusive ]; then
+      [[ -n "$comment_at" && "$comment_at" > "$sent_at_iso" ]] || continue
+    else
+      [[ -n "$comment_at" && ( "$comment_at" > "$sent_at_iso" || "$comment_at" = "$sent_at_iso" ) ]] || continue
+    fi
     comment_body="$(jq -r '.body // empty' <<< "$comment")"
     comment_is_bot "$comment_body" && continue
     return 0
@@ -240,28 +247,42 @@ needs_info_human_reply_after() {
 # date/default into state. This function owns one timeout decision and leaves
 # the same reply transition available to later ticks if a write fails.
 needs_info_timeout_step() {
-  local n="$1" issue_json="$2" now="$3" state thread_id sent_at default_option age days marker
+  local n="$1" issue_json="$2" now="$3" state thread_id sent_at default_option age days marker latest_comment_at no_comments=0 reply_comparison=inclusive reply_boundary=""
   local applied_thread marker_exists at decision_patch comment_body
   NEEDS_INFO_TIMEOUT_ACTION=unchanged
   jq -e '.labels | any(.name == "needs-info")' <<< "$issue_json" >/dev/null 2>&1 || return 0
 
   state="$(state_read "$n")" || return 1
   thread_id="$(jq -r '.needs_info_thread_id // empty' <<< "$state")"
-  [ -n "$thread_id" ] || return 0
-  applied_thread="$(jq -r '.needs_info_default_applied.thread_id // empty' <<< "$state")"
-  if [ "$applied_thread" = "$thread_id" ]; then
-    needs_info_resume_answered_issue "$n" "$issue_json" || return 1
-    NEEDS_INFO_TIMEOUT_ACTION=default-applied
-    return 0
+  if [ -z "$thread_id" ]; then
+    latest_comment_at="$(jq -r '[.comments[]?.createdAt // empty] | max // empty' <<< "$issue_json")"
+    reply_comparison=exclusive
+    reply_boundary="$latest_comment_at"
+    if [ -z "$latest_comment_at" ]; then
+      no_comments=1
+    else
+      sent_at="$(date -u -d "$latest_comment_at" +%s)" || return 0
+    fi
+  else
+    applied_thread="$(jq -r '.needs_info_default_applied.thread_id // empty' <<< "$state")"
+    if [ "$applied_thread" = "$thread_id" ]; then
+      needs_info_resume_answered_issue "$n" "$issue_json" || return 1
+      NEEDS_INFO_TIMEOUT_ACTION=default-applied
+      return 0
+    fi
+    sent_at="$(jq -r '.needs_info_question_sent_at // empty' <<< "$state")"
+  fi
+  if [ "$no_comments" != 1 ]; then
+    [[ "$now" =~ ^[0-9]+$ && "$sent_at" =~ ^[0-9]+$ && "$NEEDS_INFO_QUESTION_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || return 0
+    age=$((now - sent_at))
+    (( age >= NEEDS_INFO_QUESTION_TIMEOUT_SECONDS )) || return 0
+    needs_info_human_reply_after "$issue_json" "$sent_at" "$reply_comparison" "$reply_boundary" && return 0
   fi
 
-  sent_at="$(jq -r '.needs_info_question_sent_at // empty' <<< "$state")"
-  [[ "$now" =~ ^[0-9]+$ && "$sent_at" =~ ^[0-9]+$ && "$NEEDS_INFO_QUESTION_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || return 0
-  age=$((now - sent_at))
-  (( age >= NEEDS_INFO_QUESTION_TIMEOUT_SECONDS )) || return 0
-  needs_info_human_reply_after "$issue_json" "$sent_at" && return 0
-
-  default_option="$(jq -r '.needs_info_default_option // empty' <<< "$state")"
+  default_option=""
+  if [ -n "$thread_id" ]; then
+    default_option="$(jq -r '.needs_info_default_option // empty' <<< "$state")"
+  fi
   if [ -z "$default_option" ]; then
     route_to_advisor "$n" needs-info false "$issue_json" || return 1
     NEEDS_INFO_TIMEOUT_ACTION=advisor-routed

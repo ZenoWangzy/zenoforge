@@ -2784,9 +2784,22 @@ write_needs_info_timeout_state() {
     > "$STATE_DIR/$n.json"
 }
 
+write_threadless_needs_info_timeout_state() {
+  local n="$1"
+  jq -n '{state:"needs-info",needs_info_origin:"triage"}' > "$STATE_DIR/$n.json"
+}
+
 needs_info_timeout_issue_json() {
-  jq -cn --argjson n "$1" --arg want_label "${2:-needs-info}" \
-    '{number:$n,labels:[{name:$want_label}],comments:[]}'
+  local n="$1" want_label="${2:-needs-info}" comments="${3:-[]}"
+  jq -cn --argjson n "$n" --arg want_label "$want_label" --argjson comments "$comments" \
+    '{number:$n,labels:[{name:$want_label}],comments:$comments}'
+}
+
+needs_info_timeout_issue_json_with_comment() {
+  local n="$1" created_at="$2" prior_created_at="${3:-}" body="${4:-$BOT_DISCLAIMER}" comments
+  comments="$(jq -cn --arg created_at "$created_at" --arg prior_created_at "$prior_created_at" --arg body "$body" \
+    '[{createdAt:$created_at,body:$body}] + (if $prior_created_at == "" then [] else [{createdAt:$prior_created_at,body:$body}] end)')"
+  needs_info_timeout_issue_json "$n" needs-info "$comments"
 }
 
 write_needs_info_timeout_state 950001 "$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" '建议：A'
@@ -2830,7 +2843,41 @@ assert_eq 'fresh question state stays needs-info' needs-info "$(jq -r '.state' "
 assert_eq 'fresh question causes no writes' 0 \
   "$(wc -l < "$NEEDS_INFO_TIMEOUT_TEST_WRITES" | tr -d '[:space:]')"
 
-unset -f route_to_advisor guarded_write gh needs_info_timeout_issue_json write_needs_info_timeout_state
+write_threadless_needs_info_timeout_state 950004
+NEEDS_INFO_TIMEOUT_THREADLESS_OLD_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" +%Y-%m-%dT%H:%M:%SZ)"
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950004 "$(needs_info_timeout_issue_json_with_comment 950004 "$NEEDS_INFO_TIMEOUT_THREADLESS_OLD_AT")" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'an old threadless question routes to the advisor' advisor-routed "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'threadless timeout routing updates stage state' needs-advisor "$(jq -r '.state' "$STATE_DIR/950004.json")"
+
+write_threadless_needs_info_timeout_state 950005
+NEEDS_INFO_TIMEOUT_THREADLESS_YOUNG_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+NEEDS_INFO_TIMEOUT_THREADLESS_OLDER_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" +%Y-%m-%dT%H:%M:%SZ)"
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950005 "$(needs_info_timeout_issue_json_with_comment 950005 "$NEEDS_INFO_TIMEOUT_THREADLESS_YOUNG_AT" "$NEEDS_INFO_TIMEOUT_THREADLESS_OLDER_AT")" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'a young threadless question is left alone' unchanged "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'young threadless question state stays needs-info' needs-info "$(jq -r '.state' "$STATE_DIR/950005.json")"
+assert_eq 'young threadless question causes no writes' 0 \
+  "$(wc -l < "$NEEDS_INFO_TIMEOUT_TEST_WRITES" | tr -d '[:space:]')"
+
+write_threadless_needs_info_timeout_state 950006
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950006 "$(needs_info_timeout_issue_json 950006)" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'a threadless question with no comments routes immediately' advisor-routed "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'threadless no-comment routing updates stage state' needs-advisor "$(jq -r '.state' "$STATE_DIR/950006.json")"
+
+write_threadless_needs_info_timeout_state 950007
+NEEDS_INFO_TIMEOUT_THREADLESS_HUMAN_AT="$(date -u -d "@$((NEEDS_INFO_TIMEOUT_TEST_NOW - NEEDS_INFO_QUESTION_TIMEOUT_SECONDS - 10))" +%Y-%m-%dT%H:%M:%SZ)"
+: > "$NEEDS_INFO_TIMEOUT_TEST_WRITES"
+NEEDS_INFO_TIMEOUT_ACTION=""
+needs_info_timeout_step 950007 "$(needs_info_timeout_issue_json_with_comment 950007 "$NEEDS_INFO_TIMEOUT_THREADLESS_HUMAN_AT" '' 'Reporter reply')" "$NEEDS_INFO_TIMEOUT_TEST_NOW" || true
+assert_eq 'a threadless human comment starts rather than cancels the timeout' advisor-routed "$NEEDS_INFO_TIMEOUT_ACTION"
+assert_eq 'threadless human-comment timeout routes state to advisor' needs-advisor "$(jq -r '.state' "$STATE_DIR/950007.json")"
+
+unset -f route_to_advisor guarded_write gh needs_info_timeout_issue_json needs_info_timeout_issue_json_with_comment write_threadless_needs_info_timeout_state write_needs_info_timeout_state
 eval "$NEEDS_INFO_TIMEOUT_ORIGINAL_ROUTE"
 eval "$NEEDS_INFO_TIMEOUT_ORIGINAL_WRITE"
 AGENT_HOME="$LIB_TEST_AGENT_HOME"
