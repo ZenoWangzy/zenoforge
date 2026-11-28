@@ -163,7 +163,7 @@ jq -e '.changes | length == 2
   and any(.[]; .issue == 7001 and .category == "navigation" and (.filed_at | type == "string")
     and .lineage_id != null and .derived_from == ["V1272"]
     and .sources == [{session_key:"p1",event_line:1},{session_key:"p2",event_line:1}])
-  and any(.[]; .category == "automated-checks" and .verifiable == false and (.lesson | type == "string")
+  and any(.[]; .category == "automated-checks" and .verifiable == true and (.lesson | type == "string")
     and .sources == [{session_key:"p1",event_line:1}] and .derived_from == ["V1272"]
     and (.admission.normal_sessions | length == 10))' \
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
@@ -275,7 +275,7 @@ echo "verification before/after rc=0"
 
 # Every later verify invocation reuses the fake gh; per-scenario overrides win.
 run_verify() {
-  ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
+  ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="${VERIFY_REPO:-$publish_repo}" ZF_ENGINE_DIR="$engine" \
     ZF_ISSUE_LOCK_DIR="$test_env_root/locks" PATH="$fake_bin:$PATH" \
     FAKE_ISSUES="$test_env_root/issues.json" FAKE_COMMENTS="$test_env_root/comments.jsonl" \
     FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
@@ -421,4 +421,73 @@ printf 'not json\n' > "$verify_out/retro-verify.json"
 rc=0; run_verify "$verify_root" "$verify_out" >/dev/null 2>&1 || rc=$?
 [[ "$rc" != 0 ]] || { echo 'retro.test.sh: an unreadable state file exited 0' >&2; exit 1; }
 echo "verification bad-state rc!=0"
+lesson_repo="$test_env_root/lesson-repo"
+mkdir -p "$lesson_repo/lessons/pending" "$lesson_repo/lessons/full"
+cat > "$lesson_repo/lessons/RULES.md" <<'DOC'
+# Rules
+
+<a id="v-next-automated-regress"></a>
+**V-NEXT-automated-regress** Withdraw this lesson.
+
+<a id="v-next-tool-keep"></a>
+**V-NEXT-tool-keep** Keep this lesson.
+DOC
+cat > "$lesson_repo/lessons/CATALOG.md" <<'DOC'
+# Catalog
+
+Applies: [V-NEXT-automated-regress](RULES.md#v-next-automated-regress)
+Applies: [V-NEXT-tool-keep](RULES.md#v-next-tool-keep)
+DOC
+printf 'regressing lesson\n' > "$lesson_repo/lessons/full/automated-regress.md"
+printf 'non-regressing lesson\n' > "$lesson_repo/lessons/full/tool-keep.md"
+printf '{"id":"automated-regress"}\n' > "$lesson_repo/lessons/pending/automated-regress.json"
+printf '{"id":"tool-keep"}\n' > "$lesson_repo/lessons/pending/tool-keep.json"
+cat > "$verify_out/before.candidates.json" <<'JSON'
+{"candidates":[
+ {"category":"automated-checks","severity":"high","session_key":"b00","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"automated-checks","severity":"high","session_key":"b01","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"automated-checks","severity":"high","session_key":"b02","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"tool-economy","severity":"high","session_key":"b00","event_line":2,"evidence":"e","proposal":"p"},
+ {"category":"tool-economy","severity":"high","session_key":"b01","event_line":2,"evidence":"e","proposal":"p"},
+ {"category":"tool-economy","severity":"high","session_key":"b02","event_line":2,"evidence":"e","proposal":"p"}
+]}
+JSON
+cat > "$verify_out/after.candidates.json" <<'JSON'
+{"candidates":[
+ {"category":"automated-checks","severity":"high","session_key":"a00","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"automated-checks","severity":"high","session_key":"a01","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"automated-checks","severity":"high","session_key":"a02","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"automated-checks","severity":"high","session_key":"a03","event_line":1,"evidence":"e","proposal":"p"},
+ {"category":"tool-economy","severity":"high","session_key":"a00","event_line":2,"evidence":"e","proposal":"p"}
+]}
+JSON
+touch -d "@$((merge_epoch - 20))" "$verify_out/before.keys" "$verify_out/before.candidates.json"
+touch -d "@$((merge_epoch + 20))" "$verify_out/after.keys" "$verify_out/after.candidates.json"
+jq -n --arg filed "$merge_at" '{changes:[
+  {lesson:"automated-regress",category:"automated-checks",class:"automated-regress",filed_at:$filed,
+    verifiable:false,admission:{status:"passed"}},
+  {lesson:"tool-keep",category:"tool-economy",class:"tool-keep",filed_at:$filed,
+    verifiable:false,admission:{status:"passed"}}
+]}' > "$verify_out/retro-verify.json"
+VERIFY_REPO="$lesson_repo" run_verify "$verify_root" "$verify_out"
+VERIFY_REPO="$lesson_repo" run_verify "$verify_root" "$verify_out"
+jq -e '.changes | any(.[]; .lesson == "automated-regress" and .before_count == 3 and .after_count == 4
+    and .verdict == "withdrawn" and (.withdrawn_at | type == "string"))
+  and any(.[]; .lesson == "tool-keep" and .before_count == 3 and .after_count == 1
+    and .verdict == "retained" and (has("withdrawn_at") | not))' \
+  "$verify_out/retro-verify.json" >/dev/null \
+  || { echo 'retro.test.sh: paired lesson verification recorded the wrong verdicts' >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+jq -e '.events | length == 1 and .[0].type == "lesson-withdrawn"
+  and .[0].lesson == "automated-regress" and .[0].before_count == 3 and .[0].after_count == 4' \
+  "$verify_out/retro-verify.json" >/dev/null \
+  || { echo 'retro.test.sh: lesson withdrawal event was not recorded' >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+test ! -e "$lesson_repo/lessons/pending/automated-regress.json"
+test ! -e "$lesson_repo/lessons/full/automated-regress.md"
+! grep -Fq 'V-NEXT-automated-regress' "$lesson_repo/lessons/RULES.md"
+! grep -Fq 'V-NEXT-automated-regress' "$lesson_repo/lessons/CATALOG.md"
+test -e "$lesson_repo/lessons/pending/tool-keep.json"
+test -e "$lesson_repo/lessons/full/tool-keep.md"
+grep -Fq 'V-NEXT-tool-keep' "$lesson_repo/lessons/RULES.md"
+grep -Fq 'V-NEXT-tool-keep' "$lesson_repo/lessons/CATALOG.md"
+echo "verification lesson-withdrawal rc=0"
 echo 'retro.test.sh: all assertions passed'

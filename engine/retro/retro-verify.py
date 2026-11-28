@@ -242,12 +242,76 @@ def verify_change(root, out_dir, repo, engine, state, change):
         retro.write_verify_state(out_dir, state)
 
 
-def verify(root, out_dir, repo):
+def verify_lesson(root, out_dir, repo_dir, state, change):
+    if change.get("verified_at"):
+        return
+    lesson = change["lesson"]
+    admitted_at = change.get("filed_at")
+    if not isinstance(admitted_at, str):
+        return
+    windows = session_windows(root, admitted_at)
+    if windows is None:
+        print(f"retro-verify: waiting for {WINDOW} retained sessions around lesson {lesson}")
+        return
+    before_sessions, after_sessions = windows
+    if "before_count" not in change:
+        count = count_category(root, out_dir, change["category"], before_sessions,
+                               admitted_at, before=True)
+        if count is None:
+            print(f"retro-verify: waiting for before-window candidates for lesson {lesson}")
+            return
+        change["before_sessions"] = before_sessions
+        change["before_count"] = count
+        retro.write_verify_state(out_dir, state)
+    if "after_count" not in change:
+        count = count_category(root, out_dir, change["category"], after_sessions,
+                               admitted_at, before=False)
+        if count is None:
+            print(f"retro-verify: waiting for after-window candidates for lesson {lesson}")
+            return
+        change["after_sessions"] = after_sessions
+        change["after_count"] = count
+        retro.write_verify_state(out_dir, state)
+
+    verified_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if change["after_count"] >= change["before_count"] and change["after_count"] > 0:
+        paths = retro.withdraw_lesson_fragment(repo_dir, lesson)
+        event = {
+            "type": "lesson-withdrawn",
+            "lesson": lesson,
+            "category": change["category"],
+            "before_count": change["before_count"],
+            "after_count": change["after_count"],
+            "before_sessions": change["before_sessions"],
+            "after_sessions": change["after_sessions"],
+            "removed_paths": paths,
+            "recorded_at": verified_at,
+        }
+        state.setdefault("events", []).append(event)
+        change["verdict"] = "withdrawn"
+        change["withdrawn_at"] = verified_at
+    else:
+        change["verdict"] = "retained"
+    change["verified_at"] = verified_at
+    retro.write_verify_state(out_dir, state)
+    if change["verdict"] == "withdrawn":
+        print(f"retro-verify: lesson {lesson} withdrawn before={change['before_count']} after={change['after_count']}")
+
+
+def verify(root, out_dir, repo, repo_dir=None):
     engine = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    repo_dir = os.path.abspath(repo_dir or os.environ.get("ZF_REPO_DIR") or os.path.join(engine, ".."))
     # A bad state file fails the run loudly (main returns 1); past this point a gh or
     # read error only ends this follow-up, so the run's other results stand.
     state = retro.read_verify_state(out_dir)
     for change in state["changes"]:
+        admission = change.get("admission")
+        if change.get("lesson") and isinstance(admission, dict) and admission.get("status") == "passed":
+            try:
+                verify_lesson(root, out_dir, repo_dir, state, change)
+            except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+                print(f"retro-verify: lesson {change.get('lesson')}: {exc}; retrying next run")
+            continue
         if change.get("verifiable") is False:
             continue
         try:
@@ -266,7 +330,7 @@ def main(argv):
         print("retro-verify.py: ZF_GH_REPO or ZF_REPO is required", file=sys.stderr)
         return 2
     try:
-        verify(argv[1], argv[2], repo)
+        verify(argv[1], argv[2], repo, os.environ.get("ZF_REPO_DIR"))
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"retro-verify.py: verification failed: {exc}", file=sys.stderr)
         return 1

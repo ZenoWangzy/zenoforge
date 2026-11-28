@@ -228,13 +228,15 @@ def verify_state_path(out_dir):
 def read_verify_state(out_dir):
     path = verify_state_path(out_dir)
     if not os.path.isfile(path):
-        return {"changes": [], "observations": []}
+        return {"changes": [], "observations": [], "events": []}
     with open(path, encoding="utf-8") as state_file:
         state = json.load(state_file)
     if (not isinstance(state, dict) or not isinstance(state.get("changes"), list)
-            or not isinstance(state.get("observations", []), list)):
+            or not isinstance(state.get("observations", []), list)
+            or not isinstance(state.get("events", []), list)):
         raise ValueError(f"invalid retro verification state: {path}")
     state.setdefault("observations", [])
+    state.setdefault("events", [])
     return state
 
 
@@ -318,8 +320,8 @@ def record_lesson_change(out_dir, category, key, candidate, admission):
             "derived_from": candidate["derived_from"],
             "sources": [source_event(candidate)],
             "admission": admission,
-            "verifiable": False,
-            "reason": "measured event check is recorded as a lesson fragment without a merged PR window",
+            "verifiable": True,
+            "reason": "measured event check is admitted as a lesson fragment and verified around its admission window",
             "filed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         state["changes"].append(change)
@@ -327,7 +329,41 @@ def record_lesson_change(out_dir, category, key, candidate, admission):
         merge_record_values(change, "sources", [source_event(candidate)])
         merge_record_values(change, "derived_from", candidate["derived_from"])
         change["admission"] = admission
+        change["verifiable"] = True
     write_verify_state(out_dir, state)
+
+
+def withdraw_lesson_fragment(repo, lesson_id):
+    if not isinstance(lesson_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", lesson_id):
+        raise ValueError("lesson ID cannot name a fragment")
+    lesson_dir = os.path.join(repo, "lessons")
+    removed = []
+    for relative in (f"pending/{lesson_id}.json", f"full/{lesson_id}.md"):
+        path = os.path.join(lesson_dir, relative)
+        if os.path.isfile(path):
+            os.unlink(path)
+            removed.append(f"lessons/{relative}")
+    marker = f'<a id="v-next-{lesson_id}"></a>'
+    rules_path = os.path.join(lesson_dir, "RULES.md")
+    if os.path.isfile(rules_path):
+        with open(rules_path, encoding="utf-8") as rules_file:
+            rules = rules_file.read()
+        sections = rules.split("\n\n")
+        kept = [section for section in sections if marker not in section]
+        if len(kept) != len(sections):
+            with open(rules_path, "w", encoding="utf-8") as rules_file:
+                rules_file.write("\n\n".join(kept))
+            removed.append("lessons/RULES.md")
+    catalog_path = os.path.join(lesson_dir, "CATALOG.md")
+    if os.path.isfile(catalog_path):
+        with open(catalog_path, encoding="utf-8") as catalog_file:
+            lines = catalog_file.readlines()
+        kept = [line for line in lines if f"RULES.md#v-next-{lesson_id}" not in line]
+        if len(kept) != len(lines):
+            with open(catalog_path, "w", encoding="utf-8") as catalog_file:
+                catalog_file.writelines(kept)
+            removed.append("lessons/CATALOG.md")
+    return removed
 
 
 def write_lesson_fragment(repo, candidate, key, admission):
