@@ -10,7 +10,6 @@ DISPATCH_LOG="$test_env_root/coord-off-dispatch.log"
 REMOTE="$test_env_root/coord-off-origin.git"
 REPO_DIR="$test_env_root/coord-off-worktree"
 ISSUES="$test_env_root/coord-off-issues.json"
-OUTPUT="$test_env_root/coord-off-pipeline.log"
 PROVIDER_SCRIPT="$test_env_root/coord-off-advisor-provider"
 mkdir -p "$GUARD_BIN" "$REPO_DIR"
 "$REAL_GIT" init --bare --quiet "$REMOTE"
@@ -73,7 +72,7 @@ esac
 SH
 cat > "$GUARD_BIN/systemd-run" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$ZF_COORD_TEST_DISPATCH_LOG"
+printf '%s\n' "${*//$'\n'/ }" >> "$ZF_COORD_TEST_DISPATCH_LOG"
 SH
 cat > "$GUARD_BIN/codex" <<'SH'
 #!/usr/bin/env bash
@@ -93,22 +92,26 @@ export ZF_REPO=fixture/repo ZF_PIPELINE_ROADMAP_SWITCH=false AGENT_DRY_RUN=0
 export ZF_WEB_ADVISOR_PROVIDER_SCRIPT="$PROVIDER_SCRIPT"
 unset ZF_COORD
 
-if ! bash "$SCRIPT_DIR/issue-pipeline.sh" --stage triage > "$OUTPUT" 2>&1; then
-  cat "$OUTPUT" >&2
-  exit 1
-fi
-if ! bash "$SCRIPT_DIR/issue-pipeline.sh" --stage recut > "$OUTPUT" 2>&1; then
-  cat "$OUTPUT" >&2
-  exit 1
-fi
-if ! bash "$SCRIPT_DIR/issue-pipeline.sh" --stage advisor > "$OUTPUT" 2>&1; then
-  cat "$OUTPUT" >&2
-  exit 1
-fi
+run_stage() {
+  local stage="$1"
+  OUTPUT="$test_env_root/coord-off-$stage-pipeline.log"
+  if ! bash "$SCRIPT_DIR/issue-pipeline.sh" --stage "$stage" > "$OUTPUT" 2>&1; then
+    cat "$OUTPUT" >&2
+    exit 1
+  fi
+}
+run_stage triage
+run_stage recut
+run_stage advisor
 
-if [[ "$(wc -l < "$DISPATCH_LOG")" != 3 ]]; then
-  printf 'expected 3 dispatches, found %s\n' "$(wc -l < "$DISPATCH_LOG")" >&2
+worker_dispatch_count="$(grep -Ec 'run-(triage-batch|recut|advisor-batch)\.sh' "$DISPATCH_LOG" || true)"
+if [[ "$worker_dispatch_count" != 3 ]]; then
+  printf 'expected 3 issue worker dispatches, found %s\n' "$worker_dispatch_count" >&2
   cat "$DISPATCH_LOG" >&2
+  for stage in triage recut advisor; do
+    printf '%s stage output:\n' "$stage" >&2
+    cat "$test_env_root/coord-off-$stage-pipeline.log" >&2
+  done
   exit 1
 fi
 for expected in "$SCRIPT_DIR/run-triage-batch.sh --scheduled 991205" "$SCRIPT_DIR/run-recut.sh 991206" "$SCRIPT_DIR/run-advisor-batch.sh --scheduled 991207"; do
