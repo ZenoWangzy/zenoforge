@@ -228,6 +228,12 @@ merge_pr_size_ok() {
     merge_pr_refuse "$pr" 'no git checkout: cannot run size-ratchet' 'run tools/merge-pr.sh from a clone of the repository'
     return 1
   }
+  if [[ -f "$root/tools/comment-ratchet.mjs" ]] && ! git -C "$root" merge-base origin/main HEAD >/dev/null 2>&1; then
+    local fetch_args=()
+    [[ "$(git -C "$root" rev-parse --is-shallow-repository 2>/dev/null)" != true ]] || fetch_args+=(--unshallow)
+    git -C "$root" fetch -q --no-tags "${fetch_args[@]}" origin +refs/heads/main:refs/remotes/origin/main "+refs/pull/$pr/head:refs/zf-merge-pr/$pr" || { merge_pr_refuse "$pr" 'could not fetch the PR and main history for repository ratchets' 'restore access to the PR and main refs, then retry'; return 1; }
+    git -C "$root" merge-base origin/main HEAD >/dev/null 2>&1 || { merge_pr_refuse "$pr" 'could not find a common merge base with origin/main for repository ratchets' 'check that this checkout contains the PR head and full history'; return 1; }
+  fi
   [[ ! -f "$root/tools/comment-ratchet.mjs" ]] || comment="$(node "$root/tools/comment-ratchet.mjs" --changed origin/main 2>&1)" || { merge_pr_refuse "$pr" "$comment"; return 1; }; [[ ! -f "$root/tools/suppression-ratchet.mjs" ]] || comment="$(node "$root/tools/suppression-ratchet.mjs" --changed origin/main 2>&1)" || { merge_pr_refuse "$pr" "$comment"; return 1; }; over="$({ bash "$root/tools/size-ratchet.sh" 2>&1 || true; } | grep '^REFUSAL found=')" || return 0
   [[ "$(git -C "$root" rev-parse HEAD 2>/dev/null)" == "$(merge_pr_head_sha "$pr" 2>/dev/null)" ]] || return 0
   files="$(merge_pr_view "$pr" body,files,commits 2>/dev/null | jq -r '.files[].path')"
