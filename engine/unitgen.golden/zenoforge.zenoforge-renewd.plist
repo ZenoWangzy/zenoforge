@@ -5,9 +5,9 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
-		<string>/home/zf-golden/.local/bin:/home/zf-golden/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
+		<string>/zf-golden/.local/bin:/zf-golden/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
 		<key>ZF_REPO_DIR</key>
-		<string>/home/zf-golden/.zenoforge/checkout</string>
+		<string>/zf-golden/.zenoforge/checkout</string>
 	</dict>
 	<key>Label</key>
 	<string>zenoforge.zenoforge-renewd</string>
@@ -19,7 +19,7 @@
 		<string>50</string>
 		<string>/bin/bash</string>
 		<string>-c</string>
-		<string>e="$(readlink -e /home/zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; exec "${e:-/home/zf-golden/.zenoforge/checkout/engine}/coord/renewd.sh" --once</string>
+		<string>e="$(readlink -e /zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; exec "${e:-/zf-golden/.zenoforge/checkout/engine}/coord/renewd.sh" --once</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -29,12 +29,12 @@
 		<integer>8192</integer>
 	</dict>
 	<key>StandardErrorPath</key>
-	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-renewd.log</string>
+	<string>/zf-golden/.zenoforge/logs/units/zenoforge-renewd.log</string>
 	<key>StandardOutPath</key>
-	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-renewd.log</string>
+	<string>/zf-golden/.zenoforge/logs/units/zenoforge-renewd.log</string>
 	<key>StartInterval</key>
 	<integer>60</integer>
 	<key>WorkingDirectory</key>
-	<string>/home/zf-golden/.zenoforge/checkout</string>
+	<string>/zf-golden/.zenoforge/checkout</string>
 </dict>
 </plist>
