@@ -105,7 +105,7 @@ coord_remote_run() {
       shift
       coord_ticket_probe() {
         coord_assert_owned "$ZF_COORD_SCOPE" >/dev/null || return $?
-        printf '%s|%s\n' "$ZF_COORD_SCOPE" "$ZF_COORD_OWNER"
+        printf "%s|%s\n" "$ZF_COORD_SCOPE" "$ZF_COORD_OWNER"
       }
       if [[ "$action" == acquire && "${1:-}" == "${ZF_COORD_TEST_RACE_KEY:-}" && -n "${ZF_COORD_TEST_RACE_DIR:-}" ]]; then
         : > "$ZF_COORD_TEST_RACE_DIR/$ZF_HOST_ID.ready"
