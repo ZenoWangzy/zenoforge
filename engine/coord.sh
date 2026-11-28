@@ -12,6 +12,7 @@ COORD_OWNER_SEQ=0
 COORD_REMOTE_REPO=""
 COORD_REMOTE_OID=""
 COORD_REMOTE_EXPIRED=0
+source "$(dirname -- "${BASH_SOURCE[0]}")/coord/checkpoint.sh"
 
 coord_now_s() {
   local now
@@ -206,7 +207,7 @@ coord_read() { # key -> JSON / exit 1 confirmed absent / exit 3 unknown
 
 coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held / 3 unknown
   local key="${1:-}" owner="${2:-}" kind="${3:-}" subject="${4:-}" unit="${5:-}" stage="${6:-}"
-  local lock_fd rc now lease record held=0
+  local lock_fd rc now lease record held=0 restore_required=0 restore_record=""
   [[ -n "$owner" && -n "$kind" ]] || return 2
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "coord_acquire: invalid lease duration" >&2; return 3; }
   if coord_remote_enabled; then
@@ -221,9 +222,23 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
     fi
     if (( rc == 0 )); then
       _coord_remote_held_write "$key" "$owner" "$COORD_REMOTE_OID" "$COORD_RECORD" || rc=3
+      if (( rc == 0 )) && [[ "${COORD_REMOTE_RESTORE_REQUIRED:-0}" == 1 ]]; then
+        restore_required=1
+        restore_record="$COORD_RECORD"
+      fi
     fi
     flock -u "$lock_fd" || :
     exec {lock_fd}>&-
+    if (( rc == 0 && restore_required == 1 )); then
+      if coord_checkpoint_restore "$restore_record"; then
+        :
+      else
+        echo "coord_acquire: checkpoint restore failed key=$key" >&2
+        coord_release "$key" "$owner" >/dev/null 2>&1 || :
+        coord_checkpoint_alert "$restore_record" || echo "coord_acquire: checkpoint restore alert failed key=$key" >&2
+        return 3
+      fi
+    fi
     return "$rc"
   fi
   _coord_paths "$key" || return 2

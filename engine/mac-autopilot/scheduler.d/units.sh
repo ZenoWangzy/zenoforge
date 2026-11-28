@@ -797,3 +797,4 @@ live_workers() {
 }
 
 source "${BASH_SOURCE[0]%/*}/no-human-wait.sh"
+source "${BASH_SOURCE[0]%/*}/checkpoint.sh"

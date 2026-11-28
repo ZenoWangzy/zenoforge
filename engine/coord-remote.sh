@@ -266,11 +266,13 @@ _coord_remote_held_remove_if_owner() {
 
 _coord_remote_acquire() {
   local key="$1" owner="$2" kind="$3" subject="$4" unit="$5" stage="$6"
-  local status now record expected old_owner="" old_generation=0 generation
+  local status now record expected old_owner="" old_generation=0 generation old_checkpoint="" projection
+  COORD_REMOTE_RESTORE_REQUIRED=0
   [[ -n "$owner" && -n "$kind" ]] || return 2
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || return 3
   _coord_paths "$key" || return 2
   if _coord_remote_read "$key"; then
+    old_checkpoint="$(jq -c '.checkpoint // empty' <<<"$COORD_RECORD")" || return 3
     old_owner="$(jq -r '.owner' <<<"$COORD_RECORD")"
     if [[ "$old_owner" == "$owner" ]]; then
       _coord_remote_observation_clear "$key" || return 3
@@ -289,6 +291,9 @@ _coord_remote_acquire() {
   else
     status=$?
     (( status == 1 )) || return "$status"
+    if [[ -n "$COORD_RECORD" ]]; then
+      old_checkpoint="$(jq -c '.checkpoint // empty' <<<"$COORD_RECORD")" || return 3
+    fi
     expected="$COORD_REMOTE_OID"
     if [[ -n "$COORD_RECORD" ]]; then
       old_generation="$(jq -r '.generation // 1' <<<"$COORD_RECORD")" || return 3
@@ -304,18 +309,36 @@ _coord_remote_acquire() {
     '{proto:1,version:1,key:$key,owner:$owner,owner_kind:$kind,subject:$subject,unit:$unit,stage:$stage,
       generation:$generation,acquired_at:$now,renewed_at:$now,expires_at:($now+$lease)}
       + (if $old_owner == "" then {} else {taken_from:{owner:$old_owner,generation:$old_generation}} end)')" || return 3
+  if [[ -n "$old_checkpoint" ]]; then
+    record="$(jq -cn --argjson record "$record" --argjson checkpoint "$old_checkpoint" \
+      '$record + {checkpoint:$checkpoint}')" || return 3
+    COORD_REMOTE_RESTORE_REQUIRED=1
+  else
+    projection="$(coord_checkpoint_project "$subject" "$unit")" || return 3
+    record="$(coord_checkpoint_fit_claim "$record" "$projection")" || return 3
+  fi
   _coord_remote_store "$key" "$expected" "$record" || return $?
   _coord_remote_observation_clear "$key" || return 3
 }
 
 _coord_remote_renew() {
-  local key="$1" owner="$2" status now record
+  local key="$1" owner="$2" status now record subject unit projection old_unit
   if _coord_remote_read "$key"; then :; else status=$?; return "$status"; fi
   [[ "$(jq -r '.owner' <<<"$COORD_RECORD")" == "$owner" ]] || return 1
   (( COORD_REMOTE_EXPIRED == 0 )) || return 3
+  subject="$(jq -r '.subject' <<<"$COORD_RECORD")" || return 3
+  unit="$(jq -r '.unit' <<<"$COORD_RECORD")" || return 3
+  projection="$(coord_checkpoint_project "$subject" "$unit")" || return 3
+  if jq -e '.checkpoint.unit | type == "object" and length > 0' <<<"$COORD_RECORD" >/dev/null 2>&1 \
+    && jq -e '.unit == {}' <<<"$projection" >/dev/null 2>&1; then
+    old_unit="$(jq -c '.checkpoint.unit' <<<"$COORD_RECORD")" || return 3
+    projection="$(jq -cn --argjson projection "$projection" --argjson unit "$old_unit" \
+      '$projection | .unit=$unit')" || return 3
+  fi
+  record="$(coord_checkpoint_fit_claim "$COORD_RECORD" "$projection")" || return 3
   now="$(coord_now_s)" || return 3
   record="$(jq -c --argjson now "$now" --argjson lease "$COORD_LEASE_SECONDS" \
-    '.renewed_at=$now | .expires_at=($now+$lease)' <<<"$COORD_RECORD")" || return 3
+    '.renewed_at=$now | .expires_at=($now+$lease)' <<<"$record")" || return 3
   _coord_remote_store "$key" "$COORD_REMOTE_OID" "$record"
 }
 
