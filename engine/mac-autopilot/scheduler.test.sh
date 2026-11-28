@@ -3207,7 +3207,15 @@ command jq -e '.units | length==5
   and any(.[]; .id=="issue-8804" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8805" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8806" and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
-  || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill tick did not dispatch the waiting unit without harvesting the worker report' >&2; exit 1; }
+  || {
+    cat "$TF/tick.out" >&2
+    printf '%s\n' 'scheduler.test.sh: refill fixture GitHub calls:' >&2
+    command grep '^gh ' "$TF/calls" | tail -n 30 >&2 || :
+    command jq -c '{units:[.units[]|{id,lane,stage,issue,pr}]}' "$TF/supervisor/autopi/units.json" >&2 || :
+    command jq -c '{workers:[.workers[]|{unit,type,harvested}]}' "$TF/supervisor/autopi/workers.json" >&2 || :
+    echo 'scheduler.test.sh: refill tick did not dispatch the waiting unit without harvesting the worker report' >&2
+    exit 1
+  }
 command jq -e 'any(.workers[]; .unit=="issue-8802" and .type=="implement" and .harvested!=true)' "$TF/supervisor/autopi/workers.json" >/dev/null \
   || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill tick did not record the dispatched worker' >&2; exit 1; }
 command jq -e 'any(.workers[]; .unit=="issue-8801" and .harvested==true)' "$TF/supervisor/autopi/workers.json" >/dev/null \
