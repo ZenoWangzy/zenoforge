@@ -32,6 +32,23 @@ rotate_gh_measure() {
   mv -f -- "$f" "$f.1"
 }
 
+rescue_unpushed_ref_commit() {
+  local wt="$1" scope="${2:-all}" exclude_head="${3:-}" refs ref unpushed
+  if [[ "$scope" == branches ]]; then
+    refs="$(git -C "$wt" for-each-ref --format='%(refname)' refs/heads 2>/dev/null)" || return 1
+  else
+    refs="$(git -C "$wt" for-each-ref --format='%(refname)' 2>/dev/null)" || return 1
+  fi
+  while IFS= read -r ref; do
+    [[ "$ref" == refs/remotes/* || "$ref" == refs/heads/hand/* ]] && continue
+    if [[ -n "$exclude_head" ]]; then
+      unpushed="$(git -C "$wt" rev-list -n 1 "$ref" --not --remotes "$exclude_head" 2>/dev/null)" || return 1
+    else
+      unpushed="$(git -C "$wt" rev-list -n 1 "$ref" --not --remotes 2>/dev/null)" || return 1
+    fi
+    [[ -z "$unpushed" ]] || { printf '%s' "$unpushed"; return 0; }
+  done <<<"$refs"
+}
 worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose recoverable Git work
   local wt="$1" status stash head remote_refs pushed_refs unpushed_commits
   [[ -e "$wt/.git" ]] || return 1
@@ -63,7 +80,7 @@ worktree_cleanup_block_reason() { # dir -> reason when deleting it could lose re
     return 0
   fi
   [[ -n "$pushed_refs" ]] || { printf 'HEAD is not reachable from a remote-tracking ref'; return 0; }
-  if ! unpushed_commits="$(git -C "$wt" rev-list --exclude='refs/heads/hand/*' --all --not --remotes -n 1 2>/dev/null)"; then
+  if ! unpushed_commits="$(rescue_unpushed_ref_commit "$wt")"; then
     printf 'could not inspect local commits'
     return 0
   fi
@@ -181,6 +198,7 @@ rescue_push_unpushed() { # clone unit dir -> 0 once all are on the remote; else 
     i=$((i + 1))
     git -C "$wt" format-patch -q -o "$dir/unpushed-$i" "$sha" --not --remotes >/dev/null 2>&1 || { RESCUE_REFUSED="could not copy the unpushed commits"; return 1; }
     rescue_push_verified "$wt" "$sha" "$ref" || { RESCUE_REFUSED="rescue push failed"; rescue_push_failed "$id" "$dir" "$sha"; return 1; }
+    git -C "$wt" update-ref "refs/remotes/origin/$ref" "$sha" || { RESCUE_REFUSED="could not record the rescue ref locally"; return 1; }
   done < <({ [[ "$head_branch" == hand/* ]] || printf 'HEAD %s\n' "$head_sha"; git -C "$wt" for-each-ref --format='%(refname:short) %(objectname)' refs/heads; } | awk '$1 !~ /^hand\//')
   rm -f -- "$dir/push-pending"
 }
@@ -196,7 +214,7 @@ rescue_unpushed_local() { # clone -> 0 once every unpushed commit is on the remo
   say "handoff rescue unit=$id stash/unpushed saved $RESCUE_DIR"
 }
 rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescued; else RESCUE_REFUSED says why
-  local n="$1" wt="$2" status head commit tree raw index leftover ref="" stash stash_out stash_list="" scan=0 marker key objects sizes other path
+  local n="$1" wt="$2" status head commit tree raw index leftover ref="" stash stash_out stash_list="" scan=0 marker key objects sizes other path cleanup_block
   local -a stashes=()
   RESCUE_REFUSED=""; RESCUE_START_REF=""; RESCUE_START_SHA=""
   [[ -e "$wt/.git" ]] || { RESCUE_REFUSED="no clone"; return 1; }
@@ -212,7 +230,7 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   marker="$A/rescue-refused-$n"; key="$(printf '%s\n' "$head" "$status" "$stash_out" | sha256sum)"
   [[ "$(cat "$marker" 2>/dev/null)" != "$key" ]] || { RESCUE_REFUSED="secret scan refused an earlier pass"; return 1; }
   # Active handoff worktrees are owned by the current handoff, not unpublished work in the old clone.
-  other="$(git -C "$wt" rev-list -n1 --exclude='hand/*' --branches --not --remotes "$head" 2>/dev/null)" || { RESCUE_REFUSED="unreadable branches"; return 1; }
+  other="$(rescue_unpushed_ref_commit "$wt" branches "$head")" || { RESCUE_REFUSED="unreadable branches"; return 1; }
   if [[ -n "$other" ]]; then rescue_unpushed_local "$wt" || return 1; fi
   # What the private index below cannot see: conflicted entries, flagged files, and a staged version later edited in the worktree.
   [[ -z "$(git -C "$wt" ls-files -u)" ]] || { RESCUE_REFUSED="unmerged index"; return 1; }
@@ -265,7 +283,7 @@ rescue_handoff_clone() { # issue clone -> 0 once the clone holds nothing unrescu
   [[ "$commit" == "$head" ]] || git -C "$wt" reset -q --mixed "$commit" || { RESCUE_REFUSED="could not move the clone to its rescue commit"; return 1; } # the files already match it
   (( ${#stashes[@]} == 0 )) || git -C "$wt" stash clear || { RESCUE_REFUSED="could not clear rescued stashes"; return 1; }
   rm -f "$marker"
-  if worktree_cleanup_block_reason "$wt" >/dev/null; then RESCUE_REFUSED="clone still blocks after the rescue"; return 1; fi
+  if cleanup_block="$(worktree_cleanup_block_reason "$wt")"; then RESCUE_REFUSED="clone still blocks after the rescue: $cleanup_block"; return 1; fi
   gh issue comment "$n" --body "Work from the preserved clone is saved on the remote.${ref:+ The handoff resumes from \`$ref\`.}${stash_list:+ Stashes, not applied:$stash_list.}" >/dev/null 2>&1 </dev/null \
     || say "handoff issue #$n: could not post the rescue refs: ${ref}${stash_list}"
 }

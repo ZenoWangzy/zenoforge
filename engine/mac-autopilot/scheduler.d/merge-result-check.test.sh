@@ -26,7 +26,8 @@ export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EM
 command git init -q -b main "$source_repo"
 command git -C "$source_repo" config user.name "$GIT_AUTHOR_NAME"
 command git -C "$source_repo" config user.email "$GIT_AUTHOR_EMAIL"
-mkdir -p "$source_repo/scripts" "$source_repo/engine"
+mkdir -p "$source_repo/scripts" "$source_repo/engine/eval"
+cp "$engine_dir/eval/decision-stages.sh" "$source_repo/engine/eval/decision-stages.sh"
 cat > "$source_repo/scripts/branch-delivery-preflight.mjs" <<'JS'
 export function first() { return 1; }
 // spacer one
@@ -83,13 +84,13 @@ tick_prs() { TICK_PRS="$(cat "$fixture/prs.json")"; printf '%s' "$TICK_PRS"; }
 gh() {
   case "$1 $2" in
     'pr merge') printf '%s\n' "$*" >> "$GH_MERGES_FILE"; GH_PR_STATE=MERGED; return 0 ;;
-    'api --paginate') printf '%s\n' 'scripts/branch-delivery-preflight.mjs' ;;
+    'api --paginate') printf '%s\n' '[{"filename":"scripts/branch-delivery-preflight.mjs","additions":1,"deletions":0,"status":"modified"}]' ;;
     # checks come per head SHA now: serve the fixture row's rollup as REST check-runs
     'api repos/{owner}/{repo}/commits/'*'/check-runs'*)
       jq -c --arg h "$GH_HEAD" '[.[] | select(.headRefOid == $h)][0].statusCheckRollup // []
         | {total_count: length, check_runs: map({name: (.name // ""), details_url: (.detailsUrl // ""), started_at: (.startedAt // null),
             status: ((.status // "completed") | ascii_downcase), conclusion: (if (.conclusion // null) == null then null else (.conclusion | ascii_downcase) end)})}' "$fixture/prs.json" \
-        | jq -c '.check_runs // []' ;;
+        ;;
     'pr view')
       if [[ "$*" == *'headRefName,headRefOid,files,state,mergeCommit'* ]]; then
         printf 'agent/issue-%s\t%s\tfalse\t%s\t%s\n' "${GH_PR_NUMBER:-0}" "$GH_HEAD" "$GH_PR_STATE" "$GH_MERGE_SHA"
@@ -132,7 +133,7 @@ grep -Fq 'merge result Node syntax check failed' "$LOG" \
 set_candidate 772 "$good_head" agent/issue-772 merge-result-valid
 run_merge_lane || :
 [[ "$(cat "$GH_MERGES_FILE")" == *'pr merge 772'* && "$(unit_field merge-result-valid .stage)" == merged ]] \
-  || fail 'a syntactically valid merge result was not allowed through the merge lane'
+  || fail "a syntactically valid merge result was not allowed through the merge lane; calls=$(cat "$GH_MERGES_FILE"); log=$(tail -n 16 "$LOG")"
 
 export WORKER_SCRATCH_ROOT="$fixture/worker-scratch"
 WT_ROOT="$fixture/worktrees"

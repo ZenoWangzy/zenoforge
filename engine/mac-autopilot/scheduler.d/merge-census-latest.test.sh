@@ -7,15 +7,27 @@
 # (tick-census.sh), so these cases drive that path with REST-shaped check_runs rows.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)/test-env.sh"
+engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 d=$(cd "$(dirname "$0")" && pwd)
+source "$engine_dir/lib.d/gh-key-cache.sh"
+source "$engine_dir/lib.d/gh-tick-cache.sh"
+HERE="$engine_dir/mac-autopilot"
+source "$HERE/scheduler.d/core.sh"
 source "$d/tick-census.sh"
-HERE=$(cd "$d/.." && pwd); jqf() { jq "$@"; }; SHA_RE='^[0-9a-f]{40}$'
+HERE="$engine_dir/mac-autopilot"; jqf() { jq "$@"; }; SHA_RE='^[0-9a-f]{40}$'
+GH_KEY_CACHE_DIR="$test_env_root/gh-key-cache" GH_TICK_CACHE_DIR="$test_env_root/gh-tick-cache"
+export GH_KEY_CACHE_DIR GH_TICK_CACHE_DIR
 GH_CHECK_RUNS='{"check_runs":[]}'
 gh() {
   case "${1:-} ${2:-}" in
-    'api repos/{owner}/{repo}/commits/'*'/check-runs?per_page=100') jq -c '.check_runs // []' <<<"$GH_CHECK_RUNS" ;;
+    'api repos/{owner}/{repo}/commits/'*'/check-runs?per_page=100') printf '%s\n' "$GH_CHECK_RUNS" ;;
     *) echo "unexpected gh call: $*" >&2; return 1 ;;
   esac
+}
+reset_check_cache() {
+  rm -rf -- "$GH_KEY_CACHE_DIR"
+  rm -f -- "$GH_TICK_CACHE_DIR"/check-runs-*.json
+  TICK_PR_CHECK_RUNS=()
 }
 # The lane's own skip test, verbatim from merge-lane.sh.
 lane_skips() { ! jq -e 'length > 0 and all(.[]; .bucket != "pending")' <<<"$1" >/dev/null; }
@@ -24,6 +36,7 @@ run() { # name status conclusion started run_id (REST check-run shape; conclusio
     '{name:$n, status:$s, conclusion:(if $c == "" then null else $c end), started_at:$t, details_url:("https://github.com/o/r/actions/runs/" + $r + "/job/1")}'
 }
 census() { # rows... → normalized checks array of PR 7 (light census row + per-head check-runs fetch)
+  reset_check_cache
   GH_CHECK_RUNS="$(printf '%s\n' "$@" | jq -sc '{check_runs: .}')"
   jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' \
     | pr_census_by_number | pr_census_checks_fill | jq -c '{checks: (.["7"].checks | map({name, bucket})), ci: .["7"].ci}'
@@ -71,9 +84,11 @@ c=$(census "$(run 'Postsubmit validate' completed skipped 2026-11-08T09:57:05Z 1
 # An unreadable check-runs read is checks null (never green): the lane skips the candidate as census-unavailable,
 # and a row-less success (empty array) is pending, not green.
 GH_CHECK_RUNS='not-json'
+reset_check_cache
 c="$(jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' | pr_census_by_number | pr_census_checks_fill)"
 [[ "$(jq -r '.["7"].checks' <<<"$c")" == null && "$(jq -r '.["7"].ci' <<<"$c")" == null ]] || fail "unreadable check-runs" "$c"
 GH_CHECK_RUNS='{"check_runs":[]}'
+reset_check_cache
 c="$(jq -cn '[{number:7, headRefOid:"abcdefabcdefabcdefabcdefabcdefabcdefabcd", isDraft:false, mergeable:"MERGEABLE"}]' | pr_census_by_number | pr_census_checks_fill)"
 [[ "$(jq -c '.["7"].checks' <<<"$c")" == '[]' && "$(jq -r '.["7"].ci' <<<"$c")" == 0 ]] || fail "row-less success" "$c"
 lane_skips "$(jq -c '.["7"].checks' <<<"$c")" || fail "row-less success" "lane must skip"
