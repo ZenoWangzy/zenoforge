@@ -973,6 +973,11 @@ tick_gh() {
   esac
 }
 tick_git() {
+  if [[ "${1:-}" == -C && -f "$TF/real-prompt-git" && "${2:-}" == "$TF/repo" ]] \
+    && [[ "${3:-}" == ls-files || "${3:-}" == diff ]]; then
+    command git "$@"
+    return
+  fi
   if [[ "${1:-}" == -C && -f "$TF/real-clone-git" && "${2:-}" == "$TF/clones/"* ]]; then
     command git "$@"
     return
@@ -2998,7 +3003,7 @@ fi
 command grep -q 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log"
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
 tick
-command grep -q '^merge 78$' "$TF/actions"
+command grep -q '^merge 78$' "$TF/actions" || { tail -n 60 "$TF/calls" >&2; exit 1; }
 if command grep -Eq '^issue (edit|comment) ' "$TF/actions"; then
   echo 'scheduler.test.sh: unlinked PR produced an issue write' >&2
   exit 1
@@ -5151,7 +5156,10 @@ sched_case_hold_handoff_open_pr() {
     elif [[ "$existing" == stale ]]; then
       command jq -n '{units:[{id:"issue-779",issue:779,pr:778,branch:"agent/old",lane:"pr",stage:"ready-to-merge",history:[]}]}' > "$TF/supervisor/autopi/units.json"
     fi
-    [[ "$existing" == outside-census ]] || printf 'agent/issue-779 issue #779\n' > "$TF/busy-pr"
+    if [[ "$existing" != outside-census ]]; then
+      command jq -n '[{number:779,headRefName:"agent/issue-779",title:"handoff with open PR",body:"Refs #779"}]' \
+        > "$TF/handoff-lookup.json"
+    fi
     command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
     tick
     command jq -e '(.units|length)==1 and .units[0].issue==779 and .units[0].pr==779 and .units[0].branch=="agent/issue-779" and .units[0].stage=="repair-pending" and (.units[0].repair_hint|contains("issue comments"))' \
@@ -5449,11 +5457,13 @@ sched_case_hold_handoff_pr_ambiguity() {
       if [[ "$mode" == ambiguous ]]; then
         command jq -n '[{number:901,headRefName:"fix/one",body:"Refs #779"},{number:902,headRefName:"fix/two",body:"Fixes #902"}]' > "$TF/handoff-lookup.json"
         command jq '.auto_merge=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+        rm -f "$TF/supervisor/autopi/.tick-prs-census.json"
         tick
         command jq -e '.units[0].issue==779 and .units[0].stage=="repair-pending" and (.units[0].hold_handoff_waiting // false)==false and (.units[1].hold_handoff_waiting // false)==false' "$TF/supervisor/autopi/units.json" >/dev/null \
           || { echo 'not ok - resolving PR association left an unrelated unit frozen' >&2; exit 1; }
         command jq -n '[{number:903,headRefName:"fix/three",body:"Refs #779"},{number:904,headRefName:"fix/four",body:"Refs #779"}]' > "$TF/handoff-lookup.json"
         command jq -n '{units:[{id:"pr-903",pr:903,branch:"fix/three",lane:"pr",stage:"ready-to-merge",history:[]},{id:"pr-904",pr:904,branch:"fix/four",lane:"pr",stage:"ready-to-merge",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+        rm -f "$TF/supervisor/autopi/.tick-prs-census.json"
         tick
         [[ "$(grep -c 'handoff-pr-ambiguous issue=#779' "$TF/agent-home/supervisor-inbox")" == 2 ]] \
           || { echo 'not ok - a later distinct PR ambiguity did not notify supervisor' >&2; exit 1; }
@@ -5947,6 +5957,13 @@ DRIFTED- SIX-ACTION-ONLY 配置覆盖，没有任何终局裁决段。
 ACTION: requeue|approve|park|close|reroute|needs-info
 REASON: …
 DRIFT
+  command git -C "$TF/repo" init -q -b main
+  command git -C "$TF/repo" config user.name fixture
+  command git -C "$TF/repo" config user.email fixture@example.invalid
+  command git -C "$TF/repo" add .zenoforge/prompts/supervisor-arbiter.md
+  command git -C "$TF/repo" commit -qm 'pin target prompt fixture'
+  printf 'product_sha=%s\n' "$(command git -C "$TF/repo" rev-parse HEAD)" > "$TF/repo/BUILD-INFO"
+  touch "$TF/real-prompt-git"
   command jq -n --argjson h "$(cap_triage_history)" \
     '{units:[{id:"bind-check",issue:798,task:"one bounded fixture task",branch:"bind-check",stage:"supervisor-review",history:$h}]}' \
     > "$TF/supervisor/autopi/units.json"
