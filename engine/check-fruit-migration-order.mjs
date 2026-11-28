@@ -111,6 +111,14 @@ function option(name) {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+function mergeGateOptions() {
+  const prNumber = Number(option('--pr'));
+  if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error('--merge-gate needs --pr N');
+  const repo = option('--repo') || process.env.REPO || process.env.GITHUB_REPOSITORY;
+  if (!repo) throw new Error('--merge-gate needs --repo or REPO');
+  return { repo, prNumber, head: option('--head') };
+}
+
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const engineDir = process.env.ZF_ENGINE_DIR || dirname(fileURLToPath(import.meta.url));
@@ -127,10 +135,7 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
           && !Object.prototype.hasOwnProperty.call(config.migration, 'path')));
     if (migrationPathMissing) {
       if (process.argv.includes('--merge-gate')) {
-        const prNumber = Number(option('--pr'));
-        if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error('--merge-gate needs --pr N');
-        const repo = option('--repo') || process.env.REPO || process.env.GITHUB_REPOSITORY;
-        if (!repo) throw new Error('--merge-gate needs --repo or REPO');
+        mergeGateOptions();
       } else if (!process.argv.includes('--ci')) {
         throw new Error('usage: check-fruit-migration-order.mjs --ci [--base REF] | --merge-gate --pr N [--head SHA] [--repo R]');
       }
@@ -145,11 +150,7 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
       migrationDirectory();
       let reasons;
       if (process.argv.includes('--merge-gate')) {
-        const prNumber = Number(option('--pr'));
-        if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error('--merge-gate needs --pr N');
-        const repo = option('--repo') || process.env.REPO || process.env.GITHUB_REPOSITORY;
-        if (!repo) throw new Error('--merge-gate needs --repo or REPO');
-        reasons = mergeGate({ repo, prNumber, head: option('--head') });
+        reasons = mergeGate(mergeGateOptions());
       } else if (process.argv.includes('--ci')) {
         reasons = ciCheck({ baseRef: option('--base') ?? 'origin/main' });
       } else {

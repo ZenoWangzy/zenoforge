@@ -198,6 +198,12 @@ test('CI reports migration order as not applicable when migration.path is absent
   });
   assert.equal(missingRepo.status, 2);
   assert.match(missingRepo.stdout, /--merge-gate needs --repo or REPO/);
+  const mergeGate = spawnSync(process.execPath, [script, '--merge-gate', '--pr', '7', '--repo', 'o/r'], {
+    encoding: 'utf8',
+    env,
+  });
+  assert.equal(mergeGate.status, 0, mergeGate.stderr || mergeGate.stdout);
+  assert.match(mergeGate.stdout, /migration order not applicable/);
   const result = spawnSync(process.execPath, [script, '--ci'], { encoding: 'utf8', env });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /migration order not applicable/);
