@@ -63,9 +63,3 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm test
-      - name: Pack and run doctor from the tarball
-        run: |
-          npm pack --silent
-          # doctor exits 1 here (no gh login on the runner); the check is that it reports instead of crashing
-          npx --yes ./zenoforge-*.tgz doctor | tee doctor.txt || true
-          grep -q PASS doctor.txt

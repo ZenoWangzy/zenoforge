@@ -1,0 +1,61 @@
+name: clean-host-install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clean-host-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Linux host tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gh jq python3 util-linux
+      - name: Install macOS host tools
+        if: runner.os == 'macOS'
+        run: brew install bash coreutils flock gh jq python util-linux
+      - name: Pack and install from an empty home
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew_path="$(brew --prefix bash)/bin:$(brew --prefix coreutils)/libexec/gnubin:$(brew --prefix flock)/bin:$(brew --prefix util-linux)/bin:$(brew --prefix)/bin"
+            export PATH="$brew_path:$PATH"
+            printf '%s\n' "$brew_path" | tr ':' '\n' >> "$GITHUB_PATH"
+          fi
+          clean_home="$(mktemp -d "$RUNNER_TEMP/clean-home.XXXXXX")"
+          pack_dir="$(mktemp -d "$RUNNER_TEMP/clean-pack.XXXXXX")"
+          stub_bin="$(mktemp -d "$RUNNER_TEMP/clean-bin.XXXXXX")"
+          trap 'rm -rf "$pack_dir"' EXIT
+          printf 'HOME=%s\nCLEAN_HOST_HOME=%s\nCLEAN_HOST_STUB_BIN=%s\n' "$clean_home" "$clean_home" "$stub_bin" >> "$GITHUB_ENV"
+          printf '%s\n' "$stub_bin" "$clean_home/.local/bin" >> "$GITHUB_PATH"
+          ln -s "$(type -P true)" "$stub_bin/codex"
+          export HOME="$clean_home"
+          export PATH="$stub_bin:$PATH"
+          npm pack --silent --pack-destination "$pack_dir"
+          npm install --global --prefix "$HOME/.local" "$pack_dir"/zenoforge-*.tgz
+      - name: Initialize from the clean home
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zenoforge init --yes --repo ZenoWangzy/zenoforge --no-scheduler --dry-run
+      - if: always()
+        run: |
+          if [[ -n "${CLEAN_HOST_HOME:-}" ]]; then
+            rm -rf "$CLEAN_HOST_HOME" "$CLEAN_HOST_STUB_BIN"
+          fi
