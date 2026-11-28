@@ -34,6 +34,14 @@ test('partial labels compare only the shared cases and say which ones were compa
   assert.doesNotMatch(text, /compared in both labels:[^\n]*triage\/b/);
 });
 
+test('comparison lists paired cases by the live engine versions that ran them', () => {
+  const beforeSha = 'a'.repeat(40), afterSha = 'b'.repeat(40);
+  const before = { ...fixture('before', [['a', 1, true], ['b', 1, false]]), engineSha: beforeSha };
+  const after = { ...fixture('after', [['a', 1, false], ['b', 1, true]]), engineSha: afterSha };
+  const text = formatComparison(compareResults(before, after));
+  assert.match(text, new RegExp(`paired by live engine version\\n  ${beforeSha} → ${afterSha}: triage/a/1, triage/b/1`));
+});
+
 test('supervisor comparison reports accuracy by action and the constant-requeue reference', () => {
   const row = (caseId, expectedAction, pass, action) => ({ stage: 'supervisor', caseId, run: 1, expectedAction, pass, action });
   const before = { label: 'arbiter', results: [

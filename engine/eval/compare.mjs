@@ -34,11 +34,22 @@ export function compareResults(baseline, candidate) {
   }
   const total = (rows) => ({ passed: rows.filter((r) => r.pass).length, total: rows.length });
   const pairedRows = paired.map((id) => a.get(id)).filter((row) => row.stage === 'supervisor');
+  const pairedByEngineVersion = new Map();
+  for (const id of paired) {
+    const before = a.get(id), after = b.get(id);
+    const baselineEngineSha = before.engineSha ?? baseline.engineSha ?? 'unknown';
+    const candidateEngineSha = after.engineSha ?? candidate.engineSha ?? 'unknown';
+    const key = `${baselineEngineSha}\0${candidateEngineSha}`;
+    if (!pairedByEngineVersion.has(key)) pairedByEngineVersion.set(key, {
+      baseline: baselineEngineSha, candidate: candidateEngineSha, ids: [],
+    });
+    pairedByEngineVersion.get(key).ids.push(id);
+  }
   return { baseline: baseline.label, candidate: candidate.label,
     totals: { baseline: total(baseline.results), candidate: total(candidate.results) },
     supervisor: { baseline: summarizeSupervisor(baseline.results), candidate: summarizeSupervisor(candidate.results),
       alwaysRequeue: summarizeSupervisor(pairedRows).alwaysRequeue },
-    paired, regressions, improvements, unpaired,
+    paired, pairedByEngineVersion: [...pairedByEngineVersion.values()], regressions, improvements, unpaired,
     inconsistency: { baseline: inconsistent(baseline.results), candidate: inconsistent(candidate.results) } };
 }
 export function summarizeSupervisor(rows) {
@@ -77,6 +88,8 @@ export function formatComparison(r) {
     ...r.unpaired.map((x) => `UNPAIRED ${x.id} only in ${x.onlyIn}`),
     ...['baseline', 'candidate'].map((label) => `inconsistency ${r[label]}: ${r.inconsistency[label].length} cases${r.inconsistency[label].map((x) => `\n  ${x.id}: ${x.runs.map((run) => `${run.run}=${run.pass ? 'pass' : 'fail'}`).join(', ')}`).join('')}`),
     `compared in both labels: ${r.paired.length ? r.paired.join(', ') : 'none'}`,
+    'paired by live engine version',
+    ...r.pairedByEngineVersion.map(({ baseline, candidate, ids }) => `  ${baseline} → ${candidate}: ${ids.join(', ')}`),
   ].join('\n');
 }
 
