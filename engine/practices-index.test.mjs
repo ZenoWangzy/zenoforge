@@ -44,7 +44,15 @@ test('the practices index covers its source rules, lints, and links', () => {
   assert.ok(rows.length > 0);
   assert.ok(rows.every((row) => row.length === 3 && row.every(Boolean)));
   assert.equal(new Set(rows.map(([practice]) => practice)).size, rows.length);
-  assert.ok(rows.every(([, enforcement]) => /^gap:/i.test(enforcement) || /\b(?:test|lint|hook|skill|gate):/i.test(enforcement)));
+  assert.ok(rows.every(([, enforcement]) => /^(?:advisory|gap):/i.test(enforcement) || /\b(?:test|lint|ratchet|hook|skill|gate):/i.test(enforcement)));
+  for (const [practice, enforcement] of rows) {
+    const checkPaths = [...enforcement.matchAll(/\b(?:test|lint|ratchet|hook|gate):\s*`([^`]+)`/gi)];
+    const hasCheckPath = checkPaths.some(([, file]) => existsSync(path.resolve(repo, file)));
+    assert.ok(
+      /^advisory:/i.test(enforcement) || hasCheckPath,
+      `${practice} must name an existing check path or be marked advisory`,
+    );
+  }
   assert.ok(rows.every(([, , source]) => source.includes('](')));
 
   for (const line of agentLines) assert.equal(sourceCounts(agentsPath).get(line), 1, `AGENTS.md line ${line}`);
