@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../test-env.sh"
-p=$(cd "$(dirname "$0")" && pwd); t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+p=$(cd "$(dirname "$0")" && pwd); t="$test_env_root/hotfix-start"; mkdir -p "$t"
 cat > "$t/git" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$LOG"
