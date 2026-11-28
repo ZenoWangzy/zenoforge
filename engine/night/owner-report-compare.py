@@ -139,7 +139,7 @@ def node_health_source_state(runtime, now, agent_home, max_age=20 * 3600):
     age = source.get("age_s") if sample_epoch is not None else None
     return {"sample_at": source.get("at") if sample_epoch is not None else None,
             "age_s": age, "paused": paused,
-            "stale": paused or age is None or age > max_age or sample_epoch > now}
+            "stale": paused or source.get("stale") is True or age is None or age > max_age or sample_epoch > now}
 
 
 def anomaly_label(metric):
@@ -199,7 +199,7 @@ def station_facts(runtime, now, agent_home=None):
         return None
     agent_home = agent_home or os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME") or os.path.expanduser("~/.zenoforge")
     metrics = {m.get("id"): m for m in health["metrics"] if isinstance(m, dict)}
-    source = node_health_source_state(runtime, now, agent_home)
+    source = node_health_source_state(runtime, now, agent_home, STATION_FRESH_SECONDS)
     if source["stale"]:
         try:
             live_values = station_counts_at(agent_home, runtime, now)
