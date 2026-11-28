@@ -1,6 +1,5 @@
 # Every factory codex start passes these: without them each start re-downloads the remote plugin catalog (~51 MB, bypassing
 # the 3 h disk cache). Upstream openai/codex#47483 (open); drop this once fixed upstream. Config is not changed (interactive CLI keeps plugins).
-# features.apps=false keeps factory runs on the local shell: ChatGPT apps (codex_apps) can expose a remote shell connector that runs commands outside the factory cgroup.
 CODEX_PLUGINS_OFF_ARGS=(-c features.plugins=false -c features.apps=false)
 
 # Print Codex argv pairs that disable every server configured in this user's Codex home.

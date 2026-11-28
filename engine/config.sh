@@ -199,7 +199,11 @@ if [[ "$ZF_COORD" != on ]]; then
   if [[ -r "$ZF_ENGINE_DIR/coord-off.sh" ]]; then
     source "$ZF_ENGINE_DIR/coord-off.sh"
   else
-    source "$(dirname -- "${BASH_SOURCE[0]}")/coord-off.sh"
+    coord_off_file="$(dirname -- "${BASH_SOURCE[0]}")/coord-off.sh"
+    if [[ -r "$coord_off_file" ]]; then
+      source "$coord_off_file"
+    fi
+    unset coord_off_file
   fi
 fi
 
