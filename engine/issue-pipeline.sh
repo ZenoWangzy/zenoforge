@@ -1437,14 +1437,19 @@ maintenance_run_optional_step() { # bounded maintenance work that can yield to r
       if [ "$DRY_RUN" != "1" ] && ! manual_pause_is_valid; then
         local main_red_lane_status
         MAIN_RED_RUNS_READ=0
-        if coord_lane_run main-red "${ZF_COORD_MAIN_RED_LANE_WAIT_SECONDS:-0}" main_red_bisect_sweep; then
-          :
-        else
-          main_red_lane_status=$?
-          if (( main_red_lane_status == 75 )) && [ "${COORD_LANE_BUSY:-0}" = 1 ]; then
-            echo "issue-pipeline: main-red lane busy; recovery step deferred" >&2
-            return 0
+        if [[ "${ZF_COORD:-off}" == on ]]; then
+          if coord_lane_run main-red "${ZF_COORD_MAIN_RED_LANE_WAIT_SECONDS:-0}" main_red_bisect_sweep; then
+            :
+          else
+            main_red_lane_status=$?
+            if (( main_red_lane_status == 75 )) && [ "${COORD_LANE_BUSY:-0}" = 1 ]; then
+              echo "issue-pipeline: main-red lane busy; recovery step deferred" >&2
+              return 0
+            fi
+            echo "issue-pipeline: main-red bisect step failed; the red session retries next tick" >&2
+            return 1
           fi
+        elif ! main_red_bisect_sweep; then
           echo "issue-pipeline: main-red bisect step failed; the red session retries next tick" >&2
           return 1
         fi

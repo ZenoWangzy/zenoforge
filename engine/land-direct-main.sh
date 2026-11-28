@@ -1383,7 +1383,7 @@ fi
   fi
   echo "land-direct-main: engine pin preflight passed pin=$engine product=$head duration_ms=$elapsed_ms" >&2
 }
-trap 'land_cleanup_preflight_private_refs; land_coord_lane_cleanup' EXIT
+trap 'land_cleanup_preflight_private_refs' EXIT
 
 # Paths whose landing runs engine/systemd/sync-cihost-*.sh on cihost after the push.
 cihost_sync_path() {
@@ -1617,7 +1617,9 @@ if ! merge_result_node_check "$repo_root" "$tested_base" "$(git rev-parse HEAD)"
   echo 'land-direct-main: refusing push because merge result Node syntax check failed' >&2
   exit 1
 fi
-land_coord_lane_begin "${ZF_COORD_LAND_LANE_WAIT_SECONDS:-${MERGE_LOCK_WAIT_SECONDS:-4200}}" || exit $?; land_phase preflight-start
+land_coord_lane_begin "${ZF_COORD_LAND_LANE_WAIT_SECONDS:-${MERGE_LOCK_WAIT_SECONDS:-4200}}" || exit $?
+trap 'land_cleanup_preflight_private_refs; land_coord_lane_cleanup' EXIT
+land_phase preflight-start
 preflight
 land_phase preflight-passed
 # The engine pin preflight refuses the push before it happens, so a pin that cannot build or
