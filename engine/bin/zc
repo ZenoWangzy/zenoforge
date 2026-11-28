@@ -55,6 +55,7 @@ if [[ ${ZF_WORKER_REMOTE_INNER:-0} != 1 ]]; then
       luna_reload_live_gate
       gate_reload_at=$SECONDS
     fi
+    luna_reload_gate_env
     if declare -F luna_waiter_has_room >/dev/null; then
       if luna_waiter_has_room "$slots" "$wait_f" "$prio" "$SECONDS" zc; then break; fi
     elif box_has_room "$SECONDS" zc; then
