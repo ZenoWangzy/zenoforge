@@ -13,10 +13,7 @@
 # Per-ticket run conclusions go only to a rostered non-founder reporter; the
 # shared pre-send check rejects unclassified maintainer mail.
 
-if ! declare -F effect_run >/dev/null; then
-  source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
-  coord_source_if_enabled
-fi
+source "$(dirname -- "${BASH_SOURCE[0]}")/notify-effects.sh"
 #
 # Roster lives outside the repo (same "outside VCS, mode 600" pattern as
 # GH_TOKEN in ~/.zenoforge/env -- see systemd/zenoforge-agent.service and this
@@ -497,14 +494,6 @@ build_gmail_raw_message() {
   printf '%s' "$encoded"
 }
 
-_notify_gmail_send_request() {
-  local token="$1" payload_file="$2"
-  gmail_curl "$token" -sS --max-time "$GMAIL_TIMEOUT_SECONDS" -X POST "$GMAIL_SEND_URL" \
-    -H "Content-Type: application/json" \
-    --data-binary @"$payload_file" \
-    -w '\n%{http_code}' 2>&1
-}
-
 # Shared transport: audit and contract checks precede MIME construction and Gmail.
 _send_email_logged() {
   notify_test_write_guard || return 1
@@ -512,7 +501,6 @@ _send_email_logged() {
   local NOTIFY_LOG_MODE="$mode"
   local NOTIFY_MAILER_ID="$(date -u +%s%N)-$$-${RANDOM}"
   local rejection gcloud_bin token to_header encoded encoded_file payload_file raw curl_status http_code resp_body msg_id
-  local effect_key effect_claim effect_id
   local failure_reason gcloud_stderr_file
   local NOTIFY_LOG_STAGE="" NOTIFY_LOG_CURL_EXIT="" NOTIFY_LOG_HTTP_STATUS="" NOTIFY_LOG_CONTRACT_REASON=""
   # Before the request is issued, every failure proves Gmail received nothing.
@@ -629,25 +617,13 @@ $body" >&2
   NOTIFY_LAST_SEND_RETRY_SAFE=0
   NOTIFY_LOG_STAGE=gmail-api-send
   if [[ "$mode" == strict ]]; then
-    if [[ "${ZF_COORD:-off}" == on ]]; then
-      effect_id="$(printf '%s\0%s\0%s' "$subject" "$body" "$to_header" \
-        | git -C "${REPO_DIR:-$ZF_REPO_DIR}" hash-object --stdin)" || {
-        rm -f -- "$payload_file"
-        return 3
-      }
-    else
-      effect_id=off
-    fi
-    effect_key="mail:${issue_marker:-$maintainer_kind}:$effect_id"
-    effect_claim="$(effect_claim_for "$effect_key")" || {
+    _notify_strict_effect_send_request "$subject" "$body" "$to_header" \
+      "$issue_marker" "$maintainer_kind" "$token" "$payload_file" || curl_status=$?
+    if [[ "${NOTIFY_EFFECT_SETUP_FAILED:-0}" == 1 ]]; then
       rm -f -- "$payload_file"
       return 3
-    }
-    if raw="$(effect_run "$effect_claim" "$effect_key" mail -- _notify_gmail_send_request "$token" "$payload_file")"; then
-      curl_status=0
-    else
-      curl_status=$?
     fi
+    raw="$NOTIFY_EFFECT_RAW"
   else
     raw="$(_notify_gmail_send_request "$token" "$payload_file")"
     curl_status=$?
