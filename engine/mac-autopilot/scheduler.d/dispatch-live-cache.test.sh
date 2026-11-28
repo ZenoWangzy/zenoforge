@@ -33,7 +33,20 @@ fail() { echo "dispatch-live-cache.test.sh: $*" >&2; exit 1; }
 
 sha=2222222222222222222222222222222222222222
 FIXTURE_PRS="$fixture/prs.json"
-gh() { case "${1:-} ${2:-}" in 'pr list') cat "$FIXTURE_PRS" ;; *) return 97 ;; esac; }
+gh() {
+  case "${1:-} ${2:-}" in
+    'api -i')
+      if [[ "$*" == *'pulls?state=open&per_page=100'* ]]; then
+        local census_json
+        census_json="$(jq -c 'map({number,state:"open",draft:(.isDraft // false),head:{ref:.headRefName,sha:.headRefOid},base:{ref:(.baseRefName // "main")},title,body,labels,mergeable:null,created_at:(.createdAt // "2026-11-01T00:00:00Z"),updated_at:(.updatedAt // "2026-11-01T00:00:00Z")})' "$FIXTURE_PRS")"
+        printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$census_json"
+      else
+        return 97
+      fi ;;
+    'pr list') cat "$FIXTURE_PRS" ;;
+    *) return 97 ;;
+  esac
+}
 alive() { return 0; }
 SCHEDULER_AGENT_LIB="$fixture/supervisor-inbox-test.sh"
 printf '%s\n' 'supervisor_inbox_append_once() { :; }' > "$SCHEDULER_AGENT_LIB"

@@ -49,6 +49,14 @@ make_census
 gh() {
   printf '%s\n' "$*" >> "$GH_CALLS"
   case "${1:-} ${2:-}" in
+    'api -i')
+      if [[ "$*" == *'pulls?state=open&per_page=100'* ]]; then
+        local census_json
+        census_json="$(jq -c 'map({number,state:"open",draft:(.isDraft // false),head:{ref:.headRefName,sha:.headRefOid},base:{ref:(.baseRefName // "main")},title,body,labels,mergeable:true,created_at:"2026-11-01T00:00:00Z",updated_at:"2026-11-01T00:00:00Z"})' "$CENSUS")"
+        printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$census_json"
+      else
+        return 97
+      fi ;;
     'api repos/{owner}/{repo}/actions/jobs/'*) printf '{"status":"completed","steps":[]}\n' ;;
     'api --allow-escape-sequences')
       [[ "${3:-}" =~ ^repos/\{owner\}/\{repo\}/actions/jobs/[0-9]+/logs$ ]] || return 98
@@ -201,7 +209,8 @@ run_ci_batch_case() {
   prepare_tick
   SLOTS=2
   ci_admission
-  [[ "$(call_count pr list)" == 1 ]] || fail "30 PRs caused $(call_count pr list) open-PR list calls"
+  [[ "$(awk '$1 == "api" && $2 == "-i" && index($0, "pulls?state=open&per_page=100") { n++ } END { print n+0 }' "$GH_CALLS")" == 1 ]] \
+    || fail "30 PRs did not use one open-PR census ($(cat "$GH_CALLS"))"
   [[ "$(call_count api graphql)" == 1 ]] || fail "30 PRs caused $(call_count api graphql) batched path queries"
   [[ "$(call_count pr view)" == 0 ]] || fail "product path classification made $(call_count pr view) per-PR reads"
   [[ "$(call_count run list)" == "$SLOTS" ]] || fail "expected $SLOTS bounded run-list reads, got $(call_count run list)"
@@ -213,7 +222,8 @@ run_ci_zero_slot_case() {
   prepare_tick
   SLOTS=0
   ci_admission
-  [[ "$(call_count pr list)" == 1 ]] || fail "zero-slot pass expected one census, got $(call_count pr list)"
+  [[ "$(awk '$1 == "api" && $2 == "-i" && index($0, "pulls?state=open&per_page=100") { n++ } END { print n+0 }' "$GH_CALLS")" == 1 ]] \
+    || fail "zero-slot pass expected one REST census ($(cat "$GH_CALLS"))"
   [[ "$(call_count api graphql)" == 1 ]] || fail "zero-slot pass expected one batched path query, got $(call_count api graphql)"
   [[ "$(per_pr_read_count)" == 0 ]] || fail "zero-slot pass made per-PR reads: $(cat "$GH_CALLS")"
 }

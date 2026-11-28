@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { reset_gate_fixture_reads; printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 H1=1111111111111111111111111111111111111111
 H2=2222222222222222222222222222222222222222
@@ -34,7 +34,7 @@ rm -f "$ph/cancelled"
 units "{\"units\":[{\"id\":\"pr-21\",\"pr\":21,\"stage\":\"review-pending\",\"branch\":\"plain\",\"history\":[]},{\"id\":\"pr-20\",\"pr\":20,\"stage\":\"review-pending\",\"hotpatch\":true,\"branch\":\"hp\",\"history\":[]}]}"
 GH_RUNS="[$(run_json 70 queued hp "$H2" CI),$(run_json 71 queued plain "$H1" CI)]"
 gh_census_saved="$(declare -f gh)"
-gh() { if [[ "$1 $2" == "pr list" ]]; then return 1; else eval "${gh_census_saved/gh ()/gh_f ()}"; gh_f "$@"; fi; }
+gh() { if [[ "$*" == *'pulls?state=open&per_page=100'* ]]; then return 1; else eval "${gh_census_saved/gh ()/gh_f ()}"; gh_f "$@"; fi; }
 ( ROOT="$ph"; tick_prs_changed; ci_admission ) || fail 'ci_admission errored with an unavailable PR census'
 [[ ! -s "$ph/cancelled" ]] || fail "controller cancelled runs without hotfix classification ($(tr '\n' ' ' < "$ph/cancelled"))"
 eval "$gh_census_saved"; GH_RUNS='[]'
@@ -61,6 +61,7 @@ gh() { case "$1 $2" in
     printf 'HTTP/2.0 200 OK\nEtag: "stub"\n\n%s\n' "$body"
     return 0 ;;
   "pr list") cat "$GH_PR_TABLE" ;;
+  "api repos/{owner}/{repo}/pulls?state=open&per_page=100") gh_pr_rest_census ;;
   "pr ready") if [[ "${4:-}" == "--undo" ]]; then gh_pr_ready "$3" --undo; else gh_pr_ready "$3"; fi ;;
   # 轻量 census 后热修分类按 PR 单读正文：表里的 PR 都没有 Refs 正文，空正文即真实回答
   "pr view") [[ "$*" == *'--json body'* ]] || { echo "unexpected gh in admission fixture: $*" >&2; return 97; } ;;
@@ -70,7 +71,7 @@ gh() { case "$1 $2" in
   "api --paginate")
     case "$3" in
       # 一个在线 PR runner → 一个空槽；名额来自 runner 而不是配置（60ba960cf）
-      "repos/{owner}/{repo}/actions/runners?per_page=100") echo 1 ;;
+      "repos/{owner}/{repo}/actions/runners?per_page=100") printf '%s\n' '{"runners":[{"id":1,"status":"online","busy":false,"labels":[{"name":"cihost-ci"}]}]}' ;;
     esac ;;
   "api "*)
     if [[ "$*" == *'actions/runners?per_page=100'* ]]; then
@@ -93,7 +94,7 @@ units "$(jq -cn --arg h "$H1" '{units:[
 ]}')"
 ( ROOT="$ph"; tick_prs_changed; TICK_UNFINISHED='[]'; ci_wip_gate_test )
 [[ "$(gh_pr_is_draft 61):$(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64)" == "false:true:true:true" ]] \
-  || fail "main-red did not win the full slot over opt and normal ($(gh_pr_is_draft 61):$(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64))"
+  || fail "main-red did not win the full slot over opt and normal ($(gh_pr_is_draft 61):$(gh_pr_is_draft 62):$(gh_pr_is_draft 63):$(gh_pr_is_draft 64)); calls=$(cat "$GH_PR_CALLS"); log=$(tail -n 12 "$LOG")"
 jq -c 'map(.isDraft = true)' "$GH_PR_TABLE" > "$GH_PR_TABLE.tmp" && mv "$GH_PR_TABLE.tmp" "$GH_PR_TABLE"
 units "$(jq -cn --arg h "$H1" '{units:[
   {id:"opt-early",pr:62,branch:"agent/issue-62",stage:"ready-to-merge",ci_priority:true,approved_sha:$h,ready_since:10,product_paths:true,history:[]},

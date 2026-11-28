@@ -542,7 +542,7 @@ tick_pr_mergeable() { # Missing mergeability and PRs outside the census use the 
   local prs state=""
   prs="$(tick_prs 2>/dev/null || true)"
   [[ -z "$prs" ]] || state="$(jqf -r --argjson p "$1" '[.[] | select(.number == $p) | .mergeable][0] // empty' <<<"$prs")"
-  [[ -n "$state" ]] || state="$(pr_view "$1" mergeable)" || return 1
+  [[ -n "$state" && "$state" != UNKNOWN ]] || state="$(pr_view "$1" mergeable)" || return 1
   printf '%s\n' "$state"
 }
 classify_lane() { # pr → direct-main|pr（取不到文件列表返回 1）

@@ -139,11 +139,11 @@ unset -f phase intake_census_prime existing_walked_load
 source "$engine_dir/mac-autopilot/scheduler.d/intake.sh"
 source "$engine_dir/mac-autopilot/scheduler.d/existing-walk-station.sh"
 tick_prs_prime() { :; }
-tick_prs() { printf '%s\n' '[{"number":5,"headRefName":"agent/issue-5","title":"t","labels":[],"isDraft":false}]'; }
+tick_prs() { printf '%s\n' '[{"number":5,"headRefName":"agent/issue-5","title":"t","body":"b","labels":[],"isDraft":false}]'; }
 intake_gh_read() { [[ "$1 $2" == 'pr list' ]] || return 1; printf '%s\n' '[{"number":5,"headRefName":"agent/issue-5","title":"t","body":"b","labels":[]}]'; }
 HANDOFF_WAIT_PRS='[9]'; HANDOFF_PR_CENSUS=''; HANDOFF_CENSUS_PARTIAL=1
 intake_census_prime
-[[ "$HANDOFF_PR_CENSUS" == '[{"number":5,"headRefName":"agent/issue-5","title":"t","body":"b","labels":[]}]' && "$HANDOFF_CENSUS_PARTIAL" == 0 && "$HANDOFF_WAIT_PRS" == '[]' ]] \
+[[ "$HANDOFF_PR_CENSUS" == '[{"number":5,"headRefName":"agent/issue-5","title":"t","body":"b","labels":[],"isDraft":false}]' && "$HANDOFF_CENSUS_PARTIAL" == 0 && "$HANDOFF_WAIT_PRS" == '[]' ]] \
   || fail "census prime wrong: $HANDOFF_PR_CENSUS partial=$HANDOFF_CENSUS_PARTIAL wait=$HANDOFF_WAIT_PRS"
 
 # --- case 9: scheduler.sh routes --existing-walk to the pass without reading the tick's runtime config first; loop.sh launches it on its cadence. ---
@@ -157,7 +157,7 @@ SH
 loop_window() { # seconds
   ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$engine_dir/mac-autopilot/loop.sh"
     A="$hl/state"; LIVE="$hl/live"; export HL_CALLS="$hl/calls"
-    export AUTOPI_EXISTING_WALK_SECONDS=30 AUTOPI_HARVEST_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647 AUTOPI_MERGE_STATION_SECONDS=2147483647
+    export AUTOPI_EXISTING_WALK_SECONDS=30 AUTOPI_HARVEST_STATION_SECONDS=2147483647 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647 AUTOPI_MERGE_STATION_SECONDS=2147483647 AUTOPI_DISPATCH_STATION_SECONDS=2147483647
     echo '{"workers":[]}' > "$A/workers.json"
     sleep() { SECONDS=$((SECONDS + 5)); }
     refill_window "$1" )
