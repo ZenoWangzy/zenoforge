@@ -9,6 +9,10 @@ explore_sha_valid() {
   [[ "$1" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
 }
 
+explore_realpath() {
+  python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
 explore_run_dir() {
   printf '%s/state/explore/%s\n' "$AGENT_HOME" "$1"
 }
@@ -90,6 +94,58 @@ explore_config_load() {
   EXPLORE_SELECTED_COUNT="$(jq 'length' <<< "$EXPLORE_SELECTED_FEATURES")"
   valid_ids="$(jq '[.[]|.id]|unique|length' <<< "$EXPLORE_SELECTED_FEATURES")"
   [[ "$valid_ids" == "$EXPLORE_SELECTED_COUNT" ]]
+}
+
+explore_reclaim_old_runs() {
+  local root="$AGENT_HOME/state/explore" retention_days="${ZF_EXPLORE_RETAIN_DAYS:-14}" retention_seconds now run_dir sha state_file state age_seconds lock_file
+  local repo_real evidence_root evidence_real evidence_run reclaimed=0 removed_run status=0
+  [[ "$retention_days" =~ ^[0-9]{1,5}$ ]] || return 64
+  retention_days=$((10#$retention_days))
+  retention_seconds=$((retention_days * 86400))
+  [[ -d "$root" ]] || return 0
+  now="$(date +%s)" || return 1
+  evidence_root=
+  if explore_config_load; then
+    repo_real="$(explore_realpath "$ZF_REPO_DIR" 2>/dev/null || true)"
+    evidence_root="$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL"
+    evidence_real="$(explore_realpath "$evidence_root" 2>/dev/null || true)"
+    if [[ -z "$repo_real" || -z "$evidence_real" || ( "$evidence_real" != "$repo_real" && "$evidence_real" != "$repo_real/"* ) ]]; then
+      evidence_root=
+      status=1
+    else
+      evidence_root="$evidence_real"
+    fi
+  fi
+  for run_dir in "$root"/*; do
+    [[ -d "$run_dir" && ! -L "$run_dir" ]] || continue
+    sha="${run_dir##*/}"
+    explore_sha_valid "$sha" || continue
+    state_file="$run_dir/state.json"
+    [[ -f "$state_file" && ! -L "$state_file" ]] || continue
+    state="$(jq -r '.state // empty' "$state_file" 2>/dev/null || true)"
+    case "$state" in
+      done|skipped|killed) ;;
+      *) continue ;;
+    esac
+    age_seconds="$(python3 -c 'import os,sys; print(max(0,int(float(sys.argv[1])-os.stat(sys.argv[2]).st_mtime)))' "$now" "$state_file" 2>/dev/null || true)"
+    [[ "$age_seconds" =~ ^[0-9]+$ ]] || { status=1; continue; }
+    (( age_seconds >= retention_seconds )) || continue
+    removed_run=0
+    if rm -rf -- "$run_dir"; then removed_run=1; else status=1; fi
+    lock_file="$root/$sha.lock"
+    if [[ -e "$lock_file" || -L "$lock_file" ]]; then
+      if rm -f -- "$lock_file"; then removed_run=1; else status=1; fi
+    fi
+    if [[ -n "$evidence_root" ]]; then
+      evidence_run="$evidence_root/explore-$sha"
+      if [[ -e "$evidence_run" || -L "$evidence_run" ]]; then
+        if rm -rf -- "$evidence_run"; then removed_run=1; else status=1; fi
+      fi
+    fi
+    if (( removed_run == 1 )); then reclaimed=$((reclaimed + 1)); fi
+  done
+  if (( reclaimed > 0 )); then explore_log "explore: reclaimed runs=$reclaimed"; fi
+  return "$status"
 }
 
 explore_age_seconds() {
@@ -257,8 +313,8 @@ explore_evidence_copy() {
     case "/$relative/" in */../*) return 1 ;; esac
     source="$evidence_dir/$relative"
     [[ -f "$source" && ! -L "$source" ]] || return 1
-    resolved_root="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$evidence_dir")" || return 1
-    resolved_file="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$source")" || return 1
+    resolved_root="$(explore_realpath "$evidence_dir")" || return 1
+    resolved_file="$(explore_realpath "$source")" || return 1
     [[ "$resolved_file" == "$resolved_root/"* ]] || return 1
     size="$(wc -c < "$resolved_file" | tr -d ' ')" || return 1
     [[ "$size" =~ ^[0-9]+$ ]] && (( size > 0 && size <= 10485760 )) || return 1
@@ -281,7 +337,7 @@ explore_evidence_attachment_paths() {
 
 explore_remove_attempt_evidence() {
   local path repo_real
-  repo_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ZF_REPO_DIR" 2>/dev/null || true)"
+  repo_real="$(explore_realpath "$ZF_REPO_DIR" 2>/dev/null || true)"
   for path in "${EXPLORE_FIRST_EVIDENCE_DIR:-}" "${EXPLORE_ATTEMPT_EVIDENCE_DIR:-}"; do
     [[ -n "$path" && -n "$repo_real" && "$path" == "$repo_real/"* ]] || continue
     rm -rf -- "$path"
@@ -368,8 +424,8 @@ explore_driver_attempt() {
   result="$(explore_run_dir "$sha")/results/$feature_id-attempt-$attempt.json"
   log_file="$(explore_run_dir "$sha")/results/$feature_id-attempt-$attempt.log"
   mkdir -p -- "$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
-  repo_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ZF_REPO_DIR")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
-  evidence_base_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
+  repo_real="$(explore_realpath "$ZF_REPO_DIR")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
+  evidence_base_real="$(explore_realpath "$ZF_REPO_DIR/$EXPLORE_EVIDENCE_REL")" || { EXPLORE_ATTEMPT_STATUS=error; return 0; }
   if [[ "$evidence_base_real" != "$repo_real" && "$evidence_base_real" != "$repo_real/"* ]]; then EXPLORE_ATTEMPT_STATUS=error; return 0; fi
   evidence_dir="$evidence_base_real/explore-$sha/$feature_id/attempt-$attempt"
   EXPLORE_ATTEMPT_EVIDENCE_DIR="$evidence_dir"

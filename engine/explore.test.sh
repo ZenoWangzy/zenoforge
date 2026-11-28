@@ -148,4 +148,59 @@ check 'token budget does not file an unconfirmed defect' "$(wc -l < "$UPSERT_LOG
 contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'release=eeeeeeeeeeee features=1/1 findings=0 filed=0 tokens=5 wall=' 'token usage was not measured by usage_reader'
 contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'stop=budget-tokens' 'token budget did not stop the run'
 
+write_run_state() {
+  local sha="$1" state="$2" age_days="$3" run_dir="$AGENT_HOME/state/explore/$1"
+  mkdir -p "$run_dir"
+  jq -cn --arg state "$state" '{state:$state}' > "$run_dir/state.json"
+  python3 - "$run_dir/state.json" "$age_days" <<'PY'
+import os
+import sys
+import time
+
+path, age_days = sys.argv[1], int(sys.argv[2])
+mtime = time.time() - age_days * 86400
+os.utime(path, (mtime, mtime))
+PY
+}
+
+done_old_sha=1111111111111111111111111111111111111111
+skipped_old_sha=2222222222222222222222222222222222222222
+killed_old_sha=3333333333333333333333333333333333333333
+needs_filing_old_sha=4444444444444444444444444444444444444444
+started_old_sha=5555555555555555555555555555555555555555
+done_young_sha=6666666666666666666666666666666666666666
+done_missing_evidence_sha=7777777777777777777777777777777777777777
+invalid_sha=not-a-valid-release
+write_run_state "$done_old_sha" done 20
+write_run_state "$skipped_old_sha" skipped 20
+write_run_state "$killed_old_sha" killed 20
+write_run_state "$needs_filing_old_sha" needs-filing 20
+write_run_state "$started_old_sha" started 20
+write_run_state "$done_young_sha" done 1
+write_run_state "$done_missing_evidence_sha" done 20
+write_run_state "$invalid_sha" done 20
+mkdir -p "$REPO_DIR/run-evidence/explore-$done_old_sha" "$REPO_DIR/run-evidence/explore-$skipped_old_sha" \
+  "$REPO_DIR/run-evidence/explore-$killed_old_sha" "$REPO_DIR/run-evidence/explore-$needs_filing_old_sha" \
+  "$REPO_DIR/run-evidence/explore-$started_old_sha" "$REPO_DIR/run-evidence/explore-$done_young_sha" \
+  "$REPO_DIR/run-evidence/explore-$invalid_sha"
+touch "$AGENT_HOME/state/explore/$done_old_sha.lock" "$AGENT_HOME/state/explore/$skipped_old_sha.lock" \
+  "$AGENT_HOME/state/explore/$killed_old_sha.lock"
+if ! bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null; then fail 'dispatch failed while reclaiming an old run without evidence'; fi
+[[ ! -e "$AGENT_HOME/state/explore/$done_old_sha" ]] || fail 'old done run was not reclaimed'
+[[ ! -e "$AGENT_HOME/state/explore/$skipped_old_sha" ]] || fail 'old skipped run was not reclaimed'
+[[ ! -e "$AGENT_HOME/state/explore/$killed_old_sha" ]] || fail 'old killed run was not reclaimed'
+[[ ! -e "$AGENT_HOME/state/explore/$done_missing_evidence_sha" ]] || fail 'old done run without evidence was not reclaimed'
+[[ ! -e "$AGENT_HOME/state/explore/$done_old_sha.lock" ]] || fail 'reclaimed run lock was not removed'
+[[ ! -e "$REPO_DIR/run-evidence/explore-$done_old_sha" ]] || fail 'old run evidence was not reclaimed'
+[[ ! -e "$REPO_DIR/run-evidence/explore-$skipped_old_sha" ]] || fail 'old skipped run evidence was not reclaimed'
+[[ ! -e "$REPO_DIR/run-evidence/explore-$killed_old_sha" ]] || fail 'old killed run evidence was not reclaimed'
+[[ -e "$AGENT_HOME/state/explore/$needs_filing_old_sha/state.json" ]] || fail 'old needs-filing run was reclaimed'
+[[ -e "$AGENT_HOME/state/explore/$started_old_sha/state.json" ]] || fail 'old started run was reclaimed'
+[[ -e "$AGENT_HOME/state/explore/$done_young_sha/state.json" ]] || fail 'young done run was reclaimed'
+[[ -e "$AGENT_HOME/state/explore/$invalid_sha/state.json" ]] || fail 'run with an invalid release SHA was reclaimed'
+check 'one reclaim log reports the four removed terminal runs' "$(grep -Fc 'explore: reclaimed runs=4' "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log")" 1
+
+export ZF_EXPLORE_RETAIN_DAYS=invalid
+if ! bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null 2>&1; then fail 'dispatch propagated a reclaim failure'; fi
+
 printf 'ok - release exploration contracts\n'
