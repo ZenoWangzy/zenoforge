@@ -135,6 +135,15 @@ scheduler_conclude_merged_pr() {
     "$AGENT_HOME/state/$1.json" > "$AGENT_HOME/state/$1.json.tmp" \
     && mv -f -- "$AGENT_HOME/state/$1.json.tmp" "$AGENT_HOME/state/$1.json"
 }
+jq -n '{units:[{id:"issue-9001779",issue:9001779,stage:"implement-pending",task:"retry",history:[]}]}' > "$UNITS"
+jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
+: > "$merged_conclusion_calls"
+dispatch_close_merged_pending_unit issue-9001779 9001779 || fail "dispatch must hold a pending unit for a merged Refs PR"
+[[ "$(jq -r '.state' "$AGENT_HOME/state/9001779.json")" == awaiting-release ]] || fail "dispatch must move the merged Refs issue out of ready-for-agent"
+[[ "$(cat "$merged_conclusion_calls")" == '9001779 19001' ]] || fail "dispatch must use the shared merged conclusion path"
+jq -e 'any(.units[]; .issue == 9001779 and .stage == "closed" and any(.history[]; .stage == "merged-refs-delivered"))' "$UNITS" >/dev/null \
+  || fail "dispatch must retire the pending unit for the merged Refs PR"
+
 jq -n '{units:[{id:"issue-9001779",issue:9001779,stage:"closed",history:[{stage:"supervisor-close",at:"2026-01-01T00:00:00Z"}]}]}' > "$UNITS"
 jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
 rm -f "$UNITS.view" "$A/intake-skip-noted.tsv"

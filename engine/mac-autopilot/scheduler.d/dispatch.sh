@@ -39,9 +39,30 @@ scheduler_clear_canary_after_failed_start() (
   state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)'
 )
 dispatch_close_merged_pending_unit() {
-  local id="$1" issue="$2" state pr
+  local id="$1" issue="$2" state pr refs_pr refs_status=0 pr_number merged_at ruling_status=0
   [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
   state="$(scheduler_issue_state_readonly "$issue" 2>/dev/null)" || { say "implement-pending unit=$id: issue state unavailable; dispatch held"; return 0; }
+  if jqf -e '.state == "ready-for-agent"' <<<"$state" >/dev/null 2>&1; then
+    jqf -e '.hold == null' <<<"$state" >/dev/null 2>&1 || { say "implement-pending unit=$id: issue is held; dispatch held"; return 0; }
+    refs_pr="$(intake_merged_refs_pr_for_issue "$issue")" || refs_status=$?
+    if (( refs_status == 2 )); then
+      say "implement-pending unit=$id: merged Refs PR check unavailable; dispatch held"
+      return 0
+    elif (( refs_status == 0 )); then
+      IFS=$'\t' read -r pr_number merged_at <<<"$refs_pr"
+      intake_issue_ruling_after_merge "$issue" "$merged_at" || ruling_status=$?
+      if (( ruling_status == 1 )); then
+        scheduler_conclude_merged_pr "$issue" "$pr_number" \
+          || say "implement-pending unit=$id: merged Refs PR #$pr_number could not conclude issue #$issue; dispatch held"
+        set_unit "$id" "if .stage == \"implement-pending\" then $(hist merged-refs-delivered "merged Refs PR #$pr_number superseded this implementation") | .stage=\"closed\" | .note=$(js "superseded by merged Refs PR #$pr_number") else . end" \
+          || say "implement-pending unit=$id: could not close after merged Refs PR #$pr_number; dispatch held"
+        return 0
+      elif (( ruling_status != 0 )); then
+        say "implement-pending unit=$id: merged Refs ruling state unavailable; dispatch held"
+        return 0
+      fi
+    fi
+  fi
   jqf -e '.state == "awaiting-release" and .run.outcome == "merged"' <<<"$state" >/dev/null 2>&1 || return 1
   pr="$(jqf -r '.run.evidence.pr_number // empty' <<<"$state")" || { say "implement-pending unit=$id: merged issue evidence unreadable; dispatch held"; return 0; }
   [[ "$pr" =~ ^[1-9][0-9]*$ ]] || { say "implement-pending unit=$id: merged issue has no PR evidence; dispatch held"; return 0; }
