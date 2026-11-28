@@ -3,6 +3,19 @@
 # 夹具预置的 TICK_UNFINISHED 就是一份完整快照（含 in_progress，各阶段不再单独回读 gh）。
 # Cases redefine cpu_busy between calls in the same second, so the 10 s CPU-sample reuse is off here (luna-gate.test.sh covers it).
 export LUNA_CPU_SAMPLE_TTL=0
+reset_gate_fixture_reads() {
+  tick_prs_changed
+  if [[ -n "${GH_KEY_CACHE_DIR:-}" ]]; then
+    rm -f -- "$GH_KEY_CACHE_DIR"/*.json "$GH_KEY_CACHE_DIR"/*.ok 2>/dev/null || :
+  fi
+  if [[ -n "${GH_TICK_CACHE_DIR:-}" ]]; then
+    rm -f -- "$GH_TICK_CACHE_DIR"/*.json "$GH_TICK_CACHE_DIR"/*.ok 2>/dev/null || :
+  fi
+  if [[ -n "${GH_ETAG_DIR:-}" ]]; then
+    rm -f -- "$GH_ETAG_DIR"/*.body "$GH_ETAG_DIR"/*.etag 2>/dev/null || :
+  fi
+  TICK_PR_CHECK_RUNS=()
+}
 ci_tick_reset() {
   CI_RUN_JOBS_CACHE=()
   GATED_CENSUS_LOADED=false
@@ -32,6 +45,15 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 fixture="$test_env_root/gates"
 sup="$fixture/supervisor"
 mkdir -p "$sup/autopi/alerts" "$fixture/repo"
+if ! git -C "$fixture/repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git -C "$fixture/repo" init -q -b main
+  git -C "$fixture/repo" config user.name fixture
+  git -C "$fixture/repo" config user.email fixture@example.invalid
+  mkdir -p "$fixture/repo/engine/eval"
+  cp "$script_dir/../eval/decision-stages.sh" "$fixture/repo/engine/eval/decision-stages.sh"
+  git -C "$fixture/repo" add engine/eval/decision-stages.sh
+  git -C "$fixture/repo" commit -qm fixture
+fi
 # Repair now reads the failure itself, rather than sending just its path.
 printf 'VERDICT: REQUEST-CHANGES\nNew review failure\n' > "$sup/r.md"
 printf 'VERDICT: REQUEST-CHANGES\nNew review failure\n' > "$sup/review-14.md"

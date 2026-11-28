@@ -11,12 +11,43 @@ GH_RUN_JOBS='{}'
 GH_CHECKS_PASS='[{"name":"ci","bucket":"pass"}]'
 # open PR 表放在文件里（$(...) 和后台任务里的调用也算数）。用例把 GH_PR_TABLE 指到一个文件才打开；
 # 没指时 `gh pr list` 照旧不出声。列表和真 CLI 一样：只回 --json 要的字段，再套 --jq。
-GH_PR_CALLS="$fixture/gh-pr-calls"
+GH_PR_CALLS="$fixture/gh-pr-calls"; GH_PR_REST_CALLS="$fixture/gh-pr-rest-calls"; : > "$GH_PR_REST_CALLS"
 gh_pr_open() { # number head draft(true|false) mergeable branch [statusCheckRollup-json]
   local t; t="$(jq -c --argjson n "$1" --arg h "$2" --argjson d "$3" --arg m "$4" --arg b "$5" --argjson r "${6:-[]}" \
     '. += [{number:$n, headRefOid:$h, isDraft:$d, mergeable:$m, headRefName:$b, labels:[], statusCheckRollup:$r}]' "$GH_PR_TABLE")" && printf '%s\n' "$t" > "$GH_PR_TABLE"
 }
 gh_pr_is_draft() { jq -r --argjson n "$1" '.[] | select(.number == $n) | .isDraft' "$GH_PR_TABLE"; }
+gh_pr_rest_census() {
+  if [[ -n "${GH_PR_TABLE:-}" && -f "$GH_PR_TABLE" ]]; then
+    jq -c 'map({number, state:"open", draft:(.isDraft // false),
+      head:{ref:(.headRefName // "fix/branch"),sha:(.headRefOid // "")},
+      base:{ref:(.baseRefName // "main")}, title:(.title // ""), body:(.body // ""),
+      labels:[(.labels // [])[] | if type == "object" then . else {name:.} end],
+      mergeable:(if .mergeable == true or .mergeable == "MERGEABLE" then true elif .mergeable == false or .mergeable == "CONFLICTING" then false else null end),
+      created_at:(.createdAt // "2026-11-01T00:00:00Z"), updated_at:(.updatedAt // "2026-11-01T00:00:00Z")})' "$GH_PR_TABLE"
+  else
+    jq -cn --arg head "${GH_HEAD:-}" --slurpfile state "$UNITS" '
+      ($state[0].units // []) | map(select((.pr | type) == "number"
+        and ((.stage // "") | IN("merged","landed","closed","done","wontfix","duplicate") | not))
+        | {number:.pr, state:"open", draft:false,
+          head:{ref:(.branch // "fix/branch"),sha:(if $head != "" then $head else (.approved_sha // .reviewed_sha // .reviewed_pr_head // "") end)},
+          base:{ref:(.base_branch // .stacked_on_branch // "main")}, title:(.title // "fixture"), body:(.body // ""),
+          labels:[], mergeable:(if .mergeable == true or .mergeable == "MERGEABLE" then true elif .mergeable == false or .mergeable == "CONFLICTING" then false else null end),
+          created_at:"2026-11-01T00:00:00Z", updated_at:"2026-11-01T00:00:00Z"})'
+  fi
+}
+gh_pr_rest_row() {
+  gh_pr_rest_census | jq -ce --argjson n "$1" '[.[] | select(.number == $n)][0]'
+}
+gh_pr_rest_files() {
+  local number="$1" files
+  if [[ -n "${GH_PR_TABLE:-}" && -f "$GH_PR_TABLE" ]]; then
+    files="$(jq -c --argjson n "$number" '[.[] | select(.number == $n)][0].files // []
+      | map(if has("filename") then . else . + {filename:(.path // "")} end)' "$GH_PR_TABLE")" || return 1
+    if [[ "$files" != '[]' ]]; then printf '%s\n' "$files"; return 0; fi
+  fi
+  printf '%s\n' '[{"filename":"packages/fixture.ts","additions":0,"deletions":0,"status":"modified"}]'
+}
 gh_pr_list() { # pr list ... [--json fields] [--jq expr]
   local fields="" query="." n rows='[]'
   echo "$*" >> "$GH_PR_CALLS"
@@ -106,6 +137,9 @@ gh() {
     'api repos/example-maintainer/example-repo/issues/'*'/sub_issues?per_page=100') echo '[]' ;;
     "api --paginate")
       case "$3" in
+        "repos/{owner}/{repo}/pulls/"*"/files"*)
+          local files_pr="${3#repos/{owner}/{repo}/pulls/}"; files_pr="${files_pr%%/*}"
+          gh_pr_rest_files "$files_pr" ;;
         # 在线 PR runner 名额（60ba960cf）：套调用方的 --jq，让过滤表达式本身被测到
         "repos/{owner}/{repo}/actions/runners?per_page=100")
           local runners_jq="" runners_prev="" arg
@@ -125,6 +159,15 @@ gh() {
       esac ;;
     # #4725 gh_api_cached 递归分发落进来的直连形态（`gh api <url> --jq …`，无 --paginate）：
     # 与上面 --paginate 分支同款逻辑，URL 从 $2 取。jobs 走下面既有的 jobs 分支。
+    "api repos/{owner}/{repo}/pulls?state=open&per_page=100") echo "$2" >> "$GH_PR_REST_CALLS"; gh_pr_rest_census ;;
+    "api repos/{owner}/{repo}/pulls/"*)
+      local pr_path="${2%%\?*}" pr_number
+      case "$pr_path" in
+        */reviews) printf '[]\n' ;;
+        */comments) printf '[]\n' ;;
+        */files) pr_number="${pr_path%/files}"; pr_number="${pr_number##*/}"; gh_pr_rest_files "$pr_number" ;;
+        *) pr_number="${pr_path##*/}"; gh_pr_rest_row "$pr_number" ;;
+      esac ;;
     "api repos/{owner}/{repo}/actions/runners?per_page=100")
       local runners_jq="" runners_prev="" arg
       for arg in "$@"; do [[ "$runners_prev" == --jq ]] && runners_jq="$arg"; runners_prev="$arg"; done

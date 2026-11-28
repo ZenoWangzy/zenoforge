@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 fail() { echo "scheduler-gates-merge-station.test.sh: $*" >&2; exit 1; }
-units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { reset_gate_fixture_reads; printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 H1=1111111111111111111111111111111111111111
 M1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -50,7 +50,7 @@ for _ in $(seq 50); do [[ -s "$SCHED_LOCK/pid" ]] && break; command sleep 0.1; d
 SECONDS=290; AUTOPI_REFILL_LIMIT_SECONDS=300 # the refill's budget is spent (a refill-side pass would stop: refill-merge-pass.test.sh)
 merge_entry
 wait "$fake_tick" || :
-[[ "$(merges)" == 1 && "$(cat "$MERGE_LOG")" == *"pr merge 21"*"lock=held" ]] || fail "the station did not merge while the tick held the lock: $(cat "$MERGE_LOG")"
+[[ "$(merges)" == 1 && "$(cat "$MERGE_LOG")" == *"pr merge 21"*"lock=held" ]] || fail "the station did not merge while the tick held the lock: $(cat "$MERGE_LOG"); log=$(tail -n 16 "$LOG")"
 [[ "$(field pr-clean .stage)" == merged ]] || fail "the ledger write after the lock was released did not land: $(field pr-clean .stage)"
 [[ -s "$A/.merge-station-epoch" && -s "$A/.merge-pass-epoch" ]] || fail 'the station left no freshness or pass epoch'
 SECONDS=0
@@ -82,14 +82,14 @@ while [[ ! -e "$MS_RELEASE" ]]; do command sleep 0.1; done
 SH
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$script_dir/loop.sh"
   A="$ms/state"; LIVE="$ms/live"; export MS_CALLS="$ms/calls" MS_RELEASE="$ms/release"; : > "$MS_CALLS"
-  export AUTOPI_MERGE_STATION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647
+  export AUTOPI_MERGE_STATION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647 AUTOPI_DISPATCH_STATION_SECONDS=2147483647
   echo '{"workers":[]}' > "$A/workers.json"
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 25 ) || fail 'refill window failed before the merge station cadence'
 [[ ! -s "$ms/calls" ]] || fail "the merge station started before its cadence ($(cat "$ms/calls"))"
 ( AUTOPI_LOOP_LIBRARY_ONLY=true; source "$script_dir/loop.sh"
   A="$ms/state"; LIVE="$ms/live"; export MS_CALLS="$ms/calls" MS_RELEASE="$ms/release"
-  export AUTOPI_MERGE_STATION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647
+  export AUTOPI_MERGE_STATION_SECONDS=30 AUTOPI_REFILL_SECONDS=2147483647 AUTOPI_DASHBOARD_SECONDS=2147483647 AUTOPI_CI_ADMISSION_SECONDS=2147483647 AUTOPI_DISPATCH_STATION_SECONDS=2147483647
   sleep() { SECONDS=$((SECONDS + 5)); }
   refill_window 40 ) || fail 'refill window blocked on a running merge station pass'
 for _ in $(seq 50); do [[ -s "$ms/calls" ]] && break; command sleep 0.1; done

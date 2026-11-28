@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { reset_gate_fixture_reads; printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 H1=1111111111111111111111111111111111111111
 H2=2222222222222222222222222222222222222222
@@ -101,12 +101,12 @@ eval "$size_gh_saved"; WT_ROOT="$WT_ROOT_SAVED"
   rv="$fixture/revert-prim"; rm -rf "$rv"; mkdir -p "$rv"
   command git init -q --bare -b main "$rv/origin.git"
   command git clone -q "$rv/origin.git" "$rv/seed" 2>/dev/null
-  rg() { command git -C "$rv/seed" -c user.email=t@example.invalid -c user.name=t "$@"; }
-  rg checkout -q -b main; echo one > "$rv/seed/f"; rg add f; rg commit -q -m base
-  echo two > "$rv/seed/f"; rg commit -q -am 'squash change'; rv_bad="$(rg rev-parse HEAD)"
-  rg push -q origin main
-  rg checkout -q -b side "$rv_bad~1"; echo side > "$rv/seed/g"; rg add g; rg commit -q -m side; rv_off="$(rg rev-parse HEAD)"
-  rg push -q origin side
+  seed_git() { command git -C "$rv/seed" -c user.email=t@example.invalid -c user.name=t "$@"; }
+  seed_git checkout -q -b main; echo one > "$rv/seed/f"; seed_git add f; seed_git commit -q -m base
+  echo two > "$rv/seed/f"; seed_git commit -q -am 'squash change'; rv_bad="$(seed_git rev-parse HEAD)"
+  seed_git push -q origin main
+  seed_git checkout -q -b side "$rv_bad~1"; echo side > "$rv/seed/g"; seed_git add g; seed_git commit -q -m side; rv_off="$(seed_git rev-parse HEAD)"
+  seed_git push -q origin side
   command git clone -q "$rv/origin.git" "$rv/root" 2>/dev/null
   ROOT="$rv/root"; WT_ROOT="$rv/wt"; LOG="$rv/say.log"; : > "$LOG"
   revert_squash_merge 1 "$rv_off" && fail 'a commit that is not on origin/main was reverted'
@@ -117,8 +117,8 @@ eval "$size_gh_saved"; WT_ROOT="$WT_ROOT_SAVED"
   revert_squash_merge 1 "$rv_bad" || fail 'a repeated revert was not treated as done'
   [[ "$(command git -C "$rv/origin.git" rev-parse main)" == "$head_after" ]] && grep -q 'already present' "$LOG" || fail 'a repeated revert pushed a second commit'
   # conflict: a later commit rewrites the same line, so the plain revert of the earlier change cannot apply
-  rg checkout -q main; rg pull -q origin main 2>/dev/null; echo A > "$rv/seed/f"; rg commit -q -am 'change A'; rv_conf="$(rg rev-parse HEAD)"
-  echo B > "$rv/seed/f"; rg commit -q -am 'change B'; rg push -q origin main
+  seed_git checkout -q main; seed_git pull -q origin main 2>/dev/null; echo A > "$rv/seed/f"; seed_git commit -q -am 'change A'; rv_conf="$(seed_git rev-parse HEAD)"
+  echo B > "$rv/seed/f"; seed_git commit -q -am 'change B'; seed_git push -q origin main
   conf_head="$(command git -C "$rv/origin.git" rev-parse main)"
   revert_squash_merge 2 "$rv_conf" && fail 'a conflicting revert reported success'
   grep -q 'merge revert conflict PR#2' "$LOG" && [[ "$(command git -C "$rv/origin.git" rev-parse main)" == "$conf_head" ]] || fail 'a conflicting revert was not refused cleanly'
