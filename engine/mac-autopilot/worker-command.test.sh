@@ -21,6 +21,7 @@ check_worker_test_policy() {
   local source matches
   local -a sources=(
     "$script_dir/../../AGENTS.md"
+    "$script_dir/../hotfix/hf-start.sh"
     "$script_dir/../prompts/implement-contract.md"
     "$script_dir/../prompts/guarded-recut-hand.md"
     "$script_dir/../dispatch-codex.sh"
@@ -37,11 +38,21 @@ check_worker_test_policy() {
     || fail 'CI repair prompts must not ask for local test reproduction'
   for source in "${sources[@]}"; do
     matches="$(
-      {
-        grep -niE '(run|rerun|execute|reproduce).{0,160}((test|suite).{0,160}(locally|local|before push|before pushing|at that head|at the repaired head)|(locally|local).{0,160}(test|suite))' "$source" || true
-        grep -niE '(local|locally)' "$source" | grep -iE '(test|suite)' | grep -i receipt \
-          | grep -iE '(record|write|save|create|produce|leave|provide|attach|submit|require|needed|must|should|shall|need|before push|before pushing|pre-push|gate)' || true
-      } | grep -Eiv 'do not|never|must not|should not|avoid|don.t|not required|not needed|not necessary|manual only|no longer' || true
+      awk '
+        function inspect(text, value) {
+          value = tolower(text)
+          if (value ~ /(do not|never|must not|should not|avoid|don.t|not required|not needed|not necessary|manual only|no longer)/) return
+          if (value ~ /(run|rerun|execute|executed|reproduce|reproduced)/ && value ~ /(test|suite)/ && value ~ /(locally|local|before push|before pushing|at that head|at the repaired head)/) print FILENAME ":" FNR ":" text
+          if (value ~ /(local|locally)/ && value ~ /receipt/ && value ~ /(record|write|save|create|produce|leave|provide|attach|submit|require|required|needed|mandatory|must|should|shall|need|before push|before pushing|pre-push|gate)/) print FILENAME ":" FNR ":" text
+        }
+        {
+          sentence_count = split($0, sentences, /[;.!?]/)
+          for (i = 1; i <= sentence_count; i++) {
+            clause_count = split(sentences[i], clauses, /[[:space:]]+(and|but|however)[[:space:]]+/)
+            for (j = 1; j <= clause_count; j++) inspect(clauses[j])
+          }
+        }
+      ' "$source"
     )"
     [[ -z "$matches" ]] || fail "worker source asks for a local suite before push: $source: $matches"
   done

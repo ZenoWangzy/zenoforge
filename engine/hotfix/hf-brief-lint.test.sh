@@ -15,3 +15,5 @@ echo "fix it" > "$t/bad"; ! "$p/hf-brief-lint.sh" "$t/bad" 2>/dev/null
 ! "$p/hf-brief-lint.sh" "$t/local-receipts-reordered" 2>/dev/null
 { cat "$t/good"; echo "A local test receipt is required before pushing"; } > "$t/local-receipt-required"
 ! "$p/hf-brief-lint.sh" "$t/local-receipt-required" 2>/dev/null
+{ cat "$t/good"; echo "Do not run local suites. A local receipt is required before push"; } > "$t/local-receipt-after-negative"
+! "$p/hf-brief-lint.sh" "$t/local-receipt-after-negative" 2>/dev/null
