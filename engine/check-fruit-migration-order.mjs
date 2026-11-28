@@ -126,6 +126,14 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
           && !Array.isArray(config.migration)
           && !Object.prototype.hasOwnProperty.call(config.migration, 'path')));
     if (migrationPathMissing) {
+      if (process.argv.includes('--merge-gate')) {
+        const prNumber = Number(option('--pr'));
+        if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error('--merge-gate needs --pr N');
+        const repo = option('--repo') || process.env.REPO || process.env.GITHUB_REPOSITORY;
+        if (!repo) throw new Error('--merge-gate needs --repo or REPO');
+      } else if (!process.argv.includes('--ci')) {
+        throw new Error('usage: check-fruit-migration-order.mjs --ci [--base REF] | --merge-gate --pr N [--head SHA] [--repo R]');
+      }
       console.log('migration order not applicable');
     } else {
       const legacy = config.migration?.path ? '' : packDelegate('check-fruit-migration-order.mjs');
