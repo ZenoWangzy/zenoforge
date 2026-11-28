@@ -2,7 +2,7 @@
 
 > **Alpha: expect to read the code.** The quickest path is the CLI: `npx zenoforge doctor`, then `npx zenoforge init`. This page explains what the CLI does so you can check it, and lists what the scripts expect when you install by hand (checked against `engine/`). Some parts are not generic yet. The list is in [Not generic yet](#not-generic-yet), and you will hit most of it on a first install.
 
-Scope: one host, one target GitHub repository. The issue loop runs from systemd user timers. The unit loop is started by `engine/mac-autopilot/start.sh`; the CLI generates the service units for it. For how the pieces fit together, read [architecture.md](architecture.md).
+Scope: one host, one target GitHub repository. `ZF_TIMERS` selects systemd, launchd, or the foreground loop for timers. `ZF_RUNNER` selects the systemd runner or the pidfile runner. The unit loop is started by `engine/mac-autopilot/start.sh`; the CLI generates its service definitions. For how the pieces fit together, read [architecture.md](architecture.md).
 
 ## 0. The CLI path
 
@@ -24,7 +24,7 @@ npx zenoforge init --repo owner/name --yes --dry-run     # print the plan, chang
 | Renders `config.template.json` (worker caps, token budget, `auto_merge`, review model) and `required-pr-checks.json` into the engine version | [Section 5](#5-configuration-files) |
 | Creates the pipeline labels that are missing. The list is read from `ALL_STATE_LABELS` in `engine/lib.sh`, plus `on-hold`, `tracker`, `hotfix`, `bug`, `enhancement` | [Section 3](#3-set-the-repository-and-the-agent-identity) |
 | Sets `AGENT_SUPERVISOR=observe` and `AGENT_PIPELINE=triage` (`off` with `--no-scheduler`). Needs admin access; if `gh` refuses, it prints the two commands | [Section 4](#4-github-repository-variables) |
-| Renders the units from `engine/systemd/` into the engine version, copies them to `~/.config/systemd/user/` (or LaunchAgents on macOS), enables the timers in `pipeline-timers.list` and two resident loop services | [Sections 7 and 8](#7-systemd-units) |
+| Renders the scheduler and unit-loop definitions for the selected platform: systemd units, launchd LaunchAgents, or the foreground loop | [Sections 7 and 8](#7-systemd-units) |
 
 Defaults that differ from a bare engine: 2 workers (`--max-workers`), a 2,000,000-token daily budget (it only raises alerts), advisor off, no mail recipients, the release train and the supervisor arbiter off in `config.template.json` (their runners are not shipped), and **auto-merge off unless the repository's branch protection names required checks** or you pass `--auto-merge`. If you pass `--required-check NAME` (repeatable), those names replace the originating project's list.
 
@@ -34,7 +34,7 @@ Running `init` again is safe: existing env files are kept, an unchanged engine i
 
 After `init`: `zenoforge status`, `zenoforge logs -f`, `zenoforge stop` and `zenoforge start`. If you installed with `--no-scheduler`, the first `zenoforge start` shows the same security warning, asks for the same confirmation (or `--yes`), installs the units and sets `AGENT_PIPELINE=triage`. `zenoforge upgrade` (run from the newer package, for example `npx zenoforge@latest upgrade`) installs that package's engine as a new version, re-renders the units and restarts the two loop services; `zenoforge rollback` flips back. `zenoforge uninstall` disables and removes the units and the checkout's `engine` link and keeps `~/.zenoforge` (run `init` to set up again); `--purge --yes` deletes it, and the checkout if the CLI made it, also when an earlier `init` stopped before writing `cli.json`. `zenoforge status` warns when the repository's `main` starts tracking its own top-level `engine/` directory.
 
-On macOS the CLI installs the unit loop only (two LaunchAgents). The issue loop dispatches stages with `systemd-run`, which macOS does not have. Without systemd or launchd, `zenoforge start` runs the unit loop as detached background processes with pid files in `~/.zenoforge/run/`.
+The pidfile runner supplies the systemd command forms the issue loop uses for stage dispatch, so it does not require `systemd-run` on macOS or other hosts using pidfile mode. On Linux or WSL2 without systemd, set `ZF_TIMERS=loop` and `ZF_RUNNER=pidfile` in `$AGENT_HOME/capacity.env`; the issue-loop timer renderer runs in the foreground. For the unit loop, `start.sh` restarts its systemd services when present and otherwise starts them with `nohup`.
 
 ### Agents and roles
 
@@ -51,15 +51,26 @@ The sections below are the manual path. They give the same result as `zenoforge 
 
 ## 1. Host requirements
 
+Systemd is optional. The CLI defaults to `ZF_TIMERS=systemd` and `ZF_RUNNER=systemd` on Linux, and `ZF_TIMERS=launchd` and `ZF_RUNNER=pidfile` on macOS. A Linux or WSL2 host without systemd must set both `ZF_TIMERS=loop` and `ZF_RUNNER=pidfile`; `doctor` prints these settings when needed. Windows is supported through WSL2 only.
+
+| Host | Scheduler timer renderer (`ZF_TIMERS`) | Stage runner (`ZF_RUNNER`) |
+|---|---|---|
+| Linux with a systemd user manager | `systemd` (default) | `systemd` (default) |
+| Linux without systemd, including WSL2 without systemd | `loop` (set explicitly) | `pidfile` (set explicitly) |
+| macOS (Apple silicon and Intel) | `launchd` (default) or `loop` | `pidfile` (default) |
+| Windows 11 through WSL2 | Use either Linux mode above | Use either Linux mode above |
+| Native Windows (cmd, PowerShell, Git-Bash, MSYS2) | Not supported | Not supported |
+
 | Need | Why | Where it is used |
 |---|---|---|
-| Linux with a systemd user manager (`systemctl --user`) | Timers, detached workers (`systemd-run --user`), unit installs | `engine/run-tick.sh`, `engine/issue-pipeline.sh` |
+| Linux, macOS, or Windows 11 through WSL2 | Supported host platforms; see the modes above | `engine/platform-env.sh`, `engine/unitgen.py` |
 | `gh` CLI, logged in | All GitHub reads and writes: issues, labels, PRs, repository variables | `gh variable get` in `run-tick.sh`, `gh label` in `engine/lib.sh` |
 | `git` | Dedicated checkout, worktrees, fetch, fast-forward | `run-tick.sh`, `bin/worker` |
 | `jq` | JSON state; almost every script uses it | Nearly all `*.sh` files |
 | Node 22 | The `.mjs` tools. CI pins Node 22 | `.github/workflows/engine-tests.yml` |
 | `python3` | Admission check, time parsing | `engine/execution-admission.py`, `engine/mac-autopilot/runtime-env.sh` |
-| `flock`, `setsid`, `timeout`, `tar`, `stat`, `systemd-run` | Locks, detached processes, time limits, archives | `bin/worker`, `engine/mac-autopilot/*.sh` |
+| `flock`, `setsid`, `timeout`, `tar`, `stat` | Locks, process groups, time limits, archives | `bin/worker`, `engine/mac-autopilot/*.sh` |
+| Optional: systemd user manager (`systemctl --user`, `systemd-run`) | Native systemd timers and runner; not needed with loop timers and the pidfile runner | `engine/run-tick.sh`, `engine/issue-pipeline.sh` |
 | At least one coding-agent CLI | The workers | `codex` is the default (`bin/luna`, `scheduler.sh`). `zcode` is the failover backend (`bin/zc`). `claude` (Claude Code) runs the unit loop's review: the shipped `config.template.json` sets `models.review` to a Claude model |
 | Optional: `notify-send`, `journalctl` | Desktop alerts; out-of-memory evidence | `engine/mac-autopilot/runtime-env.sh` |
 
@@ -183,6 +194,8 @@ Set these in the unit files (with a drop-in, see section 7), in `capacity.env`, 
 Remote hosts need the same `codex-cli` version as the control host and an existing login under the account that runs workers. The worker transport never copies Codex credentials.
 
 ## 7. systemd units
+
+This manual procedure applies to hosts using the systemd renderer. The CLI selects and installs the platform renderer described in [Host requirements](#1-host-requirements).
 
 The unit files are in `engine/systemd/`:
 

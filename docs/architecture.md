@@ -4,7 +4,7 @@
 
 ## At a glance
 
-Zenoforge runs two loops on one host. Both are plain Bash, Node, and Python scripts, started by systemd timers or by hand. Neither loop runs an agent in the foreground. A tick decides what should happen next, starts detached workers, and exits. The next tick reads what the workers left behind.
+Zenoforge runs two loops on one host. Both are plain Bash, Node, and Python scripts. `ZF_TIMERS` selects systemd, launchd, or a foreground loop to schedule timer jobs. Neither loop runs an agent in the foreground. A tick decides what should happen next, starts detached workers, and exits. The next tick reads what the workers left behind.
 
 Ticket state lives in GitHub labels and comments. The engine also keeps a per-issue JSON snapshot and a unit ledger on disk.
 
@@ -23,18 +23,18 @@ About 50 of the 230 non-test files under `engine/` and `tools/` contain Chinese 
 
 ### 1.1 Issue loop
 
-`engine/run-tick.sh` is the entry point. It runs as a oneshot unit (`engine/systemd/zenoforge-agent.service`). Each tick does this, in order (function `run_tick`):
+`engine/run-tick.sh` is the entry point. With the systemd renderer it runs as a oneshot unit (`engine/systemd/zenoforge-agent.service`). Each tick does this, in order (function `run_tick`):
 
 1. Saves any uncommitted changes in the dedicated checkout to `$AGENT_HOME/quarantine/`, then resets the checkout to HEAD.
 2. Refuses to run unless the checkout is on `main`.
 3. Fetches `origin/main` and fast-forwards to it. If the default model policy changed, it refreshes the live policy copy (`engine/model-policy-fast-forward.sh`).
-4. Copies changed `*.service` and `*.timer` files from `engine/systemd/` into the systemd user directory and runs `daemon-reload`.
-5. Enables or starts each timer listed in `engine/systemd/pipeline-timers.list`, unless that timer's GitHub variable is set to `off`.
+4. In systemd mode, copies changed `*.service` and `*.timer` files from `engine/systemd/` into the systemd user directory and runs `daemon-reload`.
+5. In systemd mode, enables or starts each timer listed in `engine/systemd/pipeline-timers.list`, unless that timer's GitHub variable is set to `off`.
 6. Runs `engine/issue-pipeline.sh`.
 
 A tick that refuses counts as a failure. After three in a row, it writes an event to the supervisor inbox.
 
-`engine/issue-pipeline.sh` is a bounded-concurrency dispatcher. Its header says it "only ever decides, it never blocks on an agent model call." It fills each stage's cap by starting transient units with `systemd-run --user --collect`, so the work outlives the tick. Single-issue units follow `zf-<stage>-<n>`, such as `zf-triage-<n>` and `zf-advisor-<n>`; batch units use `zf-<stage>-batch`, while concurrent triage batches use `zf-triage-batch-<owner>`. The stages it dispatches are:
+`engine/issue-pipeline.sh` is a bounded-concurrency dispatcher. Its header says it "only ever decides, it never blocks on an agent model call." In systemd runner mode, it fills each stage's cap by starting transient units with `systemd-run --user --collect`, so the work outlives the tick. In pidfile mode, the portable runner shim handles the same command forms. Single-issue units follow `zf-<stage>-<n>`, such as `zf-triage-<n>` and `zf-advisor-<n>`; batch units use `zf-<stage>-batch`, while concurrent triage batches use `zf-triage-batch-<owner>`. The stages it dispatches are:
 
 - triage (`run-triage.sh`, `run-triage-batch.sh`)
 - advisor (`run-advisor.sh`, `run-advisor-batch.sh`). The advisor role is disabled by default, and no advisor provider ships.
@@ -77,6 +77,16 @@ The scheduler also has an old-PR lifecycle section and derived views (health sco
 ### 1.3 How the loops meet
 
 They share GitHub labels and the per-issue state files. The issue loop does not run the merge queue: `engine/issue-loop-merge-boundary.test.sh` fails when an issue-loop file gains a direct PR-merge call that is not allowlisted. The one exception is `pipeline_system_hand_external_pr_conclusion` (`engine/issue-pipeline.sh`), which squash-merges a green, cleanly mergeable factory-repo PR on `agent/issue-<n>` that a hand-owned issue's DONE report cites. The issue loop also reaches the merge lane's `merge_agent_pr` from `supervisor_hold_sweep` (`engine/supervisor-holds.sh`); that merge goes through the lane. Its header says merge is "owned by the autopilot scheduler, not by this script." The unit loop's `scheduler_issue_transition` wrapper (`engine/mac-autopilot/scheduler.d/lib-bridge.sh`) runs in a subshell, sources `$SCHEDULER_AGENT_LIB`, and calls `issue_transition`.
+
+### 1.4 Scheduler renderers and stage runner
+
+`engine/unitgen.py` reads timer definitions from `engine/systemd/`. `ZF_TIMERS` selects how they run:
+
+- `systemd` installs systemd timers and services; this is the Linux default.
+- `launchd` renders LaunchAgents from the timer definitions; this is the macOS default.
+- `loop` runs the timer jobs from those definitions in a foreground polling loop.
+
+`ZF_RUNNER` independently selects `systemd` or `pidfile`. The systemd runner starts detached stages with `systemd-run`; the pidfile runner uses `engine/portable-shim/` to implement the engine's `systemd-run`, `systemctl`, and `journalctl` command forms. The pidfile runner is the macOS default. Linux and WSL2 hosts without systemd must set `ZF_TIMERS=loop` and `ZF_RUNNER=pidfile` explicitly.
 
 ## 2. Stage chain and labels
 
