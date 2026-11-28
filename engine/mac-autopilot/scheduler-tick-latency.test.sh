@@ -22,7 +22,8 @@ unset AUTOPI_TEST_LIBRARY_ONLY
 
 ROOT="$fixture/repo"; SUP="$fixture/supervisor"; A="$fixture/supervisor/autopi"
 UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
-STAMP=tick-latency-test; NOW_EPOCH=1793577600; MAX=20; IMPLEMENT_CAP=20
+STAMP=tick-latency-test; NOW_EPOCH="$(date +%s)"; MAX=20; IMPLEMENT_CAP=20
+INTAKE_CREATED_AT="$(date -u -d "@$((NOW_EPOCH - 60))" +%Y-%m-%dT%H:%M:%SZ)"
 ISSUE_INTAKE_REMOTE_READ_CAP=3
 SCHED_LOCK="$A/.scheduler.lock"; SCHED_LOCK_HELD=false
 TICK_PRS='[]'; HANDOFF_PR_CENSUS='[]'; HANDOFF_CENSUS_PARTIAL=0
@@ -44,7 +45,7 @@ gh() {
     if [[ "$2" == *'labels=hotfix'* ]]; then
       printf '[]\n'
     elif [[ "$2" == *'labels=ready-for-agent'* ]]; then
-      jq -cn --argjson n "$GH_TEST_COUNT" '[range(1; $n+1) as $i | {number:(7000+$i),title:("candidate "+($i|tostring)),body:"",state:"open",created_at:"2026-11-26T00:00:00Z",updated_at:"2026-11-26T00:00:00Z",labels:[{name:"ready-for-agent"}],user:{login:"fixture"}}]'
+      jq -cn --argjson n "$GH_TEST_COUNT" --arg at "$INTAKE_CREATED_AT" '[range(1; $n+1) as $i | {number:(7000+$i),title:("candidate "+($i|tostring)),body:"",state:"open",created_at:$at,updated_at:$at,labels:[{name:"ready-for-agent"}],user:{login:"fixture"}}]'
     else
       printf 'unexpected issue-list query: %s\n' "$*" >&2; return 97
     fi
@@ -159,7 +160,7 @@ SECONDS=0
   mkdir -p "$detached/repo" "$detached/supervisor/autopi/alerts" "$detached/worker"
   ROOT="$detached/repo"; SUP="$detached/supervisor"; A="$detached/supervisor/autopi"
   UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
-  STAMP=detached-step-test; NOW_EPOCH=1793577600; MAX=20; IMPLEMENT_CAP=20
+  STAMP=detached-step-test; NOW_EPOCH="$(date +%s)"; MAX=20; IMPLEMENT_CAP=20
   SCHED_LOCK="$A/.scheduler.lock"; SCHED_LOCK_HELD=false; PAUSE_FILE="$A/PAUSE"
   printf '{"units":[]}\n' > "$UNITS"; printf '{"workers":[]}\n' > "$WORKERS"
   : > "$LOG"
@@ -210,6 +211,7 @@ SH
   done
   grep -Fxq 'start dispatch_pending' "$TICK_STEP_CALLS" || fail 'the detached dispatch worker did not start'
 
+  rm -f "$A/.dispatch-station-epoch"
   SCHED_LOCK_HELD=false
   SECONDS=0; main; second_elapsed=$SECONDS
   (( second_elapsed < 2 )) || fail "second tick waited for its detached dispatch step (${second_elapsed}s)"
