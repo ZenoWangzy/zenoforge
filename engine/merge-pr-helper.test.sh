@@ -256,7 +256,7 @@ assert_refuses "PR head $PR_HEAD does not match requested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json headRefOid\nview:pr view 17 --json headRefOid,statusCheckRollup\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nview:pr view 17 --json body,headRefOid\nmerge:pr merge 17 --squash --delete-branch --match-head-commit '"$PR_HEAD"$'\nview:pr view 17 --json headRefOid' ]] \
   || fail "same-head green PR CI did not squash merge: $(cat "$fixture/gh-calls")"
 
 # GraphQL refuses the head and `gh pr checks` (shared-account rate limit): the head, the checks and the squash merge all come from REST.

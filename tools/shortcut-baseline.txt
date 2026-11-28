@@ -14,7 +14,6 @@
 1	engine/mac-autopilot/scheduler.d/ci-status.sh
 2	engine/mac-autopilot/scheduler.d/conflict-resolve.sh
 1	engine/mac-autopilot/scheduler.d/dependencies.sh
-1	engine/mac-autopilot/scheduler.d/engine-batch-land.sh
 1	engine/mac-autopilot/scheduler.d/footprint.sh
 1	engine/mac-autopilot/scheduler.d/merge-tree-sweep.sh
 2	engine/mac-autopilot/scheduler.d/self-check.sh

@@ -229,9 +229,9 @@ rendered="$NIGHT/.rendered-$NAME.md"
 Publish each independently complete unit before beginning the next:
 run only static checks (`bash -n`, `node --check`, and static lint/typecheck
 scans), commit, push (direct to main for pipeline-system changes; open or
-update a PR for product code), and leave the issue/PR record. Do not run test
-files or suites locally or record local test receipts. Product PR CI supplies
-the test receipt; the post-land pipeline verifies direct-main changes.
+update a PR for product code), and leave the issue/PR record.
+Do not run test files or suites locally or record local test receipts.
+Product PR CI supplies the test receipt; the post-land pipeline verifies direct-main changes.
 For product code, open/update the PR, record it in your report, then exit.
 The night caretaker merges PRs after checks turn green. Do not poll CI or wait
 for a queue. Start the next unit immediately after publishing.

@@ -170,7 +170,7 @@ grep -Fxq 'zenoforge: worker tests are run by PR CI; do not run test files, suit
   || fail 'whole-suite PR CI refusal message missing from the worker stderr'
 [[ ! -s "$FAKE_LOG" ]] || fail 'whole-suite command reached the real vitest'
 [[ ! -s "$RUNNER_LOG" ]] || fail 'whole-suite command was sent to the test host'
-grep -q '^suite-guard refused ' "$TMPDIR/suite-guard.log" || fail 'refusal was not counted in the suite-guard log'
+grep -q '^suite-guard refused-ci-only ' "$TMPDIR/suite-guard.log" || fail 'refusal was not counted in the suite-guard log'
 : > "$FAKE_LOG"; : > "$RUNNER_LOG"
 (cd "$workdir" && "${suite_env[@]}" vitest run pkg.test.ts) >"$fixture/out" 2>"$fixture/err" && fail 'selected test run was not refused' || rc=$?
 [[ "$rc" == 64 ]] || fail "selected test run returned $rc, want refusal 64"

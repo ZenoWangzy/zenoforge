@@ -216,7 +216,9 @@ done
   write_workers 7; tick_prs_changed; : > "$LOG"
   dispatch_pending false
   [[ "$dispatch_calls" == 1 && "$captured_model" == gpt-6-luna ]] || fail "a queued rebase did not start one Luna worker ($dispatch_calls, $captured_model)"
-  [[ "$captured_prompt" == *'git rebase origin/main'* && "$captured_prompt" != *'git merge --no-edit origin/main'* && "$captured_prompt" == *'--publish-topic'* ]] \
+  [[ "$captured_prompt" == *'git rebase origin/main'* && "$captured_prompt" != *'git merge --no-edit origin/main'* \
+    && "$captured_prompt" == *'只运行静态检查'* && "$captured_prompt" == *'git push --force-with-lease origin HEAD:'* \
+    && "$captured_prompt" != *'--publish-topic'* && "$captured_prompt" != *'运行受影响测试'* ]] \
     || fail 'the rebase worker did not receive a rebase-only brief'
   jqf -e --arg sha "$sha" '.units[0] | .stage == "repair" and .merge_rebase_pending == false and .history[-1].merge_rebase_head == $sha' "$UNITS" >/dev/null \
     || fail 'the rebase start was not recorded on the PR head'

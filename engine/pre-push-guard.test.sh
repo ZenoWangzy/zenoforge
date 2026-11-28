@@ -159,7 +159,7 @@ fi
 grep -Fq 'main-red-stale-shared-failure' "$ZF_PUSH_GUARD_LOG"
 unset ZF_PUSH_GUARD_OVERRIDE_REASON
 echo 'ok - main-red stale update override validates and logs'
-jq -se 'map(.event) == ["refusal","override","refusal","refusal","override","override","refusal","api-unavailable","override"]' \
+jq -se 'map(.event) == ["refusal","override","override","override","refusal","api-unavailable","override"]' \
   "$ZF_PUSH_GUARD_LOG" >/dev/null
 echo 'ok - each refusal, override and API fail-open appends one event line'
 
