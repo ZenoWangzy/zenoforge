@@ -46,7 +46,6 @@ assert_eq() {
 needs_info_supervisor_question_case() (
   NEEDS_INFO_LOG="$(mktemp)"
   REPO=test/repo
-  trap 'rm -f -- "$NEEDS_INFO_LOG"' EXIT
   gh() {
     case "$2" in
       repos/test/repo/issues\?*) printf '%s\n' '[{"number":991304,"title":"supervisor question","body":"q","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"needs-info"}],"user":{"login":"fixture"}}]' ;;
