@@ -104,7 +104,7 @@ case "$1:$2" in
     grep -qx -- "$3" "$FAKE_LABELS" || printf '%s\n' "$3" >> "$FAKE_LABELS"
     ;;
   issue:view)
-    [[ "${FAKE_ISSUE_VIEW_FAILURE:-0}" == 1 ]] && exit 1
+    [[ "${FAKE_ISSUE_VIEW_FAILURE:-0}" == 1 || "${FAKE_ISSUE_VIEW_FAILURE_ISSUE:-}" == "$3" ]] && exit 1
     cat "$FAKE_ISSUE_VIEW"
     ;;
   pr:list|api:search/issues) cat "$FAKE_MERGED_PRS" ;;
@@ -320,6 +320,22 @@ gh_fail_out="$(FAKE_ISSUE_VIEW_FAILURE=1 FAKE_ISSUE_VIEW="$test_env_root/closed-
 cmp "$test_env_root/retro-verify.before.json" "$verify_out/retro-verify.json" \
   || { echo "retro.test.sh: a gh failure still rewrote the state file:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
 echo "verification gh-failure rc=0"
+
+jq -n '{changes:[
+  {issue:9105,category:"navigation",class:"navigation-gh-failure-first"},
+  {issue:9106,category:"navigation",class:"navigation-after-gh-failure"}
+]}' > "$verify_out/retro-verify.json"
+jq -c '.changes[0]' "$verify_out/retro-verify.json" > "$test_env_root/first-change.before.json"
+later_out="$(FAKE_ISSUE_VIEW_FAILURE_ISSUE=9105 run_verify "$verify_root" "$verify_out")"
+[[ "$later_out" == *"issue #9105"*"retrying next run"* ]] \
+  || { echo "retro.test.sh: a failing first issue did not print its retry line:" >&2; printf '%s\n' "$later_out" >&2; exit 1; }
+jq -c '.changes[0]' "$verify_out/retro-verify.json" > "$test_env_root/first-change.after.json"
+cmp "$test_env_root/first-change.before.json" "$test_env_root/first-change.after.json" \
+  || { echo "retro.test.sh: a failing first change was rewritten:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+jq -e --arg merged "$merge_at" '.changes[1] | .merged_at == $merged and .before_count == 3 and .after_count == 4
+  and (.reported_at | type == "string")' "$verify_out/retro-verify.json" >/dev/null \
+  || { echo "retro.test.sh: a later change was not verified after the first failed:" >&2; cat "$verify_out/retro-verify.json" >&2; exit 1; }
+echo "verification continues after gh-failure rc=0"
 
 # (d) The count went down: the change is reported but no retract-or-rewrite issue is opened.
 cat > "$verify_out/after.candidates.json" <<'JSON'
