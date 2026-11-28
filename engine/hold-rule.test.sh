@@ -459,6 +459,7 @@ case "$*" in
     if [[ " $* " == *" --include "* ]]; then printf 'HTTP/1.1 200 OK\n\n%s\n' "$body"; else printf '%s\n' "$body"; fi
     ;;
   'pr view 12 --json headRefOid --jq .headRefOid') printf '%s\n' "$SUPERSEDE_HEAD" ;;
+  *'repos/{owner}/{repo}/pulls/12'*) printf 'HTTP/1.1 200 OK\nETag: "fixture"\n\n{"head":{"sha":"%s"}}\n' "$SUPERSEDE_HEAD" ;;
   *) exit 64 ;;
 esac
 EOT
@@ -633,11 +634,11 @@ printf 'ok - hold --rule explains a post-ruling state read failure inside and ou
   echo '{"units":[{"id":"issue-30","issue":30,"stage":"supervisor-review","parked_reason":"supervisor-cap-exhausted","task":"t","branch":"b","history":[]},{"id":"issue-31","issue":31,"stage":"supervisor-review","pr":31,"task":"t","branch":"b","history":[]}]}' > "$test_env_root/sup/autopi/units.json"
   source "$SCRIPT_DIR/mac-autopilot/scheduler.sh"
   close_calls="$test_env_root/close-calls"; : > "$close_calls"
-  gh() { if [[ "$*" == 'pr view 31 --json state --jq .state' ]]; then printf 'gh %s\n' "$*" >> "$close_calls"; printf 'OPEN\n'; else printf 'gh %s\n' "$*" >> "$close_calls"; return 64; fi; }
+  gh() { printf 'gh %s\n' "$*" >> "$close_calls"; case "$*" in *'repos/{owner}/{repo}/pulls/31'*) printf 'HTTP/1.1 200 OK\n\n{"state":"open"}\n' ;; *) return 64 ;; esac; }
   rc=0; rule_entry issue-30 close u "closing" "" || rc=$?
   [ "$rc" = 0 ] && [ "$(jq -r '.units[]|select(.id=="issue-30")|.stage+"|"+.history[-1].stage+"|"+(.history[-1].result|tostring)+"|"+(has("parked_reason")|tostring)' "$UNITS")" = "closed|supervisor-close|supervisor ruling u: closing|false" ] && [ ! -s "$close_calls" ] || { echo "FAIL: close did not close the unit with a supervisor-close event, or touched GitHub" >&2; cat "$close_calls" >&2; exit 1; }
   rc=0; rule_entry issue-31 close u "closing" "" > "$test_env_root/close-pr.out" 2>&1 || rc=$?
-  [ "$rc" = 1 ] && grep -Fq 'open PR #31' "$test_env_root/close-pr.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = supervisor-review ] && [ "$(cat "$close_calls")" = 'gh pr view 31 --json state --jq .state' ] || { echo "FAIL: close with an open PR was not refused by number, or changed the unit" >&2; cat "$test_env_root/close-pr.out" "$close_calls" >&2; exit 1; }
+  [ "$rc" = 1 ] && grep -Fq 'open PR #31' "$test_env_root/close-pr.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = supervisor-review ] && [ "$(cat "$close_calls")" = 'gh api -i repos/{owner}/{repo}/pulls/31' ] || { echo "FAIL: close with an open PR was not refused by number, or changed the unit" >&2; cat "$test_env_root/close-pr.out" "$close_calls" >&2; exit 1; }
   jq '(.units[]|select(.id=="issue-31")|.stage) = "implement"' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
   rc=0; rule_entry issue-31 close u "closing" "" > "$test_env_root/close-implement.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && grep -Fq 'is in implement; close needs' "$test_env_root/close-implement.out" && [ "$(jq -r '.units[]|select(.id=="issue-31")|.stage' "$UNITS")" = implement ] && [ "$(wc -l < "$close_calls")" = 1 ] || { echo "FAIL: close of an implement unit was not refused by stage, or changed the unit" >&2; cat "$test_env_root/close-implement.out" "$close_calls" >&2; exit 1; }
@@ -649,12 +650,12 @@ printf 'ok - rule_entry close sets a unit closed with a supervisor-close event a
   mkdir -p "$check_runtime" "$check_bin" "$AGENT_HOME/state" "$test_env_root/repo"
   cat > "$check_bin/gh" <<'EOT'
 #!/usr/bin/env bash
-if [[ "${1:-}" == pr && "${2:-}" == view ]]; then
+if [[ "${1:-}" == api && " $* " == *'/pulls/'* ]]; then
   [[ " $* " != *' --method '* && " $* " != *' -X '* && " $* " != *' POST '* ]] || exit 64
   printf '%s\n' "$*" >> "$RULE_CHECK_GH_CALLS"
-  case " $* " in
-    *' --jq .state '*) printf '%s\n' OPEN ;;
-    *' --jq .headRefOid '*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
+  case "$*" in
+    *'/pulls/83'*) printf 'HTTP/1.1 200 OK\n\n{"state":"open"}\n' ;;
+    *'/pulls/84'*) printf 'HTTP/1.1 200 OK\n\n{"head":{"sha":"0123456789abcdef0123456789abcdef01234567"}}\n' ;;
     *) exit 64 ;;
   esac
   exit 0
@@ -740,16 +741,16 @@ EOT
       || { echo "FAIL: closed-unit $action check must stay read-only without creating a state lock" >&2; cat "$test_env_root/scheduler-closed-$action-check.out" >&2; find "$closed_agent_home" "$closed_runtime" -print >&2; exit 1; }
   done
   printf '%s\n' '{"units":[{"id":"issue-83","issue":83,"stage":"supervisor-review","pr":83,"history":[]},{"id":"issue-84","issue":84,"stage":"supervisor-review","pr":84,"history":[]}]}' > "$check_runtime/units.json"
-  pr_read_before_files="$(find "$AGENT_HOME" "$check_runtime" -print | sort)"
+  pr_read_before_files="$(find "$AGENT_HOME" "$check_runtime" -path '*/.gh-etag' -prune -o -print | sort)"
   pr_read_before_units="$(sha256sum "$check_runtime/units.json")"
   rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-83 close u '' '' '' '' > "$test_env_root/scheduler-close-check.out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && [ "$(cat "$test_env_root/scheduler-close-check.out")" = 'would refuse: rule: issue-83 has open PR #83; close or merge it first' ] \
     || { echo 'FAIL: close check did not use the read-only PR-state lookup' >&2; cat "$test_env_root/scheduler-close-check.out" >&2; exit 1; }
   rc=0; bash "$SCRIPT_DIR/mac-autopilot/scheduler.sh" --rule-check issue-84 supersede-handoff 'https://github.com/test/repo/issues/84#issuecomment-9' '' '' '' '' > "$test_env_root/scheduler-supersede-check.out" 2>&1 || rc=$?
   [ "$rc" = 0 ] && [ "$(cat "$test_env_root/scheduler-supersede-check.out")" = 'would-apply scheduler.sh --rule issue-84 --supersede-handoff' ] \
-    && [ "$(tail -n2 "$RULE_CHECK_GH_CALLS")" = "pr view 83 --json state --jq .state
-pr view 84 --json headRefOid --jq .headRefOid" ] \
-    && [ "$(find "$AGENT_HOME" "$check_runtime" -print | sort)" = "$pr_read_before_files" ] \
+    && [ "$(tail -n2 "$RULE_CHECK_GH_CALLS")" = "api -i repos/{owner}/{repo}/pulls/83
+api -i repos/{owner}/{repo}/pulls/84" ] \
+    && [ "$(find "$AGENT_HOME" "$check_runtime" -path '*/.gh-etag' -prune -o -print | sort)" = "$pr_read_before_files" ] \
     && [ "$(sha256sum "$check_runtime/units.json")" = "$pr_read_before_units" ] \
     || { echo 'FAIL: close and supersede-handoff checks must read PRs without writing scheduler files' >&2; cat "$test_env_root/scheduler-supersede-check.out" >&2; exit 1; }
   rc=0; bash "$SCRIPT_DIR/hold.sh" --rule issue-80 --requeue --check --comment 9 > "$test_env_root/rule-check-comment.out" 2>&1 || rc=$?

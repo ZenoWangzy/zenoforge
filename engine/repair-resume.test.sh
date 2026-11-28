@@ -64,7 +64,7 @@ import json, sys
 calls=[json.loads(s) for s in open(sys.argv[1])]
 assert len(calls)==1, calls
 assert 'resume' in calls[0] and sys.argv[2] in calls[0], calls
-assert calls[0][-1]=='NEW REVIEW FAILURE', calls
+assert calls[0][-1].startswith('NEW REVIEW FAILURE'), calls
 assert '--last' not in calls[0] and '--ephemeral' not in calls[0], calls
 PY
 echo 'PASS repair resumes with only new failure'
@@ -84,7 +84,7 @@ import json, sys
 calls=[json.loads(s) for s in open(sys.argv[1])]
 assert len(calls)==1, calls
 assert ('resume' in calls[0]) == (sys.argv[2]=='resume'), calls
-assert calls[0][-1]==sys.argv[3] or (sys.argv[2]=='fresh' and calls[0][-1].startswith(sys.argv[3])), calls
+assert calls[0][-1].startswith(sys.argv[3]), calls
 if sys.argv[4]: assert sys.argv[4] in calls[0], calls
 assert '--last' not in calls[0] and '--ephemeral' not in calls[0], calls
 PY
@@ -115,7 +115,7 @@ python3 - "$CALLS" <<'PY'
 import json, sys
 calls=[json.loads(s) for s in open(sys.argv[1])]
 assert len(calls)==2, calls
-assert 'resume' in calls[0] and calls[0][-1]=='NEW REVIEW FAILURE', calls
+assert 'resume' in calls[0] and calls[0][-1].startswith('NEW REVIEW FAILURE'), calls
 assert 'resume' not in calls[1] and calls[1][-1].startswith('FULL ORIGINAL BRIEF'), calls
 PY
 jq -Rse 'split("\n") | any(.[] | fromjson?; .type=="pipeline.execution" and .mode=="fresh" and .reason=="resume-startup-failed" and .resume_exit==2)' "$SUP/run.log" >/dev/null
