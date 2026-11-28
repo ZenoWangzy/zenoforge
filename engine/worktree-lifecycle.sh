@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail; transport_dir="$(dirname -- "${BASH_SOURCE[0]}")"
-for candidate in "$transport_dir" "${ZF_ENGINE_DIR:-}" "${ZF_EXECUTION_MODULE_DIR:-}" "${ZF_REPO_DIR:+$ZF_REPO_DIR/engine}"; do
+for candidate in "$transport_dir" "${ZF_ENGINE_DIR:-}" "${ZF_EXECUTION_MODULE_DIR:-}"; do
   [[ -f "$candidate/lib.d/transport.sh" ]] && { transport_dir="$candidate"; break; }
-done
-[[ -f "$transport_dir/lib.d/transport.sh" ]] || transport_dir="$(git rev-parse --show-toplevel)/engine"
+done; [[ -f "$transport_dir/lib.d/transport.sh" ]] || transport_dir="$(git rev-parse --show-toplevel)/engine"
 source "$transport_dir/lib.d/transport.sh"; source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/config.sh" # Same setting lib.sh resolves; this script runs without sourcing it.
 UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 NIGHT="${ZF_NIGHT_DIR:-$AGENT_HOME/night}"
 WORKTREE_ROOT="${ZF_WORKTREE_ROOT:-$HOME/wt}"
 MANIFEST="${ZF_WORKTREE_CLEANUP_MANIFEST:-$NIGHT/worktree-cleanup-manifest.txt}"
 AGENTS_FILE="${ZF_HAND_AGENTS_FILE:-$NIGHT/agents.txt}"
-REPO=""
-REPO_ROOT=""
+REPO=""; REPO_ROOT=""
 REAP_REMOTE_HEADS=""
 _WORKTREE_LIFECYCLE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"; source "$_WORKTREE_LIFECYCLE_DIR/proc.sh"
 [[ -r "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh" ]] && source "$_WORKTREE_LIFECYCLE_DIR/night/hand-exit-handoff.sh"
