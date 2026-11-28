@@ -8,7 +8,7 @@ fail() { echo "incident-report-self-check.test.sh: $*" >&2; exit 1; }
 
 # The gates fixture stubs the self-check; restore the real one.
 source "$script_dir/scheduler.d/self-check.sh"
-sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+sha="$(git -C "$fixture/repo" rev-parse HEAD)"
 session_id=11111111-2222-3333-4444-555555555555
 TAG=20261107T000000Z
 runs_file="$sup/self-check-runs"; : > "$runs_file"
