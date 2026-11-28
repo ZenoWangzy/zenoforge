@@ -8,7 +8,10 @@ source "$SCRIPT_DIR/lib.d/explore.sh"
 case "${1:-}" in
   dispatch)
     [[ "$#" == 1 ]] || { echo 'usage: run-explore.sh dispatch | run <sha> | file <sha>' >&2; exit 64; }
-    explore_dispatch_live_release
+    dispatch_status=0
+    if explore_dispatch_live_release; then :; else dispatch_status=$?; fi
+    explore_reclaim_old_runs || true
+    exit "$dispatch_status"
     ;;
   run|file)
     [[ "$#" == 2 ]] || { echo 'usage: run-explore.sh dispatch | run <sha> | file <sha>' >&2; exit 64; }

@@ -4,6 +4,8 @@
 
 The `explore` pipeline stage reads the latest verified live SHA and starts one detached exploration run for that SHA. It can inspect only a release recorded within the previous 24 hours. State is kept under `$AGENT_HOME/state/explore/<sha>/`; a state directory is the per-release claim. Dispatch deferrals remove the claim so a later tick can retry.
 
+Finished `done`, `skipped`, and `killed` runs and their configured checkout evidence are reclaimed after `ZF_EXPLORE_RETAIN_DAYS` days (default 14); `started` and `needs-filing` runs are retained.
+
 The target opts in with `.zenoforge/state/exploration.json`. Missing configuration, `enabled: false`, a missing driver, or an absent or empty feature map records one skip for the live SHA. The default remains disabled.
 
 ```json
