@@ -766,6 +766,8 @@ jq -e '(.metrics | all(.source != "")) and (.ci_standards.queued_runs.unhealthy 
 grep -Eq ' 1 .*WARN$' <<<"$(row 'past a spend bug bound')" || fail "over-standard work orders wrong: $(row 'past a spend bug bound')"
 [[ "$(jq -c '[.work_orders[] | select(.over != []) | [.id, .over]]' "$a/node-health.json")" == '[["pr-15",["tokens"]]]' ]] || fail "work-order bug bounds wrong: $(jq -c .work_orders "$a/node-health.json")"
 jq -e '.metrics[] | select(.id == "loop.rounds_p90") | .meaning != "" and .healthy == 3 and .unhealthy == 5' "$a/node-health.json" >/dev/null || fail 'scorecard JSON lacks meaning or bounds'
+jq -e '.metrics[] | select(.id == "review.rounds_per_merged") | .source != "" and .healthy == 1.32 and .unhealthy == 2.28' "$a/node-health.json" >/dev/null || fail 'merged review rounds missing from scorecard JSON'
+jq -e '.metrics[] | select(.id == "review.first_round_rejections") | .detail | keys == ["defect","evidence","format","scope","unknown"] and all(.[]; type == "number")' "$a/node-health.json" >/dev/null || fail 'first-round rejection cause breakdown missing from scorecard JSON'
 jq -e '.metrics[] | select(.id == "delivery.cycles_to_pass_30d") | .value == 2 and .source != "" and .healthy == 1.32 and .unhealthy == 2.28' "$a/node-health.json" >/dev/null || fail 'delivery review cycles missing from scorecard JSON'
 jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_30d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
 jq -e '[.metrics[].id | select(test("^delivery[.]human_actions"))] == []' "$a/node-health.json" >/dev/null || fail 'removed human-action rows are still published'
@@ -1171,6 +1173,46 @@ print("node_health merge pass gap: waiting unit, skipped units, NO-DATA and boun
 CHECK
 jq -e '.metrics[] | select(.id == "scheduler.merge_pass_gap_min") | .healthy == 10 and .unhealthy == 30 and .source != ""' "$a/node-health.json" >/dev/null \
   || fail 'merge pass gap row lacks its bounds or source'
+
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'review round or first-round rejection metrics are wrong'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n, ledger_history as lh
+now = n.ts("2026-11-28T12:00:00Z")
+runtime = pathlib.Path(sys.argv[2]) / "review-rounds"
+runtime.mkdir()
+live = [
+    {"id":"merged-reviewed", "history":[
+        {"stage":"review-request-changes", "reason":"Evidence", "at":"2026-11-22T10:00:00Z"},
+        {"stage":"review-approve", "at":"2026-11-22T11:00:00Z"},
+        {"stage":"merged", "at":"2026-11-23T12:00:00Z"},
+        {"stage":"review-request-changes", "reason":"Defect", "at":"2026-11-27T12:00:00Z"}]},
+    {"id":"merged-unreviewed", "history":[{"stage":"merged", "at":"2026-11-26T12:00:00Z"}]},
+    {"id":"first-format", "history":[{"stage":"review-request-changes", "reason":"Format", "at":"2026-11-27T10:00:00Z"}]},
+    {"id":"first-scope", "history":[{"stage":"review-block", "reason":"Spec", "at":"2026-11-26T10:00:00Z"},
+                                        {"stage":"review-request-changes", "reason":"Defect", "at":"2026-11-27T10:00:00Z"}]},
+    {"id":"first-defect", "history":[{"stage":"review-request-changes", "reason":"Defect", "at":"2026-11-25T10:00:00Z"}]},
+    {"id":"first-unknown", "history":[{"stage":"review-request-changes", "reason":"unknown", "at":"2026-11-24T10:00:00Z"}]},
+    {"id":"first-legacy-unknown", "history":[{"stage":"review-request-changes", "at":"2026-11-23T10:00:00Z"}]},
+    {"id":"first-approve", "history":[{"stage":"review-approve", "at":"2026-11-23T10:00:00Z"},
+                                           {"stage":"review-request-changes", "reason":"Scope", "at":"2026-11-27T10:00:00Z"}]}
+]
+archived = [
+    {"id":"merged-reviewed", "history":[{"stage":"merged", "at":"2026-11-22T12:00:00Z"}]},
+    {"id":"merged-archived", "history":[{"stage":"review-approve", "at":"2026-11-24T10:00:00Z"},
+                                            {"stage":"merged", "at":"2026-11-25T12:00:00Z"}]},
+    {"id":"merged-old", "history":[{"stage":"review-request-changes", "reason":"Scope", "at":"2026-11-20T10:00:00Z"},
+                                       {"stage":"merged", "at":"2026-11-20T12:00:00Z"}]}
+]
+(runtime / "units.json").write_text(json.dumps({"units":live}))
+(runtime / "units-archive.json").write_text(json.dumps({"units":archived}))
+units = lh.load_units(str(runtime))
+result = n.delivery_metrics(units, [], [], [], [], now)
+values, details = result["values"], result["details"]
+assert values["review.rounds_per_merged"] == 1, values
+assert values["review.first_round_rejections"] == 6, values
+assert details["first_round_rejections"] == {"evidence":1, "format":1, "scope":1, "defect":1, "unknown":2}, details
+print("node_health merged review rounds and first-round rejection causes: PASS")
+CHECK
 
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
