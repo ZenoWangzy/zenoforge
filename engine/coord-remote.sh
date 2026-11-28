@@ -126,7 +126,7 @@ coord_remote_refresh() {
 }
 
 coord_remote_scheduler_footprints() {
-  local local_rows="${1:-[]}" refs ref key record owner kind unit stage held local_claim represented scope row output='[]'
+  local local_rows="${1:-[]}" refs ref key record owner kind unit stage held local_claim represented scope row output='[]' output_file
   jq -e 'type == "array" and all(.[]; type == "object" and (.id | type == "string"))' \
     <<<"$local_rows" >/dev/null 2>&1 || return 3
   coord_remote_refresh || return 3
@@ -170,7 +170,12 @@ coord_remote_scheduler_footprints() {
     fi
     row="$(jq -cn --arg id "$unit" --arg stage "$stage" --argjson footprint "$scope" \
       '{id:$id,stage:$stage,footprint:$footprint,remote_claim:true}')" || return 3
-    output="$(jq -cn --argjson rows "$output" --argjson row "$row" '$rows + [$row]')" || return 3
+    output_file="$(jq_arg_file "$output")" || return 3
+    if ! output="$(jq -cn --rawfile rows "$output_file" --argjson row "$row" '($rows | fromjson) + [$row]')"; then
+      rm -f -- "$output_file"
+      return 3
+    fi
+    rm -f -- "$output_file"
   done <<<"$refs"
   printf '%s\n' "$output"
 }
