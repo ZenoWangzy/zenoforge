@@ -12,10 +12,10 @@ if [[ ! -f "$transport_path" ]]; then
   [[ -z "$repo_root" ]] || transport_path="$repo_root/engine/lib.d/transport.sh"
 fi
 [[ -f "$transport_path" ]] || { printf 'pre-push guard: transport wrapper unavailable; refusing push.\n' >&2; exit 1; }
-if ! source "$transport_path"; then
+source "$transport_path" || {
   printf 'pre-push guard: transport wrapper failed to load; refusing push.\n' >&2
   exit 1
-fi
+}
 
 repo="${ZF_REPO:-$(git config --get zenoforge.repo 2>/dev/null || true)}"
 agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}"
