@@ -8,6 +8,11 @@ mkdir -p "$mem" "$state"
 fail() { printf 'memory-check.test.sh: %s\n' "$*" >&2; exit 1; }
 note() { printf -- '---\nname: %s\ndescription: d %s\n---\n\nbody %s\n\n**Why:** because %s 「quote」\n' "$1" "$1" "$2" "$1" > "$mem/$1.md"; }
 
+missing_rc=0
+env -u MC_NEW_DIR -u MC_REPOS python3 "$mc" > "$fx/missing.out" 2> "$fx/missing.err" || missing_rc=$?
+missing_error="$(cat "$fx/missing.err")"
+[[ "$missing_rc" != 0 && "$missing_error" == *MC_NEW_DIR* && "$missing_error" == *MC_REPOS* ]] || fail "missing paths must fail closed and name both variables: rc=$missing_rc stderr=$missing_error"
+
 # --- selection: oldest-checked pool of 2n, citing notes first inside it
 sel=$(MC_MEMORY_GLOB="$fx/none" python3 - "$mc" "$mem" <<'PY'
 import importlib.util, sys, os
@@ -159,7 +164,7 @@ printf -- 'x\n' > "$cwd/new/third.md"
 printf '{"note":"p1/tok.md","action":"changed","evidence":"grep tool showed new path"}\n' > "$cwd/report.jsonl"
 S
 chmod +x "$stub"
-export MC_MEMORY_GLOB="$fx/projects/*/memory" MC_STATE="$state" MC_WORKER="$stub" MC_NEW_DIR="$mem" MC_BATCH=20 MC_KEEP=2 MC_REAL_PEER="$mem/peer.md"
+export MC_MEMORY_GLOB="$fx/projects/*/memory" MC_STATE="$state" MC_WORKER="$stub" MC_NEW_DIR="$mem" MC_REPOS="$fx" MC_BATCH=20 MC_KEEP=2 MC_REAL_PEER="$mem/peer.md"
 export WORKER_SCRATCH_ROOT="$fx/ws"
 mkdir -p "$state/backups"; touch "$state/backups/memory-20200101T000000Z.tar.gz" "$state/backups/memory-20200102T000000Z.tar.gz"
 mkdir "$fx/before"; cp "$mem"/*.md "$fx/before/"
