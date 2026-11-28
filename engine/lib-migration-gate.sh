@@ -123,15 +123,15 @@ pack_rebase_hook() {
         commit -m "$message"; }
 }
 
-# fruit_migration_order_gate <pr> [head]
+# migration_order_gate <pr> [head]
 #
-# Drizzle applies a Migration journal entry only when its `when` is later than the
-# last applied migration, so a lower-numbered migration merged after a higher
-# one can be skipped in production forever. Refuses while another
-# open, non-draft PR adds a lower-numbered Migration, or while this PR's
-# new journal entry is not later than every `when` on main. Shared by
-# merge_agent_pr and the night tick's green-PR merge. Fails closed.
-fruit_migration_order_gate() {
+# A journal entry only applies when its `when` is later than the last applied
+# migration, so a lower-numbered migration merged after a higher one can be
+# skipped. Refuses while another open, non-draft PR adds a lower-numbered
+# migration, or while this PR's new journal entry is not later than every
+# `when` on main. Shared by merge_agent_pr and the night tick's green-PR merge.
+# Fails closed.
+migration_order_gate() {
   local pr="$1" head="${2:-}" out rc=0
   out="$(node "$ZF_ENGINE_DIR/check-fruit-migration-order.mjs" --merge-gate --pr "$pr" \
     ${head:+--head "$head"} --repo "$REPO" 2>&1)" || rc=$?
