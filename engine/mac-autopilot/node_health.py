@@ -418,7 +418,8 @@ def merge_flow(units, since, now):
 
 
 # Stages that wait by design (a predecessor, a stop-loss): their rows stay listed but never pick the worst stage.
-WIP_WAITING = ("blocked-external", "parked")
+WAIT_CAUSES = {"blocked-external": "predecessor", "parked": "park"}
+WIP_WAITING = tuple(WAIT_CAUSES)
 
 
 def wip_stage_ages(units, now, agent_home):
@@ -428,6 +429,8 @@ def wip_stage_ages(units, now, agent_home):
     on 2026-11-07 and hid the one stage a worker could move (supervisor-review, 8 h).
     A unit whose issue is on hold is grouped as "<stage>(on-hold)", waiting, for the same reason."""
     ages = {}
+    waiting_ages = []
+    by_cause = {cause: [] for cause in WAIT_CAUSES.values()}
     for u in units:
         if u.get("stage") in UNIT_DONE:
             continue
@@ -435,10 +438,14 @@ def wip_stage_ages(units, now, agent_home):
         if not times:
             continue
         stage = u.get("stage") or "unknown"
+        age = (now - max(times)).total_seconds() / 3600
+        if stage in WAIT_CAUSES:
+            waiting_ages.append(age)
+            if stage != "blocked-external" or u.get("blocked_on") is not None or u.get("stacked_on") is not None:
+                by_cause[WAIT_CAUSES[stage]].append(age)
         if wip_hold.on_hold(agent_home, u.get("issue")):
             stage += "(on-hold)"
-        ages.setdefault(stage, []).append(
-            ((now - max(times)).total_seconds() / 3600, u.get("id")))
+        ages.setdefault(stage, []).append((age, u.get("id")))
     rows = []
     for stage in sorted(ages):
         hours = sorted(h for h, _ in ages[stage])
@@ -447,19 +454,11 @@ def wip_stage_ages(units, now, agent_home):
                      "waiting": stage in WIP_WAITING or stage.endswith("(on-hold)"),
                      "oldest": [{"id": uid, "age_hours": round(h, 1)} for h, uid in oldest]})
     worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None and not r["waiting"]), default=None)
-    return rows, worst
-
-
-def wait_stage(units, now):
-    """p90 hours (last ledger event -> now) and count of open units in WIP_WAITING: the waits the worst pick skips."""
-    ages = []
-    for u in units:
-        if u.get("stage") not in WIP_WAITING:
-            continue
-        times = [t for t in (ts(h.get("at")) for h in u.get("history") or []) if t]
-        if times:
-            ages.append((now - max(times)).total_seconds() / 3600)
-    return (round(pct(ages, .9), 1) if ages else None), len(ages)
+    details = {
+        cause: {"stage": stage, "count": len(by_cause[cause]),
+                "p90_hours": round(pct(by_cause[cause], .9), 1) if by_cause[cause] else None}
+        for stage, cause in WAIT_CAUSES.items()}
+    return rows, worst, round(pct(waiting_ages, .9), 1) if waiting_ages else None, len(waiting_ages), details
 
 
 def slot_idle_hours(waits, cost_rows, since):
@@ -1446,11 +1445,12 @@ def main():
     metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
     _, entered, merged = merge_flow(units, since, now)
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
-    wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now, agent_home); sample_counts["flow.wip_age_stage_p90_hours"] = max((row for row in wip_rows if not row["waiting"]), key=lambda row: row["p90_hours"], default={"count": 0})["count"]
-    metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now); sample_counts["flow.wait_stage_p90_hours"] = metrics["flow.wait_stage_units"]
+    wip_rows, metrics["flow.wip_age_stage_p90_hours"], metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"], wait_by_cause = wip_stage_ages(units, now, agent_home)
+    sample_counts["flow.wip_age_stage_p90_hours"] = max((row for row in wip_rows if not row["waiting"]), key=lambda row: row["p90_hours"], default={"count": 0})["count"]
+    sample_counts["flow.wait_stage_p90_hours"] = metrics["flow.wait_stage_units"]
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
-    flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
+    flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows, "wait_by_cause": wait_by_cause}
     ledger_ok = ledger_history.live_ledger_readable(a); metrics["ci.held_ready_pct"] = held_ready_pct(units, ledger_ok); metrics.update(flow_unstarted_health.collect(a, units, now, ledger_ok))
     spend = read_json(os.path.join(a, "ci-spend.json"))
     fresh = ts(spend.get("sampled_at"))

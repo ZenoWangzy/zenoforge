@@ -1462,14 +1462,15 @@ cat > "$fa/units.json" <<'JSON'
  {"id":"pr-24","stage":"implement","history":[{"stage":"created","at":"2026-10-18T22:00:00Z"},{"stage":"implement-started","at":"2026-10-18T23:00:00Z"}]},
  {"id":"pr-26","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T07:50:00Z"}]},
  {"id":"pr-27","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T10:00:00Z"}]},
- {"id":"pr-28","stage":"blocked-external","history":[{"stage":"blocked-on","at":"2026-10-10T00:00:00Z"}]},
+ {"id":"pr-28","stage":"blocked-external","blocked_on":25,"history":[{"stage":"blocked-on","at":"2026-10-10T00:00:00Z"}]},
  {"id":"pr-29","stage":"parked","history":[{"stage":"supervisor-budget-park","at":"2026-10-11T00:00:00Z"}]}
 ]}
 JSON
 python3 - "$fa/units.json" <<'PY'
 import json, sys
 path=sys.argv[1]; doc=json.load(open(path))
-doc["units"].extend({"id":f"wait-{i}","stage":"blocked-external","history":[{"stage":"blocked-on","at":"2026-10-10T18:00:00Z"}]} for i in range(8))
+doc["units"].extend({"id":f"wait-{i}","stage":"blocked-external","blocked_on":25,"history":[{"stage":"blocked-on","at":"2026-10-10T18:00:00Z"}]} for i in range(8))
+doc["units"].append({"id":"recut-30","stage":"blocked-external","size_recut_pending":True,"history":[{"stage":"size-recut","at":"2026-10-16T12:00:00Z"}]})
 json.dump(doc,open(path,"w"))
 PY
 printf '[2026-10-19T09:00:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-26\n[2026-10-19T11:00:00Z] dispatch mode=fresh pid=2 type=repair unit=pr-27\n' > "$fa/scheduler.log"
@@ -1504,6 +1505,12 @@ jq -e '.flow.entered == 2 and .flow.merged == 3
   and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)
   and (.flow.wip_age[] | select(.stage == "blocked-external") | .waiting == true and .p90_hours == 210)
   and (.flow.wip_age[] | select(.stage == "parked") | .waiting == true and .p90_hours == 204)
+  and .flow.wait_by_cause.predecessor.stage == "blocked-external"
+  and .flow.wait_by_cause.predecessor.count == 9
+  and .flow.wait_by_cause.predecessor.p90_hours == 210
+  and .flow.wait_by_cause.park.stage == "parked"
+  and .flow.wait_by_cause.park.count == 1
+  and .flow.wait_by_cause.park.p90_hours == 204
   and (.flow.wip_age[] | select(.stage == "implement") | .waiting == false)' \
   "$fa/node-health.json" >/dev/null || fail "flow details wrong: $(jq -c .flow "$fa/node-health.json")"
 # 等待阶段单独成行：计数 = blocked-external + parked 的单数，p90 落在两阶段最老的单之间（指标行不进最差阶段）。
@@ -1963,7 +1970,7 @@ state = os.path.join(home, "state", "4354.json")
 units = [{"id": "held", "issue": 4354, "stage": "supervisor-review", "history": [{"at": at(88)}]},
          {"id": "fresh", "issue": 4400, "stage": "supervisor-review", "history": [{"at": at(0.3)}]}]
 json.dump({"hold": {"holder": "nexus"}}, open(state, "w"))
-rows, worst = n.wip_stage_ages(units, now, home)
+rows, worst, *_ = n.wip_stage_ages(units, now, home)
 held = [r for r in rows if r["stage"] == "supervisor-review(on-hold)"]
 assert held and held[0]["waiting"] is True and held[0]["count"] == 1, rows
 assert abs(worst - 0.3) < 0.05, worst
@@ -1972,7 +1979,7 @@ assert abs(n.wip_stage_ages(units, now, home)[1] - 0.3) < 0.05
 open(state, "w").write("{not json")  # unreadable state: not on hold
 assert n.wip_stage_ages(units, now, home)[1] > 80
 os.remove(state)
-rows, worst = n.wip_stage_ages(units, now, home)
+rows, worst, *_ = n.wip_stage_ages(units, now, home)
 assert worst > 80 and not [r for r in rows if r["stage"].endswith("(on-hold)")], rows
 print("node_health wip age on hold: PASS")
 CHECK
