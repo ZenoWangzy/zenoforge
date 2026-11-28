@@ -877,8 +877,6 @@ tick_gh() {
     'api graphql')
       if [[ "$*" == *'i9901:'* ]]; then
         if [[ -f "$TF/dependency-closed" ]]; then printf '9901\tCLOSED\tbug\n'; else printf '9901\tOPEN\tbug\n'; fi
-      elif [[ "$*" == *'i4321: issueOrPullRequest(number: 4321)'* ]]; then
-        printf '4321\tOPEN\t\tOPEN\t\t\t\t\n'
       elif [[ "$*" == *'REOPENED_EVENT'* ]]; then
         cat "$TF/reopen-events.json" 2>/dev/null || echo '{}'
       elif [[ "$*" == *'labels(first: 100)'* && "$*" == *'blockedBy(first: 50)'* ]]; then
@@ -3178,6 +3176,8 @@ command jq -n '{units:[
   {id:"issue-8805",lane:"direct-main",branch:"agent/issue-8805",task:"handoff refill fixture",handoff_start_ref:"rescue",handoff_start_sha:"0123456789abcdef0123456789abcdef01234567",stage:"implement-pending",history:[]},
   {id:"issue-8806",lane:"direct-main",branch:"agent/issue-8806",task:"budget refill fixture",stage:"implement-pending",history:[
     {stage:"write-start",at:"2026-10-29T00:00:00Z"},{stage:"write-start",at:"2026-10-29T00:00:00Z"},{stage:"write-start",at:"2026-10-29T00:00:00Z"}]}]}' > "$TF/supervisor/autopi/units.json"
+command jq -n '{number:4321,blockedBy:{nodes:[]},subIssues:{totalCount:0,nodes:[]},subIssuesSummary:{total:0,completed:0}}' \
+  > "$TF/intake-issue-context.json"
 command jq -n --argjson pid "$refill_dead_pid" \
   '{workers:[{pid:$pid,unit:"issue-8801",type:"implement",log:"impl-8801.log",report:"impl-8801.md",started:"2026-10-29T00:00:00Z",harvested:false}]}' > "$TF/supervisor/autopi/workers.json"
 printf 'NEEDS-PR: fixture touches a product path\n' > "$TF/supervisor/impl-8801.md"
