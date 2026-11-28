@@ -139,7 +139,7 @@ def node_health_source_state(runtime, now, agent_home, max_age=20 * 3600):
     age = source.get("age_s") if sample_epoch is not None else None
     return {"sample_at": source.get("at") if sample_epoch is not None else None,
             "age_s": age, "paused": paused,
-            "stale": paused or source.get("stale") is True or age is None or age > max_age or sample_epoch > now}
+            "stale": paused or age is None or age > max_age or sample_epoch > now}
 
 
 def anomaly_label(metric):
