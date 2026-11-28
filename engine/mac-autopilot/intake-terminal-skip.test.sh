@@ -146,6 +146,16 @@ register_new_issues 0
 jq -e 'all(.units[] | select(.issue == 9001779); .stage != "implement-pending")' "$UNITS" >/dev/null \
   || fail "the merged Refs issue must not create another implement unit"
 
+jq -n '{units:[{id:"issue-9001779",issue:9001779,branch:"agent/issue-9001779",stage:"implement-pending",task:"retry",history:[{stage:"intake",at:"2026-01-03T00:00:00Z"}]}]}' > "$UNITS"
+jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
+rm -f "$UNITS.view"
+: > "$merged_conclusion_calls"
+register_new_issues 0
+[[ "$(jq -r '.state' "$AGENT_HOME/state/9001779.json")" == awaiting-release ]] || fail "a pending implement unit must not prevent merged Refs conclusion"
+[[ "$(cat "$merged_conclusion_calls")" == '9001779 19001' ]] || fail "the pending-unit path must use the shared conclusion path"
+jq -e 'any(.units[]; .issue == 9001779 and .stage == "closed" and any(.history[]; .stage == "merged-refs-delivered"))' "$UNITS" >/dev/null \
+  || fail "a pending implement unit must be retired when its Refs PR is merged"
+
 jq -n '{units:[]}' > "$UNITS"
 jq -n '{state:"ready-for-agent",state_changed_from:"needs-hold",state_changed_at:"2025-12-31T00:00:00Z"}' > "$AGENT_HOME/state/9001779.json"
 rm -f "$UNITS.view"

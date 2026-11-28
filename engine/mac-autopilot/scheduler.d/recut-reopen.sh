@@ -140,6 +140,14 @@ intake_issue_ruling_after_merge() {
     ((.state_changed_from // "") | IN("needs-advisor", "needs-triage", "tracker"))
     and (.state_changed_at // "") > $merged_at' <<<"$state" >/dev/null 2>&1
 }
+intake_close_merged_refs_pending_units() {
+  local n="$1" pr="$2" ids id
+  ids="$(jqf -r --argjson n "$n" '[.units[] | select((.issue == $n or .branch == ("agent/issue-" + ($n | tostring))) and .stage == "implement-pending") | .id] | .[]' "$UNITS")" || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    set_unit "$id" "if .stage == \"implement-pending\" then $(hist merged-refs-delivered "merged Refs PR #$pr superseded this implementation") | .stage=\"closed\" | .note=$(js "superseded by merged Refs PR #$pr") else . end" || return 1
+  done <<<"$ids"
+}
 intake_skip_merged_refs_issue() {
   local n="$1" refs_pr refs_status=0 pr_number merged_at ruling_status=0
   refs_pr="$(intake_merged_refs_pr_for_issue "$n")" || refs_status=$?
@@ -154,6 +162,8 @@ intake_skip_merged_refs_issue() {
       else
         say "intake issue #$n: could not conclude merged Refs PR #$pr_number; retry next tick"
       fi
+      intake_close_merged_refs_pending_units "$n" "$pr_number" \
+        || say "intake issue #$n: pending implement unit could not be closed after merged Refs PR #$pr_number"
       intake_skip merged_refs_pr
     elif (( ruling_status != 0 )); then
       intake_skip merged_refs_state

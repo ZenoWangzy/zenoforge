@@ -38,6 +38,17 @@ scheduler_clear_canary_after_failed_start() (
   source "$SCHEDULER_AGENT_LIB" || return 1
   state_merge "$1" 'del(.run.conclusion.canary_reserved_scopes)'
 )
+dispatch_close_merged_pending_unit() {
+  local id="$1" issue="$2" state pr
+  [[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
+  state="$(scheduler_issue_state_readonly "$issue" 2>/dev/null)" || { say "implement-pending unit=$id: issue state unavailable; dispatch held"; return 0; }
+  jqf -e '.state == "awaiting-release" and .run.outcome == "merged"' <<<"$state" >/dev/null 2>&1 || return 1
+  pr="$(jqf -r '.run.evidence.pr_number // empty' <<<"$state")" || { say "implement-pending unit=$id: merged issue evidence unreadable; dispatch held"; return 0; }
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || { say "implement-pending unit=$id: merged issue has no PR evidence; dispatch held"; return 0; }
+  set_unit "$id" "if .stage == \"implement-pending\" then $(hist merged-delivered "merged PR #$pr moved issue #$issue to awaiting-release") | .stage=\"closed\" | .note=$(js "issue #$issue is awaiting release after merged PR #$pr") else . end" \
+    || say "implement-pending unit=$id: could not close the merged issue row; dispatch held"
+  return 0
+}
 
 # Start-silent breaker: when the TRIP newest implement/repair/supervise workers (started at least MINUTES ago, after the floor)
 # all wrote 0 bytes, starts are broken. Hold every start except one probe per PROBE_MINUTES (only a probe shows a fixed build a

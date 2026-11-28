@@ -394,6 +394,11 @@ register_new_issues_pass() {
     if (( ! existing_only )) && intake_row_terminal "$n" "$episode"; then
       intake_closed_unit_noted "$n" || intake_terminal_rows+=("$n"); intake_skip terminal; continue
     fi; intake_mark terminal_check
+    if (( ! existing_only )); then
+      intake_unit_for_row "$n" "$handoff_pr"; intake_mark unit_precheck
+      if [[ -z "$existing_id" || "$(unit_field "$existing_id" '.stage // empty')" == implement-pending ]] \
+        && intake_skip_merged_refs_issue "$n"; then continue; fi
+    fi
     if (( existing_only )); then
       intake_unit_for_row "$n" "$handoff_pr"; intake_mark recut_refused_precheck
       [[ -z "$existing_id" ]] || ! intake_recut_refused "$existing_id" || { intake_skip_refused_recut "$n" "$existing_id"; continue; }
@@ -508,7 +513,6 @@ register_new_issues_pass() {
     if (( existing_only )) && [[ -n "$episode" ]]; then INTAKE_EXISTING_WALKED["$n"]=ok; fi
     [[ -n "$handoff" ]] || handoff='{}'
     intake_unit_for_row "$n" "$handoff_pr"; intake_mark unit_lookup
-    if [[ -z "$existing_id" ]] && (( ! existing_only )) && intake_skip_merged_refs_issue "$n"; then continue; fi
     if [[ -n "$existing_id" ]]; then
       (( existing_only )) || { intake_skip existing; continue; }
       [[ -n "$episode" ]] || { intake_skip no_episode; continue; }

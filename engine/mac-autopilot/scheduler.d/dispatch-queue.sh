@@ -431,7 +431,7 @@ dispatch_pending_pass() {
     fi
     dmark loop_breaker
     title="$(jqf -r '.title // ""' <<<"$u")"; pr_num="$(jqf -r '.pr // empty' <<<"$u")"
-    issue="$(jqf -r '.issue // empty' <<<"$u")"; lane="$(jqf -r '.lane // empty' <<<"$u")"
+    issue="$(jqf -r '.issue // empty' <<<"$u")"; lane="$(jqf -r '.lane // empty' <<<"$u")"; if [[ "$stage" == implement-pending ]] && dispatch_close_merged_pending_unit "$id" "$issue"; then dispatch_skip merged-issue; continue; fi
     key="${pr_num:-$id}"; subject="$(subject_of "$pr_num" "$issue")"
     prless=0; [[ -z "$pr_num" && "$lane" == direct-main ]] && prless=1
     dmark row_fields
