@@ -56,6 +56,16 @@ function validateRegistry(registry, label) {
   return packages;
 }
 
+export function escapeTestIsRegistered(cwd, commit, testPath) {
+  const registry = readRegistry(cwd, commit);
+  if (!registry) return false;
+  const normalizedTestPath = relativeRepoPath(testPath, 'test path');
+  for (const [packagePath, tests] of validateRegistry(registry, 'head registry')) {
+    if (normalizedTestPath.startsWith(packagePath + '/') && tests.has(normalizedTestPath)) return true;
+  }
+  return false;
+}
+
 function mergedRegistry(cwd, base, head) {
   const merged = new Map();
   for (const [commit, label] of [[base, 'base registry'], [head, 'head registry']]) {
