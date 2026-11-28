@@ -47,6 +47,18 @@ function git(args, cwd = repo, options) {
   if (r.status !== 0) throw new Error(`git ${args[0]}: ${r.stderr}`);
   return r.stdout;
 }
+function liveEngineSha() {
+  const agentHome = process.env.AGENT_HOME || process.env.ZF_HOME || join(homedir(), '.zenoforge');
+  const liveEngine = join(agentHome, 'engine-live');
+  const engineDir = [liveEngine, process.env.ZF_ENGINE_DIR, join(here, '..')].find((path) => path && existsSync(path));
+  const resolved = realpathSync(engineDir);
+  const buildInfo = join(dirname(resolved), 'BUILD-INFO');
+  if (existsSync(buildInfo)) {
+    const sha = readFileSync(buildInfo, 'utf8').match(/^zenoforge_sha=([0-9a-f]{40})$/m)?.[1];
+    if (sha) return sha;
+  }
+  return git(['rev-parse', 'HEAD'], resolved).trim();
+}
 export function worktree(ref, parent, name, sourceRepo = repo) {
   const privateRepo = join(parent, 'repo.git');
   if (!existsSync(privateRepo)) {
@@ -676,8 +688,10 @@ export async function main(args = process.argv.slice(2)) {
     policy = applyOverrides(policy, values.override);
     policyFile = join(out, 'policy.json');
   }
+  const engineSha = liveEngineSha();
+  const startedAt = new Date().toISOString();
   const result = prior ?? { version: 1, label: values.label, suiteSha: git(['rev-parse', 'HEAD']).trim(), policy, overrides: values.override ?? [],
-    kind: values['verify-gold'] ? 'gold-verification' : 'evaluation', startedAt: new Date().toISOString(), results: [] };
+    kind: values['verify-gold'] ? 'gold-verification' : 'evaluation', engineSha, startedAt, results: [] };
   const caseArg = values.case ?? values.cases ?? null;
   const wanted = caseArg != null && !caseArg.endsWith('.json') ? new Set(caseArg.split(',').filter(Boolean)) : null;
   const selected = [];
@@ -710,9 +724,10 @@ export async function main(args = process.argv.slice(2)) {
   mkdirSync(evalHome, { recursive: true });
   if (!values.resume) mkdirSync(out); // Existing labels are immutable; use a new label for each experiment or --resume.
   if (values.override?.length) writeFileSync(policyFile, JSON.stringify(policy, null, 2) + '\n');
+  if (!prior) writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n');
   if (prior) console.log(`resume: ${prior.results.length} existing results kept, ${pending.length} missing to run`);
   const plan = { out, verifyGold: values['verify-gold'], repairArms: values['repair-arms'], fromImplement: values['from-implement'], policyFile };
-  const record = (row) => { result.results.push(row); writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n'); };
+  const record = (row) => { result.results.push({ ...row, engineSha }); writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n'); };
   await runPool(pending, concurrency, async (job) => record(await attemptInWorker(job, plan)));
   const supervisor = summarizeSupervisor(result.results);
   if (supervisor.total) result.supervisor = supervisor;

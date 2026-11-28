@@ -513,10 +513,10 @@ test('--concurrency 3 keeps at most 3 attempts running and records every row', (
   try {
     const r = f.run(['--stage', 'triage', '--cases', f.caseFile, '--runs', '1', '--concurrency', '3', '--label', 'conc']);
     assert.equal(r.status, 0, r.stderr);
-    const rows = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/conc/results.json'), 'utf8')).results;
+    const saved = JSON.parse(readFileSync(join(f.home, '.zenoforge/eval/conc/results.json'), 'utf8')); const rows = saved.results;
     assert.deepEqual(rows.map((x) => x.caseId).sort(), ['c1', 'c2', 'c3']);
     assert.ok(rows.every((x) => x.pass), rows.map((x) => x.failures).join(';'));
-    assert.ok(rows.every((x) => x.tokens === 1234 && x.identities.length === 1));
+    assert.ok(/^[0-9a-f]{40}$/.test(saved.engineSha) && rows.every((x) => x.tokens === 1234 && x.identities.length === 1 && x.engineSha === saved.engineSha));
     assert.ok(overlap(f.events) <= 3, 'more than 3 codex calls overlapped');
     assert.ok(overlap(f.events) >= 2, 'attempts never ran in parallel');
   } finally { rmSync(f.dir, { recursive: true, force: true }); }

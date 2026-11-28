@@ -93,6 +93,9 @@ selected provider; same-family review is never a fallback.
 Outputs are `~/.zenoforge/eval/<label>/results.json`, with one row per
 stage/case/run: pass/fail and reasons, individual call usage/time, summed usage
 (or `null` if any call has unknown usage), total and model wall time and artifact locations.
+The label records the live engine SHA from its start, and every result row carries the SHA active
+when that row ran so a resumed label can span engine versions. Comparison lists paired rows by
+the baseline and candidate engine SHAs.
 Prompt, output, stderr, worker log, candidate diff and hidden-check logs stay
 with the run. Comparison prints pass→fail **first**, totals, fail→pass,
 unpaired case/runs, and mixed pass/fail cases within each label. Compare the
