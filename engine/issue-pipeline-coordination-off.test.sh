@@ -19,6 +19,7 @@ cat > "$ISSUES" <<'JSON'
 [{"number":991205,"title":"coordination off triage fixture","body":"fixture","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"needs-triage"}],"user":{"login":"fixture"}},{"number":991206,"title":"coordination off recut fixture","body":"fixture","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"needs-recut"}],"user":{"login":"fixture"}},{"number":991207,"title":"coordination off advisor fixture","body":"fixture","state":"open","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-02T00:00:00Z","labels":[{"name":"needs-advisor"}],"user":{"login":"fixture"}}]
 JSON
 jq '.switches["roadmap-order"] = false | .roles.advisor.disabled = false' "$SCRIPT_DIR/model-policy.default.json" > "$AGENT_HOME/model-policy.json"
+: > "$AGENT_HOME/codex-probe-passed"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$PROVIDER_SCRIPT"
 chmod +x "$PROVIDER_SCRIPT"
 
