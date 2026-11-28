@@ -115,14 +115,60 @@ sim_takeover() {
 }
 
 sim_publish_status() {
-  local instance caps payload ref old_oid
+  local instance caps payload ref old_oid blob tree commit
   source "$SIM_ENGINE_DIR/coord/status.sh"
   instance="$(<"$SIM_HOST_DIR/instance")"
   caps='{"os":"linux","arch":"sim","wsl":false,"cpus":1,"mem_mb":1,"cli":{}}'
   payload="$(ZF_COORD=on status_record "$SIM_HOST_ID" "$instance" "$(sim_now)" "$caps")"
   ref="refs/status/$SIM_HOST_ID"
   old_oid="$(sim_ref_oid "$ref")"
-  sim_write_ref "$ref" "$old_oid" "$payload"
+  blob="$(printf '%s\n' "$payload" | git -C "$SIM_HOST_REPO" hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\tworker.json\n' "$blob" | git -C "$SIM_HOST_REPO" mktree)"
+  commit="$(GIT_AUTHOR_NAME=zenoforge-coord GIT_AUTHOR_EMAIL=zenoforge-coord@users.noreply.github.com \
+    GIT_COMMITTER_NAME=zenoforge-coord GIT_COMMITTER_EMAIL=zenoforge-coord@users.noreply.github.com \
+    git -C "$SIM_HOST_REPO" commit-tree "$tree" -m "status $SIM_HOST_ID")"
+  git -C "$SIM_HOST_REPO" push --quiet --force-with-lease="$ref:$old_oid" origin "$commit:$ref"
+}
+
+sim_coord_setup() {
+  source "$SIM_ENGINE_DIR/config.sh"
+  REPO_DIR="$ZF_REPO_DIR"
+  GIT_FETCH_TIMEOUT_SEC=60
+  source "$SIM_ENGINE_DIR/lib.d/transport.sh"
+  coord_source_if_enabled
+}
+
+sim_coord_hold() {
+  local issue="$1" kind="${2:-feeder}" key owner pid pid_start
+  sim_coord_setup
+  key="$(coord_issue_key "$issue")"
+  owner="$(coord_new_owner)"
+  pid="${BASHPID:-$$}"
+  pid_start="$(coord_process_start_ticks "$pid")"
+  coord_acquire "$key" "$owner" "$kind" "$issue" "sim-$issue" "$kind" "$pid" "$pid_start"
+  : "${SIM_HOLD_READY:?coord-hold requires SIM_HOLD_READY}"
+  : "${SIM_HOLD_RELEASE:?coord-hold requires SIM_HOLD_RELEASE}"
+  printf '%s\n' "$pid" >"$SIM_HOLD_READY"
+  while [[ ! -e "$SIM_HOLD_RELEASE" ]]; do
+    [[ -d "${SIM_HOLD_RELEASE%/*}" ]] || return 1
+    sleep 0.02
+  done
+  coord_release "$key" "$owner"
+}
+
+sim_coord_acquire() {
+  local issue="$1" kind="${2:-feeder}" key owner pid pid_start
+  sim_coord_setup
+  key="$(coord_issue_key "$issue")"
+  owner="$(coord_new_owner)"
+  pid="${BASHPID:-$$}"
+  pid_start="$(coord_process_start_ticks "$pid")"
+  coord_acquire "$key" "$owner" "$kind" "$issue" "sim-$issue" "$kind" "$pid" "$pid_start"
+  printf '%s\n' "$owner"
+}
+
+sim_run_renewd() {
+  bash "$SIM_ENGINE_DIR/coord/renewd.sh" --once
 }
 
 sim_effect_setup() {
@@ -176,5 +222,8 @@ case "${1:-}" in
   effect) shift; sim_run_effect "$@" ;;
   effect-takeover) shift; sim_take_over_effect "$@" ;;
   status) sim_publish_status ;;
-  *) echo 'usage: worker.sh {dispatch|hold|takeover|effect|effect-takeover|status}' >&2; exit 2 ;;
+  coord-hold) shift; sim_coord_hold "${1:?issue required}" "${2:-feeder}" ;;
+  coord-acquire) shift; sim_coord_acquire "${1:?issue required}" "${2:-feeder}" ;;
+  renewd) sim_run_renewd ;;
+  *) echo 'usage: worker.sh {dispatch|hold|takeover|effect|effect-takeover|status|coord-hold|coord-acquire|renewd} [ticket stage]' >&2; exit 2 ;;
 esac

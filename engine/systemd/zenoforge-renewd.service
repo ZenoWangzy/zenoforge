@@ -1,0 +1,13 @@
+[Unit]
+Description=coordination lease renewal
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.zenoforge/checkout
+Environment=ZF_REPO_DIR=%h/.zenoforge/checkout
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+EnvironmentFile=-%h/.zenoforge/engine.env
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=50s
+ExecStart=:/bin/bash -c 'e="$(readlink -e %h/.zenoforge/engine-live 2>/dev/null)"; exec "${e:-%h/.zenoforge/checkout/engine}/coord/renewd.sh" --once'

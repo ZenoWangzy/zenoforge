@@ -246,17 +246,41 @@ _coord_remote_observe() {
 }
 
 _coord_remote_held_write() {
-  local key="$1" owner="$2" oid="$3" claim="$4" dir="$AGENT_HOME/coord/held" path tmp now generation
+  local key="$1" owner="$2" oid="$3" claim="$4" pid="${5:-}" pid_start="${6:-}" process_group="${7:-}"
+  local dir="$AGENT_HOME/coord/held" path tmp now generation kind unit stage subject
   [[ "$oid" =~ ^[0-9a-f]{40,64}$ ]] || return 3
   now="$(coord_now_s)" || return 3
   generation="$(jq -r '.generation // 1' <<<"$claim")" || return 3
   [[ "$generation" =~ ^[1-9][0-9]*$ ]] || return 3
+  kind="$(jq -r '.owner_kind // empty' <<<"$claim")" || return 3
+  unit="$(jq -r '.unit // empty' <<<"$claim")" || return 3
+  stage="$(jq -r '.stage // empty' <<<"$claim")" || return 3
+  subject="$(jq -r '.subject // empty' <<<"$claim")" || return 3
+  if [[ -z "$pid" ]]; then pid="$(jq -r '.pid // empty' <<<"$claim")" || return 3; fi
+  if [[ -z "$pid_start" ]]; then pid_start="$(jq -r '.pid_start // empty' <<<"$claim")" || return 3; fi
+  if [[ -z "$process_group" ]]; then process_group="$(jq -r '.process_group // empty' <<<"$claim")" || return 3; fi
+  if [[ "$kind" == manual-worker && ! "$pid" =~ ^[1-9][0-9]*$ && "$owner" =~ ^owner-([1-9][0-9]*)- ]]; then
+    pid="${BASH_REMATCH[1]}"
+    if declare -F coord_process_start_ticks >/dev/null; then
+      pid_start="$(coord_process_start_ticks "$pid" 2>/dev/null || true)"
+    fi
+  fi
   mkdir -p -- "$dir" || return 3
   path="$dir/$key"
+  if [[ -r "$path" ]] && jq -e --arg owner "$owner" '.owner == $owner' "$path" >/dev/null 2>&1; then
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || pid="$(jq -r '.pid // empty' "$path")" || return 3
+    [[ "$pid_start" =~ ^[0-9]+$ ]] || pid_start="$(jq -r '.pid_start // empty' "$path")" || return 3
+    [[ "$process_group" =~ ^[1-9][0-9]*$ ]] || process_group="$(jq -r '.process_group // empty' "$path")" || return 3
+  fi
   tmp="$(mktemp "$dir/.held.XXXXXX")" || return 3
   if ! jq -cn --arg key "$key" --arg owner "$owner" --arg oid "$oid" \
+      --arg kind "$kind" --arg unit "$unit" --arg stage "$stage" --arg subject "$subject" \
+      --arg pid "$pid" --arg pid_start "$pid_start" --arg process_group "$process_group" \
       --argjson generation "$generation" --argjson held_at "$now" \
-      '{key:$key,owner:$owner,oid:$oid,generation:$generation,held_at:$held_at}' >"$tmp"; then
+      '{key:$key,owner:$owner,oid:$oid,generation:$generation,held_at:$held_at,owner_kind:$kind,unit:$unit,stage:$stage,subject:$subject}
+       + (if $pid | test("^[1-9][0-9]*$") then {pid:($pid|tonumber)} else {} end)
+       + (if $pid_start | test("^[0-9]+$") then {pid_start:($pid_start|tonumber)} else {} end)
+       + (if $process_group | test("^[1-9][0-9]*$") then {process_group:($process_group|tonumber)} else {} end)' >"$tmp"; then
     rm -f -- "$tmp"
     return 3
   fi
@@ -369,7 +393,17 @@ _coord_remote_release() {
 }
 
 _coord_remote_assert_owned() {
-  local key="$1" owner="$2" status
+  local key="$1" owner="$2" status held="$AGENT_HOME/coord/held/$1" now held_at deadline
+  [[ -r "$held" ]] || return 3
+  jq -e --arg key "$key" --arg owner "$owner" \
+    'type == "object" and .key == $key and .owner == $owner and .lost != true
+     and (.held_at | type == "number" and floor == . and . >= 0)' \
+    "$held" >/dev/null 2>&1 || return 3
+  now="$(coord_now_s)" || return 3
+  held_at="$(jq -r '.held_at' "$held")" || return 3
+  deadline="${ZF_COORD_SELF_FENCE_S:-600}"
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || return 3
+  (( now >= held_at && now - held_at < deadline )) || return 3
   if _coord_remote_read "$key"; then :; else status=$?; return "$status"; fi
   [[ "$(jq -r '.owner' <<<"$COORD_RECORD")" == "$owner" ]] || return 1
   (( COORD_REMOTE_EXPIRED == 0 )) || return 3
