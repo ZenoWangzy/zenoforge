@@ -2,6 +2,7 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh"
+source "$here/../lib.d/transport.sh"
 config=$(zf_config_file hotfix.json) || config=
 # The engine's shipped default hotfix.json carries other seams' keys: without an apply_dist key it is no
 # distribution config and the legacy fallback stays reachable. A config-root or pack file still selects the

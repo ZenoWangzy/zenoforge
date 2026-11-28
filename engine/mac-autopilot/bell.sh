@@ -11,11 +11,9 @@ source "$HERE/runtime-env.sh"
 ROOT="$MAC_AUTOPILOT_ROOT"
 ENGINE_DIR="${ZF_ENGINE_DIR:-$ROOT/engine}"
 source "$HERE/incident-fingerprint.sh"
-if [[ -f "$ENGINE_DIR/lib.d/transport.sh" ]]; then
-  source "$ENGINE_DIR/lib.d/transport.sh"
-else
-  source "$HERE/../lib.d/transport.sh"
-fi
+bell_transport_path="$ENGINE_DIR/lib.d/transport.sh"
+[[ -f "$bell_transport_path" ]] || bell_transport_path="$HERE/../lib.d/transport.sh"
+source "$bell_transport_path"
 if [[ -f "$ENGINE_DIR/lib.d/ci-checks.sh" ]]; then
   source "$ENGINE_DIR/lib.d/ci-checks.sh"
 else
