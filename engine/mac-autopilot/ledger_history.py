@@ -237,12 +237,11 @@ SOURCE.update({
 })
 
 
-def _review_events(unit, parse):
+def _review_events(unit, parse, include_ev=True):
     events = []
     for index, event in enumerate(unit.get("history") or []):
-        at = parse(event.get("at"))
-        stage = event.get("stage") or event.get("ev") or ""
-        if at and stage in REVIEW_VERDICTS:
+        stage = event.get("stage") or (event.get("ev") if include_ev else "") or ""
+        if stage in REVIEW_VERDICTS and (at := parse(event.get("at"))):
             events.append((at, index, stage, event))
     return sorted(events)
 
@@ -260,8 +259,7 @@ def _rejection_cause(reason):
 def delivery_review_metrics(units, merged_units_30d, now, parse, include_rolling=False):
     cycles, approvals = [], []
     for unit, merged_at in merged_units_30d:
-        reviews = sorted((at, event.get("stage")) for event in unit.get("history") or []
-                         if event.get("stage") in REVIEW_VERDICTS and (at := parse(event.get("at"))) and at <= merged_at)
+        reviews = sorted((at, stage) for at, _, stage, _ in _review_events(unit, parse, include_ev=False) if at <= merged_at)
         approvals.append(sum(stage == "review-approve" for _, stage in reviews))
         first_approval = next((index for index, (_, stage) in enumerate(reviews) if stage == "review-approve"), None)
         if first_approval is not None:
