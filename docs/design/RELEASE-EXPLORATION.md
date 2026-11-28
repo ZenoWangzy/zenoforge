@@ -27,6 +27,8 @@ The target opts in with `.zenoforge/state/exploration.json`. Missing configurati
 
 `driver.argv` is executed as an argv array from the target checkout. The engine supplies `ZF_EXPLORATION_RELEASE_SHA`, `ZF_EXPLORATION_FEATURE_ID`, `ZF_EXPLORATION_FEATURE_TITLE`, `ZF_EXPLORATION_ATTEMPT`, `ZF_EXPLORATION_RUN_ID`, `ZF_EXPLORATION_FRESH_SESSION`, `ZF_EXPLORATION_EVIDENCE_DIR`, `ZF_EXPLORATION_RESULT_FILE`, `ZF_EXPLORATION_MAX_TOKENS`, and `ZF_EXPLORATION_ALLOWED_EFFECTS`. Each feature entry in the map has an `id` and `title`; entries run in map order up to `max_features`.
 
+When the host provides an executable `ZF_CDP_BROWSER_LEASE_SCRIPT`, the driver runs under the shared-browser lease.
+
 The configured driver must keep its run isolated and emit evidence suitable for publication with a product issue.
 
 The driver writes one JSON object to `ZF_EXPLORATION_RESULT_FILE`:

@@ -379,6 +379,9 @@ explore_driver_attempt() {
   if (( remaining <= timeout_seconds )); then timeout_seconds="$remaining"; wall_limited=1; fi
   if (( timeout_seconds <= 0 )); then EXPLORE_ATTEMPT_STATUS=budget-time; return 0; fi
   local -a command=("${EXPLORE_DRIVER_ARGV[@]}")
+  if [[ -n "${ZF_CDP_BROWSER_LEASE_SCRIPT:-}" && -x "$ZF_CDP_BROWSER_LEASE_SCRIPT" ]]; then
+    command=("$ZF_CDP_BROWSER_LEASE_SCRIPT" -- "${EXPLORE_DRIVER_ARGV[@]}")
+  fi
   if (cd -- "$ZF_REPO_DIR" && \
       ZF_EXPLORATION_RELEASE_SHA="$sha" ZF_EXPLORATION_FEATURE_ID="$feature_id" \
       ZF_EXPLORATION_FEATURE_TITLE="$title" ZF_EXPLORATION_ATTEMPT="$attempt" \
