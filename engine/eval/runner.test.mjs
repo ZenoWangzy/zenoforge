@@ -96,7 +96,6 @@ test('the implement prompt carries the premise rule and the optimization cases k
     assert.ok(prompt.includes(JSON.stringify(c.issue, null, 2).slice(0, 200)), 'the frozen intake issue reaches the implementer');
   }
   assert.ok(!renderPrompt('implement', close).includes(close.expected.gold.closeLine), 'the gold close line never reaches the model');
-  // The close case's data supports its verdict: zero agent runs in every window after the mechanism.
   const table = close.issue.comments[0].body;
   assert.ok(table.includes('| 10-23 16:53–24:00Z | 0 | 0 | 0 |'));
   assert.ok(table.includes('| 10-27 (to 15:15Z) | 0 | 0 | 0 |'));
@@ -264,7 +263,7 @@ printf 'ACTION: requeue\\n' > "$out"
     writeFileSync(join(workerScratch, 'luna/model-not-found.cache'), `gpt-6.1-terra\t${Math.floor(Date.now() / 1000) + 86400}\n`);
     assert.match(run(cachedArtifact), /^ACTION: requeue/);
     const cachedCall = readFileSync(calls, 'utf8').split('\n').at(-2);
-    assert.match(cachedCall, /exec -p terra -c features.plugins=false -m gpt-6-luna -c model_reasoning_effort=max/);
+    assert.match(cachedCall, /exec -p terra -c features\.plugins=false -c features\.apps=false -m gpt-6-luna -c model_reasoning_effort=max/);
     assert.equal(readFileSync(join(cachedArtifact, 'identity.txt'), 'utf8').trim(), 'codex:gpt-6-luna:max');
     assert.match(readFileSync(join(cachedArtifact, 'worker.log'), 'utf8'), /model-not-found cache swap eval-supervisor profile=terra from=gpt-6\.1-terra to=gpt-6-luna effort=max/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -368,7 +367,6 @@ test('runPool caps in-flight jobs at the requested concurrency and runs every jo
   assert.ok(max > 1, 'jobs never overlapped');
 });
 
-// A stub codex plus a tiny-tree base keep the CLI tests hermetic: no model, no network.
 function cliFixture() {
   const dir = mkdtempSync(join(scratch, 'eval-cli-'));
   const bin = join(dir, 'bin'), home = join(dir, 'home');
@@ -394,7 +392,6 @@ if [[ "$prompt" == *FIXTURE_PASS* ]]; then printf 'ready\n' > "$worktree/answer.
 if [[ -n "$output" ]]; then cp ${JSON.stringify(outputFile)} "$output"; fi
 printf 'tokens used\n1,234\n'
 `, { mode: 0o755 });
-  // The repo's first commit gives fixture cases a real object with a tiny checkout.
   const baseSha = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').at(-1);
   const caseFile = join(dir, 'cases.json');
   writeFileSync(caseFile, JSON.stringify({ stage: 'triage', cases: ['c1', 'c2', 'c3'].map((id) => ({ id, baseSha, issue: { number: 1, title: id, body: 'fixture' }, expected: output })) }));
