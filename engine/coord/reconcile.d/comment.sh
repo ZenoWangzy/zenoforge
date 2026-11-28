@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/../../lib.d/transport.sh"
 effect_key="${2:-}"
 [[ "$effect_key" =~ ^comment:([1-9][0-9]*):([A-Za-z0-9._:-]+)$ ]] || exit 3
 issue="${BASH_REMATCH[1]}"
