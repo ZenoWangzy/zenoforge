@@ -17,7 +17,7 @@ cat > "$tmp/valid-fragment.json" <<'JSON'
   "source_event":{"session_key":"fixture","event_line":1},
   "derived_from":["V1272"],
   "check":{"type":"failure"},
-  "admission":{"status":"passed","source_match":true,"normal_sessions":["n1","n2","n3","n4","n5","n6","n7","n8","n9","n10"],"matched_normal_events":0},
+  "admission":{"status":"passed","source_match":true,"normal_sessions":["n1","n2","n3","n4","n5","n6","n7","n8","n9","n10"],"matched_normal_events":0,"paired_eval":{"status":"passed","baseline":"retro-base-registry-parity","candidate":"retro-cand-registry-parity","paired_cases":["triage/sample-retry-delay/1"],"regressions":0}},
   "enforcement":{"level":"architecture","enforced_by":["engine/lesson-fragments.sh"]},
   "guard":{
     "id":"registry-parity","date":"2026-10-12","class":"fixture",
@@ -58,11 +58,21 @@ if bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registr
   echo 'lesson-fragments.test.sh: unmeasured candidate check was accepted' >&2
   exit 1
 fi
-grep -Fq 'candidate check has no passing event measurement' "$tmp/stderr" || {
+grep -Fq 'candidate check has no passing event and paired-eval measurement' "$tmp/stderr" || {
   echo "lesson-fragments.test.sh: refusal omitted its reason: $(cat "$tmp/stderr")" >&2
   exit 1
 }
 rm "$tmp/repo/lessons/pending/unmeasured.json"
+jq 'del(.guard, .enforcement) | .id="unrelated-labels" | .full_lesson_path="lessons/full/unrelated-labels.md" |
+  .admission.paired_eval.baseline="retro-before" | .admission.paired_eval.candidate="retro-after"' \
+  "$tmp/valid-fragment.json" > "$tmp/repo/lessons/pending/unrelated-labels.json"
+cp "$tmp/repo/lessons/full/registry-parity.md" "$tmp/repo/lessons/full/unrelated-labels.md"
+if bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json" --files "$tmp/repo/lessons/pending/unrelated-labels.json" >"$tmp/stdout" 2>"$tmp/stderr"; then
+  echo 'lesson-fragments.test.sh: unrelated paired eval labels were accepted' >&2
+  exit 1
+fi
+rm "$tmp/repo/lessons/pending/unrelated-labels.json"
+rm "$tmp/repo/lessons/full/unrelated-labels.md"
 bash "$tmp/repo/engine/lesson-fragments.sh" --check "$tmp/repo" "$tmp/registry.json"
 jq 'del(.guard, .enforcement)' "$tmp/valid-fragment.json" > "$tmp/expected-fragment.json"
 cmp "$tmp/expected-fragment.json" "$tmp/repo/lessons/pending/registry-parity.json"

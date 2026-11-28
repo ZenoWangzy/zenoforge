@@ -86,12 +86,20 @@ validate_fragments() {
         .admission.status == "passed" and .admission.source_match == true and
         (.admission.normal_sessions | type == "array" and length == 10) and
         .admission.matched_normal_events == 0 and
+        .admission.paired_eval.status == "passed" and
+        (.admission.paired_eval.baseline | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
+        (.admission.paired_eval.candidate | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
+        .admission.paired_eval.baseline == ("retro-base-" + .id) and
+        .admission.paired_eval.candidate == ("retro-cand-" + .id) and
+        (.admission.paired_eval.candidate != .admission.paired_eval.baseline) and
+        (.admission.paired_eval.paired_cases | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and
+        .admission.paired_eval.regressions == 0 and
         (.source_event.session_key | type == "string" and length > 0) and
         (.source_event.event_line | type == "number" and . >= 1 and floor == .) and
         (.derived_from | type == "array" and all(.[]; type == "string")) and
         (.check | type == "object" and length > 0)
       ' "$file" >/dev/null; then
-        echo "ERROR lesson-fragments: candidate check has no passing event measurement: $file" >&2
+        echo "ERROR lesson-fragments: candidate check has no passing event and paired-eval measurement: $file" >&2
         return 2
       fi
     fi

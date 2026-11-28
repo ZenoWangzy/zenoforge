@@ -14,6 +14,7 @@ jq -e '
     and $candidate.properties.derived_from.type == "array"
     and $candidate.properties.derived_from.items.type == "string"
     and $candidate.properties.derived_from.uniqueItems == true
+    and ($candidate.properties | has("paired_eval") | not)
 ' "$dir/../prompts/retro.schema.json" >/dev/null \
   || { echo 'retro.test.sh: retro schema omits matcher or lineage fields' >&2; exit 1; }
 grep -Fq 'none of the latest ten successful recorded sessions' "$dir/../prompts/retro.md"
@@ -63,8 +64,9 @@ echo "drop-count rc=0"
 publish_root="$test_env_root/publish-scratch"
 publish_repo="$test_env_root/publish-repo"
 fake_bin="$test_env_root/publish-bin"
+eval_home="$test_env_root/eval-home"
 engine="$(cd -- "$dir/.." && pwd -P)"
-mkdir -p "$publish_root/luna/p1" "$publish_root/luna/p2" "$publish_root/luna/p3" "$publish_root/luna/p4" "$publish_repo/.zenoforge/state" "$fake_bin"
+mkdir -p "$publish_root/luna/p1" "$publish_root/luna/p2" "$publish_root/luna/p3" "$publish_root/luna/p4" "$publish_root/luna/p5" "$publish_root/luna/p6" "$publish_root/luna/p7" "$publish_repo/.zenoforge/state" "$fake_bin" "$eval_home/eval"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T10:00:00Z"}' > "$publish_root/luna/p1/events.jsonl"
 printf 'engine-a\n' > "$publish_root/luna/p1/engine-version"
 printf '%s\n' '{"type":"failure","message":"same event","at":"2026-11-18T11:00:00Z"}' > "$publish_root/luna/p2/events.jsonl"
@@ -72,6 +74,12 @@ printf '%s\n' '{"type":"failure","message":"unmeasurable"}' > "$publish_root/lun
 printf 'engine-a\n' > "$publish_root/luna/p3/engine-version"
 printf '%s\n' '{"type":"failure","message":"false positive"}' > "$publish_root/luna/p4/events.jsonl"
 printf 'engine-a\n' > "$publish_root/luna/p4/engine-version"
+printf '%s\n' '{"type":"failure","message":"eval regression"}' > "$publish_root/luna/p5/events.jsonl"
+printf '%s\n' '{"type":"failure","message":"unrelated comparison"}' > "$publish_root/luna/p6/events.jsonl"
+printf '%s\n' '{"type":"failure","message":"unpaired case"}' > "$publish_root/luna/p7/events.jsonl"
+printf 'engine-a\n' > "$publish_root/luna/p5/engine-version"
+printf 'engine-a\n' > "$publish_root/luna/p6/engine-version"
+printf 'engine-a\n' > "$publish_root/luna/p7/engine-version"
 for i in $(seq -w 1 10); do
   mkdir -p "$publish_root/luna/normal-$i"
   printf '0\n' > "$publish_root/luna/normal-$i/rc"
@@ -86,9 +94,94 @@ cat > "$test_env_root/candidates.json" <<'JSON'
   {"category":"navigation","severity":"high","session_key":"p2","event_line":1,"evidence":"second event evidence","proposal":"Add a pointer to the schema","derived_from":["V1272"]},
   {"category":"automated-checks","severity":"high","session_key":"p1","event_line":1,"evidence":"lint evidence","proposal":"Add a lint check for this case","check":{"type":"failure","message":"same event"},"derived_from":["V1272"]},
   {"category":"automated-checks","severity":"medium","session_key":"p3","event_line":1,"evidence":"missing executable matcher","proposal":"Add a lint check without a matcher","derived_from":["V1272"]},
-  {"category":"automated-checks","severity":"medium","session_key":"p4","event_line":1,"evidence":"matcher hits ordinary recovered events","proposal":"Add a broad lint check","check":{"type":"failure"},"derived_from":["V1272"]}
+  {"category":"automated-checks","severity":"medium","session_key":"p4","event_line":1,"evidence":"matcher hits ordinary recovered events","proposal":"Add a broad lint check","check":{"type":"failure"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p5","event_line":1,"evidence":"paired evaluation regressed a frozen case","proposal":"Add an eval regression lint check","check":{"type":"failure","message":"eval regression"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p6","event_line":1,"evidence":"comparison labels must identify this candidate","proposal":"unrelated comparison labels","check":{"type":"failure","message":"unrelated comparison"},"derived_from":["V1272"]},
+  {"category":"automated-checks","severity":"high","session_key":"p7","event_line":1,"evidence":"all cases must be paired","proposal":"unpaired case","check":{"type":"failure","message":"unpaired case"},"derived_from":["V1272"]}
 ]}
 JSON
+cat > "$fake_bin/node" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+runner="$1"
+shift
+[[ "$runner" == */engine/eval/run-eval.mjs ]] || { echo "unexpected fake node script: $runner" >&2; exit 90; }
+case "$1" in
+  --label)
+    label="$2"
+    shift 2
+    fragment=""
+    route_issues=0
+    while (($#)); do
+      case "$1" in
+        --no-route-fresh-agent-issues) route_issues=1; shift ;;
+        --lesson-fragment) fragment="$2"; shift 2 ;;
+        --case|--cases) echo "retro eval unexpectedly filtered frozen cases" >&2; exit 91 ;;
+        *) echo "unexpected fake eval option: $1" >&2; exit 92 ;;
+      esac
+    done
+    [[ "$route_issues" == 1 ]] || { echo "eval issue routing was not suppressed" >&2; exit 99; }
+    if [[ "$label" == retro-base-* ]]; then
+      [[ -z "$fragment" ]] || { echo "baseline included a lesson fragment" >&2; exit 93; }
+    elif [[ "$label" == retro-cand-* ]]; then
+      [[ -n "$fragment" && -f "$fragment" ]] || { echo "candidate label omitted its lesson fragment" >&2; exit 94; }
+    else
+      echo "retro eval label omitted its candidate id: $label" >&2
+      exit 95
+    fi
+    results='[{"stage":"triage","caseId":"sample-retry-delay","run":1,"pass":true}]'
+    result_label="$label"
+    if [[ -n "$fragment" ]] && grep -Fq 'eval regression' "$fragment"; then
+      results='[{"stage":"triage","caseId":"sample-retry-delay","run":1,"pass":false}]'
+    elif [[ -n "$fragment" ]] && grep -Fq 'unrelated comparison' "$fragment"; then
+      result_label="retro-cand-unrelated"
+    elif [[ -n "$fragment" ]] && grep -Fq 'unpaired case' "$fragment"; then
+      results='[{"stage":"triage","caseId":"sample-retry-delay","run":1,"pass":true},{"stage":"triage","caseId":"unpaired","run":1,"pass":true}]'
+    fi
+    fragment_text=""
+    fragment_sha=""
+    suite_sha="$(git -C "$ZF_ENGINE_DIR" rev-parse HEAD)"
+    if [[ -n "$fragment" ]]; then
+      fragment_text="$(cat "$fragment")"
+      fragment_sha="$(printf '%s' "$fragment_text" | sha256sum | awk '{print $1}')"
+    fi
+    mkdir -p "$AGENT_HOME/eval/$label"
+    jq -n --arg label "$result_label" --arg sha "$fragment_sha" --arg suite "$suite_sha" --argjson results "$results" \
+      '{label:$label,suiteSha:$suite,caseSetSha:"fixture-cases",lessonFragmentSha:(if $sha == "" then null else $sha end),policy:{roles:{}},overrides:[],results:$results}' > "$AGENT_HOME/eval/$label/results.json"
+    jq -cn --arg kind run --arg label "$label" --arg fragment "$fragment" \
+      '{kind:$kind,label:$label,fragment:$fragment}' >> "$FAKE_EVAL_CALLS"
+    ;;
+  --compare)
+    baseline="$2"
+    candidate="$3"
+    shift 3
+    [[ "$baseline" == retro-base-* && "$candidate" == retro-cand-* ]] || { echo "comparison labels omitted candidate ids" >&2; exit 96; }
+    baseline_id="$(sed 's/^retro-base-//' <<< "$baseline")"
+    candidate_id="$(sed 's/^retro-cand-//' <<< "$candidate")"
+    [[ "$baseline_id" == "$candidate_id" ]] || { echo "comparison labels named different candidates" >&2; exit 97; }
+    baseline_file="$AGENT_HOME/eval/$baseline/results.json"
+    candidate_file="$AGENT_HOME/eval/$candidate/results.json"
+    baseline_name="$(jq -r '.label' "$baseline_file")"
+    candidate_name="$(jq -r '.label' "$candidate_file")"
+    jq -cn --arg kind compare --arg baseline "$baseline" --arg candidate "$candidate" \
+      '{kind:$kind,baseline:$baseline,candidate:$candidate}' >> "$FAKE_EVAL_CALLS"
+    echo "$baseline_name: 1/1; $candidate_name: 1/1"
+    if jq -e '.results[0].pass == true' "$baseline_file" >/dev/null && jq -e '.results[0].pass == false' "$candidate_file" >/dev/null; then
+      echo 'REGRESSION pass→fail triage/sample-retry-delay run 1'
+    else
+      echo 'pass→fail: none'
+    fi
+    if [[ "$(jq '.results | length' "$candidate_file")" -gt "$(jq '.results | length' "$baseline_file")" ]]; then
+      echo "UNPAIRED triage/unpaired/1 only in $candidate_name"
+    fi
+    echo 'compared in both labels: triage/sample-retry-delay/1'
+    ;;
+  *)
+    echo "unexpected fake eval command: $*" >&2
+    exit 98
+    ;;
+esac
+SH
 cat > "$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -140,15 +233,18 @@ case "$1:$2" in
 esac
 SH
 chmod +x "$fake_bin/gh"
+chmod +x "$fake_bin/node"
 gh() { command gh "$@"; }
 export -f gh
 printf '%s\n' bug priority:top needs-triage auto-filed > "$test_env_root/labels"
+: > "$test_env_root/eval-calls.jsonl"
 printf '[]\n' > "$test_env_root/issues.json"
 : > "$test_env_root/comments.jsonl"
 printf '7001\n' > "$test_env_root/next-number"
 printf '[]\n' > "$test_env_root/merged-prs.json"
 ZF_GH_REPO=test/repo ZF_REPO=example-maintainer/example-repo ZF_REPO_DIR="$publish_repo" ZF_ENGINE_DIR="$engine" \
   ZF_ISSUE_LOCK_DIR="$test_env_root/locks" RETRO_OUT_DIR="$test_env_root/publish-out" \
+  AGENT_HOME="$eval_home" FAKE_EVAL_CALLS="$test_env_root/eval-calls.jsonl" \
   PATH="$fake_bin:$PATH" FAKE_ISSUES="$test_env_root/issues.json" FAKE_COMMENTS="$test_env_root/comments.jsonl" \
   FAKE_LABELS="$test_env_root/labels" FAKE_NEXT_NUMBER="$test_env_root/next-number" \
   python3 -B "$retro" publish "$publish_root" "$publish_repo" "$test_env_root/candidates.json"
@@ -161,6 +257,18 @@ jq -e 'length == 1 and (.[0].body | contains("first event evidence"))
 jq -e '.body | contains("second event evidence")' "$test_env_root/comments.jsonl" >/dev/null \
   || { echo 'retro.test.sh: duplicate candidate comment omitted its evidence' >&2; cat "$test_env_root/comments.jsonl" >&2; exit 1; }
 echo "publish dedupe rc=0"
+jq -s -e '
+  ([.[] | select(.kind == "run")] | length == 8) and
+  ([.[] | select(.kind == "compare")] | length == 4) and
+  all(.[] | select(.kind == "run");
+    if (.label | startswith("retro-base-")) then .fragment == ""
+    else (.label | startswith("retro-cand-")) and (.fragment | length > 0) end) and
+  all(.[] | select(.kind == "compare");
+    (.baseline | startswith("retro-base-")) and
+    (.candidate | startswith("retro-cand-")) and
+    (.baseline | ltrimstr("retro-base-")) == (.candidate | ltrimstr("retro-cand-")))
+' "$test_env_root/eval-calls.jsonl" >/dev/null \
+  || { echo 'retro.test.sh: candidate evals did not use exact paired labels and one default case set' >&2; cat "$test_env_root/eval-calls.jsonl" >&2; exit 1; }
 # (a) Every merged retro change is recorded: the intake issue and the lesson fragment alike.
 jq -e '.changes | length == 2
   and any(.[]; .issue == 7001 and .category == "navigation" and (.filed_at | type == "string")
@@ -169,17 +277,21 @@ jq -e '.changes | length == 2
   and any(.[]; .category == "automated-checks" and .verifiable == true and (.lesson | type == "string")
     and .sources == [{session_key:"p1",event_line:1}] and .derived_from == ["V1272"]
     and .engine_version == "engine-a" and .check == {type:"failure",message:"same event"}
-    and (.admission.normal_sessions | length == 10))' \
+    and (.admission.normal_sessions | length == 10) and .admission.paired_eval.status == "passed")' \
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
   || { echo "retro.test.sh: candidate issue was not recorded for verification:" >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 fragment="$(printf '%s\n' "$publish_repo"/lessons/pending/*.json)"
 [[ -f "$fragment" ]] || { echo 'retro.test.sh: mechanical candidate created no lesson fragment' >&2; exit 1; }
 jq -e '.check == {type:"failure",message:"same event"} and .engine_version == "engine-a" and .derived_from == ["V1272"]
-  and .source_event == {session_key:"p1",event_line:1} and .admission.matched_normal_events == 0' "$fragment" >/dev/null \
+  and .source_event == {session_key:"p1",event_line:1} and .admission.matched_normal_events == 0
+  and .admission.paired_eval.regressions == 0' "$fragment" >/dev/null \
   || { echo 'retro.test.sh: admitted fragment omitted its matcher, lineage or measurement' >&2; cat "$fragment" >&2; exit 1; }
-jq -e '.observations | length == 2
+jq -e '.observations | length == 5
   and any(.[]; .source_event.session_key == "p3" and (.reason | contains("no check matcher")))
-  and any(.[]; .source_event.session_key == "p4" and (.reason | contains("normal session")))' \
+  and any(.[]; .source_event.session_key == "p4" and (.reason | contains("normal session")))
+  and any(.[]; .source_event.session_key == "p5" and (.reason | contains("pass-to-fail regression")))
+  and any(.[]; .source_event.session_key == "p6" and (.reason | contains("labels do not match candidate id")))
+  and any(.[]; .source_event.session_key == "p7" and (.reason | contains("unpaired case")))' \
   "$test_env_root/publish-out/retro-verify.json" >/dev/null \
   || { echo 'retro.test.sh: an unmeasurable candidate was not retained as an observation' >&2; cat "$test_env_root/publish-out/retro-verify.json" >&2; exit 1; }
 lesson_id="$(jq -r '.changes[] | select(.category == "automated-checks") | .lesson' "$test_env_root/publish-out/retro-verify.json")"

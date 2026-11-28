@@ -72,6 +72,12 @@ existing label: finished case/runs are kept exactly as recorded (never rerun
 or rewritten) and only missing ones run, appending to `results.json`. Use it
 after an interrupted run, e.g. a WSL restart.
 
+`--lesson-fragment <path>` adds that text to every task prompt for the label.
+The run records the fragment and case-set hashes, and `--resume` refuses a
+different fragment, engine revision, model policy, or case set. Retro uses this
+option only on the candidate label; its baseline label has no fragment. Retro also uses
+`--no-route-fresh-agent-issues` so scoring does not create or comment on issues.
+
 The default model/effort/tier policy is the current checkout's
 `model-policy.default.json`. `--policy /absolute/path/to/model-policy.json`
 selects an explicit experimental policy; `--override ROLE=provider:model[:effort[:tier]]`

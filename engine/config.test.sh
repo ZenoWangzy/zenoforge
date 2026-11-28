@@ -213,8 +213,11 @@ else
 fi
 checkout_engine_paths_added() {
   local root="$1" base_ref="$2" base diff
-  base="$(git -C "$root" merge-base "$base_ref" HEAD)" || return 2
-  diff="$(git -C "$root" diff --unified=0 "$base" -- engine ':!**/*.test.*')" || return 2
+  base="$(git -C "$root" merge-base "$base_ref" HEAD)" || {
+    [[ "$(git -C "$root" rev-parse --is-shallow-repository)" == true ]] || return 2
+    base="$base_ref"
+  }
+  diff="$(git -C "$root" diff --unified=0 "$base" HEAD -- engine ':!**/*.test.*')" || return 2
   grep -nE '^\+[^+].*(\$\{[A-Za-z_][A-Za-z_0-9]*[^}]*\}"?/engine/|\$[A-Za-z_][A-Za-z_0-9]*"?/engine/)' <<<"$diff"
 }
 lint_fixture="$test_env_root/checkout-engine-lint"
@@ -227,7 +230,8 @@ git -C "$lint_fixture" add engine/seed.sh
 git -C "$lint_fixture" commit -q -m seed
 printf '%s\n' 'source "$other_checkout/engine/config.sh"' 'source "${another_checkout}"/engine/lib.sh' > "$lint_fixture/engine/new.sh"
 git -C "$lint_fixture" add engine/new.sh
-if fixture_path="$(checkout_engine_paths_added "$lint_fixture" HEAD 2>&1)"; then
+git -C "$lint_fixture" commit -q -m added
+if fixture_path="$(checkout_engine_paths_added "$lint_fixture" HEAD^ 2>&1)"; then
   [[ "$fixture_path" == *'$other_checkout/engine/'* ]] || fail "checkout-path lint returned an unrelated fixture line: $fixture_path"
   [[ "$fixture_path" == *'${another_checkout}"/engine/'* ]] || fail "checkout-path lint missed a quoted checkout root: $fixture_path"
 else

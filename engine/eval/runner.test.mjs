@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
@@ -283,10 +284,31 @@ test('case selection and resume flags parse; --case and --cases are one option',
   const { parseEvalArgs } = await import('./run-eval.mjs');
   assert.equal(parseEvalArgs(['--case', 'zf-4186,zf-4026']).values.case, 'zf-4186,zf-4026');
   assert.equal(parseEvalArgs(['--cases', 'set.json']).values.cases, 'set.json');
+  assert.equal(
+    parseEvalArgs(['--label', 'retro-cand-case-id', '--lesson-fragment', 'lesson.md']).values['lesson-fragment'],
+    'lesson.md',
+  );
+  assert.equal(parseEvalArgs(['--label', 'x', '--no-route-fresh-agent-issues']).values['no-route-fresh-agent-issues'], true);
   assert.equal(parseEvalArgs(['--label', 'x']).values.concurrency, '1');
   assert.equal(parseEvalArgs(['--concurrency', '4', '--label', 'x']).values.concurrency, '4');
   assert.equal(parseEvalArgs(['--resume', '--label', 'x']).values.resume, true);
   assert.throws(() => parseEvalArgs(['--case', 'a', '--cases', 'b']), /same option/);
+});
+
+test('candidate lesson fragment is appended to stage and fresh-agent prompts', async () => {
+  const { renderPrompt } = await import('./run-eval.mjs');
+  const candidateLesson = 'Add the retry guard for this candidate.';
+  const triage = renderPrompt('triage', {
+    issue: { number: 1, title: 'fixture', body: 'fixture' },
+    baseSha: 'fixture-sha',
+  }, { lessonFragment: candidateLesson });
+  const freshAgent = renderPrompt('fresh-agent', { prompt: 'ordinary task' }, { lessonFragment: candidateLesson });
+  assert.match(triage, /Add the retry guard for this candidate/);
+  assert.match(freshAgent, /Add the retry guard for this candidate/);
+  assert.doesNotMatch(renderPrompt('triage', {
+    issue: { number: 1, title: 'fixture', body: 'fixture' },
+    baseSha: 'fixture-sha',
+  }), /Add the retry guard for this candidate/);
 });
 
 test('eval case sets and their expected labels prefer target configuration over the retained pack', () => {
@@ -401,6 +423,18 @@ printf 'tokens used\n1,234\n'
     encoding: 'utf8', env: { ...env, ...envOverrides },
   });
   return { dir, home, events, caseFile, output, run };
+}
+function cliResumeMetadata(f) {
+  const set = JSON.parse(readFileSync(f.caseFile, 'utf8'));
+  const selected = set.cases.map((c) => ({ stage: set.stage, c }));
+  const policyFile = zfConfigFile('model-policy.default.json') ?? resolve('engine/model-policy.default.json');
+  return {
+    suiteSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    caseSetSha: createHash('sha256').update(JSON.stringify(selected)).digest('hex'),
+    lessonFragmentSha: null,
+    policy: JSON.parse(readFileSync(policyFile, 'utf8')),
+    overrides: [],
+  };
 }
 const overlap = (events) => {
   let active = 0, max = 0;
@@ -564,7 +598,7 @@ test('completed resume and model-free gold verification do not require a backend
     const resumeDir = join(f.home, '.zenoforge/eval/completed'); mkdirSync(resumeDir, { recursive: true });
     const results = ['c1', 'c2', 'c3'].map((caseId) => ({ stage: 'triage', caseId, run: 1, pass: true, failures: [], calls: [],
       artifacts: 'kept', tokens: 1, wallSeconds: 1, modelWallSeconds: 1, identities: [] }));
-    writeFileSync(join(resumeDir, 'results.json'), JSON.stringify({ label: 'completed', results }));
+    writeFileSync(join(resumeDir, 'results.json'), JSON.stringify({ label: 'completed', ...cliResumeMetadata(f), results }));
     const resumed = f.run(['--stage', 'triage', '--cases', f.caseFile, '--runs', '1', '--resume', '--label', 'completed'], {
       PATH: minimalBin,
     });
@@ -589,7 +623,7 @@ test('--resume keeps finished results untouched and only runs the missing case/r
     mkdirSync(outDir, { recursive: true });
     const row = (caseId, run) => ({ stage: 'triage', caseId, run, pass: true, failures: [], calls: [], artifacts: 'kept',
       tokens: 1, wallSeconds: 1, modelWallSeconds: 1, identities: [] });
-    const prior = { version: 1, label: 'rl', suiteSha: 'f'.repeat(40), policy: {}, overrides: [], kind: 'evaluation',
+    const prior = { version: 1, label: 'rl', ...cliResumeMetadata(f), kind: 'evaluation',
       startedAt: '2026-10-28T00:00:00.000Z', results: [row('c1', 1), row('c1', 2), row('c2', 1)] };
     writeFileSync(join(outDir, 'results.json'), JSON.stringify(prior, null, 2) + '\n');
     const r = f.run(['--stage', 'triage', '--cases', f.caseFile, '--runs', '2', '--resume', '--label', 'rl']);
@@ -608,6 +642,29 @@ test('--resume keeps finished results untouched and only runs the missing case/r
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /--resume needs an existing label/);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('--resume refuses labels with a different engine, policy, or unknown case set', () => {
+  const corruptions = [
+    [((prior) => { prior.suiteSha = 'different'; }), /different engine revision/],
+    [((prior) => { prior.policy = { ...prior.policy, resumeMismatch: true }; }), /different model policy/],
+    [((prior) => { delete prior.caseSetSha; }), /different or unknown eval case set/],
+  ];
+  for (const [corrupt, message] of corruptions) {
+    const f = cliFixture();
+    try {
+      const outDir = join(f.home, '.zenoforge/eval/rl');
+      mkdirSync(outDir, { recursive: true });
+      const prior = { version: 1, label: 'rl', ...cliResumeMetadata(f), kind: 'evaluation', results: ['c1', 'c2', 'c3'].map((caseId) => ({
+        stage: 'triage', caseId, run: 1, pass: true, failures: [], calls: [], artifacts: 'kept', tokens: 1,
+      })) };
+      corrupt(prior);
+      writeFileSync(join(outDir, 'results.json'), JSON.stringify(prior));
+      const result = f.run(['--stage', 'triage', '--cases', f.caseFile, '--runs', '1', '--resume', '--label', 'rl']);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, message);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }
 });
 
 test('--concurrency must be a positive integer and fails before creating a label', () => {

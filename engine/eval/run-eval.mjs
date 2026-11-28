@@ -142,7 +142,7 @@ const mattSkillFile = (productRoot, name) => {
   return join(repo, '.agents/skills', name, 'SKILL.md');
 };
 const mattNote = (productRoot, ...names) => `Matt skill files for this run (the Method section names the ones to read): ${names.map((n) => `${n}=${mattSkillFile(productRoot, n)}`).join('; ')}\n`;
-export function renderPrompt(stage, c, context = {}) {
+function renderBasePrompt(stage, c, context = {}) {
   if (stage === 'fresh-agent') return c.prompt;
   const productRoot = context.productRoot ?? repo;
   const scope = 'Constraints: no GitHub writes/pushes, production/cihost/host actions, credential or auth files, full process argument listings, or delegation. Run focused checks only. Never access $HOME/src/target-repo, ~/.zenoforge/checkout, or ~/.zenoforge/PAUSE.\n';
@@ -172,6 +172,11 @@ export function renderPrompt(stage, c, context = {}) {
   return readFileSync(mattSkillFile(productRoot, process.env.ZF_REVIEW_SKILL || 'code-review'), 'utf8') + '\n' + prompt('review-contract')
     + boundary + `\nReview the local diff from ${c.baseSha} to this checkout and use the report format in the formal review contract.\n`
     + issueData(c.issue) + `\n## Implementer report\n${context.report ?? ''}\n`;
+}
+export function renderPrompt(stage, c, context = {}) {
+  const rendered = renderBasePrompt(stage, c, context);
+  const lessonFragment = context.lessonFragment?.trim();
+  return lessonFragment ? `${rendered}\n## Candidate lesson fragment\n${lessonFragment}\n` : rendered;
 }
 // Thin configuration overrides: ROLE=provider:model[:effort[:tier]] rewrites that policy role in a copy.
 export function applyOverrides(policy, overrides) {
@@ -290,7 +295,7 @@ function freshAgentSteps(c, check) {
   } catch { /* Plain hidden checks only report their exit status. */ }
   return [{ id: c.expected_divergence, ok: check.status === 0, doc_available: true, guard_available: true }];
 }
-export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, sourceRepo = repo, stageCall } = {}) {
+export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, sourceRepo = repo, stageCall, lessonFragment = '' } = {}) {
   if (stage === 'fresh-agent') {
     let wt;
     const calls = [];
@@ -300,7 +305,7 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
       const freshCase = { ...c, baseSha: c.base_sha, issue: { number: 0 }, priorState: {} };
       let call;
       try {
-        call = callStage(stage, freshCase, wt, join(dir, '1-fresh-agent'), policyFile, {}, stageCall, dir);
+        call = callStage(stage, freshCase, wt, join(dir, '1-fresh-agent'), policyFile, { lessonFragment }, stageCall, dir);
       } catch (error) {
         if (error.measurement) calls.push(error.measurement);
         const failed = grade(false, freshAgentSteps(c, { stdout: '' }));
@@ -328,7 +333,7 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
     const stageDir = join(dir, '1-supervisor');
     try {
       mkdirSync(contextDir, { recursive: true });
-      const call = callStage(stage, c, contextDir, stageDir, policyFile, {}, stageCall, dir);
+      const call = callStage(stage, c, contextDir, stageDir, policyFile, { lessonFragment }, stageCall, dir);
       const { output, ...measurement } = call;
       return { ...gradeSupervisor(output, c.expected), calls: [measurement] };
     } catch (error) {
@@ -341,7 +346,7 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
   git(['update-ref', 'refs/remotes/origin/main', c.baseSha], wt);
   const calls = [];
   const call = (s, context = {}) => {
-    const r = callStage(s, c, chainWt, join(dir, `${calls.length + 1}-${s}`), policyFile, context, stageCall, dir);
+    const r = callStage(s, c, chainWt, join(dir, `${calls.length + 1}-${s}`), policyFile, { ...context, lessonFragment }, stageCall, dir);
     const { output, ...measurement } = r;
     calls.push(measurement);
     return output;
@@ -395,7 +400,7 @@ export function execute(c, stage, dir, policyFile, { repairArms, fromImplement, 
             const armDir = join(dir, `repair-${name}`);
             let measurement, output, grade, executionFailure;
             try {
-              const r = callStage('implement', c, worker, join(armDir, 'call'), policyFile, context, stageCall, dir);
+              const r = callStage('implement', c, worker, join(armDir, 'call'), policyFile, { ...context, lessonFragment }, stageCall, dir);
               ({ output, ...measurement } = r);
             } catch (error) {
               measurement = error.measurement;
@@ -452,6 +457,7 @@ export function parseEvalArgs(args) {
     compare: { type: 'boolean' }, 'verify-gold': { type: 'boolean' }, policy: { type: 'string' },
     override: { type: 'string', multiple: true },
     'repair-arms': { type: 'string' }, 'compare-arms': { type: 'string' }, 'from-implement': { type: 'boolean' },
+    'lesson-fragment': { type: 'string' }, 'no-route-fresh-agent-issues': { type: 'boolean' },
   } });
   if (parsed.values.case !== undefined && parsed.values.cases !== undefined) throw new Error('--case and --cases are the same option; pass one');
   if (parsed.values['repair-arms'] !== undefined && parsed.values['repair-arms'] !== 'paired') throw new Error('--repair-arms must be paired');
@@ -591,7 +597,9 @@ export function attempt({ stage, c, run }, plan) {
         const fixed = hiddenChecks(c, git(['diff', '--binary', c.baseSha, c.source.fixSha]), fixedDir);
         outcome = { pass: !broken.pass && fixed.pass, failures: [broken.pass ? 'hidden checks passed on broken base' : '', !fixed.pass ? 'hidden checks failed on known fix' : ''].filter(Boolean), broken, fixed, calls: [] };
       }
-    } else outcome = execute(c, stage, dir, plan.policyFile, { repairArms: plan.repairArms, fromImplement: plan.fromImplement });
+    } else outcome = execute(c, stage, dir, plan.policyFile, {
+      repairArms: plan.repairArms, fromImplement: plan.fromImplement, lessonFragment: plan.lessonFragment,
+    });
   } catch (e) { outcome = { pass: false, failures: [e.message], calls: [] }; }
   const row = { stage, caseId: c.id, run, ...outcome, artifacts: dir,
     tokens: outcome.calls.every((x) => Number.isFinite(x.tokens)) ? outcome.calls.reduce((sum, x) => sum + x.tokens, 0) : null,
@@ -658,6 +666,7 @@ function routeFreshAgentIssues(result, cases, out, resultsPath) {
 }
 export async function main(args = process.argv.slice(2)) {
   const { values, positionals } = parseEvalArgs(args);
+  if (values['lesson-fragment'] && (values.compare || values['compare-arms'])) throw new Error('--lesson-fragment is only valid for an eval run');
   const labelPath = (label) => {
     if (!label || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(label)) throw new Error('label must be a simple directory name');
     return join(evalHome, label);
@@ -670,6 +679,11 @@ export async function main(args = process.argv.slice(2)) {
     const comparison = compareResults(...positionals.map((label) => json(join(labelPath(label), 'results.json'))));
     console.log(formatComparison(comparison)); return;
   }
+  const lessonFragment = values['lesson-fragment']
+    ? readFileSync(resolve(values['lesson-fragment']), 'utf8').trim()
+    : '';
+  if (values['lesson-fragment'] && !lessonFragment) throw new Error('--lesson-fragment must not be empty');
+  const lessonFragmentSha = lessonFragment ? createHash('sha256').update(lessonFragment).digest('hex') : null;
   if (values.stage && !stages.includes(values.stage)) throw new Error(`unknown stage: ${values.stage}`);
   const runs = Number(values.runs);
   if (!Number.isSafeInteger(runs) || runs < 1) throw new Error('--runs must be a positive integer');
@@ -681,6 +695,7 @@ export async function main(args = process.argv.slice(2)) {
   if (values.resume) {
     if (!existsSync(resultsPath)) throw new Error(`--resume needs an existing label with results.json: ${out}`);
     prior = json(resultsPath);
+    if ((prior.lessonFragmentSha ?? null) !== lessonFragmentSha) throw new Error('--resume label has a different candidate lesson fragment');
   }
   let policyFile = resolve(values.policy ?? zfConfigFile('model-policy.default.json', repo) ?? join(repo, 'engine/model-policy.default.json'));
   let policy = json(policyFile);
@@ -690,8 +705,6 @@ export async function main(args = process.argv.slice(2)) {
   }
   const engineSha = liveEngineSha();
   const startedAt = new Date().toISOString();
-  const result = prior ?? { version: 1, label: values.label, suiteSha: git(['rev-parse', 'HEAD']).trim(), policy, overrides: values.override ?? [],
-    kind: values['verify-gold'] ? 'gold-verification' : 'evaluation', engineSha, startedAt, results: [] };
   const caseArg = values.case ?? values.cases ?? null;
   const wanted = caseArg != null && !caseArg.endsWith('.json') ? new Set(caseArg.split(',').filter(Boolean)) : null;
   const selected = [];
@@ -716,6 +729,20 @@ export async function main(args = process.argv.slice(2)) {
   const unknown = wanted ? [...wanted].filter((id) => !selected.some(({ c }) => c.id === id)) : [];
   if (unknown.length) throw new Error(`unknown case id: ${unknown.join(', ')}`);
   if (!selected.length) throw new Error('no cases selected');
+  const caseSetSha = createHash('sha256').update(JSON.stringify(selected)).digest('hex');
+  const suiteSha = git(['rev-parse', 'HEAD']).trim();
+  if (prior) {
+    if (prior.label !== values.label) throw new Error('--resume label metadata does not match its directory');
+    if (prior.suiteSha !== suiteSha) throw new Error('--resume label has a different engine revision');
+    if (JSON.stringify(prior.policy) !== JSON.stringify(policy)
+        || JSON.stringify(prior.overrides ?? []) !== JSON.stringify(values.override ?? [])) {
+      throw new Error('--resume label has a different model policy');
+    }
+    if (prior.caseSetSha !== caseSetSha) throw new Error('--resume label has a different or unknown eval case set');
+  }
+  const result = prior ?? { version: 1, label: values.label, suiteSha, engineSha, startedAt,
+    caseSetSha, lessonFragmentSha, policy, overrides: values.override ?? [],
+    kind: values['verify-gold'] ? 'gold-verification' : 'evaluation', results: [] };
   const jobs = [];
   for (const { stage, c } of selected) for (let run = 1; run <= runs; run++) jobs.push({ stage, c, run });
   const done = new Set((prior?.results ?? []).map((r) => `${r.stage}/${r.caseId}/${r.run}`));
@@ -726,13 +753,14 @@ export async function main(args = process.argv.slice(2)) {
   if (values.override?.length) writeFileSync(policyFile, JSON.stringify(policy, null, 2) + '\n');
   if (!prior) writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n');
   if (prior) console.log(`resume: ${prior.results.length} existing results kept, ${pending.length} missing to run`);
-  const plan = { out, verifyGold: values['verify-gold'], repairArms: values['repair-arms'], fromImplement: values['from-implement'], policyFile };
+  const plan = { out, verifyGold: values['verify-gold'], repairArms: values['repair-arms'], fromImplement: values['from-implement'],
+    lessonFragment, policyFile };
   const record = (row) => { result.results.push({ ...row, engineSha }); writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n'); };
   await runPool(pending, concurrency, async (job) => record(await attemptInWorker(job, plan)));
   const supervisor = summarizeSupervisor(result.results);
   if (supervisor.total) result.supervisor = supervisor;
   writeFileSync(resultsPath, JSON.stringify(result, null, 2) + '\n');
-  if (!values['verify-gold'] && selected.some(({ stage }) => stage === 'fresh-agent')) {
+  if (!values['verify-gold'] && !values['no-route-fresh-agent-issues'] && selected.some(({ stage }) => stage === 'fresh-agent')) {
     routeFreshAgentIssues(result, selected.filter(({ stage }) => stage === 'fresh-agent').map(({ c }) => c), out, resultsPath);
   }
   console.log(`results: ${resultsPath}`);
