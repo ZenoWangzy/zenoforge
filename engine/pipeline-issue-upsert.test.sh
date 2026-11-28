@@ -144,7 +144,7 @@ ZF_ISSUE_LOCK_DIR="$tmp/locks-example" ZF_GH_REPO=example-maintainer/example-rep
   REPO=example-maintainer/example-repo ZF_ROADMAP_TREE_CACHE_FILE="$tmp/roadmap-tree.json" \
   MODEL_POLICY_FILE="$tmp/model-policy.json" FAKE_NEXT_NUMBER="$tmp/next-number" \
     bash "$SCRIPT_DIR/pipeline-issue-upsert.sh" --class roadmap-parent-regression \
-      --title 'Pipeline helper issue parent regression' --body-file "$tmp/roadmap.md"
+      --title 'Automation issue tracking pipeline regression' --body-file "$tmp/roadmap.md"
 grep -Fq 'api repos/example-maintainer/example-repo/issues/912/sub_issues --method POST' "$FAKE_GH_LOG"
 echo 'ok - the product pipeline-system issue is attached to the roadmap epic before upsert succeeds'
 
@@ -153,8 +153,8 @@ run_zf_upsert --lane product --class "$product_class" --title '主线 CI Example
 product_issue="$(jq -r --arg marker "<!-- vecta-incident-class:$product_class -->" '.[] | select((.body // "") | contains($marker)) | .number' "$FAKE_ISSUES")"
 jq -e --argjson number "$product_issue" '.[] | select(.number==$number)
   | ([.labels[].name] | sort) == ["auto-filed","bug","needs-triage","priority:top"]' "$FAKE_ISSUES" >/dev/null
-grep -Fq 'api repos/example-maintainer/example-repo/issues/913/sub_issues --method POST' "$FAKE_GH_LOG"
-echo 'ok - product lane upsert attaches new issue to roadmap epic before success'
+! grep -Fq 'api repos/example-maintainer/example-repo/issues/913/sub_issues --method POST' "$FAKE_GH_LOG"
+echo 'ok - unmatched product lane issue stays in triage without a roadmap parent'
 [[ "$(jq 'length' "$FAKE_ISSUES")" == 5 ]]
 run_zf_upsert --lane product --class "$product_class" --title '主线 CI Example 测试再次失败' --body-file "$tmp/product-repeat.md"
 [[ "$(jq 'length' "$FAKE_ISSUES")" == 5 ]]
