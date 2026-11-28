@@ -430,10 +430,9 @@ tick_gh_pr_rest_payload() {
     if [[ -f "$TF/main-sha" && "$(cat "$TF/main-sha")" == "$pr_sha" ]]; then
       state=closed; merged_at='2026-10-29T00:00:00Z'; merge_commit="$pr_sha"
     fi
-    [[ ! -f "$TF/no-merge-sha" ]] || merge_commit=''
     command jq -cn --argjson n "$pr_number" --arg oid "$pr_sha" --arg branch "$pr_branch" --arg state "$state" \
       --arg merged_at "$merged_at" --arg merge_commit "$merge_commit" \
-      '{number:$n,state:$state,draft:false,head:{ref:$branch,sha:$oid},base:{ref:"main"},title:"fixture",body:"",labels:[],mergeable:null,
+      '{number:$n,state:$state,merged:($state == "closed" and $merged_at != ""),draft:false,head:{ref:$branch,sha:$oid},base:{ref:"main"},title:"fixture",body:"",labels:[],mergeable:null,
         merge_commit_sha:(if $merge_commit == "" then null else $merge_commit end),merged_at:(if $merged_at == "" then null else $merged_at end)}'
     return
   fi
@@ -871,7 +870,8 @@ tick_gh() {
       local pr_rows
       pr_rows="$(tick_gh pr list --state open --limit 300 --json number,headRefOid,headRefName,baseRefName,isDraft,title,body,labels,mergeable,createdAt,updatedAt)" || return $?
       command jq -c '[.[] | {number, state:"open", draft:(.isDraft // false), head:{ref:.headRefName,sha:.headRefOid}, base:{ref:.baseRefName}, title, body,
-        labels:(.labels // []), mergeable:null, created_at:.createdAt, updated_at:.updatedAt}]' <<<"$pr_rows"
+        labels:(.labels // []), mergeable:(if .mergeable == true or .mergeable == "MERGEABLE" then true elif .mergeable == false or .mergeable == "CONFLICTING" then false else null end),
+        created_at:.createdAt, updated_at:.updatedAt}]' <<<"$pr_rows"
       ;;
     'api graphql')
       if [[ "$*" == *'i9901:'* ]]; then
@@ -1329,6 +1329,9 @@ command jq -n --arg hot "$hotfix_sha" --arg normal "$normal_sha" --arg review "$
     {databaseId:903,status:"queued",event:"pull_request",headBranch:"agent/issue-902",headSha:$review,workflowName:"CI"}
   ]' > "$TF/ci-admission-runs.json"
 command jq -n '{"901":[{"status":"in_progress","runner_id":1}]}' > "$TF/ci-admission-jobs.json"
+GH_KEY_CACHE_DIR="$TF/agent-home/state/gh-key-cache" \
+  GH_KEY_CACHE_REPO=example-maintainer/example-repo \
+  gh_key_cache_invalidate 'runners:example-maintainer/example-repo'
 tick
 command jq -e --arg normal "$normal_sha" '
   ([.units[] | select(.id == "normal-active")][0]
@@ -1423,8 +1426,7 @@ sched_case_ci_admission_census_retry() (
 tick_prs_changed; TICK_HOTFIX_ISSUES_LOADED=true; TICK_HOTFIX_ISSUES='[]'
   tick_prs_prime() { :; }
   sleep() { printf '%s\n' "$*" >> "$sleeps_file"; }
-  gh() {
-    [[ "$1" == pr && "$2" == list ]] || { echo "unexpected census gh call: $*" >&2; return 97; }
+  tick_prs() {
     n="$(cat "$calls_file")"; n=$((n + 1)); echo "$n" > "$calls_file"
     if (( n == 1 )); then return 1; fi
     echo '[{"number":99,"headRefName":"agent/issue-99","headRefOid":"9999999999999999999999999999999999999999","isDraft":true,"body":"","labels":[]}]'
@@ -4856,6 +4858,7 @@ sched_case_hold_handoff_existing_unit() {
       touch "$TF/allow-dispatch" "$TF/worker-alive"
       command jq '.implement_cap=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
       mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+      rm -f "$TF/supervisor/autopi/.dispatch-station-epoch"
       tick
       command jq -e '([.workers[] | select(.unit=="existing" and .type=="implement" and .harvested!=true)] | length)==1' \
         "$TF/supervisor/autopi/workers.json" >/dev/null || { echo 'not ok - resumed existing unit was not dispatched' >&2; exit 1; }
@@ -5333,6 +5336,7 @@ sched_case_hold_handoff_hotfix_pr() {
       command jq '.[0].labels=[]' "$lookup_fixture" > "$TF/lookup.tmp"; mv "$TF/lookup.tmp" "$lookup_fixture"
       command jq '.[0].labels=[{name:"agent/ci-gated"}]' "$TF/pr-census.json" > "$TF/census.tmp"; mv "$TF/census.tmp" "$TF/pr-census.json"
       command jq '.implement_cap=0' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+      rm -f "$TF/supervisor/autopi/.tick-prs-census.json"
       tick
       command jq -e '.units[0].issue==779 and .units[0].pr==779 and .units[0].stage=="repair-pending" and .units[0].hold_handoff_episode=="hold-779"' "$TF/supervisor/autopi/units.json" >/dev/null \
         || { echo 'not ok - handoff did not resume after the hotfix label was removed' >&2; exit 1; }
