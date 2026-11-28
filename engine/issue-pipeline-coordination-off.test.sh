@@ -106,11 +106,29 @@ if ! bash "$SCRIPT_DIR/issue-pipeline.sh" --stage advisor > "$OUTPUT" 2>&1; then
   exit 1
 fi
 
-[[ "$(wc -l < "$DISPATCH_LOG")" == 3 ]]
-grep -Fq -- "$SCRIPT_DIR/run-triage-batch.sh --scheduled 991205" "$DISPATCH_LOG"
-grep -Fq -- "$SCRIPT_DIR/run-recut.sh 991206" "$DISPATCH_LOG"
-grep -Fq -- "$SCRIPT_DIR/run-advisor-batch.sh --scheduled 991207" "$DISPATCH_LOG"
-[[ ! -e "$AGENT_HOME/coord" ]]
-[[ ! -s "$GUARD_LOG" ]]
-[[ -z "$("$REAL_GIT" --git-dir="$REMOTE" for-each-ref refs/claims)" ]]
+if [[ "$(wc -l < "$DISPATCH_LOG")" != 3 ]]; then
+  printf 'expected 3 dispatches, found %s\n' "$(wc -l < "$DISPATCH_LOG")" >&2
+  cat "$DISPATCH_LOG" >&2
+  exit 1
+fi
+for expected in "$SCRIPT_DIR/run-triage-batch.sh --scheduled 991205" "$SCRIPT_DIR/run-recut.sh 991206" "$SCRIPT_DIR/run-advisor-batch.sh --scheduled 991207"; do
+  if ! grep -Fq -- "$expected" "$DISPATCH_LOG"; then
+    printf 'missing dispatch: %s\n' "$expected" >&2
+    cat "$DISPATCH_LOG" >&2
+    exit 1
+  fi
+done
+if [[ -e "$AGENT_HOME/coord" ]]; then
+  printf 'coordination state was created: %s\n' "$AGENT_HOME/coord" >&2
+  exit 1
+fi
+if [[ -s "$GUARD_LOG" ]]; then
+  printf 'remote coordination access was attempted:\n' >&2
+  cat "$GUARD_LOG" >&2
+  exit 1
+fi
+if [[ -n "$("$REAL_GIT" --git-dir="$REMOTE" for-each-ref refs/claims)" ]]; then
+  printf 'remote claims were created\n' >&2
+  exit 1
+fi
 printf 'issue-pipeline-coordination-off.test.sh: PASS\n'
