@@ -217,15 +217,14 @@ class ExecutionAdmission(unittest.TestCase):
         (self.home / "capacity.env").write_text("AGENT_GLOBAL_EXECUTION_CAP=16\nAGENT_EXECUTION_CPU_TARGET_PERCENT=90\n")
         # Only the optional CPU stat read fails; boot identity and actual leases remain real.
         source = self.driver.read_text()
-        self.driver.write_text(source.replace("try:sys.exit", """from pathlib import Path
-import os
-from types import SimpleNamespace
-g.time=SimpleNamespace(monotonic=lambda:float(os.environ['FIXTURE_MONOTONIC']))
-read=Path.read_text
-def fixture_read(path,*args,**kwargs):
- if path==Path('/proc/stat') and os.environ.get('FIXTURE_STAT_FAILURE')=='1':raise FileNotFoundError('fixture stat')
- return read(path,*args,**kwargs)
-Path.read_text=fixture_read
+        self.driver.write_text(source.replace("try:sys.exit", """from types import SimpleNamespace
+g.time=SimpleNamespace(monotonic=lambda:float(g.os.environ['FIXTURE_MONOTONIC']))
+original_cpu_sample = g.Platform.cpu_sample
+def fixture_cpu_sample(self, home, reset=False):
+ if g.os.environ.get('FIXTURE_STAT_FAILURE') == '1':
+  return {'cpu_state':'UNKNOWN','cpu_percent':None,'cpu_sampled_monotonic':g.time.monotonic()}
+ return original_cpu_sample(self, home, reset)
+g.Platform.cpu_sample = fixture_cpu_sample
 try:sys.exit"""))
         start = self.home / "locks/execution-cpu-start.json"
         for initially_unknown in (False, True):
@@ -235,7 +234,7 @@ try:sys.exit"""))
                 self.env["FIXTURE_STAT_FAILURE"] = "1" if initially_unknown else "0"
                 self.assertEqual(self.run_guard("run", "true").returncode, 0)
                 record = json.loads(start.read_text())
-                self.assertEqual(record["boot_id"], Path('/proc/sys/kernel/random/boot_id').read_text().strip())
+                self.assertEqual(record["boot_id"], guard.hostinfo.HostInfo().boot_id())
                 self.env["FIXTURE_STAT_FAILURE"] = "1"
                 self.assertEqual(self.run_guard("run", "true").returncode, 75)
                 self.env["FIXTURE_STAT_FAILURE"] = "0"
@@ -249,7 +248,7 @@ try:sys.exit"""))
         self.assertEqual(self.run_guard("check").returncode, 0, "first missing token is allowed")
         start = self.home / "locks/execution-cpu-start.json"
         self.assertFalse(start.exists())
-        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        boot = guard.hostinfo.HostInfo().boot_id()
         for invalid in ('{', 'null', '[]', '{}', json.dumps(dict(boot_id=None, monotonic=0)),
                         json.dumps(dict(boot_id=boot, monotonic=float('nan'))),
                         json.dumps(dict(boot_id=boot, monotonic=-1))):
@@ -270,7 +269,7 @@ def fixture_read(path,*args,**kwargs):
 Path.read_text=fixture_read
 try:sys.exit"""))
         self.assertEqual(self.run_guard("run", "true").returncode, 75)
-        self.driver.write_text(source.replace("g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}", "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\nfrom pathlib import Path\nread=Path.read_text\ndef fixture_read(path,*args,**kwargs):\n if path==Path('/proc/sys/kernel/random/boot_id'):raise FileNotFoundError('fixture boot')\n return read(path,*args,**kwargs)\nPath.read_text=fixture_read"))
+        self.driver.write_text(source.replace("g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}", "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\ndef fixture_boot_id(self):\n raise FileNotFoundError('fixture boot')\ng.Platform.boot_id=fixture_boot_id"))
         start.unlink()
         self.assertEqual(self.run_guard("run", "true").returncode, 75, "unknown boot cannot waive the interval")
 
@@ -919,14 +918,17 @@ try:sys.exit"""))
         self.capacity(1)
         with (self.home / 'capacity.env').open('a') as handle:
             handle.write('AGENT_EXECUTION_MIN_MEM_MB=6144\nAGENT_EXECUTION_MAX_LOAD=12\n')
+        platform = guard.Platform()
+        process_identity = platform.identity(os.getpid())
+        start_key = "start_ticks" if platform.system == "Linux" else "start_id"
         locks = self.home / 'locks'
         locks.mkdir(exist_ok=True)
         with (locks / 'execution-0.lock').open('a+') as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
-            (locks / 'execution-0.json').write_text(json.dumps(guard.identity(os.getpid(), Path('/proc'))))
+            (locks / 'execution-0.json').write_text(json.dumps(process_identity))
             self.assertEqual(invoke('watch-cleanup').returncode, 75)
             self.assertFalse(receipt.exists())
-        self.assertEqual(invoke('watch-cleanup', str(os.getpid()), guard.identity(os.getpid(), Path('/proc'))['start_ticks']).returncode, 75)
+        self.assertEqual(invoke('watch-cleanup', str(os.getpid()), str(process_identity[start_key])).returncode, 75)
         self.assertFalse(receipt.exists())
         (resource_proc / 'meminfo').write_text('MemAvailable: 6290432 kB\n')  # 6143 MB.
         self.assertEqual(invoke('watch').returncode, 75)
