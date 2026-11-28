@@ -1,15 +1,13 @@
 # Implement-stage review contract
 
-Use the issue as source of truth. Write the machine-readable contract in your
-report; the scheduler copies it into the PR. Do not create a contract file or
-edit the PR. If optimization numbers fail to reproduce, make
-`OBSOLETE: <measured numbers, window, data source>` the report's first line
-instead of a contract.
+Use the issue as source of truth. Put the machine-readable contract in the
+report for the scheduler to copy into the PR; create no contract file or edit
+the PR. If optimization numbers fail to reproduce, start the report with
+`OBSOLETE: <measured numbers, window, data source>` instead of a contract.
 
-**No change on purpose.** When you judge that the issue has no independently deliverable slice, or a prerequisite is missing, and you change nothing, make the first line of the report `NO-CHANGE: <reason>` with the reason in the same line. Use it only when the worktree has no commit and no edit; if you changed or committed anything, do not use it.
+**No change on purpose.** If the issue has no independently deliverable slice or a prerequisite is missing, and you change nothing, start the report with `NO-CHANGE: <reason>`. Use only with no worktree edits or commits.
 
-**Do the work yourself; do not start sub-agents.** Use no tool that spawns or messages another agent: a
-sub-agent inherits your model and effort; 72 worker sessions in three days spawned 78, each a second worker's cost.
+Do not spawn or message sub-agents: 72 sessions spawned 78 in three days.
 
 ## Method: Matt skills
 
@@ -111,7 +109,10 @@ Write no code comments: record a non-obvious decision in an ADR (docs/adr/) and 
 
 When the incident rule applies, include its exact `## root-cause`,
 `## recurrence-guard`, and `## prior-art` sections too. Under `## recurrence-guard`,
-put `kind: <architecture|state|script|lint|test>` on its own line. Under
+put `kind: <architecture|state|script|lint|test>` on its own line; when
+`kind: test`, also put `escape-test: <package>/<test>` on its own line and
+register it in the candidate head's `.zenoforge/state/escape-suites.json` by
+running `node engine/mac-autopilot/scheduler.d/escape-suite-register.mjs --repo <checkout> --package <pkg> --test <path> -- <argv>`. Under
 `## prior-art`, cite at least one direct `https://` URL; if it reports an
 escalation, add one line exactly `Escalation reference: <https:// URL, #N, PR #N
 or issue #N>`. The gate rejects other forms.

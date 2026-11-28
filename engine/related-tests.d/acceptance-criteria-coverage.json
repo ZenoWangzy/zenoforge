@@ -1,4 +1,13 @@
 {
+  "engine/incident-rule.sh": [
+    "engine/mac-autopilot/incident-rule-label.test.sh"
+  ],
+  "engine/mac-autopilot/incident-rule-label.test.sh": [
+    "engine/mac-autopilot/incident-rule-label.test.sh"
+  ],
+  "engine/related-tests.d/acceptance-criteria-coverage.json": [
+    "engine/focused-test-paths.test.mjs"
+  ],
   "engine/mac-autopilot/scheduler.d/acceptance-criteria-coverage.py": [
     "engine/mac-autopilot/incident-report-self-check.test.sh"
   ],
@@ -8,6 +17,7 @@
   ],
   "engine/prompts/implement-contract.md": [
     "engine/mac-autopilot/incident-report-self-check.test.sh",
+    "engine/mac-autopilot/incident-rule-label.test.sh",
     "engine/run-triage-batch.test.sh"
   ],
   "engine/mac-autopilot/scheduler.d/intake.sh": [

@@ -35,6 +35,39 @@ actual_method_rule="$(matt_method_rule "$fixture/repo")"
   || { echo 'not ok - METHOD lacks the flaky-test diagnosis rule or still permits deleting a test for an unknown cause' >&2; exit 1; }
 
 bug_prompt="$(incident_worker_prompt implement "$bug_unit" "$report_sections")"
+escape_repo="$fixture/escape-repo"
+escape_test='packages/fruit/tests/escape.test.mjs'
+mkdir -p "$escape_repo/packages/fruit/tests"
+: > "$escape_repo/$escape_test"
+git -C "$escape_repo" init -q -b main
+git -C "$escape_repo" config user.name fixture
+git -C "$escape_repo" config user.email fixture@example.invalid
+git -C "$escape_repo" add "$escape_test"
+git -C "$escape_repo" commit -qm 'fixture escape test'
+(
+  cd "$escape_repo"
+  node "$HERE/scheduler.d/escape-suite-register.mjs" \
+    --repo "$escape_repo" \
+    --package packages/fruit \
+    --test "$escape_test" \
+    -- node --test "$escape_test"
+)
+escape_registry="$escape_repo/.zenoforge/state/escape-suites.json"
+grep -Fq -- "\"test\": \"$escape_test\"" "$escape_registry" \
+  || { echo 'not ok - escape-suite-register did not register the test path' >&2; exit 1; }
+
+escape_test_line='escape-test: <package>/<test>'
+escape_register_cli='node engine/mac-autopilot/scheduler.d/escape-suite-register.mjs --repo <checkout> --package <pkg> --test <path> -- <argv>'
+incident_rule="$(incident_rule_text)"
+[[ "$incident_rule" == *"$escape_test_line"* && "$incident_rule" == *"$escape_register_cli"* \
+  && "$bug_prompt" == *"$escape_test_line"* && "$bug_prompt" == *"$escape_register_cli"* ]] \
+  || { echo 'not ok - incident implement prompt lacks the escape-test line or registration command' >&2; exit 1; }
+contract_prompt="$(tr '\n' ' ' < "$repo_root/engine/prompts/implement-contract.md")"
+[[ "$contract_prompt" == *'Under `## recurrence-guard`'* \
+  && "$contract_prompt" == *'kind: <architecture|state|script|lint|test>'* \
+  && "$contract_prompt" == *"$escape_test_line"* \
+  && "$contract_prompt" == *"$escape_register_cli"* ]] \
+  || { echo 'not ok - implement contract lacks the recurrence-guard escape-test instructions' >&2; exit 1; }
 [[ "$bug_prompt" == *"$line"$'\nINCIDENT_RULE\n'* ]] \
   || { echo 'not ok - bug-labelled implement prompt lacks the matched-label line before INCIDENT_RULE' >&2; exit 1; }
 
