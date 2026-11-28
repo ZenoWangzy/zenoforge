@@ -361,7 +361,9 @@ roadmap_choose_epic() {
   local tree="$1" issue_json="$2" source_issue="${3:-}" flat
   flat="$(roadmap_flatten "$tree")" || return 1
   jq -ce --slurpfile flat_s <(printf '%s' "$flat") --arg source "$source_issue" '($flat_s[0]) as $flat |
-    def names($s): [$s | ascii_downcase | scan("[a-z0-9]{2,}")];
+    def names($s):
+      [$s | ascii_downcase | scan("[a-z0-9]{2,}")
+       | select(. as $word | (["a","an","and","are","as","at","be","by","for","from","in","into","is","it","of","on","or","the","to","via","with","new","issue","ticket","request","task","follow","up","roadmap","map"] | index($word)) == null)];
     def chinese_bigrams($s):
       ($s | explode) as $chars
       | [range(0; (($chars | length) - 1)) as $i
@@ -374,7 +376,7 @@ roadmap_choose_epic() {
       + ([chinese_bigrams($title)[] as $pair | select($text_bigrams | index($pair)) | $pair] | unique | length);
     . as $issue
     | ($flat | map({key:(.number|tostring),value:.}) | from_entries) as $nodes
-    | [$flat[] | select(.depth == 2 and (.labels | index("roadmap-epic") != null))] as $epics
+    | [$flat[] | select(.depth == 2 and (.labels | index("roadmap-epic") != null) and .title != "待归类")] as $epics
     | ($issue | issue_labels) as $labels
     | (if ($labels | index("pipeline-system")) != null then
          [$epics[] | select(.theme_milestone == "开发流水线与运行稳定")]
@@ -385,7 +387,7 @@ roadmap_choose_epic() {
        else null end) as $pipeline_health_epic
     | (if ($source | test("^[1-9][0-9]*$")) then $nodes[$source] else null end) as $source_node
     | (if $source_node != null then $nodes[($source_node.parent|tostring)] else null end) as $inherited
-    | ((($issue.title // "") + "\n" + ($issue.body // "")) as $text
+    | (($issue.title // "") as $text
        | names($text) as $text_words
        | chinese_bigrams($text) as $text_bigrams
        | (if $pipeline_health_epic != null then $pipeline_health_epic
@@ -393,22 +395,21 @@ roadmap_choose_epic() {
             and (($labels | index("pipeline-system")) == null
               or $inherited.theme_milestone == "开发流水线与运行稳定") then $inherited
           else
-            ([$candidate_epics[] | . + {score:score($text_words;$text_bigrams;.title)} | select(.score >= 2)]
-             | sort_by([-.score,.order]) | .[0]) as $best
-            | ($candidate_epics | map(select(.title == "待归类")) | (map(select(.theme_milestone != "开发流水线与运行稳定")) + .) | .[0]) as $fallback
-            | $best // $fallback
+            [$candidate_epics[] | . + {score:score($text_words;$text_bigrams;.title)} | select(.score >= 2)]
+            | sort_by([-.score,.order]) | .[0]
           end) as $preferred
-       | if $preferred == null then error("roadmap has no matching or 待归类 epic")
+       | if $preferred == null then {epic:null,title:null,milestone:null}
          else
            (if (($preferred.children_total // (($preferred.children // []) | length)) < 100) then $preferred
             else
               [$candidate_epics[]
                | select(.theme == $preferred.theme)
                | select((.children_total // ((.children // []) | length)) < 100)
-               | . + {score:score($text_words;$text_bigrams;.title)}]
+               | . + {score:score($text_words;$text_bigrams;.title)}
+               | select(.score >= 2)]
               | sort_by([-.score,.order]) | .[0]
             end) as $selected
-           | if $selected == null then error("roadmap theme has no non-full epic")
+           | if $selected == null then {epic:null,title:null,milestone:null}
              else {epic:$selected.number,title:$selected.title,milestone:$selected.theme_milestone} end
          end)
   ' <<< "$issue_json"
@@ -436,7 +437,7 @@ roadmap_ledger_add() {
 }
 
 roadmap_place_issue() {
-  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" explicit_epic="${5:-}" tree flat existing existing_parent="" selected epic milestone placed_file linked_file sub_issue_id link_out
+  local cache_file="$1" number="$2" issue_json="$3" source="${4:-}" explicit_epic="${5:-}" state="${6:-}" tree flat existing existing_parent="" selected epic milestone placed_file linked_file sub_issue_id link_out
   [[ "$number" =~ ^[1-9][0-9]*$ && -r "$cache_file" ]] || return 64
   [[ -z "$explicit_epic" || "$explicit_epic" =~ ^[1-9][0-9]*$ ]] || return 64
   tree="$(cat -- "$cache_file")" || return 1
@@ -478,6 +479,14 @@ roadmap_place_issue() {
     [[ "$source" =~ ^[1-9][0-9]*$ ]] || source="$(roadmap_source_issue "$issue_json")"
     selected="$(roadmap_choose_epic "$tree" "$issue_json" "$source")" || return 1
   fi
+  if ! jq -e '.epic | type == "number" and . > 0' <<< "$selected" >/dev/null 2>&1; then
+    if [[ "$state" == needs-triage ]] || jq -e '((.labels // []) | map(if type == "string" then . else .name // "" end) | index("needs-triage")) != null' <<< "$issue_json" >/dev/null 2>&1; then
+      echo "roadmap: no title-topic match for #$number; leaving it unparented for intake triage" >&2
+      return 0
+    fi
+    echo "roadmap: no title-topic match for #$number outside needs-triage" >&2
+    return 1
+  fi
   epic="$(jq -er '.epic | select(type == "number" and . > 0)' <<< "$selected")" || { echo "roadmap: no epic number chosen for #$number" >&2; return 1; }
   milestone="$(jq -r '.milestone // empty' <<< "$selected")" || return 1
   if [[ -n "$explicit_epic" ]] || ! grep -Fqx -- "$number" "$linked_file" 2>/dev/null; then
@@ -502,8 +511,8 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/roadmap-body-check.sh" # roadmap_body_
 roadmap_issue_create() {
   local -a command_args=("$@")
   local -a labels=() parsed_labels=()
-  local target_repo="${REPO:-}" title="" body_file="" source="" temp_dir="" cache_file="" tree="" issue_input selected created_url issue_number issue_json status value labels_json
-  local i cache_valid=0 has_stage_label=0
+  local target_repo="${REPO:-}" title="" body_file="" source="" temp_dir="" cache_file="" tree="" issue_input selected created_url issue_number issue_json status value labels_json stage=""
+  local i cache_valid=0 has_stage_label=0 has_non_triage_stage=0
   [[ "${command_args[0]:-}" == gh && "${command_args[1]:-}" == issue && "${command_args[2]:-}" == create ]] || return 64
   if [[ "${DRY_RUN:-0}" == 1 ]]; then
     ROADMAP_ISSUE_CREATE_INNER=1 guarded_write "${command_args[@]}"
@@ -586,12 +595,16 @@ roadmap_issue_create() {
   roadmap_body_check_refuse "$body_file" "${labels[@]}" || { rm -rf -- "$temp_dir"; return 64; }
 
   for value in "${labels[@]}"; do
-    if roadmap_stage_requires_parent "$value"; then has_stage_label=1; break; fi
+    if roadmap_stage_requires_parent "$value"; then
+      has_stage_label=1
+      if [[ "$value" == needs-triage ]]; then stage=needs-triage; else has_non_triage_stage=1; fi
+    fi
   done
   if [[ "$has_stage_label" != 1 ]]; then
     # Placement happens after GitHub accepts the create; keep a failed placement visible to triage.
     labels+=(needs-triage)
     command_args+=(--label needs-triage)
+    stage=needs-triage
   fi
 
   cache_file="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
@@ -624,15 +637,18 @@ roadmap_issue_create() {
   }
   [[ "$source" =~ ^[1-9][0-9]*$ ]] || source="$(roadmap_source_issue "$issue_input")"
   selected="$(roadmap_choose_epic "$tree" "$issue_input" "$source")" || {
-    echo "roadmap: refusing to create issue; no roadmap epic matches its title/body" >&2
+    echo "roadmap: refusing to create issue; could not classify its title" >&2
     rm -rf -- "$temp_dir"
     return 1
   }
-  jq -e '.epic | type == "number" and . > 0' <<< "$selected" >/dev/null || {
-    echo "roadmap: refusing to create issue; roadmap classification returned no parent" >&2
-    rm -rf -- "$temp_dir"
-    return 1
-  }
+  if ! jq -e '.epic | type == "number" and . > 0' <<< "$selected" >/dev/null; then
+    if [[ "$stage" != needs-triage || "$has_non_triage_stage" == 1 ]]; then
+      echo "roadmap: refusing to create issue; no title-topic match and issue is not in triage" >&2
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    echo "roadmap: no title-topic match; creating issue for intake triage without a parent" >&2
+  fi
 
   if created_url="$(ROADMAP_ISSUE_CREATE_INNER=1 guarded_write "${command_args[@]}")"; then
     :
@@ -653,7 +669,7 @@ roadmap_issue_create() {
     rm -rf -- "$temp_dir"
     return 1
   fi
-  if ! roadmap_place_issue "$cache_file" "$issue_number" "$issue_json" "$source" >/dev/null; then
+  if ! roadmap_place_issue "$cache_file" "$issue_number" "$issue_json" "$source" "" "$stage" >/dev/null; then
     echo "roadmap: issue #$issue_number was created at $created_url but parent placement failed" >&2
     rm -rf -- "$temp_dir"
     return 1
@@ -717,14 +733,14 @@ roadmap_ensure_issue_parent() (
       echo "roadmap: refusing stage $state on container #$number" >&2
       return 3 # A confirmed container lets intake route this parent to tracker.
     fi
-    roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source" || { rc=$?; echo "roadmap: placing #$number failed (rc=$rc)" >&2; return "$rc"; }
+    roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source" "" "$state" || { rc=$?; echo "roadmap: placing #$number failed (rc=$rc)" >&2; return "$rc"; }
     return 0
   fi
   if [ -r "$cache_file.placed" ] && grep -Fqx -- "$number" "$cache_file.placed"; then return 0; fi
   if [ -z "$issue_json" ]; then
     issue_json="$(timeout 20s gh issue view "$number" --repo "$REPO" --json number,title,body 2>/dev/null)" || { echo "roadmap: could not read #$number to place it" >&2; return 1; }
   fi
-  roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source" || { rc=$?; echo "roadmap: placing #$number failed (rc=$rc)" >&2; return "$rc"; }
+  roadmap_place_issue "$cache_file" "$number" "$issue_json" "$source" "" "$state" || { rc=$?; echo "roadmap: placing #$number failed (rc=$rc)" >&2; return "$rc"; }
 )
 
 roadmap_health_assess() {
