@@ -31,7 +31,7 @@ function readRegistry(cwd, commit) {
   return JSON.parse(git(cwd, ['show', `${commit}:${ESCAPE_SUITE_REGISTRY}`]));
 }
 
-function validateRegistry(registry, label) {
+export function validateRegistry(registry, label) {
   if (!registry || typeof registry !== 'object' || Array.isArray(registry) || registry.version !== 1
       || !registry.packages || typeof registry.packages !== 'object' || Array.isArray(registry.packages)) {
     fail(`${label} must have version 1 and a packages object`);

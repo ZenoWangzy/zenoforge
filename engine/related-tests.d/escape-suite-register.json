@@ -1,0 +1,11 @@
+{
+  "engine/mac-autopilot/scheduler.d/escape-suite-register.mjs": [
+    "engine/mac-autopilot/scheduler.d/escape-suite-register.test.mjs"
+  ],
+  "engine/mac-autopilot/scheduler.d/escape-suite-register.test.mjs": [
+    "engine/mac-autopilot/scheduler.d/escape-suite-register.test.mjs"
+  ],
+  "engine/related-tests.d/escape-suite-register.json": [
+    "engine/focused-test-paths.test.mjs"
+  ]
+}
