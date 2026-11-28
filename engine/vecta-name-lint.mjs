@@ -13,7 +13,7 @@ export function findForbiddenVectaNames(diff) {
       path = line.slice('+++ b/'.length);
       continue;
     }
-    if (!line.startsWith('+') || line.startsWith('+++') || !path.startsWith('engine/')) continue;
+    if (!line.startsWith('+') || line.startsWith('+++ ') || !path.startsWith('engine/')) continue;
     if (/(?:^|\/)[^/]*\.test\.[^/]+$/.test(path)) continue;
     const source = line.slice(1);
     const isDefault = path === 'engine/ci-target-config.mjs' && CONFIG_DEFAULT.test(source);

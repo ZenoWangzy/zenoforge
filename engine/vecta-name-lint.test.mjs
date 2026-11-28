@@ -10,6 +10,7 @@ test('finds added Vecta names in production engine files outside config defaults
     '+++ b/engine/new-runner.mjs',
     '@@ -0,0 +1 @@',
     "+const user = 'vecta-new-runner';",
+    '+++const extra = "vecta-prefixed";',
     'diff --git a/engine/new-runner.test.mjs b/engine/new-runner.test.mjs',
     '--- a/engine/new-runner.test.mjs',
     '+++ b/engine/new-runner.test.mjs',
@@ -22,5 +23,8 @@ test('finds added Vecta names in production engine files outside config defaults
     "const CI_RUNNER_USER_DEFAULT = 'vecta-ci';",
   ].join('\n');
 
-  assert.deepEqual(findForbiddenVectaNames(diff), ['engine/new-runner.mjs: vecta-new-runner']);
+  assert.deepEqual(findForbiddenVectaNames(diff), [
+    'engine/new-runner.mjs: vecta-new-runner',
+    'engine/new-runner.mjs: vecta-prefixed',
+  ]);
 });
