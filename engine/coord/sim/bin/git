@@ -51,4 +51,9 @@ case "$subcommand" in
 esac
 
 printf '%s\t%s\t%s\n' "$SIM_HOST_ID" "$subcommand" "$*" >> "$SIM_WORLD/git.log"
+if [[ "$subcommand" == push && "${SIM_LOST_ACK:-}" == 1 && ! -e "$SIM_HOST_DIR/lost-ack-used" ]]; then
+  : >"$SIM_HOST_DIR/lost-ack-used"
+  "$SIM_REAL_GIT" "${args[@]}" || exit $?
+  exit 128
+fi
 exec "$SIM_REAL_GIT" "${args[@]}"

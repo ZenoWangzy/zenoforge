@@ -116,8 +116,8 @@ status_rc=0
 sim_wait_worker "$worker_a" || status_rc=1
 sim_wait_worker "$worker_b" || status_rc=1
 (( status_rc == 0 )) || fail 'a status worker failed'
-status_a="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/status/A)"
-status_b="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/status/B)"
+status_a="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/status/A:worker.json)"
+status_b="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/status/B:worker.json)"
 jq -e '.proto == 1 and .host == "A" and .instance == "A-instance"' <<< "$status_a" >/dev/null \
   || fail "host A status record is invalid: $status_a"
 jq -e '.proto == 1 and .host == "B" and .instance == "B-instance"' <<< "$status_b" >/dev/null \
@@ -191,4 +191,90 @@ sim_effect_death_trial deploy issue-72 deploy:7 done
 sim_effect_death_trial mail issue-73 mail:73:1 unknown
 [[ -s $SIM_WORLD/gh.log ]] || fail 'effect trials did not call the fake GitHub boundary'
 
-printf 'coordination.test.sh: PASS (race, status, takeover, effect death points, hold cleanup)\n'
+sim_world_new "$test_env_root/coord-renewd-sim"
+sim_host_new A
+sim_host_new B
+
+death_ready="$SIM_WORLD/coord-death-ready"
+death_release="$SIM_WORLD/coord-death-release"
+SIM_HOLD_READY="$death_ready" SIM_HOLD_RELEASE="$death_release" \
+  sim_as A -- "$SIM_HARNESS_DIR/worker.sh" coord-hold 10 feeder >"$SIM_WORLD/A-coord-death.out" 2>&1 &
+death_worker=$!
+sim_worker_pids+=("$death_worker")
+if ! sim_wait_for "$death_ready"; then
+  sim_wait_worker "$death_worker" || :
+  fail 'host A did not establish the production claim before death'
+fi
+death_pid="$(<"$death_ready")"
+[[ $death_pid =~ ^[0-9]+$ ]] || fail "production claim holder recorded no pid: $death_pid"
+sim_worker_pids+=("$death_pid")
+kill -KILL "$death_worker" "$death_pid" 2>/dev/null || :
+if sim_wait_worker "$death_worker"; then fail 'production claim holder exited before it was killed'; fi
+sim_untrack_worker "$death_pid"
+sim_as A -- "$SIM_HARNESS_DIR/worker.sh" renewd >"$SIM_WORLD/A-renewd-death-first.out" 2>&1 \
+  || fail "renewd failed to observe a dead harness run: $(cat "$SIM_WORLD/A-renewd-death-first.out")"
+sim_world_advance 300
+sim_as A -- "$SIM_HARNESS_DIR/worker.sh" renewd >"$SIM_WORLD/A-renewd-death-release.out" 2>&1 \
+  || fail "renewd failed to release a dead harness run: $(cat "$SIM_WORLD/A-renewd-death-release.out")"
+dead_claim="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/claims/issue-10:claim.json)"
+jq -e '.owner == null and .release_reason == "run-gone"' <<<"$dead_claim" >/dev/null \
+  || fail "renewd left a dead harness claim owned: $dead_claim"
+sim_as B -- "$SIM_HARNESS_DIR/worker.sh" coord-acquire 10 feeder >"$SIM_WORLD/B-coord-takeover.out" 2>&1 \
+  || fail "host B could not acquire the released production claim: $(cat "$SIM_WORLD/B-coord-takeover.out")"
+takeover_claim="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/claims/issue-10:claim.json)"
+jq -e '.generation == 2 and .owner_kind == "feeder"' <<<"$takeover_claim" >/dev/null \
+  || fail "renewd death trial did not leave a second-generation takeover: $takeover_claim"
+
+fence_ready="$SIM_WORLD/coord-fence-ready"
+fence_release="$SIM_WORLD/coord-fence-release"
+SIM_HOLD_READY="$fence_ready" SIM_HOLD_RELEASE="$fence_release" \
+  sim_as A -- "$SIM_HARNESS_DIR/worker.sh" coord-hold 11 feeder >"$SIM_WORLD/A-coord-fence.out" 2>&1 &
+fence_worker=$!
+sim_worker_pids+=("$fence_worker")
+if ! sim_wait_for "$fence_ready"; then
+  sim_wait_worker "$fence_worker" || :
+  fail 'host A did not establish the self-fence claim'
+fi
+fence_pid="$(<"$fence_ready")"
+[[ $fence_pid =~ ^[0-9]+$ ]] || fail "self-fence holder recorded no pid: $fence_pid"
+sim_worker_pids+=("$fence_pid")
+sim_world_advance 600
+sim_as A -- "$SIM_HARNESS_DIR/worker.sh" renewd >"$SIM_WORLD/A-renewd-fence.out" 2>&1 \
+  || fail "renewd failed during the self-fence trial: $(cat "$SIM_WORLD/A-renewd-fence.out")"
+if sim_wait_worker "$fence_worker"; then fail 'renewd did not stop the stale harness run'; fi
+sim_untrack_worker "$fence_pid"
+if kill -0 "$fence_pid" 2>/dev/null; then fail 'self-fence left the harness run alive'; fi
+jq -e '.lost == true and .owner_kind == "feeder"' "$SIM_WORLD/hosts/A/coord/held/issue-11" >/dev/null \
+  || fail 'self-fence did not mark the local claim lost'
+
+ack_ready="$SIM_WORLD/coord-ack-ready"
+ack_release="$SIM_WORLD/coord-ack-release"
+SIM_HOLD_READY="$ack_ready" SIM_HOLD_RELEASE="$ack_release" \
+  sim_as A -- "$SIM_HARNESS_DIR/worker.sh" coord-hold 12 feeder >"$SIM_WORLD/A-coord-ack.out" 2>&1 &
+ack_worker=$!
+sim_worker_pids+=("$ack_worker")
+if ! sim_wait_for "$ack_ready"; then
+  sim_wait_worker "$ack_worker" || :
+  fail 'host A did not establish the lost-ack claim'
+fi
+ack_pid="$(<"$ack_ready")"
+[[ $ack_pid =~ ^[0-9]+$ ]] || fail "lost-ack holder recorded no pid: $ack_pid"
+sim_worker_pids+=("$ack_pid")
+pushes_before="$(awk '$1 == "A" && $2 == "push" { count++ } END { print count+0 }' "$SIM_WORLD/git.log")"
+SIM_LOST_ACK=1 sim_as A -- "$SIM_HARNESS_DIR/worker.sh" renewd >"$SIM_WORLD/A-renewd-lost-ack.out" 2>&1 \
+  || fail "renewd did not resolve a lost push acknowledgement: $(cat "$SIM_WORLD/A-renewd-lost-ack.out")"
+pushes_after="$(awk '$1 == "A" && $2 == "push" { count++ } END { print count+0 }' "$SIM_WORLD/git.log")"
+[[ $((pushes_after - pushes_before)) -eq 1 ]] || fail 'lost-ack pass did not use exactly one batched push'
+ack_claim="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/claims/issue-12:claim.json)"
+jq -e --argjson now "$(<"$SIM_CLOCK_FILE")" '.renewed_at == $now and .owner_kind == "feeder"' <<<"$ack_claim" >/dev/null \
+  || fail "lost-ack pass did not retain its renewed claim: $ack_claim"
+ack_status="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob refs/status/A:worker.json)"
+jq -e '.host == "A" and .instance == "A-instance"' <<<"$ack_status" >/dev/null \
+  || fail 'lost-ack pass did not publish host status'
+: >"$ack_release"
+sim_wait_worker "$ack_worker" || fail 'lost-ack holder did not release after the trial'
+sim_untrack_worker "$ack_pid"
+
+[[ ! -s $SIM_WORLD/gh.log ]] || fail "first-version cases unexpectedly called gh: $(cat "$SIM_WORLD/gh.log")"
+
+printf 'coordination.test.sh: PASS (race, status, plain death, renewd death and takeover, self-fence, lost-ack, hold ends when its release path vanishes)\n'

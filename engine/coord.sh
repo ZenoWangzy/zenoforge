@@ -217,8 +217,12 @@ coord_read() { # key -> JSON / exit 1 confirmed absent / exit 3 unknown
 
 coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held / 3 unknown
   local key="${1:-}" owner="${2:-}" kind="${3:-}" subject="${4:-}" unit="${5:-}" stage="${6:-}"
+  local pid="${7:-}" pid_start="${8:-}"
   local lock_fd rc now lease record old_intents='{}' held=0 restore_required=0 restore_record="" reconcile_required=0
   [[ -n "$owner" && -n "$kind" ]] || return 2
+  if [[ -n "$pid" || -n "$pid_start" ]]; then
+    [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid_start" =~ ^[0-9]+$ ]] || return 2
+  fi
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "coord_acquire: invalid lease duration" >&2; return 3; }
   if coord_remote_enabled; then
     _coord_paths "$key" || return 2
@@ -231,7 +235,7 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
       rc=$?
     fi
     if (( rc == 0 )); then
-      _coord_remote_held_write "$key" "$owner" "$COORD_REMOTE_OID" "$COORD_RECORD" || rc=3
+      _coord_remote_held_write "$key" "$owner" "$COORD_REMOTE_OID" "$COORD_RECORD" "$pid" "$pid_start" || rc=3
       if (( rc == 0 )) && declare -F effect_reconcile >/dev/null \
         && jq -e 'any((.intents // {})[]?; .state == "pending")' <<<"$COORD_RECORD" >/dev/null 2>&1; then
         reconcile_required=1
@@ -312,6 +316,13 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
     ZF_COORD_OWNER="$owner" effect_reconcile "$key" || return $?
   fi
   return "$rc"
+}
+
+coord_acquire_feeder() {
+  local key="$1" owner="$2" subject="$3" unit="$4" stage="$5"
+  local pid="${BASHPID:-$$}" pid_start
+  pid_start="$(coord_process_start_ticks "$pid" 2>/dev/null)" || return 3
+  coord_acquire "$key" "$owner" feeder "$subject" "$unit" "$stage" "$pid" "$pid_start"
 }
 
 coord_acquire_many() { # owner kind unit stage issue...; rolls back partial batch reservations
@@ -407,7 +418,7 @@ coord_renew() { # key owner [local pid [pid-start-ticks]]; a lease that has alre
     flock -x "$lock_fd" || { exec {lock_fd}>&-; return 3; }
     if _coord_remote_renew "$key" "$owner"; then rc=0; else rc=$?; fi
     if (( rc == 0 )); then
-      _coord_remote_held_write "$key" "$owner" "$COORD_REMOTE_OID" "$COORD_RECORD" || rc=3
+      _coord_remote_held_write "$key" "$owner" "$COORD_REMOTE_OID" "$COORD_RECORD" "$pid" "$pid_start" || rc=3
     elif (( rc == 1 )); then
       _coord_remote_held_remove_if_owner "$key" "$owner" || rc=3
     fi

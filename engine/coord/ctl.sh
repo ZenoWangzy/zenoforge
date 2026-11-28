@@ -309,7 +309,7 @@ ctl_adopt_local() {
 
 ctl_enable() {
   local host="$1" env_file="$AGENT_HOME/host.env" host_file="$AGENT_HOME/host-id"
-  local timers_file="$AGENT_HOME/timers.local.list" timer=zenoforge-renewd.timer timer_state temp lock_fd
+  local timers_file="$AGENT_HOME/timers.local.list" timer=zenoforge-renewd.timer timer_state temp normalized lock_fd
   [[ "$host" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { ctl_error 'invalid host id'; return 2; }
   if ! timer_state="$(systemctl --user show "$timer" --property=LoadState --value 2>/dev/null)" \
     || [[ "$timer_state" != loaded ]]; then
@@ -364,7 +364,25 @@ ctl_enable() {
     exec {lock_fd}>&-
     return 3
   }
-  grep -Fxq "$timer" "$temp" || printf '%s\n' "$timer" >>"$temp"
+  normalized="$(mktemp "$AGENT_HOME/.timers-local.XXXXXX")" || {
+    rm -f -- "$temp"
+    flock -u "$lock_fd" || :
+    exec {lock_fd}>&-
+    return 3
+  }
+  if ! awk -v timer="$timer" '$1 != timer' "$temp" >"$normalized" \
+    || ! printf '%s - renewd-alert\n' "$timer" >>"$normalized"; then
+    rm -f -- "$temp" "$normalized"
+    flock -u "$lock_fd" || :
+    exec {lock_fd}>&-
+    return 3
+  fi
+  mv -f -- "$normalized" "$temp" || {
+    rm -f -- "$temp" "$normalized"
+    flock -u "$lock_fd" || :
+    exec {lock_fd}>&-
+    return 3
+  }
   mv -f -- "$temp" "$timers_file" || {
     rm -f -- "$temp"
     flock -u "$lock_fd" || :

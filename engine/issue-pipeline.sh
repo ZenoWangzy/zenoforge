@@ -2073,7 +2073,7 @@ route_pipeline_fastlane_issue() {
   fi
   claim_key="$(coord_issue_key "$n")" || return 1
   claim_owner="$(coord_new_owner)"
-  if coord_acquire "$claim_key" "$claim_owner" feeder "$n" "fastlane-$n" fastlane; then
+  if coord_acquire_feeder "$claim_key" "$claim_owner" "$n" "fastlane-$n" fastlane; then
     :
   else
     claim_status=$?

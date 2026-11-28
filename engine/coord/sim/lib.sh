@@ -39,6 +39,7 @@ sim_host_new() {
   "$SIM_REAL_GIT" -C "$repo" config user.name "Simulation $id"
   "$SIM_REAL_GIT" -C "$repo" config user.email "$id@simulation.invalid"
   printf '%s-instance\n' "$id" > "$host/instance"
+  printf '%s-instance\n' "$id" > "$host/coord/instance"
   printf '%s\n' "$skew" > "$host/skew"
 }
 
@@ -52,6 +53,8 @@ sim_as() {
   (
     export SIM_HOST_ID="$id" SIM_HOST_DIR="$host" SIM_HOST_REPO="$host/coord/repo.git"
     export SIM_HOST_SKEW="$(<"$host/skew")" ZF_HOST_ID="$id"
+    export AGENT_HOME="$host" ZF_ENGINE_DIR="$SIM_ENGINE_DIR" ZF_REPO_DIR="$host/coord/repo.git"
+    export ZF_COORD=on ZF_COORD_CLOCK_FILE="$SIM_CLOCK_FILE"
     export PATH="$SIM_HARNESS_DIR/bin:$PATH"
     export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=5
     export GIT_CONFIG_KEY_0=protocol.http.allow GIT_CONFIG_VALUE_0=never

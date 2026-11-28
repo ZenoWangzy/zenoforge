@@ -294,7 +294,7 @@ else
 fi
 clear_claim_fixtures
 run_ctl purge
-printf '%s\n' custom.timer >"$agent/timers.local.list"
+printf '%s\n' custom.timer zenoforge-renewd.timer >"$agent/timers.local.list"
 AGENT_HOME="$agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-a \
   MAC_AUTOPILOT_RUNTIME_DIR="$fixture/autopi" ZF_COORD_TEST_ACTIVE_UNITS="$fixture/active-units" \
   ZF_COORD_SYSTEMCTL_LOG="$fixture/systemctl.log" PATH="$fixture/bin:$PATH" \
@@ -302,7 +302,11 @@ AGENT_HOME="$agent" ZF_REPO_DIR="$repo" ZF_ENGINE_DIR="$engine" ZF_HOST_ID=test-
 grep -Fxq 'ZF_COORD=on' "$agent/host.env" || { echo 'ctl.test.sh: enable did not set coordination on' >&2; exit 1; }
 grep -Fxq 'ZF_HOST_ID=test-c' "$agent/host.env" || { echo 'ctl.test.sh: enable did not set host id' >&2; exit 1; }
 grep -Fxq custom.timer "$agent/timers.local.list" || { echo 'ctl.test.sh: enable dropped an existing timer' >&2; exit 1; }
-grep -Fxq zenoforge-renewd.timer "$agent/timers.local.list" || { echo 'ctl.test.sh: enable omitted the renewal timer' >&2; exit 1; }
+grep -Fxq 'zenoforge-renewd.timer - renewd-alert' "$agent/timers.local.list" || { echo 'ctl.test.sh: enable omitted the renewal timer record' >&2; exit 1; }
+[[ $(grep -Ec '^zenoforge-renewd\.timer([[:space:]]|$)' "$agent/timers.local.list") -eq 1 ]] || {
+  echo 'ctl.test.sh: enable duplicated the renewal timer record' >&2
+  exit 1
+}
 grep -Fxq -- '--user start zenoforge-renewd.timer' "$fixture/systemctl.log" || {
   echo 'ctl.test.sh: enable did not start the renewal timer' >&2
   exit 1

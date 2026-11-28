@@ -91,7 +91,7 @@ set -Eeuo pipefail
 run_tick() {
   local script_dir="" repo_dir="" engine_repo_dir="" branch
   local fail_count_file alerted_file fail_threshold
-  local timer_list timer_repo timer_gh_timeout_sec timer timer_off_variable timer_alert_marker
+  local timer_list local_timer_list timer_repo timer_gh_timeout_sec timer timer_off_variable timer_alert_marker
   local scheduler_status=0
   local dirty_status quarantine_root quarantine_entry untracked_paths snapshot_stamp refused_path refused_dest
   local fast_forward_old_head fast_forward_new_head
@@ -193,6 +193,7 @@ run_tick() {
   # Load before the engine checkout self-updates; the shared function is then held in this shell.
   source "$script_dir/model-policy-fast-forward.sh"
   timer_list="$(zf_config_file systemd/pipeline-timers.list || true)"
+  local_timer_list="$AGENT_HOME/timers.local.list"
   # The target repository, as lib.sh derives it: ZF_REPO, else the checkout's origin remote.
   timer_repo="${ZF_REPO:-$(git -C "$repo_dir" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##' || true)}"
 
@@ -468,6 +469,9 @@ run_tick() {
   if [ -s "$PAUSE_FILE" ]; then
     timer_pause_resume="$(jq -r '(.resume? // empty) | strings' "$PAUSE_FILE" 2>/dev/null | tr -s ' \t;,' '\n' || true)"
   fi
+  if [ "${ZF_COORD:-off}" != on ]; then
+    local_timer_list=/dev/null
+  fi
   while read -r timer timer_off_variable timer_alert_marker; do
     case "$timer" in
       ""|\#*) continue ;;
@@ -527,7 +531,7 @@ run_tick() {
         2>/dev/null || true
       touch "$timer_alerted_file" 2>/dev/null || true
     fi
-  done <"$timer_list"
+  done < <(cat "$timer_list" "$local_timer_list" 2>/dev/null || true)
 
   export ZF_REPO_DIR="$repo_dir"
   # One deployment-status cache per tick, as scheduler.d/core.sh sets. lib.sh sets none (release wrappers must not cache).
