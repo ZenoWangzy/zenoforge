@@ -277,10 +277,10 @@ fi
   echo 'ctl.test.sh: claim clear deleted valid checkpoint data' >&2
   exit 1
 }
-seed_remote_ref refs/claims/issue-777 claim.json '{"version":1,"key":"issue-777","owner":null,"owner_kind":"scheduler-worker","subject":"777","unit":"issue-777","stage":"release","expires_at":0,"effects":{"deploy:9":{"state":"unknown","class":"once"}}}'
+seed_remote_ref refs/claims/issue-777 claim.json '{"version":1,"key":"issue-777","owner":null,"owner_kind":"scheduler-worker","subject":"777","unit":"issue-777","stage":"release","expires_at":0,"intents":{"deploy:9":{"kind":"deploy","class":"once","state":"unknown","gen":1,"run":"owner-old","started_at":1}}}'
 run_ctl effect clear issue-777 deploy:9
 claim="$(git --git-dir="$remote" cat-file blob refs/claims/issue-777:claim.json)"
-jq -e '.effects["deploy:9"].state == "cleared"' <<<"$claim" >/dev/null || {
+jq -e '.intents["deploy:9"].state == "cleared"' <<<"$claim" >/dev/null || {
   echo 'ctl.test.sh: effect clear did not record the operator decision' >&2
   exit 1
 }

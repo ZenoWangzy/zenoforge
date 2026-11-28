@@ -112,10 +112,13 @@ pr_merge_delivery_row() {
 
 
 merge_pr_and_reconcile() {
-  local pr="$1" subject="$2" body_file="$3" match_head_commit="$4" row pr_state pr_head merge_sha rc
+  local pr="$1" subject="$2" body_file="$3" match_head_commit="$4" row pr_state pr_head merge_sha rc effect_key effect_claim
   row="$(pr_merge_delivery_row "$pr")" || { echo "guarded_pr_merge: could not read current state for PR #$pr" >&2; return 1; }
   IFS=$'\t' read -r pr_state pr_head merge_sha <<< "$row"
   if [[ "$pr_state" == MERGED ]]; then
+    effect_key="merge:pr-$pr"
+    effect_claim="$(effect_claim_for "$effect_key")" || return 2
+    effect_run "$effect_claim" "$effect_key" merge -- true || return $?
     PR_MERGE_LANDED=1
     if [[ "$pr_head" != "$match_head_commit" || ! "$merge_sha" =~ ^[0-9a-f]{40,64}$ ]]; then
       echo "guarded_pr_merge: PR #$pr is merged but exact head or merge SHA is unavailable" >&2
@@ -134,7 +137,9 @@ merge_pr_and_reconcile() {
     echo "guarded_pr_merge: could not acquire the merge lock within $((MERGE_LOCK_WAIT_SECONDS / 60)) minutes" >&2
     return 1
   fi
-  if guarded_write land_merge_pr "$pr" "$match_head_commit" --repo "$REPO" \
+  effect_key="merge:pr-$pr"
+  effect_claim="$(effect_claim_for "$effect_key")" || return 2
+  if effect_run "$effect_claim" "$effect_key" merge -- guarded_write land_merge_pr "$pr" "$match_head_commit" --repo "$REPO" \
     --delete-branch --subject "$subject" --body "$(cat -- "$body_file")"; then
     rc=0
   else

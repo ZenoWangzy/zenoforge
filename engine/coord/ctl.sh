@@ -495,12 +495,12 @@ ctl_effect_clear() {
     ctl_error 'refusing to change an effect on a live claim'
     return 1
   fi
-  jq -e --arg effect "$effect" '.effects | type == "object" and .[$effect] != null
+  jq -e --arg effect "$effect" '.intents | type == "object" and .[$effect] != null
     and (.[$effect].class == "once") and (.[$effect].state == "pending" or .[$effect].state == "unknown")' \
     <<<"$CTL_REF_CONTENT" >/dev/null 2>&1 || { ctl_error 'effect is not an unresolved once intent'; return 1; }
   now="$(date +%s)"
   record="$(jq -c --arg effect "$effect" --arg host "$ZF_HOST_ID" --argjson now "$now" \
-    '.effects[$effect].state = "cleared" | .effects[$effect].cleared_at = $now | .effects[$effect].cleared_by = $host' \
+    '.intents[$effect].state = "cleared" | .intents[$effect].cleared_at = $now | .intents[$effect].cleared_by = $host' \
     <<<"$CTL_REF_CONTENT")" || return 3
   ctl_write_ref_file "$ref" claim.json "$CTL_REF_OID" "$record" "clear effect $effect"
 }

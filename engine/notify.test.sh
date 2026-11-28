@@ -914,15 +914,16 @@ def function(name):
 
 try:
     transport = function("_send_email_logged")
-    curl_at = transport.index("curl ")
+    send_at = transport.index("_notify_gmail_send_request")
+    sender = function("_notify_gmail_send_request")
     log_at = transport.index("notify_log_send")
-    curl_lines = [line for line in transport.splitlines() if "curl " in line and "GMAIL_SEND_URL" in line]
+    curl_lines = [line for line in sender.splitlines() if "curl " in line and "GMAIL_SEND_URL" in line]
     assert api_refs == [notify], f"Gmail API send references outside notify.sh: {api_refs}"
     assert len(send_calls) == 1 and send_calls[0][0] == notify, f"unshared Gmail sender found: {send_calls}"
     assert sum(p.read_text().count(send_url) for p in sources) == 1, "new Gmail send URL was added"
     assert source.count("GMAIL_SEND_URL") == 2, "Gmail send URL is used outside its definition and shared sender"
     assert len(curl_lines) == 1, f"expected one Gmail HTTP sender, got {len(curl_lines)}"
-    assert log_at < curl_at, "Gmail send happens before notify.log attempt"
+    assert log_at < send_at, "Gmail send happens before notify.log attempt"
     for name in ("send_email", "send_email_strict"):
         wrapper = function(name)
         assert "_send_email_logged" in wrapper, f"{name} bypasses the shared logged transport"

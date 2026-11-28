@@ -1,10 +1,60 @@
 #!/usr/bin/env bash
 set -euo pipefail
 : "${SIM_WORLD:?sim_as must set SIM_WORLD}"
-exec 9>>"$SIM_WORLD/gh.log"
+state="$SIM_WORLD/gh-state.json"
+exec 9>>"$SIM_WORLD/gh.lock"
 flock -x 9
-printf '%s\t' "${SIM_HOST_ID:-unknown}" >&9
-printf '%q ' "$@" >&9
-printf '\n' >&9
-printf 'sim gh: API calls are outside the first-version cases: %s\n' "$*" >&2
-exit 97
+printf '%s\t' "${SIM_HOST_ID:-unknown}" >>"$SIM_WORLD/gh.log"
+printf '%q ' "$@" >>"$SIM_WORLD/gh.log"
+printf '\n' >>"$SIM_WORLD/gh.log"
+
+pause_after_request() {
+  [[ -n "${SIM_PAUSE_READY:-}" ]] || return 0
+  printf '%s\n' "$$" >"$SIM_PAUSE_READY"
+  while [[ ! -e "${SIM_PAUSE_RELEASE:-}" ]]; do sleep 0.01; done
+}
+
+case "${1:-}" in
+  pr)
+    case "${2:-}" in
+      view)
+        pr="${3:-}"
+        jq -ce --arg pr "$pr" '.prs[$pr] // error("unknown PR")' "$state"
+        ;;
+      merge)
+        pr="${3:-}"
+        printf '%s\n' "$pr" >>"$SIM_WORLD/sinks/merge-requests.log"
+        jq -e --arg pr "$pr" '.prs[$pr].state == "OPEN"' "$state" >/dev/null || exit 1
+        tmp="$state.tmp.$$"
+        jq --arg pr "$pr" --arg oid 1111111111111111111111111111111111111111 \
+          '.prs[$pr].state="MERGED" | .prs[$pr].mergeCommit={oid:$oid}' "$state" >"$tmp"
+        mv -f -- "$tmp" "$state"
+        printf '%s\n' "$pr" >>"$SIM_WORLD/sinks/merge.log"
+        pause_after_request
+        ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  deploy)
+    seq="${2:-}"
+    printf '%s\n' "$seq" >>"$SIM_WORLD/sinks/deploy.log"
+    tmp="$state.tmp.$$"
+    jq --arg seq "$seq" --arg sha eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+      '.deployments += [{id:($seq|tonumber),sha:$sha,payload:{release_seq:$seq}}]' "$state" >"$tmp"
+    mv -f -- "$tmp" "$state"
+    pause_after_request
+    ;;
+  mail)
+    printf '%s\n' "${2:-event}" >>"$SIM_WORLD/sinks/mail.log"
+    pause_after_request
+    ;;
+  api)
+    endpoint="${2:-}"
+    case "$endpoint" in
+      */deployments\?environment=production\&per_page=*) jq -c '.deployments' "$state" ;;
+      */deployments/*/statuses) printf '%s\n' '[{"state":"success","created_at":"2026-11-28T00:00:00Z"}]' ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  *) exit 97 ;;
+esac

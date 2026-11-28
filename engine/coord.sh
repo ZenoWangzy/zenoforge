@@ -107,6 +107,16 @@ _coord_read_locked() {
     and (.expires_at | type == "number" and floor == .)
     and ((has("pid") | not) or (.pid | type == "number" and floor == . and . > 0))
     and ((has("pid_start") | not) or (.pid_start | type == "number" and floor == . and . >= 0))
+    and (if has("intents") then .intents | type == "object" and all(to_entries[];
+      (.key | type == "string" and test("^[A-Za-z0-9._:/@+.-]+$"))
+      and (.value | type == "object" and (.kind | IN("merge","push","revert","deploy","mail","comment"))
+        and (.class | IN("idempotent","once")) and (.state | IN("pending","done","unknown","cleared"))
+        and (.gen | type == "number" and floor == . and . >= 1) and (.run | type == "string" and length > 0)
+        and ((has("started_at") | not) or (.started_at | type == "number" and floor == . and . >= 0))
+        and ((has("completed_seq") | not) or (.completed_seq | type == "number" and floor == . and . >= 1))
+        and ((has("completed_at") | not) or (.completed_at | type == "number" and floor == . and . >= 0))
+        and ((has("reason") | not) or (.reason | type == "string")))
+    ) else true end)
   ' <<<"$record" >/dev/null 2>&1 || { echo "coord_read: malformed or unsupported claim key=$key" >&2; return 3; }
   COORD_RECORD="$record"
   [[ "$(jq -r '.owner // empty' <<<"$record")" ]] || return 1
@@ -207,7 +217,7 @@ coord_read() { # key -> JSON / exit 1 confirmed absent / exit 3 unknown
 
 coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held / 3 unknown
   local key="${1:-}" owner="${2:-}" kind="${3:-}" subject="${4:-}" unit="${5:-}" stage="${6:-}"
-  local lock_fd rc now lease record held=0 restore_required=0 restore_record=""
+  local lock_fd rc now lease record old_intents='{}' held=0 restore_required=0 restore_record="" reconcile_required=0
   [[ -n "$owner" && -n "$kind" ]] || return 2
   [[ "$COORD_LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "coord_acquire: invalid lease duration" >&2; return 3; }
   if coord_remote_enabled; then
@@ -222,6 +232,10 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
     fi
     if (( rc == 0 )); then
       _coord_remote_held_write "$key" "$owner" "$COORD_REMOTE_OID" "$COORD_RECORD" || rc=3
+      if (( rc == 0 )) && declare -F effect_reconcile >/dev/null \
+        && jq -e 'any((.intents // {})[]?; .state == "pending")' <<<"$COORD_RECORD" >/dev/null 2>&1; then
+        reconcile_required=1
+      fi
       if (( rc == 0 )) && [[ "${COORD_REMOTE_RESTORE_REQUIRED:-0}" == 1 ]]; then
         restore_required=1
         restore_record="$COORD_RECORD"
@@ -239,6 +253,17 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
         return 3
       fi
     fi
+    if (( rc == 0 && reconcile_required == 1 )); then
+      if ZF_COORD_OWNER="$owner" effect_reconcile "$key"; then
+        if _coord_remote_read "$key"; then
+          _coord_remote_held_write "$key" "$owner" "$COORD_REMOTE_OID" "$COORD_RECORD" || return 3
+        else
+          return 3
+        fi
+      else
+        return $?
+      fi
+    fi
     return "$rc"
   fi
   _coord_paths "$key" || return 2
@@ -249,11 +274,14 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
   if (( rc == 0 )); then
     now="$(coord_now_s)"
     if (( $(jq -r '.expires_at' <<<"$COORD_RECORD") <= now )); then
-      _coord_expire_locked "$key" || rc=$?
+      old_intents="$(jq -ce '(.intents // {}) | if type == "object" then . else error end' <<<"$COORD_RECORD")" || rc=3
+      (( rc != 0 )) || _coord_expire_locked "$key" || rc=$?
       if (( rc == 0 )); then rc=1; fi
     else
       held=1
     fi
+  elif (( rc == 1 )) && [[ -n "$COORD_RECORD" ]]; then
+    old_intents="$(jq -ce '(.intents // {}) | if type == "object" then . else error end' <<<"$COORD_RECORD")" || rc=3
   fi
   if (( held == 1 )); then
     rc=1
@@ -264,7 +292,14 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
       --argjson now "$now" --argjson lease "$lease" \
       '{version:1,key:$key,owner:$owner,owner_kind:$kind,subject:$subject,unit:$unit,stage:$stage,
         acquired_at:$now,renewed_at:$now,expires_at:($now+$lease)}')"; then
-      if _coord_write_locked "$key" "$record"; then rc=0; else rc=3; fi
+      if record="$(jq -cn --argjson record "$record" --argjson intents "$old_intents" '$record + {intents:$intents}')"; then
+        if jq -e 'any((.intents // {})[]?; .state == "pending")' <<<"$record" >/dev/null 2>&1; then
+          reconcile_required=1
+        fi
+        if _coord_write_locked "$key" "$record"; then rc=0; else rc=3; fi
+      else
+        rc=3
+      fi
     else
       rc=3
     fi
@@ -273,6 +308,9 @@ coord_acquire() { # key owner kind subject unit stage; exit 0 acquired / 1 held 
   fi
   flock -u "$lock_fd" || :
   exec {lock_fd}>&-
+  if (( rc == 0 && reconcile_required == 1 )) && declare -F effect_reconcile >/dev/null; then
+    ZF_COORD_OWNER="$owner" effect_reconcile "$key" || return $?
+  fi
   return "$rc"
 }
 

@@ -2430,6 +2430,7 @@ PR_MERGE_RESULT="$(PATH="$PR_MERGE_BODY_BIN:$PATH" PR_MERGE_BODY_LOG="$PR_MERGE_
   PR_MERGE_STATE_FILE="$PR_MERGE_STATE_FILE" PR_MERGE_RECONCILE_COUNT="$PR_MERGE_RECONCILE_COUNT" bash -c '
     set -euo pipefail
     source "$1/lib.sh"
+    land_candidate_eval_admission_check() { return 0; }
     if guarded_pr_merge 42 "safe title" "body from file" "$PR_MERGE_HEAD_SHA"; then first=0; else first=$?; fi
     if guarded_pr_merge 42 "safe title" "body from file" "$PR_MERGE_HEAD_SHA"; then second=0; else second=$?; fi
     printf "statuses=%s,%s\n" "$first" "$second"

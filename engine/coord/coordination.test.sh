@@ -27,6 +27,50 @@ sim_wait_worker() {
   sim_untrack_worker "$pid"
   return "$rc"
 }
+sim_effect_death_trial() {
+  local kind="$1" claim="$2" effect_key="$3" expected="$4" ready
+  ready="$SIM_WORLD/$kind-effect.ready"
+  local worker gh_pid claim_record rc sink
+  rm -f -- "$ready" "$SIM_WORLD/$kind-effect.release"
+  SIM_PAUSE_READY="$ready" SIM_PAUSE_RELEASE="$SIM_WORLD/$kind-effect.release" \
+    sim_as A -- "$SIM_HARNESS_DIR/worker.sh" effect "$claim" "$effect_key" "$kind" \
+    >"$SIM_WORLD/$kind-effect.out" 2>&1 &
+  worker=$!
+  sim_worker_pids+=("$worker")
+  if ! sim_wait_for "$ready"; then
+    kill "$worker" 2>/dev/null || :
+    sim_wait_worker "$worker" || :
+    fail "$kind effect did not reach its external request"
+  fi
+  gh_pid="$(<"$ready")"
+  [[ "$gh_pid" =~ ^[0-9]+$ ]] || fail "$kind effect pause recorded no process id"
+  sim_worker_pids+=("$gh_pid")
+  kill -KILL "$worker" "$gh_pid" 2>/dev/null || :
+  if sim_wait_worker "$worker"; then fail "$kind effect worker survived its death point"; fi
+  sim_untrack_worker "$gh_pid"
+  sim_world_advance "$((SIM_LEASE_S + 1))"
+  if sim_as B -- "$SIM_HARNESS_DIR/worker.sh" effect-takeover "$claim" >"$SIM_WORLD/$kind-observe.out" 2>&1; then
+    fail "$kind effect claim was taken over before a full observation lease"
+  else
+    rc=$?
+    [[ "$rc" == 1 ]] || fail "$kind effect first observation returned $rc instead of held"
+  fi
+  sim_world_advance "$((SIM_LEASE_S / 2))"
+  if sim_as B -- "$SIM_HARNESS_DIR/worker.sh" effect-takeover "$claim" >"$SIM_WORLD/$kind-observe-half.out" 2>&1; then
+    fail "$kind effect claim was taken over before a full observation lease"
+  else
+    rc=$?
+    [[ "$rc" == 1 ]] || fail "$kind effect half-lease observation returned $rc instead of held"
+  fi
+  sim_world_advance "$((SIM_LEASE_S - SIM_LEASE_S / 2))"
+  sim_as B -- "$SIM_HARNESS_DIR/worker.sh" effect-takeover "$claim" \
+    >"$SIM_WORLD/$kind-reconcile.out" 2>&1 || fail "$kind effect reconciliation failed: $(cat "$SIM_WORLD/$kind-reconcile.out")"
+  claim_record="$("$SIM_REAL_GIT" --git-dir="$SIM_REMOTE" cat-file blob "refs/claims/$claim:claim.json")"
+  jq -e --arg key "$effect_key" --arg state "$expected" '.intents[$key].state == $state' <<<"$claim_record" >/dev/null \
+    || fail "$kind effect ended in an unexpected state: $claim_record"
+  sink="$SIM_WORLD/sinks/$kind.log"
+  [[ "$(wc -l <"$sink")" -eq 1 ]] || fail "$kind external request was duplicated or missing"
+}
 trap 'sim_cleanup_workers; test_env_chain_exit "$test_env_root" "$test_env_prior_exit"' EXIT
 
 sim_world_new "$test_env_root/coord-sim"
@@ -142,6 +186,9 @@ done
 (( gone_ended == 1 )) || fail 'hold did not end within 2 s of losing its release directory'
 if sim_wait_worker "$gone_worker"; then fail 'hold ended with rc=0 after losing its release directory'; fi
 
-[[ ! -s $SIM_WORLD/gh.log ]] || fail "first-version cases unexpectedly called gh: $(cat "$SIM_WORLD/gh.log")"
+sim_effect_death_trial merge issue-71 merge:pr-31 done
+sim_effect_death_trial deploy issue-72 deploy:7 done
+sim_effect_death_trial mail issue-73 mail:73:1 unknown
+[[ -s $SIM_WORLD/gh.log ]] || fail 'effect trials did not call the fake GitHub boundary'
 
-printf 'coordination.test.sh: PASS (race, status, plain death with takeover, hold ends when its release path vanishes)\n'
+printf 'coordination.test.sh: PASS (race, status, takeover, effect death points, hold cleanup)\n'

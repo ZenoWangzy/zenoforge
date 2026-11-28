@@ -34,3 +34,18 @@ coord_process_start_ticks_into() {
 coord_process_start_ticks() {
   coord_process_start_ticks_into "${1:-}" && printf '%s\n' "$COORD_START_TICKS"
 }
+effect_begin() { return 0; }
+effect_complete() { return 0; }
+effect_unknown() { return 0; }
+effect_reconcile() { return 0; }
+effect_claim_for() {
+  local claim="${1:-}"
+  [[ -n "$claim" ]] || return 2
+  claim="${claim//[^A-Za-z0-9._-]/-}"
+  printf 'effect-%s\n' "$claim"
+}
+effect_run() {
+  [[ $# -ge 5 && "$4" == -- ]] || return 2
+  shift 4
+  "$@"
+}

@@ -21,6 +21,8 @@ sim_world_new() {
   : > "$SIM_WORLD/dispatch.log"
   : > "$SIM_WORLD/git.log"
   : > "$SIM_WORLD/gh.log"
+  mkdir -p "$SIM_WORLD/sinks"
+  printf '%s\n' '{"prs":{"31":{"state":"OPEN","mergeCommit":null}},"deployments":[]}' > "$SIM_WORLD/gh-state.json"
   export SIM_HARNESS_DIR SIM_ENGINE_DIR SIM_REAL_GIT SIM_WORLD SIM_REMOTE SIM_CLOCK_FILE SIM_LEASE_S
 }
 
