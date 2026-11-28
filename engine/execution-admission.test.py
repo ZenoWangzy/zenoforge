@@ -1030,6 +1030,11 @@ try:sys.exit"""))
             self.assertEqual(sample["available_mb"], 10000)
             self.assertEqual(sample["load1"], None)
 
+        with patch.dict(os.environ, {"ZF_EXECUTION_PROC_ROOT": "",
+                                    "AGENT_DISPATCH_MEMINFO_FILE": str(meminfo)}):
+            platform = guard.Platform(proc=proc, system="Linux", host=HostInfo())
+            self.assertEqual(platform.resources(1, None)["available_mb"], 1)
+
 
     def test_darwin_platform_uses_hostinfo_and_counts_locked_units(self):
         class HostInfo:

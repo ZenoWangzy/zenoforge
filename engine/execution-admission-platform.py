@@ -25,10 +25,12 @@ def memory_full_avg60(proc, platform=None):
 def resources(proc, memory, load, cpu=None, target=None, priority="", admitted=False, platform=None,
               memory_pressure=None, memory_limit=10, opt_load_factor=4 / 3, deferred=RuntimeError):
     fixture = os.environ.get("AGENT_DISPATCH_MEMINFO_FILE")
-    if platform and platform.system != "Linux" and not fixture:
+    use_fixture = bool(fixture) and platform is not None and (
+        platform.system != "Linux" or getattr(platform, "proc_override", False))
+    if platform and platform.system != "Linux" and not use_fixture:
         available = platform.host.mem_avail_mb()
     else:
-        source = Path(fixture) if fixture else proc / "meminfo"
+        source = Path(fixture) if use_fixture else proc / "meminfo"
         fields = dict(line.split(":", 1) for line in source.read_text().splitlines() if ":" in line)
         available = int(fields["MemAvailable"].split()[0]) // 1024
     priority_bypass = priority in ("hotfix", "release")
@@ -68,6 +70,7 @@ class Platform:
                  cpu_sampler=None, resource_sampler=None, worker_unit=None, deferred=RuntimeError):
         override = os.environ.get("ZF_EXECUTION_PROC_ROOT")
         self.proc = Path(override or proc or "/proc")
+        self.proc_override = bool(override)
         if override:
             self.system = "Linux"
             self.host = hostinfo.HostInfo(proc_root=self.proc, system="Linux")
@@ -131,7 +134,7 @@ class Platform:
 
     def resources(self, memory, load, cpu=None, target=None, priority="", admitted=False):
         if self.system == "Linux":
-            return self.resource_sampler(self.proc, memory, load, cpu, target, priority, admitted)
+            return self.resource_sampler(self.proc, memory, load, cpu, target, priority, admitted, self)
         try:
             return self.resource_sampler(self.proc, memory, load, cpu, target, priority, admitted, self)
         except (OSError, RuntimeError, ValueError) as exc:
