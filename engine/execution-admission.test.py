@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Small local fixtures: real flock/PID identity; no model, systemd, or network."""
+import datetime
 import fcntl
 import importlib.util
 import json
@@ -22,10 +23,13 @@ spec.loader.exec_module(guard)
 def test_process_identity(pid):
     if sys.platform != "darwin":
         return guard.identity(pid, Path("/proc"))
-    result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True)
+    env = dict(os.environ, LC_ALL="C")
+    result = subprocess.run(["ps", "-o", "ppid=", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=env)
     if result.returncode or not result.stdout.strip():
         raise OSError("process identity unavailable")
-    return {"pid": int(pid), "start_ticks": str(pid), "ppid": int(result.stdout), "cgroup": "/fixture"}
+    parent, started = result.stdout.strip().split(maxsplit=1)
+    start_ticks = str(int(datetime.datetime.strptime(started, "%a %b %d %H:%M:%S %Y").timestamp()))
+    return {"pid": int(pid), "start_ticks": start_ticks, "ppid": int(parent), "cgroup": "/fixture"}
 
 
 class ExecutionAdmission(unittest.TestCase):
@@ -48,7 +52,7 @@ class ExecutionAdmission(unittest.TestCase):
         self.children = []
         self.driver = self.home / "driver.py"
         self.driver.write_text(
-            "import importlib.util,os,subprocess,sys\n"
+            "import datetime,importlib.util,os,subprocess,sys\n"
             f"s=importlib.util.spec_from_file_location('guard',{str(ROOT / 'execution-admission.py')!r})\n"
             "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
             "g.occupied=lambda proc:set()\n"
@@ -57,10 +61,10 @@ class ExecutionAdmission(unittest.TestCase):
             " def fixture_identity(pid, proc):\n"
             "  pid=int(pid)\n"
             "  env=dict(os.environ,LC_ALL='C')\n"
-            "  result=subprocess.run(['ps','-o','ppid=','-p',str(pid)],capture_output=True,text=True,env=env)\n"
+            "  result=subprocess.run(['ps','-o','ppid=','-o','lstart=','-p',str(pid)],capture_output=True,text=True,env=env)\n"
             "  if result.returncode or not result.stdout.strip(): raise OSError('fixture process missing')\n"
-            "  parent=int(result.stdout)\n"
-            "  ticks=str(pid)\n"
+            "  parent,started=result.stdout.strip().split(maxsplit=1)\n"
+            "  ticks=str(int(datetime.datetime.strptime(started,'%a %b %d %H:%M:%S %Y').timestamp()))\n"
             "  return {'pid':pid,'start_ticks':ticks,'ppid':parent,'cgroup':'/fixture'}\n"
             " g.identity=fixture_identity\n"
             "try:sys.exit(g.admission(sys.argv[1],sys.argv[3:] if sys.argv[2:3]==['--'] else sys.argv[2:]))\n"
@@ -784,12 +788,22 @@ try:sys.exit"""))
                   f"Path({str(ready)!r}).touch();signal.pause()")
         driver = self.home / "startup-driver.py"
         driver.write_text(
-            "import importlib.util,os,signal,subprocess,sys,time\n"
+            "import datetime,importlib.util,os,signal,subprocess,sys,time\n"
             "from pathlib import Path\n"
             f"s=importlib.util.spec_from_file_location('guard',{str(ROOT / 'execution-admission.py')!r})\n"
             "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
             "g.occupied=lambda proc:set()\n"
             "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\n"
+            "if sys.platform == 'darwin':\n"
+            " def fixture_identity(pid, proc):\n"
+            "  pid=int(pid)\n"
+            "  env=dict(os.environ,LC_ALL='C')\n"
+            "  result=subprocess.run(['ps','-o','ppid=','-o','lstart=','-p',str(pid)],capture_output=True,text=True,env=env)\n"
+            "  if result.returncode or not result.stdout.strip(): raise OSError('fixture process missing')\n"
+            "  parent,started=result.stdout.strip().split(maxsplit=1)\n"
+            "  ticks=str(int(datetime.datetime.strptime(started,'%a %b %d %H:%M:%S %Y').timestamp()))\n"
+            "  return {'pid':pid,'start_ticks':ticks,'ppid':int(parent),'cgroup':'/fixture'}\n"
+            " g.identity=fixture_identity\n"
             "original=subprocess.Popen\n"
             f"command=[sys.executable,'-c',{worker!r}]\n"
             "def start(args,*a,**kw):\n"
