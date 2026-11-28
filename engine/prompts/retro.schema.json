@@ -17,15 +17,6 @@
           "evidence": {"type": "string"},
           "proposal": {"type": "string"},
           "check": {"type": "object", "minProperties": 1},
-          "paired_eval": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["baseline", "candidate"],
-            "properties": {
-              "baseline": {"type": "string", "minLength": 1},
-              "candidate": {"type": "string", "minLength": 1}
-            }
-          },
           "derived_from": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"}, "uniqueItems": true}
         }
       }

@@ -9,7 +9,6 @@ Rules for this run:
 - Severity: high = the worker failed, or repeated a failed step; medium = it cost many turns or tokens; low = minor friction.
 - `proposal` is one concrete change (a pointer, a check that would have caught it, a rule to move or delete). Prefer a deterministic check over a written rule for mechanical mistakes.
 - For automated-checks, include a non-empty matcher object in `check`, mapping exact event fields and values from the cited event. It must match the cited event and none of the latest ten successful recorded sessions. If no exact matcher can be stated, omit `check`; the system records the candidate as an observation.
-- For automated-checks, provide `paired_eval` labels only when the existing eval has compared the frozen cases. Use distinct baseline and candidate labels; never invent labels. If no pair is available, omit `paired_eval`; the system records the candidate as an observation.
 - `derived_from` lists exact earlier lesson or candidate IDs from the supplied lineage context that informed the proposal. Use an empty derived_from array when none apply; never invent an ID.
 - A prompt or skill change remains a proposal until the existing paired evaluation compares runs with and without it and shows no regression; if it cannot be measured, it is not loaded.
 - Output only the JSON object required by the output schema, with `candidates` possibly empty.

@@ -89,6 +89,8 @@ validate_fragments() {
         .admission.paired_eval.status == "passed" and
         (.admission.paired_eval.baseline | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
         (.admission.paired_eval.candidate | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
+        .admission.paired_eval.baseline == ("retro-base-" + .id) and
+        .admission.paired_eval.candidate == ("retro-cand-" + .id) and
         (.admission.paired_eval.candidate != .admission.paired_eval.baseline) and
         (.admission.paired_eval.paired_cases | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and
         .admission.paired_eval.regressions == 0 and

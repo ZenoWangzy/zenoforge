@@ -5,6 +5,7 @@
 #        retro.py publish <scratch-root> <repo-root> <candidates.json> routes kept candidates
 import datetime
 import glob
+import hashlib
 import json
 import os
 import re
@@ -210,34 +211,88 @@ def measure_check(root, candidate):
     }, None
 
 
-def measure_paired_eval(engine, candidate):
-    pair = candidate.get("paired_eval")
-    if not isinstance(pair, dict):
-        return None, "paired eval labels are missing"
-    baseline = pair.get("baseline")
-    after = pair.get("candidate")
+def measure_paired_eval(engine, candidate, candidate_id):
     pattern = r"[A-Za-z0-9][A-Za-z0-9._-]*"
-    if (not isinstance(baseline, str) or re.fullmatch(pattern, baseline) is None
-            or not isinstance(after, str) or re.fullmatch(pattern, after) is None or baseline == after):
-        return None, "paired eval labels are invalid or identical"
+    if not isinstance(candidate_id, str) or re.fullmatch(pattern, candidate_id) is None:
+        return None, "candidate id cannot form paired eval labels"
+    baseline = f"retro-base-{candidate_id}"
+    candidate_label = f"retro-cand-{candidate_id}"
     runner = os.path.join(engine, "eval", "run-eval.mjs")
+    eval_home = (os.environ.get("AGENT_HOME") or os.environ.get("ZF_HOME")
+                 or os.path.join(os.path.expanduser("~"), ".zenoforge"))
+    baseline_results = os.path.join(eval_home, "eval", baseline, "results.json")
+    candidate_results = os.path.join(eval_home, "eval", candidate_label, "results.json")
+    lesson_fragment = candidate["proposal"].strip()
     try:
-        result = subprocess.run(
-            ["node", runner, "--compare", baseline, after],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-        )
+        with tempfile.TemporaryDirectory(prefix="retro-eval-") as scratch:
+            lesson_path = os.path.join(scratch, "lesson.md")
+            with open(lesson_path, "w", encoding="utf-8") as lesson_file:
+                lesson_file.write(lesson_fragment + "\n")
+            for label, result_path, extra in (
+                (baseline, baseline_results, []),
+                (candidate_label, candidate_results, ["--lesson-fragment", lesson_path]),
+            ):
+                command = ["node", runner, "--label", label, "--no-route-fresh-agent-issues", *extra]
+                if os.path.isfile(result_path):
+                    command.append("--resume")
+                result = subprocess.run(command, capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace")
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout).strip()
+                    return None, f"run-eval {label} failed: {detail[-600:]}"
+            result = subprocess.run(
+                ["node", runner, "--compare", baseline, candidate_label],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+            )
     except OSError as exc:
-        return None, f"run-eval --compare could not start: {exc}"
+        return None, f"run-eval could not start: {exc}"
     output = (result.stdout or "").strip()
     if result.returncode != 0:
         detail = (result.stderr or output).strip()
         return None, f"run-eval --compare failed: {detail[-600:]}"
+    label_summary = re.compile(
+        rf"^{re.escape(baseline)}: [0-9]+/[0-9]+; {re.escape(candidate_label)}: [0-9]+/[0-9]+$"
+    )
+    if not any(label_summary.fullmatch(line) for line in output.splitlines()):
+        return None, "paired eval labels do not match candidate id"
+    try:
+        with open(baseline_results, encoding="utf-8") as results_file:
+            baseline_data = json.load(results_file)
+        with open(candidate_results, encoding="utf-8") as results_file:
+            candidate_data = json.load(results_file)
+    except (OSError, ValueError) as exc:
+        return None, f"paired eval result labels are unreadable: {exc}"
+    if not isinstance(baseline_data, dict) or not isinstance(candidate_data, dict):
+        return None, "paired eval result labels are invalid"
+    if (baseline_data.get("label") != baseline or candidate_data.get("label") != candidate_label
+            or "lessonFragmentSha" not in baseline_data or baseline_data.get("lessonFragmentSha") is not None
+            or candidate_data.get("lessonFragmentSha") != hashlib.sha256(lesson_fragment.encode("utf-8")).hexdigest()):
+        return None, "paired eval labels do not match candidate id"
+    try:
+        live_revision = subprocess.run(
+            ["git", "-C", engine, "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError as exc:
+        return None, f"paired eval live engine revision could not be read: {exc}"
+    if live_revision.returncode != 0 or not live_revision.stdout.strip():
+        return None, "paired eval live engine revision could not be read"
+    if (not isinstance(baseline_data.get("suiteSha"), str) or not baseline_data["suiteSha"]
+            or baseline_data.get("suiteSha") != live_revision.stdout.strip()
+            or baseline_data.get("suiteSha") != candidate_data.get("suiteSha")
+            or not isinstance(baseline_data.get("caseSetSha"), str) or not baseline_data["caseSetSha"]
+            or baseline_data.get("caseSetSha") != candidate_data.get("caseSetSha")
+            or not isinstance(baseline_data.get("policy"), dict)
+            or baseline_data.get("policy") != candidate_data.get("policy")
+            or not isinstance(baseline_data.get("overrides"), list)
+            or baseline_data.get("overrides") != candidate_data.get("overrides")):
+        return None, "paired eval labels did not use the same engine and model policy"
     regressions = [line for line in output.splitlines() if line.startswith("REGRESSION pass→fail ")]
     if regressions:
-        return None, f"paired eval {baseline} → {after} found pass-to-fail regression: " + "; ".join(regressions)
+        return None, f"paired eval {baseline} → {candidate_label} found pass-to-fail regression: " + "; ".join(regressions)
     unpaired = [line for line in output.splitlines() if line.startswith("UNPAIRED ")]
     if unpaired:
-        return None, f"paired eval {baseline} → {after} did not cover the same frozen cases: " + "; ".join(unpaired)
+        return None, f"paired eval {baseline} → {candidate_label} has unpaired cases: " + "; ".join(unpaired)
     paired_line = next((line for line in output.splitlines() if line.startswith("compared in both labels: ")), None)
     if paired_line is None or paired_line.endswith(": none"):
         return None, "paired eval compared no frozen cases"
@@ -247,7 +302,7 @@ def measure_paired_eval(engine, candidate):
     return {
         "status": "passed",
         "baseline": baseline,
-        "candidate": after,
+        "candidate": candidate_label,
         "paired_cases": [case.strip() for case in paired_text.split(",")],
         "regressions": 0,
     }, None
@@ -547,7 +602,7 @@ def publish_candidates(root, repo, candidates_path):
                 record_observation(out_dir, candidate, key, parents, measurement_error)
                 print(f"retro.py: candidate {key} kept as an observation: {measurement_error}")
                 continue
-            paired_eval, eval_error = measure_paired_eval(engine, candidate)
+            paired_eval, eval_error = measure_paired_eval(engine, candidate, key)
             if eval_error:
                 record_observation(out_dir, candidate, key, parents, eval_error)
                 print(f"retro.py: candidate {key} kept as an observation: {eval_error}")

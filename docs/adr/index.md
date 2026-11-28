@@ -15,3 +15,4 @@ ADRs record surprising, hard-to-reverse decisions; read the Do not lines before 
 | [0009](0009-skip-ci-must-not-hide-tested-files.md) | Skip-CI commits must not hide tested files. | accepted | skip-CI commit, test reference, direct-main admission |
 | [0010](0010-clean-host-ci-uses-init-dry-run.md) | Clean-host CI uses init dry-run. | accepted | clean-host install, `init --dry-run`, doctor, GitHub Actions |
 | [0011](0011-retro-lessons-without-measured-gain-are-withdrawn.md) | Retro lessons without measured gain are withdrawn. | accepted | admitted lesson, engine-version window, withdrawal event |
+| [0012](0012-retro-admission-requires-paired-eval.md) | Retro lesson admission requires paired eval evidence. | accepted | automated-check candidate, paired evaluation, frozen case, lesson fragment |
