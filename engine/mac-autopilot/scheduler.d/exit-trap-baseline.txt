@@ -7,11 +7,9 @@ engine/entry-symlink.test.sh
 engine/gitnexus-refresh-target.test.sh
 engine/gitnexus-refresh-window.test.sh
 engine/gitnexus-wrapper.test.sh
-engine/hotfix/hf-brief-lint.test.sh
 engine/hotfix/hf-install-gate.test.sh
 engine/hotfix/hf-source-check.test.sh
 engine/hotfix/hf-stale.test.sh
-engine/hotfix/hf-start.test.sh
 engine/hotfix/hf-supersede.test.sh
 engine/hotfix/hf-worker-stuck.test.sh
 engine/hotfix/validate-acceptance.test.sh

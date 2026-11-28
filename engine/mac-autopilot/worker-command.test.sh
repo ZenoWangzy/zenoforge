@@ -17,6 +17,53 @@ SESSION_RE='^[0-9a-f-]{36}$'
 contains_arg() { [[ " $1 " == *" $2 "* ]]; }
 arg_value() { local i; for ((i = 0; i < ${#CODEX_COMMAND[@]}; i++)); do [[ "${CODEX_COMMAND[i]}" == "$1" ]] && { printf '%s' "${CODEX_COMMAND[i + 1]:-}"; return 0; }; done; return 1; }
 
+check_worker_test_policy() {
+  local source matches
+  local -a sources=(
+    "$script_dir/../../AGENTS.md"
+    "$script_dir/../hotfix/hf-start.sh"
+    "$script_dir/../prompts/implement-contract.md"
+    "$script_dir/../prompts/guarded-recut-hand.md"
+    "$script_dir/../dispatch-codex.sh"
+    "$script_dir/../night/dispatch.sh"
+    "$script_dir/scheduler.sh"
+    "$script_dir/scheduler.d/dispatch-queue.sh"
+    "$script_dir/scheduler.d/worker-command.sh"
+    "$script_dir/scheduler.d/ci-status.sh"
+    "$script_dir/scheduler.d/merge-lane.sh"
+  )
+  [[ "$VERIFY_RUN_RULE" == *'不要运行本地测试文件或套件'* && "$VERIFY_RUN_RULE" == *'PR CI 验证'* ]] \
+    || fail 'implement and repair prompts must leave suite execution to PR CI'
+  [[ "$CI_REPRO_RULE" == *'不在本机或测试 runner 运行测试'* ]] \
+    || fail 'CI repair prompts must not ask for local test reproduction'
+  for source in "${sources[@]}"; do
+    matches="$(
+      awk '
+        function inspect(text, value) {
+          value = tolower(text)
+          if (value ~ /(do not|never|must not|should not|avoid|don.t|not required|not needed|not necessary|manual only|no longer)/) return
+          if (value ~ /(run|rerun|execute|executed|reproduce|reproduced)/ && value ~ /(test|suite)/ && value ~ /(locally|local|before push|before pushing|at that head|at the repaired head)/) print FILENAME ":" FNR ":" text
+          if (value ~ /(local|locally)/ && value ~ /receipt/ && value ~ /(record|write|save|create|produce|leave|provide|attach|submit|require|required|needed|mandatory|must|should|shall|need|before push|before pushing|pre-push|gate)/) print FILENAME ":" FNR ":" text
+        }
+        {
+          sentence_count = split($0, sentences, /[;.!?]/)
+          for (i = 1; i <= sentence_count; i++) {
+            clause_count = split(sentences[i], clauses, /[[:space:]]+(and|but|however)[[:space:]]+/)
+            for (j = 1; j <= clause_count; j++) inspect(clauses[j])
+          }
+        }
+      ' "$source"
+    )"
+    [[ -z "$matches" ]] || fail "worker source asks for a local suite before push: $source: $matches"
+  done
+  if grep -niE 'Name the full verification command before coding|see each test fail before its fix' \
+    "$script_dir/../prompts/implement-contract.md"; then
+    fail 'implement contract must use PR CI as the test receipt'
+  fi
+}
+
+check_worker_test_policy
+
 CFG='{"models":[["gpt-6-luna","max","fast"]]}'
 CODEX_ENV_ARGS=(-c shell_environment_policy.inherit=all)
 UNITS="$test_env_root/units.json"
@@ -208,6 +255,12 @@ impl_tools="$(impl_value --allowedTools)"
 [[ ",$impl_tools," == *",Read(/$SUP/**),"* ]] || fail 'Claude implement cannot read the supervisor reports'
 [[ ",$impl_tools," == *',Bash(git push origin unit/impl-1),'* ]] || fail "Claude implement cannot push its own branch: $impl_tools"
 [[ ",$impl_tools," == *",Bash(git -C $impl_repo push origin unit/impl-1),"* ]] || fail "Claude implement cannot push its own branch with git -C: $impl_tools"
+[[ "$impl_tools" != *'branch-delivery-preflight'* && "$impl_tools" != *'Bash(pnpm:*)'* && "$impl_tools" != *'Bash(node --test:*)'* ]] || fail "Claude implement can run local suites or preflight: $impl_tools"
+unit_json='{"lane":"pr","merge_rebase_pending":true}'
+build_codex_command implement claude-sonnet-5-5 high impl-1 'p' 'p' "$impl_repo" claude || fail 'Claude rebase repair command was refused'
+impl_tools="$(impl_value --allowedTools)"
+[[ ",$impl_tools," == *',Bash(git push --force-with-lease origin HEAD:unit/impl-1),'* ]] || fail "Claude rebase repair cannot push its own branch with a lease: $impl_tools"
+unit_json='{}'
 for bare in Edit Write Read 'Bash(git push:*)' 'Bash(git:*)' 'Bash(git *)' 'Bash(gh pr merge:*)' 'Bash(curl:*)' 'Bash(node:*)'; do
   [[ ",$impl_tools," != *",$bare,"* ]] || fail "Claude implement allows $bare"
 done

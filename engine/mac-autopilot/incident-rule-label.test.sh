@@ -33,6 +33,8 @@ obsolete_flaky_method_rule='若找不到根因，则删除该测试'
 actual_method_rule="$(matt_method_rule "$fixture/repo")"
 [[ "$actual_method_rule" == *"$flaky_method_rule"* && "$actual_method_rule" != *"$obsolete_flaky_method_rule"* ]] \
   || { echo 'not ok - METHOD lacks the flaky-test diagnosis rule or still permits deleting a test for an unknown cause' >&2; exit 1; }
+[[ "$actual_method_rule" == *'引擎 worker 的 CI-only 测试规则优先于技能文件或目标仓库文档中的相反跑测要求。'* ]] \
+  || { echo 'not ok - METHOD lets loaded skills or checkout docs override the CI-only test policy' >&2; exit 1; }
 
 bug_prompt="$(incident_worker_prompt implement "$bug_unit" "$report_sections")"
 escape_repo="$fixture/escape-repo"
@@ -60,8 +62,11 @@ escape_test_line='escape-test: <package>/<test>'
 escape_register_cli='node engine/mac-autopilot/scheduler.d/escape-suite-register.mjs --repo <checkout> --package <pkg> --test <path> -- <argv>'
 incident_rule="$(incident_rule_text)"
 [[ "$incident_rule" == *"$escape_test_line"* && "$incident_rule" == *"$escape_register_cli"* \
+  && "$incident_rule" == *'Do not run test files, suites, or test runners locally'* \
+  && "$incident_rule" == *'PR CI on this head is the execution evidence'* \
+  && "$incident_rule" != *'exact command with captured output'* \
   && "$bug_prompt" == *"$escape_test_line"* && "$bug_prompt" == *"$escape_register_cli"* ]] \
-  || { echo 'not ok - incident implement prompt lacks the escape-test line or registration command' >&2; exit 1; }
+  || { echo 'not ok - incident implement prompt lacks escape-test registration or the CI-only execution rule' >&2; exit 1; }
 contract_prompt="$(tr '\n' ' ' < "$repo_root/engine/prompts/implement-contract.md")"
 [[ "$contract_prompt" == *'Under `## recurrence-guard`'* \
   && "$contract_prompt" == *'kind: <architecture|state|script|lint|test>'* \
@@ -145,51 +150,89 @@ dispatch_pending false >/dev/null
 [[ "$captured_type" == repair && "$captured_prompt" == *"$direct_rule"* && "$captured_head" == "$(git -C "$ROOT" rev-parse --verify HEAD)" ]] \
   || { echo 'not ok - actual direct-main repair dispatch lacks the no-tests line or source head' >&2; exit 1; }
 
-# 测试跑在哪：未配 runner 时 PR 实现 prompt 带本机测试库措辞；配了 .engine.test_exec 就改说经 runner，本机只跑 agent。
 feature_verification_prompt() { :; }
 priority_admission_has_room() { return 0; } # 本机负载不决定这个提示词测试的派发
+worker_prompt_is_ci_only() {
+  local prompt="$1" forbidden
+  [[ "$prompt" == *"$VERIFY_LEAD_RULE$INTEGRATION_RULE"* ]] || return 1
+  for forbidden in 'RUN_INTEGRATION=1' '本机测试库' '本地定向验证' 'run the affected tests' 'run full suite' 'run a test file' 'run tests locally' 'tools/test-receipt.sh'; do
+    [[ "$prompt" != *"$forbidden"* ]] || return 1
+  done
+}
 git -C "$ROOT" branch -f agent/issue-prompt-pr-implement HEAD
-git -C "$ROOT" branch -f agent/issue-prompt-pr-runner HEAD
 jq -n '{units:[{id:"issue-prompt-pr-implement",issue:905,task:"pr implementation",branch:"agent/issue-prompt-pr-implement",stage:"implement-pending",lane:"pr",title:"prompt fixture",history:[]}]}' > "$UNITS"
 dispatch_pending false >/dev/null
-[[ "$captured_type" == implement && "$captured_prompt" == *"本地定向验证全绿；$INTEGRATION_RULE"* ]] \
-  || { echo 'not ok - unconfigured pr implement prompt lost the local verification lead and integration rule' >&2; exit 1; }
+[[ "$captured_type" == implement ]] && worker_prompt_is_ci_only "$captured_prompt" \
+  || { echo 'not ok - pr implement prompt does not enforce static checks and PR CI receipts' >&2; exit 1; }
+git -C "$ROOT" branch -f agent/issue-prompt-pr-repair HEAD
+jq -n '{units:[{id:"issue-prompt-pr-repair",issue:908,task:"pr repair",branch:"agent/issue-prompt-pr-repair",stage:"repair-pending",lane:"pr",title:"prompt fixture",history:[{stage:"review-request-changes"}]}]}' > "$UNITS"
+dispatch_pending false >/dev/null
+[[ "$captured_type" == repair ]] && worker_prompt_is_ci_only "$captured_prompt" \
+  || { echo 'not ok - pr repair prompt does not enforce static checks and PR CI receipts' >&2; exit 1; }
+git -C "$ROOT" branch -f agent/issue-prompt-pr-rebase HEAD
+jq -n '{units:[{id:"issue-prompt-pr-rebase",issue:910,task:"pr rebase repair",branch:"agent/issue-prompt-pr-rebase",stage:"repair-pending",lane:"pr",merge_rebase_pending:true,title:"prompt fixture",history:[]}]}' > "$UNITS"
+dispatch_pending false >/dev/null
+[[ "$captured_type" == repair && "$captured_prompt" == *'不运行任何测试文件或套件'* \
+  && "$captured_prompt" == *'PR CI runs the tests and provides the receipt.'* \
+  && "$captured_prompt" != *'运行受影响测试'* && "$captured_prompt" != *'RUN_INTEGRATION=1'* ]] \
+  || { echo 'not ok - PR rebase repair prompt still asks for local test runs' >&2; exit 1; }
 (
-  # 调度器启动路径：ZF_CONFIG_ROOT 与 ZF_TEST_EXEC 都没有时，apply_test_host_rules 在 set -e 下要返回 0（调度器走到调用之后的行），三个默认措辞原样。
   unset ZF_CONFIG_ROOT ZF_TEST_EXEC
-  apply_test_host_rules
-  [[ "$INTEGRATION_RULE" == *'本机测试库'* && "$VERIFY_LEAD_RULE" == '本地定向验证全绿；' && "$CI_REPRO_RULE" == *'RUN_INTEGRATION=1 npx vitest run'* ]] \
-    || { echo 'not ok - no-config-root call did not keep the three default texts' >&2; exit 1; }
-  git -C "$ROOT" branch -f agent/issue-prompt-pr-no-root HEAD
-  jq -n '{units:[{id:"issue-prompt-pr-no-root",issue:907,task:"pr implementation",branch:"agent/issue-prompt-pr-no-root",stage:"implement-pending",lane:"pr",title:"prompt fixture",history:[]}]}' > "$UNITS"
-  dispatch_pending false >/dev/null
-  [[ "$captured_type" == implement && "$captured_prompt" == *"本地定向验证全绿；$INTEGRATION_RULE"* ]] \
-    || { echo 'not ok - no-config-root implement prompt lost the local wording' >&2; exit 1; }
-)
-(
   runner_root="$fixture/runner-config"; mkdir -p "$runner_root"
   printf '%s\n' '{"engine":{"test_exec":"/stub/test-runner"}}' > "$runner_root/config.json"
   export ZF_CONFIG_ROOT="$runner_root"
-  apply_test_host_rules
-  jq -n '{units:[{id:"issue-prompt-pr-runner",issue:906,task:"pr implementation",branch:"agent/issue-prompt-pr-runner",stage:"implement-pending",lane:"pr",title:"prompt fixture",history:[]}]}' > "$UNITS"
-  dispatch_pending false >/dev/null
-  [[ "$captured_type" == implement && "$captured_prompt" == *'/stub/test-runner "$(git rev-parse --show-toplevel)" -- <命令>'* ]] \
-    || { echo 'not ok - runner-configured pr implement prompt lacks the configured runner call shape' >&2; exit 1; }
-  [[ "$captured_prompt" == *'本机只跑 agent'* && "$captured_prompt" == *'test host unavailable'* && "$INTEGRATION_RULE" == *'交给 PR 的 CI 验证'* ]] \
-    || { echo 'not ok - runner-configured pr implement prompt lacks the agents-only or CI-verifies sentences' >&2; exit 1; }
-  [[ "$captured_prompt" != *'RUN_INTEGRATION=1 npx vitest run'* && "$captured_prompt" != *'本机测试库'* && "$captured_prompt" != *'本地定向验证'* ]] \
-    || { echo 'not ok - runner-configured pr implement prompt still runs tests on this host' >&2; exit 1; }
-  [[ "$CI_REPRO_RULE" == *'不在本机复现'* && "$CI_REPRO_RULE" != *'RUN_INTEGRATION=1 npx vitest run'* && "$CI_REPRO_RULE" != *'本机测试库'* ]] \
-    || { echo 'not ok - runner-configured repair hint still reproduces on this host' >&2; exit 1; }
-)
-(
   export ZF_TEST_EXEC=/env-wins/test-runner
-  apply_test_host_rules
-  [[ "$VERIFY_LEAD_RULE" == *'/env-wins/test-runner'* ]] \
-    || { echo 'not ok - ZF_TEST_EXEC did not win over the configured runner' >&2; exit 1; }
+  git -C "$ROOT" branch -f agent/issue-prompt-pr-configured HEAD
+  jq -n '{units:[{id:"issue-prompt-pr-configured",issue:909,task:"pr implementation",branch:"agent/issue-prompt-pr-configured",stage:"implement-pending",lane:"pr",title:"prompt fixture",history:[]}]}' > "$UNITS"
+  dispatch_pending false >/dev/null
+  [[ "$captured_type" == implement && "$captured_prompt" == *"$VERIFY_LEAD_RULE$INTEGRATION_RULE"* \
+    && "$captured_prompt" != *'/stub/test-runner'* && "$captured_prompt" != *'/env-wins/test-runner'* \
+    && "$captured_prompt" != *'RUN_INTEGRATION=1'* ]] \
+    || { echo 'not ok - test runner config changed the static-check and PR CI policy' >&2; exit 1; }
 )
+[[ "$CI_REPRO_RULE" == *'读取本 PR 的 CI 日志定位'* && "$CI_REPRO_RULE" == *'不在本机或测试 runner 运行测试'* ]] \
+  || { echo 'not ok - repair hint does not use CI logs and forbid local repro' >&2; exit 1; }
 grep -q '${CI_REPRO_RULE}' "$HERE/scheduler.d/ci-status.sh" && grep -q '${CI_REPRO_RULE}' "$HERE/scheduler.d/merge-lane.sh" \
   || { echo 'not ok - ci repair hints no longer interpolate the shared reproduction rule' >&2; exit 1; }
+for prompt_source in self-check.sh merge-tree-sweep.sh ci-admission.sh merge-lane.sh; do
+  if grep -Eq '跑受影响测试|运行受影响测试|run the affected tests|run the failing suite locally' "$HERE/scheduler.d/$prompt_source"; then
+    echo "not ok - $prompt_source asks a repair worker to run tests locally" >&2
+    exit 1
+  fi
+done
+if grep -Fq 'review fix scope and receipt gate' "$HERE/scheduler.d/review-fixes.sh"; then
+  echo 'not ok - reviewer-fix report gate still asks for a local receipt' >&2
+  exit 1
+fi
+[[ "$contract_prompt" == *'Do not run test files or suites locally'* \
+  && "$contract_prompt" == *'push the change and let PR CI run the tests and provide the receipt'* \
+  && "$contract_prompt" != *'RUN_INTEGRATION=1'* \
+  && "$contract_prompt" != *'see each test fail before its fix'* \
+  && "$contract_prompt" != *'run the affected tests locally'* \
+  && "$contract_prompt" != *'run the full suite locally' ]] \
+  || { echo 'not ok - implement contract does not make PR CI the test receipt' >&2; exit 1; }
+
+for prompt_source in "$repo_root/engine/dispatch-codex.sh" "$repo_root/engine/night/dispatch.sh" \
+  "$repo_root/engine/land-queue.sh" "$repo_root/engine/hotfix/hf-start.sh" \
+  "$repo_root/engine/prompts/guarded-recut-hand.md"; do
+  if grep -Eiq 'run focused verification|run (the )?(exact )?test locally|run (focused )?(local )?tests|run tests in the returned candidate|write the local push-guard receipt|run focused suites for the conflicting files|run the tests and type checks' "$prompt_source"; then
+    echo "not ok - $prompt_source asks an implement or repair worker to run tests before delivery" >&2
+    exit 1
+  fi
+  grep -Eiq 'do not run test files|do not execute test files|do not run suites locally' "$prompt_source" \
+    || { echo "not ok - $prompt_source lacks the no-local-tests contract" >&2; exit 1; }
+done
+if grep -Eq 'run (SCHED_TEST_CASE=prelude|the failing engine/|bash engine/mac-autopilot/review-family[.]test[.]sh)' "$repo_root/tools/merge-pr.sh"; then
+  echo 'not ok - merge refusal instructions ask workers to run local test suites' >&2
+  exit 1
+fi
+for delivery_source in "$HERE/scheduler.d/dispatch-queue.sh" "$HERE/scheduler.d/self-check.sh" \
+  "$HERE/scheduler.d/worker-command.sh"; do
+  if grep -Fq 'node scripts/branch-delivery-preflight.mjs' "$delivery_source"; then
+    echo "not ok - $delivery_source sends workers through a preflight that can run local suites" >&2
+    exit 1
+  fi
+done
 
 # A direct-main unit still dispatches if its mocked worktree has no readable HEAD.
 missing_head_root="$fixture/no-head-worktree"

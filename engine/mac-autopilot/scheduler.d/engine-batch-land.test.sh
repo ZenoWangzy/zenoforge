@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# The engine batch lander (merge station, engine_batch_land.enabled): lands every ready Zenoforge PR through tools/merge-pr.sh, names and skips the ones that
-# conflict, are drafts, have no green receipt or are refused, never merges one PR twice, and does nothing while its knob is off.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -21,15 +19,8 @@ A="$MAC_AUTOPILOT_RUNTIME_DIR"; LOG="$A/scheduler.log"; STAMP=T; : > "$LOG"
 ENGINE_BATCH_LAND_UNKNOWN_WAIT=0
 
 hd() { printf '%040d' "$1"; } # a 40-digit fake head per PR number
-mkclone() { command git init -q "$fixture/clones/$1"; mkdir -p "$fixture/clones/$1/.git/zf-test-receipts"; }
-receipt() { printf '%s\t%s\n' "$3" "bash engine/x.test.sh" >> "$fixture/clones/$1/.git/zf-test-receipts/$(hd "$2")"; } # clone pr rc
-mkclone auth1; mkclone auth2
-receipt auth1 1 0                                     # PR 1: green
-receipt auth1 3 0; receipt auth1 3 1                  # PR 3: the last run is red
-receipt auth1 5 0                                     # PR 5: green, but merge-pr refuses it
-receipt auth2 6 0                                     # PR 6: green, receipt in the other clone, mergeability still UNKNOWN on the listing
-receipt auth1 7 1; receipt auth1 7 0                  # PR 7: red, then green: the last run counts
-receipt auth1 2 0; receipt auth2 8 0                  # PR 2 conflicts, PR 8 is a draft
+mkclone() { command git init -q "$fixture/clones/$1"; }
+mkclone auth1
 PRS="$fixture/prs.json"
 list_json() {
   jq -cn --arg h1 "$(hd 1)" --arg h2 "$(hd 2)" --arg h3 "$(hd 3)" --arg h4 "$(hd 4)" --arg h5 "$(hd 5)" --arg h6 "$(hd 6)" --arg h7 "$(hd 7)" --arg h8 "$(hd 8)" \
@@ -48,13 +39,16 @@ gh() { # pr list -> the open PRs; pr view N --json mergeable -q .mergeable -> wh
 CALLS="$fixture/merge.calls"
 cat > "$fixture/merge-pr.sh" <<SH
 #!/usr/bin/env bash
-# stands in for tools/merge-pr.sh: records the PR and the clone it ran in, refuses PR 5, and takes the PR off the open list like a real merge
 printf '%s %s\n' "\$1" "\$(basename "\$PWD")" >> "$CALLS"
 [[ "\${MERGE_SLEEP:-0}" == 0 ]] || sleep "\$MERGE_SLEEP"
+if [[ "\$1" == 3 || "\$1" == 4 ]]; then echo "refusing to merge PR #\$1: PR CI has not completed all required test checks" >&2; exit 1; fi
 if [[ "\$1" == 5 ]]; then echo "refusing to merge PR #5: PR body has no ## prior-art section" >&2; exit 1; fi
 jq -c --argjson n "\$1" 'map(select(.number != \$n))' "$PRS" > "$PRS.new" && mv "$PRS.new" "$PRS"
 SH
-CFG="$(jq -c --arg script "$fixture/merge-pr.sh" --arg clones "$fixture/clones" '.engine_batch_land={enabled:true,merge_script:$script,clones_dir:$clones}' "$A/config.json")"
+mkdir -p "$fixture/clones/auth1/tools"
+mv "$fixture/merge-pr.sh" "$fixture/clones/auth1/tools/merge-pr.sh"
+script="$fixture/clones/auth1/tools/merge-pr.sh"
+CFG="$(jq -c --arg script "$script" '.engine_batch_land={enabled:true,merge_script:$script}' "$A/config.json")"
 
 # Knob off (the template has no such key): nothing is listed or merged.
 CFG_ON="$CFG"; CFG="$(jq -c . "$A/config.json")"; list_json; : > "$CALLS"
@@ -69,15 +63,16 @@ CFG="$CFG_ON"
 # One pass lands the ready PRs and names every skip with its reason.
 : > "$LOG"; : > "$CALLS"; list_json
 engine_batch_land
-[[ "$(sort "$CALLS" | tr '\n' ';')" == '1 auth1;5 auth1;6 auth2;7 auth1;' ]] || fail "wrong set of merge-pr calls (conflicting, draft, red and receipt-less PRs must not reach it): $(tr '\n' ';' < "$CALLS")"
+[[ "$(sort "$CALLS" | tr '\n' ';')" == '1 auth1;3 auth1;4 auth1;5 auth1;6 auth1;7 auth1;' ]] || fail "wrong set of merge-pr calls (every mergeable non-draft PR must reach the CI merge gate): $(tr '\n' ';' < "$CALLS")"
 [[ "$(jq -c '[.[].number]' "$PRS")" == '[2,3,4,5,8]' ]] || fail "wrong PRs left open: $(cat "$PRS")"
-for want in 'PR#1 merged' 'PR#6 merged' 'PR#7 merged' 'PR#2 skipped: mergeable=CONFLICTING' 'PR#3 skipped: no green test receipt' 'PR#4 skipped: no green test receipt' \
+for want in 'PR#1 merged' 'PR#6 merged' 'PR#7 merged' 'PR#2 skipped: mergeable=CONFLICTING' \
+  'PR#3 skipped: merge-pr rc=1: refusing to merge PR #3: PR CI has not completed all required test checks' \
+  'PR#4 skipped: merge-pr rc=1: refusing to merge PR #4: PR CI has not completed all required test checks' \
   'PR#5 skipped: merge-pr rc=1: refusing to merge PR #5: PR body has no ## prior-art section' 'PR#8 skipped: draft' 'done landed=3 skipped=5'; do
   grep -Fq "engine batch land $want" "$LOG" || fail "log lacks: $want ($(cat "$LOG"))"
 done
 
-# A second pass over what is left lands nothing more.
-: > "$CALLS"; engine_batch_land; [[ "$(cat "$CALLS")" == '5 auth1' ]] || fail "a later pass retried something other than the refused PR: $(cat "$CALLS")"
+: > "$CALLS"; engine_batch_land; [[ "$(tr '\n' ';' < "$CALLS")" == '3 auth1;4 auth1;5 auth1;' ]] || fail "a later pass did not retry only CI/prior-art refusals: $(tr '\n' ';' < "$CALLS")"
 
 # The per-pass cap: one PR, then the rest wait.
 list_json; : > "$CALLS"; : > "$LOG"; CFG="$(jq -c '.engine_batch_land.max_per_pass=1' <<<"$CFG_ON")"
@@ -92,7 +87,7 @@ list_json; : > "$CALLS"; : > "$LOG"
 wait "$p1" "$p2" || :
 dups="$(sort "$CALLS" | uniq -d | tr '\n' ';')"
 [[ -z "$dups" ]] || fail "a PR reached merge-pr twice: $dups"
-[[ "$(sort -u "$CALLS" | wc -l)" == 4 ]] || fail "the racing passes did not land 1, 5 (refused), 6 and 7 once each: $(tr '\n' ';' < "$CALLS")"
+[[ "$(sort -u "$CALLS" | wc -l)" == 6 ]] || fail "the racing passes did not reach 1, 3, 4, 5, 6 and 7 once each: $(tr '\n' ';' < "$CALLS")"
 grep -Fq 'engine batch land busy: pass skipped' "$LOG" || fail 'the second pass did not skip on the lock'
 # Control: without the lock the same race calls merge-pr twice per PR, so the check above is the lock's doing.
 list_json; : > "$CALLS"
@@ -101,4 +96,4 @@ eval "$(declare -f engine_batch_land | sed 's/flock -n "\$fd"/true/')"
 ( MERGE_SLEEP=1 engine_batch_land ) & p2=$!
 wait "$p1" "$p2" || :
 [[ -n "$(sort "$CALLS" | uniq -d)" ]] || fail 'control: two unlocked passes did not both reach merge-pr; the race fixture proves nothing'
-printf 'ok - engine batch land: lands ready PRs, names skips, one lander at a time, off by default\n'
+printf 'ok - engine batch land: sends mergeable PRs to the CI merge gate, names skips, one lander at a time, off by default\n'

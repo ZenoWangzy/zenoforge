@@ -227,8 +227,11 @@ rendered="$NIGHT/.rendered-$NAME.md"
 ## Required incremental landing
 
 Publish each independently complete unit before beginning the next:
-run focused verification, commit, push (direct to main for pipeline-system
-changes; open or update a PR for product code), leave the issue/PR record.
+run only static checks (`bash -n`, `node --check`, and static lint/typecheck
+scans), commit, push (direct to main for pipeline-system changes; open or
+update a PR for product code), and leave the issue/PR record.
+Do not run test files or suites locally or record local test receipts.
+Product PR CI supplies the test receipt; the post-land pipeline verifies direct-main changes.
 For product code, open/update the PR, record it in your report, then exit.
 The night caretaker merges PRs after checks turn green. Do not poll CI or wait
 for a queue. Start the next unit immediately after publishing.
@@ -238,41 +241,11 @@ written in your report with the reason.
 ## Repairing a PR after failed CI
 
 Before pushing a repair head for an existing PR, inspect the failed step in
-the existing CI log and identify the failing test file or command. Run that
-exact test locally on the repaired head; for build, typecheck, or static-check
-failures, run the matching local command. If CI-only infrastructure prevents
-the exact run, run the closest available focused check and record the failed
-step, local command, and limitation in your report. Never claim the failed
-check passed locally when it did not run. Do not rerun CI or wait for it.
-
-Use the live checkout's `branch-delivery-preflight.mjs` to run that exact
-command and write the local push-guard receipt. Read the failed check's
-`link`, `name`, and `completedAt` from `gh pr checks <PR> --json name,link,completedAt,bucket`,
-and the old head from `gh pr view <PR> --json headRefOid --jq .headRefOid`.
-After committing the repaired head, run:
-
-```bash
-node "@AGENT_HOME@/checkout/scripts/branch-delivery-preflight.mjs" --mode push --target main \
-  --repair-ci-failure-link "$FAILED_CHECK_LINK" --repair-ci-check "$FAILED_CHECK_NAME" \
-  --repair-ci-failed-head "$FAILED_HEAD_SHA" --repair-ci-failed-at "$FAILED_CHECK_COMPLETED_AT" \
-  --repair-ci-failing-path "$FAILING_TEST_FILE" --repair-ci-command "$EXACT_FAILED_COMMAND"
-```
-
-For one failing unit from an aggregate shard, omit `--repair-ci-full-check`; the
-receipt says `focused-passed`, never that the shard passed. Add
-`--repair-ci-full-check` and remove `--repair-ci-failing-path` only after
-running the entire failed check command.
-For a stale, diff-unrelated unit, add `--repair-ci-stale-on-main`; the writer
-requires the exact command to pass on both tested HEAD and freshly fetched
-`origin/main`, pins that main SHA, and verifies the test path is outside the PR
-diff. `--repair-ci-reproduces-on-main` requires failure on both tested HEAD
-and fresh main with the same path bound outside the diff. A command that fails
-on tested HEAD but passes on main is a candidate failure; fix it.
-
-If CI-only infrastructure prevents that command, remove
-`--repair-ci-failing-path` and replace `--repair-ci-command` with
-`--repair-ci-only-reason "<specific local infrastructure limitation>"`.
-Run from the repaired worktree; receipt binds to its current `HEAD` and branch.
+the CI log and identify the failing test or static check. Use the CI output to
+fix test failures without reproducing suites locally. For static-check
+failures, run the matching static command. Commit and push the repaired head;
+its PR CI result is the receipt. Do not run a test runner or write a local
+receipt, and do not poll CI or wait for it.
 
 If another fix blocks your work, write this as the report's first line and
 exit: `STATUS: BLOCKED-ON <commit-subject-regex|issue N|agent name>`.
@@ -286,9 +259,9 @@ worktree when it lands. Do not poll or idle-wait. SPINNING token threshold:
 
 ## Delivery lane (maintainer rulings 2026-09-23 / 2026-09-24: pipeline changes land directly and fast)
 
-- **Pipeline-system changes** — anything under `engine/`, `.agents/skills/`, `docs/agents/`, `lessons/`, and the operator scripts — do NOT go through PR / CI queue / Postsubmit / release. Run focused local tests, then `node scripts/branch-delivery-preflight.mjs --mode commit` before committing. Write issue references as `issue NNNN`, never `Fixes #NNNN`. Commit on your own branch with `[skip ci]` in every subject. Add a `Plan-Package` trailer, then run `bash engine/land-direct-main.sh --enqueue`. It records the request and returns immediately; the detached unit serializes rebase, fast local preflight, and push. Exit with `STATUS: LANDING-QUEUED`; the unit updates your report to `DONE` with `LANDED <sha>`. If landing fails, it writes `BLOCKED-ON landing-failed <ticket>` and night tick resumes you in the same worktree. Never wait for the unit or CI. Never check out `main` in any worktree; never touch `$HOME/src/target-repo` or `@AGENT_HOME@/checkout`. Keep pipeline-only and docs-only commits separate. The pipeline runs from `@AGENT_HOME@/checkout`, which fast-forwards to main on its next tick — that is the deploy.
+- **Pipeline-system changes** — anything under `engine/`, `.agents/skills/`, `docs/agents/`, `lessons/`, and the operator scripts — do NOT go through PR / CI queue / Postsubmit / release. Run only static checks before committing; the post-land Pipeline suites verify the change. Write issue references as `issue NNNN`, never `Fixes #NNNN`. Commit on your own branch with `[skip ci]` in every subject. Add a `Plan-Package` trailer, then run `bash engine/land-direct-main.sh --enqueue`. It records the request and returns immediately; the detached unit serializes rebase, fast local preflight, and push. Exit with `STATUS: LANDING-QUEUED`; the unit updates your report to `DONE` with `LANDED <sha>`. If landing fails, it writes `BLOCKED-ON landing-failed <ticket>` and night tick resumes you in the same worktree. Never wait for the unit or CI. Never check out `main` in any worktree; never touch `$HOME/src/target-repo` or `@AGENT_HOME@/checkout`. Keep pipeline-only and docs-only commits separate. The pipeline runs from `@AGENT_HOME@/checkout`, which fast-forwards to main on its next tick — that is the deploy.
 - **the product product code** (`packages/`, `apps/`, anything that ships in a production image) keeps the full flow: topic branch → PR → CI → merge → release leg → production acceptance.
-- **This dev box has no container runtime.** Testcontainers integration suites and image builds cannot run here. Run unit tests and typecheck locally, then commit, push and open the PR; PR CI ("Run touched Postsubmit integration gates" and the image jobs) is where those gates run. A missing local Docker is never a reason to hold back a commit, a push or a PR, and never a `BLOCKED-ON`.
+- **This dev box has no container runtime.** Testcontainers integration suites and image builds run in PR CI ("Run touched Postsubmit integration gates" and the image jobs). Run only static checks locally, then commit, push and open the PR. A missing local Docker is never a reason to hold back a commit, a push or a PR, and never a `BLOCKED-ON`.
 - `.github/workflows/*` other than the agent-workflow-contract file are not in the direct lane; they still need a PR.
 
 ## Follow-up and final status contract
@@ -312,8 +285,8 @@ PRE
 Never edit the live pipeline checkout: `@AGENT_HOME@/checkout` is what the pipeline executes. Read it only; work in your own worktree.
 Do not run `gitnexus analyze` on any path, including temporary clones. Query the existing index with the `gitnexus` CLI and explicit `--repo`. Skip whole-repository suites when a package-scoped suite covers the change.
 Keep MAX_AGENTS configurable. The default cap is 10 hand agents; existing memory and load guards still apply.
-For cihost source tests, commit the candidate, then call scripts/ops/sync-cihost-candidate.sh through with-credentials.sh with exact candidate and base SHAs. Run tests in the returned candidate= path; record bytes_sent, cache, and exact tree receipt. First call sends only compressed delta; same-SHA cache hit sends zero source-payload bytes. Never send a whole-source bundle or tar for cihost source tests; dedicated GitNexus bundle flows stay separate.
-Other hand agents run suites on this host at the same time. Stop only processes you started, by the PID you recorded when you started them; never kill, pkill or killall a process you found by scanning, because another agent's test tree looks like yours.
+For cihost source changes, commit and publish the candidate, then rely on its PR CI checks; do not run suites in a synchronized candidate checkout. Record bytes_sent and cache when using scripts/ops/sync-cihost-candidate.sh through with-credentials.sh. First call sends only compressed delta; same-SHA cache hit sends zero source-payload bytes. Never send a whole-source bundle or tar; dedicated GitNexus bundle flows stay separate.
+Other hand agents may have processes on this host at the same time. Stop only processes you started, by the PID you recorded when you started them; never kill, pkill or killall a process you found by scanning.
 PRE
   cat "$BRIEF"
   if [ -n "$RESUME_NOTE" ]; then
@@ -335,11 +308,12 @@ export no_proxy=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8 \
   NO_PROXY=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8
 attempt_started_at="$(date +%s%N)"
 PROVIDER_EPISODE="${PROVIDER_EPISODE:-$attempt_started_at}"
-worker_env=()
+install_guard_path="$SCRIPT_DIR/bin/install-guard"
+worker_env=("ZF_TESTS_CI_ONLY=1" "PATH=$install_guard_path:$PATH")
 if [[ "$HAND_NON_PRODUCT_UNIT" == 1 ]]; then
-  PATH="$SCRIPT_DIR/non-product-test-shim:$PATH"
+  PATH="$SCRIPT_DIR/non-product-test-shim:$install_guard_path:$PATH"
   export PATH
-  worker_env=("ZF_NON_PRODUCT_UNIT=1" "ZF_PIPELINE_UNIT=$HAND_UNIT" "PATH=$PATH")
+  worker_env+=("ZF_NON_PRODUCT_UNIT=1" "ZF_PIPELINE_UNIT=$HAND_UNIT" "PATH=$PATH")
 fi
 codex_home_args=()
 [ "$PROVIDER" != codex ] || [ -z "${CODEX_HOME:-}" ] || codex_home_args=(-E "CODEX_HOME=$CODEX_HOME")

@@ -218,6 +218,8 @@ shell_test_command() {
     if shell_script_is_test "$script"; then test_mode=shell; test_args=("$script"); fi
   elif (( i < count )) && [[ ${args[$i]} == *.test.sh ]]; then
     test_mode=shell; test_args=("${args[@]:$i}")
+  elif (( i < count )) && [[ ${ZF_TESTS_CI_ONLY:-0} == 1 && ${args[$i]} == *tools/test-receipt.sh ]]; then
+    test_mode=receipt; test_args=("${args[@]:$i}")
   fi
 }
 
@@ -254,6 +256,11 @@ suite_guard_log() {
 }
 
 if [[ -n $test_mode ]]; then
+  if [[ ${ZF_TESTS_CI_ONLY:-0} == 1 ]]; then
+    suite_guard_log refused-ci-only "${original_args[@]}"
+    echo 'zenoforge: worker tests are run by PR CI; do not run test files, suites, or local receipt commands' >&2
+    exit 64
+  fi
   if (( ! has_selector )); then
     if [[ ${ZF_ALLOW_WHOLE_SUITE:-0} == 1 ]]; then
       suite_guard_log allowed-by-override "${original_args[@]}"

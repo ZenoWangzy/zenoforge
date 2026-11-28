@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# Run the CI-equivalent local suites for this exact HEAD, record their exit
-# codes under .git, then merge only if GitHub still reports the tested SHA.
 set -uo pipefail
 export ZF_GH_NO_CACHE=1
 source "$(dirname -- "${BASH_SOURCE[0]}")/../engine/lib.d/transport.sh"
-# Must match the shard matrix in .github/workflows/engine-tests.yml.
-MERGE_PR_ENGINE_SHARDS=8
-MERGE_PR_MAX_PARALLEL=4
 source "$(dirname -- "${BASH_SOURCE[0]}")/merge-pr-bootstrap.sh"
+MERGE_PR_ENGINE_SHARDS=8
 
 merge_pr_root() { git rev-parse --show-toplevel 2>/dev/null; }
 
@@ -15,32 +11,6 @@ if ! source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/engine/la
   printf 'merge-pr: cannot load engine/land-admit.sh\n' >&2
   return 1 2>/dev/null || exit 1
 fi
-
-merge_pr_result_dir() {
-  local repo="$1" git_dir
-  git_dir="$(git -C "$repo" rev-parse --git-dir 2>/dev/null)" || return 1
-  case "$git_dir" in
-    /*) ;;
-    *) git_dir="$repo/$git_dir" ;;
-  esac
-  printf '%s/zenoforge-merge-pr\n' "$git_dir"
-}
-
-merge_pr_result_file() {
-  local dir
-  dir="$(merge_pr_result_dir "$1")" || return 1
-  printf '%s/%s.json\n' "$dir" "$2"
-}
-
-merge_pr_receipt_file() {
-  local repo="$1" git_dir
-  git_dir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  case "$git_dir" in
-    /*) ;;
-    *) git_dir="$repo/$git_dir" ;;
-  esac
-  printf '%s/zf-test-receipts/%s\n' "$git_dir" "$2"
-}
 
 merge_pr_refuse() { local fix="${3:-}" # pr reason [fix]
   case "$2" in 'could not'*|cannot*) : "${fix:=retry; if it repeats check gh auth status, the network and the checkout path}" ;; esac
@@ -54,19 +24,6 @@ merge_pr_join_checks() {
     printf '%s%s' "$separator" "$check_name"
     separator=', '
   done
-}
-
-merge_pr_result_is_green() {
-  local result_file="$1" sha="$2"
-  jq -e --arg sha "$sha" '
-    .sha == $sha
-    and .green == true
-    and .cli_exit_code == 0
-    and (.engine_shards | type == "array"
-      and length == 8
-      and ([.[].shard] | sort == [0,1,2,3,4,5,6,7])
-      and all(.[]; .exit_code == 0))
-  ' "$result_file" >/dev/null 2>&1
 }
 
 # Ruling zenoforge-limited-allow-research-first-2026-11-05: a PR body must cite
@@ -114,23 +71,9 @@ merge_pr_prior_art_ok() {
   fi
 }
 
-# A merge must not follow a failed test: tools/test-receipt.sh records each test
-# command's exit code for the exact HEAD it ran at, and the merge needs every
-# command's last recorded run green. A Markdown-only PR (the quick-land path)
-# has no test run to prove, and a green full-suite result for the same SHA
-# (merge_pr_main) is itself a receipt.
 merge_pr_ci_green_check_count() {
-  local pr="$1" head_sha="$2" success_only="${3:-false}" with_url="${4:-false}" view count files_raw files path
+  local pr="$1" head_sha="$2" success_only="${3:-false}" with_url="${4:-false}" view count
   view="$(if [[ "$with_url" == true ]]; then merge_pr_rollup_rest "$pr"; else gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null || merge_pr_rollup_rest "$pr" 2>/dev/null; fi)" || return 1
-  files_raw="$(gh_pr_files_cached "$(gh_key_cache_repo)" "$pr" "$head_sha" 2>/dev/null)" || return 1
-  files="$(jq -rs 'add // [] | .[].filename' <<<"$files_raw")" || return 1
-  [[ -n "$files" ]] || return 1
-  while IFS= read -r path; do
-    case "$path" in
-      .github/*|tools/run-engine-tests.sh|.zenoforge/ci.json) return 1 ;;
-      '') return 1 ;;
-    esac
-  done <<<"$files"
   # headRefOid anchors the rollup to this commit; GitHub CheckRuns have no per-check SHA.
   count="$(jq -er --arg sha "$head_sha" --arg strict "$success_only" --arg details "$with_url" --argjson shards "$MERGE_PR_ENGINE_SHARDS" '
     def check_run_time: .startedAt // .completedAt;
@@ -163,62 +106,58 @@ merge_pr_ci_green_check_count() {
   printf '%s\n' "$count"
 }
 
+merge_pr_external_ci_green_check_count() {
+  local pr="$1" head_sha="$2" view count
+  view="$(gh pr view "$pr" --json headRefOid,statusCheckRollup 2>/dev/null || merge_pr_rollup_rest "$pr" 2>/dev/null)" || return 1
+  count="$(jq -er --arg sha "$head_sha" '
+    def check_run_time: .startedAt // .completedAt;
+    def completed_success:
+      if .__typename == "CheckRun" then
+        .status == "COMPLETED"
+        and (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL")
+      elif .__typename == "StatusContext" then .state == "SUCCESS"
+      else false end;
+    . as $view
+    | ($view.statusCheckRollup // null) as $checks
+    | select($view.headRefOid == $sha)
+    | select($checks | type == "array" and length > 0)
+    | ([$checks[] | select(.__typename == "CheckRun" and check_run_time != null)]
+      | group_by([.workflowName, .name])
+      | map(max_by(check_run_time))) as $newest_check_runs
+    | ([$checks[] | select(.__typename != "CheckRun" or check_run_time == null)]) as $single_checks
+    | ($newest_check_runs + $single_checks) as $current_checks
+    | select(all($current_checks[]; completed_success))
+    | select(any($current_checks[]; .__typename == "CheckRun" and (.workflowName | type == "string" and length > 0)))
+    | $current_checks | length
+  ' <<<"$view" 2>/dev/null)" || return 1
+  printf '%s\n' "$count"
+}
+
 merge_pr_test_receipt_ok() {
-  local pr="$1" view head_sha root result_file='' receipt bad
+  local pr="$1" zenoforge="${2:-false}" view head_sha count
   if ! view="$(merge_pr_view "$pr" body,files,commits 2>/dev/null)" \
     || ! jq -e '.files | type == "array" and length > 0' <<<"$view" >/dev/null 2>&1; then
-    merge_pr_refuse "$pr" 'could not read the PR file list for the test receipt'
+    merge_pr_refuse "$pr" 'could not read the PR file list for the CI receipt'
     return 1
   fi
   if jq -e 'all(.files[].path; test("\\.md$"))' <<<"$view" >/dev/null 2>&1; then
     return 0
   fi
   head_sha="$(merge_pr_head_sha "$pr")" || {
-    merge_pr_refuse "$pr" 'could not read the PR head for the test receipt'
+    merge_pr_refuse "$pr" 'could not read the PR head for the CI receipt'
     return 1
   }
-  root="$(merge_pr_root)" || {
-    merge_pr_refuse "$pr" 'run this helper inside a Git checkout so test receipts can be found'
-    return 1
-  }
-  if result_file="$(merge_pr_result_file "$root" "$head_sha")" \
-    && [[ -e "$result_file" || -L "$result_file" ]]; then
-    if merge_pr_result_is_green "$result_file" "$head_sha"; then
-      printf 'merge-pr: receipt: local\n' >&2
-      return 0
-    fi
-    if [[ -f "$result_file" ]] && jq -e --arg sha "$head_sha" '
-      .sha == $sha and (.green == false
-        or .cli_exit_code != 0
-        or any(.engine_shards[]?; .exit_code != 0))
-    ' "$result_file" >/dev/null 2>&1; then
-      merge_pr_refuse "$pr" "full local suites are red for SHA $head_sha" 'fix the failing suite, commit, and rerun the full suites at the new HEAD'
-    else
-      merge_pr_refuse "$pr" "the full-suite result for SHA $head_sha is incomplete or invalid" 'rerun the full suites at that SHA to rewrite the result'
-    fi
-    return 1
+  if [[ "$zenoforge" == true ]]; then
+    count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")" || count=''
+  else
+    count="$(merge_pr_external_ci_green_check_count "$pr" "$head_sha")" || count=''
   fi
-  receipt="$(merge_pr_receipt_file "$root" "$head_sha")" || {
-    merge_pr_refuse "$pr" 'cannot locate the repository test-receipt directory'
-    return 1
-  }
-  if [[ ! -s "$receipt" ]]; then
-    if count="$(merge_pr_ci_green_check_count "$pr" "$head_sha")"; then
-      printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
-      return 0
-    fi
-    merge_pr_refuse "$pr" "no test receipt exists for $head_sha: run the tests at that HEAD through tools/test-receipt.sh <command...>"
-    return 1
+  if [[ -n "$count" ]]; then
+    printf 'merge-pr: receipt: ci-green %s checks at %.12s\n' "$count" "$head_sha" >&2
+    return 0
   fi
-  if [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
-    merge_pr_refuse "$pr" "test receipt for $head_sha is empty or invalid" 'run the tests at this HEAD again through tools/test-receipt.sh <command...>'
-    return 1
-  fi
-  if ! bad="$(LAND_RECEIPT_STRICT=1 land_receipt_green "$receipt" 2>&1)"; then
-    merge_pr_red_receipt_ci_superseded "$pr" "$head_sha" "$bad" && return 0 || merge_pr_refuse "$pr" "test receipt for $head_sha has a failed last run: $bad" 'fix the failing command, then rerun it at this HEAD through tools/test-receipt.sh <command...>'
-    return 1
-  fi
-  printf 'merge-pr: receipt: local\n' >&2
+  merge_pr_refuse "$pr" "PR CI has not completed all required test checks for $head_sha" 'wait for PR CI to pass on this head, then rerun tools/merge-pr.sh <pr>'
+  return 1
 }
 
 # Only this PR's own files: a main already over its baseline must not stop other merges.
@@ -279,7 +218,7 @@ merge_pr_scheduler_prelude_ok() {
   fi
   if out="$(merge_pr_scheduler_prelude "$pr")"; then return 0; else rc=$?; fi
   if [[ "$rc" == 124 ]]; then timeout_note=' (timeout 900s)'; fi
-  merge_pr_refuse "$pr" "scheduler.test.sh prelude failed rc=$rc$timeout_note: $out" 'run SCHED_TEST_CASE=prelude bash engine/mac-autopilot/scheduler.test.sh, fix the failure, push'
+  merge_pr_refuse "$pr" "scheduler.test.sh prelude failed rc=$rc$timeout_note: $out" 'fix the source, push the updated head, and wait for PR CI'
 }
 # These scans take seconds, so they run here and hold no merge on CI: #502 reached main past jq-arg-safety.
 merge_pr_static_scans_in() {
@@ -300,7 +239,7 @@ merge_pr_static_scans_ok() {
   fi
   (( touched > 0 )) || return 0
   out="$(merge_pr_static_scans "$pr")" && return 0
-  merge_pr_refuse "$pr" "static scan failed: $out" 'run the failing engine/<scan>.test.sh named above, fix the finding, push'
+  merge_pr_refuse "$pr" "static scan failed: $out" 'fix the source finding, push the updated head, and wait for PR CI'
 }
 # review-family.test.sh greps the review dispatch lines: #599 changed one, its own CI was cancelled on merge, and main went red.
 merge_pr_review_family_in() {
@@ -317,7 +256,7 @@ merge_pr_review_family_ok() {
   fi
   (( touched > 0 )) || return 0
   out="$(merge_pr_review_family "$pr")" && return 0
-  merge_pr_refuse "$pr" "review-family.test.sh failed: $out" 'run bash engine/mac-autopilot/review-family.test.sh, fix the failure, push'
+  merge_pr_refuse "$pr" "review-family.test.sh failed: $out" 'fix the source, push the updated head, and wait for PR CI'
 }
 # The pin three-way merges every overridden engine file into the target's pack copy and refuses on a conflict (tools/pin-vecta.sh): #643 merged such a change and stopped every pin for 12 minutes.
 # Same table, base blob, pack path and `git merge-file ours base theirs` as the pin; only files the PR touches are read, so a clean merge passes.
@@ -607,10 +546,9 @@ merge_pr_checks_and_merge() {
     merge_pr_prior_art_ok "$pr" || return 1
   fi
   merge_pr_bootstrap_ok "$pr" || return 1
-  [[ "$zenoforge" == true ]] || merge_pr_test_receipt_ok "$pr" || return 1
+  merge_pr_test_receipt_ok "$pr" "$zenoforge" || return 1
   merge_pr_size_ok "$pr" || return 1
   [[ "$zenoforge" == true ]] || merge_pr_gate_ci_ok "$pr" "$checks_json" || return 1
-  [[ "$zenoforge" == true ]] && printf 'merge-pr: local test checks skipped for PR #%s (founder ruling zenoforge_merge_without_tests_2026_11_21; fix forward)\n' "$pr" >&2 || :
   [[ "$zenoforge" == true ]] || merge_pr_scheduler_prelude_ok "$pr" || return 1
   [[ "$zenoforge" == true ]] || merge_pr_static_scans_ok "$pr" || return 1
   [[ "$zenoforge" == true ]] || merge_pr_review_family_ok "$pr" || return 1
@@ -640,7 +578,7 @@ merge_pr_checks_and_merge() {
     local failed_csv blocked_csv
     failed_csv="$(merge_pr_join_checks "${failed_names[@]}")"
     blocked_csv="$(merge_pr_join_checks "${blocked_names[@]}")"
-    merge_pr_refuse "$pr" "failed checks: $failed_csv" "read each failing check (gh pr checks $pr), fix the cause, push, then re-record the receipt at the new HEAD (tools/test-receipt.sh <command...>); exception only: checks without a matching ZF_MERGE_OVERRIDE: $blocked_csv"
+    merge_pr_refuse "$pr" "failed checks: $failed_csv" "read each failing check (gh pr checks $pr), fix the cause, push, then wait for PR CI on the new head; exception only: checks without a matching ZF_MERGE_OVERRIDE: $blocked_csv"
     return 1
   fi
   if ((${#overridden_names[@]})); then
@@ -655,8 +593,7 @@ merge_pr_checks_and_merge() {
 }
 
 merge_pr_gate() {
-  local pr="$1" sha="$2" repo="${3:-$(merge_pr_root)}"
-  local result_file head_json head_sha
+  local pr="$1" sha="$2" head_sha
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     merge_pr_refuse "$pr" 'PR number must be numeric' 'pass the PR number: tools/merge-pr.sh <pr-number>'
     return 1
@@ -665,136 +602,18 @@ merge_pr_gate() {
     merge_pr_refuse "$pr" 'tested SHA is not a full commit ID' 'pass the 40-character SHA from git rev-parse HEAD'
     return 1
   fi
-  result_file="$(merge_pr_result_file "$repo" "$sha")" || {
-    merge_pr_refuse "$pr" 'cannot locate the repository result directory'
-    return 1
-  }
-  if [[ ! -f "$result_file" ]]; then
-    merge_pr_refuse "$pr" "no full-suite result exists for SHA $sha" 'run the full suites at that SHA to write the result'
-    return 1
-  fi
-  if ! merge_pr_result_is_green "$result_file" "$sha"; then
-    if jq -e --arg sha "$sha" '
-      .sha == $sha and (.green == false
-        or .cli_exit_code != 0
-        or any(.engine_shards[]?; .exit_code != 0))
-    ' "$result_file" >/dev/null 2>&1; then
-      merge_pr_refuse "$pr" "full local suites are red for SHA $sha" 'fix the failing suite, commit, and rerun the full suites at the new HEAD'
-    else
-      merge_pr_refuse "$pr" "the full-suite result for SHA $sha is incomplete or invalid" 'rerun the full suites at that SHA to rewrite the result'
-    fi
-    return 1
-  fi
   head_sha="$(merge_pr_head_sha "$pr")" || {
     merge_pr_refuse "$pr" 'could not read the PR head'
     return 1
   }
   if [[ "$head_sha" != "$sha" ]]; then
-    merge_pr_refuse "$pr" "PR head $head_sha does not match tested SHA $sha" 'make the PR head equal the tested SHA (push or reset), then rerun'
+    merge_pr_refuse "$pr" "PR head $head_sha does not match requested SHA $sha" 'push the intended head, then rerun'
     return 1
   fi
-  printf 'full local suites are green for %s and PR #%s still points to that SHA; checking PR checks before merge\n' "$sha" "$pr"
+  printf 'PR #%s still points to %s; checking its CI receipt before merge\n' "$pr" "$sha"
   merge_pr_checks_and_merge "$pr" "$sha"
 }
 
-merge_pr_main() {
-  local pr="${1:-}" repo sha result_dir log_dir result_file cli_rc rc green current_sha engine_results='[]'
-  local shard pid status_file
-  local -a pids=()
-  if [[ $# -ne 1 || ! "$pr" =~ ^[0-9]+$ ]]; then
-    printf 'usage: tools/merge-pr.sh <pr-number>\n' >&2
-    return 2
-  fi
-  repo="$(merge_pr_root)" || {
-    merge_pr_refuse "$pr" 'run this helper inside a Git checkout'
-    return 1
-  }
-  cd "$repo" || return 1
-  if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
-    merge_pr_refuse "$pr" 'the working tree must be clean so the tested SHA identifies the source' 'commit or stash the local changes, then rerun'
-    return 1
-  fi
-  sha="$(git rev-parse HEAD 2>/dev/null)" || {
-    merge_pr_refuse "$pr" 'could not read the current HEAD'
-    return 1
-  }
-  result_dir="$(merge_pr_result_dir "$repo")" || {
-    merge_pr_refuse "$pr" 'cannot locate the repository result directory'
-    return 1
-  }
-  mkdir -p "$result_dir" || return 1
-  result_file="$result_dir/$sha.json"
-  log_dir="$result_dir/$sha-logs"
-  rm -f "$result_file"
-  rm -rf "$log_dir"
-  mkdir -p "$log_dir" || return 1
-
-  for ((shard=0; shard<MERGE_PR_ENGINE_SHARDS; shard++)); do
-    (
-      # The host is shared with production; shards yield to it under load.
-      nice -n 10 bash "$repo/tools/run-engine-tests.sh" "$shard" "$MERGE_PR_ENGINE_SHARDS" \
-        >"$log_dir/engine-$shard.log" 2>&1
-      rc=$?
-      printf '%s\n' "$rc" >"$log_dir/engine-$shard.exit"
-      exit "$rc"
-    ) &
-    pids+=("$!")
-    if (( ${#pids[@]} >= MERGE_PR_MAX_PARALLEL )); then
-      wait "${pids[0]}" || :
-      pids=("${pids[@]:1}")
-    fi
-  done
-  for pid in "${pids[@]}"; do wait "$pid" || :; done
-
-  for ((shard=0; shard<MERGE_PR_ENGINE_SHARDS; shard++)); do
-    status_file="$log_dir/engine-$shard.exit"
-    if [[ -f "$status_file" ]]; then
-      rc="$(cat "$status_file")"
-      [[ "$rc" =~ ^[0-9]+$ ]] || rc=125
-    else
-      rc=125
-    fi
-    engine_results="$(jq -cn --argjson current "$engine_results" --argjson shard "$shard" --argjson rc "$rc" \
-      '$current + [{shard:$shard,exit_code:$rc}]')"
-  done
-
-  npm test >"$log_dir/cli.log" 2>&1
-  cli_rc=$?
-  [[ "$cli_rc" =~ ^[0-9]+$ ]] || cli_rc=125
-  green=false
-  if [[ "$cli_rc" == 0 ]] && jq -e 'all(.[]; .exit_code == 0)' <<<"$engine_results" >/dev/null; then
-    green=true
-  fi
-  jq -n --arg sha "$sha" --argjson engine_shards "$engine_results" \
-    --argjson cli_exit_code "$cli_rc" --argjson green "$green" \
-    '{sha:$sha,engine_shards:$engine_shards,cli_exit_code:$cli_exit_code,green:$green}' \
-    >"$result_file.tmp" && mv -f "$result_file.tmp" "$result_file" || {
-      merge_pr_refuse "$pr" "could not record full-suite results for SHA $sha"
-      return 1
-    }
-
-  for ((shard=0; shard<MERGE_PR_ENGINE_SHARDS; shard++)); do
-    rc="$(jq -r --argjson shard "$shard" '.[] | select(.shard==$shard) | .exit_code' <<<"$engine_results")"
-    printf 'ENGINE_SHARD=%s/%s EXIT_CODE=%s\n' "$shard" "$MERGE_PR_ENGINE_SHARDS" "$rc"
-    tail -n 15 "$log_dir/engine-$shard.log"
-  done
-  printf 'CLI_TEST=npm test EXIT_CODE=%s\n' "$cli_rc"
-  tail -n 15 "$log_dir/cli.log"
-  printf 'FULL_SUITE_SHA=%s GREEN=%s RESULT=%s\n' "$sha" "$green" "$result_file"
-
-  current_sha="$(git rev-parse HEAD 2>/dev/null)" || current_sha=''
-  if [[ "$current_sha" != "$sha" ]]; then
-    merge_pr_refuse "$pr" "local HEAD changed during the suites (tested $sha, now ${current_sha:-unknown})" 'leave HEAD alone while the suites run, then rerun'
-    return 1
-  fi
-  merge_pr_gate "$pr" "$sha" "$repo"
-}
-
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  if [[ "${ZF_ALLOW_FULL_GATE:-}" == 1 ]]; then
-    merge_pr_main "$@"
-  else
-    # Ruling zenoforge-no-local-gate-2026-11-04: only the focused tests run locally.
-    merge_pr_checks_and_merge "$@"
-  fi
+  merge_pr_checks_and_merge "$@"
 fi

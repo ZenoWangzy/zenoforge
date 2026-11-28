@@ -20,7 +20,6 @@ source "$transport_path" || {
 repo="${ZF_REPO:-$(git config --get zenoforge.repo 2>/dev/null || true)}"
 agent_home="${AGENT_HOME:-${ZF_HOME:-${HOME:-$HOME}/.zenoforge}}"
 log_file="${ZF_PUSH_GUARD_LOG:-$agent_home/night/night.log}"
-receipts_file=""
 origin_repo="$(git remote get-url origin 2>/dev/null || true)"
 origin_repo="${origin_repo,,}"
 origin_repo="${origin_repo#https://github.com/}"
@@ -32,10 +31,7 @@ origin_repo="${origin_repo%.git}"
 
 common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 if [[ -n "$common_dir" && "$common_dir" != /* ]]; then common_dir="$PWD/$common_dir"; fi
-if [[ -n "$common_dir" ]]; then
-  common_dir="$(cd -- "$common_dir" 2>/dev/null && pwd -P)" || common_dir=""
-  receipts_file="$common_dir/push-guard/repair-records.jsonl"
-fi
+if [[ -n "$common_dir" ]]; then common_dir="$(cd -- "$common_dir" 2>/dev/null && pwd -P)" || common_dir=""; fi
 
 record_event() {
   local event="$1" reason="$2" branch="${3:-}" local_sha="${4:-}" remote_sha="${5:-}"
@@ -75,7 +71,7 @@ pre_push_non_code_only() {
 }
 
 pre_push_receipt_check() {
-  local branch="$1" local_sha="$2" remote_sha="$3" head_sha receipt helper receipt_status=0 detail
+  local branch="$1" local_sha="$2" remote_sha="$3" head_sha receipt receipt_status=0 detail verifier
   head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
   if [[ -z "$head_sha" || "$local_sha" != "$head_sha" ]]; then
     printf 'Push refused: pushed SHA %s does not match current HEAD %s. Check out and test the pushed head before retrying.\n' \
@@ -92,14 +88,15 @@ pre_push_receipt_check() {
       "${local_sha:0:12}" >&2
     refuse test-receipt-missing "$branch" "$local_sha" "$remote_sha" ""
   fi
-  helper="$(mktemp /tmp/zf-receipt-admit.XXXXXX.sh 2>/dev/null || true)"
-  if [[ -z "$helper" ]] || ! git show "origin/main:${ZF_PACK_REL:-engine}/land-admit.sh" > "$helper" 2>/dev/null; then
-    [[ -z "$helper" ]] || rm -f -- "$helper"
+  verifier="$(git show "origin/main:${ZF_PACK_REL:-engine}/land-admit.sh" 2>/dev/null)" || {
+    printf 'Push refused: the trusted test receipt verifier is unavailable.\n' >&2
+    refuse test-receipt-verifier-unavailable "$branch" "$local_sha" "$remote_sha" ""
+  }
+  if [[ -z "$verifier" ]]; then
     printf 'Push refused: the trusted test receipt verifier is unavailable.\n' >&2
     refuse test-receipt-verifier-unavailable "$branch" "$local_sha" "$remote_sha" ""
   fi
-  detail="$(source "$helper" && LAND_RECEIPT_STRICT=1 land_receipt_green "$receipt" 2>&1)" || receipt_status=$?
-  rm -f -- "$helper"
+  detail="$(source <(printf '%s\n' "$verifier") && LAND_RECEIPT_STRICT=1 land_receipt_green "$receipt" 2>&1)" || receipt_status=$?
   if ((receipt_status != 0)); then
     printf 'Push refused: test receipt at pushed SHA %s is not green: %s\n' \
       "${local_sha:0:12}" "$detail" >&2
@@ -205,11 +202,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
   [[ "$branch" == agent/issue-* || "$branch" == hand/* || "$branch" == hand-* ]] || continue
   [[ "$local_sha" =~ ^0+$ ]] && continue
-  if [[ "$origin_repo" != zenowangzy/zenoforge ]] \
+  if [[ "${ZF_TESTS_CI_ONLY:-0}" != 1 && "$origin_repo" != zenowangzy/zenoforge ]] \
     && ! pre_push_non_code_only "$local_sha"; then
     pre_push_receipt_check "$branch" "$local_sha" "$remote_sha"
   fi
-
   size_limit="$(git config --get zenoforge.size-admission.limit 2>/dev/null || true)"
   size_exempt="$(git config --get zenoforge.size-admission.exempt 2>/dev/null || true)"
   if [[ -n "$size_limit" && "$size_exempt" != true ]]; then
@@ -268,54 +264,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     allow_api_failure "$local_sha" "$remote_sha" "$branch"
   fi
 
-  fresh_main_sha=""
-  if jq -e 'any(.[]; .bucket == "fail")' <<< "$checks" >/dev/null 2>&1 \
-    && git fetch --quiet origin main >/dev/null 2>&1; then
-    fresh_main_sha="$(git rev-parse --verify 'origin/main^{commit}' 2>/dev/null || true)"
-  fi
-  missing_check=""
   main_red_override_used=0
-  while IFS=$'\t' read -r check_name check_link completed_at; do
+  while IFS=$'\t' read -r check_name check_link; do
     [[ -n "$check_name" ]] || continue
-    if ! [[ "$completed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || [[ -z "$check_link" ]]; then
-      allow_api_failure "$local_sha" "$remote_sha" "$branch"
+    if [[ "$override_reason" == main-red-stale-shared-failure ]] \
+      && main_red_override_matches "$branch" "$remote_sha" "$pr" "$check_link"; then
+      record_event override main-red-stale-shared-failure "$branch" "$local_sha" "$remote_sha" "$pr" "$check_name" "$check_link"
+      main_red_override_used=1
     fi
-    receipt_contract="$(mktemp /tmp/vecta-ci-receipt.XXXXXX.mjs 2>/dev/null || true)"
-    receipt_matches=1
-    if [[ -n "$receipt_contract" ]] \
-      && git show origin/main:engine/ci-repair-receipt.mjs > "$receipt_contract" 2>/dev/null; then
-      node "$receipt_contract" --match "$receipts_file" "$branch" "$remote_sha" "$local_sha" \
-        "$check_link" "$check_name" "$completed_at" "$pr" "$fresh_main_sha" >/dev/null 2>&1 && receipt_matches=0
-    fi
-    [[ -z "$receipt_contract" ]] || rm -f -- "$receipt_contract"
-    if [[ "$receipt_matches" != 0 ]]; then
-      if main_red_override_matches "$branch" "$remote_sha" "$pr" "$check_link"; then
-        record_event override main-red-stale-shared-failure "$branch" "$local_sha" "$remote_sha" "$pr" "$check_name" "$check_link"
-        main_red_override_used=1
-        continue
-      fi
-      missing_check="$check_name"
-      missing_link="$check_link"
-      missing_completed_at="$completed_at"
-      break
-    fi
-  done < <(jq -r '.[] | select(.bucket == "fail") | [.name // "",.link // "",.completedAt // ""] | @tsv' <<< "$checks")
-
-  if [[ -n "$missing_check" ]]; then
-    run_id="$(grep -oE '/runs/[0-9]+' <<< "$missing_link" | head -1 | grep -oE '[0-9]+' || true)"
-    printf 'Push refused: PR #%s latest CI check failed on head %s: %s%s\n' \
-      "$pr" "$remote_sha" "$missing_check" "${run_id:+ (run $run_id)}" >&2
-    printf 'Read the failed CI step, then run the exact failing unit command locally through:\n' >&2
-    printf 'node "%s/checkout/scripts/branch-delivery-preflight.mjs" --mode push --target main --repair-ci-branch %q --repair-ci-failure-link %q --repair-ci-check %q --repair-ci-failed-head %q --repair-ci-failed-at %q --repair-ci-failing-path %q --repair-ci-command %q\n' \
-      "$agent_home" "$branch" "$missing_link" "$missing_check" "$remote_sha" "$missing_completed_at" '<failing test file>' '<exact failing command from CI log>' >&2
-    printf 'For a complete check, remove --repair-ci-failing-path and add --repair-ci-full-check; use it only after running the entire failed check. A focused unit records focused-passed, never shard passed.\n' >&2
-    printf 'If local infrastructure prevents that command, remove --repair-ci-failing-path and replace --repair-ci-command with --repair-ci-only-reason %q. See %s\n' \
-      '<specific CI-only limitation>' "https://github.com/$repo/blob/main/engine/night/dispatch.sh" >&2
-    printf 'For diff-unrelated recovery, --repair-ci-stale-on-main requires the exact unit to pass on tested HEAD and fresh origin/main; --repair-ci-reproduces-on-main requires failure on both. Both require the path outside the PR diff.\n' >&2
-    printf 'If the same failure reproduces on origin/main outside the PR diff, use --repair-ci-reproduces-on-main with --repair-ci-failing-path %q.\n' \
-      '<failing test file>' >&2
-    refuse failed-ci-without-receipt "$branch" "$local_sha" "$remote_sha" "$pr" "$missing_check" "$missing_link"
-  fi
+  done < <(jq -r '.[] | select(.bucket == "fail") | [.name // "",.link // ""] | @tsv' <<< "$checks")
 
   if [[ -n "$override_reason" ]]; then
     if [[ "$override_reason" == conflict-sweeper-conflicting-pr && "$mergeable" == CONFLICTING ]]; then

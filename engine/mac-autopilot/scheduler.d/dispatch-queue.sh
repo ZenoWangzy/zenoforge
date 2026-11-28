@@ -511,15 +511,15 @@ dispatch_pending_pass() {
 本轮额外阻断（优先处理；评审报告若已 READY，只需处理这一条）：$hint"
         if [[ "$lane" == direct-main ]]; then
           verify_rule='2. 补/改回归测试。'
-          deliver="node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交即可，【不要 push】：这是非产品快车道，复审通过后流水线会把它压成一个提交经 land-direct-main.sh 直落 main。提交信息不要带 [skip ci]。"
+          deliver="只运行静态检查，然后在本地分支 ${branch} 提交即可，【不要 push】：这是非产品快车道，复审通过后流水线会把它压成一个提交经 land-direct-main.sh 直落 main。提交信息不要带 [skip ci]。"
         else
-          verify_rule="2. 补/改回归测试${VERIFY_RUN_RULE}${INTEGRATION_RULE}"
-          deliver="node scripts/branch-delivery-preflight.mjs --mode push --publish-topic $(if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then printf '通过后发布重写后的 origin %s，预检使用 force-with-lease。' "$branch"; else printf '通过后 push 到 origin %s（绝不推 main、不 force）。' "$branch"; fi)"
+          verify_rule="2. 补/改回归测试${VERIFY_LEAD_RULE}${INTEGRATION_RULE}"
+          deliver="只运行静态检查，然后 $(if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then printf 'git push --force-with-lease origin HEAD:%s 发布重写后的 PR 分支。' "$branch"; else printf 'git push -u origin %s 发布 PR 分支（不推 main、不 force）。' "$branch"; fi)"
         fi
         prompt="你是 the product 流水线的实现 subagent，修复 ${subject} 的评审阻断发现。当前目录是隔离 clone：${wt}（分支 ${branch}，已同步 origin）。
 $(matt_method_rule "$wt")
 0. 先看 git stash list：若有「autopilot: kept before redispatch」，那是上一轮未推送的修复，先 git stash pop 恢复并在其基础上继续。
-0b. 先合入最新 main：git merge --no-edit origin/main（不 rebase、不 force；有冲突按两边意图解决）。push preflight 的 freshness 门禁拒绝落后 main 过多的分支，不合就永远推不上。
+0b. 先合入最新 main：git merge --no-edit origin/main（不 rebase、不 force；有冲突按两边意图解决）。Push guard 检查分支 freshness；落后 main 过多时先同步再推。
 1. 读评审报告 $SUP/${prev_report}，逐条处理其中的阻断发现（${title}）。不得为凑绿弱化断言。按缺陷类别修，不按单点修：每条发现先归纳成一类问题（例：单位码被显示名覆盖、幂等键缺字段），在本 PR 全部改动里搜出同类位置一并处理，每一类补一条回归测试；只修被点名的那一行，下一轮评审会在同类的另一处再打回。同一函数的兄弟出口也要枚举：评审点名某函数的一个 return、throw、提前 continue 或错误分支时，先列出该函数的全部出口，每个出口修同一缺陷类别并各补一条回归测试，本轮一次做完，不留到下一轮；报告里列出已检查的出口。${hint}
 1b. 修复报告必须按 $REVIEW_CONTRACT_MD 中的 author-disposition schema，为上一轮每个 finding ID 记录处置和一行理由；复审会从单元历史读取这些处置。
 ${verify_rule}
@@ -528,8 +528,7 @@ ${verify_rule}
 4. 禁止：动主 checkout、合并 PR（gh pr merge）、改 GitHub 状态、部署。0b 的 git merge origin/main 不在此列。
 5. 修复说明写到 $SUP/${rep}，包含改动、验证摘要、交付 SHA 和非空的 ## decision-log（试过什么、失败原因、最终选择、如何验证）；同时就地更新单元实现报告的该节，供复审读取，交付完即结束。
 $(decision_scope "$u")"
-        if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then prompt="你是 the product 流水线的 rebase worker。当前目录是隔离 clone：${wt}（分支 ${branch}）。只处理该 PR 与 origin/main 的冲突。$(matt_method_rule "$wt") 先看 git stash list；若有 autopilot: kept before redispatch，先 git stash pop 恢复。运行 git fetch origin main 和 git rebase origin/main，按两边意图解决冲突，不做无关改动或 merge commit；不能安全解决就记录原因并停止。运行受影响测试，检查 git status 和 diff，然后 ${deliver}。不要改主 checkout、合并 PR、改 GitHub 状态或部署。不要直接 push；publish-topic 预检负责带 lease 发布重写后的分支。将结果、验证命令与退出码、交付 SHA 写入 $SUP/${rep} 的 ## decision-log。"; failure="$prompt"; fi
-        if [[ "$lane" == direct-main ]]; then prompt+=$'\nDo not run *.test.* files; the lander runs the tests.'; fi
+        if [[ "$(jqf -r '.merge_rebase_pending // false' <<<"$u")" == true ]]; then prompt="你是 the product 流水线的 rebase worker。当前目录是隔离 clone：${wt}（分支 ${branch}）。只处理该 PR 与 origin/main 的冲突。$(matt_method_rule "$wt") 先看 git stash list；若有 autopilot: kept before redispatch，先 git stash pop 恢复。运行 git fetch origin main 和 git rebase origin/main，按两边意图解决冲突，不做无关改动或 merge commit；不能安全解决就记录原因并停止。不运行任何测试文件或套件；只运行静态检查，检查 git status 和 diff，然后 ${deliver}。不要改主 checkout、合并 PR、改 GitHub 状态或部署。将结果、验证命令与退出码、交付 SHA 写入 $SUP/${rep} 的 ## decision-log。"; failure="$prompt"; fi
         prompt="$(direct_main_worker_prompt "$prompt" "$u")"
         sha=""
         if [[ "$lane" == direct-main ]]; then
@@ -718,7 +717,7 @@ $(review_fix_prompt_rule "$lane")$(review_dispositions_context "$u")$(review_inp
           deliver="ACCEPTANCE：
 先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据：写明当前 main 上的 file:line、commit 或 run 链接；没有数据不算 OBSOLETE>。${OPT_PREMISE_RULE}${BLAST_RADIUS_RULE}
 VERIFY：
-node scripts/branch-delivery-preflight.mjs --mode commit 通过后在本地分支 ${branch} 提交（提交信息不带 [skip ci]）——这是非产品快车道，评审通过后流水线把它压成一个提交经 land-direct-main.sh 直落 main。
+只运行静态检查，然后在本地分支 ${branch} 提交（提交信息不带 [skip ci]）——这是非产品快车道，评审通过后流水线把它压成一个提交经 land-direct-main.sh 直落 main。
 FORBIDDEN：
 只改非产品路径（scripts/、lessons/、docs/、.agents/ 等）；修复必须改产品代码（packages/、apps/、services/）或 .github/workflows 时不要改，报告第一行写 NEEDS-PR: <原因>。不要 push、不开 PR；禁止 merge PR/部署/改 GitHub 状态。
 REPORT：
@@ -729,9 +728,9 @@ $(implement_report_sections)
 先确认问题在当前 main 上仍存在：已被修复或不再适用就不改代码，报告第一行写 OBSOLETE: <证据：写明当前 main 上的 file:line、commit 或 run 链接；没有数据不算 OBSOLETE>。否则修根因并补回归测试。${OPT_PREMISE_RULE}${BLAST_RADIUS_RULE}
 尺寸准入：${branch} 相对 main 的改动合计（Markdown/文档、生成物、锁文件、测试快照不计入）不超过 ${SIZE_ADMISSION_LINES} 行，push 前用 git diff --numstat origin/main...HEAD 自查。整张票放不进限额时不要硬塞：只实现第一个可独立交付的完整切片（含必要测试），报告第一行改写 SPLIT: <剩余范围一句话>，剩余工作由流水线另开续作票承接；不要为压行数砍掉切片必需的测试。
 VERIFY：
-${VERIFY_LEAD_RULE}${INTEGRATION_RULE}node scripts/branch-delivery-preflight.mjs --mode push --publish-topic 通过后 push 分支 ${branch} 到 origin。
+${VERIFY_LEAD_RULE}${INTEGRATION_RULE}git push -u origin ${branch} 后由 PR CI 验证。
 FORBIDDEN：
-不 push main、不 force、不开 PR——流水线会开 PR 并派评审；禁止 merge PR/部署/改 GitHub 状态。push preflight 判定这份改动只能走 direct-main 时不要自己落地，报告第一行写 NEEDS-DIRECT: <原因>。
+不 push main、不 force、不开 PR——流水线会开 PR 并派评审；禁止 merge PR/部署/改 GitHub 状态。push guard 判定这份改动只能走 direct-main 时不要自己落地，报告第一行写 NEEDS-DIRECT: <原因>。
 REPORT：
 $(implement_report_sections)
 产出说明写到 $SUP/${rep}（根因、改动、验证输出摘要、push SHA；SPLIT 时写清已交付切片的边界和剩余范围）。交付完即结束。"
