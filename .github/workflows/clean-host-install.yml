@@ -37,7 +37,7 @@ jobs:
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             brew_path="$(brew --prefix bash)/bin:$(brew --prefix coreutils)/libexec/gnubin:$(brew --prefix flock)/bin:$(brew --prefix util-linux)/bin:$(brew --prefix)/bin"
             export PATH="$brew_path:$PATH"
-            printf '%s\n' "$(brew --prefix bash)/bin" "$(brew --prefix coreutils)/libexec/gnubin" "$(brew --prefix flock)/bin" "$(brew --prefix util-linux)/bin" "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+            printf '%s\n' "$brew_path" | tr ':' '\n' >> "$GITHUB_PATH"
           fi
           clean_home="$(mktemp -d "$RUNNER_TEMP/clean-home.XXXXXX")"
           pack_dir="$(mktemp -d "$RUNNER_TEMP/clean-pack.XXXXXX")"
