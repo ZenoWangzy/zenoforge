@@ -254,7 +254,7 @@ def verify(root, out_dir, repo):
             verify_change(root, out_dir, repo, engine, state, change)
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             print(f"retro-verify: issue #{change.get('issue')}: {exc}; retrying next run")
-            return
+            continue
 
 
 def main(argv):
