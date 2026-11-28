@@ -33,8 +33,7 @@ roadmap_choose_epic() {
        | chinese_bigrams($text) as $text_bigrams
        | (if $pipeline_health_epic != null then $pipeline_health_epic
           elif $inherited != null and ($inherited.labels | index("roadmap-epic") != null)
-            and (($labels | index("pipeline-system")) != null
-              or score($text_words;$text_bigrams;$inherited.title) >= 2)
+            and score($text_words;$text_bigrams;$inherited.title) >= 2
             and (($labels | index("pipeline-system")) == null
               or $inherited.theme_milestone == "开发流水线与运行稳定") then $inherited
           else

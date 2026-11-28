@@ -146,9 +146,12 @@ assert_eq 'one shared bigram does not create a parent' null "$(jq -r '.epic' <<<
 
 CATEGORY_TREE="$(jq '.roots[0].children += [{number:910,title:"开发流水线与运行稳定",state:"OPEN",milestone:"开发流水线与运行稳定",labels:["roadmap-theme"],children:[{number:912,title:"自动派发与规则校验持续可靠",state:"OPEN",labels:["roadmap-epic"],children:[]}]}]' <<< "$TREE")"
 CATEGORY_TREE="$(jq '.roots[0].children[1].children[0].children += [{number:913,title:"Product source issue",state:"OPEN",labels:["needs-triage"],children:[]}]' <<< "$CATEGORY_TREE")"
-pipeline_classified="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"Domain pack pipeline dispatch","body":"Issue from pipeline automation.","labels":[{"name":"pipeline-system"}]}' '913')"
-assert_eq 'pipeline-system label scopes inherited source to pipeline theme' 912 \
+pipeline_classified="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"自动派发 pipeline dispatch","body":"Issue from pipeline automation.","labels":[{"name":"pipeline-system"}]}' '913')"
+assert_eq 'pipeline-system source inherits only when title matches the parent' 912 \
   "$(jq -r '.epic' <<< "$pipeline_classified")"
+pipeline_unmatched="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"External follow-up","labels":[{"name":"pipeline-system"}]}' '913')"
+assert_eq 'pipeline-system source does not inherit an unrelated parent' null \
+  "$(jq -r '.epic' <<< "$pipeline_unmatched")"
 pipeline_health_classified="$(roadmap_choose_epic "$CATEGORY_TREE" '{"title":"pipeline health: release.hotpatch_blockers unhealthy","body":"Node health metric stayed unhealthy.","labels":[{"name":"pipeline-system"}]}' '')"
 assert_eq 'pipeline health issues map to the pipeline-system epic without a 待归类 epic' 912 \
   "$(jq -r '.epic' <<< "$pipeline_health_classified")"
