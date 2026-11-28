@@ -115,7 +115,7 @@
 2	engine/factory/watch.sh
 3	engine/failure-triage-replay.mjs
 7	engine/failure-triage.mjs
-38	engine/focused-test-paths.mjs
+37	engine/focused-test-paths.mjs
 10	engine/focused-test-paths.test.mjs
 16	engine/formal/dispatch-claim/replay.test.sh
 5	engine/formal/dispatch-claim/verify-model.sh

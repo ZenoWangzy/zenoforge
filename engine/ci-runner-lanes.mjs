@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { CI_RUNNER_PREFIX, validateReservedRunners } from './ci-reserved-runners.mjs';
+import { ciTargetConfig } from './ci-target-config.mjs';
+
+const { suitesLane: CI_SUITES_LANE } = ciTargetConfig();
 
 // shortcut: inline runs-on selectors only; add YAML parsing when block selectors appear.
 export function workflowSelectors(source) {
@@ -25,10 +28,11 @@ export function workflowSelectors(source) {
   return { jobs };
 }
 
-export function validateRunnerLanes(runners, workflows, priorityPr = '') {
+export function validateRunnerLanes(runners, workflows, priorityPr = '', suitesLane = CI_SUITES_LANE) {
   validateReservedRunners(runners);
-  const minimums = { [`${CI_RUNNER_PREFIX}-main`]: 5, [`${CI_RUNNER_PREFIX}-postsubmit`]: 1, [`${CI_RUNNER_PREFIX}-light`]: 4, [`${CI_RUNNER_PREFIX}-priority`]: 1, 'vecta-suites': 3 };
-  const laneLabel = new RegExp(`\\b(?:${CI_RUNNER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-[a-z0-9-]+)?|vecta-suites)\\b`, 'g');
+  const minimums = { [`${CI_RUNNER_PREFIX}-main`]: 5, [`${CI_RUNNER_PREFIX}-postsubmit`]: 1, [`${CI_RUNNER_PREFIX}-light`]: 4, [`${CI_RUNNER_PREFIX}-priority`]: 1, [suitesLane]: 3 };
+  const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const laneLabel = new RegExp(`\\b(?:${escapeRegex(CI_RUNNER_PREFIX)}(?:-[a-z0-9-]+)?|${escapeRegex(suitesLane)})\\b`, 'g');
   const counts = [];
   for (const workflow of workflows) {
     for (const [job, config] of Object.entries(workflow.jobs ?? {})) {

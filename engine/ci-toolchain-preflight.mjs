@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import process from 'node:process';
 
+import { ciTargetConfig } from './ci-target-config.mjs';
 import { focusedTestPaths } from './focused-test-paths.mjs';
 
 export { focusedTestPaths };
@@ -47,7 +48,7 @@ function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-export function remoteScript(changedPaths, testPaths) {
+export function remoteScript(changedPaths, testPaths, runnerUser = ciTargetConfig().runnerUser) {
   const syntaxChecks = changedPaths.flatMap((path) => {
     if (path.startsWith('engine/') && path.endsWith('.sh')) {
       return [`bash -n ${shellQuote(path)}`];
@@ -87,8 +88,8 @@ export function remoteScript(changedPaths, testPaths) {
     'trap \'rm -rf "$work"\' EXIT',
     'mkdir "$work/home"',
     'tar -xf - -C "$work"',
-    'chown -R vecta-ci:vecta-ci "$work"',
-    `runuser -u vecta-ci -- env HOME="$work/home" TMPDIR="$work" WORK_DIR="$work" bash -c ${shellQuote(checks)}`,
+    `chown -R ${shellQuote(`${runnerUser}:${runnerUser}`)} "$work"`,
+    `runuser -u ${shellQuote(runnerUser)} -- env HOME="$work/home" TMPDIR="$work" WORK_DIR="$work" bash -c ${shellQuote(checks)}`,
   ].join('\n');
 }
 

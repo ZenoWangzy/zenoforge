@@ -186,7 +186,6 @@ export const RELATED_TESTS = (await import('./related-tests-dir.mjs').catch(() =
   ['engine/install-traffic-monitor.sh', ['engine/network-traffic.test.sh']],
   ['engine/network-traffic.py', ['engine/network-traffic.test.sh']],
   ['engine/network-traffic-check.py', ['engine/network-traffic.test.sh']],
-  // This gate and its suite were retired; the preflight contracts prove its removal.
   ['engine/ci-runner-lanes.mjs', ['engine/ci-runner-lanes.test.mjs']],
   ['engine/ci-reserved-runners.mjs', ['engine/ci-priority-lane.test.mjs']],
   ['.github/workflows/pipeline-suites.yml', [

@@ -27,6 +27,13 @@ test('the mirrored runner creates a writable Git index before tests that inspect
   assert.ok(test > commit);
 });
 
+test('uses the configured runner identity in the mirrored script', () => {
+  const script = remoteScript(['engine/lib.sh'], ['engine/lib.test.sh'], 'build-runner');
+
+  assert.match(script, /chown -R 'build-runner:build-runner'/);
+  assert.match(script, /runuser -u 'build-runner'/);
+});
+
 test('selects changed pipeline script tests, including non-sibling test owners', () => {
   const tracked = new Set([
     'engine/dispatch-load-guard.test.sh',

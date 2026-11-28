@@ -76,6 +76,7 @@ jobs:
           ZF_PUBLIC_TEXT_DENYLIST: ''
         run: |
           merge_base="$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")"
+          node engine/vecta-name-lint.mjs --base "origin/$BASE_REF" --head "$HEAD_SHA"
           node engine/public-text-guard.mjs --base "origin/$BASE_REF" --head "$HEAD_SHA"
           suite_list="$(node engine/focused-test-paths.mjs --range "$merge_base" "$HEAD_SHA")"
           selection="$(node -e '
