@@ -49,7 +49,12 @@ pass_recheck || fail 'a recheck in a pass failed'
 unset -f gh git set_unit pass_recheck
 
 # A split leaves its parent in its delivery state (no tracker move): the parent delivers its own first slice, so a split never leaves a childless tracker.
-gh() { return 1; }
+gh() {
+  case "$1 $2" in
+    "issue list") printf '[]\n' ;;
+    *) return 1 ;;
+  esac
+}
 scheduler_auto_filed_issue_create() { echo "https://github.com/o/r/issues/41"; }
 unit_field() { echo t; }
 hist() { echo '{}'; }

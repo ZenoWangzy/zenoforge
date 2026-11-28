@@ -489,7 +489,7 @@ $(head -40 "$2")"
 # SPLIT: <剩余范围一句话>。剩余范围需要一张自己的票承载——生而 needs-triage，走正常分诊
 # （含行数估算），不会再被整票派发。创建失败记 supervisor inbox，单元保持评审队列。
 split_followup_issue() { # unit issue pr split-line report-path
-  local unit="$1" issue="$2" pr="$3" first="$4" rep="$5" remainder body url num parent
+  local unit="$1" issue="$2" pr="$3" first="$4" rep="$5" remainder body url num parent title issues lookup_failed=false
   remainder="$(printf '%s' "$first" | sed -E 's/^SPLIT:[[:space:]]*//')"
   body="## Parent
 
@@ -502,16 +502,34 @@ $remainder
 ## 切片交付说明（worker 报告）
 
 $(head -n 200 "$rep" 2>/dev/null)"
+  title="$(unit_field "$unit" .title)（续作自 #${issue}）"
+  if issues="$(gh issue list --state open --search "\"$title\" in:title" --json number,title --limit 1000 2>/dev/null)"; then
+    if num="$(jqf -r --arg title "$title" 'if type != "array" then error("issue list was not an array") else [.[] | select(.title == $title) | .number][0] // empty end' <<<"$issues")"; then
+      if [[ "$num" =~ ^[1-9][0-9]*$ ]]; then
+        set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"
+        say "unit $unit split delivery: adopted remainder #$num; slice in PR #$pr"
+        return 0
+      fi
+    else
+      lookup_failed=true
+    fi
+  else
+    lookup_failed=true
+  fi
   # The follow-up is the parent's sibling: an open child makes the parent a roadmap container, which refuses awaiting-release.
-  parent="$(gh api "repos/{owner}/{repo}/issues/$issue/parent" --jq '.number // empty' 2>/dev/null || true)"
-  url="$(scheduler_auto_filed_issue_create --title "$(unit_field "$unit" .title)（续作自 #${issue}）" --body "$body" --label needs-triage ${parent:+--parent "$parent"} 2>/dev/null || true)"
+  if [[ "$lookup_failed" == false ]]; then
+    parent="$(gh api "repos/{owner}/{repo}/issues/$issue/parent" --jq '.number // empty' 2>/dev/null || true)"
+    url="$(scheduler_auto_filed_issue_create --title "$title" --body "$body" --label needs-triage ${parent:+--parent "$parent"} 2>/dev/null || true)"
+  else
+    url=""
+  fi
   if [[ -n "$url" ]]; then
     num="${url##*/}"
     set_unit "$unit" "$(hist split-followup "issue #$num: $remainder") | .split_followup=$num"
     say "unit $unit split delivery: remainder #$num filed; slice in PR #$pr"
   else
     # 切片 PR 已在评审，失败只报 supervisor inbox，不把单元踢出评审队列；剩余范围仍在 worker 报告与 PR 描述里。
-    ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "split-followup-failed:$unit" "split 续作票创建失败 unit=$unit 原票 #$issue 切片 PR #${pr}：剩余范围见报告 $(basename "$rep")" ) >/dev/null 2>&1 \
-      || say "unit $unit split followup create failed; remainder in $(basename "$rep")"
+    ( source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "split-followup-failed:$unit" "split 续作票查重或创建失败 unit=$unit 原票 #$issue 切片 PR #${pr}：剩余范围见报告 $(basename "$rep")" ) >/dev/null 2>&1 \
+      || say "unit $unit split followup lookup/create failed; remainder in $(basename "$rep")"
   fi
 }
