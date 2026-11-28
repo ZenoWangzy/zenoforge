@@ -154,11 +154,11 @@ check 'different failure signatures are not filed' "$(wc -l < "$UPSERT_LOG" | tr
 contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'explore: unconfirmed release=cccccccccccc feature=search' 'unconfirmed finding was not logged'
 
 slow_sha=dddddddddddddddddddddddddddddddddddddddd
-write_config 5 100
+write_config 20 100 30
 write_live "$slow_sha"
 bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
 export ZF_CDP_BROWSER_LEASE_SCRIPT="$REPO_DIR/browser-lease.sh"
-export LEASE_DELAY=12
+export LEASE_DELAY=25
 lease_calls_before_wall="$(wc -l < "$LEASE_CALLS" | tr -d ' ')"
 bash "$SCRIPT_DIR/run-explore.sh" run "$slow_sha" >/dev/null
 check 'wall-limited wait runs through the browser lease' "$(wc -l < "$LEASE_CALLS" | tr -d ' ')" "$((lease_calls_before_wall + 2))"
@@ -169,6 +169,7 @@ call_timeout_sha=abababababababababababababababababababab
 write_config 3600 100 1
 write_live "$call_timeout_sha"
 bash "$SCRIPT_DIR/run-explore.sh" dispatch >/dev/null
+export LEASE_DELAY=3
 bash "$SCRIPT_DIR/run-explore.sh" run "$call_timeout_sha" >/dev/null
 contains "$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log" 'explore: driver error release=abababababab feature=search attempt=1' 'per-call lease timeout did not use the driver error path'
 check 'per-call lease timeout keeps the existing run status' "$(jq -r .stop "$AGENT_HOME/state/explore/$call_timeout_sha/state.json")" done
