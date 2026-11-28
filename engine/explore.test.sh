@@ -197,7 +197,7 @@ shift
 SH
 chmod +x "$REPO_DIR/browser-lease.sh"
 
-leased_sha=ffffffffffffffffffffffffffffffffffffffff
+leased_sha=9999999999999999999999999999999999999999
 write_config 3600 100
 write_live "$leased_sha"
 export ZF_CDP_BROWSER_LEASE_SCRIPT="$REPO_DIR/browser-lease.sh"
