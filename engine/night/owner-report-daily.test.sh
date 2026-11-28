@@ -9,7 +9,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/maintainer-health-mail.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 printf '#!/usr/bin/env bash\nprintf "[]\\n"\n' > "$tmp/bin/gh"
 chmod +x "$tmp/bin/gh"
