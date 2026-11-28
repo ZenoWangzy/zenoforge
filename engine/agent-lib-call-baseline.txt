@@ -1,4 +1,5 @@
 engine/mac-autopilot/scheduler.d/acceptance.sh 1
+engine/mac-autopilot/scheduler.d/checkpoint.sh 0
 engine/mac-autopilot/scheduler.d/ci-admission.sh 0
 engine/mac-autopilot/scheduler.d/ci-status.sh 2
 engine/mac-autopilot/scheduler.d/ci-stuck-unqueued.sh 2
