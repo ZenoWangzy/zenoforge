@@ -5,21 +5,21 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>AGENT_HOME</key>
-		<string>/home/zf-golden/.zenoforge</string>
+		<string>/zf-golden/.zenoforge</string>
 		<key>HTTP_PROXY</key>
 		<string>http://127.0.0.1:3128 HTTPS_PROXY=http://127.0.0.1:3128</string>
 		<key>NO_PROXY</key>
 		<string>127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8</string>
 		<key>PATH</key>
-		<string>/home/zf-golden/.local/bin:/home/zf-golden/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
+		<string>/zf-golden/.local/bin:/zf-golden/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
 		<key>ZF_HOME</key>
-		<string>/home/zf-golden/.zenoforge</string>
+		<string>/zf-golden/.zenoforge</string>
 		<key>ZF_NIGHT_DIR</key>
-		<string>/home/zf-golden/.zenoforge/night</string>
+		<string>/zf-golden/.zenoforge/night</string>
 		<key>ZF_REPO_DIR</key>
-		<string>/home/zf-golden/.zenoforge/checkout</string>
+		<string>/zf-golden/.zenoforge/checkout</string>
 		<key>ZF_WORKTREE_ROOT</key>
-		<string>/home/zf-golden/wt</string>
+		<string>/zf-golden/wt</string>
 		<key>http_proxy</key>
 		<string>http://127.0.0.1:3128 https_proxy=http://127.0.0.1:3128</string>
 		<key>no_proxy</key>
@@ -35,7 +35,7 @@
 		<string>360</string>
 		<string>/bin/bash</string>
 		<string>-c</string>
-		<string>e="$(readlink -e /home/zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; for v in ZF_RELEASE_TRAIN_SCRIPT AGENT_INCIDENT_GUARDS_FILE ZF_PRODUCTION_TENANT_MARKER_EXCEPTIONS_FILE; do p="${!v-}"; case "$p" in /home/zf-golden/.zenoforge/engine-live/*) export "$v=$e/${p#/home/zf-golden/.zenoforge/engine-live/}";; esac; done; fi; exec "${e:-/home/zf-golden/.zenoforge/checkout/engine}/night/health-maintenance.sh" maintenance</string>
+		<string>e="$(readlink -e /zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; if [ -n "$e" ]; then export ZF_ENGINE_DIR="$e" ZF_ENGINE_LIVE="$e"; [ -z "${ZF_PACK_DIR-}" ] || export ZF_PACK_DIR="$e"; for v in ZF_RELEASE_TRAIN_SCRIPT AGENT_INCIDENT_GUARDS_FILE ZF_PRODUCTION_TENANT_MARKER_EXCEPTIONS_FILE; do p="${!v-}"; case "$p" in /zf-golden/.zenoforge/engine-live/*) export "$v=$e/${p#/zf-golden/.zenoforge/engine-live/}";; esac; done; fi; exec "${e:-/zf-golden/.zenoforge/checkout/engine}/night/health-maintenance.sh" maintenance</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -47,6 +47,6 @@
 	<key>StartInterval</key>
 	<integer>600</integer>
 	<key>WorkingDirectory</key>
-	<string>/home/zf-golden/.zenoforge/checkout</string>
+	<string>/zf-golden/.zenoforge/checkout</string>
 </dict>
 </plist>

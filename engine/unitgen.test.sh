@@ -24,7 +24,7 @@ grep -Fq "$tmp/unknown.service:3: unknown directive UnknownDirective" <<< "$outp
 python3 "$dir/unitgen.py" check "$dir/systemd/"
 
 # plist: goldens are rendered with a fixed HOME and a fixed UTC+8 zone (POSIX TZ, no tzdata needed).
-render_plists() { HOME=/home/zf-golden TZ=CST-8 python3 "$dir/unitgen.py" plist --dir "$1"; }
+render_plists() { HOME=/zf-golden TZ=CST-8 python3 "$dir/unitgen.py" plist --dir "$1"; }
 golden="$dir/unitgen.golden"
 plist_out="$tmp/plist"
 render_plists "$plist_out"
@@ -57,7 +57,7 @@ cat > "$tmp/no-exec.service" <<'UNIT'
 Environment=PATH=/usr/bin:/bin
 UNIT
 plist_bad="$tmp/plist-bad"
-if output="$(HOME=/home/zf-golden TZ=CST-8 python3 "$dir/unitgen.py" plist --dir "$plist_bad" "$tmp/no-exec.timer" 2>&1)"; then
+if output="$(HOME=/zf-golden TZ=CST-8 python3 "$dir/unitgen.py" plist --dir "$plist_bad" "$tmp/no-exec.timer" 2>&1)"; then
   echo "FAIL: missing ExecStart passed plist" >&2
   exit 1
 else

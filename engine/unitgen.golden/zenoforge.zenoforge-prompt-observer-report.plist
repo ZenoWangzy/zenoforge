@@ -5,17 +5,17 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>AGENT_HOME</key>
-		<string>/home/zf-golden/.zenoforge</string>
+		<string>/zf-golden/.zenoforge</string>
 		<key>MAC_AUTOPILOT_RUNTIME_DIR</key>
-		<string>/home/zf-golden/.zenoforge/checkout/.scratch-supervisor/autopi</string>
+		<string>/zf-golden/.zenoforge/checkout/.scratch-supervisor/autopi</string>
 		<key>MAC_AUTOPILOT_SUPERVISOR_DIR</key>
-		<string>/home/zf-golden/.zenoforge/checkout/.scratch-supervisor</string>
+		<string>/zf-golden/.zenoforge/checkout/.scratch-supervisor</string>
 		<key>PATH</key>
-		<string>/home/zf-golden/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
+		<string>/zf-golden/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
 		<key>ZF_HOME</key>
-		<string>/home/zf-golden/.zenoforge</string>
+		<string>/zf-golden/.zenoforge</string>
 		<key>ZF_REPO_DIR</key>
-		<string>/home/zf-golden/.zenoforge/checkout</string>
+		<string>/zf-golden/.zenoforge/checkout</string>
 	</dict>
 	<key>Label</key>
 	<string>zenoforge.zenoforge-prompt-observer-report</string>
@@ -31,9 +31,9 @@
 		<integer>8192</integer>
 	</dict>
 	<key>StandardErrorPath</key>
-	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-prompt-observer-report.log</string>
+	<string>/zf-golden/.zenoforge/logs/units/zenoforge-prompt-observer-report.log</string>
 	<key>StandardOutPath</key>
-	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-prompt-observer-report.log</string>
+	<string>/zf-golden/.zenoforge/logs/units/zenoforge-prompt-observer-report.log</string>
 	<key>StartCalendarInterval</key>
 	<array>
 		<dict>
@@ -44,6 +44,6 @@
 		</dict>
 	</array>
 	<key>WorkingDirectory</key>
-	<string>/home/zf-golden/.zenoforge/checkout</string>
+	<string>/zf-golden/.zenoforge/checkout</string>
 </dict>
 </plist>
