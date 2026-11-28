@@ -71,12 +71,12 @@ priority_admission_case() {
   printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=12 avg60=12 avg300=12 total=12\n' > "$psi"
   room_for issue-9 implement "" true false && fail 'memory-full opt waiter released normal dispatch below the run cap'
   printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0\n' > "$psi"
-  PRIORITY_GATE_CPU_BUSY=0; PRIORITY_GATE_RUNS=$((LUNA_RUNS_HARD_CAP - 1))
+  PRIORITY_GATE_CPU_BUSY=0; PRIORITY_GATE_RUNS=$(( $(luna_run_cap) - 1 ))
   room_for issue-9 implement "" true false || fail 'opt waiter held normal dispatch while shared capacity was available'
   PRIORITY_GATE_RUNS="$(luna_run_cap)"
   room_for issue-9 implement "" true false && fail 'opt waiter did not hold normal dispatch at the shared run cap'
   rm -f "$LUNA_SLOTS/wait-opt-$$"; : > "$LUNA_SLOTS/wait-hotfix-$$"
-  PRIORITY_GATE_RUNS=$((LUNA_RUNS_HARD_CAP - 1)) # the host gate now also admits a normal start, so the hotfix case needs headroom
+  PRIORITY_GATE_RUNS=$(( $(luna_run_cap) - 1 )) # the host gate now also admits a normal start, so the hotfix case needs headroom
   room_for issue-9 implement "" true false || fail 'normal dispatch held while hotfix admission was open'
   printf 'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=12 avg60=12 avg300=12 total=12\n' > "$psi"
   room_for issue-9 implement "" true false && fail 'memory-full hotfix waiter released normal dispatch'
