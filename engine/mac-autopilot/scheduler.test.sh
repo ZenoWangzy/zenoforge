@@ -3002,6 +3002,7 @@ if command grep -q '^merge 78$' "$TF/actions"; then
 fi
 command grep -q 'required checks without a real pass:' "$TF/supervisor/autopi/scheduler.log"
 printf 'fresh\n' > "$TF/pipeline-ci-adoption"
+AGENT_HOME="$TF/agent-home" gh_commit_check_runs_invalidate "$unlinked_sha"
 tick
 command grep -q '^merge 78$' "$TF/actions" || { tail -n 60 "$TF/calls" >&2; exit 1; }
 if command grep -Eq '^issue (edit|comment) ' "$TF/actions"; then
@@ -5156,10 +5157,8 @@ sched_case_hold_handoff_open_pr() {
     elif [[ "$existing" == stale ]]; then
       command jq -n '{units:[{id:"issue-779",issue:779,pr:778,branch:"agent/old",lane:"pr",stage:"ready-to-merge",history:[]}]}' > "$TF/supervisor/autopi/units.json"
     fi
-    if [[ "$existing" != outside-census ]]; then
-      command jq -n '[{number:779,headRefName:"agent/issue-779",title:"handoff with open PR",body:"Refs #779"}]' \
-        > "$TF/handoff-lookup.json"
-    fi
+    command jq -n '[{number:779,headRefName:"agent/issue-779",title:"handoff with open PR",body:"Refs #779"}]' \
+      > "$TF/handoff-lookup.json"
     command jq '.max_workers=1 | .implement_cap=0 | .issue_intake.enabled=true | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
     tick
     command jq -e '(.units|length)==1 and .units[0].issue==779 and .units[0].pr==779 and .units[0].branch=="agent/issue-779" and .units[0].stage=="repair-pending" and (.units[0].repair_hint|contains("issue comments"))' \
