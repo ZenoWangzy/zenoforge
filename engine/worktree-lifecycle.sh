@@ -2860,10 +2860,10 @@ watch_cleanup() {
   local target="$1" pid="$2" start_ticks="$3" current_ticks owner owner_target canonical_target handoff_status=0
   # This internal entry also rejects direct calls before the original target is terminal.
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$start_ticks" =~ ^[0-9]+$ ]] || return 75
-  if [[ -d "/proc/$pid" ]]; then
+  if pid_live "$pid"; then
     current_ticks="$(pid_start_ticks "$pid" 2>/dev/null || true)"
     [[ -n "$current_ticks" ]] || return 75
-    if [[ "$current_ticks" == "$start_ticks" ]] && pid_live "$pid"; then return 75; fi
+    [[ "$current_ticks" != "$start_ticks" ]] || return 75
   fi
   # A child the agent backgrounded (an ssh tunnel) keeps the transient scope
   # active after the agent exits, and an active scope reads as a live hold

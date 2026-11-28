@@ -110,6 +110,7 @@ echo 'PASS an invalid older event does not starve the next completion'
   printf '#!%s\n' "$BASH"
   cat <<'SH'
 set -euo pipefail
+source "$(dirname "$REFILL_WATCH_SOURCE")/proc.sh"
 eval "$(sed -n '/^watch_cleanup() {$/,/^}$/p' "$REFILL_WATCH_SOURCE")"
 NIGHT="$REFILL_NIGHT"; AGENTS_FILE="$NIGHT/agents.txt"; mkdir -p "$NIGHT"
 hand_registry_record_exit() { :; }

@@ -200,6 +200,7 @@ jobs:
 
   portable-shim-contract-macos:
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
@@ -209,3 +210,11 @@ jobs:
         env:
           ZF_RUNNER: pidfile
         run: bash engine/portable-shim/zf_units.test.sh
+      - name: Install macOS engine dependencies
+        run: |
+          brew bundle --file=engine/Brewfile
+          "$(brew --prefix bash)/bin/bash" -c 'source engine/platform-env.sh; platform_require; echo "PATH=$PATH" >> "$GITHUB_ENV"'
+      - name: Run hostinfo tests
+        run: bash engine/hostinfo.test.sh
+      - name: Run execution admission tests
+        run: bash engine/execution-admission.test.sh
