@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+transport_path="$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
+if [[ ! -f "$transport_path" ]]; then transport_path="$(git rev-parse --show-toplevel)/engine/lib.d/transport.sh"; fi
+source "$transport_path"
 set -euo pipefail
 unset GH_TOKEN
 [[ $# == 3 && $1 =~ ^[0-9]+$ && $2 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && -f $3 ]] || { echo 'usage: hf-start.sh <issue-number> <slug> <brief-file>' >&2; exit 2; }

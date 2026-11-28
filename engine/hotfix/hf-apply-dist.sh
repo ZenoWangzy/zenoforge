@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+transport_path="$(dirname -- "${BASH_SOURCE[0]}")/../lib.d/transport.sh"
+if [[ ! -f "$transport_path" ]]; then transport_path="$(git rev-parse --show-toplevel)/engine/lib.d/transport.sh"; fi
+source "$transport_path"
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$here/../config.sh"
