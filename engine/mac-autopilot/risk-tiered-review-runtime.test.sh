@@ -65,6 +65,13 @@ if risk_tiered_review_try_skip skip-unit "$unit" "$REPO_DIR" "$HEAD_SHA" "$HEAD_
   echo 'an escape-rate brake must leave the candidate for normal review'
   exit 1
 fi
+jq -e '.snapshot.units | length == 5' "$SUP/risk-tiered-review-archive-window.json" >/dev/null
+cache_identity="$(stat -c '%i %s %Y' "$SUP/risk-tiered-review-archive-window.json")"
+if risk_tiered_review_try_skip skip-unit "$unit" "$REPO_DIR" "$HEAD_SHA" "$HEAD_SHA"; then
+  echo 'the cached escape rate must continue to leave the candidate for normal review'
+  exit 1
+fi
+[[ "$(stat -c '%i %s %Y' "$SUP/risk-tiered-review-archive-window.json")" == "$cache_identity" ]]
 jq -e '.units[0] | .stage == "review-pending" and .history == []' "$UNITS" >/dev/null
 cp "$UNITS_ARCHIVE" "$SUP/matured-units.json"
 printf '{"units":[]}' > "$UNITS_ARCHIVE"

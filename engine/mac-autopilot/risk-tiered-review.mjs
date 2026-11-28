@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -113,6 +113,11 @@ export function recordEscapedPaths(paths, packages) {
     .map((packagePath) => ({ path: file, packagePath })));
 }
 
+function lastMergedAt(unit) {
+  const merged = [...(unit.history ?? [])].reverse().find((event) => event.stage === 'merged');
+  return Date.parse(merged?.at ?? '');
+}
+
 export function riskTieredReviewStats(units, now = Date.now(), { lookbackDays = Infinity } = {}) {
   const cutoff = now - 7 * 86400000;
   const lookbackCutoff = now - (7 + lookbackDays) * 86400000;
@@ -121,8 +126,7 @@ export function riskTieredReviewStats(units, now = Date.now(), { lookbackDays = 
   let escapedSkippedUnits = 0;
   for (const unit of units) {
     const history = unit.history ?? [];
-    const merged = [...history].reverse().find((event) => event.stage === 'merged');
-    const mergedAt = Date.parse(merged?.at ?? '');
+    const mergedAt = lastMergedAt(unit);
     if (!Number.isFinite(mergedAt) || mergedAt > cutoff || mergedAt < lookbackCutoff) continue;
     maturedMergedUnits += 1;
     const skip = [...history].reverse().find((event) => event.stage === 'review-skip'
@@ -256,7 +260,45 @@ function readInvalidations(file) {
   return parsed;
 }
 
-export function evaluateReviewSkip({ repo, base, head, checkOutput, selfCheckStatus, selfCheckSha, invalidationsFile, unitsFile, archiveFile, now = Date.now() }) {
+function archiveSnapshotCacheKey(file, now) {
+  const stat = statSync(file);
+  return [path.resolve(file), stat.dev, stat.ino, stat.size, stat.mtimeMs, Math.floor(now / 86400000)].join(':');
+}
+
+function readCachedArchiveSnapshot(file, key) {
+  if (!file || !key || !existsSync(file)) return null;
+  try {
+    const cached = JSON.parse(readFileSync(file, 'utf8'));
+    if (cached.key === key && Array.isArray(cached.snapshot?.units)) return cached.snapshot;
+  } catch {}
+  return null;
+}
+
+function archiveSnapshotForLookback(snapshot, now) {
+  const cutoff = now - (7 + REVIEW_SKIP_ESCAPE_LOOKBACK_DAYS) * 86400000;
+  return {
+    units: (snapshot?.units ?? []).filter((unit) => {
+      const mergedAt = lastMergedAt(unit);
+      return Number.isFinite(mergedAt) && mergedAt >= cutoff;
+    }),
+  };
+}
+
+function writeCachedArchiveSnapshot(file, key, snapshot) {
+  if (!file || !key || !snapshot) return;
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(temporary, `${JSON.stringify({ key, snapshot })}\n`);
+    renameSync(temporary, file);
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {}
+  }
+}
+
+export function evaluateReviewSkip({ repo, base, head, checkOutput, selfCheckStatus, selfCheckSha, invalidationsFile, unitsFile, archiveFile, archiveCacheFile, now = Date.now() }) {
   const paths = changedPaths(repo, base, head);
   const checks = checkLog(checkOutput);
   const protectedList = protectedPaths(repo, base, head);
@@ -277,12 +319,17 @@ export function evaluateReviewSkip({ repo, base, head, checkOutput, selfCheckSta
   });
   if (!decision.eligible) return decision;
   const snapshotFiles = [archiveFile, unitsFile];
-  const snapshots = snapshotFiles.every((file) => file && existsSync(file))
-    ? snapshotFiles.map((file) => JSON.parse(readFileSync(file, 'utf8')))
-    : [];
-  const stats = snapshots.length
-    ? riskTieredReviewStats(mergeUnitSnapshots(...snapshots), now, { lookbackDays: REVIEW_SKIP_ESCAPE_LOOKBACK_DAYS })
-    : null;
+  let stats = null;
+  if (snapshotFiles.every((file) => file && existsSync(file))) {
+    const archiveKey = archiveSnapshotCacheKey(archiveFile, now);
+    let archiveSnapshot = readCachedArchiveSnapshot(archiveCacheFile, archiveKey);
+    if (!archiveSnapshot) {
+      archiveSnapshot = archiveSnapshotForLookback(JSON.parse(readFileSync(archiveFile, 'utf8')), now);
+      writeCachedArchiveSnapshot(archiveCacheFile, archiveKey, archiveSnapshot);
+    }
+    const liveSnapshot = JSON.parse(readFileSync(unitsFile, 'utf8'));
+    stats = riskTieredReviewStats(mergeUnitSnapshots(archiveSnapshot, liveSnapshot), now, { lookbackDays: REVIEW_SKIP_ESCAPE_LOOKBACK_DAYS });
+  }
   return escapeBrake(decision, stats);
 }
 
@@ -314,14 +361,14 @@ export function formatRiskTieredReviewStats(stats) {
 }
 
 function parseArgs(args) {
-  const options = { mode: 'decision', repo: process.cwd(), base: '', head: 'HEAD', checkOutput: '', status: '', selfCheckSha: '', invalidationsFile: '', units: '', archive: '' };
+  const options = { mode: 'decision', repo: process.cwd(), base: '', head: 'HEAD', checkOutput: '', status: '', selfCheckSha: '', invalidationsFile: '', units: '', archive: '', archiveCacheFile: '' };
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
     if (['--decision', '--record-escape', '--report'].includes(key)) options.mode = key.slice(2);
-    else if (['--repo', '--base', '--head', '--check-output', '--status', '--self-check-sha', '--invalidations', '--units', '--archive'].includes(key)) {
+    else if (['--repo', '--base', '--head', '--check-output', '--status', '--self-check-sha', '--invalidations', '--units', '--archive', '--archive-cache'].includes(key)) {
       const value = args[index + 1];
       if (!value) throw new Error(`${key} requires a value`);
-      const names = { 'check-output': 'checkOutput', 'self-check-sha': 'selfCheckSha', invalidations: 'invalidationsFile' };
+      const names = { 'check-output': 'checkOutput', 'self-check-sha': 'selfCheckSha', invalidations: 'invalidationsFile', 'archive-cache': 'archiveCacheFile' };
       options[names[key.slice(2)] ?? key.slice(2)] = value;
       index += 1;
     } else throw new Error(`unknown argument: ${key}`);
@@ -345,6 +392,7 @@ if (process.argv[1] && existsSync(process.argv[1])
         invalidationsFile: options.invalidationsFile,
         unitsFile: options.units,
         archiveFile: options.archive,
+        archiveCacheFile: options.archiveCacheFile,
       })));
     } else if (options.mode === 'record-escape') {
       console.log(JSON.stringify(recordEscapeInvalidationsAt(options.repo, options.base, options.head, options.invalidationsFile)));
