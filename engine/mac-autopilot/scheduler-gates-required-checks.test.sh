@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
-units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
+units() { reset_gate_fixture_reads; printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
 H1=1111111111111111111111111111111111111111
 H2=2222222222222222222222222222222222222222
@@ -65,7 +65,7 @@ SH
   GH_CHECKS="$(jq -c '. + [{name:"Touched packages PR gate",bucket:"skipping"},{name:"Example pack PR gate",bucket:"skipping"}]' <<< "$passing_checks")"
   units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-required",pr:11,stage:"ready-to-merge",approved_sha:$sha,history:[]}]}')"
   GH_MERGES=(); run_merge_lane || :
-  [[ "${GH_MERGES[0]:-}" == *"pr merge 11"* && "$(field pr-required .stage)" == merged ]] || fail 'skipping heavy rows blocked a green aggregate from merging'
+  [[ "${GH_MERGES[0]:-}" == *"pr merge 11"* && "$(field pr-required .stage)" == merged ]] || fail "skipping heavy rows blocked a green aggregate from merging; log=$(tail -n 16 "$LOG")"
   ready_at='2026-10-28T22:00:00Z'
   GH_CHECKS="$(jq -c --arg started_at '2026-10-28T21:59:59Z' '
     .required | map({name:.,bucket:"pass",started_at:$started_at})
@@ -128,9 +128,10 @@ SH
   grep -Fq 'merge skipped PR#11 (required checks without a real pass:' "$LOG" || fail 'pre-adoption rows lack the required-check block reason'
   [[ "$(wc -l < "$fixture/pr-edit.calls")" == 1 ]] || fail 'an already-adopted head was labeled again'
   GH_CHECKS="$(jq -c --arg started_at '2026-10-29T10:00:01Z' '.required | map({name:.,bucket:"pass",started_at:$started_at})' "$REQUIRED_PR_CHECKS_FILE")"
+  gh_commit_check_runs_invalidate "$H1"
   GH_MERGE_SHA="$M2"
   run_merge_lane || :
-  [[ "${GH_MERGES[0]:-}" == *"pr merge 11"* && "$(field pr-adopt .stage)" == merged ]] || fail 'post-adoption green rows did not merge'
+  [[ "${GH_MERGES[0]:-}" == *"pr merge 11"* && "$(field pr-adopt .stage)" == merged ]] || fail "post-adoption green rows did not merge; merges=${GH_MERGES[*]:-}; stage=$(field pr-adopt .stage); check_runs=$(cat "$GH_CHECK_RUNS_CALLS"); log=$(tail -n 12 "$LOG" | tr '\n' ';')"
   # A later synchronize event has already launched CI because the adoption label remains on
   # the PR. Advancing the ledger head must preserve the first label timestamp, not label again
   # or move the freshness floor past those synchronize checks.
@@ -185,10 +186,10 @@ SH
   STALE_BASE_ROUTING=true
   GH_HEAD="$H1"; GH_MERGES=()
   GH_CHECKS="$(jq -cn --arg n "$gate" '[{name:$n,bucket:"fail"},{name:"contract",bucket:"pass"}]')"
-  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-behind-main",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,stale_base_hop_used:false,history:[]}]}')"
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-behind-main",pr:11,branch:"agent/issue-11",stage:"ready-to-merge",approved_sha:$sha,mergeable:"MERGEABLE",stale_base_hop_used:false,history:[]}]}')"
   : > "$LOG"; run_merge_lane || :
   [[ "$(cat "$UPDATE_BRANCH_CALLS")" == "11 $H1" && ${#GH_MERGES[@]} == 0 && "$(field pr-behind-main .stage)" == ready-to-merge \
-      && "$(field pr-behind-main '.history[-1].stage')" == ci-red-behind-main-update ]] || fail 'a red PR behind main did not get one update-branch'
+      && "$(field pr-behind-main '.history[-1].stage')" == ci-red-behind-main-update ]] || fail "a red PR behind main did not get one update-branch; calls=$(cat "$UPDATE_BRANCH_CALLS"); merges=${GH_MERGES[*]:-}; stage=$(field pr-behind-main .stage); history=$(field pr-behind-main '.history | map(.stage) | join(",")'); checks=$(cat "$GH_CHECK_RUNS_CALLS"); log=$(tail -n 12 "$LOG" | tr '\n' ';')"
   grep -Fq "check failed: $gate; head behind main" "$LOG" || fail 'the stale-base update lacks the check failed log line'
   # A clean update-branch carries approval without renewing the spent budget; a different test-red check takes repair.
   approval_carries_saved="$(declare -f approval_carries)"
