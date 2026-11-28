@@ -1225,7 +1225,19 @@ SH
   # 额外参数原样传给 scheduler.sh（如 --refill）；不带参数就是一整拍慢 tick。
   local rc=0
   # Fixture ticks assert step effects before exit; keep the production step lock but run them inline here.
-  AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
+  if [[ "${SCHED_TEST_TRACE_REFILL:-}" == 1 ]]; then
+    exec 9>"$TF/refill.trace"
+    BASH_XTRACEFD=9 PS4='+${BASH_SOURCE##*/}:${LINENO}: '
+    export BASH_XTRACEFD PS4
+    set -o xtrace
+    export SHELLOPTS
+    AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
+    set +o xtrace
+    unset BASH_XTRACEFD
+    exec 9>&-
+  else
+    AUTOPI_TEST_INLINE_TICK_STEPS=true bash "$TF/repo/engine/mac-autopilot/scheduler.sh" "$@" > "$TF/tick.out" 2>&1 || rc=$?
+  fi
   if (( rc != 0 && rc != 75 )); then cat "$TF/tick.out" >&2; return 1; fi
   [[ ! -e "$TF/unexpected-host" ]] || { cat "$TF/unexpected-host" >&2; return 1; }
   return "$rc"
@@ -3211,7 +3223,7 @@ command jq -cn --arg sampled_at "$budget_sampled_at" --argjson sampled_epoch "$b
   '{sampled_at:$sampled_at,sampled_epoch:$sampled_epoch,resources:{graphql:{used:100,remaining:4900,reset:$reset},core:{used:0,remaining:5000,reset:$reset}}}' \
   > "$TF/agent-home/state/gh-budget.latest.json"
 calls_before="$(wc -l < "$TF/calls")"
-ZF_AGENT_TEST_MODE=0 TF_REAL_PS=1 tick --refill
+SCHED_TEST_TRACE_REFILL=1 ZF_AGENT_TEST_MODE=0 TF_REAL_PS=1 tick --refill
 command jq -e '.units | length==5
   and any(.[]; .id=="issue-8802" and .stage=="implement")
   and any(.[]; .id=="issue-8801" and .lane=="pr" and .stage=="implement-pending")
@@ -3222,6 +3234,9 @@ command jq -e '.units | length==5
     cat "$TF/tick.out" >&2
     printf '%s\n' 'scheduler.test.sh: refill fixture GitHub calls:' >&2
     command grep -E '^gh |^fixture graphql ' "$TF/calls" | tail -n 30 >&2 || :
+    if [[ -s "$TF/refill.trace" ]]; then
+      awk '/[[:space:]]gh / { command=$0; sub(/^.*[[:space:]]gh /,"gh ",command); split(command, words, /[[:space:]]+/); if (words[1] == "gh") print words[1], words[2], words[3] }' "$TF/refill.trace" | tail -n 30 >&2
+    fi
     command jq -c '.units[] | {id,lane,stage,issue,pr}' "$TF/supervisor/autopi/units.json" >&2 || :
     command jq -c '.workers[] | {unit,type,harvested}' "$TF/supervisor/autopi/workers.json" >&2 || :
     echo 'scheduler.test.sh: refill tick did not dispatch the waiting unit without harvesting the worker report' >&2
