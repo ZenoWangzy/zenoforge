@@ -115,7 +115,8 @@ remote_tree="$(printf '100644 blob %s\tclaim.json\n' "$remote_blob" | git -C "$c
 remote_commit="$(GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid \
   git -C "$claims_repo" commit-tree "$remote_tree" -m claim)"
 git -C "$claims_repo" update-ref refs/seen/claims/issue-1510 "$remote_commit"
-remote_rows="$(coord_remote_scheduler_footprints '[]')" || fail 'remote scheduler claim projection failed'
+remote_rows="$(coord_remote_scheduler_footprints '[{"id":"local-live","stage":"implement"}]')" \
+  || fail 'remote scheduler claim projection failed with a local row missing its cached footprint'
 jq -e --arg unit "$unit" 'any(.[]; .id==$unit and .stage=="implement" and .footprint==["engine/coord"] and .remote_claim==true)' \
   <<<"$remote_rows" >/dev/null || fail 'remote scheduler claim footprint was missing'
 

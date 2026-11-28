@@ -470,5 +470,6 @@ remote_conflict="$(active_footprint_conflict '["src/hot"]' "$remote_active" remo
 [[ "$remote_conflict" == remote-owner ]] || fail 'remote writer scope did not block an overlapping unit'
 coord_remote_scheduler_footprints() { return 3; }
 if footprint_active_rows >/dev/null; then fail 'unknown remote claim snapshot was admitted'; fi
+if active_footprint_snapshot remote-candidate >/dev/null; then fail 'unknown remote claim snapshot reached footprint admission'; fi
 
 echo 'footprint-convoy.test.sh: pass (stale-owner release, live-owner lock, convoy dedupe, refill metrics, expansion cache, refill expansion reuse)'

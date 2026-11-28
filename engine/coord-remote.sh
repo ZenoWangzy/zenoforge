@@ -127,8 +127,8 @@ coord_remote_refresh() {
 
 coord_remote_scheduler_footprints() {
   local local_rows="${1:-[]}" refs ref key record owner kind unit stage held local_claim represented scope row output='[]'
-  jq -e 'type == "array" and all(.[]; type == "object" and (.id | type == "string")
-    and (.footprint | type == "array" and all(.[]; type == "string")))' <<<"$local_rows" >/dev/null 2>&1 || return 3
+  jq -e 'type == "array" and all(.[]; type == "object" and (.id | type == "string"))' \
+    <<<"$local_rows" >/dev/null 2>&1 || return 3
   coord_remote_refresh || return 3
   refs="$(git -C "$COORD_REMOTE_REPO" for-each-ref --format='%(refname)' refs/seen/claims 2>/dev/null)" || return 3
   while IFS= read -r ref; do

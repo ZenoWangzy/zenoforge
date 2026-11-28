@@ -168,7 +168,7 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
 }
 active_footprint_snapshot() { # refresh live writes for all active implementation workers
   local active
-  active="$(footprint_active_rows)"
+  active="$(footprint_active_rows)" || return $?
   [[ "$active" == '[]' ]] || active="$(resolve_active_footprints "$active")" || return 1
   printf '%s\n' "$active"
 }
