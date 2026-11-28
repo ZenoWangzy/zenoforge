@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/home/zf-golden/.local/bin:/home/zf-golden/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin</string>
+		<key>ZF_REPO_DIR</key>
+		<string>/home/zf-golden/.zenoforge/checkout</string>
+	</dict>
+	<key>Label</key>
+	<string>zenoforge.zenoforge-renewd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>timeout</string>
+		<string>-k</string>
+		<string>30</string>
+		<string>50</string>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>e="$(readlink -e /home/zf-golden/.zenoforge/engine-live 2&gt;/dev/null)"; exec "${e:-/home/zf-golden/.zenoforge/checkout/engine}/coord/renewd.sh" --once</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>8192</integer>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-renewd.log</string>
+	<key>StandardOutPath</key>
+	<string>/home/zf-golden/.zenoforge/logs/units/zenoforge-renewd.log</string>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>WorkingDirectory</key>
+	<string>/home/zf-golden/.zenoforge/checkout</string>
+</dict>
+</plist>
