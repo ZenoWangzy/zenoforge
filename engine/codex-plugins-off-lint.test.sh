@@ -77,6 +77,8 @@ scan_context_mode_root() {
   return 0
 }
 
+source "$engine/lib.d/codex-mcp.sh"
+printf '%s\n' "${CODEX_PLUGINS_OFF_ARGS[@]}" | grep -qx 'features.apps=false' || fail "CODEX_PLUGINS_OFF_ARGS lacks -c features.apps=false"
 bad="$(scan_root "$root")"
 [[ -z "$bad" ]] || { printf 'codex-plugins-off-lint.test.sh: codex run without -c features.plugins=false (CODEX_PLUGINS_OFF_ARGS):\n%s\n' "$bad" >&2; exit 1; }
 context_mode_bad="$(scan_context_mode_root "$root")"
