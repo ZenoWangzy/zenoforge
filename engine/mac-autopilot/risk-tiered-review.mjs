@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { lessonLintRegistry } from '../lesson-lints.mjs';
 
 const REVIEW_SKIP_MAX_CHANGED_LINES = 80;
+const REVIEW_SKIP_ESCAPE_MIN_SKIPS = 4;
+const REVIEW_SKIP_ESCAPE_SHARE = 0.25;
+const REVIEW_SKIP_ESCAPE_LOOKBACK_DAYS = 30;
 const REGISTRY_PATH = '.zenoforge/state/escape-suites.json';
 const RULES_PATH = 'engine/state/rule-files.json';
 const REVIEW_VERDICT_STAGES = new Set(['review-approve', 'review-request-changes', 'review-block']);
@@ -84,6 +87,12 @@ export function assessReviewSkip({
   return { eligible: true, changedLines, paths: changed, checks: [...checks.values()].sort((left, right) => left.name.localeCompare(right.name)) };
 }
 
+export function escapeBrake(decision, stats) {
+  if (!decision.eligible || !(stats?.skippedUnits >= REVIEW_SKIP_ESCAPE_MIN_SKIPS)
+    || !(stats.escapeShare >= REVIEW_SKIP_ESCAPE_SHARE)) return decision;
+  return { eligible: false, reason: 'escape-rate' };
+}
+
 export function recordEscapeInvalidations(paths, basePackages, headPackages) {
   const invalidations = [];
   for (const file of [...new Set(paths)].sort()) {
@@ -104,8 +113,9 @@ export function recordEscapedPaths(paths, packages) {
     .map((packagePath) => ({ path: file, packagePath })));
 }
 
-export function riskTieredReviewStats(units, now = Date.now()) {
+export function riskTieredReviewStats(units, now = Date.now(), { lookbackDays = Infinity } = {}) {
   const cutoff = now - 7 * 86400000;
+  const lookbackCutoff = now - (7 + lookbackDays) * 86400000;
   let maturedMergedUnits = 0;
   let skippedUnits = 0;
   let escapedSkippedUnits = 0;
@@ -113,7 +123,7 @@ export function riskTieredReviewStats(units, now = Date.now()) {
     const history = unit.history ?? [];
     const merged = [...history].reverse().find((event) => event.stage === 'merged');
     const mergedAt = Date.parse(merged?.at ?? '');
-    if (!Number.isFinite(mergedAt) || mergedAt > cutoff) continue;
+    if (!Number.isFinite(mergedAt) || mergedAt > cutoff || mergedAt < lookbackCutoff) continue;
     maturedMergedUnits += 1;
     const skip = [...history].reverse().find((event) => event.stage === 'review-skip'
       && event.result === unit.approved_sha && Date.parse(event.at ?? '') <= mergedAt);
@@ -246,13 +256,13 @@ function readInvalidations(file) {
   return parsed;
 }
 
-export function evaluateReviewSkip({ repo, base, head, checkOutput, selfCheckStatus, selfCheckSha, invalidationsFile }) {
+export function evaluateReviewSkip({ repo, base, head, checkOutput, selfCheckStatus, selfCheckSha, invalidationsFile, unitsFile, archiveFile, now = Date.now() }) {
   const paths = changedPaths(repo, base, head);
   const checks = checkLog(checkOutput);
   const protectedList = protectedPaths(repo, base, head);
   if (!protectedList) return { eligible: false, reason: 'protected-path-registry-unavailable' };
   const lintScopes = Object.fromEntries(paths.map((file) => [file, lintScopesForPath(file)]));
-  return assessReviewSkip({
+  const decision = assessReviewSkip({
     paths,
     changedLines: changedLines(repo, base, head),
     escapePackages: mergedPackages(repo, base, head),
@@ -265,6 +275,15 @@ export function evaluateReviewSkip({ repo, base, head, checkOutput, selfCheckSta
     invalidations: readInvalidations(invalidationsFile),
     protectedPaths: protectedList,
   });
+  if (!decision.eligible) return decision;
+  const snapshotFiles = [archiveFile, unitsFile];
+  const snapshots = snapshotFiles.every((file) => file && existsSync(file))
+    ? snapshotFiles.map((file) => JSON.parse(readFileSync(file, 'utf8')))
+    : [];
+  const stats = snapshots.length
+    ? riskTieredReviewStats(mergeUnitSnapshots(...snapshots), now, { lookbackDays: REVIEW_SKIP_ESCAPE_LOOKBACK_DAYS })
+    : null;
+  return escapeBrake(decision, stats);
 }
 
 export function recordEscapeInvalidationsAt(repo, base, head, invalidationsFile) {
@@ -324,6 +343,8 @@ if (process.argv[1] && existsSync(process.argv[1])
         selfCheckStatus: options.status,
         selfCheckSha: options.selfCheckSha,
         invalidationsFile: options.invalidationsFile,
+        unitsFile: options.units,
+        archiveFile: options.archive,
       })));
     } else if (options.mode === 'record-escape') {
       console.log(JSON.stringify(recordEscapeInvalidationsAt(options.repo, options.base, options.head, options.invalidationsFile)));

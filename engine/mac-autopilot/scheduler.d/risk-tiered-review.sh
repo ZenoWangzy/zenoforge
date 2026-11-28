@@ -10,7 +10,7 @@ risk_tiered_review_try_skip() {
   [[ "$base" =~ $SHA_RE ]] || return 1
   decision="$(node "$(risk_tiered_review_script)" --decision --repo "$repo" --base "$base" --head "$sha" \
     --check-output "$output" --status "$status" --self-check-sha "$self_sha" \
-    --invalidations "$SUP/risk-tiered-review-invalidations.json" 2>/dev/null)" || return 1
+    --invalidations "$SUP/risk-tiered-review-invalidations.json" --units "$UNITS" --archive "$UNITS_ARCHIVE" 2>/dev/null)" || return 1
   jqf -e '.eligible == true' <<<"$decision" >/dev/null || return 1
   checks="$(jqf -c '.checks' <<<"$decision")" || return 1
   paths="$(jqf -c '.paths' <<<"$decision")" || return 1

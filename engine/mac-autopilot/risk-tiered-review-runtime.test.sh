@@ -5,6 +5,7 @@ REPO_DIR="$TMPDIR/risk-tiered-review-repo"
 ROOT="$REPO_DIR"
 SUP="$TMPDIR/risk-tiered-review-supervisor"
 UNITS="$SUP/units.json"
+UNITS_ARCHIVE="$SUP/units-archive.json"
 SELF_CHECK_LOG="$TMPDIR/risk-tiered-review-self-check.log"
 mkdir -p "$REPO_DIR/.zenoforge/state" "$REPO_DIR/engine/state" "$REPO_DIR/packages/tests" "$REPO_DIR/packages/fruit/tests" "$SUP"
 git -C "$REPO_DIR" init -q -b main
@@ -50,6 +51,23 @@ source "$(dirname -- "$BASH_SOURCE")/scheduler.d/risk-tiered-review.sh"
 printf '{"units":[{"id":"skip-unit","issue":1121,"stage":"review-pending","self_check_status":"pass","self_check_sha":"%s","self_check_output":"%s","history":[]}]}' \
   "$HEAD_SHA" "$SELF_CHECK_LOG" > "$UNITS"
 unit="$(jq -c '.units[0]' "$UNITS")"
+history_sha="$(printf '%040d' 7)"
+history_skip_at="$(date -u -d '21 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+history_merge_at="$(date -u -d '20 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+history_escape_at="$(date -u -d '19 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+jq -n --arg sha "$history_sha" --arg skip "$history_skip_at" --arg merged "$history_merge_at" \
+  --arg escape "$history_escape_at" --arg path packages/fruit/tests/escape.test.sh \
+  '{units:[range(0;5) as $i | {id:("matured-\($i)"),stage:"merged",approved_sha:$sha,history:( [
+    {stage:"review-skip",result:$sha,at:$skip,paths:[$path]},
+    {stage:"merged",at:$merged}
+  ] + (if $i < 2 then [{stage:"review-skip-escape",at:$escape,paths:[$path]}] else [] end))}]}' > "$UNITS_ARCHIVE"
+if risk_tiered_review_try_skip skip-unit "$unit" "$REPO_DIR" "$HEAD_SHA" "$HEAD_SHA"; then
+  echo 'an escape-rate brake must leave the candidate for normal review'
+  exit 1
+fi
+jq -e '.units[0] | .stage == "review-pending" and .history == []' "$UNITS" >/dev/null
+cp "$UNITS_ARCHIVE" "$SUP/matured-units.json"
+printf '{"units":[]}' > "$UNITS_ARCHIVE"
 risk_tiered_review_try_skip skip-unit "$unit" "$REPO_DIR" "$HEAD_SHA" "$HEAD_SHA"
 jq -e --arg sha "$HEAD_SHA" '.units[0] | .stage == "ready-to-merge" and .approved_sha == $sha and .history[-1].stage == "review-skip" and (.history[-1].paths | index("packages/fruit/tests/escape.test.sh") != null) and ([.history[-1].checks[] | select(.kind == "escape-suite")] | length == 2) and any(.history[-1].checks[]; .kind == "lesson-lint")' "$UNITS" >/dev/null
 source "$(dirname -- "$BASH_SOURCE")/scheduler.d/pr-body.sh"
@@ -70,4 +88,11 @@ skip_line="$(grep -n 'risk_tiered_review_try_skip' <<<"$review_block" | cut -d: 
 pick_line="$(grep -n 'pick_review_for_unit' <<<"$review_block" | cut -d: -f1)"
 [[ "$skip_line" =~ ^[0-9]+$ && "$pick_line" =~ ^[0-9]+$ ]] && (( skip_line < pick_line ))
 grep -q 'risk_tiered_review_record_escape "$ready" "$pre_merge_sha" "$approved"' "$(dirname -- "$BASH_SOURCE")/scheduler.d/merge-lane.sh"
+decision_units="$SUP/decision-units.json"
+jq -n --argjson unit "$unit" --slurpfile history "$SUP/matured-units.json" \
+  '{units:([$unit] + $history[0].units)}' > "$decision_units"
+missing_archive_decision="$(node "$(risk_tiered_review_script)" --decision --repo "$REPO_DIR" --base "$BASE_SHA" --head "$HEAD_SHA" \
+  --check-output "$SELF_CHECK_LOG" --status pass --self-check-sha "$HEAD_SHA" \
+  --invalidations "$SUP/missing-invalidations.json" --units "$decision_units" --archive "$SUP/missing-archive.json")"
+jq -e '.eligible == true' <<<"$missing_archive_decision" >/dev/null
 echo 'ok - eligible review skips are recorded, named in the PR body, and invalidated by a covered escape'
