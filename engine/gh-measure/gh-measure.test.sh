@@ -9,6 +9,7 @@ t="$(mktemp -d)"; trap 'rm -rf -- "$t" "$test_env_root"' EXIT
 cat > "$t/real-gh" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
+  bytes) printf '%0123d' 0 ;;
   hang) echo $$ > "$FAKE_PID_FIFO"; read -r _ < "$FAKE_HOLD_FIFO" ;;
   api)
     shift; path=""
@@ -86,6 +87,9 @@ kill -TERM "$shim"; wait "$shim" || true
 [ "$(tail -1 "$t/calls.tsv" | cut -f4,8)" = $'hang \tother' ] || fail 'a killed call was not logged'
 
 summary="$(python3 "$dir/summary.py" "$t/calls.tsv")"
+"$dir/bin/gh" bytes > "$t/body" || fail '123-byte call failed'
+[ "$(wc -c < "$t/body" | tr -d '[:space:]')" = 123 ] || fail 'fake gh did not produce a 123-byte body'
+[ "$(tail -1 "$t/calls.tsv" | cut -f10)" = 123 ] || fail "response byte count not recorded: $(tail -1 "$t/calls.tsv")"
 grep -q '^10 gh calls .*failed 9 (90.0%)' <<< "$summary" || fail "summary did not count rows and ignore the 304: $summary"
 # Spike pass: a site failing >=50% this hour after a clean day alerts; a noisy-before site and a healthy busy site do not.
 now=1800000000; ts() { date -u -d "@$1" +%FT%TZ; }
