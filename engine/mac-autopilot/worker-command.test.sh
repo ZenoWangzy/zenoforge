@@ -36,7 +36,13 @@ check_worker_test_policy() {
   [[ "$CI_REPRO_RULE" == *'不在本机或测试 runner 运行测试'* ]] \
     || fail 'CI repair prompts must not ask for local test reproduction'
   for source in "${sources[@]}"; do
-    matches="$(grep -niE '(run|rerun|execute|reproduce).{0,160}(test|suite).{0,160}(locally|local|before push|before pushing|at that head|at the repaired head)' "$source" | grep -Eiv 'do not|never|must not|should not' || true)"
+    matches="$(
+      {
+        grep -niE '(run|rerun|execute|reproduce).{0,160}((test|suite).{0,160}(locally|local|before push|before pushing|at that head|at the repaired head)|(locally|local).{0,160}(test|suite))' "$source" || true
+        grep -niE '(local|locally)' "$source" | grep -iE '(test|suite)' | grep -i receipt \
+          | grep -iE '(record|write|save|create|produce|leave|provide|attach|submit|require|needed|must|should|shall|need|before push|before pushing|pre-push|gate)' || true
+      } | grep -Eiv 'do not|never|must not|should not|avoid|don.t|not required|not needed|not necessary|manual only|no longer' || true
+    )"
     [[ -z "$matches" ]] || fail "worker source asks for a local suite before push: $source: $matches"
   done
   if grep -niE 'Name the full verification command before coding|see each test fail before its fix' \

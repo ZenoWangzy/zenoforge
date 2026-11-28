@@ -14,10 +14,9 @@ git -C "$repo" config user.name 'Push Guard Test'
 git -C "$repo" config user.email 'push-guard@example.test'
 mkdir -p "$repo/engine/ci"
 cp "$root/engine/land-admit.sh" "$repo/engine/land-admit.sh"
-cp "$root/engine/ci-repair-receipt.mjs" "$repo/engine/ci-repair-receipt.mjs"
 cp "$root/engine/ci/pr-required-aggregate.mjs" "$repo/engine/ci/pr-required-aggregate.mjs"
 printf 'base\n' > "$repo/file.js"
-git -C "$repo" add file.js engine/land-admit.sh engine/ci-repair-receipt.mjs engine/ci/pr-required-aggregate.mjs
+git -C "$repo" add file.js engine/land-admit.sh engine/ci/pr-required-aggregate.mjs
 git -C "$repo" commit -qm base
 base_sha="$(git -C "$repo" rev-parse HEAD)"
 git init -q --bare --initial-branch=main "$remote"
@@ -69,7 +68,6 @@ chmod +x "$tmp/bin/gh"
 export HOME="$tmp/home" PATH="$tmp/bin:$PATH" ZF_PUSH_GUARD_LOG="$tmp/push-guard.log" ZF_ENGINE_DIR="$root/engine"
 
 link='https://github.com/example-maintainer/example-repo/actions/runs/999/job/1000'
-failed_at='2026-10-10T00:00:00Z'
 pass_checks="$(jq -cn --arg link "$link" '[{name:"CI",bucket:"pass",completedAt:"2026-10-10T00:00:00Z",link:$link}]')"
 fail_checks="$(jq -cn --arg link "$link" '[{name:"CI",bucket:"fail",completedAt:"2026-10-10T00:00:00Z",link:$link}]')"
 
@@ -125,53 +123,8 @@ echo 'ok - Rule A allows and logs conflict sweeper override'
 
 set_remote_head "$base_sha"
 export PUSH_GUARD_MERGEABLE=MERGEABLE PUSH_GUARD_CHECKS="$fail_checks" PUSH_GUARD_CHECK_EXIT=1
-if run_guard "$base_sha"; then echo 'not ok - Rule B refuses failed CI without repair evidence' >&2; exit 1; fi
-grep -Fq -- '--repair-ci-failure-link' "$tmp/stderr"
-echo 'ok - Rule B refuses failed CI without repair evidence'
-
-write_receipt() {
-  local status="$1" command="$2" reason="$3" main_sha="${4:-}" failing_path="${5:-}" common failed_ms
-  common="$(git -C "$repo" rev-parse --git-common-dir)"
-  [[ "$common" == /* ]] || common="$repo/$common"
-  mkdir -p "$common/push-guard"
-  failed_ms="$(node -p 'Date.parse(process.argv[1])' "$failed_at")"
-  jq -cn --arg branch agent/issue-123 --arg link "$link" --arg check CI \
-    --arg failed_head "$base_sha" --arg failed_at "$failed_at" --arg tested_head "$local_sha" \
-    --arg recorded_at '2026-10-10T00:00:01.000Z' --arg status "$status" --arg command "$command" \
-    --arg reason "$reason" --arg main_head "$main_sha" --arg failing_path "$failing_path" \
-    --argjson failed_ms "$failed_ms" --argjson recorded_ms "$((failed_ms + 1000))" \
-    '{version:(if $status == "reproduces-on-main" then 3 else 2 end),branch:$branch,prNumber:123,failureLink:$link,checkName:$check,failedHeadSha:$failed_head,
-      failedAt:$failed_at,failedAtMs:$failed_ms,testedHeadSha:$tested_head,recordedAt:$recorded_at,
-      recordedAtMs:$recorded_ms,status:$status}
-      + if $status == "passed" then {scope:"whole-check",command:$command}
-        elif $status == "focused-passed" then {scope:"failing-unit",command:$command,failingPath:$failing_path}
-        elif $status == "ci-only" then {reason:$reason}
-        else {scope:"failing-unit",command:$command,mainHeadSha:$main_head,failingPath:$failing_path}
-          + if $status == "reproduces-on-main" then {reproductionEvidence:{failingPath:$failing_path,
-              testedHeadFailure:($failing_path + " :: not ok 1 - focused test"),
-              mainFailure:($failing_path + " :: not ok 1 - focused test")}} else {} end end' \
-    > "$common/push-guard/repair-records.jsonl"
-}
-
-write_receipt passed 'pnpm --filter @example/test test -- focused.test.ts' ''
-if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - passed receipt' >&2; exit 1; fi
-echo 'ok - Rule B allows matching post-failure command receipt'
-
-write_receipt ci-only '' 'CI-only infrastructure: local Docker runtime unavailable'
-if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - CI-only receipt' >&2; exit 1; fi
-echo 'ok - Rule B allows and records CI-only limitation receipt'
-
-write_receipt reproduces-on-main 'pnpm --filter @example/test test -- focused.test.ts' '' "$base_sha" package.json
-if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - main reproduction receipt' >&2; exit 1; fi
-echo 'ok - Rule B allows exact failing command reproduced on origin/main outside PR diff'
-jq '.version = 2 | del(.reproductionEvidence)' "$repo/.git/push-guard/repair-records.jsonl" > "$tmp/legacy-reproduction.jsonl"
-mv "$tmp/legacy-reproduction.jsonl" "$repo/.git/push-guard/repair-records.jsonl"
-if run_guard "$base_sha"; then echo 'not ok - legacy reproduction receipt without target failure evidence' >&2; exit 1; fi
-echo 'ok - Rule B refuses legacy main reproduction receipt without target failure evidence'
-
-write_receipt stale-on-main 'pnpm --filter @example/test test -- focused.test.ts' '' "$base_sha" package.json
-if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - stale-on-main receipt' >&2; exit 1; fi
-echo 'ok - Rule B allows a focused unit classified against fresh origin/main'
+if ! run_guard "$base_sha"; then cat "$tmp/stderr" >&2; echo 'not ok - repair push without local test receipt' >&2; exit 1; fi
+echo 'ok - Rule B allows repair pushes without a local test receipt'
 
 main_red_link='https://github.com/example-maintainer/example-repo/actions/runs/888/job/1000'
 main_red_checks="$(jq -cn --arg link "$main_red_link" '[{name:"CI",bucket:"fail",completedAt:"2026-10-10T00:00:00Z",link:$link}]')"
@@ -186,7 +139,7 @@ echo 'ok - guard consumes exact main-red override event for matching PR head and
 
 set_remote_head "$diverged_sha"
 if run_guard "$diverged_sha"; then echo 'not ok - main-red override must not authorize a different remote head' >&2; exit 1; fi
-grep -Fq 'failed-ci-without-receipt' "$ZF_PUSH_GUARD_LOG"
+grep -Fq 'invalid-main-red-override' "$ZF_PUSH_GUARD_LOG"
 unset ZF_PUSH_GUARD_OVERRIDE_REASON
 echo 'ok - main-red override does not authorize different remote head'
 
@@ -342,7 +295,6 @@ mkdir -p "$size_worker/src"
 awk 'BEGIN { for (i = 0; i < 801; i++) print "line" }' > "$size_worker/src/change.ts"
 git -C "$size_worker" add src/change.ts
 git -C "$size_worker" commit -qm oversized
-write_green_test_receipt "$size_worker"
 size_count="$(changed_lines_in_checkout "$size_worker" main)"
 [[ "$size_count" == 801 ]] || { echo "not ok - size admission counted $size_count lines instead of 801" >&2; exit 1; }
 if size_output="$(git -C "$size_worker" push origin agent/issue-801 2>&1)"; then
@@ -356,7 +308,6 @@ echo 'ok - worker push refuses 801 changed lines, reports SPLIT, and uses change
 awk 'BEGIN { for (i = 0; i < 800; i++) print "line" }' > "$size_worker/src/change.ts"
 git -C "$size_worker" add src/change.ts
 git -C "$size_worker" commit -qm 'trim to admitted size'
-write_green_test_receipt "$size_worker"
 if ! git -C "$size_worker" push -q origin agent/issue-801; then
   echo 'not ok - 800-line worker push was refused' >&2
   exit 1
@@ -368,7 +319,6 @@ mkdir -p "$size_waived_worker/src"
 awk 'BEGIN { for (i = 0; i < 801; i++) print "line" }' > "$size_waived_worker/src/change.ts"
 git -C "$size_waived_worker" add src/change.ts
 git -C "$size_waived_worker" commit -qm 'waived size'
-write_green_test_receipt "$size_waived_worker"
 if ! git -C "$size_waived_worker" push -q origin agent/issue-802; then
   echo 'not ok - waived 801-line worker push was refused' >&2
   exit 1
